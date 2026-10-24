@@ -4848,6 +4848,7 @@ mod tests {
         let naming = replay_io::Naming {
             localisation: None,
             settings: &settings,
+            report: None,
         };
         let recording = || replay::recording_files::recording_of(&target, ID).unwrap();
         // Each game process records the campaign, then ends with Auto save off.
@@ -4939,6 +4940,7 @@ mod tests {
                 replay_io::Naming {
                     localisation: None,
                     settings: &settings,
+                    report: None,
                 },
             )
         };
@@ -5059,6 +5061,7 @@ mod tests {
                 replay_io::Naming {
                     localisation: None,
                     settings: &settings,
+                    report: None,
                 },
             )
             .unwrap()

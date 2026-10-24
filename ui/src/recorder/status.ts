@@ -85,6 +85,7 @@ export interface SavedRecording {
 }
 
 export interface Recordings { unsaved: UnsavedRecording[]; saved: SavedRecording[] }
+export interface RecordingsView { panel: string; visit: number; open: boolean }
 
 export type Dot = 'red' | 'grey' | 'green' | 'spin';
 export type HeadAction = 'stop' | 'record' | 'open' | 'recordings';

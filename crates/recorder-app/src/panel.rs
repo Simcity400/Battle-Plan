@@ -48,6 +48,7 @@ struct State {
     shown: bool,
     /// A window is being created on its own thread.
     opening: bool,
+    recordings_panel: Option<String>,
 }
 
 #[derive(Default)]
@@ -225,6 +226,9 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
                 state.focused = false;
                 state.shown = false;
                 state.ask_stop = false;
+                if let Some(panel) = state.recordings_panel.take() {
+                    handle.state::<crate::recordings::Library>().close(&panel);
+                }
             }
             handle.state::<Arc<Recorder>>().panel_closed(&handle);
         }
@@ -234,8 +238,15 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
 }
 
 /// Whether the panel opens on the Stop prompt, and whether that is all it shows.
-pub fn take_opening(app: &AppHandle) -> (bool, bool) {
+pub fn take_opening(app: &AppHandle, panel: &str) -> (bool, bool) {
     let mut state = state(app);
+    if state.closed_at.is_none() && state.recordings_panel.as_deref() != Some(panel) {
+        let library = app.state::<crate::recordings::Library>();
+        if let Some(previous) = state.recordings_panel.replace(panel.to_owned()) {
+            library.close(&previous);
+        }
+        library.register_panel(panel);
+    }
     (std::mem::take(&mut state.ask_stop), state.compact)
 }
 

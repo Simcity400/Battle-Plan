@@ -561,6 +561,10 @@ fn waiting_list(settled: &Settled) -> Vec<Waiting> {
         .collect()
 }
 
+fn background_naming<T>(work: impl FnOnce() -> T) -> T {
+    job_priority::JobPriority::run(Arc::new(AtomicBool::new(true)), work)
+}
+
 type AheadResult = (replay_io::Ahead, Option<Localisation>, Duration, Duration);
 
 /// Finalizes a growing spool ahead below the fastest speed, and names it when asked, on one thread.
@@ -568,8 +572,35 @@ struct FinalizingAhead {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<AheadResult>>,
     asked: Arc<AtomicBool>,
-    /// The name each campaign's recording would get so far, by campaign.
+    /// The file name each recording it saves would get so far, by campaign.
     names: Arc<Mutex<BTreeMap<String, String>>>,
+}
+
+/// The file name a save through this session would give each recording in `target` now, by
+/// campaign: those it spools, and those ended sessions left waiting there, which it saves alike.
+fn predicted_names(
+    session: &Path,
+    target: &Path,
+    ahead: &replay_io::Ahead,
+    naming: replay_io::Naming<'_>,
+) -> BTreeMap<String, String> {
+    let mut names = ahead.names(session, target, naming);
+    let (Ok(root), Ok(spooled)) = (root_of(session), replay_io::spooled_campaigns(session)) else {
+        return names;
+    };
+    let waiting: BTreeSet<_> = session_folders(root)
+        .iter()
+        .flat_map(|ended| waiting_campaigns(ended))
+        .filter(|waiting| waiting.target == target && !spooled.contains(&waiting.campaign))
+        .map(|waiting| waiting.campaign)
+        .collect();
+    for campaign in waiting {
+        let sessions = waiting_sessions(root, target, &campaign);
+        if let Some(name) = replay_io::waiting_name(&sessions, target, &campaign, naming) {
+            names.insert(campaign, name);
+        }
+    }
+    names
 }
 
 impl FinalizingAhead {
@@ -588,7 +619,7 @@ impl FinalizingAhead {
         let asking = Arc::clone(&asked);
         let thread = std::thread::Builder::new()
             .name("finalize ahead".into())
-            .spawn(move || {
+            .spawn(move || background_naming(|| {
                 // So are the threads its checkpoints and saves start.
                 job_priority::background_thread();
                 // The session's own content stack names its countries as the game does.
@@ -615,21 +646,18 @@ impl FinalizingAhead {
                     if let Err(error) = ahead.read(&session, &target) {
                         fail(error);
                     }
+                    let naming = replay_io::Naming {
+                        localisation: localisation.as_ref(),
+                        settings: &settings,
+                        report: None,
+                    };
                     if asking.swap(false, Ordering::AcqRel) {
-                        let named = ahead
-                            .names(localisation.as_ref())
-                            .into_iter()
-                            .map(|(campaign, name)| (campaign, name.stem()))
-                            .collect();
+                        let named = predicted_names(&session, &target, &ahead, naming);
                         *published
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner) = named;
                     }
                     reading += thread_cpu() - before;
-                    let naming = replay_io::Naming {
-                        localisation: localisation.as_ref(),
-                        settings: &settings,
-                    };
                     if let Some(settling) = &settling
                         && let Err(error) =
                             settle(&session, &target, &mut ahead, settling, &mut settled, naming)
@@ -664,7 +692,7 @@ impl FinalizingAhead {
                     }
                 }
                 (ahead, localisation, reading, writing)
-            })
+            }))
             .ok();
         Self {
             stop,
@@ -812,7 +840,8 @@ pub enum Stage<'a> {
     Recording {
         session: &'a Path,
         status: Option<&'a Value>,
-        /// The name each campaign's recording would get so far, while asked for.
+        /// The file name a save through this session would give each recording in its folder
+        /// now, by campaign, while asked for; one not known is left out.
         names: &'a BTreeMap<String, String>,
     },
     /// Collector absence or game exit is proven and the spool is being
@@ -1977,6 +2006,7 @@ pub(crate) fn capture(
     let naming = replay_io::Naming {
         localisation: localisation.as_ref(),
         settings: &settings,
+        report: None,
     };
     if let Some(settling) = &settling {
         report_set_aside(settling, stage);
@@ -3395,6 +3425,7 @@ fn stage_waiting(root: &Path, target: &Path) -> Result<BTreeMap<String, String>,
     let naming = replay_io::Naming {
         localisation: None,
         settings: &settings,
+        report: None,
     };
     for campaign in campaigns {
         for session in waiting_sessions(root, target, &campaign) {
@@ -3439,18 +3470,287 @@ fn root_of(session: &Path) -> Result<&Path, String> {
         .ok_or_else(|| failure_text(session, "not in a capture root"))
 }
 
-/// Save a recording an ended session left waiting, with every ended session's hours of it.
-/// Without a session's content stack, a first save names its country by tag.
-pub fn save_waiting(session: &Path, campaign: &str) -> Result<Option<PathBuf>, String> {
+/// Where a capture reads the game's content while no game runs: the game installation Steam
+/// records, and the Paradox user folder and content hash cache a capture uses.
+fn installed_content() -> Result<installed_content_core::ResolveOptions, String> {
+    let settings = RecorderSettings::load()
+        .map_err(|error| format!("the recorder settings could not be read: {error}"))?;
+    let user_dir = match settings.user_folder {
+        Some(folder) => folder,
+        None => resolve_user_directory()?,
+    };
+    let game_dir = crate::directories::default_game_directory()
+        .map_err(|_| "Steam lists no the game installation".to_owned())?;
+    Ok(installed_content_core::ResolveOptions {
+        game_dir,
+        user_dir,
+        cache_dir: replay::recorder_settings::directory(),
+    })
+}
+
+type InstallationKey = Result<(PathBuf, PathBuf), String>;
+type SettingsStamp = Option<(SystemTime, u64)>;
+type InstalledContent = Result<installed_content_core::ResolveOptions, String>;
+
+const NAMING_RETRY: Duration = Duration::from_secs(30);
+const NAMING_RETRY_MAX: Duration = Duration::from_secs(600);
+
+static INSTALLED_CONTENT: Mutex<Option<(SettingsStamp, Instant, InstalledContent)>> =
+    Mutex::new(None);
+
+fn cached_installed_content() -> InstalledContent {
+    let stamp = fs::metadata(RecorderSettings::path())
+        .ok()
+        .and_then(|metadata| Some((metadata.modified().ok()?, metadata.len())));
+    let now = Instant::now();
+    let mut cached = locked(&INSTALLED_CONTENT);
+    if let Some((known, checked, content)) = &*cached
+        && *known == stamp
+        && now.saturating_duration_since(*checked) < NAMING_RETRY
+    {
+        return content.clone();
+    }
+    let content = installed_content();
+    *cached = Some((stamp, now, content.clone()));
+    content
+}
+
+struct NamingStack {
+    identity: replay_data::identity::Identity,
+    installation: InstallationKey,
+    resolved: Option<installed_content_core::ResolvedContent>,
+    localisation: Option<Result<Localisation, String>>,
+    retry: Option<(Instant, Duration)>,
+    #[cfg(test)]
+    resolutions: usize,
+    #[cfg(test)]
+    reads: usize,
+}
+
+impl NamingStack {
+    fn load(&mut self, content: &InstalledContent, now: Instant) {
+        if self.localisation.as_ref().is_some_and(Result::is_ok)
+            || self
+                .retry
+                .is_some_and(|(checked, delay)| now.saturating_duration_since(checked) < delay)
+        {
+            return;
+        }
+        let loaded = (|| {
+            if self.resolved.is_none() {
+                #[cfg(test)]
+                {
+                    self.resolutions += 1;
+                }
+                let options = content.as_ref().map_err(String::clone)?;
+                let resolved = installed_content_core::resolve(&self.identity, options)
+                    .map_err(|error| error.to_string())?;
+                self.resolved = Some(resolved);
+            }
+            #[cfg(test)]
+            {
+                self.reads += 1;
+            }
+            installed_content_localisation::localisation::read(
+                &self.resolved.as_ref().unwrap().layers,
+                &self.identity.language,
+            )
+            .map_err(|error| error.to_string())
+        })();
+        self.retry = loaded.is_err().then(|| {
+            (
+                now,
+                self.retry
+                    .map_or(NAMING_RETRY, |(_, delay)| (delay * 2).min(NAMING_RETRY_MAX)),
+            )
+        });
+        self.localisation = Some(loaded);
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct WaitingName {
+    pub name: Option<String>,
+    pub retry: bool,
+}
+
+/// Names recordings ended sessions left waiting as [`save_waiting`] saves them, each through its
+/// own content stack, read once per stack and installation.
+pub struct WaitingNames {
+    content: InstalledContent,
+    installed: bool,
+    stacks: Vec<NamingStack>,
+}
+
+impl WaitingNames {
+    pub fn installed() -> Self {
+        Self {
+            installed: true,
+            ..Self::new(cached_installed_content())
+        }
+    }
+
+    pub fn installation_key() -> InstallationKey {
+        cached_installed_content().map(|content| (content.game_dir, content.user_dir))
+    }
+
+    pub fn new(content: InstalledContent) -> Self {
+        Self {
+            content,
+            installed: false,
+            stacks: Vec::new(),
+        }
+    }
+
+    /// Names the whole waiting set, dropping stacks no recording still uses.
+    pub fn predictions(&mut self, waiting: &[(PathBuf, String)]) -> Vec<WaitingName> {
+        background_naming(|| {
+            if self.installed {
+                self.content = cached_installed_content();
+            }
+            let installation = self
+                .content
+                .as_ref()
+                .map(|content| (content.game_dir.clone(), content.user_dir.clone()))
+                .map_err(String::clone);
+            let identities: Vec<_> = waiting
+                .iter()
+                .filter_map(|(session, _)| crate::controller::session_identity(session).ok())
+                .collect();
+            self.stacks.retain(|stack| {
+                stack.installation == installation
+                    && identities
+                        .iter()
+                        .any(|identity| stack.identity.same_content(identity))
+            });
+            waiting
+                .iter()
+                .map(|(session, campaign)| self.prediction(session, campaign))
+                .collect()
+        })
+    }
+
+    /// The localisation that names the countries of what `session` left waiting, or why none does.
+    fn localisation(&mut self, session: &Path) -> Result<&Localisation, String> {
+        if self.installed {
+            self.content = cached_installed_content();
+        }
+        let identity = crate::controller::session_identity(session).map_err(|error| {
+            format!(
+                "{}: its content stack could not be read: {error}",
+                session.display()
+            )
+        })?;
+        let installation = self
+            .content
+            .as_ref()
+            .map(|content| (content.game_dir.clone(), content.user_dir.clone()))
+            .map_err(String::clone);
+        let at = match self.stacks.iter().position(|known| {
+            known.identity.same_content(&identity) && known.installation == installation
+        }) {
+            Some(at) => at,
+            None => {
+                self.stacks.push(NamingStack {
+                    identity,
+                    installation,
+                    resolved: None,
+                    localisation: None,
+                    retry: None,
+                    #[cfg(test)]
+                    resolutions: 0,
+                    #[cfg(test)]
+                    reads: 0,
+                });
+                self.stacks.len() - 1
+            }
+        };
+        let stack = &mut self.stacks[at];
+        stack.load(&self.content, Instant::now());
+        stack
+            .localisation
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .map_err(String::clone)
+    }
+
+    /// The file name [`save_waiting`] would give the recording `session` left waiting of
+    /// `campaign`; `None` while it is not known.
+    pub fn name(&mut self, session: &Path, campaign: &str) -> Option<String> {
+        self.prediction(session, campaign).name
+    }
+
+    pub fn prediction(&mut self, session: &Path, campaign: &str) -> WaitingName {
+        let mut retry = true;
+        let name = (|| {
+            let target = waiting_target(session, campaign).ok()?;
+            let root = root_of(session).ok()?;
+            let sessions = waiting_sessions(root, &target, campaign);
+            let settings = RecorderSettings::path();
+            let localisation = self.localisation(session);
+            let by_tag = AtomicBool::new(false);
+            let report = |why: Option<&str>| by_tag.store(why.is_some(), Ordering::Relaxed);
+            let naming = replay_io::Naming {
+                localisation: localisation.as_ref().ok().copied(),
+                settings: &settings,
+                report: Some(&report),
+            };
+            let name = replay_io::waiting_name(&sessions, &target, campaign, naming)?;
+            retry = localisation.is_err() || by_tag.load(Ordering::Relaxed);
+            Some(name)
+        })();
+        WaitingName { name, retry }
+    }
+}
+
+/// A recording saved from the Recordings view.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SavedWaiting {
+    /// `None` when no admitted hour of it waited.
+    pub recording: Option<PathBuf>,
+    /// Why its country uses a tag: content resolution or a named localisation refusal.
+    pub by_tag: Option<String>,
+}
+
+/// Save a recording an ended session left waiting, with every ended session's hours of it, its
+/// countries named through its own content stack as a capture names them.
+pub fn save_waiting(session: &Path, campaign: &str) -> Result<SavedWaiting, String> {
+    save_waiting_with(session, campaign, &mut WaitingNames::installed())
+}
+
+fn save_waiting_with(
+    session: &Path,
+    campaign: &str,
+    names: &mut WaitingNames,
+) -> Result<SavedWaiting, String> {
     let target = waiting_target(session, campaign)?;
+    let localisation = names.localisation(session);
+    if let Err(why) = &localisation {
+        eprintln!("Countries are named by tag: {why}");
+    }
     fs::create_dir_all(&target).map_err(|error| failure_text(&target, error))?;
     let _lock = finalization_lock(&target)?;
     let settings = RecorderSettings::path();
-    let naming = replay_io::Naming {
-        localisation: None,
-        settings: &settings,
+    let refusal = Mutex::new(None::<String>);
+    let report = |why: Option<&str>| {
+        *refusal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = why.map(str::to_owned);
     };
-    save_recording(root_of(session)?, &target, campaign, naming)
+    let naming = replay_io::Naming {
+        localisation: localisation.as_ref().ok().copied(),
+        settings: &settings,
+        report: Some(&report),
+    };
+    let recording = save_recording(root_of(session)?, &target, campaign, naming)?;
+    let by_tag = localisation.err().or_else(|| {
+        refusal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    });
+    Ok(SavedWaiting { recording, by_tag })
 }
 
 /// Discard a recording's waiting hours from every ended session; what it saved stays.
@@ -3574,11 +3874,21 @@ mod tests {
         std::mem::take(&mut *locked(&settling.done))
     }
 
+    /// Saved from the Recordings view without the game's content, so countries are named by tag.
+    fn saved_waiting(session: &Path, campaign: &str) -> Result<SavedWaiting, String> {
+        save_waiting_with(
+            session,
+            campaign,
+            &mut WaitingNames::new(Err("no installation in this test".into())),
+        )
+    }
+
     /// Names by tag, with no name chosen.
     fn unnamed() -> replay_io::Naming<'static> {
         static SETTINGS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
         replay_io::Naming {
             localisation: None,
+            report: None,
             settings: SETTINGS.get_or_init(|| {
                 std::env::temp_dir().join(format!(
                     "hoi4-unwritten-recorder-settings-{}.json",
@@ -3945,7 +4255,7 @@ mod tests {
                         .is_some()
                 );
             }
-            let saved = save_waiting(&sessions[0], name).unwrap().unwrap();
+            let saved = save_waiting(&sessions[0], name).unwrap().recording.unwrap();
             assert_eq!(
                 fs::read(&saved).unwrap(),
                 bytes,
@@ -4202,13 +4512,19 @@ mod tests {
             both
         );
         assert_eq!(waiting_campaigns(&second).len(), 1);
-        assert_eq!(save_waiting(&first, name).unwrap(), Some(recording.clone()));
+        assert_eq!(
+            saved_waiting(&first, name).unwrap().recording,
+            Some(recording.clone())
+        );
         assert_eq!(recorded_frames(&recording), both);
         assert!(waiting_campaigns(&first).is_empty() && waiting_campaigns(&second).is_empty());
         // Ended after staging but before its completion record: listed by what it wrote first.
         let third = session("1-3", 11, THIRD_LOAD, 7..=8, true, WAITING_FILE);
         assert_eq!(waiting_campaigns(&third).len(), 1);
-        assert_eq!(save_waiting(&third, name).unwrap(), Some(recording.clone()));
+        assert_eq!(
+            saved_waiting(&third, name).unwrap().recording,
+            Some(recording.clone())
+        );
         assert_eq!(
             recorded_frames(&recording),
             [(9, 2), (9, 3), (9, 4), (10, 5), (10, 6), (11, 7), (11, 8)]
@@ -4288,7 +4604,7 @@ mod tests {
         assert!(!recording.exists());
         // Save from either: both sessions' hours, and neither lists it any more.
         assert_eq!(
-            save_waiting(&second, name).unwrap(),
+            saved_waiting(&second, name).unwrap().recording,
             Some(recording.clone())
         );
         assert_eq!(
@@ -4297,7 +4613,7 @@ mod tests {
         );
         assert!(waiting_campaigns(&first).is_empty() && waiting_campaigns(&second).is_empty());
         assert!(
-            save_waiting(&first, name).is_err(),
+            saved_waiting(&first, name).is_err(),
             "nothing waits there now"
         );
         // Two later sessions, discarded: the saved sessions stay in the file.
@@ -4316,6 +4632,304 @@ mod tests {
         assert!(!replay::publication::unsaved_path(&target, name).exists());
         assert_eq!(fs::read(&recording).unwrap(), bytes);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_waiting_recording_is_named_through_its_own_mods_as_its_save_names_it() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_test_directory, named_session_records,
+            write_campaign_spool,
+        };
+        let directory = allocation_test_directory("waiting-localisation");
+        let (game, user) = (directory.join("game"), directory.join("user"));
+        use replay::spool::Record;
+        let names_mod = directory.join("names mod");
+        let descriptor = user.join("mod/names.mod");
+        let mod_path = names_mod.to_string_lossy().replace('\\', "/");
+        for (path, text) in [
+            (game.join("hoi4.exe"), "synthetic executable".to_owned()),
+            (user.join("settings.txt"), "language=l_english".to_owned()),
+            (
+                user.join("dlc_load.json"),
+                r#"{"enabled_mods":["mod/names.mod"],"disabled_dlcs":[]}"#.to_owned(),
+            ),
+            (
+                descriptor.clone(),
+                format!("name=Names path=\"{mod_path}\""),
+            ),
+            // Only the mod names the country.
+            (
+                names_mod.join("localisation/names_l_english.yml"),
+                "\u{feff}l_english:\n Z01_democratic:0 \"Republic of Nowhere\"\n Z01_fascism:0 \"[ROOT.SyntheticName]\"\n".to_owned(),
+            ),
+        ] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        fs::create_dir_all(game.join("dlc")).unwrap();
+        let cache = directory.join("cache");
+        let executable =
+            engine_executable::build::hash_executable(File::open(game.join("hoi4.exe")).unwrap())
+                .unwrap();
+        let identity = installed_content_core::gather(&installed_content_core::GatherOptions {
+            game_dir: game.clone(),
+            user_dir: user.clone(),
+            cache_dir: cache.clone(),
+            dlc_order: Some(Vec::new()),
+        })
+        .unwrap()
+        .identity(
+            "synthetic".into(),
+            executable.sha256,
+            executable.size,
+            "test".into(),
+            [0; 32],
+        )
+        .unwrap();
+        assert_eq!(identity.mods.len(), 1);
+        let content = || {
+            Ok(installed_content_core::ResolveOptions {
+                game_dir: game.clone(),
+                user_dir: user.clone(),
+                cache_dir: cache.clone(),
+            })
+        };
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        // An ended session of Z01 under democrats whose hours wait staged, its content recorded.
+        let waiting = |root: &str, group: &str| {
+            let target = directory.join(root);
+            let session = target.join("sessions").join("1-1");
+            let mut records = named_session_records(7, 9, &[(5, group, 1)]);
+            let Record::SessionStart(start) = &mut records[0] else {
+                unreachable!()
+            };
+            start.identity = identity.clone();
+            let mut start_bytes = Vec::new();
+            start.encode(&mut start_bytes).unwrap();
+            fs::create_dir_all(session.join("bin")).unwrap();
+            write_json(
+                &session.join("bin/collector.json"),
+                &json!({"session_start": start_bytes}),
+            )
+            .unwrap();
+            write_campaign_spool(&session, &records);
+            let unsaved = replay_io::unsaved(&session, name).unwrap();
+            replay_io::save_campaign(
+                &session,
+                &target,
+                name,
+                true,
+                &|| Ok(()),
+                &mut replay_io::Ahead::default(),
+                unnamed(),
+            )
+            .unwrap();
+            write_json(
+                &session.join("completed.json"),
+                &json!({"target": target, "waiting": [waiting_json(name, unsaved.as_ref())]}),
+            )
+            .unwrap();
+            session
+        };
+        let stem = |saved: &SavedWaiting| {
+            saved
+                .recording
+                .as_ref()
+                .and_then(|path| path.file_stem())
+                .map(|stem| stem.to_string_lossy().into_owned())
+        };
+        // Named by the mod it recorded with, as the Recordings view says before Save.
+        let named = waiting("named", "democratic");
+        let mut cached = WaitingNames::new(content());
+        let prediction = cached.prediction(&named, name);
+        assert!(!prediction.retry);
+        let predicted = prediction.name;
+        assert_eq!(predicted.as_deref(), Some("Republic of Nowhere"));
+        let saved = save_waiting_with(&named, name, &mut WaitingNames::new(content())).unwrap();
+        assert_eq!(stem(&saved), predicted);
+        assert_eq!(saved.by_tag, None);
+        let scripted = waiting("scripted", "fascism");
+        let prediction = cached.prediction(&scripted, name);
+        assert!(prediction.retry);
+        let predicted = prediction.name;
+        assert_eq!(predicted.as_deref(), Some("Z01"));
+        assert_eq!(cached.prediction(&scripted, name).name, predicted);
+        assert_eq!(cached.stacks.len(), 1);
+        assert_eq!(
+            (cached.stacks[0].resolutions, cached.stacks[0].reads),
+            (1, 1)
+        );
+        // A localisation read retry keeps its successfully resolved stack.
+        let now = Instant::now();
+        let stack = &mut cached.stacks[0];
+        stack.localisation = Some(Err("synthetic read failure".into()));
+        stack.retry = Some((now, NAMING_RETRY));
+        stack.load(&content(), now + NAMING_RETRY);
+        assert_eq!((stack.resolutions, stack.reads), (1, 2));
+        assert!(stack.localisation.as_ref().unwrap().is_ok());
+        cached.content = Err("another installation".into());
+        assert!(cached.prediction(&scripted, name).retry);
+        assert_eq!(cached.stacks.len(), 2);
+        cached.content = content();
+        assert_eq!(cached.prediction(&scripted, name).name, predicted);
+        assert_eq!(
+            (cached.stacks[0].resolutions, cached.stacks[0].reads),
+            (1, 2)
+        );
+        let saved = save_waiting_with(&scripted, name, &mut WaitingNames::new(content())).unwrap();
+        assert_eq!(stem(&saved), predicted);
+        let why = saved.by_tag.unwrap();
+        assert!(
+            why.contains("Z01_fascism") && why.contains("unsupported scripted"),
+            "{why}"
+        );
+        let localisation_file = names_mod.join("localisation/names_l_english.yml");
+        let original_localisation = fs::read(&localisation_file).unwrap();
+        let original_descriptor = fs::read(&descriptor).unwrap();
+        for change in [
+            "localisation",
+            "descriptor",
+            "missing-localisation",
+            "missing-descriptor",
+        ] {
+            let session = waiting(change, "democratic");
+            let saving = waiting(&format!("{change}-save"), "democratic");
+            let batch = [(session.clone(), name.to_owned())];
+            let mut revised = WaitingNames::new(content());
+            assert_eq!(
+                revised.predictions(&batch)[0].name.as_deref(),
+                Some("Republic of Nowhere")
+            );
+            match change {
+                "localisation" => fs::write(
+                    &localisation_file,
+                    "\u{feff}l_english:\n Z01_democratic:0 \"Changed Republic\"\n",
+                )
+                .unwrap(),
+                "descriptor" => {
+                    let mut bytes = original_descriptor.clone();
+                    bytes.extend_from_slice(b"\nversion=changed");
+                    fs::write(&descriptor, bytes).unwrap();
+                }
+                "missing-localisation" => fs::remove_file(&localisation_file).unwrap(),
+                "missing-descriptor" => fs::remove_file(&descriptor).unwrap(),
+                _ => unreachable!(),
+            }
+            revised.stacks[0].load(&content(), Instant::now() + NAMING_RETRY_MAX);
+            let predicted = revised.predictions(&batch).remove(0);
+            assert!(!predicted.retry, "{change}");
+            assert_eq!(
+                predicted.name.as_deref(),
+                Some("Republic of Nowhere"),
+                "{change}"
+            );
+            assert_eq!(
+                (revised.stacks[0].resolutions, revised.stacks[0].reads),
+                (1, 1)
+            );
+            let saved =
+                save_waiting_with(&saving, name, &mut WaitingNames::new(content())).unwrap();
+            assert_eq!(stem(&saved).as_deref(), Some("Z01"), "{change}");
+            revised.predictions(&[]);
+            assert!(revised.stacks.is_empty());
+            let reopened = revised.predictions(&batch).remove(0);
+            assert!(reopened.retry, "{change}");
+            assert_eq!(reopened.name, stem(&saved), "{change}");
+            assert!(revised.stacks[0].resolved.is_none());
+            let why = saved.by_tag.unwrap();
+            assert!(
+                why.contains("hash mismatch") || why.contains("names.mod"),
+                "{why}"
+            );
+            fs::write(&localisation_file, &original_localisation).unwrap();
+            fs::write(&descriptor, &original_descriptor).unwrap();
+            revised.predictions(&[]);
+            assert!(revised.stacks.is_empty());
+        }
+        let retained = waiting("retained-stack", "democratic");
+        cached.predictions(&[(retained, name.to_owned())]);
+        assert_eq!(cached.stacks.len(), 1);
+        cached.predictions(&[]);
+        assert!(cached.stacks.is_empty());
+        // With that mod gone, both name it by tag, and the save says which mod is missing.
+        let descriptor_bytes = fs::read(&descriptor).unwrap();
+        fs::remove_file(&descriptor).unwrap();
+        let tagged = waiting("tagged", "democratic");
+        let mut failed = WaitingNames::new(content());
+        let prediction = failed.prediction(&tagged, name);
+        assert!(prediction.retry);
+        let predicted = prediction.name;
+        assert_eq!(predicted.as_deref(), Some("Z01"));
+        assert_eq!(failed.prediction(&tagged, name).name, predicted);
+        let stack = &mut failed.stacks[0];
+        assert_eq!((stack.resolutions, stack.reads), (1, 0));
+        let mut now = stack.retry.unwrap().0;
+        for delay in [30, 60, 120, 240, 480, 600, 600] {
+            let delay = Duration::from_secs(delay);
+            assert_eq!(stack.retry, Some((now, delay)));
+            let attempts = stack.resolutions;
+            stack.load(&content(), now + delay - Duration::from_nanos(1));
+            assert_eq!(stack.resolutions, attempts);
+            now += delay;
+            stack.load(&content(), now);
+            assert_eq!(stack.resolutions, attempts + 1);
+        }
+        let saved = save_waiting_with(&tagged, name, &mut WaitingNames::new(content())).unwrap();
+        assert_eq!(stem(&saved), predicted);
+        let why = saved.by_tag.unwrap();
+        assert!(why.contains("names.mod"), "{why}");
+        fs::write(&descriptor, descriptor_bytes).unwrap();
+        let stack = &mut failed.stacks[0];
+        let (checked, delay) = stack.retry.unwrap();
+        stack.load(&content(), checked + delay);
+        assert!(stack.localisation.as_ref().unwrap().is_ok());
+        assert_eq!(stack.retry, None);
+        assert!(failed.localisation(&tagged).is_ok());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn naming_background_jobs_propagate_to_recovery_and_localisation_helpers() {
+        use job_priority::{JobPriority, Level};
+        assert!(!JobPriority::current().background());
+        background_naming(|| {
+            assert!(JobPriority::current().background());
+            let priority = JobPriority::current();
+            std::thread::spawn(move || {
+                priority.enter(Level::Normal);
+                assert!(JobPriority::current().background());
+                #[cfg(windows)]
+                unsafe {
+                    use windows_sys::Win32::System::Threading::{
+                        GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+                    };
+                    assert_eq!(
+                        GetThreadPriority(GetCurrentThread()),
+                        THREAD_PRIORITY_BELOW_NORMAL
+                    );
+                }
+                let priority = JobPriority::current();
+                std::thread::spawn(move || {
+                    priority.enter(Level::BelowNormal);
+                    assert!(JobPriority::current().background());
+                    #[cfg(windows)]
+                    unsafe {
+                        use windows_sys::Win32::System::Threading::{
+                            GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_LOWEST,
+                        };
+                        assert_eq!(
+                            GetThreadPriority(GetCurrentThread()),
+                            THREAD_PRIORITY_LOWEST
+                        );
+                    }
+                })
+                .join()
+                .unwrap();
+            })
+            .join()
+            .unwrap();
+        });
+        assert!(!JobPriority::current().background());
     }
 
     /// An ended session listing `hours` of `campaign` at `load` waiting, unstaged.

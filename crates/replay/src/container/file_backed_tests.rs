@@ -25,6 +25,32 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn held_containment_streams_the_same_proof_as_resident_containment() {
+    let first = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
+    let appended = first.append(&[records(2, &[8, 9])]).unwrap();
+    let earlier = Fixture::new(first.bytes());
+    let later = Fixture::new(appended.bytes());
+    let held = Replay::open_path(&later.0).unwrap();
+    assert!(held.bytes.is_empty());
+    let (holds, read) = file_backed::measure_held_reads(|| held.holds(&earlier.0).unwrap());
+    assert!(holds);
+    assert_eq!(read, 2 * first.saved_length());
+    assert_eq!(holds, appended.holds(&earlier.0).unwrap());
+    assert!(
+        !Replay::open_path(&earlier.0)
+            .unwrap()
+            .holds(&later.0)
+            .unwrap()
+    );
+    let mut changed = first.bytes().to_vec();
+    changed[first.index[0].offset as usize + 5] ^= 1;
+    std::fs::write(&earlier.0, changed).unwrap();
+    assert!(!held.holds(&earlier.0).unwrap());
+    assert!(!appended.holds(&earlier.0).unwrap());
+    assert!(held.bytes.is_empty());
+}
+
+#[test]
 fn held_grouped_selected_reads_and_seeks_match_resident_readers() {
     let memory = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2, 3])]).unwrap();
     let fixture = Fixture::new(memory.bytes());

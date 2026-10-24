@@ -816,7 +816,6 @@ impl Recorder {
                 snapshot.phase = Phase::Recording;
                 snapshot.started_at = Some(now_ms());
                 snapshot.campaign = Some(loaded.campaign);
-                snapshot.name = recording.as_deref().and_then(file_name);
                 snapshot.continued = recording.is_some();
                 snapshot.recording = recording.map(|path| path.display().to_string());
                 snapshot.hour = Some(loaded.hour);
@@ -983,23 +982,12 @@ impl Recorder {
             }
             None => (None, None),
         };
-        let name = match (&recording, &live.campaign) {
-            (Some(recording), _) => file_name(recording),
-            // Named by the spool alone, which is not the name of one that adds to unsaved hours.
-            (None, Some(campaign))
-                if matches!(
-                    recording_files::unsaved_recording(target, campaign.as_bytes()),
-                    Ok(None)
-                ) =>
-            {
-                names
-                    .get(campaign)
-                    .and_then(|stem| recording_files::unique_path(target, stem, None).ok())
-                    .as_deref()
-                    .and_then(file_name)
-            }
-            (None, _) => None,
-        };
+        // The name a save gives its file, not the name a file it continues has now.
+        let name = live
+            .campaign
+            .as_ref()
+            .and_then(|campaign| names.get(campaign))
+            .cloned();
         // A new set of flag keys (another country, cosmetic tag or ruling group)
         // or another campaign asks for its flag once.
         let flag_request = match (&live.campaign, live.flag_keys.take()) {

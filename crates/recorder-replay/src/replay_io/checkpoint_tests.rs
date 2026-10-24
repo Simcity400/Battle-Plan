@@ -55,6 +55,7 @@ impl Fixture {
         Naming {
             localisation: None,
             settings: &self.settings,
+            report: None,
         }
     }
 

@@ -2,7 +2,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
-import type { CaptureMode, NextLoad, RecorderSettings, Recordings, Snapshot } from './status';
+import type { CaptureMode, NextLoad, RecorderSettings, Recordings, RecordingsView, Snapshot } from './status';
 
 export interface SettingsPatch {
   recordEveryCampaign?: boolean;
@@ -17,7 +17,7 @@ export interface SettingsPatch {
 
 export const recorderStatus = () => invoke<Snapshot>('recorder_status');
 /** Tells the recorder the panel has drawn; it answers whether to open on the Stop prompt, and whether that prompt is all it shows. */
-export const panelOpened = () => invoke<{ askStop: boolean; compact: boolean }>('panel_opened');
+export const panelOpened = (panel: string) => invoke<{ askStop: boolean; compact: boolean }>('panel_opened', { panel });
 export const panelFit = (height: number) => invoke<void>('panel_fit', { height });
 export const closePanel = () => invoke<void>('close_panel');
 export const startRecording = () => invoke<void>('start_recording');
@@ -33,9 +33,10 @@ export const setUserFolder = (choose: boolean) => invoke<RecorderSettings | null
 export const openRecordingsFolder = () => invoke<void>('open_recordings_folder');
 export const openDetails = () => invoke<void>('open_details');
 export const openReplay = (path: string | null) => invoke<void>('open_replay', { path });
-export const recordings = () => invoke<Recordings>('recordings');
+export const recordings = (view: RecordingsView) => invoke<Recordings>('recordings', { ...view });
 /** Save or Discard a recording waiting to be saved. */
-export const actOnWaiting = (session: string, campaign: string, discard: boolean) => invoke<void>('act_on_waiting', { session, campaign, discard });
+/** Resolves to why a save named its countries by tag, when it did. */
+export const actOnWaiting = (session: string, campaign: string, discard: boolean) => invoke<string | null>('act_on_waiting', { session, campaign, discard });
 /** Show a saved recording selected in its folder. */
 export const revealRecording = (path: string) => invoke<void>('reveal_recording', { path });
 

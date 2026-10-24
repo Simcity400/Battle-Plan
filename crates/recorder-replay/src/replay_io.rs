@@ -28,7 +28,7 @@ use replay_frame::{
     frame::TableUpdate, frame::TableView,
 };
 
-use crate::{recording_name::RecordingName, recording_name::SpoolName, windows};
+use crate::{recording_name::Contents, recording_name::SpoolName, windows};
 use installed_content_localisation::localisation::Localisation;
 use replay::{
     recorder_settings::RecorderSettings, recording_files, recording_files::NamesLock,
@@ -179,8 +179,6 @@ pub struct Ahead {
     /// The game speed index the last frame read recorded.
     speed: Option<i32>,
     committed: Option<Box<Committed<'static>>>,
-    /// The span and roster of hours a checkpoint took from the spool, for naming what follows.
-    carried: BTreeMap<PathBuf, SpoolName>,
     // Checkpoint metrics outlive the disposable spool tails, whose table times recordings omit.
     checkpoint_reports: BTreeMap<PathBuf, Box<FinalizationReport>>,
 }
@@ -194,10 +192,50 @@ struct CampaignAhead {
     written: Option<(replay::container::Ahead, Box<Summary>)>,
     /// It could not go on; finalization writes every block.
     stopped: bool,
-    /// Fed in spool order: `grow` reads on one thread.
-    naming: std::sync::Mutex<SpoolName>,
+    /// Naming inputs read with the spool, independently of load decisions.
+    naming: std::sync::Mutex<CampaignNaming>,
     /// A checkpoint waits for the segments through this one: later ones are left unread.
     through: Option<u32>,
+}
+
+#[derive(Default)]
+struct CampaignNaming {
+    spools: BTreeMap<BranchId, (SpoolName, (u32, usize))>,
+}
+
+impl CampaignNaming {
+    fn observe(&mut self, segment: u32, placement: Placement, frame: &Frame) {
+        let (spool, written) = self.spools.entry(frame.branch).or_default();
+        if spool.last_hour().is_none_or(|last| frame.hour >= last) {
+            *written = (segment, placement.offset);
+        }
+        spool.observe(segment, placement, frame);
+    }
+
+    fn contents(
+        &mut self,
+        dropped: &BTreeSet<BranchId>,
+        read: impl FnMut(u32, Placement) -> std::io::Result<Frame>,
+    ) -> Option<Contents> {
+        let mut combined: Option<Contents> = None;
+        let mut latest = None;
+        for (branch, (spool, written)) in &self.spools {
+            if dropped.contains(branch) {
+                continue;
+            }
+            let summary = spool.summary()?;
+            combined = Some(match combined {
+                Some(known) => known.then(summary),
+                None => summary,
+            });
+            let key = (spool.last_hour()?, *written);
+            if latest.is_none_or(|(known, _)| key >= known) {
+                latest = Some((key, *branch));
+            }
+        }
+        let country = self.spools.get_mut(&latest?.1)?.0.contents(read)?;
+        Some(combined?.then(country))
+    }
 }
 
 impl Ahead {
@@ -206,7 +244,6 @@ impl Ahead {
         let mut grew = false;
         for name in spooled_campaigns(session_dir)? {
             let campaign_dir = session_dir.join(&name);
-            let carried = &mut self.carried;
             let campaign = &mut **self
                 .campaigns
                 .entry(campaign_dir.clone())
@@ -220,28 +257,15 @@ impl Ahead {
                             .filter(|saved| Some(&saved.replay) == base.as_ref())
                             .map(|saved| saved.segments.into_keys().collect())
                             .unwrap_or_default(),
-                        naming: std::sync::Mutex::new(
-                            carried.remove(&campaign_dir).unwrap_or_default(),
-                        ),
                         ..CampaignAhead::default()
                     })
                 });
-            let naming = &campaign.naming;
             for (number, path) in segment_paths(&campaign_dir)? {
                 if campaign.saved.contains(&number)
                     || campaign.through.is_some_and(|through| number > through)
                 {
                     continue;
                 }
-                let keep = |record: Record, placement: Placement| {
-                    if let Record::Frame(frame) = &record {
-                        naming
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .observe(number, placement, frame);
-                    }
-                    Recovered::keep(record, placement)
-                };
                 let (_, tail) = campaign
                     .tails
                     .entry(number)
@@ -253,8 +277,51 @@ impl Ahead {
                     .len();
                 let length = usize::try_from(length).map_err(|error| failure(&path, error))?;
                 let read = tail.records().len();
-                tail.grow(&mut std::io::BufReader::new(file), length, keep)
-                    .map_err(|error| failure(&path, error))?;
+                let pending = std::sync::Mutex::new(None::<(Placement, Frame)>);
+                let grow = tail.grow(
+                    &mut std::io::BufReader::new(file),
+                    length,
+                    |record, placement| {
+                        let mut pending = pending
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        // grow accepts the previous record before asking keep for the next one.
+                        if let Some((placement, frame)) = pending.take() {
+                            campaign
+                                .naming
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .observe(number, placement, &frame);
+                        }
+                        match record {
+                            Record::Frame(frame) => {
+                                let kept = Recovered::Frame(FrameMetadata {
+                                    branch: frame.branch,
+                                    hour: frame.hour,
+                                    keyframe: frame.keyframe,
+                                    placement,
+                                    campaign: frame.tables[TableId::Campaign.index()].clone(),
+                                    clock: frame.tables[TableId::Clock.index()].clone(),
+                                });
+                                *pending = Some((placement, frame));
+                                kept
+                            }
+                            record => Recovered::keep(record, placement),
+                        }
+                    },
+                );
+                if let Some((placement, frame)) = pending
+                    .into_inner()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    && matches!(tail.records().last(), Some(Recovered::Frame(kept)) if kept.placement == placement)
+                {
+                    campaign
+                        .naming
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .observe(number, placement, &frame);
+                }
+                grow.map_err(|error| failure(&path, error))?;
                 let clock = campaign
                     .clock
                     .get_or_insert_with(|| FrameDecoder::for_tables(&[TableId::Clock]));
@@ -281,12 +348,54 @@ impl Ahead {
         Ok(grew)
     }
 
-    /// Each campaign's name so far, by spool folder, as a save names a new recording.
-    pub fn names(&self, localisation: Option<&Localisation>) -> BTreeMap<String, RecordingName> {
+    /// The file name a save would give each campaign's recording in `replay_dir` now, by spool
+    /// folder: its spool's hours appended to what they add to. One not known is left out.
+    pub fn names(
+        &self,
+        session_dir: &Path,
+        replay_dir: &Path,
+        naming: Naming<'_>,
+    ) -> BTreeMap<String, String> {
+        let Ok(admissions) = session_admissions(session_dir) else {
+            return BTreeMap::new();
+        };
         self.campaigns
             .iter()
             .filter_map(|(directory, campaign)| {
                 let name = directory.file_name()?.to_str()?.to_owned();
+                // A campaign none of whose loads was admitted saves nothing.
+                if admissions.as_ref().is_some_and(|admissions| {
+                    admissions.loads.get(&name).is_none_or(BTreeSet::is_empty)
+                }) {
+                    return None;
+                }
+                let sessions = spool_session(&segment_paths(directory).ok()?);
+                if !campaign.saved.is_empty() {
+                    let base = save_base(session_dir, replay_dir, &name, &sessions).ok()??;
+                    let saved = read_saved(directory)?;
+                    if !Replay::open_path(&base)
+                        .ok()?
+                        .contains_revision(saved.revision)
+                        .ok()?
+                    {
+                        return None;
+                    }
+                }
+                let mut branches = BranchLoads::default();
+                for (_, tail) in campaign.tails.values() {
+                    for record in tail.records() {
+                        branches.observe(record.view());
+                    }
+                }
+                if branches.undecided(admissions.as_ref(), &name) {
+                    return None;
+                }
+                let dropped = admissions
+                    .as_ref()
+                    .map(|admissions| {
+                        branches.dropped(admissions.loads.get(&name).unwrap_or(&BTreeSet::new()))
+                    })
+                    .unwrap_or_default();
                 let read = |segment: u32, placement: Placement| {
                     let (path, tail) = campaign
                         .tails
@@ -294,11 +403,18 @@ impl Ahead {
                         .ok_or_else(|| std::io::Error::other("spool segment is gone"))?;
                     read_frame_at(&mut fs::File::open(path)?, placement, tail.valid_bytes())
                 };
-                let mut naming = campaign
+                let mut known = campaign
                     .naming
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                Some((name, naming.name(read, localisation)?))
+                let added = if known.spools.is_empty() {
+                    None
+                } else {
+                    Some(known.contents(&dropped, read)?)
+                };
+                let file =
+                    predicted_name(session_dir, replay_dir, &name, &sessions, added, naming)?;
+                Some((name, file))
             })
             .collect()
     }
@@ -1142,6 +1258,36 @@ impl BranchLoads {
         }
     }
 
+    fn dropped(&self, admitted: &BTreeSet<i64>) -> BTreeSet<BranchId> {
+        self.order
+            .iter()
+            .copied()
+            .filter(|branch| {
+                !self
+                    .loads
+                    .get(branch)
+                    .is_some_and(|load| admitted.contains(load))
+            })
+            .collect()
+    }
+
+    fn undecided(&self, admissions: Option<&Admissions>, campaign: &str) -> bool {
+        let Some(admissions) = admissions else {
+            return false;
+        };
+        self.order.iter().any(|branch| {
+            self.loads.get(branch).is_none_or(|load| {
+                !admissions
+                    .loads
+                    .get(campaign)
+                    .is_some_and(|loads| loads.contains(load))
+                    && !admissions
+                        .refused
+                        .contains_key(&(campaign.to_owned(), *load))
+            })
+        })
+    }
+
     /// The loads of `branches`, in spool order, with the hours each recorded;
     /// hours of branches with no identified load count under `None`.
     fn by_load(&self, branches: impl Iterator<Item = BranchId>) -> Vec<(Option<i64>, u64)> {
@@ -1239,17 +1385,7 @@ fn keep_admitted_loads(
     if let Some((branch, load)) = known {
         branches.loads.entry(branch).or_insert(load);
     }
-    let dropped: BTreeSet<BranchId> = branches
-        .order
-        .iter()
-        .copied()
-        .filter(|branch| {
-            !branches
-                .loads
-                .get(branch)
-                .is_some_and(|load| admitted.contains(load))
-        })
-        .collect();
+    let dropped = branches.dropped(admitted);
     for (_, recovery) in segments.iter_mut() {
         let mut dropping = false;
         recovery.records.retain(|record| {
@@ -1321,6 +1457,7 @@ pub fn finalize_session_outcome_with_progress(
     let naming = Naming {
         localisation: None,
         settings: &settings,
+        report: None,
     };
     finalize_session_ahead(
         session_dir,
@@ -1339,6 +1476,8 @@ pub struct Naming<'a> {
     pub localisation: Option<&'a Localisation>,
     /// The recorder settings that keep the names users chose.
     pub settings: &'a Path,
+    /// The country-name refusal of each actual save, including a successful name clearing it.
+    pub report: Option<&'a (dyn Fn(Option<&str>) + Sync)>,
 }
 
 /// A session's failure witness, refusing a failed capture without one.
@@ -2048,14 +2187,6 @@ pub fn checkpoint_campaign(
     fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
     let unsaved = !auto_save;
     let taken = ahead.campaigns.remove(&campaign_dir);
-    if let Some(taken) = &taken {
-        let naming = taken
-            .naming
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .carried();
-        ahead.carried.insert(campaign_dir.clone(), naming);
-    }
     let committed = &mut ahead.committed;
     let mut hand = |recording: &Path, replay: &Replay, blocks: &[BlockIndex]| {
         if let Some(committed) = committed {
@@ -2394,11 +2525,238 @@ fn spool_session(paths: &[(u32, PathBuf)]) -> Vec<u64> {
 
 /// The name a save gives a recording of these contents.
 fn recording_stem(replay: &Replay, naming: Naming<'_>, multiplayer: bool) -> Result<String> {
-    Ok(
-        crate::recording_name::recording_name(replay, naming.localisation, multiplayer)
-            .map_err(|error| error.to_string())?
-            .stem(),
-    )
+    let name = crate::recording_name::recording_name(replay, naming.localisation, multiplayer)
+        .map_err(|error| error.to_string())?;
+    if let Some(report) = naming.report {
+        report(name.by_tag.as_deref());
+    }
+    Ok(name.stem())
+}
+
+/// Whether a save keeps the name of the recording it continues: its contents give it, or the user chose it.
+fn keeps_name(
+    recording: &Path,
+    stem: &str,
+    settings: &RecorderSettings,
+    folder: &Path,
+    campaign: &[u8],
+) -> bool {
+    let current = recording
+        .file_stem()
+        .and_then(|current| current.to_str())
+        .unwrap_or_default();
+    recording_files::stem_is(current, stem) || settings.name_chosen(folder, campaign)
+}
+
+/// Each recording a save adds to, by its size and time, and what names it.
+static CONTENTS: std::sync::Mutex<BTreeMap<PathBuf, (u64, std::time::SystemTime, Contents)>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// What names the recording a save adds to, read once per version of it without loading it whole.
+fn saved_contents(path: &Path, campaign: &str) -> std::io::Result<Contents> {
+    let stamp = roster_stamp(path)?;
+    let (key, length, modified) = stamp.clone();
+    let known = CONTENTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .filter(|(known_length, known_modified, _)| {
+            (*known_length, *known_modified) == (length, modified)
+        })
+        .map(|(_, _, contents)| contents.clone());
+    if let Some(contents) = known {
+        return Ok(contents);
+    }
+    let replay = Replay::open_path(path)?;
+    replay.require_undamaged()?;
+    if !replay.campaign_id.eq_ignore_ascii_case(campaign.as_bytes()) {
+        return Err(std::io::Error::other(
+            "existing replay belongs to a different campaign",
+        ));
+    }
+    let contents = Contents::for_prediction(&replay)?;
+    drop(replay);
+    // Replaced while read, it is read again next time.
+    if roster_stamp(path)? != stamp {
+        return Err(std::io::Error::other(
+            "the recording changed while it was read",
+        ));
+    }
+    CONTENTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, (length, modified, contents.clone()));
+    Ok(contents)
+}
+
+/// The file name a save gives the campaign's recording, found and placed as the save does, with
+/// `added` appended; `None` when that save would fail or part of its name cannot be read.
+fn predicted_name(
+    session_dir: &Path,
+    replay_dir: &Path,
+    campaign: &str,
+    sessions: &[u64],
+    added: Option<Contents>,
+    naming: Naming<'_>,
+) -> Option<String> {
+    let existing =
+        continued_recording(session_dir, replay_dir, campaign.as_bytes(), sessions).ok()?;
+    let staged = staged_recording(replay_dir, campaign).ok()?;
+    if let (Some(staged), Some(existing)) = (&staged, &existing)
+        && !staged_holds(staged, existing)
+    {
+        return None;
+    }
+    let contents = match staged.or_else(|| existing.clone()) {
+        Some(base) => {
+            let base = saved_contents(&base, campaign).ok()?;
+            match added {
+                Some(added) => base.then(added),
+                None => base,
+            }
+        }
+        None => added?,
+    };
+    let predicted = contents.predicted(naming.localisation)?;
+    if let Some(report) = naming.report {
+        report(predicted.by_tag.as_deref());
+    }
+    let stem = predicted.stem();
+    let folder = fs::canonicalize(replay_dir).ok()?;
+    let settings = RecorderSettings::load_from(naming.settings).ok()?;
+    let path = match existing {
+        Some(existing) if keeps_name(&existing, &stem, &settings, &folder, campaign.as_bytes()) => {
+            existing
+        }
+        existing => recording_files::unique_path(replay_dir, &stem, existing.as_deref()).ok()?,
+    };
+    path.file_stem()?.to_str().map(str::to_owned)
+}
+
+type FileStamp = (PathBuf, u64, std::time::SystemTime);
+
+static CONTAINMENT: std::sync::Mutex<BTreeMap<PathBuf, (FileStamp, FileStamp, bool)>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn staged_holds(staged: &Path, existing: &Path) -> bool {
+    let proof = || -> std::io::Result<bool> {
+        let staged_stamp = roster_stamp(staged)?;
+        let existing_stamp = roster_stamp(existing)?;
+        let key = staged_stamp.0.clone();
+        if let Some((_, _, holds)) = CONTAINMENT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .filter(|(a, b, _)| *a == staged_stamp && *b == existing_stamp)
+        {
+            return Ok(*holds);
+        }
+        let holds = Replay::open_path(staged)?.holds(existing)?;
+        if roster_stamp(staged)? != staged_stamp || roster_stamp(existing)? != existing_stamp {
+            return Ok(false);
+        }
+        CONTAINMENT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, (staged_stamp, existing_stamp, holds));
+        Ok(holds)
+    };
+    proof().unwrap_or(false)
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct StagedStamp {
+    staged: FileStamp,
+    journal: FileStamp,
+    admissions: Option<FileStamp>,
+    marker: Option<FileStamp>,
+    segments: Vec<(u32, FileStamp)>,
+}
+
+fn staged_stamp(campaign_dir: &Path, staged: &Path) -> Option<StagedStamp> {
+    let session = campaign_dir.parent()?;
+    Some(StagedStamp {
+        staged: roster_stamp(staged).ok()?,
+        journal: roster_stamp(&campaign_dir.join(SAVED_FILE)).ok()?,
+        admissions: roster_stamp(&session.join(ADMISSIONS_FILE)).ok(),
+        marker: roster_stamp(&session.join("bin").join(ADMISSION_MARKER)).ok(),
+        segments: segment_paths(campaign_dir)
+            .ok()?
+            .into_iter()
+            .map(|(number, path)| Some((number, roster_stamp(&path).ok()?)))
+            .collect::<Option<_>>()?,
+    })
+}
+
+static STAGED: std::sync::Mutex<BTreeMap<PathBuf, (StagedStamp, bool)>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+/// Verify the current staged revision as Save does, including exact contents after later appends.
+fn staged_whole(campaign_dir: &Path, staged: &Path) -> bool {
+    let Some(stamp) = staged_stamp(campaign_dir, staged) else {
+        return false;
+    };
+    let Ok(key) = fs::canonicalize(campaign_dir) else {
+        return false;
+    };
+    if let Some((_, whole)) = STAGED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .filter(|(known, _)| *known == stamp)
+    {
+        return *whole;
+    }
+    let whole = verify_staged(campaign_dir, staged, &stamp).unwrap_or(false);
+    if staged_stamp(campaign_dir, staged).as_ref() != Some(&stamp) {
+        return false;
+    }
+    STAGED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, (stamp, whole));
+    whole
+}
+
+fn verify_staged(campaign_dir: &Path, staged: &Path, stamp: &StagedStamp) -> Option<bool> {
+    let saved = read_saved(campaign_dir)?;
+    if !replay::recorder_settings::same_path(&saved.replay, staged)
+        || stamp
+            .segments
+            .iter()
+            .any(|(number, (_, length, _))| saved.segments.get(number) != Some(length))
+    {
+        return Some(false);
+    }
+    let campaign = campaign_dir.file_name()?.to_str()?;
+    let previous = Replay::open_path(staged).ok()?;
+    if !previous
+        .campaign_id
+        .eq_ignore_ascii_case(campaign.as_bytes())
+    {
+        return Some(false);
+    }
+    previous.contains_revision(saved.revision).ok()
+}
+
+/// The file name saving the hours ended `sessions` (oldest first) left waiting gives the recording;
+/// known only while its unsaved recording holds them all, so their spools add nothing.
+pub fn waiting_name(
+    sessions: &[PathBuf],
+    replay_dir: &Path,
+    campaign: &str,
+    naming: Naming<'_>,
+) -> Option<String> {
+    let staged = staged_recording(replay_dir, campaign).ok()??;
+    if !sessions
+        .iter()
+        .all(|session| staged_whole(&session.join(campaign), &staged))
+    {
+        return None;
+    }
+    let first = sessions.first()?;
+    let spooled = spool_session(&segment_paths(&first.join(campaign)).ok()?);
+    predicted_name(first, replay_dir, campaign, &spooled, None, naming)
 }
 
 /// Where a saved recording's bytes are before they become its file.
@@ -2472,11 +2830,7 @@ fn save_recording_file(
     }
     .map_err(|error| failure(destination, error))?;
     progress().map_err(|error| failure(destination, error))?;
-    let current = destination
-        .file_stem()
-        .and_then(|current| current.to_str())
-        .unwrap_or_default();
-    if recording_files::stem_is(current, stem) || settings.name_chosen(&folder, id) {
+    if keeps_name(destination, stem, &settings, &folder, id) {
         return Ok((destination.to_owned(), None));
     }
     // Renamed once its contents are durable; a failure keeps the old name.
@@ -5153,6 +5507,7 @@ mod tests {
         static SETTINGS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
         Naming {
             localisation: None,
+            report: None,
             settings: SETTINGS.get_or_init(|| {
                 std::env::temp_dir().join(format!(
                     "hoi4-unwritten-settings-{}.json",

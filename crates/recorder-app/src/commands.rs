@@ -69,9 +69,13 @@ pub struct PanelOpened {
 
 /// The panel has drawn: it learns whether to open on the Stop prompt.
 #[tauri::command]
-pub fn panel_opened(app: AppHandle, recorder: State<'_, Arc<Recorder>>) -> PanelOpened {
+pub fn panel_opened(
+    app: AppHandle,
+    recorder: State<'_, Arc<Recorder>>,
+    panel: String,
+) -> PanelOpened {
     recorder.panel_opened(&app);
-    let (ask_stop, compact) = panel::take_opening(&app);
+    let (ask_stop, compact) = panel::take_opening(&app, &panel);
     PanelOpened { ask_stop, compact }
 }
 
@@ -303,7 +307,13 @@ pub async fn open_recordings_folder() -> Result<(), String> {
 
 /// The recordings not saved yet and the saved ones, listed while the panel asks.
 #[tauri::command]
-pub async fn recordings(app: AppHandle) -> Result<Recordings, String> {
+pub async fn recordings(
+    app: AppHandle,
+    panel: String,
+    visit: u64,
+    open: bool,
+) -> Result<Recordings, String> {
+    let view = app.state::<Library>().view(&panel, visit, open);
     blocking(move || {
         let settings = RecorderSettings::load()
             .map_err(|error| format!("Recorder settings could not be read: {error}"))?;
@@ -321,9 +331,12 @@ pub async fn recordings(app: AppHandle) -> Result<Recordings, String> {
             set_aside: &set_aside,
             names: &names,
         };
+        let named = app.clone();
         Ok(app
             .state::<Library>()
-            .list(&settings, &live, &recorder.flags()))
+            .list(&settings, view, &live, &recorder.flags(), move || {
+                recordings_changed(&named)
+            }))
     })
     .await
 }
@@ -344,14 +357,15 @@ fn waiting_part(session: &str, campaign: &str) -> Result<PathBuf, String> {
     Ok(session)
 }
 
-/// Through the running session when it saves into the same folder.
+/// Through the running session when it saves into the same folder. Returns why a save named its
+/// countries by tag, when it did.
 #[tauri::command]
 pub async fn act_on_waiting(
     app: AppHandle,
     session: String,
     campaign: String,
     discard: bool,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let session = waiting_part(&session, &campaign)?;
     let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
     let target = match recorder.live_target(&session) {
@@ -362,13 +376,17 @@ pub async fn act_on_waiting(
         }
     };
     if recorder.act_on_recording(&target, &campaign, discard) {
-        return Ok(());
+        return Ok(None);
     }
     let result = blocking(move || {
         if discard {
-            recorder::controller::discard_waiting(&session, &campaign)
+            recorder::controller::discard_waiting(&session, &campaign).map(|()| None)
         } else {
-            recorder::controller::save_waiting(&session, &campaign).map(|_| ())
+            recorder::controller::save_waiting(&session, &campaign).map(|saved| {
+                saved
+                    .by_tag
+                    .map(|why| format!("Saved. Its countries are named by tag: {why}"))
+            })
         }
     })
     .await;

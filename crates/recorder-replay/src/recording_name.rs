@@ -14,6 +14,8 @@ pub struct RecordingName {
     /// The first and last in-game years recorded.
     pub years: Option<(i32, i32)>,
     pub multiplayer: bool,
+    /// Why the country uses its recorded tag instead of a localised name.
+    pub by_tag: Option<String>,
 }
 
 impl RecordingName {
@@ -116,24 +118,101 @@ impl Country {
         })
     }
 
-    /// As the game names it in the recording's language, else its tag.
-    fn name(&self, localisation: Option<&Localisation>) -> Option<String> {
-        localisation
-            .and_then(|localisation| {
-                CountryNames::of_operands(localisation, self.operands.clone())
-                    .name(self.slot)
-                    .ok()
+    fn known(frame: &DecodedFrame, country: Option<&Self>) -> bool {
+        let Ok([player]) = frame.complete::<tables::LocalPlayer>() else {
+            return false;
+        };
+        if (player.country as i32) <= 0 {
+            return true;
+        }
+        if country_tables()
+            .iter()
+            .any(|table| !matches!(&*frame.tables[table.index()], TableView::Complete(_)))
+        {
+            return false;
+        }
+        let Ok(links) = frame.complete::<tables::CountryLinks>() else {
+            return false;
+        };
+        let mut links = links.iter().filter(|link| link.id == player.country);
+        let Some(link) = links.next() else {
+            return false;
+        };
+        if links.next().is_some() {
+            return false;
+        }
+        let Ok(countries) = frame.complete::<tables::Countries>() else {
+            return false;
+        };
+        countries
+            .iter()
+            .rev()
+            .find(|country| country.canonical_slot == link.canonical_slot)
+            .is_some_and(|country| {
+                std::str::from_utf8(&country.tag).is_ok_and(|tag| !tag.trim().is_empty())
             })
-            .filter(|name| !name.trim().is_empty())
-            .or_else(|| self.tag.clone().filter(|tag| !tag.is_empty()))
+            && country.is_some_and(Self::operands_known)
+    }
+
+    fn operands_known(&self) -> bool {
+        let mut pending = vec![self.slot];
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(slot) = pending.pop() {
+            if !seen.insert(slot) {
+                continue;
+            }
+            let Some(Ok(operands)) = self.operands.get(&slot) else {
+                return false;
+            };
+            pending.extend(operands.overlord);
+        }
+        true
+    }
+
+    /// As the game names it in the recording's language, else its tag with the named refusal.
+    fn name(&self, localisation: Option<&Localisation>) -> (Option<String>, Option<String>) {
+        let refusal = if let Some(localisation) = localisation {
+            match CountryNames::of_operands(localisation, self.operands.clone()).name(self.slot) {
+                Ok(name) if !name.trim().is_empty() => return (Some(name), None),
+                Ok(_) => Some("the country name is empty".to_owned()),
+                Err(why) => Some(why),
+            }
+        } else {
+            None
+        };
+        (
+            self.tag.clone().filter(|tag| !tag.is_empty()),
+            refusal.map(|why| format!("{}: {why}", self.tag.as_deref().unwrap_or("country"))),
+        )
+    }
+}
+
+fn roster(frame: &DecodedFrame) -> Option<bool> {
+    match &*frame.tables[TableId::Players.index()] {
+        TableView::Complete(rows) => Some(rows.len() > 1),
+        TableView::Truncated { rows, .. } if rows.len() > 1 => Some(true),
+        _ => None,
     }
 }
 
 fn more_than_one_player(frame: &DecodedFrame) -> bool {
-    match &*frame.tables[TableId::Players.index()] {
-        TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len() > 1,
-        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => false,
+    roster(frame) == Some(true)
+}
+
+/// Whether saved hours prove multiplayer or single-player; neither when a roster is missing.
+pub fn known_multiplayer(replay: &Replay, blocks: usize) -> io::Result<Option<bool>> {
+    let mut known = true;
+    for block in replay.index.iter().take(blocks) {
+        let mut decoder = FrameDecoder::for_tables(&[TableId::Players]);
+        for frame in replay.read_block_selected(block, &[TableId::Players])? {
+            match roster(decoder.advance(&frame)?) {
+                Some(true) => return Ok(Some(true)),
+                Some(false) => {}
+                None => known = false,
+            }
+        }
     }
+    Ok(known.then_some(false))
 }
 
 /// Whether an hour of the first `blocks` held more than one human; stops at the first.
@@ -149,34 +228,112 @@ pub fn multiplayer(replay: &Replay, blocks: usize) -> io::Result<bool> {
     Ok(false)
 }
 
+/// What a recording's name is made of, its country not yet put in words.
+#[derive(Clone, Debug, Default)]
+pub struct Contents {
+    span: Option<(Hour, Hour)>,
+    multiplayer: Option<bool>,
+    country_known: bool,
+    /// The recording player's country at the latest hour; `None` when it plays none.
+    country: Option<Country>,
+}
+
+impl Contents {
+    /// A finished recording's; `multiplayer` comes from its hours as they were saved.
+    pub fn of(replay: &Replay, multiplayer: bool) -> io::Result<Self> {
+        let span = replay
+            .index
+            .iter()
+            .map(|block| (block.first_hour, block.last_hour))
+            .reduce(|(first, last), (low, high)| (first.min(low), last.max(high)));
+        // Of several branches reaching the latest hour, the last written.
+        let mut country_known = false;
+        let country = match replay.index.iter().max_by_key(|block| block.last_hour) {
+            Some(block) => {
+                match replay.seek_selected(
+                    block.branch,
+                    block.last_hour,
+                    Some(&country_tables()),
+                )? {
+                    SeekResult::Frame(frame) => {
+                        let country = Country::of(&frame);
+                        country_known = Country::known(&frame, country.as_ref());
+                        country
+                    }
+                    SeekResult::Gap { .. } => None,
+                }
+            }
+            None => None,
+        };
+        Ok(Self {
+            span,
+            multiplayer: Some(multiplayer),
+            country_known,
+            country,
+        })
+    }
+
+    /// These hours with `added` appended after them, as a save appends a spool: written last, its
+    /// country names the recording when it reaches the latest hour.
+    pub fn then(self, added: Self) -> Self {
+        let last = |contents: &Self| contents.span.map(|(_, last)| last);
+        Self {
+            country_known: if last(&added) >= last(&self) {
+                added.country_known
+            } else {
+                self.country_known
+            },
+            country: if last(&added) >= last(&self) {
+                added.country
+            } else {
+                self.country
+            },
+            span: match (self.span, added.span) {
+                (Some((first, last)), Some((low, high))) => Some((first.min(low), last.max(high))),
+                (span, other) => span.or(other),
+            },
+            multiplayer: match (self.multiplayer, added.multiplayer) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            },
+        }
+    }
+
+    pub fn for_prediction(replay: &Replay) -> io::Result<Self> {
+        let multiplayer = known_multiplayer(replay, replay.index.len())?;
+        let mut contents = Self::of(replay, multiplayer == Some(true))?;
+        contents.multiplayer = multiplayer;
+        Ok(contents)
+    }
+
+    pub fn predicted(&self, localisation: Option<&Localisation>) -> Option<RecordingName> {
+        self.multiplayer?;
+        self.country_known.then(|| self.name(localisation))
+    }
+
+    pub fn name(&self, localisation: Option<&Localisation>) -> RecordingName {
+        let (country, by_tag) = self
+            .country
+            .as_ref()
+            .map(|country| country.name(localisation))
+            .unwrap_or_default();
+        RecordingName {
+            country,
+            years: self.span.and_then(years),
+            multiplayer: self.multiplayer == Some(true),
+            by_tag,
+        }
+    }
+}
+
 /// A finished recording's name; `multiplayer` comes from its hours as they were saved.
 pub fn recording_name(
     replay: &Replay,
     localisation: Option<&Localisation>,
     multiplayer: bool,
 ) -> io::Result<RecordingName> {
-    let span = replay
-        .index
-        .iter()
-        .map(|block| (block.first_hour, block.last_hour))
-        .reduce(|(first, last), (low, high)| (first.min(low), last.max(high)));
-    // Of several branches reaching the latest hour, the last written.
-    let country = match replay.index.iter().max_by_key(|block| block.last_hour) {
-        Some(block) => {
-            match replay.seek_selected(block.branch, block.last_hour, Some(&country_tables()))? {
-                SeekResult::Frame(frame) => {
-                    Country::of(&frame).and_then(|country| country.name(localisation))
-                }
-                SeekResult::Gap { .. } => None,
-            }
-        }
-        None => None,
-    };
-    Ok(RecordingName {
-        country,
-        years: span.and_then(years),
-        multiplayer,
-    })
+    Ok(Contents::of(replay, multiplayer)?.name(localisation))
 }
 
 /// A growing spool's name: reading notes span, roster and latest frames; the country decodes when asked.
@@ -185,24 +342,18 @@ pub struct SpoolName {
     span: Option<(Hour, Hour)>,
     players: Option<FrameDecoder>,
     multiplayer: bool,
+    /// A roster could not be read, so a single-player spool cannot be told from a multiplayer one.
+    roster_lost: bool,
     /// The latest hour's branch and its frames since their keyframe, by segment.
     branch: Option<BranchId>,
     frames: Vec<(u32, Placement)>,
     /// Decoded through `frames[..done]`, and the country at the last of them.
     decoded: Option<(FrameDecoder, usize)>,
     country: Option<Country>,
+    country_known: bool,
 }
 
 impl SpoolName {
-    /// What naming keeps of the hours read once a checkpoint saved them: their span and roster.
-    pub fn carried(&self) -> Self {
-        Self {
-            span: self.span,
-            multiplayer: self.multiplayer,
-            ..Self::default()
-        }
-    }
-
     pub fn observe(&mut self, segment: u32, placement: Placement, frame: &Frame) {
         let latest = self.span.is_none_or(|(_, last)| frame.hour >= last);
         self.span = Some(self.span.map_or((frame.hour, frame.hour), |(first, last)| {
@@ -212,8 +363,14 @@ impl SpoolName {
             .players
             .get_or_insert_with(|| FrameDecoder::for_tables(&[TableId::Players]));
         match players.advance(frame) {
-            Ok(decoded) => self.multiplayer |= more_than_one_player(decoded),
-            Err(_) => self.players = None,
+            Ok(decoded) => match roster(decoded) {
+                Some(multiplayer) => self.multiplayer |= multiplayer,
+                None => self.roster_lost = true,
+            },
+            Err(_) => {
+                self.players = None;
+                self.roster_lost = true;
+            }
         }
         if !latest {
             return;
@@ -222,6 +379,7 @@ impl SpoolName {
             self.frames.clear();
             self.decoded = None;
             self.country = None;
+            self.country_known = false;
             // Only a keyframe starts frames that can be decoded.
             self.branch = frame.keyframe.then_some(frame.branch);
         }
@@ -230,43 +388,67 @@ impl SpoolName {
         }
     }
 
-    /// Decodes the latest hour's frames not decoded yet; `None` before the first frame.
-    pub fn name(
+    pub fn last_hour(&self) -> Option<Hour> {
+        self.span.map(|(_, last)| last)
+    }
+
+    pub fn summary(&self) -> Option<Contents> {
+        if self.roster_lost && !self.multiplayer {
+            return None;
+        }
+        Some(Contents {
+            span: Some(self.span?),
+            multiplayer: Some(self.multiplayer),
+            ..Contents::default()
+        })
+    }
+
+    /// Decodes the latest hour's frames not decoded yet; `None` before the first frame, and while
+    /// its roster or the latest hour's country cannot be read.
+    pub fn contents(
         &mut self,
         mut read: impl FnMut(u32, Placement) -> io::Result<Frame>,
-        localisation: Option<&Localisation>,
-    ) -> Option<RecordingName> {
+    ) -> Option<Contents> {
         let span = self.span?;
-        if !self.frames.is_empty() {
-            let (decoder, done) = self
-                .decoded
-                .get_or_insert_with(|| (FrameDecoder::for_tables(&country_tables()), 0));
-            while *done < self.frames.len() {
-                let (segment, placement) = self.frames[*done];
-                *done += 1;
-                match read(segment, placement).and_then(|frame| {
-                    decoder
-                        .advance(&frame)
-                        .map(|decoded| (*done == self.frames.len()).then(|| Country::of(decoded)))
-                }) {
-                    Ok(Some(country)) => self.country = country,
-                    Ok(None) => {}
-                    Err(_) => {
-                        self.frames.clear();
-                        self.decoded = None;
-                        self.country = None;
-                        break;
-                    }
+        if self.frames.is_empty() || (self.roster_lost && !self.multiplayer) {
+            return None;
+        }
+        let (decoder, done) = self
+            .decoded
+            .get_or_insert_with(|| (FrameDecoder::for_tables(&country_tables()), 0));
+        while *done < self.frames.len() {
+            let (segment, placement) = self.frames[*done];
+            *done += 1;
+            match read(segment, placement).and_then(|frame| {
+                decoder.advance(&frame).map(|decoded| {
+                    (*done == self.frames.len()).then(|| {
+                        let country = Country::of(decoded);
+                        let known = Country::known(decoded, country.as_ref());
+                        (country, known)
+                    })
+                })
+            }) {
+                Ok(Some((country, known))) => {
+                    self.country = country;
+                    self.country_known = known;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    self.frames.clear();
+                    self.decoded = None;
+                    self.country = None;
+                    return None;
                 }
             }
         }
-        Some(RecordingName {
-            country: self
-                .country
-                .as_ref()
-                .and_then(|country| country.name(localisation)),
-            years: years(span),
-            multiplayer: self.multiplayer,
+        if !self.country_known {
+            return None;
+        }
+        Some(Contents {
+            span: Some(span),
+            multiplayer: Some(self.multiplayer),
+            country_known: self.country_known,
+            country: self.country.clone(),
         })
     }
 }

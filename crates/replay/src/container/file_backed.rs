@@ -99,8 +99,9 @@ impl Replay {
                 let end = ((slot + commit::SLOT_SIZE) as u64).min(offset + count as u64);
                 if start < end {
                     let saved = self.revision.slot();
-                    buffer[(start - offset) as usize..(end - offset) as usize]
-                        .copy_from_slice(&saved[(start - slot as u64) as usize..(end - slot as u64) as usize]);
+                    buffer[(start - offset) as usize..(end - offset) as usize].copy_from_slice(
+                        &saved[(start - slot as u64) as usize..(end - slot as u64) as usize],
+                    );
                 }
             }
             visit(&buffer[..count])?;
@@ -136,7 +137,7 @@ impl Replay {
         let slot = earlier
             .slot
             .map_or(0..0, |slot| slot as u64..(slot + commit::SLOT_SIZE) as u64);
-        let mut theirs = engine_allocation::filled(end.min(1 << 20) as usize, 0)?;
+        let mut theirs = engine_allocation::filled(end.min(64 * 1024) as usize, 0)?;
         let mut ours = engine_allocation::filled(theirs.len(), 0)?;
         let mut at = 0;
         while at < end {

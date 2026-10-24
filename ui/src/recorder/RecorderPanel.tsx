@@ -7,6 +7,7 @@ import { Segmented } from '../components/Segmented';
 import { Select } from '../components/Select';
 import { recordingDisplayName, recordingFilename } from '../dashboard/recordingNames';
 import { errorMessage } from '../shell/errors';
+import { newId } from '../shell/ids';
 import * as api from './api';
 import type { SettingsPatch } from './api';
 import { captureModeFixed, dateText, discardTooltip, head, nextLoad, recordingName, recordsAutomatically, sessionLength, settingsQueue, sizeText, spanText,
@@ -280,9 +281,6 @@ function SavedRow({ row, actions }: { row: SavedRecording; actions: PanelActions
   </div>;
 }
 
-// Asked once per panel window: the recorder answers whether it opens on the Stop prompt.
-let opened: Promise<{ askStop: boolean; compact: boolean }> | null = null;
-
 /** The Battle Plan Recorder tray panel. */
 export default function RecorderPanel() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -294,6 +292,9 @@ export default function RecorderPanel() {
   const [error, setError] = useState<string | null>(null);
   const [, setMinute] = useState(0);
   const root = useRef<HTMLDivElement>(null);
+  const [panel] = useState(newId);
+  const visit = useRef({ number: 0, open: false });
+  const opened = useRef<ReturnType<typeof api.panelOpened> | null>(null);
   const [queue] = useState(() => settingsQueue<RecorderSettings>(api.recorderSettings, setSettings));
 
   useEffect(() => {
@@ -308,13 +309,13 @@ export default function RecorderPanel() {
     ];
     void api.recorderStatus().then(value => { if (active) setSnapshot(value); }, cause => { if (active) setError(errorMessage(cause)); });
     loadSettings();
-    void (opened ??= api.panelOpened()).then(({ askStop, compact: alone }) => {
+    void (opened.current ??= api.panelOpened(panel)).then(({ askStop, compact: alone }) => {
       if (!active) return;
       setCompact(alone);
       if (askStop) setAsking(true);
     }, () => { if (active) setCompact(false); });
     return () => { active = false; for (const listener of listeners) void listener.then(stop => stop(), () => {}); };
-  }, [queue]);
+  }, [queue, panel]);
 
   // Listed only while the full panel shows, at the status's pace while their view is open.
   const listing = compact === false;
@@ -326,13 +327,17 @@ export default function RecorderPanel() {
     return () => { active = false; void listener.then(stop => stop(), () => {}); };
   }, [listing]);
   const phase = snapshot?.phase;
-  const watching = view === 'recordings' ? snapshot : null;
+  const viewOpen = view === 'recordings';
+  const watching = viewOpen ? snapshot : null;
   useEffect(() => {
     if (!listing) return;
     let active = true;
-    void api.recordings().then(value => { if (active) setRecordings(value); }, cause => { if (active) setError(errorMessage(cause)); });
+    if (viewOpen && !visit.current.open) visit.current.number += 1;
+    visit.current.open = viewOpen;
+    void api.recordings({ panel, visit: visit.current.number, open: viewOpen }).then(
+      value => { if (active) setRecordings(value); }, cause => { if (active) setError(errorMessage(cause)); });
     return () => { active = false; };
-  }, [listing, phase, watching, changed]);
+  }, [listing, phase, watching, changed, viewOpen, settings, panel]);
 
   // The window takes the panel's height and stays on screen.
   const ready = snapshot != null && compact != null;
@@ -397,7 +402,7 @@ export default function RecorderPanel() {
     campaign: (campaign, choice) => save(() => api.setCampaignChoice(campaign, choice)),
     saveFolder: () => save(api.chooseSaveFolder),
     userFolder: choose => save(() => api.setUserFolder(choose)),
-    waiting: (recording, discard) => run(() => api.actOnWaiting(recording.session, recording.campaign, discard)),
+    waiting: (recording, discard) => run(async () => { setError(await api.actOnWaiting(recording.session, recording.campaign, discard)); }),
     reveal: path => run(() => api.revealRecording(path)),
   };
   return <PanelView snapshot={snapshot} settings={settings} view={view} asking={asking} error={error} now={Date.now()} actions={actions} root={root}

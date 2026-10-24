@@ -143,6 +143,100 @@ pub const RELOAD: i64 = 23;
 /// A third load of the same campaign after that.
 pub const THIRD_LOAD: i64 = 29;
 
+/// An hour of the modded country Z01 ruled by `group`, with `players` humans, played by the
+/// recording client.
+pub fn named_frame(
+    branch: u64,
+    hour: i32,
+    group: &str,
+    players: usize,
+) -> replay_frame::frame::Frame {
+    use replay_data::rows::{
+        CountryAppearanceRow, CountryLinkRow, CountryRow, LocalPlayerRow, PlayerRow,
+        PoliticalPartyRow, PoliticsRow,
+    };
+    let mut frame = allocation_frame(branch, hour, FIRST_LOAD);
+    for rows in [
+        TableRows::LocalPlayer(vec![LocalPlayerRow {
+            country: 400,
+            observer_country: 0,
+        }]),
+        TableRows::CountryLinks(vec![CountryLinkRow {
+            id: 400,
+            canonical_slot: 30,
+        }]),
+        TableRows::Countries(vec![CountryRow {
+            id: 400,
+            canonical_slot: 30,
+            tag: b"Z01".to_vec(),
+            ..Default::default()
+        }]),
+        TableRows::CountryAppearance(vec![CountryAppearanceRow {
+            country: 400,
+            ..Default::default()
+        }]),
+        TableRows::Politics(vec![PoliticsRow {
+            country: 400,
+            ruling_party: Some(7),
+            ..Default::default()
+        }]),
+        TableRows::PoliticalParties(vec![PoliticalPartyRow {
+            country: 400,
+            id: 7,
+            token: group.as_bytes().to_vec(),
+            ..Default::default()
+        }]),
+        TableRows::Players(
+            (0..players)
+                .map(|id| PlayerRow {
+                    id: id as i32,
+                    country: 400,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    ] {
+        let index = rows.table().index();
+        frame.tables[index] = replay_frame::frame::TableUpdate::Snapshot(rows);
+    }
+    frame
+}
+
+/// One recorder session of the synthetic campaign on `branch`: `(hour, ruling group, players)`
+/// per frame of [`named_frame`].
+pub fn named_session_records(
+    session: u64,
+    branch: u64,
+    hours: &[(i32, &str, usize)],
+) -> Vec<replay::spool::Record> {
+    use replay::{spool::ControlRecord, spool::Record};
+    let mut records = allocation_records();
+    records.truncate(2);
+    if let Record::SessionStart(start) = &mut records[0] {
+        start.id = session;
+    }
+    if let Record::BranchStart(start) = &mut records[1] {
+        start.id = branch;
+        start.session = session;
+        start.first_hour = hours[0].0;
+        start.loaded_hour = Some(hours[0].0 - 1);
+    }
+    for (at, &(hour, group, players)) in hours.iter().enumerate() {
+        records.push(Record::Frame(named_frame(branch, hour, group, players)));
+        records.push(Record::Control(ControlRecord::ClockWitness {
+            session,
+            qpc: 100 * (at as u64 + 1),
+            hour,
+            load_signal: Some(FIRST_LOAD),
+        }));
+    }
+    records.push(Record::Control(ControlRecord::Detach {
+        session,
+        last_hour: Some(hours.last().unwrap().0),
+    }));
+    records
+}
+
 /// Replace the closing detach of `records` with another load of the synthetic
 /// campaign, as the collector writes it (a load-signal branch, then each
 /// hour's clock witness before its frame), and detach after it.
