@@ -62,7 +62,6 @@
 
 ## Pull requests
 
-- Use Codex for searches, basic research and mechanical work, not Claude agents. Check everything Codex writes. Use claude for more difficult tasks/research.
 - One complete PR per task. Never leave residuals unless you are actually blocked and state what and why is blocked.
 - After merging, delete your branch, worktree, build folder and captures.
 
