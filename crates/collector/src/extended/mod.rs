@@ -2507,6 +2507,7 @@ impl Captured {
             game_state: state,
             captured: std::mem::replace(&mut self.ship_models, ship_models::Captured::vacant()),
             census,
+            details: None,
         }
     }
 
@@ -2541,29 +2542,10 @@ impl Captured {
         countries: &Arc<engine_native::country_memory::Cache>,
         base: usize,
     ) -> [Option<crate::acquisition_jobs::ShipModelDetailsRequest>; ship_models::MAX_PARTS] {
-        let mut requests = [const { None }; ship_models::MAX_PARTS];
         if self.ship_models_report.is_some() || self.ship_models.has_terminal_failure() {
-            return requests;
+            return [const { None }; ship_models::MAX_PARTS];
         }
-        let parts = self
-            .ship_models
-            .split_details(ship_models::parts_for(self.ship_models.census_len()));
-        let context = self.ship_models.capture_context(base);
-        for (part, request) in requests.iter_mut().enumerate().take(parts).skip(1) {
-            *request = Some(crate::acquisition_jobs::ShipModelDetailsRequest {
-                countries: Arc::clone(countries),
-                context,
-                part,
-                captured: self.ship_models.take_part(part - 1),
-            });
-        }
-        requests[0] = Some(crate::acquisition_jobs::ShipModelDetailsRequest {
-            countries: Arc::clone(countries),
-            context,
-            part: 0,
-            captured: std::mem::replace(&mut self.ship_models, ship_models::Captured::vacant()),
-        });
-        requests
+        crate::acquisition_jobs::ship_details::take_parts(&mut self.ship_models, countries, base)
     }
 
     /// Return one detail part; part 0 first. Ticks add up to the family's

@@ -1121,7 +1121,7 @@ impl Captured {
             hour,
             force_full,
             packs,
-            project_fingerprints,
+            project_fingerprints: Some(project_fingerprints),
             countries,
         }
     }
@@ -1135,7 +1135,7 @@ impl Captured {
         completed: bool,
     ) -> Box<crate::slicing::SliceFingerprints> {
         let mut packs = request.packs;
-        let mut fingerprints = request.project_fingerprints;
+        let mut fingerprints = request.project_fingerprints.expect("projects job restored");
         if !completed {
             packs.fail(request.hour, request.force_full, "gated acquisition failed");
             fingerprints.forget();
@@ -2419,9 +2419,7 @@ impl LatePacks {
     }
 }
 
-/// The packs whose typed walks wait for the raw-copy verdicts (radar, intel,
-/// registrations, projects, construction rest): one pool job dispatched right
-/// after those joins and joined before capture_tables.
+/// Raw-gated packs; Projects is loaned to an independent job until settlement.
 pub(crate) struct GatedPacks {
     pub(crate) fog: fog::Captured,
     pub(crate) projects: projects::Captured,
@@ -2504,16 +2502,13 @@ impl GatedPacks {
         }))
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
-        roster: &impl Memory,
         base: usize,
         game_state: usize,
         hour: i32,
         force_full: bool,
-        projects: &mut crate::slicing::SliceFingerprints,
     ) {
         let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         let mut ticks = [0; TABLE_COUNT];
@@ -2529,25 +2524,6 @@ impl GatedPacks {
                 .capture_growing(memory, base, game_state, hour, force_full),
             &mut ticks,
         );
-        if self.projects_recorded {
-            scatter(
-                &projects::TABLES,
-                self.projects.capture_selected(
-                    memory,
-                    roster,
-                    base,
-                    game_state,
-                    hour,
-                    force_full,
-                    projects,
-                    &crate::country_input_changes::Observer,
-                ),
-                &mut ticks,
-            );
-        } else {
-            self.projects
-                .fail_gated_capture(hour, force_full, super::NOT_RECORDED);
-        }
         self.ticks = ticks;
     }
 }

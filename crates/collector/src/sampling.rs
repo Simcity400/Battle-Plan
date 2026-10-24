@@ -2851,16 +2851,18 @@ unsafe fn acquire_with_memory(
             // queues without waking the pool and is released at once
             // (`Batch::release`), the jobs that gate others first.
             batch.hold();
-            // ShipModels walks its own ship census; its detail parts follow its join.
+            // The census publisher releases details without waiting for this callback.
             let ship_census = std::mem::replace(&mut frame.map.naval, ShipCensus::vacant());
-            let ship_models_pending = queue!(acquisition::Job::ShipModels(
-                frame.extended.take_ship_models_request(
+            let ship_models_pending = out_of_line(|| {
+                let mut request = frame.extended.take_ship_models_request(
                     &country_snapshot,
                     shared.base,
                     state,
                     ship_census,
-                )
-            ));
+                );
+                batch.arm_ship_details(&mut request);
+                queue!(acquisition::Job::ShipModels(request))
+            });
             // The Ordinary counter part reads the naming this job leaves in
             // the appearance pack; it leaves as soon as this job joins.
             let countries_pending = queue!(acquisition::Job::Countries(
@@ -3557,6 +3559,31 @@ unsafe fn acquire_with_memory(
                 frame.extended.projects_pilot().raw_mode = false;
                 None
             };
+            // Raw admission already decides these modes; joins only stage rows or failures.
+            let intel_ctx = frame
+                .extended
+                .intel_pilot()
+                .intel_copy_context(shared.base, state);
+            frame.extended.radar_pilot().radar_raw_mode = radar_pending.is_some();
+            frame.extended.radar_pilot().registrations_raw_mode = true;
+            frame.extended.intel_pilot().intel_raw_mode = true;
+            frame.extended.projects_pilot().raw_mode =
+                projects_pending.is_some() || projects_omitted;
+            frame.extended.construction_rest_pilot().rest_raw_mode = construction_active;
+            let (gated_pending, gated_projects_pending) = out_of_line(|| {
+                let mut request = frame.extended.take_gated_request(
+                    shared.base,
+                    state,
+                    clock.hour,
+                    force_full,
+                    // SAFETY: only this callback takes and returns the store.
+                    unsafe { take_slice_store(shared, crate::slicing::PROJECTS) },
+                    Some(Arc::clone(&country_snapshot)),
+                );
+                let projects = request.take_projects();
+                let projects = queue!(acquisition::Job::GatedProjects(projects));
+                (queue!(acquisition::Job::Gated(request)), projects)
+            });
             let lexical_ctx = extended::lexical::LexicalCopyContext { base: shared.base };
             let lexical_pending = if lexical_refresh {
                 Some(queue!(acquisition::Job::Lexical(acquisition::RawRequest {
@@ -3740,7 +3767,6 @@ unsafe fn acquire_with_memory(
             let mut movement_pending = None;
             let mut speed_terms_pending = None;
             let mut intel_pending = None;
-            let mut gated_pending = None;
             let mut province_unit_order_pending = None;
             let mut model_inputs_pending = None;
             let mut ordinary_pending = None;
@@ -4571,10 +4597,6 @@ unsafe fn acquire_with_memory(
                                     None,
                                 )
                             });
-                        let intel_ctx = frame
-                            .extended
-                            .intel_pilot()
-                            .intel_copy_context(shared.base, state);
                         intel_pending = intel_recorded.then(|| {
                             queue!(acquisition::Job::Intel(acquisition::IntelRequest {
                                 countries: Arc::clone(&country_snapshot),
@@ -4585,37 +4607,6 @@ unsafe fn acquire_with_memory(
                                     .then_some("division input acquisition could not complete")),
                             }))
                         });
-                        // Every verdict the Gated packs read is settled once its job is
-                        // queued, so they leave here instead of after the joins: each
-                        // raw-copy join turns an incomplete acquisition into a failure
-                        // (`raw_copy_join_failure`, `air_bases_join_failure`), and its
-                        // verdict was `raw_ok || failure.is_some()`, true for every
-                        // queued job (the Radar, Projects, AirBases and Intel jobs);
-                        // World's construction verdict was whether its part was
-                        // scheduled. Unqueued Radar and Projects keep the false their
-                        // dispatch set. The joins then only stage payloads and failures,
-                        // which the packs never read.
-                        if radar_pending.is_some() {
-                            frame.extended.radar_pilot().radar_raw_mode = true;
-                        }
-                        frame.extended.radar_pilot().registrations_raw_mode = true;
-                        frame.extended.intel_pilot().intel_raw_mode = true;
-                        if projects_pending.is_some() || projects_omitted {
-                            frame.extended.projects_pilot().raw_mode = true;
-                        }
-                        frame.extended.construction_rest_pilot().rest_raw_mode =
-                            construction_active;
-                        gated_pending = Some(queue!(acquisition::Job::Gated(
-                            frame.extended.take_gated_request(
-                                shared.base,
-                                state,
-                                clock.hour,
-                                force_full,
-                                // SAFETY: only this callback takes and returns the store.
-                                unsafe { take_slice_store(shared, crate::slicing::PROJECTS) },
-                                Some(Arc::clone(&country_snapshot)),
-                            )
-                        )));
                         // ProvinceUnitOrder takes its division occupants from the census
                         // the inputs job acquired; without it the walk reads them all.
                         province_unit_order_pending =
@@ -4644,13 +4635,11 @@ unsafe fn acquire_with_memory(
                         inputs_done = true;
                     }
                     EarlyStep::Ships => {
-                        // The census's detail parts go out once it joins; they are joined
-                        // with the late joins, before capture_tables. No other job borrows
-                        // their model attempts.
+                        // Adopt publisher-released details; only an unreleased census uses the fallback.
                         // Out of line: the job-sized request stays off the hourly body's frame.
-                        out_of_line(|| {
+                        let dispatched = out_of_line(|| {
                             // SAFETY: this thread still owns the live acquisition boundary.
-                            let (ship_models_request, ship_models_report) = unsafe {
+                            let (mut ship_models_request, mut ship_models_report) = unsafe {
                                 collect_acquisition(
                                     shared,
                                     &mut batch,
@@ -4668,26 +4657,50 @@ unsafe fn acquire_with_memory(
                                     },
                                 )
                             };
+                            let dispatched = ship_models_request.details.take().and_then(
+                                |details| match details.take(&mut ship_models_request.captured) {
+                                    Ok(pending) => pending,
+                                    Err(failure) => {
+                                        ship_models_report = Err(failure);
+                                        None
+                                    }
+                                },
+                            );
                             frame.map.naval = frame.extended.restore_ship_models_request(
                                 ship_models_request,
                                 ship_models_report,
                             );
+                            dispatched.map(|parts| {
+                                parts.map(|pending| {
+                                    pending.map(|pending| {
+                                        let (ticket, parked) =
+                                            batch.adopt_presentation_ticket(pending);
+                                        if parked {
+                                            PendingAcquisition::Rejected(ticket)
+                                        } else {
+                                            PendingAcquisition::Accepted(ticket)
+                                        }
+                                    })
+                                })
+                            })
                         });
                         // Written after the map-tick copy below, which covers these indices.
                         naval_ns = frame.map.naval.ticks.map(|cost| shared.ns(cost as i64));
                         // Out of line: the parts' requests stay off the hourly body's frame.
-                        ship_detail_pending = out_of_line(|| {
-                            batch.hold();
-                            let pending = frame
-                                .extended
-                                .take_ship_model_parts(&country_snapshot, shared.base)
-                                .map(|request| {
-                                    request.map(|request| {
-                                        queue!(acquisition::Job::ShipModelDetails(request))
-                                    })
-                                });
-                            release!();
-                            pending
+                        ship_detail_pending = dispatched.unwrap_or_else(|| {
+                            out_of_line(|| {
+                                batch.hold();
+                                let pending = frame
+                                    .extended
+                                    .take_ship_model_parts(&country_snapshot, shared.base)
+                                    .map(|request| {
+                                        request.map(|request| {
+                                            queue!(acquisition::Job::ShipModelDetails(request))
+                                        })
+                                    });
+                                release!();
+                                pending
+                            })
                         });
                         ships_done = true;
                     }
@@ -5443,7 +5456,6 @@ unsafe fn acquire_with_memory(
             let speed_terms_pending =
                 status_recorded.then(|| speed_terms_pending.expect("speed terms dispatch"));
             let intel_pending = intel_recorded.then(|| intel_pending.expect("intel dispatch"));
-            let gated_pending = gated_pending.expect("gated dispatch");
             let province_unit_order_pending =
                 province_unit_order_pending.expect("province order dispatch");
             let ordinary_pending = ordinary_pending.expect("ordinary dispatch");
@@ -5822,10 +5834,14 @@ unsafe fn acquire_with_memory(
                 );
                 return_slice_store(shared, crate::slicing::TRADE_ROUTES, state_stores.routes);
             };
-            let (gated_request, _, gated_failure) = completed!(gated_pending, Gated);
-            let project_store = frame
-                .extended
-                .restore_gated_request(gated_request, gated_failure.is_none());
+            let (mut gated_request, _, gated_failure) = completed!(gated_pending, Gated);
+            let (projects_request, _, gated_projects_failure) =
+                completed!(gated_projects_pending, GatedProjects);
+            gated_request.restore_projects(projects_request);
+            let project_store = frame.extended.restore_gated_request(
+                gated_request,
+                gated_failure.is_none() && gated_projects_failure.is_none(),
+            );
             // SAFETY: the Gated job has joined; no worker retains this store.
             unsafe { return_slice_store(shared, crate::slicing::PROJECTS, project_store) };
             let (character_inputs_request, character_inputs_report) =

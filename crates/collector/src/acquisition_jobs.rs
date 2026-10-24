@@ -20,12 +20,14 @@ use crate::{
 };
 pub(crate) use acquisition::{Completion, Failure, SubmitError, Ticket};
 mod presentation;
+pub(crate) mod ship_details;
 mod variant_workers;
 use engine_native::{memory::CountedMemory, memory::LiveMemory};
 pub(crate) use presentation::{
     FinalInputsDispatch, PresentationDispatch, PresentationFanIn, PresentationInputs,
 };
 use serde::Serialize;
+use ship_details::ShipDetailsDispatch;
 use std::sync::Arc;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -581,10 +583,74 @@ pub(crate) struct GatedRequest {
     pub force_full: bool,
     pub packs: Box<crate::extended::GatedPacks>,
     /// The projects family's only fingerprint store, loaned for this hour.
-    pub project_fingerprints: Box<crate::slicing::SliceFingerprints>,
+    pub project_fingerprints: Option<Box<crate::slicing::SliceFingerprints>>,
     /// The hour's authenticated country census, which the projects family's
     /// per-slot census reads instead of each country object.
     pub countries: Option<Arc<engine_native::country_memory::Cache>>,
+}
+pub(crate) struct GatedProjectsRequest {
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub captured: projects::Captured,
+    pub fingerprints: Box<crate::slicing::SliceFingerprints>,
+    pub countries: Option<Arc<engine_native::country_memory::Cache>>,
+    pub recorded: bool,
+    pub ticks: [u64; projects::N],
+}
+impl GatedRequest {
+    pub(crate) fn take_projects(&mut self) -> GatedProjectsRequest {
+        GatedProjectsRequest {
+            base: self.base,
+            game_state: self.game_state,
+            hour: self.hour,
+            force_full: self.force_full,
+            captured: std::mem::replace(&mut self.packs.projects, projects::Captured::vacant()),
+            fingerprints: self
+                .project_fingerprints
+                .take()
+                .expect("projects store present"),
+            countries: self.countries.take(),
+            recorded: self.packs.projects_recorded,
+            ticks: [0; projects::N],
+        }
+    }
+    pub(crate) fn restore_projects(&mut self, request: GatedProjectsRequest) {
+        self.packs.projects = request.captured;
+        self.project_fingerprints = Some(request.fingerprints);
+        for (table, ticks) in projects::TABLES.into_iter().zip(request.ticks) {
+            self.packs.ticks[table.index()] = ticks;
+        }
+    }
+}
+impl GatedProjectsRequest {
+    fn capture(
+        &mut self,
+        memory: &impl engine_native::Memory,
+        roster: &impl engine_native::Memory,
+        changes: &dyn crate::country_input_changes::Changes,
+    ) {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Extended);
+        if self.recorded {
+            self.ticks = self.captured.capture_selected(
+                memory,
+                roster,
+                self.base,
+                self.game_state,
+                self.hour,
+                self.force_full,
+                &mut self.fingerprints,
+                changes,
+            );
+        } else {
+            self.captured.fail_gated_capture(
+                self.hour,
+                self.force_full,
+                crate::extended::NOT_RECORDED,
+            );
+        }
+    }
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct GatedReport;
@@ -606,9 +672,9 @@ pub(crate) struct ShipModelsRequest {
     pub context: ship_models::CaptureContext,
     pub game_state: usize,
     pub captured: ship_models::Captured,
-    /// The job walks only this census; its ships seed the detail parts,
-    /// which the callback dispatches once it joins the census.
+    /// Its publisher releases the detail parts before callback collection.
     pub census: crate::map_capture::ShipCensus,
+    pub details: Option<Arc<ShipDetailsDispatch>>,
 }
 /// One contiguous census range of the ShipModels details (part 0 is the
 /// family's own capture).
@@ -842,6 +908,7 @@ pub(crate) enum Job {
     /// owner operands.
     ChildFronts(OrdersRequest),
     Gated(GatedRequest),
+    GatedProjects(GatedProjectsRequest),
     CharacterInputs(crate::extended::CharacterInputsRequest),
     ShipModels(ShipModelsRequest),
     ShipModelDetails(ShipModelDetailsRequest),
@@ -921,6 +988,7 @@ pub(crate) enum Report {
     Fronts(FrontsReport),
     ChildFronts(OrdersReport),
     Gated(GatedReport),
+    GatedProjects(()),
     /// Per-table worker ticks of the character inputs.
     CharacterInputs([u64; crate::extended::character_inputs::N]),
     /// The census is in the request; the details report per part.
@@ -1020,6 +1088,7 @@ pub(crate) enum Role {
     PresentationPreparation,
     PresentationSettle,
     DivisionModelInputs,
+    GatedProjects,
 }
 
 impl Role {
@@ -1096,6 +1165,7 @@ impl Role {
             Self::ChildFronts => T::ArmyOrderPlans,
             Self::Fronts => T::Fronts,
             Self::Gated => T::VolunteerHosts,
+            Self::GatedProjects => T::Projects,
             Self::ShipModels => T::Ships,
             Self::ShipModelDetails => T::ShipModels,
             Self::Provinces => T::Provinces,
@@ -1195,6 +1265,7 @@ impl Role {
             Self::IntelResidual
             | Self::Governance
             | Self::Gated
+            | Self::GatedProjects
             | Self::CharacterInputs
             // A FinalInputs producer, without delaying queued Presentation work.
             | Self::AdvisorRoles
@@ -1238,7 +1309,7 @@ impl Role {
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 79;
+pub(crate) const ROLE_COUNT: usize = 80;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -1319,6 +1390,7 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::PresentationPreparation,
     Role::PresentationSettle,
     Role::DivisionModelInputs,
+    Role::GatedProjects,
 ];
 impl Job {
     /// Whether this job must run on a worker: its role's rule, except a
@@ -1409,6 +1481,7 @@ impl Job {
             Self::ChildFronts(..) => Role::ChildFronts,
             Self::Fronts(..) => Role::Fronts,
             Self::Gated(..) => Role::Gated,
+            Self::GatedProjects(..) => Role::GatedProjects,
             Self::CharacterInputs(..) => Role::CharacterInputs,
             Self::ShipModels(..) => Role::ShipModels,
             Self::ShipModelDetails(..) => Role::ShipModelDetails,
@@ -2265,29 +2338,26 @@ fn run_with_memory(
             Report::ChildFronts(OrdersReport)
         }
         Job::Gated(request) => {
-            // The projects family's census reads the hour's authenticated
-            // roster when the game thread prepared one.
-            match request.countries.as_deref() {
-                Some(countries) => request.packs.capture(
+            request.packs.capture(
+                memory,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.force_full,
+            );
+            Report::Gated(GatedReport)
+        }
+        Job::GatedProjects(request) => {
+            let countries = request.countries.clone();
+            match countries.as_deref() {
+                Some(countries) => request.capture(
                     memory,
                     &countries.roster_view(memory),
-                    request.base,
-                    request.game_state,
-                    request.hour,
-                    request.force_full,
-                    &mut request.project_fingerprints,
+                    &crate::country_input_changes::Observer,
                 ),
-                None => request.packs.capture(
-                    memory,
-                    memory,
-                    request.base,
-                    request.game_state,
-                    request.hour,
-                    request.force_full,
-                    &mut request.project_fingerprints,
-                ),
+                None => request.capture(memory, memory, &crate::country_input_changes::Observer),
             }
-            Report::Gated(GatedReport)
+            Report::GatedProjects(())
         }
         Job::CharacterInputs(request) => Report::CharacterInputs(request.capture(memory)),
         Job::ShipModels(request) => {
@@ -2513,6 +2583,7 @@ pub(crate) struct Pool {
     presentation_preparation: Arc<PresentationFanIn>,
     presentation_stitch: Arc<PresentationFanIn>,
     final_inputs: Arc<FinalInputsDispatch>,
+    ship_details: Arc<ShipDetailsDispatch>,
 }
 impl Pool {
     #[cfg(test)]
@@ -2528,6 +2599,7 @@ impl Pool {
         Self {
             presentation_inputs: Arc::new(PresentationInputs::new(&executor, &calibration)),
             final_inputs: Arc::new(FinalInputsDispatch::new(&executor, &calibration)),
+            ship_details: Arc::new(ShipDetailsDispatch::new(&executor, &calibration)),
             presentation_preparation: Arc::new(PresentationFanIn::new(&executor, &calibration)),
             presentation_stitch: Arc::new(PresentationFanIn::new(&executor, &calibration)),
             executor,
@@ -2558,6 +2630,7 @@ impl Pool {
         Ok(Self {
             presentation_inputs: Arc::new(PresentationInputs::new(&executor, &calibration)),
             final_inputs: Arc::new(FinalInputsDispatch::new(&executor, &calibration)),
+            ship_details: Arc::new(ShipDetailsDispatch::new(&executor, &calibration)),
             presentation_preparation: Arc::new(PresentationFanIn::new(&executor, &calibration)),
             presentation_stitch: Arc::new(PresentationFanIn::new(&executor, &calibration)),
             executor,
@@ -2663,8 +2736,9 @@ impl Pool {
             .saturating_add(2 * std::mem::size_of::<usize>())
             .saturating_add(std::mem::size_of::<PresentationInputs>())
             .saturating_add(std::mem::size_of::<FinalInputsDispatch>())
+            .saturating_add(std::mem::size_of::<ShipDetailsDispatch>())
             .saturating_add(2 * std::mem::size_of::<PresentationFanIn>())
-            .saturating_add(8 * std::mem::size_of::<usize>())
+            .saturating_add(10 * std::mem::size_of::<usize>())
     }
     pub(crate) fn world_calibration(&self) -> WorldCalibration {
         *self
@@ -2770,6 +2844,10 @@ impl<'a> Batch<'a> {
         }
         jobs
     }
+    pub(crate) fn arm_ship_details(&self, request: &mut ShipModelsRequest) {
+        self.pool.ship_details.arm(request);
+        request.details = Some(Arc::clone(&self.pool.ship_details));
+    }
     pub(crate) fn arm_presentation(&mut self, request: &mut PresentationRequest) {
         request
             .dispatch
@@ -2807,7 +2885,7 @@ impl<'a> Batch<'a> {
         let slot = self.tickets[..WORKER_ONLY_JOBS]
             .iter()
             .position(Option::is_none)
-            .expect("admitted presentation child slot");
+            .expect("admitted continuation child slot");
         self.tickets[slot] = Some(pending.ticket);
         self.parked[slot] = pending.parked;
         (pending.ticket, pending.parked)
@@ -2956,6 +3034,7 @@ impl Drop for Batch<'_> {
         self.pool.presentation_preparation.close();
         self.presentation_stitch.close();
         self.pool.final_inputs.close();
+        self.pool.ship_details.close();
         // A held burst must reach the workers before its tickets drain.
         self.release();
         let pool = self.pool;
@@ -2980,6 +3059,7 @@ impl Drop for Batch<'_> {
         pool.presentation_preparation.drain();
         self.presentation_stitch.drain();
         self.pool.final_inputs.drain();
+        self.pool.ship_details.drain();
     }
 }
 
@@ -3015,6 +3095,8 @@ fn drop_collected(pool: &Pool, ticket: Ticket) {
 pub(crate) mod batch_drain_tests;
 #[cfg(test)]
 mod order_group_loan_tests;
+#[cfg(test)]
+mod scheduling_tests;
 
 #[cfg(test)]
 mod tests {

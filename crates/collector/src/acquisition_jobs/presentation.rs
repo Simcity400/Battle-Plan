@@ -191,6 +191,11 @@ pub(super) fn completed(
     report: &Result<Report, Failure>,
 ) -> Option<Arc<dyn acquisition::Publication>> {
     match job {
+        Job::ShipModels(request) => {
+            let dispatch = request.details.as_ref()?;
+            dispatch.store(&mut request.captured, report);
+            Some(dispatch.clone())
+        }
         Job::Characters(request) => {
             let dispatch = request.final_inputs.as_ref()?;
             dispatch.store(request.payload.part, report);
@@ -266,7 +271,7 @@ fn submit(
     }
 }
 
-fn drain(
+pub(super) fn drain(
     executor: &Weak<acquisition::Pool<Job, Report>>,
     calibration: &SharedCalibration,
     pending: Option<RangeTicket>,
