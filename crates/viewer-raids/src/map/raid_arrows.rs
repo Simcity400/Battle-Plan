@@ -682,7 +682,10 @@ fn raid_entity(
 
 /// Choose the largest signed `WingEquipment` amount in a nonempty bank,
 /// first on ties, as `aircraft.rs` reads it.
-pub fn wing_primary_variant(frame: &DecodedFrame, wing: u64) -> Result<Option<u64>, String> {
+pub fn wing_primary_variant(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    wing: u64,
+) -> Result<Option<u64>, String> {
     aircraft_model::wing_primary(frame, wing)
 }
 

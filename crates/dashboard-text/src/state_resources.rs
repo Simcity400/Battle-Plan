@@ -11,7 +11,6 @@ use replay_data::{
     rows::CountryBuildingResourceRow, rows::StateResourceInputRow, rows::StateResourceRow,
     rows::TableSchema, rows::tables,
 };
-use replay_frame::frame::DecodedFrame;
 
 type Index<T> = OnceLock<crate::triggers::refusal::Resolved<Result<T, crate::triggers::Failure>>>;
 /// Building type token to its `local_resources` grants by resource token.
@@ -168,7 +167,7 @@ pub trait Links {
 /// One hour's recorded state resource operands, each index built on first
 /// use.
 pub struct StateResources<'a> {
-    frame: &'a DecodedFrame,
+    frame: &'a dyn replay_frame::frame::DecodedSource,
     /// Building types, for their `local_resources_<resource>` grants.
     buildings: &'a Buildings,
     /// `NBuildings` `INFRASTRUCTURE_RESOURCE_BONUS` and
@@ -186,7 +185,9 @@ pub struct StateResources<'a> {
     grants: Index<Grants>,
 }
 
-fn table<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], crate::triggers::Failure> {
+fn table<T: TableSchema>(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> Result<&[T::Row], crate::triggers::Failure> {
     frame
         .complete::<T>()
         .map_err(|error| crate::triggers::Failure::input(T::ID, "", None, error.to_string()))
@@ -209,7 +210,7 @@ fn get<T>(
 
 impl<'a> StateResources<'a> {
     pub fn new(
-        frame: &'a DecodedFrame,
+        frame: &'a dyn replay_frame::frame::DecodedSource,
         buildings: &'a Buildings,
         resource_bonuses: [i64; 2],
     ) -> Self {

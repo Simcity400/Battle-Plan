@@ -166,10 +166,11 @@ impl Query {
                 vec![TableRead::fields(T::States, &["continent"]).row(state.into())]
             }
             &Query::FocusTree(raw) => vec![TableRead::fields(T::Focus, &["tree"]).row(raw.into())],
-            // The Divisions row's presence, then its whole status row.
+            // The unit's identity and the retained naming operands.
             &Query::UnitStatus(reference) => vec![
                 TableRead::keys(T::Divisions).row(reference.into()),
-                TableRead::all(T::DivisionStatus).row(reference.into()),
+                TableRead::fields(T::DivisionStatus, &["name", "naming", "country_ordinal"])
+                    .row(reference.into()),
             ],
             Query::RaidWingName(_) => vec![
                 TableRead::all(T::Raids),
@@ -393,7 +394,10 @@ impl Query {
             &Query::Character(id) => vec![TableRead::all(T::Characters).row(id.into())],
             &Query::CharacterExists(id) => vec![TableRead::keys(T::Characters).row(id.into())],
             &Query::UnitLeader(reference) => {
-                vec![TableRead::all(T::UnitLeaders).row(reference.into())]
+                vec![
+                    TableRead::fields(T::UnitLeaders, replay_frame::frame::Leader::FIELDS)
+                        .row(reference.into()),
+                ]
             }
             &Query::PartyLeaders(slot) => party_leaders(slot),
             &Query::CountryCharacters(slot) => vec![

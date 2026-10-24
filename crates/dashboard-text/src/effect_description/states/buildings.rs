@@ -501,7 +501,7 @@ impl Renderer<'_, '_, '_> {
             .context
             .text
             .frame()
-            .complete::<tables::Provinces>()
+            .provinces()
             .map_err(|why| why.to_string())?;
         let endpoint_state = |id: u32| {
             provinces.iter().find(|row| row.id == id).map(|row| row.state).ok_or_else(|| {
@@ -553,7 +553,7 @@ impl Renderer<'_, '_, '_> {
             .context
             .text
             .frame()
-            .complete::<tables::Provinces>()
+            .provinces()
             .map_err(|why| why.to_string())?;
         let state = match provinces.iter().find(|row| row.id == location) {
             Some(province) if province.state == 0 => {
@@ -682,7 +682,7 @@ impl Renderer<'_, '_, '_> {
             .context
             .text
             .frame()
-            .complete::<tables::Provinces>()
+            .provinces()
             .map_err(|why| why.to_string())?
             .iter()
             .find(|row| row.id == province)

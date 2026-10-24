@@ -325,7 +325,7 @@ impl Renderer<'_, '_, '_> {
         let Some(target) = self.country_target(item, scopes)? else {
             return Ok(String::new());
         };
-        let hour = self.context.text.frame().hour;
+        let hour = self.context.text.frame().hour();
         let day = hour.wrapping_sub(hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH) % 24);
         let days = crate::triggers::fixed_round(self.numeric_field(item, "days", scopes)?) as i32;
         let (year, month, date) = numeric_date_parts(day.wrapping_add(days.wrapping_mul(24)));

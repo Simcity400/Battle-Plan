@@ -948,7 +948,7 @@ impl Renderer<'_, '_, '_> {
             Scope::Character(character) => character,
             Scope::Leader(reference) | Scope::CountryLeader { leader: reference, .. } => {
                 let row = frame
-                    .complete::<tables::UnitLeaders>()
+                    .leaders()
                     .map_err(|why| why.to_string())?
                     .iter()
                     .find(|row| {

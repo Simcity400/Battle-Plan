@@ -9,7 +9,6 @@ use replay_data::{
     rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow,
     rows::VariantDefinitionRow, rows::tables,
 };
-use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -65,7 +64,7 @@ pub fn compare_variants(
 pub fn enabled_module_slots(
     database: &installed_content_core::equipment::Database,
     index: usize,
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
 ) -> Result<bool, String> {
     let kind = &database.equipment[index];
     if kind.module_slots.is_empty() {
@@ -89,7 +88,7 @@ pub fn variant_order(
     database: &installed_content_core::equipment::Database,
     index: usize,
     variant: &VariantDefinitionRow,
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
 ) -> Result<VariantOrder, String> {
     let kind = &database.equipment[index];
     let archetype = kind
@@ -283,12 +282,13 @@ impl<'a> Tags<'a> {
 }
 
 /// A variant's naming operands at a read.
-pub fn raw_variant(
+pub fn raw_variant<'a>(
     definition: &VariantDefinitionRow,
     hour: i32,
     tags: &Tags,
-    lexical: &[LexicalTokenRow],
+    lexical: impl Into<replay_frame::frame::Rows<'a, LexicalTokenRow>>,
 ) -> RawVariant {
+    let lexical = lexical.into();
     // The origin when set (a signed id of at least 1), else the creator, by its
     // original tag when it is a dynamic country.
     let mut refusals = Vec::new();

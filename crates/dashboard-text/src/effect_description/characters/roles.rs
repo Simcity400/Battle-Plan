@@ -131,7 +131,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     fn char_token_text(&self, token: u32) -> Result<&'f [u8], String> {
-        self.character_table::<tables::LexicalTokens>()?
+        self.character_lexical()?
             .iter()
             .find(|row| row.token == token)
             .map(|row| row.literal.as_slice())
@@ -190,7 +190,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = leader.character else {
             return Ok(None);
         };
-        self.character_table::<tables::Characters>()?
+        self.character_rows()?
             .iter()
             .find(|row| row.id == character)
             .map(Some)
@@ -343,7 +343,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     .map_err(|why| why.to_string())?
             {
                 let world = self.context.world()?;
-                let characters = self.character_table::<tables::Characters>()?;
+                let characters = self.character_rows()?;
                 let character = self
                     .character_table::<tables::CountryCharacters>()?
                     .iter()
@@ -569,7 +569,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let name = match leader.character {
             Some(id) => {
                 let character = self
-                    .character_table::<tables::Characters>()?
+                    .character_rows()?
                     .iter()
                     .find(|row| row.id == id)
                     .ok_or_else(|| format!("PartyLeaders references missing character {id}"))?;
@@ -789,10 +789,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .map_err(Clone::clone)?;
             let idea_token = std::str::from_utf8(&advisor.idea)
                 .map_err(|_| "advisor idea token is not UTF-8")?;
-            let built = crate::identity::built_template(
-                character,
-                self.character_table::<tables::LexicalTokens>().ok(),
-            );
+            let built = crate::identity::built_template(character, self.character_lexical().ok());
             let role = catalogue
                 .held_advisor(idea_token, built.as_ref().map_err(String::as_str))?
                 .ok_or_else(|| format!("advisor role {idea_token} is absent from content"))?;
@@ -944,7 +941,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         };
         let mut matching = self
-            .character_table::<tables::Characters>()?
+            .character_rows()?
             .iter()
             .filter(|row| row.name_token_id as u32 == token);
         let Some(character) = matching.next() else {

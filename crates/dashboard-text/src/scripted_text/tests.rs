@@ -1073,3 +1073,6 @@ fn predicate_world_keeps_country_facts_when_map_content_or_provinces_are_missing
     assert!(world.state_order(64).is_err());
     assert!(text.world().is_err());
 }
+
+#[path = "recorded_source_tests.rs"]
+mod recorded_source;

@@ -160,8 +160,8 @@ struct Views {
     appearance: SharedView,
     faction_members: SharedView,
     counters: SharedView,
-    characters: SharedView,
-    lexical: SharedView,
+    characters: replay_frame::frame::SharedCharacters,
+    lexical: replay_frame::frame::SharedLexical,
     saved_targets: SharedView,
 }
 
@@ -180,8 +180,10 @@ fn view_rows<T: TableSchema>(view: Option<&SharedView>) -> &[T::Row] {
 }
 
 /// A table's rows, and why an entry it lacks is unknown.
-pub(crate) fn table<T: TableSchema>(frame: &DecodedFrame) -> (&[T::Row], String) {
-    match &*frame.tables[T::ID.index()] {
+pub(crate) fn table<T: TableSchema>(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> (&[T::Row], String) {
+    match frame.view(T::ID.index()) {
         TableView::Complete(rows) => (
             rows.rows::<T>().unwrap_or_default(),
             "the complete table has no row for it".into(),
@@ -376,18 +378,18 @@ impl RecordedScopes {
 
 impl RecordedScopes {
     /// Reads scope facts and native country-list snapshots at this hour.
-    pub fn read(frame: &DecodedFrame, aliases: Arc<TagAliases>) -> Self {
+    pub fn read(frame: &dyn replay_frame::frame::DecodedSource, aliases: Arc<TagAliases>) -> Self {
         Self::read_with(frame, OriginalTagLists::read(frame), aliases)
     }
 
     /// Uses a selectively read native-list snapshot for this same hour.
     pub fn read_with(
-        frame: &DecodedFrame,
+        frame: &dyn replay_frame::frame::DecodedSource,
         original_tags: OriginalTagLists,
         aliases: Arc<TagAliases>,
     ) -> Self {
         let complete = |id: replay_data::rows::TableId| {
-            matches!(&*frame.tables[id.index()], TableView::Complete(_))
+            matches!(frame.view(id.index()), TableView::Complete(_))
         };
         let mut gaps = BTreeMap::new();
         gaps.insert("CountryLinks", table::<tables::CountryLinks>(frame).1);
@@ -407,15 +409,15 @@ impl RecordedScopes {
             "Characters",
             format!(
                 "{} (LexicalTokens: {})",
-                table::<tables::Characters>(frame).1,
-                table::<tables::LexicalTokens>(frame).1
+                frame.row_gap(tables::Characters::ID),
+                frame.row_gap(tables::LexicalTokens::ID)
             ),
         );
         gaps.insert(
             "GlobalSavedEventTargets",
             table::<tables::GlobalSavedEventTargets>(frame).1,
         );
-        let view = |id: replay_data::rows::TableId| frame.tables[id.index()].clone();
+        let view = |id: replay_data::rows::TableId| frame.shared(id.index());
         Self {
             views: Some(Arc::new(Views {
                 links: view(tables::CountryLinks::ID),
@@ -425,16 +427,16 @@ impl RecordedScopes {
                 appearance: view(tables::CountryAppearance::ID),
                 faction_members: view(tables::FactionMembers::ID),
                 counters: view(tables::CountryCounterInputs::ID),
-                characters: view(tables::Characters::ID),
-                lexical: view(tables::LexicalTokens::ID),
+                characters: frame.shared_characters(),
+                lexical: frame.shared_lexical(),
                 saved_targets: view(tables::GlobalSavedEventTargets::ID),
             })),
             countries_complete: complete(tables::Countries::ID),
             faction_members_complete: complete(tables::FactionMembers::ID),
             // A character's script token is its name token id spelled by the
             // hour's LexicalTokens (`Characters.token` is its saved name).
-            characters_complete: complete(tables::Characters::ID)
-                && complete(tables::LexicalTokens::ID),
+            characters_complete: frame.character_status().is_table_complete()
+                && frame.lexical_status().is_table_complete(),
             saved_targets_complete: complete(tables::GlobalSavedEventTargets::ID),
             original_tags,
             aliases,
@@ -458,8 +460,8 @@ impl RecordedScopes {
                 TableId::Politics => &views.politics,
                 TableId::CountryAppearance => &views.appearance,
                 TableId::CountryCounterInputs => &views.counters,
-                TableId::Characters => &views.characters,
-                TableId::LexicalTokens => &views.lexical,
+                TableId::Characters => return views.characters.status().is_table_complete(),
+                TableId::LexicalTokens => return views.lexical.status().is_table_complete(),
                 TableId::FactionMembers => &views.faction_members,
                 TableId::GlobalSavedEventTargets => &views.saved_targets,
                 _ => unreachable!("scope input table"),
@@ -588,12 +590,39 @@ impl RecordedScopes {
     }
 
     fn characters(&self) -> &CharactersByToken {
+        fn rows<'a, R>(
+            table: replay_data::rows::TableId,
+            view: Option<(
+                replay_frame::frame::OperandStatus<'_>,
+                replay_frame::frame::Rows<'a, R>,
+            )>,
+        ) -> replay_frame::frame::Rows<'a, R> {
+            use replay_frame::frame::OperandStatus;
+            crate::triggers::inputs::unrecorded(|| match view {
+                Some((OperandStatus::Unavailable(_) | OperandStatus::NotRecorded(_), _)) | None => {
+                    crate::triggers::refusal::missing_reference(table, None).resolution_failed();
+                    replay_frame::frame::Rows::empty()
+                }
+                Some((_, rows)) => rows,
+            })
+        }
         self.characters
             .get_or_init(|| {
                 crate::triggers::refusal::Resolved::new(|| {
-                    let lexical = self.rows::<tables::LexicalTokens>(|views| &views.lexical);
+                    let lexical = rows(
+                        tables::LexicalTokens::ID,
+                        self.views
+                            .as_ref()
+                            .map(|views| (views.lexical.status(), views.lexical.rows())),
+                    );
+                    let characters = rows(
+                        tables::Characters::ID,
+                        self.views
+                            .as_ref()
+                            .map(|views| (views.characters.status(), views.characters.rows())),
+                    );
                     let mut by_token = CharactersByToken::new();
-                    for row in self.rows::<tables::Characters>(|views| &views.characters) {
+                    for row in characters {
                         if let Some(token) = crate::identity::character_script_token(row, lexical) {
                             by_token
                                 .entry(token.to_ascii_lowercase())
@@ -1153,7 +1182,7 @@ impl RecordedScopes {
                 if self
                     .views
                     .as_deref()
-                    .is_some_and(|views| !matches!(&*views.lexical, TableView::Complete(_)))
+                    .is_some_and(|views| !views.lexical.status().is_table_complete())
                 {
                     return Err(Missing(self.input::<tables::LexicalTokens>(
                         "",
@@ -1383,13 +1412,13 @@ impl Names for RecordedScopes {
             (
                 self.views
                     .as_deref()
-                    .is_some_and(|views| matches!(&*views.characters, TableView::Complete(_))),
+                    .is_some_and(|views| views.characters.status().is_table_complete()),
                 tables::Characters::ID,
             ),
             (
                 self.views
                     .as_deref()
-                    .is_some_and(|views| matches!(&*views.lexical, TableView::Complete(_))),
+                    .is_some_and(|views| views.lexical.status().is_table_complete()),
                 tables::LexicalTokens::ID,
             ),
         ] {

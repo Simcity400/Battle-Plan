@@ -16,6 +16,12 @@ mod decoder;
 mod encoder;
 pub mod endpoint_step;
 mod provenance;
+mod source;
+pub use source::{
+    CommandAllocation, CommandAllocations, DecodedSource, Division, DivisionName, DivisionNames,
+    Divisions, Leader, Leaders, OperandStatus, Province, Provinces, RecordedSource, Rows,
+    SharedCharacters, SharedLexical,
+};
 #[doc(hidden)]
 pub mod recorded;
 pub use recorded::{FrameSource, IntoRecordedFrame, RecordedFrame, RecordedTables};

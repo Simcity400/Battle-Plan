@@ -397,11 +397,9 @@ impl Renderer<'_, '_, '_> {
             );
             let raw = crate::variant_names::raw_variant(
                 variant,
-                frame.hour,
+                frame.hour(),
                 &tags,
-                frame
-                    .complete::<tables::LexicalTokens>()
-                    .map_err(|why| why.to_string())?,
+                frame.lexical().map_err(|why| why.to_string())?,
             );
             if raw.name_tag.is_none() {
                 raw.check("name tag")?;
@@ -409,7 +407,7 @@ impl Renderer<'_, '_, '_> {
             }
             raw
         } else {
-            crate::variant_names::raw_variant(variant, frame.hour, &empty, &[])
+            crate::variant_names::raw_variant(variant, frame.hour(), &empty, &[])
         };
         Ok(raw)
     }
@@ -1516,9 +1514,7 @@ impl Renderer<'_, '_, '_> {
         frame
             .complete::<tables::CountryLinks>()
             .map_err(|why| why.to_string())?;
-        frame
-            .complete::<tables::Provinces>()
-            .map_err(|why| why.to_string())?;
+        frame.provinces().map_err(|why| why.to_string())?;
         let fields = children(item);
         let priority = integer_field(fields, "prioritize_location", 0) as u32;
         let enemy = parser::read_bool_field(fields, "allow_spawning_on_enemy_provs", false);
@@ -1607,7 +1603,7 @@ impl Renderer<'_, '_, '_> {
             Ok(false) // Direct installed subjects, without a date or cancellation filter.
         };
         let mut admitted =
-            |province: &replay_data::rows::ProvinceRow, ignore_occupants| -> Result<bool, String> {
+            |province: &replay_frame::frame::Province, ignore_occupants| -> Result<bool, String> {
                 if !world.state_provinces().contains_key(&province.state) {
                     return Err(format!(
                         "province {} state {} is not defined by the recorded content stack",
@@ -1700,7 +1696,7 @@ impl Renderer<'_, '_, '_> {
                     }
                 } else {
                     let land = frame
-                        .complete::<tables::Divisions>()
+                        .divisions()
                         .map_err(|why| why.to_string())?
                         .iter()
                         .filter(|unit| unit.province == province.id)

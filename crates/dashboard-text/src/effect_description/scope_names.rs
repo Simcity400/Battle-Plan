@@ -94,7 +94,7 @@ impl Renderer<'_, '_, '_> {
             );
         }
         let world = self.context.world()?;
-        let divisions = match world.frame().complete::<tables::Divisions>() {
+        let divisions = match world.frame().divisions() {
             Ok(rows) => rows,
             Err(why) => {
                 // The legacy raid's exact references and native resolution
@@ -325,7 +325,7 @@ impl Renderer<'_, '_, '_> {
         self.context
             .text
             .frame()
-            .complete::<tables::Provinces>()
+            .provinces()
             .map_err(|why| why.to_string())?
             .iter()
             .find(|row| row.id == province)

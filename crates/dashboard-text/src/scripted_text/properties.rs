@@ -106,7 +106,7 @@ impl ScriptedText<'_> {
             .map_err(|e| format!("GetManpower: {e}"))?;
         let provinces = self
             .frame
-            .complete::<tables::Provinces>()
+            .provinces()
             .map_err(|e| format!("GetManpower: {e}"))?;
         let populated: std::collections::BTreeSet<u32> =
             provinces.iter().map(|province| province.state).collect();
@@ -206,7 +206,10 @@ impl ScriptedText<'_> {
     }
 
     pub(crate) fn character_gender_unrecorded(&self, id: u32) -> Result<u32, String> {
-        let (characters, gap) = rows::<tables::Characters>(self.frame);
+        let (characters, gap) = (
+            self.frame.character_rows(),
+            self.frame.row_gap(tables::Characters::ID),
+        );
         characters
             .iter()
             .find(|row| row.id == id)
@@ -420,9 +423,9 @@ impl ScriptedText<'_> {
     }
 
     pub(crate) fn date_property_unrecorded(&self, name: &str) -> Result<Option<String>, String> {
-        let date = date_parts(self.frame.hour);
+        let date = date_parts(self.frame.hour());
         Ok(Some(if named(name, "GetDateText") {
-            self.date_text(self.frame.hour)?
+            self.date_text(self.frame.hour())?
         } else if named(name, "GetDate") {
             format!("{}.{}.{}.{}", date.0, date.1 + 1, date.2 + 1, date.3 + 1)
         } else if named(name, "GetYear") {

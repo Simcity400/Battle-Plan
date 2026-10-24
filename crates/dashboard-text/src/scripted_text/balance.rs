@@ -140,10 +140,7 @@ impl<'a> ScriptedText<'a> {
             .frame
             .complete::<tables::ModifierDefinitions>()
             .map_err(|e| format!("{name}: {e}"))?;
-        let tokens = self
-            .frame
-            .complete::<tables::LexicalTokens>()
-            .map_err(|e| format!("{name}: {e}"))?;
+        let tokens = self.frame.lexical().map_err(|e| format!("{name}: {e}"))?;
         let tokens: std::collections::BTreeMap<_, _> =
             tokens.iter().map(|r| (r.token, &r.literal)).collect();
         let mut registry = std::collections::BTreeMap::new();

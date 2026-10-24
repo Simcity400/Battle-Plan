@@ -2,18 +2,20 @@
 //! prefixes can use the authenticated active-raid projection shared by
 //! effect descriptions.
 
+#[cfg(test)]
+use replay_frame::frame::DecodedFrame;
+
 use crate::catalogue::Refusals;
 use replay_data::{
     rows::AirWingRow, rows::RaidRow, rows::RaidTooltipOperandRow, rows::Recorded, rows::tables,
 };
-use replay_frame::frame::DecodedFrame;
 use std::collections::{HashMap, HashSet};
 
 #[cfg(test)]
 mod tests;
 
 pub fn recorded_names(
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
     requested: &HashSet<u64>,
     refusals: &mut Refusals,
 ) -> HashMap<u64, Vec<u8>> {
@@ -72,14 +74,17 @@ pub fn recorded_names(
     names
 }
 
-pub(crate) fn raid_name(frame: &DecodedFrame, reference: u64) -> Result<Vec<u8>, String> {
+pub(crate) fn raid_name(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    reference: u64,
+) -> Result<Vec<u8>, String> {
     raid_names(frame, &HashSet::from([reference]))
         .remove(&reference)
         .expect("requested wing name")
 }
 
 fn raid_names(
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
     requested: &HashSet<u64>,
 ) -> HashMap<u64, Result<Vec<u8>, String>> {
     let mut names = HashMap::new();

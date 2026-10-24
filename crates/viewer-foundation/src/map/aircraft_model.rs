@@ -1,6 +1,6 @@
 //! Shared conventional-flight and raid-aircraft equipment selection.
 use replay_data::{rows::VariantDefinitionRow, rows::WingEquipmentRow, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::DecodedSource;
 
 /// Primary equipment is the largest signed
 /// amount in a nonempty bank, first native ordinal on ties; replay key order is unrelated.
@@ -17,7 +17,7 @@ pub fn primary(rows: &[WingEquipmentRow], wing: u64) -> Option<u64> {
     best.map(|row| row.variant)
 }
 
-pub fn wing_primary(frame: &DecodedFrame, wing: u64) -> Result<Option<u64>, String> {
+pub fn wing_primary(frame: &dyn DecodedSource, wing: u64) -> Result<Option<u64>, String> {
     Ok(primary(
         frame
             .complete::<tables::WingEquipment>()

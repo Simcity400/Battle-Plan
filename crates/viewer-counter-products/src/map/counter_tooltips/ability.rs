@@ -310,7 +310,17 @@ fn communication_leader<'a>(
         .unit_leader(original.character_id)
         .map_err(|why| why.to_string())?
     {
-        Some(UnitLeader::Direct(row)) => Ok(Some(row)),
+        Some(UnitLeader::Direct(row)) => {
+            let reference = u64::from(row.id) << 32 | u64::from(row.reference_type);
+            let rows = context
+                .frame
+                .complete::<tables::UnitLeaders>()
+                .map_err(|why| why.to_string())?;
+            rows.iter()
+                .find(|candidate| candidate.character_id == row.character_id)
+                .map(Some)
+                .ok_or_else(|| format!("UnitLeaders leader {reference} is absent"))
+        }
         Some(UnitLeader::Referenced(row)) if (row.category as u32) >= 2 => Ok(None),
         Some(UnitLeader::Referenced(_)) => {
             Err("the character's referenced leader has no recorded army formation operands".into())

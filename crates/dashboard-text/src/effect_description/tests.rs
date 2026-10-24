@@ -1835,3 +1835,6 @@ fn faction_names_in_effect_descriptions_use_bound_template_names_and_literals() 
         "faction name is text the game stored in english without its key, and the viewer's language is french"
     )), "{:?}", out.refusals);
 }
+
+#[path = "recorded_source_tests.rs"]
+mod recorded_source;

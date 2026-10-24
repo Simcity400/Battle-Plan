@@ -425,7 +425,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let character = match leader {
             UnitLeader::Direct(row) => row.character_id,
             UnitLeader::Referenced(row) => self
-                .character_table::<tables::UnitLeaders>()?
+                .character_leaders()?
                 .iter()
                 .find(|leader| {
                     (u64::from(leader.id) << 32) | u64::from(leader.reference_type) == row.reference

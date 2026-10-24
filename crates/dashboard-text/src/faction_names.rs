@@ -5,8 +5,8 @@ use installed_content_core::{
     gui::native::BoundValue, gui::native::FormattedLocalization,
 };
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
-use replay_data::{rows::TableRows, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
+use replay_data::{rows::TableRows, rows::TableSchema, rows::tables};
+use replay_frame::{frame::SharedView, frame::TableView};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, OnceLock, Weak},
@@ -15,14 +15,14 @@ use std::{
 /// Spell the template operand recorded at this hour. A null template needs no
 /// dictionary; unread tokens remain errors. Lexer tokens are sorted by token.
 pub fn template_spelling(
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::RecordedSource,
     token: Option<u32>,
 ) -> Result<Option<String>, String> {
     let Some(token) = token else {
         return Ok(None);
     };
     let lexical = frame
-        .complete::<tables::LexicalTokens>()
+        .lexical()
         .map_err(|reason| format!("LexicalTokens is not recorded completely: {reason}"))?;
     let index = lexical
         .binary_search_by_key(&token, |row| row.token)
@@ -78,7 +78,8 @@ type SavedChanges = Arc<Vec<(u32, Option<Vec<u8>>)>>;
 /// for bound token arguments and shared by factions from the same table read.
 #[derive(Debug)]
 pub struct LexicalNames {
-    table: SharedView,
+    table: replay_frame::frame::SharedLexical,
+    identity: Option<replay_frame::frame::ViewIdentity>,
     names: OnceLock<ReverseIndex>,
     /// Its changes from the dictionary saved before it (none for the first),
     /// kept since a history saves every dictionary again at each commit.
@@ -102,39 +103,52 @@ impl LexicalNames {
 
     pub fn new(table: SharedView) -> Self {
         Self {
-            table,
+            identity: Some(table.identity()),
+            table: table.into(),
             names: OnceLock::new(),
             saved: Mutex::new(None),
         }
     }
 
+    pub fn from_source(frame: &dyn replay_frame::frame::RecordedSource) -> Self {
+        Self {
+            table: frame.shared_lexical(),
+            identity: frame.identity(tables::LexicalTokens::ID.index()),
+            names: OnceLock::new(),
+            saved: Mutex::new(None),
+        }
+    }
+    fn recorded(
+        &self,
+    ) -> Result<replay_frame::frame::Rows<'_, replay_data::rows::LexicalTokenRow>, String> {
+        use replay_frame::frame::OperandStatus;
+        match self.table.status() {
+            OperandStatus::Complete => Ok(self.table.rows()),
+            OperandStatus::Unavailable(reason) => Err(format!(
+                "LexicalTokens is not recorded completely: {reason}"
+            )),
+            OperandStatus::Truncated(missing) | OperandStatus::TruncatedWrongLayout(missing) => Err(format!(
+                "LexicalTokens is not recorded completely: {missing} rows missing"
+            )),
+            _ => Err("LexicalTokens has the wrong table layout".into()),
+        }
+    }
     pub fn matches(&self, table: &SharedView) -> bool {
-        SharedView::ptr_eq(&self.table, table)
+        self.identity
+            .as_ref()
+            .is_some_and(|identity| identity.is(table))
     }
 
     /// Whether `table` holds this dictionary's rows, from whichever read.
     pub fn holds(&self, table: &SharedView) -> bool {
-        self.table == *table
+        self.table.holds(table)
     }
 
     pub fn token_of(&self, name: &[u8]) -> Result<Option<u32>, String> {
         let names = self
             .names
             .get_or_init(|| {
-                let rows = match &*self.table {
-                    TableView::Complete(TableRows::LexicalTokens(rows)) => rows,
-                    TableView::Unavailable { reason } => {
-                        return Err(format!(
-                            "LexicalTokens is not recorded completely: {reason}"
-                        ));
-                    }
-                    TableView::Truncated { missing, .. } => {
-                        return Err(format!(
-                            "LexicalTokens is not recorded completely: {missing} rows missing"
-                        ));
-                    }
-                    _ => return Err("LexicalTokens has the wrong table layout".into()),
-                };
+                let rows = self.recorded()?;
                 let mut names = BTreeMap::new();
                 for row in rows {
                     let folded = row.literal.to_ascii_lowercase();
@@ -186,14 +200,15 @@ pub mod dictionary_history {
         let mut previous: Option<&Arc<LexicalNames>> = None;
         let mut kept = Vec::with_capacity(dictionaries.len());
         for dictionary in dictionaries {
-            kept.push(match &*dictionary.table {
-                TableView::Complete(TableRows::LexicalTokens(rows)) => {
-                    let changes = changes_from(dictionary, rows, previous);
+            use replay_frame::frame::OperandStatus;
+            kept.push(match dictionary.table.status() {
+                OperandStatus::Complete => {
+                    let changes = changes_from(dictionary, dictionary.table.rows(), previous);
                     previous = Some(dictionary);
                     Ok(changes)
                 }
-                TableView::Unavailable { reason } => Err(reason.clone()),
-                TableView::Truncated { missing, .. } => Err(format!("{missing} rows missing")),
+                OperandStatus::Unavailable(reason) => Err(reason.to_owned()),
+                OperandStatus::Truncated(missing) | OperandStatus::TruncatedWrongLayout(missing) => Err(format!("{missing} rows missing")),
                 _ => {
                     return Err(serde::ser::Error::custom(
                         "LexicalTokens has the wrong table layout",
@@ -218,7 +233,7 @@ pub mod dictionary_history {
     /// the dictionary for the same `previous`.
     fn changes_from(
         dictionary: &LexicalNames,
-        rows: &[LexicalTokenRow],
+        rows: replay_frame::frame::Rows<'_, LexicalTokenRow>,
         previous: Option<&Arc<LexicalNames>>,
     ) -> SavedChanges {
         let mut saved = dictionary
@@ -238,13 +253,16 @@ pub mod dictionary_history {
         }
         #[cfg(test)]
         COMPUTED.with(|computed| computed.set(computed.get() + 1));
-        let before: BTreeMap<u32, &[u8]> = match previous.map(|previous| &*previous.table) {
-            Some(TableView::Complete(TableRows::LexicalTokens(rows))) => rows
-                .iter()
-                .map(|row| (row.token, row.literal.as_slice()))
-                .collect(),
-            _ => BTreeMap::new(),
-        };
+        let before: BTreeMap<u32, &[u8]> = previous
+            .filter(|previous| previous.table.status().is_complete())
+            .map_or_else(BTreeMap::new, |previous| {
+                previous
+                    .table
+                    .rows()
+                    .iter()
+                    .map(|row| (row.token, row.literal.as_slice()))
+                    .collect()
+            });
         let current: BTreeMap<_, _> = rows
             .iter()
             .map(|row| (row.token, row.literal.as_slice()))
@@ -554,7 +572,8 @@ mod tests {
         let restored: Saved = serde_json::from_slice(&first).unwrap();
         assert_eq!(restored.history.len(), saved.history.len());
         for (restored, original) in restored.history.iter().zip(&saved.history) {
-            assert!(restored.holds(&original.table));
+            assert_eq!(restored.table.status(), original.table.status());
+            assert_eq!(restored.table.rows(), original.table.rows());
         }
     }
 

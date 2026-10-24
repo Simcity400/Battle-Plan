@@ -11,7 +11,7 @@ pub use replay_data::country_stability::{
 /// same frame (the stability row's native country ID mapped through
 /// CountryLinks); `None` when the table is not complete or has no row.
 pub fn command_power(
-    decoded: &replay_frame::frame::DecodedFrame,
+    decoded: &dyn replay_frame::frame::DecodedSource,
     slot: u32,
 ) -> Option<&CountryCommandPowerRow> {
     let rows = crate::triggers::refusal::FrameInputs::trigger_table::<

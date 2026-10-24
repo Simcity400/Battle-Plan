@@ -209,7 +209,7 @@ fn with_world<T>(
 }
 
 fn with_world_traits<T>(
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
     aliases: &str,
     roles: Result<&LeaderRoles, &str>,
     traits: Result<
@@ -3737,3 +3737,6 @@ fn shared_trigger_kit_keeps_unit_scope_and_country_ace_operands() {
     assert!(super::RECORDED_TABLES.contains(&replay_data::rows::TableId::Divisions));
     assert!(super::RECORDED_TABLES.contains(&replay_data::rows::TableId::CountryCommandPower));
 }
+
+#[path = "recorded_source_tests.rs"]
+mod recorded_source;

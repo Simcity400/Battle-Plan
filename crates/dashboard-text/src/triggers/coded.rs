@@ -5,7 +5,8 @@ use crate::triggers::Failure;
 use std::collections::BTreeSet;
 
 use installed_content_core::{parser::Item, parser::Operator};
-use replay_data::{rows::UnitLeaderRow, rows::tables};
+use replay_data::rows::tables;
+use replay_frame::frame::Leader;
 
 use super::{
     Eval, Scope, Scopes,
@@ -784,7 +785,7 @@ impl Evaluator<'_, '_> {
             let states = if let Some(recorded) = recorded {
                 recorded
             } else {
-                let provinces = table::<tables::Provinces>(self.world().frame())?;
+                let provinces = super::world::provinces(self.world().frame())?;
                 let nonempty: BTreeSet<_> =
                     provinces.iter().map(|province| province.state).collect();
                 derived = table::<tables::States>(self.world().frame())?
@@ -973,7 +974,8 @@ impl Evaluator<'_, '_> {
     /// apply only skills and traits of their own block, and neither they nor
     /// legacy leader creation store a role, so an effect's `visible` is never
     /// read. The predicate is the template role's `visible` conjunction.
-    pub(crate) fn leader_visible(&self, row: &UnitLeaderRow) -> Eval {
+    pub(crate) fn leader_visible<'r>(&self, row: impl Into<Leader<'r>>) -> Eval {
+        let row = row.into();
         self.decide_leader_visibility(row, self.world().leader_visibility(row), false)
     }
 
@@ -981,20 +983,22 @@ impl Evaluator<'_, '_> {
     /// Its captured-role gate is applied by the roster caller before this lookup.
     /// The roster caches the first step itself; tests compare against this.
     #[cfg(test)]
-    pub(crate) fn leader_roster_visible(&self, row: &UnitLeaderRow) -> Eval {
+    pub(crate) fn leader_roster_visible<'r>(&self, row: impl Into<Leader<'r>>) -> Eval {
+        let row = row.into();
         self.decide_leader_visibility(row, self.world().leader_visibility(row), true)
     }
 
     /// A leader's [`LeaderVisibility`] decided in its owner's scope: the
     /// second step of [`Self::leader_visible`], or with `roster` of
     /// [`Self::leader_roster_visible`].
-    pub fn decide_leader_visibility(
+    pub fn decide_leader_visibility<'r>(
         &self,
-        row: &UnitLeaderRow,
+        row: impl Into<Leader<'r>>,
         visibility: LeaderVisibility,
         roster: bool,
     ) -> Eval {
         let world = self.world();
+        let row = row.into();
         let visible: &[Item] = match visibility {
             LeaderVisibility::Decided(value) => return value,
             LeaderVisibility::Unconditioned => &[],
@@ -1233,7 +1237,7 @@ impl Evaluator<'_, '_> {
     fn any_captured_general(&self, slot: u32) -> Result<Eval, Failure> {
         let world = self.world();
         let mut result = Eval::False;
-        for row in table::<tables::UnitLeaders>(world.frame())? {
+        for row in super::world::leaders(world.frame())?.iter() {
             if row.captured == 0 {
                 continue;
             }

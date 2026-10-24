@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::character_scope::{Tables, UnitLeader};
-use replay_data::{rows::CharacterRow, rows::TableSchema, rows::UnitLeaderRow, rows::tables};
+use replay_data::{rows::CharacterRow, rows::TableSchema, rows::tables};
 
 mod content;
 mod military;
@@ -49,11 +49,37 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         Ok(text)
     }
 
+    fn character_lexical(
+        &self,
+    ) -> Result<replay_frame::frame::Rows<'f, replay_data::rows::LexicalTokenRow>, String> {
+        self.context
+            .text
+            .frame()
+            .lexical()
+            .map_err(|why| why.to_string())
+    }
+
     fn character_table<T: TableSchema>(&self) -> Result<&'f [T::Row], String> {
         self.context
             .text
             .frame()
             .complete::<T>()
+            .map_err(|why| why.to_string())
+    }
+
+    fn character_rows(&self) -> Result<replay_frame::frame::Rows<'f, CharacterRow>, String> {
+        self.context
+            .text
+            .frame()
+            .characters()
+            .map_err(|why| why.to_string())
+    }
+
+    fn character_leaders(&self) -> Result<replay_frame::frame::Leaders<'f>, String> {
+        self.context
+            .text
+            .frame()
+            .leaders()
             .map_err(|why| why.to_string())
     }
 
@@ -69,23 +95,16 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             | Scope::CountryLeader {
                 leader: reference, ..
             } => {
-                let Some(row) = self
-                    .character_table::<tables::UnitLeaders>()?
-                    .iter()
-                    .find(|row| {
-                        (u64::from(row.id) << 32) | u64::from(row.reference_type) == reference
-                    })
-                else {
+                let Some(row) = self.character_leaders()?.iter().find(|row| {
+                    (u64::from(row.id) << 32) | u64::from(row.reference_type) == reference
+                }) else {
                     return Ok(None);
                 };
                 row.character_id
             }
             _ => return Ok(None),
         };
-        Ok(self
-            .character_table::<tables::Characters>()?
-            .iter()
-            .find(|row| row.id == id))
+        Ok(self.character_rows()?.iter().find(|row| row.id == id))
     }
 
     // Try the evaluated scope, named lookup, then the current character.
@@ -136,7 +155,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             if let Some(country) = named_country {
                 let world = self.context.world()?;
                 if let Some(token) = world.token_of(operand).map_err(|why| why.to_string())? {
-                    let characters = self.character_table::<tables::Characters>()?;
+                    let characters = self.character_rows()?;
                     let active = self.character_table::<tables::CountryCharacters>()?;
                     for roster in [Some(active), None] {
                         let roster = match roster {
@@ -202,11 +221,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .map_err(|why| why.to_string())
     }
 
-    pub(super) fn effect_leader_name(&self, row: &UnitLeaderRow) -> Result<String, String> {
+    pub(super) fn effect_leader_name(
+        &self,
+        row: replay_frame::frame::Leader<'_>,
+    ) -> Result<String, String> {
         crate::scripted_text::stored_text(
             self.context.localisation,
             self.context.text.recorded_language(),
-            &row.inherited_text_b,
+            row.inherited_text_b,
             &format!("unit leader {} name", row.id),
         )
     }
@@ -231,7 +253,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     );
                 }
                 let named = self
-                    .character_table::<tables::UnitLeaders>()?
+                    .character_leaders()?
                     .iter()
                     .find(|leader| {
                         (u64::from(leader.id) << 32) | u64::from(leader.reference_type)
@@ -399,7 +421,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         let field = "operative codename";
         let recorded = match leader {
-            UnitLeader::Direct(row) => &row.codename,
+            UnitLeader::Direct(row) => row.codename,
             UnitLeader::Referenced(row) => &row.codename,
         };
         let name = recorded

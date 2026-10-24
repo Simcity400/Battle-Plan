@@ -553,7 +553,18 @@ impl<'w, 'a> Moves<'w, 'a> {
         self.world
             .provinces()
             .get(&province)
-            .copied()
+            .ok_or_else(|| format!("province {province} is not recorded"))?;
+        let rows = match self.world.frame().view(tables::Provinces::ID.index()) {
+            replay_frame::frame::TableView::Complete(rows)
+            | replay_frame::frame::TableView::Truncated { rows, .. } => {
+                rows.rows::<tables::Provinces>().unwrap_or_default()
+            }
+            _ => &[],
+        };
+        let past = rows.partition_point(|row| row.id <= province);
+        past.checked_sub(1)
+            .and_then(|at| rows.get(at))
+            .filter(|row| row.id == province)
             .ok_or_else(|| format!("province {province} is not recorded"))
     }
 
@@ -1080,3 +1091,59 @@ impl<'a> Moves<'_, 'a> {
 #[cfg(any(test, feature = "test-support"))]
 #[path = "movement_reads/test_support.rs"]
 pub mod test_support;
+
+#[cfg(test)]
+mod recorded_source_tests {
+    use super::*;
+    use replay_data::rows::{Recorded, TableId, TableRows};
+    use replay_frame::frame::{DecodedSource, TableView};
+
+    #[test]
+    fn decoded_movement_keeps_full_last_province_row_and_partial_gate() {
+        let assets = test_support::assets();
+        let mut frame = test_support::frame();
+        let mut first = frame.complete::<tables::Provinces>().unwrap()[0].clone();
+        first.fort_positive = 1;
+        first.move_gate = ProvinceRow::MOVE_BORDER_CONFLICT;
+        first.port_sea = 93;
+        first.fort_bunker = Recorded::Value(Some(-27_000));
+        first.owner_area = Recorded::Value(Some(101));
+        let mut last = first.clone();
+        last.port_sea = 94;
+        last.owner_area = Recorded::Value(None);
+        *frame.tables[TableId::Provinces.index()] = TableView::Truncated {
+            rows: TableRows::Provinces(vec![first, last]),
+            missing: 7,
+        };
+        let source: &dyn DecodedSource = &frame;
+        let before = match &*frame.tables[TableId::Provinces.index()] {
+            TableView::Truncated {
+                rows: TableRows::Provinces(rows),
+                ..
+            } => rows
+                .iter()
+                .map(|row| (row.id, row))
+                .collect::<BTreeMap<_, _>>(),
+            _ => unreachable!(),
+        };
+        let world = World::read(source, assets.trigger_content.facts());
+        let cells = Cells::default();
+        let moves = Moves::new(&world, assets.movement_reads(), &cells);
+        let actual = moves.province(1).unwrap();
+        assert!(std::ptr::eq(actual, before[&1]));
+        assert_eq!(
+            (actual.fort_positive, actual.move_gate, actual.port_sea),
+            (1, ProvinceRow::MOVE_BORDER_CONFLICT, 94)
+        );
+        assert_eq!(actual.fort_bunker, Recorded::Value(Some(-27_000)));
+        assert_eq!(actual.owner_area, Recorded::Value(None));
+        assert_eq!(moves.province(2).unwrap_err(), "province 2 is not recorded");
+        assert!(
+            world
+                .core_gap()
+                .unwrap()
+                .to_string()
+                .contains("Provinces is truncated (7 rows missing)")
+        );
+    }
+}

@@ -26,7 +26,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         token: i32,
     ) -> Result<Option<&'f CharacterRow>, String> {
         let world = self.context.world()?;
-        let characters = self.character_table::<tables::Characters>()?;
+        let characters = self.character_rows()?;
         let mut selected: Option<(u32, Option<&'f CharacterRow>)> = None;
         for row in roster {
             if world.slot(row.country).ok_or_else(|| {
@@ -101,7 +101,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             let mut character = self.military_roster_character(roster, country, id)?;
             if character.is_none() {
                 let token = format!("{}_", self.tag(country)?);
-                let characters = self.character_table::<tables::Characters>()?;
+                let characters = self.character_rows()?;
                 let world = self.context.world()?;
                 let mut selected: Option<(u32, &'f CharacterRow)> = None;
                 for row in roster {
@@ -438,10 +438,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let world = self.context.world()?;
         let raid = world.raid(reference).map_err(|why| why.to_string())?;
         let army_resolved = raid.unit != 0
-            && match world
-                .frame()
-                .complete::<replay_data::rows::tables::Divisions>()
-            {
+            && match world.frame().divisions() {
                 Ok(rows) => rows.iter().any(|row| row.id == raid.unit),
                 Err(why) => {
                     // The legacy active-raid witness proves Army resolution

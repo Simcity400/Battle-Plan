@@ -764,10 +764,13 @@ pub fn unrecorded<T>(compute: impl FnOnce() -> T) -> T {
 
 /// Record a read of `table`'s whole view in `frame`, for state built from
 /// the whole table that an evaluation reads directly.
-pub fn table(frame: &DecodedFrame, table: TableId) {
+pub fn table(frame: &dyn replay_frame::frame::DecodedSource, table: TableId) {
     if recording() {
         record(Key::Table(table), || {
-            Value::View(frame.tables[table.index()].identity())
+            frame
+                .identity(table.index())
+                .map(Value::View)
+                .unwrap_or_else(|| Value::Digest(digest_debug(frame.view(table.index()))))
         });
     }
 }
@@ -775,11 +778,14 @@ pub fn table(frame: &DecodedFrame, table: TableId) {
 /// Record a read of the fields `names` name in every row of `table`'s view
 /// in `frame`, for state built from those fields of the whole table that an
 /// evaluation reads directly ([`Key::Fields`]).
-pub fn fields(frame: &DecodedFrame, table: TableId, names: &[&str]) {
+pub fn fields(frame: &dyn replay_frame::frame::DecodedSource, table: TableId, names: &[&str]) {
     if recording() {
         let fields = TableRead::fields(table, names).fields;
         record(Key::Fields(table, fields), || {
-            Value::View(frame.tables[table.index()].identity())
+            frame
+                .identity(table.index())
+                .map(Value::View)
+                .unwrap_or_else(|| Value::Digest(digest_debug(frame.view(table.index()))))
         });
     }
 }

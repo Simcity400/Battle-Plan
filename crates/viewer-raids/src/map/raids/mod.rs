@@ -1095,11 +1095,11 @@ struct CachedIcon {
 impl IconCache {
     /// Forgets every icon unless `frame`'s lexer tokens are the complete
     /// table the icons were laid out from.
-    fn hour(&mut self, frame: &DecodedFrame) {
+    fn hour(&mut self, frame: &dyn replay_frame::frame::DecodedSource) {
         let table = replay_data::rows::TableId::LexicalTokens;
-        let view = &frame.tables[table.index()];
-        let complete = matches!(&**view, replay_frame::frame::TableView::Complete(rows) if rows.table() == table);
-        if !(complete && self.tokens.as_ref().is_some_and(|tokens| tokens.is(view))) {
+        let view = frame.shared(table.index());
+        let complete = matches!(&*view, replay_frame::frame::TableView::Complete(rows) if rows.table() == table);
+        if !(complete && self.tokens.as_ref().is_some_and(|tokens| tokens.is(&view))) {
             self.icons.clear();
             self.tokens = complete.then(|| view.identity());
         }
@@ -1170,7 +1170,7 @@ impl<'s, 'f> HourLayer<'s, 'f> {
     pub fn icons(&self, cycle: &cycle::Cycle, cache: &mut IconCache) -> RaidIcons {
         let frame = self.world.frame();
         let mut out = RaidIcons {
-            built_for: Some((frame.branch, frame.hour, self.ours)),
+            built_for: Some((frame.branch(), frame.hour(), self.ours)),
             ..RaidIcons::default()
         };
         match &self.membership {

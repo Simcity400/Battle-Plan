@@ -239,7 +239,7 @@ impl<'s, 'f> Sweep<'s, 'f> {
     }
 
     pub fn hour(&self) -> replay_data::Hour {
-        self.world.frame().hour
+        self.world.frame().hour()
     }
 
     /// The targets at ordinals `rows`, in that order, evaluated at this

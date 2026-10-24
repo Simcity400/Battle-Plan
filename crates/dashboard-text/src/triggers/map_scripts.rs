@@ -796,7 +796,7 @@ impl Evaluator<'_, '_> {
 }
 
 fn recorded<T: replay_data::rows::TableSchema>(
-    frame: &replay_frame::frame::DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
 ) -> Result<&[T::Row], Failure> {
     super::inputs::table(frame, T::ID);
     super::world::table::<T>(frame)

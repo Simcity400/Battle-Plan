@@ -1,19 +1,20 @@
 //! Recorded raid target joins, shared by the dashboard and map hovers.
-use replay_data::{rows::ProvinceRow, rows::RaidScope, rows::StateRow, rows::tables};
+#[cfg(test)]
 use replay_frame::frame::DecodedFrame;
+
+use replay_data::{rows::RaidScope, rows::StateRow, rows::tables};
+use replay_frame::frame::DecodedSource;
 
 type Result<T> = std::result::Result<T, String>;
 
-fn province(frame: &DecodedFrame, id: u32) -> Result<&ProvinceRow> {
-    let rows = frame
-        .complete::<tables::Provinces>()
-        .map_err(|error| error.to_string())?;
+fn province(frame: &dyn DecodedSource, id: u32) -> Result<replay_frame::frame::Province> {
+    let rows = frame.provinces().map_err(|error| error.to_string())?;
     rows.binary_search_by_key(&id, |row| row.id)
-        .map(|at| &rows[at])
+        .map(|at| rows.get(at).unwrap())
         .map_err(|_| format!("raid target province {id} is absent"))
 }
 
-fn state_row(frame: &DecodedFrame, id: u32) -> Result<&StateRow> {
+fn state_row(frame: &dyn DecodedSource, id: u32) -> Result<&StateRow> {
     let rows = frame
         .complete::<tables::States>()
         .map_err(|error| error.to_string())?;
@@ -25,7 +26,7 @@ fn state_row(frame: &DecodedFrame, id: u32) -> Result<&StateRow> {
 /// Target country priority: building, province, state, resolved captive
 /// leader's captor, then leader province. A resolved captor's raw word
 /// suppresses the leader-province fallback.
-pub fn country(frame: &DecodedFrame, scope: &RaidScope) -> Result<Option<u32>> {
+pub fn country(frame: &dyn DecodedSource, scope: &RaidScope) -> Result<Option<u32>> {
     let raw = if scope.building_type != 0 {
         if scope.building_country > 0 {
             scope.building_country as u32
@@ -52,7 +53,7 @@ pub fn country(frame: &DecodedFrame, scope: &RaidScope) -> Result<Option<u32>> {
 
 /// Plain location priority: explicit state, province, leader province,
 /// then building state. A provincial building resolves through its province.
-pub fn state(frame: &DecodedFrame, scope: &RaidScope) -> Result<Option<u32>> {
+pub fn state(frame: &dyn DecodedSource, scope: &RaidScope) -> Result<Option<u32>> {
     if scope.state != 0 {
         return Ok(Some(scope.state));
     }
@@ -76,7 +77,7 @@ pub fn state(frame: &DecodedFrame, scope: &RaidScope) -> Result<Option<u32>> {
     Ok((id != 0).then_some(id))
 }
 
-fn owner_tag(frame: &DecodedFrame, owner: u32) -> Result<&str> {
+fn owner_tag(frame: &dyn DecodedSource, owner: u32) -> Result<&str> {
     // Owner zero still resolves reserved country slot zero, whose
     // original or own tag supplies the qualified localisation key.
     if owner == 0 {
@@ -124,7 +125,7 @@ fn owner_tag(frame: &DecodedFrame, owner: u32) -> Result<&str> {
 /// Plain location then falls back to the state's display name.
 /// The callback keeps text controls until after this emptiness test.
 pub fn victory_point(
-    frame: &DecodedFrame,
+    frame: &dyn DecodedSource,
     id: u32,
     mut localise: impl FnMut(&str) -> Result<Option<String>>,
 ) -> Result<Option<String>> {
@@ -150,7 +151,7 @@ pub fn victory_point(
 /// resolve localisation through their recorded content stack and supply
 /// the shared stored-state-name rule in their display representation.
 pub fn location(
-    frame: &DecodedFrame,
+    frame: &dyn DecodedSource,
     scope: &RaidScope,
     localise: impl FnMut(&str) -> Result<Option<String>>,
     state_name: impl FnOnce(u32) -> Result<String>,

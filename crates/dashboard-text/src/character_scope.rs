@@ -6,11 +6,11 @@
 
 use crate::{state_resources::Links, triggers::Failure};
 use installed_content_core::{leader_traits::LeaderTraits, unit_leader::Traits};
+use replay_data::rows::TableSchema;
 use replay_data::{
     rows::CharacterOperativeRow, rows::CharacterRoleTraitRow, rows::CharacterRow,
-    rows::CountryCharacterRow, rows::UnitLeaderRow, rows::UnitLeaderTraitRow, rows::tables,
+    rows::CountryCharacterRow, rows::UnitLeaderTraitRow, rows::tables,
 };
-use replay_frame::frame::DecodedFrame;
 
 type Evaluation<T> = Result<T, Failure>;
 
@@ -51,8 +51,8 @@ pub const FIELDS: [(replay_data::rows::TableId, &[&str]); 6] = {
 /// The recorded character tables a character scope's `has_trait`, `skill`
 /// and `tag` read.
 pub struct Tables<'a> {
-    characters: Result<&'a [CharacterRow], Failure>,
-    unit_leaders: Result<&'a [UnitLeaderRow], Failure>,
+    characters: Result<replay_frame::frame::Rows<'a, CharacterRow>, Failure>,
+    unit_leaders: Result<&'a dyn replay_frame::frame::DecodedSource, Failure>,
     unit_leader_traits: Result<&'a [UnitLeaderTraitRow], Failure>,
     role_traits: Result<&'a [CharacterRoleTraitRow], Failure>,
     operatives: Result<&'a [CharacterOperativeRow], Failure>,
@@ -63,7 +63,7 @@ pub struct Tables<'a> {
 /// referenced leader (CharacterOperatives).
 #[derive(Clone, Copy)]
 pub enum UnitLeader<'a> {
-    Direct(&'a UnitLeaderRow),
+    Direct(replay_frame::frame::Leader<'a>),
     Referenced(&'a CharacterOperativeRow),
 }
 
@@ -133,9 +133,9 @@ impl Default for Tables<'_> {
 impl<'a> Tables<'a> {
     /// The hour's tables, each hourly (replay_data::cadence): their writers run at
     /// any hour.
-    pub fn read(frame: &'a DecodedFrame) -> Self {
+    pub fn read(frame: &'a dyn replay_frame::frame::DecodedSource) -> Self {
         fn table<'f, T: replay_data::rows::TableSchema>(
-            frame: &'f DecodedFrame,
+            frame: &'f dyn replay_frame::frame::DecodedSource,
             name: &str,
         ) -> Result<&'f [T::Row], Failure> {
             frame.complete::<T>().map_err(|error| {
@@ -148,8 +148,26 @@ impl<'a> Tables<'a> {
             })
         }
         Self {
-            characters: table::<tables::Characters>(frame, "Characters"),
-            unit_leaders: table::<tables::UnitLeaders>(frame, "UnitLeaders"),
+            characters: frame.characters().map_err(|error| {
+                Failure::input(
+                    tables::Characters::ID,
+                    "",
+                    None,
+                    format!("Characters is not complete this hour: {error}"),
+                )
+            }),
+            unit_leaders: frame
+                .leader_status()
+                .complete(frame.hour(), tables::UnitLeaders::ID)
+                .map(|()| frame)
+                .map_err(|error| {
+                    Failure::input(
+                        tables::UnitLeaders::ID,
+                        "",
+                        None,
+                        format!("UnitLeaders is not complete this hour: {error}"),
+                    )
+                }),
             unit_leader_traits: table::<tables::UnitLeaderTraits>(frame, "UnitLeaderTraits"),
             role_traits: table::<tables::CharacterRoleTraits>(frame, "CharacterRoleTraits"),
             operatives: table::<tables::CharacterOperatives>(frame, "CharacterOperatives"),
@@ -180,11 +198,14 @@ impl<'a> Tables<'a> {
     /// the referenced leader recorded by CharacterOperatives when resolved;
     /// `None` for neither.
     pub fn unit_leader(&self, character: u32) -> Evaluation<Option<UnitLeader<'a>>> {
-        let leaders = self.unit_leaders.as_ref().map_err(|failure| {
+        let leaders = *self.unit_leaders.as_ref().map_err(|failure| {
             failure.reached();
             failure.clone()
         })?;
-        let mut found = leaders.iter().filter(|row| row.character_id == character);
+        let mut found = leaders
+            .leader_rows()
+            .iter()
+            .filter(|row| row.character_id == character);
         if let Some(leader) = found.next() {
             if found.next().is_some() {
                 return Err(format!(

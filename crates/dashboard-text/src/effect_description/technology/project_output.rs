@@ -310,7 +310,7 @@ impl Renderer<'_, '_, '_> {
             .context
             .text
             .frame()
-            .complete::<tables::Provinces>()
+            .provinces()
             .map_err(|why| why.to_string())?
             .iter()
             .map(|row| (row.id, row.state))

@@ -162,11 +162,9 @@ impl Renderer<'_, '_, '_> {
             .context
             .text
             .frame()
-            .complete::<tables::Clock>()
+            .clock_seed()
             .map_err(|why| why.to_string())?
-            .first()
-            .ok_or("Clock lacks focus-description seed")?
-            .seed;
+            .ok_or("Clock lacks focus-description seed")?;
         let hash = id.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
             (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
         });

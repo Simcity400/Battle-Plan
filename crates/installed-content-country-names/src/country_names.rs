@@ -18,7 +18,9 @@ use replay_data::{
     rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
     rows::ReservedCountryNamingRow, rows::TableId, rows::TableSchema, rows::tables,
 };
-use replay_frame::{frame::DecodedFrame, frame::TableView};
+#[cfg(test)]
+use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::TableView;
 
 use crate::localisation::Localisation;
 
@@ -203,7 +205,10 @@ impl<'a> CountryNames<'a> {
     }
     /// Reads the operands of every country in `frame`. A country whose inputs
     /// are missing this hour keeps the reason instead of a name.
-    pub fn read(frame: &DecodedFrame, localisation: &'a Localisation) -> Self {
+    pub fn read(
+        frame: &dyn replay_frame::frame::DecodedSource,
+        localisation: &'a Localisation,
+    ) -> Self {
         let mut operands = operands(frame);
         operands.insert(0, reserved_zero(frame));
         Self {
@@ -217,7 +222,7 @@ impl<'a> CountryNames<'a> {
     /// keys are sorted; canonical aliases retain the last Countries row, as
     /// [`Self::read`] does. Name expansion keeps the same cycle and work limits.
     pub fn read_selected(
-        frame: &DecodedFrame,
+        frame: &dyn replay_frame::frame::DecodedSource,
         localisation: &'a Localisation,
         slots: impl IntoIterator<Item = u32>,
     ) -> Self {
@@ -406,8 +411,8 @@ impl<'a> CountryNames<'a> {
 }
 
 /// The rows a table holds this hour and whether that is all of them.
-fn partial<T: TableSchema>(frame: &DecodedFrame) -> (&[T::Row], bool) {
-    match &*frame.tables[T::ID.index()] {
+fn partial<T: TableSchema>(frame: &dyn replay_frame::frame::DecodedSource) -> (&[T::Row], bool) {
+    match frame.view(T::ID.index()) {
         TableView::Complete(rows) => (rows.rows::<T>().unwrap_or(&[]), true),
         TableView::Truncated { rows, .. } => (rows.rows::<T>().unwrap_or(&[]), false),
         TableView::Unavailable { .. } | TableView::NotRecorded { .. } => (&[], false),
@@ -440,7 +445,9 @@ fn text(bytes: &[u8], what: &str) -> Result<String, String> {
     String::from_utf8(bytes.to_vec()).map_err(|_| format!("{what} is not UTF-8"))
 }
 
-fn reserved_zero_row(frame: &DecodedFrame) -> Result<&ReservedCountryNamingRow, String> {
+fn reserved_zero_row(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> Result<&ReservedCountryNamingRow, String> {
     let rows = frame
         .complete::<tables::ReservedCountryNaming>()
         .map_err(|why| format!("ReservedCountryNaming is unavailable this hour: {why}"))?;
@@ -451,14 +458,16 @@ fn reserved_zero_row(frame: &DecodedFrame) -> Result<&ReservedCountryNamingRow, 
 }
 
 /// Raw zero's tag comes from the reserved country database row.
-pub fn reserved_zero_tag(frame: &DecodedFrame) -> Result<&str, String> {
+pub fn reserved_zero_tag(frame: &dyn replay_frame::frame::DecodedSource) -> Result<&str, String> {
     std::str::from_utf8(&reserved_zero_row(frame)?.tag)
         .map_err(|_| "reserved country tag is not UTF-8".into())
 }
 
 /// Resolve the reserved row's original-or-own tag from its recorded bytes.
 /// The name generator's dynamic-only `name_tag` is a separate witness.
-pub fn reserved_zero_original_tag(frame: &DecodedFrame) -> Result<&str, String> {
+pub fn reserved_zero_original_tag(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> Result<&str, String> {
     let row = reserved_zero_row(frame)?;
     let reference = row
         .original_tag_reference
@@ -477,7 +486,10 @@ pub fn reserved_zero_original_tag(frame: &DecodedFrame) -> Result<&str, String> 
 
 /// Exact original-or-own tag bytes for a canonical country slot.
 /// Zero has its own authenticated singleton, outside the positive census.
-pub fn original_or_own_tag(frame: &DecodedFrame, slot: u32) -> Result<&str, String> {
+pub fn original_or_own_tag(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    slot: u32,
+) -> Result<&str, String> {
     if slot == 0 {
         return reserved_zero_original_tag(frame);
     }
@@ -487,7 +499,10 @@ pub fn original_or_own_tag(frame: &DecodedFrame, slot: u32) -> Result<&str, Stri
 
 /// Selected signed original-or-own tag word. This numeric getter does not
 /// require the separately optional tag-string payload.
-pub fn original_or_own_reference(frame: &DecodedFrame, slot: u32) -> Result<i32, String> {
+pub fn original_or_own_reference(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    slot: u32,
+) -> Result<i32, String> {
     if slot == 0 {
         let raw = reserved_zero_row(frame)?
             .original_tag_reference
@@ -508,7 +523,7 @@ pub fn original_or_own_reference(frame: &DecodedFrame, slot: u32) -> Result<i32,
 }
 
 fn original_rows(
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
     slot: u32,
 ) -> Result<(&CountryRow, &CountryAppearanceRow), String> {
     let (countries, countries_complete) = partial::<tables::Countries>(frame);
@@ -536,7 +551,7 @@ fn original_rows(
 
 /// Slot zero's naming operands from its dedicated singleton. These operands
 /// never admit zero into Countries, CountryLinks or CountryAppearance.
-pub fn reserved_zero(frame: &DecodedFrame) -> Result<Operands, String> {
+pub fn reserved_zero(frame: &dyn replay_frame::frame::DecodedSource) -> Result<Operands, String> {
     let row = reserved_zero_row(frame)?;
     let tag = if row.name_tag.is_empty() {
         &row.tag
@@ -618,7 +633,9 @@ fn naming_tag<'a>(
 pub use replay_data::country_flags::original_tag;
 
 /// Per canonical slot: the operands, or why they are unavailable this hour.
-fn operands(frame: &DecodedFrame) -> BTreeMap<u32, Result<Operands, String>> {
+fn operands(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> BTreeMap<u32, Result<Operands, String>> {
     let (Ok(countries), Ok(links)) = (
         frame.complete::<tables::Countries>(),
         frame.complete::<tables::CountryLinks>(),
@@ -651,7 +668,7 @@ fn last_by_key<T, K: Ord>(rows: &[T], wanted: K, key: impl Fn(&T) -> K) -> Optio
 }
 
 fn country_operands<'r>(
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
     by_slot: &dyn Fn(u32) -> Option<&'r CountryRow>,
     links: &[CountryLinkRow],
     country: &CountryRow,

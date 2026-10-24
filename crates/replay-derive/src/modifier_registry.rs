@@ -4,10 +4,7 @@
 //! joins its lexical token's literal (ModifierDefinitions, LexicalTokens); the
 //! eligibility callback's flags are the hour's `SimulationFeatures.dlc_mask`.
 
-use crate::{
-    frame::DecodedFrame,
-    rows::{LexicalTokenRow, ModifierDefinitionRow, tables},
-};
+use crate::rows::{LexicalTokenRow, ModifierDefinitionRow, tables};
 use std::collections::BTreeMap;
 
 /// `engine_native::modifier_definition::CLAMP_MAXIMUM`: the getter clamps an eligible value to
@@ -25,12 +22,13 @@ pub struct Registry<'a> {
 impl<'a> Registry<'a> {
     /// Joins each definition to its lexical token's literal. A definition
     /// whose token the recording does not hold is refused by name.
-    pub fn new(
+    pub fn new<'t>(
         definitions: &'a [ModifierDefinitionRow],
-        tokens: &[LexicalTokenRow],
+        tokens: impl Into<replay_frame::frame::Rows<'t, LexicalTokenRow>>,
         dlc_mask: Option<u32>,
     ) -> Result<Self, String> {
         let literals: BTreeMap<u32, &[u8]> = tokens
+            .into()
             .iter()
             .map(|row| (row.token, row.literal.as_slice()))
             .collect();
@@ -58,13 +56,11 @@ impl<'a> Registry<'a> {
 
     /// The frame's complete ModifierDefinitions and LexicalTokens, and its
     /// SimulationFeatures flags when recorded.
-    pub fn from_frame(frame: &'a DecodedFrame) -> Result<Self, String> {
+    pub fn from_frame(frame: &'a dyn replay_frame::frame::DecodedSource) -> Result<Self, String> {
         let definitions = frame
             .complete::<tables::ModifierDefinitions>()
             .map_err(|e| e.to_string())?;
-        let tokens = frame
-            .complete::<tables::LexicalTokens>()
-            .map_err(|e| e.to_string())?;
+        let tokens = frame.lexical().map_err(|e| e.to_string())?;
         let dlc_mask = frame
             .complete::<tables::SimulationFeatures>()
             .ok()

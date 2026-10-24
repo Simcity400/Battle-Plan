@@ -2,7 +2,7 @@
 use crate::triggers::{Failure, refusal::FrameInputs};
 
 use super::{Evaluator, Scope, World};
-use replay_data::{rows::DivisionRow, rows::ProjectRow, rows::RaidRow, rows::tables};
+use replay_data::{rows::ProjectRow, rows::RaidRow, rows::tables};
 
 impl<'a> World<'a> {
     /// Projects retains the pool owner and local id.
@@ -29,9 +29,10 @@ impl<'a> World<'a> {
 
     /// Divisions records each army's full unit handle,
     /// including its reference type.
-    pub(crate) fn unit(&self, reference: u64) -> Result<&'a DivisionRow, Failure> {
+    pub(crate) fn unit(&self, reference: u64) -> Result<replay_frame::frame::Division, Failure> {
         self.frame()
-            .trigger_table::<tables::Divisions>()?
+            .divisions()
+            .map_err(|why| super::refusal::input_error(replay_data::rows::TableId::Divisions, why))?
             .iter()
             .find(|row| row.id == reference)
             .ok_or_else(|| -> Failure {

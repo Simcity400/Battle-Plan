@@ -3,7 +3,9 @@ use replay_data::{
     Hour, rows::LexicalTokenRow, rows::TableRows, rows::TableSchema, rows::tables,
     scope::CaptureMode,
 };
-use replay_frame::{frame::DecodedFrame, frame::TableView};
+#[cfg(test)]
+use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::TableView;
 use std::{collections::BTreeMap, io};
 
 /// What one table of one decoded hour actually holds.
@@ -71,11 +73,13 @@ pub fn country_slot(
 ///
 /// The only error is a decoded table holding another table's rows, which is a
 /// corrupt file rather than a recorded gap.
-pub fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<Available<'_, T>> {
-    match &*frame.tables[T::ID.index()] {
-        TableView::Complete(rows) => Ok(Available::Complete(typed::<T>(rows, frame.hour)?)),
+pub fn rows<T: TableSchema>(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> io::Result<Available<'_, T>> {
+    match frame.view(T::ID.index()) {
+        TableView::Complete(rows) => Ok(Available::Complete(typed::<T>(rows, frame.hour())?)),
         TableView::Truncated { rows, missing } => Ok(Available::Truncated {
-            rows: typed::<T>(rows, frame.hour)?,
+            rows: typed::<T>(rows, frame.hour())?,
             missing: *missing,
         }),
         TableView::Unavailable { reason } => Ok(Available::Unavailable { reason }),
@@ -93,7 +97,7 @@ pub fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<Available<'_, T>
 #[derive(Clone, Copy, Debug)]
 pub struct TokenNames<'a> {
     /// The hour's rows, in token order.
-    rows: &'a [LexicalTokenRow],
+    rows: replay_frame::frame::Rows<'a, LexicalTokenRow>,
     complete: bool,
 }
 
@@ -120,21 +124,36 @@ impl std::fmt::Display for TokenError {
 }
 
 impl<'a> TokenNames<'a> {
-    pub fn new(frame: &'a DecodedFrame) -> io::Result<Self> {
-        let tokens = rows::<tables::LexicalTokens>(frame)?;
-        let rows = tokens.rows();
+    pub fn new(frame: &'a dyn replay_frame::frame::RecordedSource) -> io::Result<Self> {
+        if matches!(
+            frame.lexical_status(),
+            replay_frame::frame::OperandStatus::WrongLayout
+                | replay_frame::frame::OperandStatus::TruncatedWrongLayout(_)
+        ) {
+            return Err(invalid(format!(
+                "hour {} LexicalTokens contains another table's rows",
+                frame.hour()
+            )));
+        }
+        let rows = frame.lexical_rows();
         if !rows.is_sorted_by(|a, b| a.token < b.token) {
             return Err(invalid(format!(
                 "hour {} LexicalTokens rows are not in token order",
-                frame.hour
+                frame.hour()
             )));
         }
-        Ok(Self::from_rows(rows, tokens.is_complete()))
+        Ok(Self {
+            rows,
+            complete: frame.lexical_status().is_complete(),
+        })
     }
 
     /// Rows already in ascending token order, as every replay table is.
     pub fn from_rows(rows: &'a [LexicalTokenRow], complete: bool) -> Self {
-        Self { rows, complete }
+        Self {
+            rows: rows.into(),
+            complete,
+        }
     }
 
     /// Every token of the hour spelled as text, in token order.
@@ -189,7 +208,7 @@ impl<'a> TokenNames<'a> {
                 TokenError::Missing(token)
             });
         };
-        std::str::from_utf8(&self.rows[index].literal)
+        std::str::from_utf8(&self.rows.get(index).unwrap().literal)
             .ok()
             .filter(|name| !name.contains('\0'))
             .ok_or(TokenError::NotText(token))
@@ -260,6 +279,28 @@ fn typed<T: TableSchema>(rows: &TableRows, hour: Hour) -> io::Result<&[T::Row]> 
 mod tests {
     use super::*;
     use replay_data::{rows::LexicalTokenRow, rows::TableId};
+
+    #[test]
+    fn truncated_lexical_wrong_layout_is_corruption_for_partial_readers() {
+        let frame = frame(TableView::Truncated {
+            rows: TableRows::Countries(Vec::new()),
+            missing: 3,
+        });
+        assert_eq!(
+            TokenNames::new(&frame).unwrap_err().to_string(),
+            "hour 0 LexicalTokens contains another table's rows"
+        );
+        assert_eq!(
+            (&frame as &dyn replay_frame::frame::RecordedSource)
+                .lexical()
+                .unwrap_err()
+                .to_string(),
+            frame
+                .complete::<tables::LexicalTokens>()
+                .unwrap_err()
+                .to_string()
+        );
+    }
 
     fn frame(view: TableView) -> DecodedFrame {
         let mut frame = DecodedFrame {

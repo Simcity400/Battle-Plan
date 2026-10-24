@@ -17,6 +17,24 @@
 //! refusals for event-chain links they cannot describe.
 use crate::triggers::{Failure, refusal::FrameInputs};
 
+// Complete country rosters bound these lookups, so present partial rows remain exact.
+fn localisation_status(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    table: replay_data::rows::TableId,
+    status: replay_frame::frame::OperandStatus<'_>,
+) -> Result<(), Failure> {
+    use replay_frame::frame::OperandStatus;
+    match status {
+        OperandStatus::Complete | OperandStatus::Truncated(_) => Ok(()),
+        OperandStatus::WrongLayout | OperandStatus::TruncatedWrongLayout(_) => {
+            Err(format!("{table:?} contains another table's rows").into())
+        }
+        _ => status
+            .complete(frame.hour(), table)
+            .map_err(|why| super::refusal::input_error(table, why)),
+    }
+}
+
 use installed_content_core::{
     parser::Item, parser::Operator, scope::Keyword as ScopeKeyword, scope::Names, scoped_variable,
     scoped_variable::Constant, scoped_variable::Link, scoped_variable::ScopedVariable,
@@ -301,14 +319,25 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             // The roster bounds this lookup. Unrelated truncated manager or
             // dictionary rows cannot shadow this country's parsed operand.
-            let characters = self.localisation_rows::<replay_data::rows::tables::Characters>()?;
+            let frame = self.world().frame();
+            localisation_status(
+                frame,
+                replay_data::rows::TableId::Characters,
+                frame.character_status(),
+            )?;
+            let characters = frame.character_rows();
             let character = &characters[characters.binary_search_by_key(&id, |row| row.id).map_err(|_| {
                 format!("{candidate}: rostered character {id} is unread in Characters, so its token could shadow the numeric operand")
             })?];
             let Ok(token) = u32::try_from(character.name_token_id) else {
                 continue;
             };
-            let tokens = self.localisation_rows::<replay_data::rows::tables::LexicalTokens>()?;
+            localisation_status(
+                frame,
+                replay_data::rows::TableId::LexicalTokens,
+                frame.lexical_status(),
+            )?;
+            let tokens = frame.lexical_rows();
             let spelling = &tokens[tokens.binary_search_by_key(&token, |row| row.token).map_err(|_| {
                 format!("{candidate}: rostered character {id}'s name token {token} is unread in LexicalTokens")
             })?].literal;
@@ -321,34 +350,15 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         Ok(())
     }
 
-    /// Parse-time lookup is bounded by complete native country rosters, so
-    /// a present demanded row remains usable in a truncated manager table.
-    fn localisation_rows<T: replay_data::rows::TableSchema>(&self) -> Result<&[T::Row], Failure> {
-        match &*self.world().frame().tables[T::ID.index()] {
-            replay_frame::frame::TableView::Complete(rows)
-            | replay_frame::frame::TableView::Truncated { rows, .. } => {
-                rows.rows::<T>().ok_or_else(|| -> Failure {
-                    format!("{:?} contains another table's rows", T::ID).into()
-                })
-            }
-            replay_frame::frame::TableView::Unavailable { .. }
-            | replay_frame::frame::TableView::NotRecorded { .. } => {
-                self.world().frame().trigger_table::<T>()
-            }
-        }
-    }
-
     fn localisation_character_candidates(&self, name: &str) -> Result<Vec<u32>, Failure> {
-        let characters =
-            super::world::table::<replay_data::rows::tables::Characters>(self.world().frame())?;
+        let characters = super::world::characters(self.world().frame())?;
         if characters
             .iter()
             .all(|character| character.name_token_id < 0)
         {
             return Ok(Vec::new());
         }
-        let tokens =
-            super::world::table::<replay_data::rows::tables::LexicalTokens>(self.world().frame())?;
+        let tokens = super::world::lexical(self.world().frame())?;
         let mut matches = Vec::new();
         for character in characters {
             let Ok(token) = u32::try_from(character.name_token_id) else {

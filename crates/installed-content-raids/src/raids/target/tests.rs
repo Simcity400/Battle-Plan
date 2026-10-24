@@ -1,7 +1,7 @@
 use super::*;
 use replay_data::{
     rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::Recorded,
-    rows::ReservedCountryNamingRow, rows::TableId, rows::TableRows,
+    rows::ProvinceRow, rows::ReservedCountryNamingRow, rows::TableId, rows::TableRows,
 };
 use replay_frame::{frame::Metrics, frame::TableView};
 

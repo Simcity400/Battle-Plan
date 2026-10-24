@@ -9,8 +9,9 @@ use std::collections::HashMap;
 /// token. None when the id is negative or not in the dictionary.
 pub fn character_script_token<'a>(
     character: &replay_data::rows::CharacterRow,
-    lexical: &'a [replay_data::rows::LexicalTokenRow],
+    lexical: impl Into<replay_frame::frame::Rows<'a, replay_data::rows::LexicalTokenRow>>,
 ) -> Option<&'a str> {
+    let lexical = lexical.into();
     let token = u32::try_from(character.name_token_id).ok()?;
     let index = crate::triggers::refusal::reference(
         lexical.binary_search_by_key(&token, |row| row.token).ok(),
@@ -23,7 +24,7 @@ pub fn character_script_token<'a>(
         },
     )?;
     crate::triggers::refusal::reference(
-        std::str::from_utf8(&lexical[index].literal).ok(),
+        std::str::from_utf8(&lexical.get(index).unwrap().literal).ok(),
         token != 0,
         || {
             crate::triggers::refusal::missing_reference(
@@ -37,10 +38,11 @@ pub fn character_script_token<'a>(
 /// The template a recorded character holds, from its Characters row's
 /// template columns. Its tag token is spelled by LexicalTokens;
 /// `Err` names what the hour does not hold.
-pub fn built_template(
+pub fn built_template<'a>(
     character: &replay_data::rows::CharacterRow,
-    lexical: Option<&[replay_data::rows::LexicalTokenRow]>,
+    lexical: Option<impl Into<replay_frame::frame::Rows<'a, replay_data::rows::LexicalTokenRow>>>,
 ) -> Result<installed_content_core::characters::BuiltTemplate, String> {
+    let lexical = lexical.map(Into::into);
     let id = character.id;
     if character.template_present == 0 {
         return Err(format!(
@@ -64,7 +66,7 @@ pub fn built_template(
     .ok_or_else(|| {
         format!("character {id}'s template tag token {token} has no LexicalTokens row")
     })?;
-    let tag = std::str::from_utf8(&lexical[index].literal)
+    let tag = std::str::from_utf8(&lexical.get(index).unwrap().literal)
         .map_err(|_| format!("character {id}'s template tag token {token} is not UTF-8"))?;
     Ok(installed_content_core::characters::BuiltTemplate {
         tag: tag.to_owned(),
@@ -79,7 +81,10 @@ pub fn built_template(
 /// positive CountryCounterInputs.owned_state_count, or an existing enemy
 /// holds it in its own civil-war list ([`CivilWars::holds`]). `Err` names
 /// the input the hour lacks.
-pub fn civil_war(frame: &replay_frame::frame::DecodedFrame, slot: u32) -> Result<bool, String> {
+pub fn civil_war(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    slot: u32,
+) -> Result<bool, String> {
     CivilWars::new(frame)?.holds(slot)
 }
 
@@ -132,9 +137,9 @@ struct Relations {
 }
 
 impl<'a> CivilWars<'a> {
-    pub fn new(frame: &'a replay_frame::frame::DecodedFrame) -> Result<Self, String> {
+    pub fn new(frame: &'a dyn replay_frame::frame::DecodedSource) -> Result<Self, String> {
         use replay_data::rows::tables;
-        let hour = frame.hour;
+        let hour = frame.hour();
         let text = |error: std::io::Error| error.to_string();
         let countries = frame.complete::<tables::Countries>().map_err(text)?;
         let links = frame.complete::<tables::CountryLinks>().map_err(text)?;
@@ -336,7 +341,7 @@ impl Look {
     /// The country's appearance at the frame's hour, `None` without its
     /// CountryAppearance row.
     pub fn read(
-        frame: &replay_frame::frame::DecodedFrame,
+        frame: &dyn replay_frame::frame::DecodedSource,
         row: &replay_data::rows::CountryRow,
     ) -> Option<Self> {
         let appearances = crate::triggers::refusal::FrameInputs::trigger_table::<
@@ -359,7 +364,7 @@ impl Look {
     }
 
     fn read_with_appearance(
-        frame: &replay_frame::frame::DecodedFrame,
+        frame: &dyn replay_frame::frame::DecodedSource,
         row: &replay_data::rows::CountryRow,
         appearance: &replay_data::rows::CountryAppearanceRow,
     ) -> Option<Self> {
@@ -395,7 +400,7 @@ impl Look {
 impl NamingCountry {
     #[cfg(any(test, feature = "test-support"))]
     pub fn read(
-        frame: &replay_frame::frame::DecodedFrame,
+        frame: &dyn replay_frame::frame::DecodedSource,
         row: &replay_data::rows::CountryRow,
     ) -> Self {
         Self {
@@ -406,7 +411,7 @@ impl NamingCountry {
 
     /// The same naming getters with the caller's indexed appearance row.
     pub fn read_with_appearance(
-        frame: &replay_frame::frame::DecodedFrame,
+        frame: &dyn replay_frame::frame::DecodedSource,
         row: &replay_data::rows::CountryRow,
         appearance: Option<&replay_data::rows::CountryAppearanceRow>,
     ) -> Self {

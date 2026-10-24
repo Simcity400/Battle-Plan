@@ -19,11 +19,15 @@
 //! country tags and scripted localisation names match exactly. What the
 //! recording cannot answer is refused by name with the missing input.
 
+#[cfg(test)]
+use replay_frame::frame::DecodedFrame;
+
 use crate::scope::{RecordedScopes, table as rows};
 use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::{localisation::Localisation, localisation::crt_case_text};
 use replay_data::{rows::TableSchema, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::TableView};
+#[cfg(test)]
+use replay_frame::frame::TableView;
 
 /// Recorded inputs for authored country-scoped scripted text and its triggers.
 /// Consumers that see a scripted `[` in resolved content decode this set once
@@ -606,7 +610,7 @@ pub struct ScriptedText<'a> {
     scopes: RecordedScopes,
     names: recorded_names::RecordedNames<'a>,
     lexical_names: crate::faction_names::LexicalNames,
-    frame: &'a DecodedFrame,
+    frame: &'a dyn replay_frame::frame::DecodedSource,
     root: u32,
     pub(crate) nato_counters: bool,
     world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
@@ -618,8 +622,8 @@ fn named(segment: &str, name: &str) -> bool {
 }
 
 /// Whether the frame holds the whole table.
-fn complete<T: TableSchema>(frame: &DecodedFrame) -> bool {
-    matches!(&*frame.tables[T::ID.index()], TableView::Complete(_))
+fn complete<T: TableSchema>(frame: &dyn replay_frame::frame::DecodedSource) -> bool {
+    frame.complete_status(T::ID).is_ok()
 }
 
 /// A recorded query of a scripted text's own hour reads ([`crate::triggers::inputs`]).
@@ -777,12 +781,8 @@ impl ScriptedText<'_> {
 }
 
 /// The hour's Clock random seed, if recorded.
-pub fn clock_seed(frame: &DecodedFrame) -> Option<u32> {
-    frame
-        .complete::<tables::Clock>()
-        .ok()
-        .and_then(|rows| rows.first())
-        .map(|clock| clock.seed as u32)
+pub fn clock_seed(frame: &dyn replay_frame::frame::RecordedSource) -> Option<u32> {
+    frame.clock_seed().ok().flatten().map(|seed| seed as u32)
 }
 
 impl<'a> ScriptedText<'a> {
@@ -790,7 +790,7 @@ impl<'a> ScriptedText<'a> {
     /// the original-tag lists read from this frame alone
     /// ([`RecordedScopes::read`]).
     pub fn new(
-        frame: &'a DecodedFrame,
+        frame: &'a dyn replay_frame::frame::DecodedSource,
         localisation: &'a Localisation,
         content: &'a ScriptedContent,
         root: u32,
@@ -808,7 +808,7 @@ impl<'a> ScriptedText<'a> {
     /// the original-tag lists derived from the branch
     /// ([`RecordedScopes::read_with`]).
     pub fn with_scopes(
-        frame: &'a DecodedFrame,
+        frame: &'a dyn replay_frame::frame::DecodedSource,
         localisation: &'a Localisation,
         content: &'a ScriptedContent,
         root: u32,
@@ -819,9 +819,7 @@ impl<'a> ScriptedText<'a> {
             content,
             scopes,
             names: recorded_names::RecordedNames(CountryNames::read(frame, localisation)),
-            lexical_names: crate::faction_names::LexicalNames::new(
-                frame.tables[replay_data::rows::TableId::LexicalTokens.index()].clone(),
-            ),
+            lexical_names: crate::faction_names::LexicalNames::from_source(frame),
             frame,
             root,
             nato_counters: installed_content_settings::settings::Counters::default().nato == 1,
@@ -863,14 +861,15 @@ impl<'a> ScriptedText<'a> {
             .find(|row| row.organisation == reference)
             .ok_or_else(|| format!("IndustrialOrganisations lacks organisation {reference:#x}"))?;
         let name = if row.name.is_empty() {
-            let tokens = self
-                .frame
-                .complete::<tables::LexicalTokens>()
-                .map_err(|why| why.to_string())?;
+            let tokens = self.frame.lexical().map_err(|why| why.to_string())?;
             let at = tokens
                 .binary_search_by_key(&row.token, |token| token.token)
                 .map_err(|_| "LexicalTokens lacks industrial organisation name")?;
-            tokens[at].literal.as_slice()
+            tokens
+                .get(at)
+                .expect("located lexical token")
+                .literal
+                .as_slice()
         } else {
             row.name.as_slice()
         };
@@ -978,7 +977,7 @@ impl<'a> ScriptedText<'a> {
     pub(crate) fn recorded(&self) -> &RecordedScopes {
         &self.scopes
     }
-    pub(crate) fn frame(&self) -> &'a DecodedFrame {
+    pub(crate) fn frame(&self) -> &'a dyn replay_frame::frame::DecodedSource {
         self.frame
     }
 
@@ -1640,7 +1639,10 @@ impl<'a> ScriptedText<'a> {
         if is("GetName") {
             // Character GetName copies the stored name directly;
             // party leaders instead use the token fallback.
-            let (characters, gap) = rows::<tables::Characters>(self.frame);
+            let (characters, gap) = (
+                self.frame.character_rows(),
+                self.frame.row_gap(tables::Characters::ID),
+            );
             let row = characters
                 .iter()
                 .find(|row| row.id == id)
@@ -1671,7 +1673,10 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn character_name_unrecorded(&self, id: u32) -> Result<String, String> {
-        let (characters, gap) = rows::<tables::Characters>(self.frame);
+        let (characters, gap) = (
+            self.frame.character_rows(),
+            self.frame.row_gap(tables::Characters::ID),
+        );
         let row = characters
             .iter()
             .find(|row| row.id == id)
@@ -1820,7 +1825,10 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn character_country_unrecorded(&self, id: u32) -> Result<Object, String> {
-        let (characters, gap) = rows::<tables::Characters>(self.frame);
+        let (characters, gap) = (
+            self.frame.character_rows(),
+            self.frame.row_gap(tables::Characters::ID),
+        );
         let row = characters
             .iter()
             .find(|row| row.id == id)
@@ -1860,7 +1868,16 @@ impl<'a> ScriptedText<'a> {
             | EventObject::CountryUnitLeader {
                 leader: reference, ..
             } => {
-                let (leaders, gap) = rows::<tables::UnitLeaders>(self.frame);
+                let leaders = self.frame.leader_rows();
+                let gap = match self.frame.leader_status() {
+                    replay_frame::frame::OperandStatus::WrongLayout => {
+                        replay_frame::frame::OperandStatus::Complete.gap()
+                    }
+                    replay_frame::frame::OperandStatus::TruncatedWrongLayout(missing) => {
+                        replay_frame::frame::OperandStatus::Truncated(missing).gap()
+                    }
+                    status => status.gap(),
+                };
                 let row = leaders
                     .iter()
                     .find(|row| {
@@ -1979,8 +1996,12 @@ impl<'a> ScriptedText<'a> {
             }
             (_, EventObject::Province(_)) => None,
         };
-        let (characters, gap) = rows::<tables::Characters>(self.frame);
-        let (lexical, lexical_gap) = rows::<tables::LexicalTokens>(self.frame);
+        let (characters, gap) = (
+            self.frame.character_rows(),
+            self.frame.row_gap(tables::Characters::ID),
+        );
+        let lexical = self.frame.lexical_rows();
+        let lexical_gap = self.frame.row_gap(tables::LexicalTokens::ID);
         let links_whole = complete::<tables::CountryLinks>(self.frame);
         // With every link recorded, a character is the country's exactly when
         // its link is one of the country's links: other rows are skipped
@@ -2041,7 +2062,7 @@ impl<'a> ScriptedText<'a> {
                 }
             }
         }
-        let unknown = if complete::<tables::Characters>(self.frame) {
+        let unknown = if self.frame.character_status().is_table_complete() {
             unknown
         } else {
             Some(format!("Characters {gap}"))

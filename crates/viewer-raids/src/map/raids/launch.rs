@@ -2261,11 +2261,11 @@ impl<'w, 'a> Context<'w, 'a> {
                 .require("ReservedCountryNaming.launch_sources")?
                 .as_ref()
                 .ok_or("ReservedCountryNaming.launch_sources refused this hour")?;
-            if !packet.sample_hour.fresh_at(self.world.frame().hour) {
+            if !packet.sample_hour.fresh_at(self.world.frame().hour()) {
                 return Err(format!(
                     "ReservedCountryNaming.launch_sources sampled hour {}, expected {}",
                     packet.sample_hour,
-                    self.world.frame().hour
+                    self.world.frame().hour()
                 ));
             }
             Ok(packet)

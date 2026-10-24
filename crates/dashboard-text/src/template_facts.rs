@@ -1,10 +1,13 @@
 //! Shared plain template, country-configuration and HQ sections from recorded facts.
 use installed_content_localisation::localisation::Localisation;
 use replay_data::rows::tables;
-use replay_frame::frame::DecodedFrame;
 use std::fmt::Write;
 
-fn reference(frame: &DecodedFrame, handle: u64, loc: &Localisation) -> Result<String, String> {
+fn reference(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    handle: u64,
+    loc: &Localisation,
+) -> Result<String, String> {
     if handle == 0 {
         return Ok("None".into());
     }
@@ -20,7 +23,7 @@ fn reference(frame: &DecodedFrame, handle: u64, loc: &Localisation) -> Result<St
 
 /// Retained display-name operands, localised for the composition country.
 pub fn display_name(
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
     handle: u64,
     loc: &Localisation,
 ) -> Result<String, String> {
@@ -56,7 +59,10 @@ impl TemplateNaming {
 }
 
 /// [`display_name`]'s operands at the frame's hour.
-pub fn display_naming(frame: &DecodedFrame, handle: u64) -> Result<TemplateNaming, String> {
+pub fn display_naming(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    handle: u64,
+) -> Result<TemplateNaming, String> {
     let dictionaries = frame
         .complete::<tables::DivisionTemplates>()
         .map_err(|e| e.to_string())?;
@@ -75,7 +81,7 @@ pub fn display_naming(frame: &DecodedFrame, handle: u64) -> Result<TemplateNamin
         .map(|at| &icons[at])
         .ok_or_else(|| format!("template {handle} naming operands missing"))?;
     crate::unit_names::template_name_with(
-        icon.display_name_inputs(frame.hour, Some(dictionary))?,
+        icon.display_name_inputs(frame.hour(), Some(dictionary))?,
         icon.country,
         TemplateNaming::Text,
         |raw, key| {
@@ -99,19 +105,15 @@ pub fn display_naming(frame: &DecodedFrame, handle: u64) -> Result<TemplateNamin
 }
 
 struct Tokens<'a> {
-    rows: &'a [replay_data::rows::LexicalTokenRow],
+    rows: replay_frame::frame::Rows<'a, replay_data::rows::LexicalTokenRow>,
     complete: bool,
 }
-fn tokens(frame: &DecodedFrame) -> Result<Tokens<'_>, String> {
-    use replay_data::rows::{TableId, TableRows};
-    use replay_frame::frame::TableView;
-    let (rows, complete) = match &*frame.tables[TableId::LexicalTokens.index()] {
-        TableView::Complete(TableRows::LexicalTokens(rows)) => (rows.as_slice(), true),
-        TableView::Truncated {
-            rows: TableRows::LexicalTokens(rows),
-            ..
-        } => (rows.as_slice(), false),
-        TableView::Unavailable { .. } => (&[][..], false),
+fn tokens(frame: &dyn replay_frame::frame::DecodedSource) -> Result<Tokens<'_>, String> {
+    use replay_frame::frame::OperandStatus;
+    let rows = frame.lexical_rows();
+    let complete = match frame.lexical_status() {
+        OperandStatus::Complete => true,
+        OperandStatus::Truncated(_) | OperandStatus::Unavailable(_) => false,
         _ => return Err("LexicalTokens holds another table's rows".into()),
     };
     if !rows.is_sorted_by(|a, b| a.token < b.token) {
@@ -180,7 +182,7 @@ impl Rendered {
     fn reference(
         &mut self,
         label: &str,
-        frame: &DecodedFrame,
+        frame: &dyn replay_frame::frame::DecodedSource,
         handle: u64,
         loc: &Localisation,
         validate: &dyn Fn(&str) -> Result<(), String>,
@@ -202,13 +204,17 @@ fn checked(
     Ok(text)
 }
 
-pub fn template(frame: &DecodedFrame, handle: u64, loc: &Localisation) -> Result<Rendered, String> {
+pub fn template(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    handle: u64,
+    loc: &Localisation,
+) -> Result<Rendered, String> {
     template_with(frame, handle, loc, &|_| Ok(()))
 }
 
 /// Validate each text-bearing fact before joining it with its independent siblings.
 pub fn template_with(
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
     handle: u64,
     loc: &Localisation,
     validate: &dyn Fn(&str) -> Result<(), String>,
@@ -383,7 +389,7 @@ pub fn template_with(
 }
 
 pub fn country(
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
     slot: u32,
     loc: &Localisation,
     canonical: impl Fn(u32) -> Result<u32, String>,
@@ -393,7 +399,7 @@ pub fn country(
 
 /// Validate reference names independently from country configuration.
 pub fn country_with(
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
     slot: u32,
     loc: &Localisation,
     canonical: impl Fn(u32) -> Result<u32, String>,
@@ -462,13 +468,17 @@ pub fn country_with(
     Ok(out)
 }
 
-pub fn hq(frame: &DecodedFrame, group: u64, loc: &Localisation) -> Result<Rendered, String> {
+pub fn hq(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    group: u64,
+    loc: &Localisation,
+) -> Result<Rendered, String> {
     hq_with(frame, group, loc, &|_| Ok(()))
 }
 
 /// Validate HQ names and requirement spellings independently from its pools.
 pub fn hq_with(
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
     group: u64,
     loc: &Localisation,
     validate: &dyn Fn(&str) -> Result<(), String>,

@@ -67,8 +67,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let frame = self.context.text.frame();
         let token =
             std::str::from_utf8(&role.idea).map_err(|_| "advisor idea token is not UTF-8")?;
-        let built =
-            identity::built_template(character, frame.complete::<tables::LexicalTokens>().ok());
+        let built = identity::built_template(character, frame.lexical().ok());
         let template = self
             .character_content()?
             .catalogue

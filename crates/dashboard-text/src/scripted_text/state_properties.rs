@@ -2,7 +2,9 @@
 use super::*;
 use replay_data::rows::TableId;
 
-fn recorded<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], String> {
+fn recorded<T: TableSchema>(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> Result<&[T::Row], String> {
     crate::triggers::inputs::table(frame, T::ID);
     frame.complete::<T>().map_err(|why| why.to_string())
 }

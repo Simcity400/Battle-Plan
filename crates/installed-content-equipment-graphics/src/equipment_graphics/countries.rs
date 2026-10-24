@@ -8,11 +8,11 @@
 use std::{collections::BTreeMap, io};
 
 use replay_data::{rows::TableSchema, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::TableView};
+use replay_frame::{frame::DecodedSource, frame::TableView};
 
 /// The rows of `T` this hour holds, complete or truncated, and whether the table
 /// is complete; an unavailable table holds none.
-fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<(&[T::Row], bool)> {
+fn rows<T: TableSchema>(frame: &dyn DecodedSource) -> io::Result<(&[T::Row], bool)> {
     fn typed<T: TableSchema>(
         rows: &replay_data::rows::TableRows,
         hour: replay_data::Hour,
@@ -24,8 +24,8 @@ fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<(&[T::Row], bool)> {
             )
         })
     }
-    let typed = |rows| typed::<T>(rows, frame.hour);
-    match &*frame.tables[T::ID.index()] {
+    let typed = |rows| typed::<T>(rows, frame.hour());
+    match frame.view(T::ID.index()) {
         TableView::Complete(rows) => Ok((typed(rows)?, true)),
         TableView::Truncated { rows, .. } => Ok((typed(rows)?, false)),
         TableView::Unavailable { .. } | TableView::NotRecorded { .. } => Ok((&[], false)),
@@ -48,7 +48,7 @@ pub struct ModelCountry {
 
 /// Canonical country slots with readable model operands. A country without an
 /// appearance row is absent: a missing row does not prove it has no cosmetic tag.
-pub fn read(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, ModelCountry>> {
+pub fn read(frame: &dyn DecodedSource) -> io::Result<BTreeMap<u32, ModelCountry>> {
     let links: BTreeMap<u32, u32> = frame
         .complete::<tables::CountryLinks>()?
         .iter()

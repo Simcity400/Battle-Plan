@@ -436,11 +436,9 @@ impl Renderer<'_, '_, '_> {
             .world()
             .map_err(|_| "Clock decision-description seed is unavailable")?
             .frame()
-            .complete::<tables::Clock>()
+            .clock_seed()
             .map_err(|_| "Clock decision-description seed is unavailable")?
-            .first()
-            .ok_or("Clock lacks decision-description seed")?
-            .seed;
+            .ok_or("Clock lacks decision-description seed")?;
         let additive = if definition.fixed_random_seed {
             None
         } else if let Some(row) = row {

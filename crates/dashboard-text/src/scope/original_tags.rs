@@ -4,7 +4,7 @@
 use crate::triggers::Failure;
 
 use replay_data::{Hour, rows::TableSchema, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
+use replay_frame::{frame::SharedView, frame::TableView};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default)]
@@ -13,9 +13,9 @@ pub struct OriginalTagLists {
 }
 
 impl OriginalTagLists {
-    pub fn read(frame: &DecodedFrame) -> Self {
+    pub fn read(frame: &dyn replay_frame::frame::DecodedSource) -> Self {
         Self {
-            table: Some(frame.tables[tables::ReservedCountryNaming::ID.index()].clone()),
+            table: Some(frame.shared(tables::ReservedCountryNaming::ID.index())),
         }
     }
 

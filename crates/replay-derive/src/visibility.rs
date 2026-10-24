@@ -1,6 +1,9 @@
 //! Shared recorded country access and intel branches for map and equipment queries.
+#[cfg(test)]
+use replay_frame::frame::DecodedFrame;
+
 use crate::{
-    frame::DecodedFrame,
+    frame::DecodedSource,
     rows::{
         CountryIntelRow, Recorded, RelationLinkRow, ReservedCountryNamingRow, ZeroSubjectInputs,
         tables,
@@ -34,7 +37,7 @@ impl IntelBranch {
     reason = "Keep observer/target visibility gates and content thresholds explicit without an observer/design state matrix."
 )]
 pub fn design_details(
-    frame: &DecodedFrame,
+    frame: &dyn DecodedSource,
     links: &BTreeMap<u32, u32>,
     observer: u32,
     target: u32,
@@ -73,7 +76,7 @@ fn link(links: &BTreeMap<u32, u32>, raw: u32, what: &'static str) -> Result<u32,
     links.get(&raw).copied().ok_or(what)
 }
 fn complete<'a, T: crate::rows::TableSchema>(
-    frame: &'a DecodedFrame,
+    frame: &'a dyn DecodedSource,
     name: &'static str,
 ) -> Result<&'a [T::Row], &'static str> {
     frame.complete::<T>().map_err(|_| name)
@@ -141,7 +144,7 @@ impl Intel<'_> {
     /// The signed raw gate precedes its daily sample and vector demand.
     pub fn zero_army(
         &self,
-        frame: &DecodedFrame,
+        frame: &dyn DecodedSource,
         raw_target: u32,
         target: u32,
     ) -> Result<i64, &'static str> {
@@ -149,7 +152,7 @@ impl Intel<'_> {
     }
     pub fn zero_channel(
         &self,
-        frame: &DecodedFrame,
+        frame: &dyn DecodedSource,
         raw_target: u32,
         target: u32,
         branch: IntelBranch,
@@ -170,7 +173,7 @@ impl Intel<'_> {
             }
             Recorded::Value(Some(sample)) => sample,
         };
-        if sample.sample_hour > frame.hour {
+        if sample.sample_hour > frame.hour() {
             return Err("ReservedCountryNaming.country_intel_sample is later than frame");
         }
         if sample.vector_count > i32::MAX as u32 {
@@ -201,7 +204,7 @@ impl Intel<'_> {
     }
 }
 
-pub fn reserved(frame: &DecodedFrame) -> Result<&ReservedCountryNamingRow, &'static str> {
+pub fn reserved(frame: &dyn DecodedSource) -> Result<&ReservedCountryNamingRow, &'static str> {
     let [row] = complete::<tables::ReservedCountryNaming>(frame, "ReservedCountryNaming")? else {
         return Err("ReservedCountryNaming singleton");
     };
@@ -233,7 +236,7 @@ pub fn active_war(war: [u8; 2]) -> Result<bool, &'static str> {
 /// Complete same-hour membership is demanded only after the war veto and a
 /// nonnull source faction. Missing target membership then means native null.
 pub fn map_intel_faction(
-    frame: &DecodedFrame,
+    frame: &dyn DecodedSource,
     links: &BTreeMap<u32, u32>,
     target: u32,
 ) -> Result<Option<u64>, &'static str> {
@@ -263,7 +266,7 @@ pub fn reserved_faction(row: &ReservedCountryNamingRow) -> Result<u64, &'static 
 
 /// Country0's fresh reverse-visibility cell toward `target`.
 fn reverse_cell<'a>(
-    frame: &DecodedFrame,
+    frame: &dyn DecodedSource,
     row: &'a ReservedCountryNamingRow,
     target: u32,
 ) -> Result<&'a crate::rows::ReverseZeroVisibilityInputs, &'static str> {
@@ -276,7 +279,7 @@ fn reverse_cell<'a>(
         }
         Recorded::Value(Some(packet)) => packet,
     };
-    if !packet.sample_hour.fresh_at(frame.hour) {
+    if !packet.sample_hour.fresh_at(frame.hour()) {
         return Err("ReservedCountryNaming.reverse_visibility sample hour mismatch");
     }
     packet
@@ -325,7 +328,7 @@ pub fn map_intel_subject(
 
 /// Physical receiver0, : no symmetric relation-table inference.
 pub fn reverse_zero_shared(
-    frame: &DecodedFrame,
+    frame: &dyn DecodedSource,
     links: &BTreeMap<u32, u32>,
     target: u32,
 ) -> Result<bool, &'static str> {
@@ -355,7 +358,7 @@ pub fn reverse_zero_shared(
 /// field absence keeps the established exact-zero publication guard; a fresh
 /// refused packet never falls back to the independent legacy observations.
 pub fn forward_zero_shared(
-    frame: &DecodedFrame,
+    frame: &dyn DecodedSource,
     links: &BTreeMap<u32, u32>,
     owner: u32,
 ) -> Result<bool, &'static str> {
@@ -396,7 +399,7 @@ pub fn forward_zero_shared(
 /// includes positive aliases of Country0. War and military admission precede any demand for the
 /// target or subject.
 pub fn forward_visibility_shared(
-    frame: &DecodedFrame,
+    frame: &dyn DecodedSource,
     links: &BTreeMap<u32, u32>,
     owner: u32,
     inputs: &Recorded<Option<crate::rows::ReverseZeroVisibilityInputs>>,
@@ -453,7 +456,7 @@ pub fn forward_visibility_shared(
 /// Receiver comparison uses the resolved object's own ID. Actual Country0 therefore requires its
 /// first matrix for a positive target alias of Country0, even when incoming aliases are equal.
 pub fn event_shared(
-    frame: &DecodedFrame,
+    frame: &dyn DecodedSource,
     links: &BTreeMap<u32, u32>,
     receiver: u32,
     raw_target: u32,
@@ -608,7 +611,10 @@ pub struct Families {
 
 impl Families {
     /// Faction and subject inputs for full-country visibility.
-    pub fn read(frame: &DecodedFrame, links: &BTreeMap<u32, u32>) -> Result<Self, &'static str> {
+    pub fn read(
+        frame: &dyn DecodedSource,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<Self, &'static str> {
         let mut out = Self::default();
         out.read_factions(frame, links)?;
         out.read_subjects(frame, links)?;
@@ -617,7 +623,7 @@ impl Families {
 
     pub fn read_factions(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &dyn DecodedSource,
         links: &BTreeMap<u32, u32>,
     ) -> Result<(), &'static str> {
         for row in complete::<tables::FactionMembers>(frame, "FactionMembers")? {
@@ -635,7 +641,7 @@ impl Families {
 
     pub fn read_subjects(
         &mut self,
-        frame: &DecodedFrame,
+        frame: &dyn DecodedSource,
         links: &BTreeMap<u32, u32>,
     ) -> Result<(), &'static str> {
         for row in complete::<tables::Subjects>(frame, "Subjects")? {
@@ -661,7 +667,7 @@ impl Families {
     /// Also admits recorded attache country slots.
     pub fn with_attaches(
         mut self,
-        frame: &DecodedFrame,
+        frame: &dyn DecodedSource,
         links: &BTreeMap<u32, u32>,
     ) -> Result<Self, &'static str> {
         for row in complete::<tables::RelationLinks>(frame, "RelationLinks")? {
@@ -723,7 +729,10 @@ impl Relations {
     }
 
     /// Faction, war and subject inputs for full-country visibility.
-    pub fn read(frame: &DecodedFrame, links: &BTreeMap<u32, u32>) -> Result<Self, &'static str> {
+    pub fn read(
+        frame: &dyn DecodedSource,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<Self, &'static str> {
         let mut out = Self::default();
         out.families.read_factions(frame, links)?;
         for row in complete::<tables::WarRelations>(frame, "WarRelations")? {
@@ -740,7 +749,7 @@ impl Relations {
     /// Also admits recorded attache country slots.
     pub fn with_attaches(
         mut self,
-        frame: &DecodedFrame,
+        frame: &dyn DecodedSource,
         links: &BTreeMap<u32, u32>,
     ) -> Result<Self, &'static str> {
         self.families = self.families.with_attaches(frame, links)?;
@@ -783,7 +792,10 @@ pub struct AccessLinks {
 }
 
 impl AccessLinks {
-    pub fn read(frame: &DecodedFrame, links: &BTreeMap<u32, u32>) -> Result<Self, &'static str> {
+    pub fn read(
+        frame: &dyn DecodedSource,
+        links: &BTreeMap<u32, u32>,
+    ) -> Result<Self, &'static str> {
         let mut out = Self::default();
         for row in complete::<tables::RelationLinks>(frame, "RelationLinks")? {
             let holder = *links.get(&row.country).ok_or("RelationLinks country")?;

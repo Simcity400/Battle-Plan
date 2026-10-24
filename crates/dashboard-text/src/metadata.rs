@@ -266,7 +266,9 @@ pub fn read_partial_recording(path: &Path) -> io::Result<Option<PartialRecording
         .map(Option::flatten)
 }
 
-pub fn country_tables(frame: &DecodedFrame) -> io::Result<(&[CountryRow], &[CountryLinkRow])> {
+pub fn country_tables(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> io::Result<(&[CountryRow], &[CountryLinkRow])> {
     Ok((
         frame.complete::<tables::Countries>()?,
         frame.complete::<tables::CountryLinks>()?,
@@ -1111,15 +1113,15 @@ mod local_player_tests {
 /// The rows a table holds this hour, complete or truncated; an unavailable table
 /// holds none. For products that use whatever rows were recorded.
 pub fn recorded_rows<T: replay_data::rows::TableSchema>(
-    frame: &replay_frame::frame::DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
 ) -> io::Result<&[T::Row]> {
     use replay_frame::frame::TableView;
-    match &*frame.tables[T::ID.index()] {
+    match frame.view(T::ID.index()) {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
             rows.rows::<T>().ok_or_else(|| {
                 crate::invalid(format!(
                     "hour {} {:?} contains another table's rows",
-                    frame.hour,
+                    frame.hour(),
                     T::ID
                 ))
             })
@@ -1127,7 +1129,7 @@ pub fn recorded_rows<T: replay_data::rows::TableSchema>(
         TableView::Unavailable { .. } => Ok(&[]),
         TableView::NotRecorded { mode } => Err(crate::invalid(format!(
             "hour {} {:?} is not recorded in a {mode} recording",
-            frame.hour,
+            frame.hour(),
             T::ID
         ))),
     }

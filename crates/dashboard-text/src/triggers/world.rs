@@ -16,9 +16,10 @@ use installed_content_core::{
 use replay_data::{
     Hour, rows::ArmyOrderPlanRow, rows::ArmyOrderRow, rows::CharacterRow,
     rows::CountryAppearanceRow, rows::CountryCounterInputRow, rows::CountryLinkRow,
-    rows::CountryRow, rows::InvasionPreparationRow, rows::ProvinceRow, rows::Recorded,
-    rows::ScriptVariablesRow, rows::StateRow, rows::TableSchema, rows::UnitLeaderRow, rows::tables,
+    rows::CountryRow, rows::InvasionPreparationRow, rows::Recorded, rows::ScriptVariablesRow,
+    rows::StateRow, rows::TableSchema, rows::tables,
 };
+use replay_frame::frame::{Leader, OperandStatus, Province, Provinces};
 use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 
 use super::{Eval, Scope, ongoing, variables::Store};
@@ -35,8 +36,8 @@ type Index<T> = OnceLock<super::refusal::Resolved<Result<T, Failure>>>;
 
 type OperandLoader<'a, T> = (
     &'a dyn PreparedContent,
-    &'a DecodedFrame,
-    fn(&'a dyn PreparedContent, &'a DecodedFrame) -> T,
+    &'a dyn replay_frame::frame::DecodedSource,
+    fn(&'a dyn PreparedContent, &'a dyn replay_frame::frame::DecodedSource) -> T,
 );
 
 /// An operand retains its authored result and runs its reader only on first use.
@@ -47,8 +48,8 @@ pub struct PreparedOperand<'a, T> {
 impl<'a, T> PreparedOperand<'a, T> {
     fn lazy(
         content: &'a dyn PreparedContent,
-        frame: &'a DecodedFrame,
-        load: fn(&'a dyn PreparedContent, &'a DecodedFrame) -> T,
+        frame: &'a dyn replay_frame::frame::DecodedSource,
+        load: fn(&'a dyn PreparedContent, &'a dyn replay_frame::frame::DecodedSource) -> T,
     ) -> Self {
         Self {
             value: OnceLock::new(),
@@ -134,26 +135,26 @@ impl<T> PartialCollection<'_, T> {
 /// Core rows whose referenced-key reads retain acquisition and missing-row
 /// failures. Enumeration still visits only recorded rows.
 #[derive(Debug)]
-pub struct ReferencedRows<'a, T> {
-    rows: BTreeMap<u32, &'a T>,
+pub struct ReferencedRows<T> {
+    rows: BTreeMap<u32, T>,
     table: replay_data::rows::TableId,
     unavailable: Option<Failure>,
 }
-impl<'a, T> ReferencedRows<'a, T> {
+impl<T> ReferencedRows<T> {
     fn enumerate(&self) {
         if let Some(failure) = &self.unavailable {
             failure.resolution_failed();
         }
     }
-    pub fn iter(&self) -> std::collections::btree_map::Iter<'_, u32, &'a T> {
+    pub fn iter(&self) -> std::collections::btree_map::Iter<'_, u32, T> {
         self.enumerate();
         self.rows.iter()
     }
-    pub fn values(&self) -> std::collections::btree_map::Values<'_, u32, &'a T> {
+    pub fn values(&self) -> std::collections::btree_map::Values<'_, u32, T> {
         self.enumerate();
         self.rows.values()
     }
-    pub fn keys(&self) -> std::collections::btree_map::Keys<'_, u32, &'a T> {
+    pub fn keys(&self) -> std::collections::btree_map::Keys<'_, u32, T> {
         self.enumerate();
         self.rows.keys()
     }
@@ -165,7 +166,7 @@ impl<'a, T> ReferencedRows<'a, T> {
         self.enumerate();
         self.rows.is_empty()
     }
-    pub fn get(&self, id: &u32) -> Option<&&'a T> {
+    pub fn get(&self, id: &u32) -> Option<&T> {
         super::refusal::reference(self.rows.get(id), *id != 0, || {
             self.unavailable.clone().unwrap_or_else(|| {
                 super::refusal::missing_reference(
@@ -179,15 +180,15 @@ impl<'a, T> ReferencedRows<'a, T> {
         self.get(id).is_some()
     }
 }
-impl<'a, T> std::ops::Deref for ReferencedRows<'a, T> {
-    type Target = BTreeMap<u32, &'a T>;
+impl<T> std::ops::Deref for ReferencedRows<T> {
+    type Target = BTreeMap<u32, T>;
     fn deref(&self) -> &Self::Target {
         &self.rows
     }
 }
-impl<'m, 'a, T> IntoIterator for &'m ReferencedRows<'a, T> {
-    type Item = (&'m u32, &'m &'a T);
-    type IntoIter = std::collections::btree_map::Iter<'m, u32, &'a T>;
+impl<'m, T> IntoIterator for &'m ReferencedRows<T> {
+    type Item = (&'m u32, &'m T);
+    type IntoIter = std::collections::btree_map::Iter<'m, u32, T>;
     fn into_iter(self) -> Self::IntoIter {
         self.enumerate();
         self.rows.iter()
@@ -293,19 +294,21 @@ struct PoliticalParties<'a> {
 type CoreRows<'f> = (
     &'f [CountryLinkRow],
     &'f [CountryRow],
-    &'f [ProvinceRow],
+    Provinces<'f>,
     &'f [StateRow],
 );
 
 /// The core tables' rows and why each, in their order, is not complete this
 /// hour: a truncated table's rows are exact; a row it lacks is unknown.
-fn core_tables(frame: &DecodedFrame) -> (CoreRows<'_>, Vec<(&'static str, Failure)>) {
+fn core_tables(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> (CoreRows<'_>, Vec<(&'static str, Failure)>) {
     fn rows<'f, T: TableSchema>(
-        frame: &'f DecodedFrame,
+        frame: &'f dyn replay_frame::frame::DecodedSource,
         name: &'static str,
         gaps: &mut Vec<(&'static str, Failure)>,
     ) -> &'f [T::Row] {
-        match &*frame.tables[T::ID.index()] {
+        match frame.view(T::ID.index()) {
             TableView::Complete(rows) => rows.rows::<T>().unwrap_or_default(),
             TableView::Truncated { rows, missing } => {
                 gaps.push((
@@ -344,19 +347,63 @@ fn core_tables(frame: &DecodedFrame) -> (CoreRows<'_>, Vec<(&'static str, Failur
     let core = (
         rows::<tables::CountryLinks>(frame, "CountryLinks", &mut gaps),
         rows::<tables::Countries>(frame, "Countries", &mut gaps),
-        rows::<tables::Provinces>(frame, "Provinces", &mut gaps),
+        province_core(frame, &mut gaps),
         rows::<tables::States>(frame, "States", &mut gaps),
     );
     (core, gaps)
 }
 
+fn province_core<'a>(
+    frame: &'a dyn replay_frame::frame::DecodedSource,
+    gaps: &mut Vec<(&'static str, Failure)>,
+) -> Provinces<'a> {
+    let reason = match frame.province_status() {
+        OperandStatus::Complete | OperandStatus::WrongLayout => None,
+        OperandStatus::Truncated(missing) | OperandStatus::TruncatedWrongLayout(missing) => {
+            Some(format!("Provinces is truncated ({missing} rows missing)"))
+        }
+        OperandStatus::Unavailable(reason) => Some(format!("Provinces is unavailable: {reason}")),
+        OperandStatus::NotRecorded(mode) => {
+            Some(format!("Provinces is not recorded in a {mode} recording"))
+        }
+    };
+    if let Some(reason) = reason {
+        gaps.push((
+            "Provinces",
+            Failure::input(tables::Provinces::ID, "", None, reason),
+        ));
+    }
+    frame.province_rows()
+}
+
 /// [`World::core_gap`] of the hour, without building its indexes.
-pub fn core_gap(frame: &DecodedFrame) -> Option<String> {
-    let first = super::refusal::deferred(|| core_tables(frame))
-        .1
+pub fn core_gap(frame: &dyn replay_frame::frame::RecordedSource) -> Option<String> {
+    use replay_data::rows::TableId;
+    let gaps = super::refusal::deferred(|| {
+        [
+            (TableId::CountryLinks, "CountryLinks"),
+            (TableId::Countries, "Countries"),
+            (TableId::Provinces, "Provinces"),
+            (TableId::States, "States"),
+        ]
         .into_iter()
-        .next();
-    first.map(|(_, why)| {
+        .filter_map(|(table, name)| {
+            let reason = match frame.status(table) {
+                OperandStatus::Complete | OperandStatus::WrongLayout => return None,
+                OperandStatus::Truncated(missing)
+                | OperandStatus::TruncatedWrongLayout(missing) => {
+                    format!("{name} is truncated ({missing} rows missing)")
+                }
+                OperandStatus::Unavailable(reason) => format!("{name} is unavailable: {reason}"),
+                OperandStatus::NotRecorded(mode) => {
+                    format!("{name} is not recorded in a {mode} recording")
+                }
+            };
+            Some(Failure::input(table, "", None, reason))
+        })
+        .collect::<Vec<_>>()
+    });
+    gaps.into_iter().next().map(|why| {
         why.reached();
         why.to_string()
     })
@@ -412,7 +459,7 @@ impl<'a> GeographyInputs<'a> {
 
 /// One hour's trigger inputs, each built on first use.
 pub struct World<'a> {
-    frame: &'a DecodedFrame,
+    frame: &'a dyn replay_frame::frame::DecodedSource,
     prepared_content: Option<&'a dyn PreparedContent>,
     hour: Hour,
     /// Which of the tables the indexes below are built from is not complete
@@ -426,10 +473,10 @@ pub struct World<'a> {
     raw_ids: BTreeMap<u32, u32>,
     /// The hour's Provinces and States rows, and each by id, built when
     /// first read.
-    province_rows: &'a [ProvinceRow],
+    province_rows: Provinces<'a>,
     state_rows: &'a [StateRow],
-    provinces: OnceLock<ReferencedRows<'a, ProvinceRow>>,
-    states: OnceLock<ReferencedRows<'a, StateRow>>,
+    provinces: OnceLock<ReferencedRows<Province>>,
+    states: OnceLock<ReferencedRows<&'a StateRow>>,
     /// Content: every state's provinces in its own order, and impassability.
     state_provinces: PreparedOperand<'a, &'a BTreeMap<u32, Vec<u32>>>,
     /// Why authored state templates are unread, if they are.
@@ -524,7 +571,7 @@ pub struct World<'a> {
     invasion_prepare_days: PreparedOperand<'a, Result<i32, &'a str>>,
     /// Unit leaders by their reference (`id << 32 | reference type`, the
     /// raid target's handle).
-    leaders: Index<BTreeMap<u64, &'a UnitLeaderRow>>,
+    leaders: Index<BTreeMap<u64, Leader<'a>>>,
     /// Characters by their id.
     characters: Index<BTreeMap<u32, &'a CharacterRow>>,
     /// Content: the character templates, or why unread.
@@ -724,9 +771,47 @@ pub struct PartyLeader {
     pub id: i32,
 }
 
-pub(super) fn table<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], Failure> {
+pub(super) fn lexical(
+    frame: &dyn replay_frame::frame::RecordedSource,
+) -> Result<replay_frame::frame::Rows<'_, replay_data::rows::LexicalTokenRow>, Failure> {
+    frame.lexical().map_err(|error| {
+        let failure = Failure::input(tables::LexicalTokens::ID, "", None, error.to_string());
+        failure.resolution_failed();
+        failure
+    })
+}
+
+pub(super) fn table<T: TableSchema>(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> Result<&[T::Row], Failure> {
     frame.complete::<T>().map_err(|error| {
         let failure = Failure::input(T::ID, "", None, error.to_string());
+        failure.resolution_failed();
+        failure
+    })
+}
+
+pub(super) fn characters(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> Result<replay_frame::frame::Rows<'_, CharacterRow>, Failure> {
+    frame
+        .characters()
+        .map_err(|error| super::refusal::input_error(tables::Characters::ID, error))
+}
+
+pub(super) fn provinces(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> Result<Provinces<'_>, Failure> {
+    frame
+        .provinces()
+        .map_err(|error| super::refusal::input_error(tables::Provinces::ID, error))
+}
+
+pub(super) fn leaders(
+    frame: &dyn replay_frame::frame::DecodedSource,
+) -> Result<replay_frame::frame::Leaders<'_>, Failure> {
+    frame.leaders().map_err(|error| {
+        let failure = Failure::input(tables::UnitLeaders::ID, "", None, error.to_string());
         failure.resolution_failed();
         failure
     })
@@ -735,12 +820,12 @@ pub(super) fn table<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], F
 /// A present row in a truncated view remains exact. Only the lookup that
 /// cannot find its required row creates a refusal, retaining native last-row order.
 fn required_row<T: TableSchema>(
-    frame: &DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
     scope: Option<Store>,
     matches: impl Fn(&T::Row) -> bool,
     message: String,
 ) -> Result<&T::Row, Failure> {
-    let view = &*frame.tables[T::ID.index()];
+    let view = frame.view(T::ID.index());
     let (rows, complete) = match view {
         TableView::Complete(rows) => (rows.rows::<T>().unwrap_or_default(), true),
         TableView::Truncated { rows, .. } => (rows.rows::<T>().unwrap_or_default(), false),
@@ -870,9 +955,9 @@ impl World<'_> {
             Query::IndustrialOrganisationUnlocked(reference) => super::inputs::digest_debug(
                 &self.organisation_details(*reference).map(|row| &row.unlocked),
             ),
-            Query::IndustrialOrganisationPolicies(reference) => super::inputs::digest_debug(
-                &self.organisation_policies_unrecorded(*reference),
-            ),
+            Query::IndustrialOrganisationPolicies(reference) => {
+                super::inputs::digest_debug(&self.organisation_policies_unrecorded(*reference))
+            }
             Query::IndustrialOrganisationFlags(reference) => super::inputs::digest_debug(
                 &self.organisation_details(*reference).map(|row| &row.flags),
             ),
@@ -1040,7 +1125,7 @@ impl<'a> World<'a> {
     }
 
     fn table_fresh_unrecorded(&self, table: replay_data::rows::TableId) -> Result<(), Failure> {
-        if self.frame.tables[table.index()].sampled_at() == Some(self.frame.hour) {
+        if self.frame.sampled_at(table.index()) == Some(self.frame.hour()) {
             Ok(())
         } else {
             Err(Failure::input(
@@ -1172,12 +1257,12 @@ impl<'a> World<'a> {
 
     /// Every recorded state by id, read whole: an evaluation depends on the
     /// whole States table ([`super::inputs::table`]).
-    pub fn states(&self) -> &ReferencedRows<'a, StateRow> {
+    pub fn states(&self) -> &ReferencedRows<&'a StateRow> {
         super::inputs::table(self.frame, replay_data::rows::TableId::States);
         self.state_map()
     }
 
-    fn state_map(&self) -> &ReferencedRows<'a, StateRow> {
+    fn state_map(&self) -> &ReferencedRows<&'a StateRow> {
         self.states.get_or_init(|| ReferencedRows {
             rows: self.state_rows.iter().map(|row| (row.id, row)).collect(),
             table: tables::States::ID,
@@ -1189,7 +1274,7 @@ impl<'a> World<'a> {
         })
     }
 
-    fn province_map(&self) -> &ReferencedRows<'a, ProvinceRow> {
+    fn province_map(&self) -> &ReferencedRows<Province> {
         self.provinces.get_or_init(|| ReferencedRows {
             rows: self.province_rows.iter().map(|row| (row.id, row)).collect(),
             table: tables::Provinces::ID,
@@ -1219,7 +1304,7 @@ impl<'a> World<'a> {
     }
 
     /// Every recorded province by id, read whole ([`Self::states`]).
-    pub fn provinces(&self) -> &ReferencedRows<'a, ProvinceRow> {
+    pub fn provinces(&self) -> &ReferencedRows<Province> {
         super::inputs::table(self.frame, replay_data::rows::TableId::Provinces);
         self.province_map()
     }
@@ -1228,7 +1313,7 @@ impl<'a> World<'a> {
         super::inputs::table(self.frame, tables::Provinces::ID);
         get(&self.controller_area_sizes, || {
             let mut counts = BTreeMap::<u32, i32>::new();
-            for province in table::<tables::Provinces>(self.frame)? {
+            for province in provinces(self.frame)? {
                 let area = province
                     .controller_area
                     .require("Provinces.controller_area")
@@ -1344,7 +1429,10 @@ impl<'a> World<'a> {
 
     /// The hour's inputs, strictly: a raid or scripted text needs the
     /// country links, countries, provinces and states complete.
-    pub fn new(frame: &'a DecodedFrame, content: ContentFacts<'a>) -> Result<Self, Failure> {
+    pub fn new(
+        frame: &'a dyn replay_frame::frame::DecodedSource,
+        content: ContentFacts<'a>,
+    ) -> Result<Self, Failure> {
         let world = Self::read(frame, content);
         match world.core_gap() {
             Some(gap) => Err(gap),
@@ -1355,13 +1443,16 @@ impl<'a> World<'a> {
     /// The hour's inputs, a table that is not complete noted: the triggers
     /// that read the country links, countries, provinces or states are then
     /// unknown, the others still decided.
-    pub fn read(frame: &'a DecodedFrame, content: ContentFacts<'a>) -> Self {
+    pub fn read(
+        frame: &'a dyn replay_frame::frame::DecodedSource,
+        content: ContentFacts<'a>,
+    ) -> Self {
         let ((links, countries, provinces, states), core_gaps) =
             super::refusal::deferred(|| core_tables(frame));
         Self {
             frame,
             prepared_content: None,
-            hour: frame.hour,
+            hour: frame.hour(),
             core_gaps,
             links: links
                 .iter()
@@ -1541,7 +1632,7 @@ impl<'a> World<'a> {
         })
     }
 
-    pub fn frame(&self) -> &'a DecodedFrame {
+    pub fn frame(&self) -> &'a dyn replay_frame::frame::DecodedSource {
         self.frame
     }
 
@@ -1550,7 +1641,7 @@ impl<'a> World<'a> {
     pub(crate) fn unit_status(
         &self,
         reference: u64,
-    ) -> Result<&'a replay_data::rows::DivisionStatusRow, Failure> {
+    ) -> Result<replay_frame::frame::DivisionName<'a>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::UnitStatus(reference)),
             || self.unit_status_unrecorded(reference),
@@ -1560,9 +1651,13 @@ impl<'a> World<'a> {
     fn unit_status_unrecorded(
         &self,
         reference: u64,
-    ) -> Result<&'a replay_data::rows::DivisionStatusRow, Failure> {
+    ) -> Result<replay_frame::frame::DivisionName<'a>, Failure> {
         self.unit(reference)?;
-        table::<tables::DivisionStatus>(self.frame)?
+        self.frame
+            .division_names()
+            .map_err(|why| {
+                super::refusal::input_error(replay_data::rows::TableId::DivisionStatus, why)
+            })?
             .iter()
             .find(|row| row.division == reference)
             // Retain the existing carrier diagnostic when no status row was captured.
@@ -1781,9 +1876,7 @@ impl<'a> World<'a> {
 
     fn token_unrecorded(&self, token: u32) -> Result<Option<&'a [u8]>, Failure> {
         let literals = get(&self.literals, || {
-            Ok(literals::Lookup::new(table::<tables::LexicalTokens>(
-                self.frame,
-            )?))
+            Ok(literals::Lookup::new(lexical(self.frame)?))
         })?;
         Ok(super::refusal::reference(
             literals.get(token),
@@ -1816,18 +1909,20 @@ impl<'a> World<'a> {
     pub(super) fn names(&self) -> Result<&Folds, Failure> {
         super::inputs::table(self.frame, replay_data::rows::TableId::LexicalTokens);
         get(&self.names, || {
-            let view = &self.frame.tables[replay_data::rows::TableId::LexicalTokens.index()];
+            let view = self
+                .frame
+                .identity(replay_data::rows::TableId::LexicalTokens.index());
             let cached = |cache: &[(ViewIdentity, Arc<Folds>)]| {
                 cache
                     .iter()
-                    .find(|(identity, _)| identity.is(view))
+                    .find(|(identity, _)| view.as_ref().is_some_and(|view| identity.same(view)))
                     .map(|(_, folds)| Arc::clone(folds))
             };
             if let Some(folds) = cached(&FOLDS.lock().unwrap_or_else(|e| e.into_inner())) {
                 return Ok(folds);
             }
             let mut out = Folds::new();
-            for row in table::<tables::LexicalTokens>(self.frame)? {
+            for row in lexical(self.frame)? {
                 let folded = row.literal.to_ascii_lowercase();
                 match out.get_mut(&folded) {
                     None => {
@@ -1844,8 +1939,10 @@ impl<'a> World<'a> {
             }
             let out = Arc::new(out);
             let mut cache = FOLDS.lock().unwrap_or_else(|e| e.into_inner());
-            cache.retain(|(identity, _)| !identity.is(view));
-            cache.insert(0, (view.identity(), Arc::clone(&out)));
+            cache.retain(|(identity, _)| !view.as_ref().is_some_and(|view| identity.same(view)));
+            if let Some(view) = view {
+                cache.insert(0, (view, Arc::clone(&out)));
+            }
             // One per table allocation a concurrent scan can be reading.
             cache.truncate(8);
             Ok(out)
@@ -3305,16 +3402,16 @@ impl<'a> World<'a> {
     }
 
     /// A recorded unit leader by its reference handle.
-    pub(crate) fn unit_leader(&self, reference: u64) -> Result<Option<&'a UnitLeaderRow>, Failure> {
+    pub(crate) fn unit_leader(&self, reference: u64) -> Result<Option<Leader<'a>>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::UnitLeader(reference)),
             || self.unit_leader_unrecorded(reference),
         )
     }
 
-    fn unit_leader_unrecorded(&self, reference: u64) -> Result<Option<&'a UnitLeaderRow>, Failure> {
+    fn unit_leader_unrecorded(&self, reference: u64) -> Result<Option<Leader<'a>>, Failure> {
         let leaders = get(&self.leaders, || {
-            Ok(table::<tables::UnitLeaders>(self.frame)?
+            Ok(leaders(self.frame)?
                 .iter()
                 .map(|row| {
                     (
@@ -3333,22 +3430,24 @@ impl<'a> World<'a> {
 
     /// A leader's [`LeaderVisibility`], its character and tag spelling read
     /// from the hour's indexes.
-    pub(super) fn leader_visibility(&self, row: &UnitLeaderRow) -> LeaderVisibility {
+    pub(super) fn leader_visibility<'r>(&self, row: impl Into<Leader<'r>>) -> LeaderVisibility {
+        let row = row.into();
         self.leader_visibility_from(row, |id| self.character(id), |token| self.token(token))
     }
 
     /// [`Self::leader_visibility`] with the hour's Characters and LexicalTokens
     /// rows binary searched instead of indexed: the decoder validates a
     /// table's keys unique and ascending, so both find the same row.
-    pub fn decoded_leader_visibility(&self, row: &UnitLeaderRow) -> LeaderVisibility {
+    pub fn decoded_leader_visibility<'r>(&self, row: impl Into<Leader<'r>>) -> LeaderVisibility {
+        let row = row.into();
         self.leader_visibility_from(
             row,
             |id| {
-                let rows = table::<tables::Characters>(self.frame)?;
+                let rows = characters(self.frame)?;
                 Ok(super::refusal::reference(
                     rows.binary_search_by_key(&id, |row| row.id)
                         .ok()
-                        .map(|at| &rows[at]),
+                        .and_then(|at| rows.get(at)),
                     id != 0,
                     || {
                         super::refusal::missing_reference(
@@ -3359,11 +3458,11 @@ impl<'a> World<'a> {
                 ))
             },
             |token| {
-                let rows = table::<tables::LexicalTokens>(self.frame)?;
+                let rows = lexical(self.frame)?;
                 Ok(super::refusal::reference(
                     rows.binary_search_by_key(&token, |row| row.token)
                         .ok()
-                        .map(|at| rows[at].literal.as_slice()),
+                        .map(|at| rows.get(at).unwrap().literal.as_slice()),
                     token != 0,
                     || super::refusal::missing_reference(tables::LexicalTokens::ID, None),
                 ))
@@ -3375,7 +3474,7 @@ impl<'a> World<'a> {
     /// id and `literal` a LexicalTokens literal by token.
     fn leader_visibility_from(
         &self,
-        row: &UnitLeaderRow,
+        row: Leader<'_>,
         character: impl FnOnce(u32) -> Result<Option<&'a CharacterRow>, Failure>,
         literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, Failure>,
     ) -> LeaderVisibility {
@@ -3397,7 +3496,7 @@ impl<'a> World<'a> {
     /// template is `template`, `literal` spelling its tag token.
     pub(super) fn template_visibility(
         &self,
-        row: &UnitLeaderRow,
+        row: Leader<'_>,
         template: Result<Option<RecordedTemplate>, Failure>,
         literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, Failure>,
     ) -> LeaderVisibility {
@@ -3420,7 +3519,7 @@ impl<'a> World<'a> {
     /// lexer folds) that its file and line name.
     fn template_role(
         &self,
-        row: &UnitLeaderRow,
+        row: Leader<'_>,
         template: Option<RecordedTemplate>,
         literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, Failure>,
     ) -> Result<Option<(usize, &'a installed_content_core::triggers::Triggers)>, Failure> {
@@ -3983,7 +4082,7 @@ impl<'a> World<'a> {
         })?;
         let counts = get(&self.owned_controlled_states, || {
             table::<tables::CountryLinks>(self.frame)?;
-            table::<tables::Provinces>(self.frame)?;
+            provinces(self.frame)?;
             let members = self.state_members()?;
             let mut out: BTreeMap<u32, i32> = BTreeMap::new();
             for row in table::<tables::States>(self.frame)? {
@@ -4169,7 +4268,7 @@ impl<'a> World<'a> {
 
     fn character_unrecorded(&self, id: u32) -> Result<Option<&'a CharacterRow>, Failure> {
         let characters = get(&self.characters, || {
-            Ok(table::<tables::Characters>(self.frame)?
+            Ok(characters(self.frame)?
                 .iter()
                 .map(|character| (character.id, character))
                 .collect())

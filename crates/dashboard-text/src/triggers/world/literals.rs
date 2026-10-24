@@ -2,13 +2,14 @@ use replay_data::rows::LexicalTokenRow;
 use std::collections::BTreeMap;
 
 pub(super) enum Lookup<'a> {
-    Sorted(&'a [LexicalTokenRow]),
+    Sorted(replay_frame::frame::Rows<'a, LexicalTokenRow>),
     Map(BTreeMap<u32, &'a [u8]>),
 }
 
 impl<'a> Lookup<'a> {
-    pub(super) fn new(rows: &'a [LexicalTokenRow]) -> Self {
-        if rows.windows(2).all(|pair| pair[0].token < pair[1].token) {
+    pub(super) fn new(rows: impl Into<replay_frame::frame::Rows<'a, LexicalTokenRow>>) -> Self {
+        let rows = rows.into();
+        if rows.is_sorted_by(|a, b| a.token < b.token) {
             Self::Sorted(rows)
         } else {
             // Preserve last-row wins for unordered or duplicate tokens, including zero.
@@ -25,7 +26,7 @@ impl<'a> Lookup<'a> {
             Self::Sorted(rows) => rows
                 .binary_search_by_key(&token, |row| row.token)
                 .ok()
-                .map(|index| rows[index].literal.as_slice()),
+                .map(|index| rows.get(index).unwrap().literal.as_slice()),
             Self::Map(rows) => rows.get(&token).copied(),
         }
     }

@@ -94,7 +94,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             .context
             .world()?
             .frame()
-            .complete::<tables::LexicalTokens>()
+            .lexical()
             .map_err(|why| why.to_string())?;
         let literal = rows
             .iter()
@@ -509,7 +509,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             self.context
                 .text
                 .frame()
-                .hour
+                .hour()
                 .wrapping_add(added.wrapping_add(days).wrapping_mul(24)),
         );
         // localises the month key.
@@ -1179,9 +1179,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let definitions = frame
             .complete::<tables::ModifierDefinitions>()
             .map_err(|why| why.to_string())?;
-        let tokens = frame
-            .complete::<tables::LexicalTokens>()
-            .map_err(|why| why.to_string())?;
+        let tokens = frame.lexical().map_err(|why| why.to_string())?;
         for modifier in modifiers.listed() {
             let definition = definitions
                 .iter()
@@ -1301,9 +1299,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let definitions = frame
             .complete::<tables::ModifierDefinitions>()
             .map_err(|why| why.to_string())?;
-        let tokens = frame
-            .complete::<tables::LexicalTokens>()
-            .map_err(|why| why.to_string())?;
+        let tokens = frame.lexical().map_err(|why| why.to_string())?;
         let mut values = modifiers
             .listed()
             .map(|modifier| {
@@ -1506,7 +1502,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
 /// Whether `definition`'s feature selector, if it has one, is in the
 /// recorded DLC mask.
 fn feature_enabled(
-    frame: &replay_frame::frame::DecodedFrame,
+    frame: &dyn replay_frame::frame::DecodedSource,
     definition: &ModifierDefinitionRow,
 ) -> Result<bool, String> {
     if definition.feature_selector == 0 {

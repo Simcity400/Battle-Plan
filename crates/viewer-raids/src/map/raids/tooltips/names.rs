@@ -9,7 +9,7 @@ use replay_data::{
     rows::DivisionStatusRow, rows::RaidRow, rows::RaidTooltipOperandRow, rows::Recorded,
     rows::tables,
 };
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::DecodedSource;
 use viewer_foundation::tooltip_text::localise;
 
 pub struct Name<'a> {
@@ -20,7 +20,7 @@ pub struct Name<'a> {
 }
 
 impl<'a> Name<'a> {
-    pub fn new(frame: &'a DecodedFrame, raid: &RaidRow) -> Result<Self, String> {
+    pub fn new(frame: &'a dyn DecodedSource, raid: &RaidRow) -> Result<Self, String> {
         let id = u64::from(raid.id) << 32 | u64::from(raid.reference_type);
         let rows = frame
             .complete::<tables::RaidTooltipOperands>()
@@ -416,7 +416,7 @@ mod tests {
             })
             .collect(),
         );
-        let raw = |frame: &DecodedFrame, loc: &Localisation| {
+        let raw = |frame: &dyn DecodedSource, loc: &Localisation| {
             Name::new(frame, &raid)
                 .unwrap()
                 .raw(&Content::default(), loc, "english")

@@ -5,7 +5,7 @@
 //! constrained.
 
 use crate::{
-    frame::DecodedFrame,
+    frame::DecodedSource,
     rows::{TableId, tables},
 };
 use engine_executable::modifier_keys as keys;
@@ -605,7 +605,7 @@ pub const FAMILIES: &[Family] = &[
 
 /// Playback authenticates expected modifier names against recorded definitions.
 /// A partial or absent table is not evidence of a matching layout.
-pub fn validate_recording(frame: &DecodedFrame, family: Family) -> Result<(), String> {
+pub fn validate_recording(frame: &dyn DecodedSource, family: Family) -> Result<(), String> {
     let validate = || -> Result<(), String> {
         if !engine_executable::executable_tables::is_initialized() {
             return Err(
@@ -615,9 +615,7 @@ pub fn validate_recording(frame: &DecodedFrame, family: Family) -> Result<(), St
         let definitions = frame
             .complete::<tables::ModifierDefinitions>()
             .map_err(|e| e.to_string())?;
-        let tokens = frame
-            .complete::<tables::LexicalTokens>()
-            .map_err(|e| e.to_string())?;
+        let tokens = frame.lexical().map_err(|e| e.to_string())?;
         let gap = engine_fixed_layout::fixed_layout::GAP;
         if definitions
             .binary_search_by_key(&gap, |row| row.index)
@@ -651,6 +649,8 @@ mod tests {
         frame::{FrameDecoder, FrameEncoder, Metrics, TableView},
         rows::{LexicalTokenRow, ModifierDefinitionRow, TableRows},
     };
+
+    use crate::frame::DecodedFrame;
 
     fn fixture() -> DecodedFrame {
         engine_executable::executable_tables::initialize_for_tests()

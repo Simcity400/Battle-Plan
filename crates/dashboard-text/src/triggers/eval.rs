@@ -1345,7 +1345,9 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let world = self.world;
         let state_rows = counted::<tables::StateBuildings>(world, "StateBuildings")?;
         let province_rows = counted::<tables::ProvinceBuildings>(world, "ProvinceBuildings")?;
-        let provinces = counted::<tables::Provinces>(world, "Provinces")?;
+        let provinces = super::world::provinces(world.frame()).map_err(|error| {
+            error.context(|error| format!("Provinces is not complete this hour: {error}"))
+        })?;
         let (states, provinces): (BTreeSet<u32>, BTreeSet<u32>) = match target {
             Target::Country(slot) => {
                 let mut states = BTreeSet::new();

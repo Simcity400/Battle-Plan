@@ -3,7 +3,7 @@
 
 use crate::metadata::recorded_rows;
 use replay_data::rows::tables;
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::DecodedSource;
 use std::{collections::BTreeMap, io};
 
 pub struct FlagChoice {
@@ -32,7 +32,7 @@ impl FlagChoice {
 /// The flag's ruling ideology group, retaining a missing or unsupported join
 /// instead of skipping the group-qualified candidate.
 pub fn ruling_groups(
-    frame: &DecodedFrame,
+    frame: &dyn DecodedSource,
 ) -> io::Result<BTreeMap<u32, Result<Option<String>, String>>> {
     let parties: BTreeMap<_, _> = recorded_rows::<tables::PoliticalParties>(frame)?
         .iter()
@@ -70,7 +70,7 @@ pub fn ruling_groups(
 }
 
 /// Flag asset candidates per country at one hour, shared with the combat UI.
-pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
+pub fn choices(frame: &dyn DecodedSource) -> io::Result<Vec<FlagChoice>> {
     let links: BTreeMap<_, _> = recorded_rows::<tables::CountryLinks>(frame)?
         .iter()
         .map(|r| (r.id, r.canonical_slot))
@@ -136,4 +136,91 @@ pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
             })
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay_data::rows::{
+        CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticalPartyRow, PoliticsRow, Recorded,
+        TableId, TableRows,
+    };
+    use replay_frame::frame::{DecodedFrame, Metrics, TableView};
+
+    #[test]
+    fn decoded_source_keeps_mod_art_candidates_aliases_and_unknown_tail() {
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 17,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+            }),
+        };
+        *frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(
+                [100, 150]
+                    .map(|id| CountryLinkRow {
+                        id,
+                        canonical_slot: 1,
+                    })
+                    .into(),
+            ));
+        *frame.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(vec![CountryRow {
+                id: 100,
+                canonical_slot: 1,
+                tag: b"D01".to_vec(),
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::CountryAppearance.index()] =
+            TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+                country: 100,
+                cosmetic_tag: b"MOD_COS".to_vec(),
+                original_tag_reference: Recorded::Value(Some(200)),
+                original_tag: Recorded::Value(Some(b"ORG".to_vec())),
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::Politics.index()] =
+            TableView::Complete(TableRows::Politics(vec![PoliticsRow {
+                country: 100,
+                ruling_party: Some(7),
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::PoliticalParties.index()] =
+            TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
+                country: 100,
+                id: 7,
+                token: b"mod_group".to_vec(),
+                ..Default::default()
+            }]));
+        let source: &dyn DecodedSource = &frame;
+        let flags = choices(source).unwrap();
+        assert_eq!(
+            flags.iter().map(|flag| flag.raw).collect::<Vec<_>>(),
+            [100, 150]
+        );
+        for flag in &flags {
+            assert_eq!(flag.tag, "D01");
+            assert_eq!(
+                flag.candidates,
+                ["MOD_COS_mod_group", "MOD_COS", "ORG_mod_group", "ORG"]
+            );
+            assert_eq!(flag.key(|key| key == "ORG_mod_group"), Ok("ORG_mod_group"));
+            assert_eq!(flag.refusal, None);
+        }
+        if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+            &mut *frame.tables[TableId::CountryAppearance.index()]
+        {
+            rows[0].original_tag_reference = Recorded::Value(None);
+        }
+        for flag in choices(&frame).unwrap() {
+            assert_eq!(flag.candidates, ["MOD_COS_mod_group", "MOD_COS"]);
+            assert_eq!(flag.key(|key| key == "MOD_COS"), Ok("MOD_COS"));
+            assert_eq!(
+                flag.key(|_| false).unwrap_err(),
+                "CountryAppearance.original_tag_reference capture refused"
+            );
+        }
+    }
 }

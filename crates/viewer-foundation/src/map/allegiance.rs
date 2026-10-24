@@ -16,7 +16,7 @@
 use std::{collections::BTreeMap, io};
 
 use replay_data::{rows::Recorded, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, DecodedSource};
 
 use super::{
     tables::{Available, rows},
@@ -183,7 +183,7 @@ struct NativeCountryRelations {
 }
 
 impl NativeRelations {
-    pub fn read(frame: &DecodedFrame, links: &BTreeMap<u32, u32>) -> io::Result<Self> {
+    pub fn read(frame: &dyn DecodedSource, links: &BTreeMap<u32, u32>) -> io::Result<Self> {
         let table = rows::<tables::CountryCounterInputs>(frame)?;
         let missing = match &table {
             Available::Complete(_) => "CountryCounterInputs has no row for this owner".into(),

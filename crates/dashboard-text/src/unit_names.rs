@@ -3,9 +3,9 @@
 
 use installed_content_division_names::division_names::Database;
 use installed_content_localisation::localisation::Localisation;
-use replay_data::{
-    rows::DivisionStatusRow, rows::NameOperands, rows::Recorded, rows::TaskForceCounterInputRow,
-};
+#[cfg(test)]
+use replay_data::rows::DivisionStatusRow;
+use replay_data::{rows::NameOperands, rows::Recorded, rows::TaskForceCounterInputRow};
 
 /// Return the task force's stored name directly. No generator choice
 /// survives in this cache, so readable nonempty text keeps the
@@ -42,16 +42,17 @@ pub fn task_force_name(
 /// name-group database nor successful naming operands. A nonprogrammatic
 /// literal whose bytes equal the cache establishes a literal name;
 /// all other cached text keeps the recording-language guard.
-pub fn army_name<'a>(
-    status: &DivisionStatusRow,
+pub fn army_name<'a, 'b>(
+    status: impl Into<replay_frame::frame::DivisionName<'b>>,
     localisation: &Localisation,
     recorded_language: &str,
     legacy_names: impl FnOnce() -> Result<&'a Database, String>,
 ) -> Result<String, String> {
-    match &status.name {
+    let status = status.into();
+    match status.name {
         Recorded::Value(Some(bytes)) => {
             let literal = matches!(
-                &status.naming,
+                status.naming,
                 Recorded::Value(Some(naming))
                     if naming.programmatic == 0 && naming.custom == *bytes
             );

@@ -298,7 +298,23 @@ pub(crate) fn assert_reached(failure: &Failure) {
 pub(crate) trait FrameInputs {
     fn trigger_table<T: replay_data::rows::TableSchema>(&self) -> Result<&[T::Row], Failure>;
 }
+
+pub(crate) fn input_error(table: TableId, why: std::io::Error) -> Failure {
+    let failure = Failure::input(table, "", None, why.to_string());
+    failure.resolution_failed();
+    failure
+}
 impl FrameInputs for replay_frame::frame::DecodedFrame {
+    fn trigger_table<T: replay_data::rows::TableSchema>(&self) -> Result<&[T::Row], Failure> {
+        self.complete::<T>().map_err(|why| {
+            let failure = Failure::input(T::ID, "", None, why.to_string());
+            failure.resolution_failed();
+            failure
+        })
+    }
+}
+
+impl FrameInputs for dyn replay_frame::frame::DecodedSource + '_ {
     fn trigger_table<T: replay_data::rows::TableSchema>(&self) -> Result<&[T::Row], Failure> {
         self.complete::<T>().map_err(|why| {
             let failure = Failure::input(T::ID, "", None, why.to_string());

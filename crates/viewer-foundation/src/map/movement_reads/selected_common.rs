@@ -82,7 +82,7 @@ impl<'w, 'a> Moves<'w, 'a> {
             .selection_hour
             .require("RailCooldowns.selection_hour")?
             .ok_or("selected railway sample hour capture refused")?
-            != self.world.frame().hour
+            != self.world.frame().hour()
         {
             return Err("selected railway input sample is stale".into());
         }
@@ -189,7 +189,7 @@ impl<'w, 'a> Moves<'w, 'a> {
     }
 
     fn common_subject_access(&self, receiver: Country, target: Country) -> Fact<bool> {
-        let hour = self.world.frame().hour;
+        let hour = self.world.frame().hour();
         let actual = self.actual_country_raw(receiver)?;
         if receiver == 0 {
             let rows = self.table::<tables::ReservedCountryNaming>()?;
@@ -350,7 +350,7 @@ impl<'w, 'a> Moves<'w, 'a> {
         cells: &'w Cells,
         common: &'w CommonCells<'a>,
     ) -> Fact<Self> {
-        if !std::ptr::eq(world.frame(), common.frame) {
+        if !std::ptr::eq(world.frame().decoded_frame(), common.frame) {
             return Err("selected common movement frame/world association differs".into());
         }
         Ok(Self {
@@ -655,7 +655,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
         })
         .as_ref()
         .ok_or("selected unit combat-reference capture refused")?;
-        if !packet.valid_at(self.world.frame().hour, unit.combat_count) {
+        if !packet.valid_at(self.world.frame().hour(), unit.combat_count) {
             return Err(
                 "selected unit combat references are stale, malformed or have a different count"
                     .into(),
@@ -844,7 +844,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
             .require("RailwayGunCounterInputs.fresh")?
             .as_ref()
             .ok_or("selected railway orders-group capture refused")?;
-        if !packet.sample_hour.fresh_at(self.world.frame().hour) {
+        if !packet.sample_hour.fresh_at(self.world.frame().hour()) {
             return Err("selected railway orders-group sample is stale".into());
         }
         packet
@@ -862,7 +862,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
             .require("CountryWars.ordered")?
             .as_ref()
             .ok_or("selected ordered diplomacy enemy capture refused")?;
-        if !packet.sample_hour.fresh_at(self.world.frame().hour) {
+        if !packet.sample_hour.fresh_at(self.world.frame().hour()) {
             return Err("selected ordered diplomacy enemy sample is stale".into());
         }
         Ok(packet.entries.clone())

@@ -35,12 +35,12 @@ impl Renderer<'_, '_, '_> {
     fn description_province(
         &self,
         id: u32,
-    ) -> Result<Option<&replay_data::rows::ProvinceRow>, String> {
+    ) -> Result<Option<replay_frame::frame::Province>, String> {
         Ok(self
             .context
             .text
             .frame()
-            .complete::<tables::Provinces>()
+            .provinces()
             .map_err(|why| why.to_string())?
             .iter()
             .find(|row| row.id == id))
@@ -111,7 +111,12 @@ impl Renderer<'_, '_, '_> {
         if label.is_empty() {
             // Both VP descriptions copy the raw override after an empty display.
             // province_display_name already checked this sparse table's coverage.
-            let raw = match &*self.context.text.frame().tables[TableId::ProvinceNames.index()] {
+            let raw = match self
+                .context
+                .text
+                .frame()
+                .view(TableId::ProvinceNames.index())
+            {
                 TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows
                     .rows::<tables::ProvinceNames>()
                     .and_then(|rows| rows.iter().find(|row| row.province == id)),

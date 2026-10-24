@@ -38,7 +38,7 @@ use installed_content_core::{
     province_graph::raid_distance,
 };
 use replay_data::{rows::RaidPathDistanceRow, rows::RaidScope, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::DecodedSource;
 
 use super::{
     RaidAssets,
@@ -231,7 +231,7 @@ impl<'b> Ledger<'b> {
 /// asked so far this hour beyond the memo.
 pub struct Distances<'a> {
     assets: &'a RaidAssets,
-    frame: &'a DecodedFrame,
+    frame: &'a dyn DecodedSource,
     /// The recorded memo, in its key order (source, target): a decoded table
     /// holds unique ascending keys (`replay_frame::frame::validate_rows`).
     recorded: Result<&'a [RaidPathDistanceRow], String>,
@@ -244,7 +244,7 @@ pub struct Distances<'a> {
 }
 
 impl<'a> Distances<'a> {
-    pub fn new(assets: &'a RaidAssets, frame: &'a DecodedFrame) -> Self {
+    pub fn new(assets: &'a RaidAssets, frame: &'a dyn DecodedSource) -> Self {
         Self {
             assets,
             frame,
@@ -512,7 +512,7 @@ pub struct HourPaths<'a> {
 }
 
 impl<'a> HourPaths<'a> {
-    pub fn new(assets: &'a RaidAssets, frame: &'a DecodedFrame) -> Self {
+    pub fn new(assets: &'a RaidAssets, frame: &'a dyn DecodedSource) -> Self {
         Self {
             assets,
             distances: Distances::new(assets, frame),

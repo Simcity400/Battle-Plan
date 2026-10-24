@@ -920,16 +920,13 @@ impl Renderer<'_, '_, '_> {
                     return Ok(Vec::new()); // case 4.
                 }
                 let status: std::collections::BTreeMap<_, _> = frame
-                    .complete::<tables::DivisionStatus>()
+                    .division_names()
                     .map_err(|why| why.to_string())?
                     .iter()
                     .map(|row| (row.division, row))
                     .collect();
                 let mut rows = Vec::new();
-                for row in frame
-                    .complete::<tables::Divisions>()
-                    .map_err(|why| why.to_string())?
-                {
+                for row in frame.divisions().map_err(|why| why.to_string())? {
                     if slot(row.roster_owner)? != caller {
                         continue;
                     }
@@ -976,7 +973,7 @@ impl Renderer<'_, '_, '_> {
                     .map(|row| (row.province, row))
                     .collect();
                 let armies: std::collections::BTreeSet<_> = frame
-                    .complete::<tables::Divisions>()
+                    .divisions()
                     .map_err(|why| why.to_string())?
                     .iter()
                     .map(|row| row.id)

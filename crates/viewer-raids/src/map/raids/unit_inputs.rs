@@ -2,7 +2,7 @@
 use super::{RaidAssets, script::World};
 use installed_content_raids::{raids::RaidGraphicsDefines, raids::RaidType};
 use replay_data::{rows::RaidRow, rows::RaidTargetRow, rows::TaskForceRow, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::DecodedSource;
 use std::collections::BTreeMap;
 pub const NO_BUILDING_TYPE: u32 = 0x4c17;
 const SCALE: i64 = 100_000;
@@ -157,7 +157,10 @@ pub struct SpeedInputs {
 /// `CountryCommandPower`). A table the recorder withheld is refused with its
 /// reason, including a refused fixed-key contract for raid unit speed key 2
 /// or ace country keys 0x72 and 0x25A.
-pub fn plane_inputs(frame: &DecodedFrame, raid: &RaidRow) -> Result<(i64, SpeedInputs), String> {
+pub fn plane_inputs(
+    frame: &dyn DecodedSource,
+    raid: &RaidRow,
+) -> Result<(i64, SpeedInputs), String> {
     let travelled = raid.travelled.ok_or(PLANE_UNRECORDED)?;
     let rows = frame
         .complete::<tables::RaidSpeedInputs>()
@@ -176,7 +179,7 @@ impl SpeedInputs {
     /// (recorded only for a living ace).
     pub fn from_row(
         row: &replay_data::rows::RaidSpeedInputRow,
-        frame: &DecodedFrame,
+        frame: &dyn DecodedSource,
     ) -> Result<Self, String> {
         let country = |slot: Option<u32>,
                        name: &str,
@@ -359,7 +362,7 @@ pub fn raid_unit_speed(
 /// over three to the resolved target province. A missing distance is 100000.
 pub fn target_distance(
     assets: &RaidAssets,
-    frame: &DecodedFrame,
+    frame: &dyn DecodedSource,
     raid: &RaidRow,
     target: &RaidTargetRow,
 ) -> Result<i64, String> {
@@ -414,7 +417,7 @@ pub struct RaidPool {
 /// `Raids`): `archetype_tokens` and `archetype_amounts` zipped. A withheld
 /// table (the recorder withholds it for a null or foreign archetype), a
 /// raid without a row or lists of different lengths are refused by name.
-pub fn raid_pool(frame: &DecodedFrame, raid: &RaidRow) -> Result<RaidPool, String> {
+pub fn raid_pool(frame: &dyn DecodedSource, raid: &RaidRow) -> Result<RaidPool, String> {
     let rows = frame
         .complete::<tables::RaidEquipment>()
         .map_err(|error| format!("the raid's own equipment pool is withheld: {error}"))?;

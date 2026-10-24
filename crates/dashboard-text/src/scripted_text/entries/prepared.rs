@@ -92,7 +92,10 @@ impl ScriptedContent {
             .as_ref()
             .map_err(String::as_str)
     }
-    pub(super) fn lazy_world<'a>(&'a self, frame: &'a DecodedFrame) -> Result<World<'a>, String> {
+    pub(super) fn lazy_world<'a>(
+        &'a self,
+        frame: &'a dyn replay_frame::frame::DecodedSource,
+    ) -> Result<World<'a>, String> {
         let environment = self.prepared_environment().map_err(str::to_owned)?;
         #[cfg(any(test, feature = "test-support"))]
         if let Some(Ok(inputs)) = environment.inputs.get() {

@@ -185,11 +185,11 @@ impl<V> Drop for FailOnDrop<'_, V> {
 pub struct TableKey(Vec<SharedView>);
 
 impl TableKey {
-    pub fn of(frame: &DecodedFrame, tables: &[TableId]) -> Self {
+    pub fn of(frame: &dyn replay_frame::frame::DecodedSource, tables: &[TableId]) -> Self {
         Self(
             tables
                 .iter()
-                .map(|table| frame.tables[table.index()].clone())
+                .map(|table| frame.shared(table.index()))
                 .collect(),
         )
     }

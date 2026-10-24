@@ -363,7 +363,7 @@ impl EnvironmentInputs {
         &'a self,
         content: &'a ScriptedContent,
         environment: &'a Environment,
-        frame: &'a DecodedFrame,
+        frame: &'a dyn replay_frame::frame::DecodedSource,
     ) -> World<'a> {
         World::read(frame, self.facts(environment))
             .with_geography(self.geography(content, environment))
@@ -454,7 +454,10 @@ pub fn state_display_name(
 
 impl ScriptedContent {
     /// The same lazy content inputs as scripted text, retaining recorded table gaps.
-    pub fn recorded_world<'a>(&'a self, frame: &'a DecodedFrame) -> Result<World<'a>, String> {
+    pub fn recorded_world<'a>(
+        &'a self,
+        frame: &'a dyn replay_frame::frame::DecodedSource,
+    ) -> Result<World<'a>, String> {
         self.lazy_world(frame)
     }
 }
@@ -691,7 +694,10 @@ impl<'a> ScriptedText<'a> {
         if let Some(text) = self.province_display_name_primary(id)? {
             return Ok(text);
         }
-        let (provinces, gap) = rows::<tables::Provinces>(self.frame);
+        let (provinces, gap) = (
+            self.frame.province_rows(),
+            self.frame.row_gap(tables::Provinces::ID),
+        );
         let province = provinces
             .iter()
             .find(|row| row.id == id)
@@ -734,7 +740,10 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn province_victory_point_name_unrecorded(&self, id: u32) -> Result<String, String> {
-        let (provinces, gap) = rows::<tables::Provinces>(self.frame);
+        let (provinces, gap) = (
+            self.frame.province_rows(),
+            self.frame.row_gap(tables::Provinces::ID),
+        );
         let province = provinces
             .iter()
             .find(|row| row.id == id)
