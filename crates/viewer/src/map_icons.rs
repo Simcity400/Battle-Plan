@@ -55,7 +55,8 @@ impl MapIcons {
     /// graphics defines (the recorded defines with the visual mods' graphics sections), which
     /// the counters, combat window, raids and floating map text read.
     #[allow(clippy::too_many_arguments)] // The content stack plus the client's settings.
-    pub fn load(
+    pub fn load_with_products(
+        products: Option<&map_products::loader::Loader>,
         layers: &ResolvedLayers,
         (defines, graphics): (
             &installed_content_core::defines::Defines,
@@ -145,7 +146,8 @@ impl MapIcons {
                 refused.join("; ")
             ));
         }
-        let combat = combat::Assets::load(
+        let combat = combat::Assets::load_with_products(
+            products,
             &shared,
             regions,
             graphics,
@@ -155,8 +157,13 @@ impl MapIcons {
             &mut images,
             &lazy,
         )?;
-        let mut raids =
-            viewer_raids::map::raids::RaidAssets::load(layers, graphics, map, &interface.registry)?;
+        let mut raids = viewer_raids::map::raids::RaidAssets::load_with_products(
+            products,
+            layers,
+            graphics,
+            map,
+            &interface.registry,
+        )?;
         raids.trigger_content.triggers = Arc::new(combat.tactics.trigger_names());
         raids.trigger_content.character_traits = combat.tactics.trait_databases();
         raids.transport_sub_units = combat.sub_units().cloned().map_err(str::to_owned);

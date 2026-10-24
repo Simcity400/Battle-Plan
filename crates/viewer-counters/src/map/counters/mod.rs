@@ -31,6 +31,8 @@
 //! Controllers select neither flag. Grouping uses mean member anchors and vertical
 //! columns ([`crate::map::counter_groups`]); source and pool history belongs to each view.
 
+#[cfg(test)]
+use map_products::loader::default_anchor;
 use std::cell::RefCell;
 use std::{
     borrow::Cow,
@@ -1294,12 +1296,23 @@ impl CounterContent {
         defines: &installed_content_core::defines::Defines,
         regions: &BTreeMap<u32, regions::StrategicRegion>,
     ) -> io::Result<Self> {
-        let mut anchors = BTreeMap::new();
-        let mut stack_scales = BTreeMap::new();
-        for stack in positions::read_unit_stacks(layers)? {
-            anchors.insert((stack.province, stack.kind), [stack.x, stack.y, stack.z]);
-            stack_scales.insert((stack.province, stack.kind), stack.scale);
-        }
+        Self::load_with_products(None, layers, artwork, map, defines, regions)
+    }
+
+    pub fn load_with_products(
+        products: Option<&map_products::loader::Loader>,
+        layers: &ResolvedLayers,
+        artwork: &ResolvedLayers,
+        map: &MapData,
+        defines: &installed_content_core::defines::Defines,
+        regions: &BTreeMap<u32, regions::StrategicRegion>,
+    ) -> io::Result<Self> {
+        let stacks = match products {
+            Some(products) => products.anchors(layers)?,
+            None => map_products::loader::StackAnchors::read(layers)?,
+        };
+        let anchors = stacks.positions;
+        let stack_scales = stacks.scales;
         let mut ports = BTreeMap::new();
         let definitions = installed_content_core::buildings::read(layers)?;
         let port_slots = port_slot_names(&definitions);
@@ -1460,9 +1473,12 @@ impl CounterContent {
             ability_no_hq_scaling: defines
                 .fixed5("NMilitary", "ABILITY_NO_HQ_SCALING")
                 .map_err(|error| error.to_string()),
-            fog: Arc::new(
-                FogContent::load(layers, map, defines).map_err(|error| error.to_string()),
-            ),
+            fog: match products {
+                Some(products) => products.fog(layers, map, defines),
+                None => Arc::new(
+                    FogContent::load(layers, map, defines).map_err(|error| error.to_string()),
+                ),
+            },
             subunit_tokens: viewer_foundation::map::subunit_files::subunit_keys(layers)
                 .map(|keys| TokenKeys::new(&keys))
                 .map_err(|error| error.to_string()),
@@ -1499,13 +1515,10 @@ impl CounterContent {
         heights: &HeightField<'_>,
     ) {
         let mut default_anchors = Arc::unwrap_or_clone(std::mem::take(&mut self.default_anchors));
-        for province in provinces.filter(|&province| province != 0) {
-            if let Some(centroid) = centroid(province) {
-                default_anchors.insert(province, default_anchor(centroid, heights));
-            } else if !self.anchors.contains_key(&(province, STANDSTILL)) {
-                self.missing_standstill.push(province);
-            }
-        }
+        let (seeded, missing) =
+            map_products::loader::seed_default_anchors(provinces, &self.anchors, centroid, heights);
+        default_anchors.extend(seeded);
+        self.missing_standstill.extend(missing);
         self.default_anchors = Arc::new(default_anchors);
     }
 
@@ -1613,13 +1626,6 @@ impl CounterContent {
 fn seeded_only(anchors: &BTreeMap<(u32, u32), [f32; 3]>, province: u32, kind: u32) -> bool {
     !anchors.contains_key(&(province, kind))
         && (kind != VICTORY_POINT || !anchors.contains_key(&(province, DEFENDING)))
-}
-
-/// Default anchor uses the integer pixel centroid converted to float and
-/// its sampled terrain height.
-fn default_anchor([x, z]: [f32; 2], heights: &HeightField<'_>) -> [f32; 3] {
-    let [x, z] = [(x as i32) as f32, (z as i32) as f32];
-    [x, heights.native_height(x, z), z]
 }
 
 /// Each province's terrain name as the definition reader stores it
@@ -2950,7 +2956,6 @@ impl HourBase {
             task_forces: &self.task_forces,
         }
     }
-
 }
 
 /// The immutable content operands of the history-dependent marker producers.

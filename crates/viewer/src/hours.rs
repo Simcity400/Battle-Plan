@@ -448,10 +448,7 @@ pub struct Borders {
 /// The viewing country's own tag at an hour, which presentation continuity
 /// compares. It walks the hour's country tables, so it is read here and not
 /// on a frame.
-#[derive(Debug, Default)]
-pub struct Header {
-    pub viewing: Option<String>,
-}
+pub use map_products::Header;
 
 /// Everything the map draws for one recorded hour, built off the frame path.
 pub struct Layers {
@@ -656,16 +653,7 @@ enum Part {
     Snow(io::Result<Arc<SnowMud>>),
 }
 
-#[derive(Clone)]
-struct FogPart {
-    intel: Arc<IntelMap>,
-    limitations: Limitations,
-    header: Arc<Header>,
-    map_text: Arc<viewer_world::map::animated_map_text::events::Prepared>,
-    /// The viewing country's song chances.
-    music: Option<Arc<viewer_audio::Chances>>,
-    battles: Option<Arc<viewer_audio::Battles>>,
-}
+type FogPart = map_products::FogProduct;
 
 #[derive(Clone)]
 struct Movers {
@@ -812,8 +800,7 @@ struct Memos {
     /// Equal snow grids share an allocation even when the weather table changes identity.
     snow_shared: Settled<SnowMud>,
     /// The intel map, by the viewing country's rebuilt province bytes.
-    intel: Recent<Option<BTreeMap<u32, u8>>, IntelMap>,
-    music: crate::document::music_inputs::Memo,
+    fog: map_products::FogMemos,
 }
 
 /// How many recent values each memo keeps: the pool builds several hours at
@@ -827,8 +814,7 @@ impl Memos {
             placed: PlacedAreas::default(),
             rails: Recent::new(MEMO_ENTRIES),
             snow_shared: Settled::new(weather::TABLES, MEMO_ENTRIES),
-            intel: Recent::new(MEMO_ENTRIES),
-            music: crate::document::music_inputs::Memo::new(MEMO_ENTRIES),
+            fog: map_products::FogMemos::new(MEMO_ENTRIES),
         }
     }
 }
@@ -929,7 +915,7 @@ fn part_rank(part: &Part) -> u8 {
         Part::Rails(_) => 3,
         Part::Buildings(_) => 4,
         Part::Movers(_) => 5,
-        Part::Fog(_) => 6,
+        Part::Fog(_) => map_products::FOG_PART_RANK,
         Part::Snow(_) => 7,
     }
 }
@@ -2232,7 +2218,7 @@ impl coordinator::BuildTarget for Coordinator {
                     let units = Arc::new(units);
                     let effects = weather_effects::prepare(
                         &view.weather_effects,
-                        weather_effects::field(view.frame)?,
+                        view.weather_field()?,
                         camera,
                         viewport,
                     );
@@ -2255,43 +2241,7 @@ impl coordinator::BuildTarget for Coordinator {
         submit(
             "fog",
             Box::new(move |view, spans| {
-                Part::Fog((|| {
-                    let vision = spans.measure("fog.vision", |_| view.vision(&fog_perspective))?;
-                    let fog = vision.province_fog();
-                    let key = spans.measure("fog.intel_key", |_| fog.cloned());
-                    let intel = spans.measure("fog.intel_lookup", |spans| {
-                        memos.intel.get_or_insert_with(key, || {
-                            spans.measure("fog.intel_build", |_| {
-                                view.intel_map_from_visibility(fog).map(Arc::new)
-                            })
-                        })
-                    })?;
-                    let limitations = spans.measure("fog.limitations", |_| {
-                        view.limitations_with(&fog_perspective, Some(&intel))
-                    })?;
-                    let music = spans.measure("fog.music", |_| {
-                        view.music_chances_cached(vision.ours(), &memos.music)
-                            .map(Arc::new)
-                    });
-                    let battles =
-                        spans.measure("fog.battles", |_| view.battle_sounds().map(Arc::new));
-                    Ok(Arc::new(FogPart {
-                        intel,
-                        limitations,
-                        header: spans.measure("fog.header", |_| {
-                            Arc::new(Header {
-                                viewing: view
-                                    .vision(&fog_perspective)
-                                    .and_then(|vision| view.viewing_tag(&vision))
-                                    .ok(),
-                            })
-                        }),
-                        map_text: spans
-                            .measure("fog.map_text", |_| Arc::new(view.map_text(&vision))),
-                        music,
-                        battles,
-                    }))
-                })())
+                Part::Fog(view.fog_products(&fog_perspective, &memos.fog, spans))
             }),
         );
         let memos = Arc::clone(&self.memos);

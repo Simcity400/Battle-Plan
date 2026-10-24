@@ -222,6 +222,16 @@ pub struct NameContent {
 impl NameContent {
     /// Reads the adjacency rows and the localisation in `language`, and scans the bounds.
     pub fn load(layers: &ResolvedLayers, map: &MapData, language: &str) -> io::Result<Self> {
+        Self::load_with_localisation(layers, map, || {
+            localisation::read(layers, language).map(Arc::new)
+        })
+    }
+
+    pub fn load_with_localisation(
+        layers: &ResolvedLayers,
+        map: &MapData,
+        localisation: impl FnOnce() -> io::Result<Arc<Localisation>>,
+    ) -> io::Result<Self> {
         let rows = adjacencies::read(layers)?;
         let graph = ProvinceGraph::build(map.width, map.height, &map.province_ids, &rows)?;
         let bounds = names::scan_province_bounds(&ProvinceMap {
@@ -239,7 +249,7 @@ impl NameContent {
             graph,
             bounds,
             bridged,
-            localisation: Arc::new(localisation::read(layers, language)?),
+            localisation: localisation()?,
         })
     }
 }

@@ -1,13 +1,12 @@
 //! A replay and the verified local game content used to draw its current hour.
 
+#[cfg(test)]
 pub(crate) mod music_inputs;
 
 use crate::map_icons::MapIcons;
 use crate::map_views::CounterView;
 use crate::map_views::Views;
 use dashboard::naval_battle_name::battle_name_candidates;
-use std::cell::OnceCell;
-use std::cell::RefCell;
 use std::sync::OnceLock;
 use viewer_combat as combat;
 use viewer_foundation::map::camera::MapSize;
@@ -27,7 +26,9 @@ use viewer_foundation::map::native_resources::Context;
 use viewer_foundation::map::native_shader::draw as native_shader_draw;
 use viewer_foundation::map::native_windows::NativeWindows;
 use viewer_foundation::map::native_windows::RAID_WINDOW;
-use viewer_foundation::map::perspective::{VisionKey, cached_vision};
+use viewer_foundation::map::perspective::VisionKey;
+#[cfg(test)]
+use viewer_foundation::map::perspective::cached_vision;
 use viewer_foundation::map::province_schedule::Shared;
 use viewer_foundation::map::sprites::Quad;
 use viewer_foundation::movement_timing::EtaCache;
@@ -103,7 +104,7 @@ use {
 // weather
 use viewer_foundation::map::perspective;
 use viewer_foundation::map::tables::{self, Limitations};
-use viewer_foundation::map::textures::{self, IntelMap};
+use viewer_foundation::map::textures::IntelMap;
 use {viewer_world::map::weather, viewer_world::map::weather::SnowMud};
 
 /// The recorded hour to sit on after load: `--branch` and `--hour` select it,
@@ -239,6 +240,7 @@ fn load_sprawl(
 /// The verified local game content a replay is drawn with: everything that
 /// does not change with the recorded hour.
 pub struct Content {
+    pub products: map_products::ProductContent,
     /// Fresh combat content identity, constructed with every host content load.
     pub combat: Arc<combat::Content>,
     pub counter_content: Arc<viewer_counter_products::map::counter_content::Content>,
@@ -356,8 +358,6 @@ pub struct Content {
     /// The map-building slot table, types and meshes; the placed buildings are
     /// per hour and come from [`Document::map_building_field`].
     pub map_buildings: MapBuildingAssets,
-    /// The building types the floating map text names, from the recorded content stack.
-    pub map_text: viewer_world::map::animated_map_text::events::Content,
     /// `gfx/models/supply/railroad.dds`.
     pub rail_assets: RailAssets,
     /// Static boundary crossings and anchors for the recorded railway graph.
@@ -381,11 +381,6 @@ pub struct Content {
     /// layer builds on the window thread and the close-zoom models on workers
     /// that run ahead of it; see [`Hour::etas`].
     eta_cache: Arc<EtaCache>,
-    /// Each hour's viewing-country visibility, shared by that hour's builders:
-    /// the buildings, movers, fog and icon parts each read it on their own
-    /// thread. Keyed on the tables it reads ([`perspective::VISION_TABLES`]),
-    /// the branch and hour and the viewing choice.
-    pub(crate) vision_memo: Arc<Keyed<perspective::Vision, VisionKey>>,
     /// Each hour's battle plan, shared by the hours whose plan tables
     /// ([`orders::TABLES`]) are the same allocations, keyed also on the
     /// viewing country's slot, the only thing it reads from the perspective.
@@ -398,9 +393,6 @@ pub struct Content {
     mission_memo: counters::MissionMemo,
     /// Which provinces each snow and mud cell reads, built on first use.
     snow_cells: OnceLock<Result<weather::SnowCells, (io::ErrorKind, String)>>,
-    /// The fog grid's immutable cell composition, prepared during content
-    /// loading with the same lazy fallback for an hour that arrives first.
-    intel_cells: Arc<textures::IntelCellsCache>,
     /// The content-derived movement map and defines behind route points,
     /// stack kinds and ETAs; `None` when the content could not be derived, in
     /// which case moving units stand at their province and have no ETA.
@@ -410,21 +402,6 @@ pub struct Content {
     pub province_geometry: Arc<ProvinceGeometry>,
     /// How long that one pass over `map/provinces.bmp` took, for reporting.
     pub province_geometry_build: Duration,
-}
-
-impl Content {
-    /// The exact intel raster for rebuilt visibility. A missing visibility
-    /// input validates the image but need not construct its cell composition.
-    pub(crate) fn intel_map_from_visibility(
-        &self,
-        visibility: Option<&BTreeMap<u32, u8>>,
-    ) -> io::Result<IntelMap> {
-        if visibility.is_none() {
-            return textures::clear_intel_map(&self.map);
-        }
-        let cells = self.intel_cells.get_or_init()?;
-        Ok(cells.intel_map(visibility))
-    }
 }
 
 /// What one hour's [`perspective::Vision`] reads besides its tables: the hour
@@ -451,8 +428,7 @@ pub struct Hour<'a> {
     /// See [`Document::hour_fraction`].
     pub hour_fraction: f32,
     /// The last perspective read for this hour; several builders need it.
-    vision_cache: RefCell<Option<(perspective::Choice, Arc<perspective::Vision>)>>,
-    trigger_world: OnceCell<dashboard::triggers::World<'a>>,
+    product_hour: map_products::ProductHour<'a>,
     pool_limits: viewer_world::map::equipment_graphics::LimitValues,
     worker_etas: Option<Arc<viewer_foundation::movement_timing::WorkerEtas>>,
 }
@@ -1548,21 +1524,55 @@ impl Document {
                 },
             }
         }
+        let product_loader = map_products::loader::Loader::new(&content.layers);
+        Self::load_product_content(
+            path,
+            options,
+            initial,
+            visual_mods,
+            texture_quality,
+            replay,
+            content,
+            &product_loader,
+            warnings,
+            recorded_language,
+            visual_revision,
+            fallback,
+            uncovered_reads,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn load_product_content(
+        path: &Path,
+        options: &ResolveOptions,
+        initial: &InitialHour,
+        visual_mods: Option<&[installed_content_core::content::visual::Choice]>,
+        texture_quality: u8,
+        replay: Arc<Replay>,
+        content: installed_content_core::content::ResolvedContent,
+        product_loader: &map_products::loader::Loader,
+        mut warnings: Vec<String>,
+        recorded_language: String,
+        visual_revision: String,
+        fallback: Option<crate::visual_fallback::Built>,
+        uncovered_reads: installed_content_core::content::UncoveredReads,
+    ) -> io::Result<Self> {
         let content = Arc::new(content);
         let scripted = dashboard::scripted_text::ScriptedContent::read(
             Arc::clone(&content),
             recorded_language.clone(),
         );
-        let map = map::load(&content.layers)?;
-        let (terrain, default_map) = installed_content_core::terrain::read(&content.layers)?;
+        let map = product_loader.map()?;
+        let (terrain, default_map) = product_loader.terrain()?;
         // The game logs a malformed terrain entry or field and loads the rest.
         for reason in &terrain.skipped {
             warnings.push(format!(
                 "Terrain content the game logs and reads past: {reason}."
             ));
         }
-        let defines = installed_content_core::defines::read(&content.layers)?;
-        let audio = audio_source(&content.layers, &defines, &options.user_dir, &mut warnings);
+        let defines = product_loader.defines()?;
+        let audio = product_loader.audio(&defines, &options.user_dir, &mut warnings);
         // Graphics consumers read the recorded defines with the graphics sections of the defines
         // merged natively with the visual mods' scripts (`Defines::with_graphics_of`); every
         // simulation section stays recorded, for every consumer. A graphics value of another
@@ -1669,7 +1679,8 @@ impl Document {
             let layers = &content.layers;
             let h_assets = scope.spawn(|| {
                 let mut warnings = Vec::new();
-                let assets = crate::map_assets::load(
+                let assets = crate::map_assets::load_with_products(
+                    Some(product_loader),
                     layers,
                     &defines,
                     &art_defines,
@@ -1686,7 +1697,8 @@ impl Document {
             // visual mods show only under artwork roots, and fall back to the recording by name.
             let h_icons = scope.spawn(|| {
                 layers.artwork("map icons and interface", |stack| {
-                    MapIcons::load(
+                    MapIcons::load_with_products(
+                        Some(product_loader),
                         stack,
                         (&defines, defines_for(stack)),
                         &map,
@@ -1700,7 +1712,9 @@ impl Document {
             });
             let h_names = scope.spawn(|| {
                 layers.artwork("map names", |stack| {
-                    NameContent::load(stack, &map, &language)
+                    NameContent::load_with_localisation(stack, &map, || {
+                        product_loader.localisation(stack, &language)
+                    })
                 })
             });
             // Naval source labels in another language recover through the recording
@@ -1719,7 +1733,14 @@ impl Document {
                     &art_defines,
                     &defines,
                     |defines| {
-                        CounterContent::load(layers, layers.presentation(), &map, defines, &regions)
+                        CounterContent::load_with_products(
+                            Some(product_loader),
+                            layers,
+                            layers.presentation(),
+                            &map,
+                            defines,
+                            &regions,
+                        )
                     },
                 )
             });
@@ -1740,7 +1761,7 @@ impl Document {
             let h_rail_reads = scope.spawn(|| -> io::Result<_> {
                 let (cities, city_styles) = installed_content_core::cities::read(layers)?;
                 let buildings_read = installed_content_core::positions::read_buildings(layers)?;
-                let building_types = installed_content_core::buildings::read(layers)?;
+                let building_types = product_loader.buildings()?;
                 let rail_defines = crate::map_assets::graphics_define(
                     layers,
                     "railways",
@@ -1861,10 +1882,10 @@ impl Document {
             });
             // The ideology groups supply the tactic triggers' ideology names.
             // Loading trigger keys registers those content names.
-            let h_ideologies = scope.spawn(|| installed_content_core::ideologies::read(layers));
+            let h_ideologies = scope.spawn(|| product_loader.ideologies());
             // The resource declarations, for the tactic triggers' resource
             // names as the content is read.
-            let h_resources = scope.spawn(|| installed_content_core::resources::read(layers));
+            let h_resources = scope.spawn(|| product_loader.resources());
             // The initial seek decodes from its block start to the hour, all
             // in memory; it overlaps the file reads above on its own thread.
             // Only playback moves here, so the joins below keep their order.
@@ -2132,10 +2153,7 @@ impl Document {
                 }
             });
             let h_movement = scope.spawn(|| -> io::Result<_> {
-                let mut movement = MovementContent::new(
-                    installed_content_core::movement::MovementMap::read(layers, &defines)?,
-                    installed_content_core::movement::MovementDefines::read(&defines)?,
-                );
+                let mut movement = product_loader.movement(&defines)?;
                 movement.set_task_force_terrain(
                     combat_assets.movement_terrain(),
                     &regions,
@@ -2272,7 +2290,9 @@ impl Document {
                     None
                 }
             };
-            h_initial_flags.join().expect("initial flag warmer panicked");
+            h_initial_flags
+                .join()
+                .expect("initial flag warmer panicked");
             // Boxed for the same reason as the first wave's content.
             Ok(Box::new((
                 labels,
@@ -2510,7 +2530,6 @@ impl Document {
             scripted: Arc::clone(&scripted),
         });
         let map = Arc::new(map);
-        let intel_cells = textures::IntelCellsCache::prewarm(Arc::clone(&map));
         let province_geometry = Arc::new(province_geometry);
         let battle_name_provinces = Arc::new(battle_name_provinces);
         let state_name_keys = Arc::new(state_name_keys);
@@ -2657,7 +2676,25 @@ impl Document {
         .map_err(|error| error.to_string());
         let snow_cells = weather::SnowCells::new(&map, &assets.perm_snow)
             .map_err(|error| (error.kind(), error.to_string()));
+        let products = map_products::ProductContent::from_inputs(
+            product_loader.reads.clone(),
+            map_products::ProductInputs {
+                map: Arc::clone(&map),
+                fog: Arc::clone(&counters.fog),
+                anchors: Arc::clone(&counters.anchors),
+                default_anchors: Arc::clone(&counters.default_anchors),
+                bounds: Arc::clone(&counters.bounds),
+                localisation: Arc::clone(&names.localisation),
+                map_text: viewer_world::map::animated_map_text::events::Content::new(
+                    &building_types,
+                ),
+                audio: audio.as_ref().map(|source| Arc::clone(&source.content)),
+                triggers: Arc::new(icons.raids.trigger_content.clone()),
+                vision_memo: Arc::clone(&vision_memo),
+            },
+        );
         let content = Content {
+            products,
             map_export: Default::default(),
             map_export_visual_mods: content.layers.presentation().shows_visual_mods(),
             map_export_layers: content.layers.clone(),
@@ -2723,7 +2760,6 @@ impl Document {
             sprawl,
             sprawl_build,
             map_buildings,
-            map_text: viewer_world::map::animated_map_text::events::Content::new(&building_types),
             rail_assets,
             rail_geometry,
             trains,
@@ -2735,13 +2771,11 @@ impl Document {
             orders: order_assets,
             political_gpu: viewer_world::map::political_gpu::Cache::default(),
             eta_cache,
-            vision_memo,
             order_memo: Recent::new(ORDER_MEMO),
             trade_route_memo: Recent::new(ORDER_MEMO),
             type_tint_memo: Keyed::new(counters::type_tint::TABLES, TYPE_TINT_MEMO),
             mission_memo: Recent::new(MISSION_MEMO),
             snow_cells: OnceLock::from(snow_cells),
-            intel_cells,
             movement,
             province_geometry,
             province_geometry_build,
@@ -3165,6 +3199,19 @@ impl OverlayTables {
 }
 
 impl<'a> Hour<'a> {
+    pub(crate) fn fog_products(
+        &self,
+        choice: &perspective::Choice,
+        memos: &map_products::FogMemos,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<Arc<map_products::FogProduct>> {
+        self.product_hour.fog(choice, memos, spans)
+    }
+
+    pub(crate) fn weather_field(&self) -> io::Result<viewer_world::map::weather_effects::Field> {
+        self.product_hour.weather_field()
+    }
+
     pub(crate) fn air_ranges(
         &self,
         viewer: u32,
@@ -3190,8 +3237,7 @@ impl<'a> Hour<'a> {
             content,
             frame,
             hour_fraction,
-            vision_cache: RefCell::new(None),
-            trigger_world: OnceCell::new(),
+            product_hour: map_products::ProductHour::new(&content.products, frame, hour_fraction),
             pool_limits: Default::default(),
             worker_etas: None,
         }
@@ -3205,120 +3251,8 @@ impl<'a> Hour<'a> {
         self
     }
 
-    pub(crate) fn music_chances_cached(
-        &self,
-        country: u32,
-        memo: &music_inputs::Memo,
-    ) -> Option<viewer_audio::Chances> {
-        let audio = self.content.audio.as_ref()?;
-        if audio.content.music.songs.is_empty() {
-            return None;
-        }
-        // Build lazy world indexes before capturing each song's own reads.
-        let world = self.trigger_world();
-        Some(memo.chances(self.frame, &audio.content, country, world))
-    }
-
-    /// The hour's battles for the battle ambience: the game's recorded
-    /// battle list (`BattleSounds`), in recorded order, each with the
-    /// divisions of its member provinces' land combats. Tables the recording
-    /// lacks are named in the refusals; without `BattleSounds` no battle
-    /// plays, and without sub-unit compositions the battles still sound
-    /// their distant ambience, but no layer. `None` without battle defines.
-    pub fn battle_sounds(&self) -> Option<viewer_audio::Battles> {
-        use replay_data::rows::tables;
-        use viewer_foundation::table_access::{Available, rows};
-        let audio = self.content.audio.as_ref()?;
-        audio.content.battle.as_ref()?;
-        let mut refusals = Vec::new();
-        let mut note = |table: &str, available: Result<bool, String>| match available {
-            Ok(true) => {}
-            Ok(false) => refusals.push(format!("the recorded {table} table is incomplete")),
-            Err(why) => refusals.push(format!("the recorded {table} table is unavailable ({why})")),
-        };
-        fn state<T: replay_data::rows::TableSchema>(
-            available: &std::io::Result<Available<'_, T>>,
-        ) -> Result<bool, String> {
-            match available {
-                Ok(Available::Complete(_)) => Ok(true),
-                Ok(Available::Truncated { .. }) => Ok(false),
-                Ok(Available::Unavailable { reason }) => Err(reason.to_string()),
-                Ok(Available::NotRecorded { mode }) => {
-                    Err(format!("not recorded in a {mode} recording"))
-                }
-                Err(error) => Err(error.to_string()),
-            }
-        }
-        let recorded = rows::<tables::BattleSounds>(self.frame);
-        note("BattleSounds", state(&recorded));
-        let combats = rows::<tables::LandCombats>(self.frame);
-        note("LandCombats", state(&combats));
-        let divisions = rows::<tables::Divisions>(self.frame);
-        let templates = rows::<tables::DivisionTemplateIcons>(self.frame);
-        let tokens = rows::<tables::LexicalTokens>(self.frame);
-        let layers = !audio.content.layers.sounds.is_empty();
-        if layers {
-            note("Divisions", state(&divisions));
-            note("DivisionTemplateIcons", state(&templates));
-            note("LexicalTokens", state(&tokens));
-        }
-        let recorded = recorded.as_ref().map_or(&[][..], Available::rows);
-        let combats = combats.as_ref().map_or(&[][..], Available::rows);
-        let divisions: BTreeMap<u64, u64> = divisions
-            .as_ref()
-            .map_or(&[][..], Available::rows)
-            .iter()
-            .map(|division| (division.id, division.template))
-            .collect();
-        // A template whose composition was unreadable or unrecorded is unknown.
-        let templates: BTreeMap<u64, &replay_data::rows::TemplateGrids> = templates
-            .as_ref()
-            .map_or(&[][..], Available::rows)
-            .iter()
-            .filter(|template| template.model_unreadable == 0)
-            .filter_map(|template| match &template.grids {
-                replay_data::rows::Recorded::Value(grids) => Some((template.template, grids)),
-                replay_data::rows::Recorded::NotRecorded => None,
-            })
-            .collect();
-        let tokens = tokens.as_ref().map_or(&[][..], Available::rows);
-        let name = |token: u32| -> Option<String> {
-            let found = tokens.binary_search_by_key(&token, |row| row.token).ok()?;
-            Some(String::from_utf8_lossy(&tokens[found].literal).into_owned())
-        };
-        let (battles, unknown) = recorded_battles(recorded, combats, layers, |division| {
-            let template = *divisions.get(&division)?;
-            // A division without a template has no slots to count.
-            if template == 0 {
-                return Some(Vec::new());
-            }
-            let grids = templates.get(&template)?;
-            grids
-                .ambience_slots()
-                .filter(|subunit| subunit.token != 0)
-                .map(|subunit| {
-                    Some((
-                        name(subunit.token)?,
-                        usize::try_from(subunit.count).unwrap_or(0),
-                    ))
-                })
-                .collect()
-        });
-        if unknown > 0 {
-            refusals.push(format!(
-                "{unknown} combat divisions have no recorded template composition or sub-unit name, so their sub-units do not count toward battle layers"
-            ));
-        }
-        Some(viewer_audio::Battles { battles, refusals })
-    }
-
     pub fn trigger_world(&self) -> &dashboard::triggers::World<'a> {
-        self.trigger_world.get_or_init(|| {
-            dashboard::triggers::World::read(
-                self.frame,
-                self.content.icons.raids.trigger_content.facts(),
-            )
-        })
+        self.product_hour.trigger_world()
     }
 
     /// This hour's derived ETAs, cached and shared by both consumers.
@@ -3944,19 +3878,13 @@ impl<'a> Hour<'a> {
 
     /// This hour's nuclear impacts at their provinces' standstill anchors.
     pub fn nuclear_impacts(&self) -> io::Result<viewer_world::map::strike_effects::Impacts> {
-        viewer_world::map::strike_effects::Impacts::read(self.frame, |province| {
-            self.impact_place(province)
-        })
+        self.product_hour.nuclear_impacts()
     }
 
     /// A province's standstill unit-stack anchor and admission box, where
     /// its impact effects stand.
     fn impact_place(&self, province: u32) -> Option<([f32; 3], [f32; 4])> {
-        Some((
-            self.counters
-                .anchor(province, viewer_foundation::map::unit_rules::STANDSTILL)?,
-            *self.counters.bounds.get(&province)?,
-        ))
+        self.content.products.impact_place(province)
     }
 
     /// This hour's map events interpreted for `vision`'s viewing country:
@@ -3965,24 +3893,7 @@ impl<'a> Hour<'a> {
         &self,
         vision: &perspective::Vision,
     ) -> viewer_world::map::animated_map_text::events::Prepared {
-        use viewer_world::map::animated_map_text::events::{Context, Prepared};
-        let view = vision.ours();
-        match viewer_foundation::table_access::rows::<replay_data::rows::tables::MapEvents>(
-            self.frame,
-        ) {
-            Ok(intervals) => Prepared::new(
-                &Context::new(
-                    self.frame,
-                    vision,
-                    &self.content.map_text,
-                    &self.content.names.localisation,
-                ),
-                intervals.rows(),
-                intervals.is_complete(),
-                |province| self.impact_place(province),
-            ),
-            Err(error) => Prepared::unavailable(view, format!("map text table malformed: {error}")),
-        }
+        self.product_hour.map_text(vision)
     }
 
     pub fn aircraft_plan(
@@ -4034,7 +3945,10 @@ impl<'a> Hour<'a> {
             models.resolve(variant, country, || {
                 self.unit_models.aircraft_entity(
                     self.frame,
-                    viewer_world::map::equipment_graphics::Limits::new(&self.pool_limits, &evaluate),
+                    viewer_world::map::equipment_graphics::Limits::new(
+                        &self.pool_limits,
+                        &evaluate,
+                    ),
                     variant,
                     country,
                 )
@@ -4078,106 +3992,7 @@ impl<'a> Hour<'a> {
     /// that cost, so the window's warning area and a `--dump` report the same
     /// thing. A core table's gap is not here: it is the frame error above.
     pub fn limitations(&self, perspective: &perspective::Choice) -> io::Result<Limitations> {
-        self.limitations_with(perspective, None)
-    }
-
-    /// [`Hour::limitations`] with this hour's intel map already built for the
-    /// same perspective, so its fogged count need not rebuild it.
-    pub fn limitations_with(
-        &self,
-        perspective: &perspective::Choice,
-        intel: Option<&IntelMap>,
-    ) -> io::Result<Limitations> {
-        let frame = self.frame;
-        let mut out = tables::limitations(frame);
-        out.note_trains(frame);
-        out.note_aircraft(frame);
-        out.note_point_lights();
-        for refused in self.nuclear_impacts()?.refused {
-            out.note_field("Nuclear impact effects", &refused);
-        }
-        // counters: which country the map is drawn for. Stated on every frame,
-        // degraded or not, because every counter on it depends on the answer.
-        let vision = self.vision(perspective)?;
-        out.note_perspective(&tables::Perspective {
-            tag: self.viewing_tag(&vision)?,
-            resolution: vision.resolution().clone(),
-            fog: vision.fog(),
-        });
-        // orders: what the drawn battle plan could not take from the recording.
-        // The count is the perspective's own orders, which is the cheap half of
-        // `Document::order_field` and needs none of its geometry.
-        let links: BTreeMap<u32, u32> = tables::core::<row_tables::CountryLinks>(frame)?
-            .iter()
-            .map(|link| (link.id, link.canonical_slot))
-            .collect();
-        out.note_battle_plan(orders::own_order_count(frame, &links, vision.ours())?);
-        // raids: what the raid arrows could not take from this hour.
-        if let Ok(raids) = frame.complete::<row_tables::Raids>() {
-            let ours: Vec<_> = raids
-                .iter()
-                .filter(|raid| raid.parent_slot == vision.ours() && raid.phase != 5)
-                .collect();
-            let launched = ours.iter().filter(|raid| raid.phase == 4).count();
-            out.note_raid_arrows(ours.len(), launched);
-        }
-        // counters: what the fog-on sight rule could not take from this hour.
-        // With fog off every stack is shown and none of it decides anything.
-        if vision.fog() {
-            out.note_fog_on_sight(frame);
-            if let Some(table) = vision.undecided() {
-                out.note_undecided_sight(table);
-            }
-            if let Some(input) = vision.visibility_gap() {
-                out.note_visibility_gap(input);
-            }
-        }
-        // fog of war: stated only when drawn; the fog-on gap is stated above.
-        if vision.province_fog().is_some() {
-            let built;
-            let intel = match intel {
-                Some(intel) => intel,
-                None => {
-                    built = self.intel_map_from_visibility(vision.province_fog())?;
-                    &built
-                }
-            };
-            out.note_fog_of_war(intel.fogged_texels(), self.hour_fraction);
-        }
-        for table in vision.truncated() {
-            out.note_field(
-                &format!("{table} (perspective)"),
-                "the rows this hour did not reach are read as no relation and no detection at \
-                 all, so a stack among them carries the game's question mark where the game drew \
-                 it in full",
-            );
-        }
-        // names: bytes the port cannot lay out as text. The province keeps its static name rather
-        // than being drawn with replacement marks; see `viewer_world::map::labels`.
-        let unreadable = labels::unreadable_overrides(frame)?;
-        if !unreadable.is_empty() {
-            out.note_field(
-                "ProvinceNames.name",
-                &format!(
-                    "the recorded name of {} {} ({}) is not text this port can lay out, so {} \
-                     keeps the static localised name of its province",
-                    unreadable.len(),
-                    if unreadable.len() == 1 {
-                        "province"
-                    } else {
-                        "provinces"
-                    },
-                    unreadable
-                        .iter()
-                        .take(8)
-                        .map(u32::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    if unreadable.len() == 1 { "it" } else { "each" },
-                ),
-            );
-        }
-        Ok(out)
+        self.product_hour.limitations(perspective)
     }
 
     /// Political naval FX uses the same viewing country as fog and counters.
@@ -4221,19 +4036,7 @@ impl<'a> Hour<'a> {
         &self,
         perspective: &perspective::Choice,
     ) -> io::Result<Arc<perspective::Vision>> {
-        if let Some((choice, vision)) = self.vision_cache.borrow().as_ref()
-            && choice == perspective
-        {
-            return Ok(Arc::clone(vision));
-        }
-        let vision = cached_vision(
-            self.frame,
-            perspective,
-            self.counters.fog(),
-            &self.vision_memo,
-        )?;
-        *self.vision_cache.borrow_mut() = Some((perspective.clone(), Arc::clone(&vision)));
-        Ok(vision)
+        self.product_hour.vision(perspective)
     }
 
     /// Prefer the installed hour's value to rebuilding a visibility memo entry that the
@@ -4246,19 +4049,14 @@ impl<'a> Hour<'a> {
         if let Some(value) =
             tables.and_then(|tables| tables.vision.get(self.frame, choice, &self.counters.fog))
         {
-            *self.vision_cache.borrow_mut() = Some((choice.clone(), Arc::clone(value)));
+            self.product_hour.seed_vision(choice, Arc::clone(value));
         }
         self.vision(choice)
     }
 
     /// The viewing country's tag at the hour on screen.
     pub fn viewing_tag(&self, vision: &perspective::Vision) -> io::Result<String> {
-        let ours = vision.ours();
-        Ok(tables::core::<row_tables::Countries>(self.frame)?
-            .iter()
-            .find(|country| country.canonical_slot == ours)
-            .map(|country| String::from_utf8_lossy(&country.tag).into_owned())
-            .unwrap_or_else(|| format!("country slot {ours}")))
+        self.product_hour.viewing_tag(vision)
     }
 
     // borders: the demilitarised-zone bucket bank
@@ -4520,7 +4318,10 @@ impl<'a> Hour<'a> {
     ) -> io::Result<OverlayTables> {
         if !Arc::ptr_eq(&previous.content_identity, &self.combat)
             || !previous.counters.is_for_frame(self.frame)
-            || previous.vision.get(self.frame, perspective, &self.counters.fog).is_none()
+            || previous
+                .vision
+                .get(self.frame, perspective, &self.counters.fog)
+                .is_none()
         {
             return self.hour_tables_with_raids(perspective, raids, engaged);
         }
@@ -4528,9 +4329,9 @@ impl<'a> Hour<'a> {
         // arrival during this chain deliberately asks for refinement next frame.
         let engaged_covered =
             engaged.is_some_and(|index| index.shared.covers(self.frame.branch, self.frame.hour));
-        let counters = previous.counters.refine_engagement(
-            engaged.map(|index| index.shared.as_ref()),
-        )?;
+        let counters = previous
+            .counters
+            .refine_engagement(engaged.map(|index| index.shared.as_ref()))?;
         Ok(OverlayTables {
             counters,
             vision: previous.vision.clone(),
@@ -4543,7 +4344,10 @@ impl<'a> Hour<'a> {
             content_identity: Arc::clone(&previous.content_identity),
             engaged_covered,
             raids: raids::RaidIcons::carried(
-                raids, self.frame.branch, self.frame.hour, previous.ours(),
+                raids,
+                self.frame.branch,
+                self.frame.hour,
+                previous.ours(),
             ),
             intel: Arc::clone(&previous.intel),
             built_for: previous.built_for,
@@ -5065,8 +4869,7 @@ impl<'a> Hour<'a> {
     /// [`perspective::Vision::province_fog`] is `None` gets the all-clear grid
     /// and a frame that draws no fog.
     pub fn intel_map(&self, perspective: &perspective::Choice) -> io::Result<IntelMap> {
-        let vision = self.vision(perspective)?;
-        self.intel_map_from_visibility(vision.province_fog())
+        self.product_hour.intel_map(perspective)
     }
 }
 
@@ -5089,6 +4892,7 @@ const _: fn() = || {
 /// member combats' divisions without a recorded composition or name. A
 /// battle's sounds keep its object as their identity from hour to hour, so a
 /// battle that moves in the list plays on.
+#[cfg(test)]
 fn recorded_battles(
     recorded: &[replay_data::rows::BattleSoundRow],
     combats: &[replay_data::rows::LandCombatRow],
@@ -5154,9 +4958,11 @@ fn recorded_battles(
 }
 
 /// The unit class of a division; a land combat's other units have no template.
+#[cfg(test)]
 const DIVISION_CLASS: u32 = 0;
 
 /// A mean-time value of one: the evaluator's fixed five-decimal scale.
+#[cfg(test)]
 const MUSIC_CHANCE_ONE: f64 = 100_000.0;
 
 /// Each song's chance from `evaluate`, which reads a mean-time body as fixed
@@ -5195,93 +5001,6 @@ fn song_chances(
         })
         .collect();
     viewer_audio::Chances { weights, refusals }
-}
-
-/// The content's sound definitions. Unreadable definitions leave the maps
-/// silent with a warning; unreadable `NSound` defines leave the height and
-/// voice categories at full volume, named in the warnings.
-fn audio_source(
-    layers: &installed_content_core::ResolvedLayers,
-    defines: &installed_content_core::defines::Defines,
-    user: &std::path::Path,
-    warnings: &mut Vec<String>,
-) -> Option<Arc<viewer_audio::Source>> {
-    let catalog = match installed_content_sound::sound::Catalog::read(layers) {
-        Ok(catalog) => catalog,
-        Err(error) => {
-            warnings.push(format!(
-                "Map audio is unavailable: the sound definitions are unreadable ({error})."
-            ));
-            return None;
-        }
-    };
-    if !catalog.notes.is_empty() {
-        warnings.push(format!(
-            "Sound definitions the game refuses or reads past: {}.",
-            catalog.notes.lines().join("; ")
-        ));
-    }
-    let recently_played = defines
-        .int32("NGame", "MUSIC_PLAYER_RECENTLY_PLAYED_SIZE")
-        .map_err(|error| warnings.push(format!("Map music repeats songs freely: {error}.")))
-        .map_or(0, |size| usize::try_from(size).unwrap_or(0));
-    let battle = installed_content_sound::combat_sounds::BattleDefines::load(defines)
-        .map_err(|error| warnings.push(format!("Map battles are silent: {error}.")))
-        .ok();
-    let combat_sounds = match installed_content_sound::combat_sounds::Layers::read(layers) {
-        Ok(combat_sounds) => {
-            if !combat_sounds.notes.is_empty() {
-                warnings.push(format!(
-                    "Battle sound definitions the game refuses or reads past: {}.",
-                    combat_sounds.notes.lines().join("; ")
-                ));
-            }
-            combat_sounds
-        }
-        Err(error) => {
-            warnings.push(format!("Map battles play no layers: {error}."));
-            Default::default()
-        }
-    };
-    let defines = installed_content_sound::sound::Defines::load(defines)
-        .map_err(|error| {
-            warnings.push(format!(
-                "Map audio plays its height and voice categories without their volumes: {error}."
-            ))
-        })
-        .ok();
-    let music = match installed_content_sound::music::Music::read(layers) {
-        Ok(music) => {
-            if !music.notes.is_empty() {
-                warnings.push(format!(
-                    "Music definitions the game refuses or reads past: {}.",
-                    music.notes.lines().join("; ")
-                ));
-            }
-            music
-        }
-        Err(error) => {
-            warnings.push(format!("Map music is unavailable: {error}."));
-            Default::default()
-        }
-    };
-    // The user's enabled stations; without the playlist file every station plays.
-    let stations = installed_content_sound::music::enabled_stations(user)
-        .map_err(|error| {
-            warnings.push(format!(
-                "Map music plays every station: the playlist settings are unreadable ({error})."
-            ))
-        })
-        .ok()
-        .flatten();
-    Some(Arc::new(viewer_audio::Source {
-        content: Arc::new(
-            viewer_audio::Content::new(catalog, defines)
-                .with_music(music, stations, recently_played)
-                .with_battles(battle, combat_sounds),
-        ),
-        layers: layers.clone(),
-    }))
 }
 
 #[cfg(test)]

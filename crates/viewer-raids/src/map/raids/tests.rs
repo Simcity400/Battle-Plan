@@ -1,5 +1,6 @@
 use super::test_support::*;
 use super::*;
+use script::LeaderRoles;
 use installed_content_core::buildings::BuildingType;
 use installed_content_raids::{raids::RaidType as Kind, raids::TargetType};
 use replay_data::{

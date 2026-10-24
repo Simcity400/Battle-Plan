@@ -480,6 +480,7 @@ fn the_intel_map_follows_the_viewing_countrys_province_bytes() {
     let built = std::cell::Cell::new(0);
     let intel = |fog: Option<BTreeMap<u32, u8>>| {
         memos
+            .fog
             .intel
             .get_or_insert_with(fog.clone(), || {
                 built.set(built.get() + 1);

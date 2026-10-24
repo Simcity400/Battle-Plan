@@ -17,12 +17,13 @@ pub mod witness;
 pub use background::Background;
 pub use binding::Key;
 pub use codec::Limits;
+pub use content_witness::Witness;
 pub use reader::{Headroom, LayerProduct, Reader, Restore};
 pub use records::{
     CONTRACT, Cursor, FORMAT, LayerStatus, Manifest, Payload, Producer, SNOW, SNOW_CONTRACT,
     TABLE_SECTION, Variant, payload_section, schema_digest,
 };
-pub use witness::Witness;
+use witness::Publish;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Coverage {

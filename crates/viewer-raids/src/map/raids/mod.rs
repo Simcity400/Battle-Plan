@@ -42,7 +42,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use viewer_foundation::map::province_map::province_at;
-use viewer_foundation::state_resources::resource_bonuses as state_resources_resource_bonuses;
 use viewer_foundation::trigger_content::TriggerContent;
 pub mod cycle;
 pub mod eligibility;
@@ -69,7 +68,7 @@ use installed_content_raids::{raids::Catalog, raids::RaidType};
 use replay_data::{rows::RaidRow, rows::RaidScope, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
-use script::{Eval, LeaderRoles, REFUSED, Scope, Scopes, World, refused};
+use script::{Eval, REFUSED, Scope, Scopes, World, refused};
 use viewer_foundation::map::mode_visibility::RaidReach;
 use viewer_foundation::map::{
     camera::Camera,
@@ -327,6 +326,17 @@ impl RaidAssets {
         map: &MapData,
         registry: &native::resources::Registry,
     ) -> io::Result<Self> {
+        Self::load_with_products(None, layers, defines, map, registry)
+    }
+
+    pub fn load_with_products(
+        products: Option<&map_products::loader::Loader>,
+        layers: &ResolvedLayers,
+        defines: &installed_content_core::defines::Defines,
+        map: &MapData,
+        registry: &native::resources::Registry,
+    ) -> io::Result<Self> {
+        let product = map_products::loader::TriggerLoader::new(layers, products);
         let mut warnings = Vec::new();
         let catalog = installed_content_raids::raids::read(layers)?;
         if !catalog.refused.is_empty() {
@@ -346,8 +356,8 @@ impl RaidAssets {
                 format!("Raid content read as the game reads it: {misread}"),
             )
         }));
-        let buildings = installed_content_core::buildings::read(layers)?;
-        let tag_aliases = installed_content_core::tag_aliases::read(layers)?;
+        let buildings = product.buildings()?;
+        let tag_aliases = product.tag_aliases()?;
         warnings.extend(tag_aliases.unknown.iter().map(|reason| {
             (
                 installed_content_core::DiagnosticKind::Unsettled,
@@ -403,26 +413,22 @@ impl RaidAssets {
             .into_iter()
             .filter(|name| registry.sprite(name.as_bytes()).is_some())
             .collect();
-        let leader_roles = installed_content_core::characters::leader_templates(layers)
-            .map(LeaderRoles::new)
-            .map(Arc::new);
+        let leader_roles = product.leader_roles();
         if let Err(error) = &leader_roles {
             warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
                 "Character templates cannot be read ({error}); unit leaders whose visibility has a condition are undecided."
             )));
         }
         // The document reports the state conflicts and misreads once.
-        let (states, _) = installed_content_states::states::read(layers, defines, &map.definitions)?;
+        let (states, _) = product.states(defines, map)?;
         let states = states.definitions();
-        let (paths, geometry) = match installed_content_core::province_graph::ProvinceGraph::read(layers) {
-            Ok((graph, geometry)) => (Ok(paths::PathSearch::new(graph)), geometry),
-            Err(error) => {
-                warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
-                    "The province graph cannot be built ({error}); naval and building raid sources cannot be ranged."
-                )));
-                (Err(error.to_string()), ProvinceGeometry::read(layers)?)
-            }
-        };
+        let (graph, geometry) = product.graph()?;
+        if let Err(error) = &graph {
+            warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
+                "The province graph cannot be built ({error}); naval and building raid sources cannot be ranged."
+            )));
+        }
+        let paths = graph.map(paths::PathSearch::new);
         let moves = paths
             .as_ref()
             .map(|paths| installed_content_unit_path::unit_path::MoveGraph::new(paths.graph(), &geometry))
@@ -437,17 +443,9 @@ impl RaidAssets {
                 }
             }
         }
-        let state_provinces: BTreeMap<u32, Vec<u32>> = states
-            .iter()
-            .map(|(&id, state)| (id, state.provinces.clone()))
-            .collect();
-        let neighbor_states = match &paths {
-            Ok(paths) => paths
-                .graph()
-                .neighbor_states(&state_provinces)
-                .map_err(|error| error.to_string()),
-            Err(error) => Err(format!("the province graph cannot be built ({error})")),
-        };
+        let (state_provinces, impassable) = map_products::loader::state_content(states);
+        let neighbor_states =
+            product.neighbor_states(paths.as_ref().map(|paths| paths.graph()), &state_provinces);
         if let Err(error) = &neighbor_states {
             warnings.push((installed_content_core::DiagnosticKind::Refused, format!(
                 "State neighbours cannot be derived ({error}); any_neighbor_state and all_neighbor_state are unknown."
@@ -484,14 +482,8 @@ impl RaidAssets {
         // The combat window sorts in the GUI band above every priority.
         let priority =
             map_icon_priority(defines.number("NMapIcons", "TOP_MAP_ICON")?).map_err(invalid)?;
-        let dlcs = layers.dlc_names()?;
-        let impassable = states
-            .iter()
-            .filter(|(_, state)| state.impassable)
-            .map(|(&id, _)| id)
-            .collect();
-        let terrain = None;
-        let resource_bonuses = state_resources_resource_bonuses(defines)?;
+        let dlcs = product.dlcs()?;
+        let resource_bonuses = product.resource_bonuses(defines)?;
         let recorded_indexes = Default::default();
         let table_indexes = Default::default();
         let batch = target_batch(defines);
@@ -514,40 +506,25 @@ impl RaidAssets {
                     )
                 })
             });
-        let triggers = Default::default();
-        let ideologies = None;
-        let continents = installed_content_core::terrain::read_default_map(layers)
-            .and_then(|map| layers.read(&map.file("continent")?))
-            .and_then(|bytes| {
-                installed_content_equipment_graphics::equipment_graphics::context::continent_names(&bytes)
-            })
-            .map_err(|why| why.to_string());
-        let character_traits = None;
+        let continents = product.continents();
         let tag_aliases = Arc::new(tag_aliases);
         let tooltip = tooltips::content::Content::read(defines, states, layers);
-        let invasion_prepare_days = defines
-            .int32("NNavy", "NAVAL_INVASION_PREPARE_DAYS")
-            .map_err(|error| error.to_string());
-        let script_constants =
-            installed_content_core::script_constants::read(layers).map_err(|error| error.to_string());
+        let invasion_prepare_days = product.invasion_prepare_days(defines);
+        let script_constants = product.constants();
         let defines = RaidDefines::read(defines)?;
-        let trigger_content = TriggerContent {
-            dlcs,
-            state_provinces,
-            neighbor_states,
-            impassable,
-            terrain,
-            resource_bonuses,
-            triggers: Arc::new(triggers),
-            ideologies,
-            continents,
-            character_traits,
+        let trigger_content = map_products::loader::assemble_trigger_content(
             tag_aliases,
-            buildings,
             leader_roles,
+            buildings,
+            state_provinces,
+            impassable,
+            neighbor_states,
+            dlcs,
+            resource_bonuses,
+            continents,
             invasion_prepare_days,
             script_constants,
-        };
+        );
         Ok(Self {
             trigger_content,
             glyphs,

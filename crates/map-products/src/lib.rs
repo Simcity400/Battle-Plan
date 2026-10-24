@@ -1,0 +1,534 @@
+pub mod loader;
+pub mod music_inputs;
+pub mod witness;
+
+use installed_content_core::{ResolvedLayers, map::MapData};
+use installed_content_localisation::localisation::Localisation;
+use replay_data::rows::tables as row_tables;
+use replay_frame::frame::DecodedFrame;
+use std::{
+    cell::{OnceCell, RefCell},
+    collections::BTreeMap,
+    io,
+    sync::Arc,
+};
+use viewer_counter_products::map::orders;
+use viewer_foundation::{
+    map::{
+        memo::{Keyed, Recent},
+        perspective::{self, VisionKey, cached_vision},
+        tables::{self, Limitations},
+        textures::{self, IntelMap},
+        visibility::FogContent,
+    },
+    profiling::BuilderSpans,
+    trigger_content::TriggerContent,
+};
+use viewer_world::map::{animated_map_text::events, labels, strike_effects, weather_effects};
+use witness::ContentReads;
+
+pub struct ProductInputs {
+    pub map: Arc<MapData>,
+    pub fog: Arc<Result<FogContent, String>>,
+    pub anchors: Arc<BTreeMap<(u32, u32), [f32; 3]>>,
+    pub default_anchors: Arc<BTreeMap<u32, [f32; 3]>>,
+    pub bounds: Arc<BTreeMap<u32, [f32; 4]>>,
+    pub localisation: Arc<Localisation>,
+    pub map_text: events::Content,
+    pub audio: Option<Arc<viewer_audio::Content>>,
+    pub triggers: Arc<TriggerContent>,
+    pub vision_memo: Arc<Keyed<perspective::Vision, VisionKey>>,
+}
+
+pub struct ProductContent {
+    pub reads: ContentReads,
+    inputs: ProductInputs,
+    intel_cells: Arc<textures::IntelCellsCache>,
+}
+
+impl std::ops::Deref for ProductContent {
+    type Target = ProductInputs;
+    fn deref(&self) -> &ProductInputs {
+        &self.inputs
+    }
+}
+
+impl ProductContent {
+    pub fn load(
+        layers: &ResolvedLayers,
+        user: &std::path::Path,
+        language: &str,
+    ) -> io::Result<Self> {
+        loader::Loader::new(layers).load(user, language)
+    }
+
+    pub fn from_inputs(reads: ContentReads, inputs: ProductInputs) -> Self {
+        let intel_cells = textures::IntelCellsCache::prewarm(Arc::clone(&inputs.map));
+        Self {
+            reads,
+            inputs,
+            intel_cells,
+        }
+    }
+
+    pub fn intel_map_from_visibility(
+        &self,
+        visibility: Option<&BTreeMap<u32, u8>>,
+    ) -> io::Result<IntelMap> {
+        if visibility.is_none() {
+            return textures::clear_intel_map(&self.map);
+        }
+        Ok(self.intel_cells.get_or_init()?.intel_map(visibility))
+    }
+
+    pub fn impact_place(&self, province: u32) -> Option<([f32; 3], [f32; 4])> {
+        Some((
+            viewer_foundation::map::counter_anchors::stack_anchor(
+                &self.anchors,
+                &self.default_anchors,
+                province,
+                viewer_foundation::map::unit_rules::STANDSTILL,
+            )?,
+            *self.bounds.get(&province)?,
+        ))
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Header {
+    pub viewing: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct FogProduct {
+    pub intel: Arc<IntelMap>,
+    pub limitations: Limitations,
+    pub header: Arc<Header>,
+    pub map_text: Arc<events::Prepared>,
+    pub music: Option<Arc<viewer_audio::Chances>>,
+    pub battles: Option<Arc<viewer_audio::Battles>>,
+}
+
+pub struct FogMemos {
+    pub intel: Recent<Option<BTreeMap<u32, u8>>, IntelMap>,
+    pub music: music_inputs::Memo,
+}
+
+impl FogMemos {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            intel: Recent::new(capacity),
+            music: music_inputs::Memo::new(capacity),
+        }
+    }
+}
+
+pub const FOG_PART_NAME: &str = "fog";
+pub const FOG_PART_RANK: u8 = 6;
+
+pub struct ProductHour<'a> {
+    pub content: &'a ProductContent,
+    pub frame: &'a DecodedFrame,
+    pub hour_fraction: f32,
+    vision_cache: RefCell<Option<(perspective::Choice, Arc<perspective::Vision>)>>,
+    trigger_world: OnceCell<dashboard_text::triggers::World<'a>>,
+}
+
+impl<'a> ProductHour<'a> {
+    pub fn new(content: &'a ProductContent, frame: &'a DecodedFrame, hour_fraction: f32) -> Self {
+        Self {
+            content,
+            frame,
+            hour_fraction,
+            vision_cache: RefCell::new(None),
+            trigger_world: OnceCell::new(),
+        }
+    }
+
+    pub fn seed_vision(&self, choice: &perspective::Choice, vision: Arc<perspective::Vision>) {
+        *self.vision_cache.borrow_mut() = Some((choice.clone(), vision));
+    }
+
+    pub fn trigger_world(&self) -> &dashboard_text::triggers::World<'a> {
+        let inputs: &'a ProductInputs = &self.content.inputs;
+        self.trigger_world.get_or_init(|| {
+            dashboard_text::triggers::World::read(self.frame, inputs.triggers.facts())
+        })
+    }
+
+    pub fn weather_field(&self) -> io::Result<weather_effects::Field> {
+        weather_effects::field(self.frame)
+    }
+
+    pub fn nuclear_impacts(&self) -> io::Result<strike_effects::Impacts> {
+        strike_effects::Impacts::read(self.frame, |province| {
+            self.content.impact_place(province)
+        })
+    }
+
+    pub fn map_text(
+        &self,
+        vision: &perspective::Vision,
+    ) -> viewer_world::map::animated_map_text::events::Prepared {
+        use viewer_world::map::animated_map_text::events::{Context, Prepared};
+        let view = vision.ours();
+        match viewer_foundation::table_access::rows::<replay_data::rows::tables::MapEvents>(
+            self.frame,
+        ) {
+            Ok(intervals) => Prepared::new(
+                &Context::new(
+                    self.frame,
+                    vision,
+                    &self.content.map_text,
+                    &self.content.localisation,
+                ),
+                intervals.rows(),
+                intervals.is_complete(),
+                |province| self.content.impact_place(province),
+            ),
+            Err(error) => Prepared::unavailable(view, format!("map text table malformed: {error}")),
+        }
+    }
+
+    pub fn limitations(&self, perspective: &perspective::Choice) -> io::Result<Limitations> {
+        self.limitations_with(perspective, None)
+    }
+
+    pub fn limitations_with(
+        &self,
+        perspective: &perspective::Choice,
+        intel: Option<&IntelMap>,
+    ) -> io::Result<Limitations> {
+        let frame = self.frame;
+        let mut out = tables::limitations(frame);
+        out.note_trains(frame);
+        out.note_aircraft(frame);
+        out.note_point_lights();
+        for refused in self.nuclear_impacts()?.refused {
+            out.note_field("Nuclear impact effects", &refused);
+        }
+        let vision = self.vision(perspective)?;
+        out.note_perspective(&tables::Perspective {
+            tag: self.viewing_tag(&vision)?,
+            resolution: vision.resolution().clone(),
+            fog: vision.fog(),
+        });
+        let links: BTreeMap<u32, u32> = tables::core::<row_tables::CountryLinks>(frame)?
+            .iter()
+            .map(|link| (link.id, link.canonical_slot))
+            .collect();
+        out.note_battle_plan(orders::own_order_count(frame, &links, vision.ours())?);
+        if let Ok(raids) = frame.complete::<row_tables::Raids>() {
+            let ours: Vec<_> = raids
+                .iter()
+                .filter(|raid| raid.parent_slot == vision.ours() && raid.phase != 5)
+                .collect();
+            let launched = ours.iter().filter(|raid| raid.phase == 4).count();
+            out.note_raid_arrows(ours.len(), launched);
+        }
+        if vision.fog() {
+            out.note_fog_on_sight(frame);
+            if let Some(table) = vision.undecided() {
+                out.note_undecided_sight(table);
+            }
+            if let Some(input) = vision.visibility_gap() {
+                out.note_visibility_gap(input);
+            }
+        }
+        if vision.province_fog().is_some() {
+            let built;
+            let intel = match intel {
+                Some(intel) => intel,
+                None => {
+                    built = self
+                        .content
+                        .intel_map_from_visibility(vision.province_fog())?;
+                    &built
+                }
+            };
+            out.note_fog_of_war(intel.fogged_texels(), self.hour_fraction);
+        }
+        for table in vision.truncated() {
+            out.note_field(
+                &format!("{table} (perspective)"),
+                "the rows this hour did not reach are read as no relation and no detection at \
+                 all, so a stack among them carries the game's question mark where the game drew \
+                 it in full",
+            );
+        }
+        let unreadable = labels::unreadable_overrides(frame)?;
+        if !unreadable.is_empty() {
+            out.note_field(
+                "ProvinceNames.name",
+                &format!(
+                    "the recorded name of {} {} ({}) is not text this port can lay out, so {} \
+                     keeps the static localised name of its province",
+                    unreadable.len(),
+                    if unreadable.len() == 1 {
+                        "province"
+                    } else {
+                        "provinces"
+                    },
+                    unreadable
+                        .iter()
+                        .take(8)
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    if unreadable.len() == 1 { "it" } else { "each" },
+                ),
+            );
+        }
+        Ok(out)
+    }
+
+    pub fn vision(
+        &self,
+        perspective: &perspective::Choice,
+    ) -> io::Result<Arc<perspective::Vision>> {
+        if let Some((choice, vision)) = self.vision_cache.borrow().as_ref()
+            && choice == perspective
+        {
+            return Ok(Arc::clone(vision));
+        }
+        let vision = cached_vision(
+            self.frame,
+            perspective,
+            FogContent::loaded(&self.content.fog),
+            &self.content.vision_memo,
+        )?;
+        *self.vision_cache.borrow_mut() = Some((perspective.clone(), Arc::clone(&vision)));
+        Ok(vision)
+    }
+
+    pub fn viewing_tag(&self, vision: &perspective::Vision) -> io::Result<String> {
+        let ours = vision.ours();
+        Ok(tables::core::<row_tables::Countries>(self.frame)?
+            .iter()
+            .find(|country| country.canonical_slot == ours)
+            .map(|country| String::from_utf8_lossy(&country.tag).into_owned())
+            .unwrap_or_else(|| format!("country slot {ours}")))
+    }
+
+    pub fn intel_map(&self, perspective: &perspective::Choice) -> io::Result<IntelMap> {
+        let vision = self.vision(perspective)?;
+        self.content
+            .intel_map_from_visibility(vision.province_fog())
+    }
+
+    pub fn battle_sounds(&self) -> Option<viewer_audio::Battles> {
+        use replay_data::rows::tables;
+        use viewer_foundation::table_access::{Available, rows};
+        let audio = self.content.audio.as_ref()?;
+        audio.battle.as_ref()?;
+        let mut refusals = Vec::new();
+        let mut note = |table: &str, available: Result<bool, String>| match available {
+            Ok(true) => {}
+            Ok(false) => refusals.push(format!("the recorded {table} table is incomplete")),
+            Err(why) => refusals.push(format!("the recorded {table} table is unavailable ({why})")),
+        };
+        fn state<T: replay_data::rows::TableSchema>(
+            available: &std::io::Result<Available<'_, T>>,
+        ) -> Result<bool, String> {
+            match available {
+                Ok(Available::Complete(_)) => Ok(true),
+                Ok(Available::Truncated { .. }) => Ok(false),
+                Ok(Available::Unavailable { reason }) => Err(reason.to_string()),
+                Ok(Available::NotRecorded { mode }) => {
+                    Err(format!("not recorded in a {mode} recording"))
+                }
+                Err(error) => Err(error.to_string()),
+            }
+        }
+        let recorded = rows::<tables::BattleSounds>(self.frame);
+        note("BattleSounds", state(&recorded));
+        let combats = rows::<tables::LandCombats>(self.frame);
+        note("LandCombats", state(&combats));
+        let divisions = rows::<tables::Divisions>(self.frame);
+        let templates = rows::<tables::DivisionTemplateIcons>(self.frame);
+        let tokens = rows::<tables::LexicalTokens>(self.frame);
+        let layers = !audio.layers.sounds.is_empty();
+        if layers {
+            note("Divisions", state(&divisions));
+            note("DivisionTemplateIcons", state(&templates));
+            note("LexicalTokens", state(&tokens));
+        }
+        let recorded = recorded.as_ref().map_or(&[][..], Available::rows);
+        let combats = combats.as_ref().map_or(&[][..], Available::rows);
+        let divisions: BTreeMap<u64, u64> = divisions
+            .as_ref()
+            .map_or(&[][..], Available::rows)
+            .iter()
+            .map(|division| (division.id, division.template))
+            .collect();
+        let templates: BTreeMap<u64, &replay_data::rows::TemplateGrids> = templates
+            .as_ref()
+            .map_or(&[][..], Available::rows)
+            .iter()
+            .filter(|template| template.model_unreadable == 0)
+            .filter_map(|template| match &template.grids {
+                replay_data::rows::Recorded::Value(grids) => Some((template.template, grids)),
+                replay_data::rows::Recorded::NotRecorded => None,
+            })
+            .collect();
+        let tokens = tokens.as_ref().map_or(&[][..], Available::rows);
+        let name = |token: u32| -> Option<String> {
+            let found = tokens.binary_search_by_key(&token, |row| row.token).ok()?;
+            Some(String::from_utf8_lossy(&tokens[found].literal).into_owned())
+        };
+        let (battles, unknown) = recorded_battles(recorded, combats, layers, |division| {
+            let template = *divisions.get(&division)?;
+            if template == 0 {
+                return Some(Vec::new());
+            }
+            let grids = templates.get(&template)?;
+            grids
+                .ambience_slots()
+                .filter(|subunit| subunit.token != 0)
+                .map(|subunit| {
+                    Some((
+                        name(subunit.token)?,
+                        usize::try_from(subunit.count).unwrap_or(0),
+                    ))
+                })
+                .collect()
+        });
+        if unknown > 0 {
+            refusals.push(format!(
+                "{unknown} combat divisions have no recorded template composition or sub-unit name, so their sub-units do not count toward battle layers"
+            ));
+        }
+        Some(viewer_audio::Battles { battles, refusals })
+    }
+
+    pub fn music_chances_cached(
+        &self,
+        country: u32,
+        memo: &music_inputs::Memo,
+    ) -> Option<viewer_audio::Chances> {
+        let audio = self.content.audio.as_ref()?;
+        if audio.music.songs.is_empty() {
+            return None;
+        }
+        let world = self.trigger_world();
+        Some(memo.chances(self.frame, audio, country, world))
+    }
+
+    pub fn fog(
+        &self,
+        choice: &perspective::Choice,
+        memos: &FogMemos,
+        spans: &mut BuilderSpans,
+    ) -> io::Result<Arc<FogProduct>> {
+        let vision = spans.measure("fog.vision", |_| self.vision(choice))?;
+        let fog = vision.province_fog();
+        let key = spans.measure("fog.intel_key", |_| fog.cloned());
+        let intel = spans.measure("fog.intel_lookup", |spans| {
+            memos.intel.get_or_insert_with(key, || {
+                spans.measure("fog.intel_build", |_| {
+                    self.content.intel_map_from_visibility(fog).map(Arc::new)
+                })
+            })
+        })?;
+        let limitations = spans.measure("fog.limitations", |_| {
+            self.limitations_with(choice, Some(&intel))
+        })?;
+        let music = spans.measure("fog.music", |_| {
+            self.music_chances_cached(vision.ours(), &memos.music)
+                .map(Arc::new)
+        });
+        let battles = spans.measure("fog.battles", |_| self.battle_sounds().map(Arc::new));
+        Ok(Arc::new(FogProduct {
+            intel,
+            limitations,
+            header: spans.measure("fog.header", |_| {
+                Arc::new(Header {
+                    viewing: self
+                        .vision(choice)
+                        .and_then(|vision| self.viewing_tag(&vision))
+                        .ok(),
+                })
+            }),
+            map_text: spans.measure("fog.map_text", |_| Arc::new(self.map_text(&vision))),
+            music,
+            battles,
+        }))
+    }
+}
+
+fn recorded_battles(
+    recorded: &[replay_data::rows::BattleSoundRow],
+    combats: &[replay_data::rows::LandCombatRow],
+    layers: bool,
+    composition: impl Fn(u64) -> Option<Vec<(String, usize)>>,
+) -> (Vec<viewer_audio::battle::Battle>, usize) {
+    #[derive(Default)]
+    struct Front {
+        divisions: usize,
+        sub_units: BTreeMap<String, usize>,
+        unknown: usize,
+    }
+    let mut fronts: BTreeMap<u32, Front> = BTreeMap::new();
+    for combat in combats {
+        let front = fronts.entry(combat.province).or_default();
+        front.divisions += combat.attackers.len() + combat.defenders.len();
+        if !layers {
+            continue;
+        }
+        let members = combat
+            .attackers
+            .iter()
+            .zip(&combat.attacker_classes)
+            .chain(combat.defenders.iter().zip(&combat.defender_classes));
+        for (&division, _) in members.filter(|(_, class)| **class == DIVISION_CLASS) {
+            match composition(division) {
+                Some(units) => {
+                    for (unit, count) in units {
+                        *front.sub_units.entry(unit).or_default() += count;
+                    }
+                }
+                None => front.unknown += 1,
+            }
+        }
+    }
+    let mut unknown = 0;
+    let battles = recorded
+        .iter()
+        .map(|row| {
+            let mut battle = viewer_audio::battle::Battle {
+                key: row.object,
+                provinces: row.provinces.clone(),
+                center: [f32::from_bits(row.center_x), f32::from_bits(row.center_z)],
+                radius: f32::from_bits(row.radius),
+                divisions: 0,
+                sub_units: BTreeMap::new(),
+            };
+            for province in &row.provinces {
+                let Some(front) = fronts.get(province) else {
+                    continue;
+                };
+                battle.divisions += front.divisions;
+                unknown += front.unknown;
+                for (unit, count) in &front.sub_units {
+                    *battle.sub_units.entry(unit.clone()).or_default() += count;
+                }
+            }
+            battle
+        })
+        .collect();
+    (battles, unknown)
+}
+
+const DIVISION_CLASS: u32 = 0;
+const MUSIC_CHANCE_ONE: f64 = 100_000.0;
+
+const _: fn() = || {
+    fn shared<T: Send + Sync>() {}
+    shared::<ProductContent>();
+};
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod loader_tests;

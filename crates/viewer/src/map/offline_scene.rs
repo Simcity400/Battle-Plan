@@ -127,7 +127,8 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         force_pow2_textures: input.force_pow2_textures,
     };
     // The offline scene renders the recorded content alone, so both define sets are recorded.
-    let assets = crate::map_assets::load(
+    let assets = crate::map_assets::load_with_products(
+        None,
         layers,
         &defines,
         &defines,
@@ -151,7 +152,8 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         counters,
         animated_text,
         lazy,
-    } = MapIcons::load(
+    } = MapIcons::load_with_products(
+        None,
         layers,
         (&defines, &defines),
         &map_data,

@@ -2169,6 +2169,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
+name = "content-witness"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-native",
+ "installed-content-core",
+ "product-codec",
+ "replay-data",
+ "replay-identity",
+ "sha2",
+ "test-unify",
+]
+
+[[package]]
 name = "cookie"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2685,6 +2699,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "content-witness",
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
@@ -6541,6 +6556,42 @@ name = "mach2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
+
+[[package]]
+name = "map-products"
+version = "0.1.0"
+dependencies = [
+ "content-witness",
+ "dashboard-text",
+ "dpi",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-equipment-graphics",
+ "installed-content-image",
+ "installed-content-localisation",
+ "installed-content-sound",
+ "installed-content-states",
+ "installed-content-weather",
+ "indexmap 2.14.2",
+ "once_cell",
+ "product-codec",
+ "replay",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "sha2",
+ "test-unify",
+ "uuid",
+ "viewer-audio",
+ "viewer-counter-products",
+ "viewer-foundation",
+ "viewer-world",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "map-snow"
@@ -10858,6 +10909,7 @@ dependencies = [
  "installed-content-states",
  "installed-content-weather",
  "indexmap 2.14.2",
+ "map-products",
  "map-snow",
  "mimalloc",
  "once_cell",
@@ -10926,6 +10978,7 @@ dependencies = [
  "installed-content-regions",
  "installed-content-weather",
  "indexmap 2.14.2",
+ "map-products",
  "mimalloc",
  "once_cell",
  "replay",
@@ -10933,14 +10986,14 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "shader-pipeline",
  "test-unify",
  "uuid",
  "viewer-combat",
+ "viewer-counter-products",
  "viewer-foundation",
+ "viewer-world",
  "winapi-util",
  "windows 0.62.2",
- "windows-core 0.62.2",
  "windows-sys 0.52.0",
  "windows-sys 0.59.0",
 ]
@@ -11005,7 +11058,9 @@ dependencies = [
  "installed-content-regions",
  "installed-content-settings",
  "installed-content-states",
+ "installed-content-weather",
  "indexmap 2.14.2",
+ "map-products",
  "mimalloc",
  "once_cell",
  "replay",
@@ -11014,14 +11069,14 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "serde_json",
- "shader-pipeline",
  "test-unify",
  "uuid",
+ "viewer-counter-products",
  "viewer-counters",
  "viewer-foundation",
+ "viewer-world",
  "winapi-util",
  "windows 0.62.2",
- "windows-core 0.62.2",
  "windows-sys 0.52.0",
  "windows-sys 0.59.0",
 ]
@@ -11089,7 +11144,9 @@ dependencies = [
  "installed-content-regions",
  "installed-content-states",
  "installed-content-unit-path",
+ "installed-content-weather",
  "indexmap 2.14.2",
+ "map-products",
  "mimalloc",
  "once_cell",
  "replay",
@@ -11097,14 +11154,14 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "shader-pipeline",
  "test-unify",
  "uuid",
+ "viewer-counter-products",
  "viewer-foundation",
  "viewer-raids",
+ "viewer-world",
  "winapi-util",
  "windows 0.62.2",
- "windows-core 0.62.2",
  "windows-sys 0.52.0",
  "windows-sys 0.59.0",
 ]

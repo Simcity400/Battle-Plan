@@ -721,3 +721,25 @@ fn music_outcomes_keep_f64_scaling_fallback_calls_and_primary_refusal_order() {
     assert_eq!(bits(&actual), bits(&reference));
     assert_eq!(actual.refusals, reference.refusals);
 }
+
+#[test]
+fn map_products_music_matches_the_pre_extraction_synchronous_evaluator() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let content = fixture_content();
+    let memo = map_products::music_inputs::Memo::new(8);
+    for countries in [2, 1500, 5000] {
+        let mut frame = frame(countries);
+        for (branch, hour, country) in
+            [(1, 16, 1), (1, 17, 2), (2, 60827992, 1), (1, 10, countries)]
+        {
+            frame.branch = branch;
+            frame.hour = hour;
+            let expected = original(&frame, &content, country);
+            let actual = with_world(&frame, |world| {
+                memo.chances(&frame, &content, country, world)
+            });
+            assert_eq!(bits(&actual), bits(&expected));
+            assert_eq!(actual.refusals, expected.refusals);
+        }
+    }
+}

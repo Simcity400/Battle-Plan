@@ -563,27 +563,27 @@ pub struct CombatContent {
 
 impl CombatContent {
     pub fn read(layers: &ResolvedLayers, defines: &Defines) -> io::Result<Self> {
-        // The one trait-name inventory (trait registration) and the one
-        // sub-unit database, for has_trait, has_artillery_ratio, the trait
-        // sprites and the commander hovers.
-        let traits = installed_content_core::unit_leader::Traits::registered(layers)?;
-        let sub_units =
-            installed_content_core::unit_leader::sub_units(layers).map_err(|error| error.to_string());
-        // The country-leader traits, which a character's has_trait and the
-        // advisor-trait hover lines name.
-        let country_leader_traits = installed_content_core::leader_traits::read(layers)
-            .map(|(traits, _)| Arc::new(traits))
-            .map_err(|error| error.to_string());
-        // The tactic registry as the game reads it: the file's one read
-        // (installed_content_core::combat_tactics).
-        let tactics =
-            super::tactics::Content::from_database(installed_content_core::combat_tactics::read(layers)?)
-                .with_inventories(
-                    traits.clone(),
-                    sub_units.as_ref(),
-                    installed_content_core::scripted_triggers::read(layers)?,
-                )
-                .with_country_leader_traits(country_leader_traits.clone());
+        Self::read_with_products(None, layers, defines)
+    }
+
+    pub fn read_with_products(
+        products: Option<&map_products::loader::Loader>,
+        layers: &ResolvedLayers,
+        defines: &Defines,
+    ) -> io::Result<Self> {
+        let map_products::loader::CombatInputs {
+            traits,
+            sub_units,
+            country_traits: country_leader_traits,
+            database,
+            scripted,
+        } = match products {
+            Some(products) => products.combat(layers)?,
+            None => map_products::loader::CombatInputs::read(layers)?,
+        };
+        let tactics = super::tactics::Content::from_database(database)
+            .with_inventories(traits.clone(), sub_units.as_ref(), scripted)
+            .with_country_leader_traits(country_leader_traits.clone());
         let (division_names, mut warnings) =
             installed_content_division_names::division_names::read(layers)?;
         let (commander_tooltips, skills) = super::commander_tooltips::Content::load(
@@ -657,6 +657,22 @@ impl Assets {
         images: &mut Vec<dds::Texture>,
         lazy: &Arc<LazyTextures>,
     ) -> io::Result<Self> {
+        Self::load_with_products(
+            None, shared, regions, defines, interface, flags, client, images, lazy,
+        )
+    }
+
+    pub fn load_with_products(
+        products: Option<&map_products::loader::Loader>,
+        shared: &Arc<ResolvedLayers>,
+        regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
+        defines: &Defines,
+        interface: &Interface,
+        flags: &Arc<LazyFlags>,
+        client: (&str, [u32; 2], &NativeWindows),
+        images: &mut Vec<dds::Texture>,
+        lazy: &Arc<LazyTextures>,
+    ) -> io::Result<Self> {
         let (language, map_size, native_windows) = client;
         let layers: &ResolvedLayers = shared;
         for name in WINDOW_TEMPLATES {
@@ -690,7 +706,7 @@ impl Assets {
             let key = format!("combat_portrait:{texture}");
             direct.sprites.push(texture_sprite(key, texture));
         }
-        let content = CombatContent::read(layers, defines)?;
+        let content = CombatContent::read_with_products(products, layers, defines)?;
         let content_warnings: Vec<String> = content.warnings().collect();
         let CombatContent {
             traits,

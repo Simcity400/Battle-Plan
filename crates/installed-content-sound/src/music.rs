@@ -267,7 +267,14 @@ impl Music {
 /// The music stations the user enabled (`playlists/settings.txt`'s
 /// `enabled`), in file order; `None` when the file is absent.
 pub fn enabled_stations(user: &Path) -> io::Result<Option<Vec<String>>> {
-    let bytes = match std::fs::read(user.join("playlists").join("settings.txt")) {
+    enabled_stations_with(user, |path| std::fs::read(path))
+}
+
+pub fn enabled_stations_with(
+    user: &Path,
+    read: impl FnOnce(&Path) -> io::Result<Vec<u8>>,
+) -> io::Result<Option<Vec<String>>> {
+    let bytes = match read(&user.join("playlists").join("settings.txt")) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),

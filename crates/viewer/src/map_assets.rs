@@ -21,7 +21,8 @@ use {
 /// are artwork, read through [`ResolvedLayers::presentation`] so selected visual mods replace
 /// them; the bitmaps that place terrain, heights, rivers and trees are recorded geometry.
 #[allow(clippy::too_many_arguments)]
-pub fn load(
+pub fn load_with_products(
+    products: Option<&map_products::loader::Loader>,
     layers: &ResolvedLayers,
     defines: &installed_content_core::defines::Defines,
     art_defines: &installed_content_core::defines::Defines,
@@ -66,8 +67,11 @@ pub fn load(
     };
     let terrain = bmp::decode_indexed(&layers.read(&format!("map/{}", default_map.terrain))?)
         .map_err(|error| invalid(format!("map/{}: {error}", default_map.terrain)))?;
-    let heightmap = bmp::decode_indexed(&layers.read(&format!("map/{}", default_map.heightmap))?)
-        .map_err(|error| invalid(format!("map/{}: {error}", default_map.heightmap)))?;
+    let heightmap = match products {
+        Some(products) => products.heightmap(default_map)?,
+        None => bmp::decode_indexed(&layers.read(&format!("map/{}", default_map.heightmap))?)
+            .map_err(|error| invalid(format!("map/{}: {error}", default_map.heightmap)))?,
+    };
     // Load the sampled heightmap as a texture file.
     let height_texture =
         sampled_heights(&load_image("map/heightmap.bmp", &read, decode)?, &heightmap);
@@ -85,12 +89,15 @@ pub fn load(
         terrain.height,
         [map.width, map.height],
     )?;
-    expect_size(
-        "map/heightmap.bmp",
-        heightmap.width,
-        heightmap.height,
-        [map.width, map.height],
-    )?;
+    match products {
+        Some(products) => products.validate_heightmap(&heightmap, [map.width, map.height])?,
+        None => expect_size(
+            "map/heightmap.bmp",
+            heightmap.width,
+            heightmap.height,
+            [map.width, map.height],
+        )?,
+    }
     // rivers
     expect_size(
         "map/rivers.bmp",

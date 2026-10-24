@@ -238,11 +238,7 @@ impl Content {
         sub_units: Result<&SubUnits, &String>,
         mut scripted: ScriptedTriggers,
     ) -> Self {
-        for template in scripted.templates.values_mut() {
-            if let Ok(body) = &mut template.body {
-                installed_content_core::combat_tactics::resolve_phase_triggers(&self.phases, body);
-            }
-        }
+        scripted = map_products::loader::resolved_scripted(&self.phases, scripted);
         self.warnings.extend(
             scripted
                 .logged
