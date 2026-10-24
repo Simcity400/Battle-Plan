@@ -146,3 +146,217 @@ fn tag_resolver_declarations_fit_the_bound_watch_and_kept_frame() {
         }
     }
 }
+
+#[test]
+fn original_bucket_visibility_fast_fold_matches_whole_frame_payloads() {
+    use dashboard_base::prepared::{prepass::noted, series::tests::Fixture};
+    use dashboard_text::{
+        scope::Query,
+        triggers::{Evaluator, inputs},
+    };
+    use replay_data::rows::{
+        CountryAppearanceRow, CountryLinkRow, CountryRow, LexicalTokenRow, ReservedCountryNamingRow,
+    };
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+        ),
+        (
+            "common/unit_leader/test.txt",
+            "leader_skills={1={type=corps_commander cost=1}} leader_traits={}",
+        ),
+        (
+            "common/characters/test.txt",
+            "characters={mod_commander={corps_commander={visible={any_country_with_original_tag={original_tag_to_check=THIS count=2 always=yes}}}}}",
+        ),
+    ]);
+    let templates =
+        installed_content_core::characters::leader_templates(&catalogue.content.layers).unwrap();
+    let template = &templates[0];
+    let frames: Vec<_> = (100..=107)
+        .map(|hour| {
+            let mut frame = frame(hour, 1);
+            for rows in [
+                TableRows::Countries(
+                    [(100_000, 1, "AAA"), (100_001, 2, "BBB")]
+                        .into_iter()
+                        .map(|(id, canonical_slot, tag)| CountryRow {
+                            id,
+                            canonical_slot,
+                            tag: tag.as_bytes().to_vec(),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+                TableRows::CountryLinks(
+                    [(100_000, 1), (100_001, 2)]
+                        .into_iter()
+                        .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+                        .collect(),
+                ),
+                TableRows::CountryAppearance(vec![CountryAppearanceRow {
+                    country: 100_000,
+                    original_tag_reference: Recorded::Value(Some(100_000)),
+                    ..Default::default()
+                }]),
+                TableRows::ReservedCountryNaming(vec![ReservedCountryNamingRow {
+                    original_tag_buckets: Recorded::Value(match hour {
+                        102 | 103 => Some(vec![vec![], vec![], vec![]]),
+                        104 | 105 => None,
+                        _ => Some(vec![vec![], vec![100_001], vec![]]),
+                    }),
+                    ..Default::default()
+                }]),
+                TableRows::ScriptVariables(
+                    [100_000, 100_001]
+                        .map(|scope_id| ScriptVariablesRow {
+                            scope_kind: 1,
+                            scope_id,
+                            seed: Recorded::Value(Some(7)),
+                            ..Default::default()
+                        })
+                        .into(),
+                ),
+                TableRows::LexicalTokens(vec![LexicalTokenRow {
+                    token: 901,
+                    literal: template.tag.as_bytes().to_vec(),
+                }]),
+                TableRows::empty(TableId::Provinces),
+                TableRows::empty(TableId::States),
+            ] {
+                set(&mut frame, rows);
+            }
+            if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+                &mut *frame.tables[TableId::UnitLeaders.index()]
+            {
+                rows[0].visibility_choice = 1;
+            }
+            if let TableView::Complete(TableRows::Characters(rows)) =
+                &mut *frame.tables[TableId::Characters.index()]
+            {
+                rows[0].template_present = 1;
+                rows[0].template_tag = 901;
+                rows[0].template_file = template.path.as_bytes().to_vec();
+                rows[0].template_line = template.line.unwrap() as i32;
+            }
+            frame
+        })
+        .collect();
+    let catalogue = Arc::new(catalogue);
+    let content = Content {
+        politics: Arc::new(
+            dashboard_base::products::politics_content::PoliticsContent::load(catalogue.clone())
+                .unwrap(),
+        ),
+        leaders: installed_content_core::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)
+            .unwrap(),
+        catalogue,
+    };
+    let scripted = content.catalogue.scripted_content().unwrap();
+    for frame in &frames {
+        let world = scripted.recorded_world(frame).unwrap();
+        let row = &frame.complete::<tables::UnitLeaders>().unwrap()[0];
+        let (value, reads) = inputs::capture(frame, || {
+            Evaluator::new(&world, None).decide_leader_visibility(
+                row,
+                world.decoded_leader_visibility(row),
+                true,
+            )
+        });
+        let expected = match frame.hour {
+            102 | 103 => Some(false),
+            104 | 105 => None,
+            _ => Some(true),
+        };
+        let decided = value.decided();
+        assert_eq!(
+            decided.as_ref().ok().copied(),
+            expected,
+            "hour {}: {decided:?}",
+            frame.hour
+        );
+        if let Err(why) = decided {
+            assert!(why.contains("original_tag_buckets"), "{why}");
+        }
+        assert!(
+            reads
+                .keys()
+                .any(|key| *key == inputs::Key::Scopes(Query::OriginalBucket(100_000)))
+        );
+        assert!(
+            reads.keys().all(|key| key.dependence().is_some()),
+            "{reads:?}"
+        );
+    }
+
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let selection = bound(true);
+    let mut extract = (selection.start)(replay.format);
+    let mut tracker = FrameChangeTracker::new();
+    replay
+        .read_block_alone(
+            &replay.index[0],
+            &selection.tables,
+            |_, frame| extract.observe(&replay, frame, &tracker.observe(frame, replay.format)),
+            || Ok(()),
+        )
+        .unwrap();
+    let facts = extract.finish().unwrap().downcast::<BlockFacts>().unwrap();
+    assert!(
+        facts
+            .hours
+            .iter()
+            .any(|hour| matches!(hour, Hour::Quiet { .. }))
+    );
+    assert!(
+        facts
+            .hours
+            .iter()
+            .any(|hour| matches!(hour, Hour::Kept { .. }))
+    );
+    let mut folded = Prepared::new(&replay, 1);
+    let rejected = noted("leaders.reject.undeclared-input");
+    let (mode, reached) = inputs::reusing(|| {
+        fold(
+            &mut folded,
+            facts,
+            &replay,
+            &replay.index[0],
+            Some(&content),
+            &mut |_, result| result.map(|()| true),
+            &mut || Ok(()),
+        )
+        .unwrap()
+    });
+    assert_eq!(mode, Folded::Fast);
+    assert_eq!(reached, Some(107));
+    assert_eq!(noted("leaders.reject.undeclared-input"), rejected);
+
+    let mut hourly = Prepared::new(&replay, 1);
+    observe_block(
+        &mut hourly,
+        &replay,
+        &replay.index[0],
+        None,
+        Some(&content),
+        &mut |_, result| result.map(|()| true),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    let publish = |prepared: &mut Prepared| {
+        let fixture = Fixture::new();
+        let mut writer = fixture.writer();
+        prepared
+            .flush(&mut writer, 1, Some(&content), &[], &AtomicBool::new(false))
+            .unwrap();
+        writer.commit().unwrap();
+        fixture.payloads()
+    };
+    assert_eq!(publish(&mut folded), publish(&mut hourly));
+}

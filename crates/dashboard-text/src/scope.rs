@@ -256,6 +256,19 @@ impl Query {
                 link(raw),
                 TableRead::fields(TableId::Countries, &["canonical_slot"]),
             ],
+            &Query::OriginalBucket(selected) => {
+                if selected <= 0 {
+                    Vec::new()
+                } else {
+                    vec![
+                        link(selected as u32),
+                        TableRead::fields(
+                            TableId::ReservedCountryNaming,
+                            &["original_tag_buckets"],
+                        ),
+                    ]
+                }
+            }
             Query::Tag(_) | Query::Country(_) => vec![tags()],
             // Parsing and alias lookup read the recorded tags; alias bodies
             // themselves belong to the fixed content stack.
