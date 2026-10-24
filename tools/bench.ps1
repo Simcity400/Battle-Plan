@@ -37,6 +37,10 @@ Plan JSON:
 candidate's "capture_mode" ("full" or "map", default the recorder's own) is passed
 to it as --capture-mode. "speed" is the native game speed 0-4 (default 4). "max_hours"
 defaults to 420; choose a cap above the expected progress for a full-duration run.
+"console" lists console lines (e.g. "observe") typed after each reload, before a
+recorder attaches; they briefly take the foreground, and console.png shows the
+game's replies. "status_every_s" appends the recorder's cumulative pause counters,
+histogram and slowest hours to status_series.jsonl at that interval during a screen.
 Ordinary recorder candidates require -MetricsTool pointing to a reader built for
 their replay format. Missing or incomplete metrics, failed drains, drops and write
 errors fail the screen. Bare-game references do not need a metrics reader.
@@ -989,6 +993,22 @@ function Get-SizeSummary([string]$runDir) {
 }
 
 # ---- timed screen --------------------------------------------------------------
+function Invoke-PlanConsole([string]$runDir) {
+    # The plan's console lines, e.g. "observe", after each reload and before any recorder attaches.
+    if (-not ($spec.PSObject.Properties['console'] -and $spec.console)) { return }
+    foreach ($line in @($spec.console)) {
+        Log "console: $line"
+        # The console ignores posted keys, so these always borrow the foreground.
+        $null = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Console -GameId $script:game.Id -Text ([string]$line) -Foreground
+        Start-Sleep -Seconds 2
+    }
+    # Reopen the console so console.png shows the game's replies.
+    $null = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Key -Key Grave -GameId $script:game.Id -Foreground
+    Start-Sleep -Milliseconds 800
+    Take-Screenshot (Join-Path $runDir 'console.png')
+    $null = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Key -Key Grave -GameId $script:game.Id -Foreground
+    Start-Sleep -Seconds 1
+}
 function Invoke-Screen($attached, [string]$runDir) {
     Wait-Quiet
     $identity = Set-Paused $true
@@ -1016,6 +1036,10 @@ function Invoke-Screen($attached, [string]$runDir) {
     $nextMemory = $startQpc + [int64]$frequency
     # Other processes' CPU every 5 s: an exited process keeps its latest sample.
     $nextOtherCpu = $startQpc + 5 * [int64]$frequency
+    # With "status_every_s", the recorder's cumulative pause counters along the window.
+    $statusEvery = $(if ($attached -and $spec.PSObject.Properties['status_every_s'] -and $spec.status_every_s) { [double]$spec.status_every_s } else { 0 })
+    $statusSeries = $(if ($statusEvery -gt 0) { [IO.StreamWriter]::new((Join-Path $runDir 'status_series.jsonl'), $false, $utf8) } else { $null })
+    $nextStatus = $startQpc
     $stopReason = 'duration_limit'
     try {
         while (([Hoi4ClockBaseline]::Qpc() - $startQpc) / $frequency -lt $seconds) {
@@ -1052,11 +1076,27 @@ function Invoke-Screen($attached, [string]$runDir) {
                 $memoryEnd = $memory
             }
             $log.WriteLine(($entry | ConvertTo-Json -Compress))
+            if ($statusSeries -and $qpc -ge $nextStatus) {
+                $nextStatus = $qpc + [int64]($statusEvery * $frequency)
+                $status = $null
+                try { $status = Read-Status $attached.status } catch { }
+                if ($status) {
+                    $statusSeries.WriteLine(([ordered]@{
+                        elapsed_s = $entry.elapsed_s; hour = $entry.hour
+                        callback_work = $status.callback_work; native_tick_work = $status.native_tick_work
+                        callback_histogram = $status.callback_tail.histogram; slowest = $status.callback_tail.slowest
+                        spool_bytes = $status.spool_bytes; pool_bytes = $status.pool_bytes
+                        dropped_frames = $status.dropped_frames; write_errors = $status.write_errors
+                    } | ConvertTo-Json -Compress -Depth 8))
+                    $statusSeries.Flush()
+                }
+            }
             Start-Sleep -Milliseconds 125
         }
     } finally {
         $null = Set-Paused $true
         $log.Dispose()
+        if ($statusSeries) { $statusSeries.Dispose() }
     }
     Update-OtherCpu $otherCpu (Get-OtherCpuSnapshot)
     $otherCpuWindow = Measure-OtherCpu $otherCpu (([Hoi4ClockBaseline]::Qpc() - $startQpc) / $frequency) ([Environment]::ProcessorCount)
@@ -1191,11 +1231,13 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
                 $row.collector_sha256 = (Get-FileHash -LiteralPath (Join-Path ([string]$candidate.frozen) 'collector.dll') -Algorithm SHA256).Hash
                 $null = Invoke-Reload $runDir $false
                 Complete-Pending
+                Invoke-PlanConsole $runDir
                 $attached = Start-Candidate $candidate $runDir
                 $row.recording = $attached.recording
             } else {
                 $null = Invoke-Reload $runDir $false
                 Complete-Pending
+                Invoke-PlanConsole $runDir
             }
             Take-Screenshot (Join-Path $runDir 'reloaded.png')
             $screen = Invoke-Screen $attached $runDir
