@@ -22,6 +22,8 @@ use std::{collections::BTreeMap, io};
 #[derive(Debug, Default)]
 pub struct Catalog {
     definitions: BTreeMap<Token, BoundLocalization>,
+    /// Each template's sprite name, the last definition's.
+    icons: BTreeMap<Token, Vec<u8>>,
     coverage: Coverage,
     pub warnings: Vec<String>,
 }
@@ -33,6 +35,14 @@ impl Catalog {
             return Err(why.to_string());
         }
         Ok(self.definitions.get(&token))
+    }
+    /// The template's sprite name; None when no definition sets one.
+    pub fn icon(&self, token: &str) -> Result<Option<&[u8]>, String> {
+        let token = Token::c_str(token.as_bytes());
+        if let Some(why) = self.coverage.unknown(&identity(&token)) {
+            return Err(why.to_string());
+        }
+        Ok(self.icons.get(&token).map(Vec::as_slice))
     }
 }
 
@@ -172,6 +182,10 @@ fn apply(catalogue: &mut Catalog, items: &[Item]) {
             if field.keyword_is("name") {
                 *found = BoundLocalization::from_value(&field.value);
                 catalogue.coverage.replace(&identity(&token));
+            } else if field.keyword_is("icon")
+                && let Some(icon) = field.value.scalar()
+            {
+                catalogue.icons.insert(token.clone(), icon.to_vec());
             }
         }
     }
@@ -209,6 +223,14 @@ mod tests {
         let mut result = Catalog::default();
         apply(&mut result, &file.items);
         result
+    }
+
+    #[test]
+    fn a_template_icon_is_its_last_definitions_sprite() {
+        let read = catalog(b"a = { icon = GFX_first } a = { name = A icon = GFX_second } b = { name = B }");
+        assert_eq!(read.icon("a").unwrap(), Some(&b"GFX_second"[..]));
+        assert_eq!(read.icon("b").unwrap(), None);
+        assert_eq!(read.icon("absent").unwrap(), None);
     }
 
     #[test]

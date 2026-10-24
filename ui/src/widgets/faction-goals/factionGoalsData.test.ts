@@ -4,7 +4,7 @@ import type { FactionDetailReply, FactionGoalDefinition, FactionGoalsReply } fro
 import { asksDetails, filterGoals, goalRows, goalsAt } from './factionGoalsData.ts';
 import { currentParts, partAt, splitPart, WHOLE } from './goalParts.ts';
 
-const definition = (token: string, extra: Partial<FactionGoalDefinition> = {}): FactionGoalDefinition => ({ progress: [], sections: [], conditions: [], rewards: [],
+const definition = (token: string, extra: Partial<FactionGoalDefinition> = {}): FactionGoalDefinition => ({ progress: [], sections: [], bands: [], conditions: [], rewards: [],
   flags: [], token, name: `Mod ${token}`, description: null, icon: null, category: 'mod_term', categoryName: 'A mod term', reason: null, ...extra });
 const ARTWORK = 'Faction goal artwork GFX_mod; group: sprite is absent';
 

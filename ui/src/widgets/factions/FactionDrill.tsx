@@ -1,0 +1,235 @@
+import { useCallback, useMemo, useRef } from 'react';
+import type { ReactNode } from 'react';
+import { CountryFlagUrl } from '../../components/CountryFlag';
+import { Icon } from '../../components/Icons';
+import WidgetState from '../../components/WidgetState';
+import { dayLabel } from '../../charts/draw';
+import { usNumber } from '../../charts/numberFormat';
+import { startUnseen } from '../../charts/timeline/runState';
+import { tooltipText } from '../../charts/tooltip';
+import type { TooltipContent } from '../../charts/tooltip';
+import { useRowTooltips } from '../../charts/useRowTooltips';
+import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import type { WidgetRuntime } from '../../dashboard/definitions';
+import type { BoundTrack } from '../../dashboard/model';
+import { useProduct } from '../../dashboard/products';
+import type { FactionDetailReply, FactionGoalDefinition, FactionNameRun, HourSpan } from '../../generated/dashboard';
+import { countSteps, extracted, fixedWhole, goalGroups, goalName, goalProgress, goalStatus, joinEvents, manifestGoal, manifestMarks, rewardRows, yearStarts } from './factionDrillData';
+import { factionLabel, leaderAt, membersAt, tagAt } from './factionsData';
+import type { FactionView, MemberView } from './factionsData';
+
+const CHART_HEIGHT = 70;
+const noMenu = () => {};
+
+/** One faction at the hour shown, opened from the timeline: who it is, how it grew,
+ * what it is working towards and what it has done. Follows playback. */
+export default function FactionDrill({ runtime, track, view, names, at, active, gaps, onBack }: {
+  runtime: WidgetRuntime; track: BoundTrack; view: FactionView; names: readonly FactionNameRun[]; at: number; active: boolean;
+  gaps: readonly HourSpan[]; onBack: () => void;
+}) {
+  const life = view.lifetime;
+  const exists = life.some(span => span.firstHour <= at && at <= span.lastHour);
+  const product = useProduct<FactionDetailReply>(runtime.client, exists ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'faction-details', params: { branchId: track.branch.id, hour: at, faction: view.id } } : null, active);
+  // The last reply stays shown while the next hour's loads, so playback never flickers;
+  // never one from a later hour (after a rewind), nor once the current read has failed.
+  const held = useRef<FactionDetailReply | null>(null);
+  if (product.data?.faction === view.id) held.current = product.data;
+  const data = !product.error && held.current?.faction === view.id && held.current.hour <= at ? held.current : null;
+
+  const founded = life[0]?.firstHour ?? null;
+  const from = founded == null ? at : Math.min(at, Math.max(track.branch.firstHour, founded));
+  // Runs split across unrecorded hours; only a different country or name is a change.
+  const leaders = changes(view.leaders.filter(run => run.firstHour <= at), run => run.tag);
+  const leader = leaderAt(view.leaders, at);
+  const leaderRun = leaders.at(-1);
+  const formerLeader = leaders.length > 1 ? leaders[leaders.length - 2].tag : null;
+  const nameRuns = changes(names.filter(run => run.firstHour <= at && run.name), run => run.name);
+  const formerName = nameRuns.length > 1 ? nameRuns.at(-2)! : null;
+  const events = useMemo(() => joinEvents(view, at), [view, at]);
+  const memberTag = useCallback((member: MemberView) => {
+    const last = member.stretches.at(-1)?.lastHour ?? at;
+    return tagAt(view, member, Math.min(at, last));
+  }, [view, at]);
+  const wanted = useMemo(() => {
+    const tags = new Set<string>();
+    for (const event of events) for (const member of event.members) { const tag = memberTag(member); if (tag) tags.add(tag); }
+    for (const tag of [leader, formerLeader]) if (tag) tags.add(tag);
+    return [...tags].map(tag => ({ hour: at, tag }));
+  }, [events, memberTag, leader, formerLeader, at]);
+  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
+  const label = labelAt(at);
+  const manifest = data ? manifestGoal(data) : null;
+  const groups = useMemo(() => data ? goalGroups(data, manifest) : [], [data, manifest]);
+  const resources = useMemo(() => extracted(data?.resources ?? null), [data]);
+
+  const goalTip = useCallback((definition: FactionGoalDefinition, subtitle: string, heading: string): TooltipContent => ({
+    title: goalName(definition), subtitle, icon: definition.icon ?? undefined, description: definition.description || undefined,
+    rows: rewardRows(definition, heading),
+  }), []);
+  const content = useCallback((key: string): TooltipContent | null => {
+    const [kind, id] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
+    if (kind === 'goal') {
+      const goal = data?.goals.find(entry => String(entry.ordinal) === id);
+      return goal ? goalTip(goal.definition, [goal.definition.categoryName, goalStatus(goal.status)].filter(Boolean).join(' · '), 'On completion') : null;
+    }
+    if (kind === 'done') {
+      const definition = data?.completed[Number(id)];
+      return definition ? goalTip(definition, [definition.categoryName, 'Completed'].filter(Boolean).join(' · '), 'Gave') : null;
+    }
+    if (kind === 'member') {
+      const member = view.members.find(entry => entry.key === id);
+      const tag = member && memberTag(member);
+      if (!member || !tag) return null;
+      const country = label(tag);
+      const current = member.stretches.some(span => span.firstHour <= at && at <= span.lastHour);
+      const joined = member.stretches[0].firstHour;
+      const since = startUnseen(joined, track.branch.firstHour, gaps) ? `before ${dayLabel(joined)}` : dayLabel(joined);
+      return { title: country.name, countryFlag: country, rows: [],
+        subtitle: current ? `${tag === leader ? 'Leader' : 'Member'} since ${since}` : `Member from ${since} to ${dayLabel(member.stretches.at(-1)!.lastHour)}` };
+    }
+    if (kind === 'resource') {
+      const entry = resources.find(item => String(item.resource.ordinal) === id);
+      return entry ? { title: entry.resource.name ?? 'Resource name not recorded', icon: entry.resource.icon ?? undefined,
+        subtitle: `${usNumber.format(entry.value)} extracted`, rows: [] } : null;
+    }
+    return null;
+  }, [data, goalTip, view.members, memberTag, label, at, leader, track.branch.firstHour, gaps, resources]);
+  const { rowProps, descriptionId } = useRowTooltips<string>({ owner: `faction-drill:${view.id}`, active, content, revision: `${at}:${data?.hour ?? ''}`, onMenu: noMenu });
+  const hover = (key: string) => {
+    const shown = content(key);
+    return <>{shown && <span id={descriptionId(key)} hidden>{tooltipText(shown)}</span>}</>;
+  };
+
+  const name = factionLabel(view, at);
+  const leaderLabel = leader ? label(leader) : null;
+  const projection = data ? fixedWhole(data.projectionRaw) : null;
+  const count = membersAt(view, at);
+  return <div className="faction-drill">
+    <button type="button" className="faction-drill-back" onClick={onBack}><Icon name="chevron-left" />Factions</button>
+    <div className="faction-hero">
+      {data?.logo ? <img className="faction-logo" src={data.logo} alt="" /> : <span className="faction-logo is-empty" style={{ background: view.color }} />}
+      <div className="faction-hero-text">
+        <h3>{name}</h3>
+        <p>{founded != null && <span>{startUnseen(founded, track.branch.firstHour, gaps) ? `Founded before ${dayLabel(founded)}` : `Founded ${dayLabel(founded)}`}</span>}
+          {leaderLabel && <span className="faction-leader">led by <CountryFlagUrl className="faction-flag" url={leaderLabel.flag} reason={leaderLabel.flagReason} pending={leaderLabel.flagPending} />
+            <b>{leaderLabel.name}</b>{formerLeader && leaderRun && <> since {dayLabel(leaderRun.firstHour)}</>}</span>}</p>
+        {formerLeader && <p className="faction-former">Previously led by {label(formerLeader).name}</p>}
+        {formerName && <p className="faction-former">Formerly {formerName.name}, renamed {dayLabel(nameRuns.at(-1)!.firstHour)}</p>}
+      </div>
+      <div className="faction-stats">
+        <Stat value={count} label={count === 1 ? 'member' : 'members'} />
+        {projection != null && <Stat value={projection} label="power projection" />}
+      </div>
+    </div>
+    {!exists ? <WidgetState kind="unavailable" message="This faction does not exist at this time." /> : <>
+      <Section title="Members" note="joined over time">
+        <MemberChart view={view} from={from} at={at} events={events} memberTag={memberTag} label={label} rowProps={rowProps} hover={hover} leaders={leaders} />
+      </Section>
+      {product.error ? <WidgetState kind="error" detail={product.error} onRetry={product.retry} />
+        : !data ? <WidgetState kind="loading" label="Loading faction details…" /> : <>
+          <div className="faction-drill-columns">
+            <div>
+              {manifest && <Section title="Manifest"><Manifest goal={manifest} /></Section>}
+              {data.completed.length > 0 && <Section title="Completed" note={usNumber.format(data.completed.length)}>
+                <div className="faction-done">{data.completed.map((definition, index) => <span key={index} className="faction-icon-button" {...rowProps(`done:${index}`)}>
+                  <GoalIcon definition={definition} />{hover(`done:${index}`)}</span>)}</div>
+              </Section>}
+            </div>
+            <Section title="Goals" note={groups.length ? `${usNumber.format(groups.reduce((sum, group) => sum + group.goals.length, 0))} active` : undefined}>
+              {data.goalReason ? <p className="faction-drill-empty">Goals not recorded at this time.</p>
+                : !groups.length ? <p className="faction-drill-empty">No goals.</p> : groups.map(group => <div key={group.key} className="faction-term">
+                <div className="faction-term-name">{group.name}</div>
+                {group.goals.map(goal => <div key={goal.ordinal} className="faction-goal-row" {...rowProps(`goal:${goal.ordinal}`)}>
+                  <GoalIcon definition={goal.definition} /><span>{goalName(goal.definition)}</span>{hover(`goal:${goal.ordinal}`)}</div>)}
+              </div>)}
+            </Section>
+          </div>
+          {resources.length > 0 && <Section title="Extracted resources">
+            <div className="faction-resources">{resources.map(({ resource, value }) => <span key={resource.ordinal} className="faction-resource" {...rowProps(`resource:${resource.ordinal}`)}>
+              {resource.icon ? <img src={resource.icon} alt="" /> : <span>{resource.name}</span>}<b>{usNumber.format(value)}</b>{hover(`resource:${resource.ordinal}`)}</span>)}</div>
+          </Section>}
+        </>}
+    </>}
+  </div>;
+}
+
+/** Keeps a marker inside the chart at either end. */
+const edge = (percent: number) => percent < 3 ? '0' : percent > 97 ? '-100%' : '-50%';
+
+/** The runs where `key` changes, each from the first hour of its value. */
+function changes<T extends { firstHour: number }>(runs: readonly T[], key: (run: T) => unknown): T[] {
+  return runs.filter((run, index) => index === 0 || key(run) !== key(runs[index - 1]));
+}
+
+function Stat({ value, label }: { value: number | null; label: string }) {
+  return <div className="faction-stat"><b>{value == null ? '—' : usNumber.format(value)}</b><span>{label}</span></div>;
+}
+
+function Section({ title, note, children }: { title: string; note?: string; children: ReactNode }) {
+  return <section className="faction-drill-section"><h4>{title}{note && <small>{note}</small>}</h4>{children}</section>;
+}
+
+function GoalIcon({ definition }: { definition: FactionGoalDefinition }) {
+  return definition.icon ? <img className="faction-goal-icon" src={definition.icon} alt="" /> : <span className="faction-goal-icon is-empty" />;
+}
+
+function Manifest({ goal }: { goal: FactionDetailReply['goals'][number] }) {
+  const progress = goalProgress(goal);
+  const { marks, reached } = manifestMarks(goal);
+  return <div className="faction-manifest">
+    <div className="faction-manifest-name"><b>{goalName(goal.definition)}</b>{reached && <span className="faction-manifest-reached"><Icon name="check" />{reached}</span>}
+      {progress != null && <span className="faction-manifest-value">{Math.round(progress)}%</span>}</div>
+    {progress != null && <>
+      <div className="faction-manifest-bar" role="img" aria-label={`${Math.round(progress)}% progress`}>
+        <i style={{ width: `${progress}%` }} />{marks.map(mark => <span key={mark.at} className="faction-manifest-mark" style={{ left: `${mark.at}%` }} />)}
+      </div>
+      <div className="faction-manifest-scale">
+        {marks.map(mark => <span key={mark.at} style={{ left: `${mark.at}%` }} title={mark.name ?? undefined}>{Math.round(mark.at)}%</span>)}
+      </div>
+    </>}
+    {goal.definition.description && <p>{goal.definition.description}</p>}
+  </div>;
+}
+
+function MemberChart({ view, from, at, events, memberTag, label, rowProps, hover, leaders }: {
+  view: FactionView; from: number; at: number; events: ReturnType<typeof joinEvents>; memberTag: (member: MemberView) => string | null;
+  label: ReturnType<ReturnType<typeof useCountryLabelsAt>['labelAt']>; rowProps: (key: string) => object; hover: (key: string) => ReactNode;
+  leaders: FactionView['leaders'];
+}) {
+  const span = Math.max(1, at - from);
+  const steps = countSteps(view, from, at);
+  const most = Math.max(1, ...steps.map(step => step.value));
+  const x = (hour: number) => (hour - from) / span * 1000;
+  const y = (value: number) => CHART_HEIGHT - 6 - value / most * (CHART_HEIGHT - 16);
+  // Unknown hours between steps break the line and its fill; nothing is drawn across them.
+  const runs: (typeof steps)[] = [];
+  for (const step of steps) { const run = runs.at(-1); if (run && run.at(-1)!.lastHour + 1 === step.firstHour) run.push(step); else runs.push([step]); }
+  const path = (run: typeof steps) => run.map((step, index) => `${index ? 'L' : 'M'}${x(step.firstHour)},${y(step.value)} L${x(step.lastHour + 1)},${y(step.value)}`).join(' ');
+  const line = runs.map(path).join(' ');
+  const area = runs.map(run => `${path(run)} L${x(run.at(-1)!.lastHour + 1)},${CHART_HEIGHT} L${x(run[0].firstHour)},${CHART_HEIGHT} Z`).join(' ');
+  const valueAt = (hour: number) => steps.find(step => step.firstHour <= hour && hour <= step.lastHour)?.value ?? 0;
+  const changes = leaders.slice(1).filter(run => run.firstHour >= from);
+  // A dark faction colour still reads on a dark panel.
+  const ink = `color-mix(in srgb, ${view.color} 65%, var(--text))`;
+  return <div className="faction-growth">
+    <div className="faction-growth-plot" style={{ height: CHART_HEIGHT }}>
+      <svg viewBox={`0 0 1000 ${CHART_HEIGHT}`} preserveAspectRatio="none" aria-hidden="true">
+        {area && <path d={area} style={{ fill: ink }} fillOpacity={0.16} />}
+        {line && <path d={line} fill="none" style={{ stroke: ink }} strokeWidth={2} vectorEffect="non-scaling-stroke" />}
+      </svg>
+      {changes.map(run => <span key={run.firstHour} className="faction-growth-crown" style={{ left: `${x(run.firstHour) / 10}%` }}><Icon name="crown" /></span>)}
+      {events.map(event => <span key={event.hour} className="faction-growth-join" style={{ left: `${x(event.hour) / 10}%`, top: y(valueAt(event.hour)),
+        transform: `translate(${edge(x(event.hour) / 10)}, calc(-100% - 3px))` }}>
+        {event.members.map(member => {
+          const tag = memberTag(member);
+          const country = tag ? label(tag) : null;
+          const current = member.stretches.some(stretch => stretch.firstHour <= at && at <= stretch.lastHour);
+          return <span key={member.key} className={`faction-growth-flag${current ? '' : ' is-former'}`} {...rowProps(`member:${member.key}`)}>
+            <CountryFlagUrl className="faction-flag" url={country?.flag} reason={country?.flagReason} pending={country?.flagPending} />{hover(`member:${member.key}`)}</span>;
+        })}
+      </span>)}
+    </div>
+    <div className="faction-growth-axis">{yearStarts(from, at).map(start => <span key={start.year} style={{ left: `${x(start.hour) / 10}%` }}>{start.year}</span>)}</div>
+  </div>;
+}

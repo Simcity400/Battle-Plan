@@ -6,7 +6,7 @@ import { entryAt } from '../../dashboard/reads.ts';
 import { Lineage, joinTagChanges } from '../../dashboard/identity.ts';
 import type { CountryIdentityIndex } from '../../dashboard/countryIdentity';
 import { compareTags } from '../../dashboard/tagOrder.ts';
-import type { HourSpan, WarCasualtyRun, WarObservation, WarParticipantRun, WarSide, WarTimeline, WarsAtHour, WarsReply } from '../../generated/dashboard';
+import type { HourSpan, WarCasualtyRun, WarContributionGroup, WarObservation, WarParticipantRun, WarSide, WarTimeline, WarsAtHour, WarsReply } from '../../generated/dashboard';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 
 export type WarsView = 'gantt' | 'countries';
@@ -91,6 +91,24 @@ export function validateWarsReply(value: unknown): WarsReply {
 export function currentWarsAt(reply: WarsReply | undefined, at: number): WarsAtHour | null {
   const current = (reply as { current?: readonly WarsAtHour[] } | undefined)?.current;
   return current?.find(entry => entry.hour === at) ?? null;
+}
+
+/** The game's contributions for the war at an hour: its native group, or, while the
+ * war holds several (a declaration the game lists beside the war it joins), the
+ * largest group within it. */
+export function warContributions(groups: readonly WarContributionGroup[] | undefined, observation: WarObservation | null): WarContributionGroup | null {
+  if (!groups || !observation) return null;
+  const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((tag, index) => tag === b[index]);
+  const exact = groups.find(group => same(group.viewpointSide, observation.viewpointSide) && same(group.opposingSide, observation.opposingSide));
+  if (exact) return exact;
+  const viewpoint = new Set(observation.viewpointSide), opposing = new Set(observation.opposingSide);
+  let best: WarContributionGroup | null = null;
+  for (const group of groups) {
+    if (!group.viewpointSide.every(tag => viewpoint.has(tag)) || !group.opposingSide.every(tag => opposing.has(tag))) continue;
+    const size = group.viewpointSide.length + group.opposingSide.length;
+    if (!best || size > best.viewpointSide.length + best.opposingSide.length) best = group;
+  }
+  return best;
 }
 
 /** Covering observations only: an old name or roster never fills an unobserved hour. */

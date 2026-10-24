@@ -95,6 +95,8 @@ export interface TimelineLane {
   heading?: boolean;
   /** Present for an expandable lane; the chart calls onLaneActivate to change it. */
   expanded?: boolean;
+  /** Click, Enter or Space opens the lane (onLaneActivate) without a disclosure. */
+  opens?: boolean;
   /** One centred label instead of a holder above a slot name. */
   singleLine?: boolean;
   /** Height of each sub-row, in layout pixels; ordinary lanes keep ROW_HEIGHT. */
@@ -313,7 +315,7 @@ export function barGlyphHours(span: TimelineSpan, playhead: number | null): read
 
 /** Pointer and keyboard activation share the expandable-lane rule. */
 export function activateLane(lane: TimelineLane | undefined, key: string, activate?: (lane: TimelineLane) => void): boolean {
-  if (!lane || lane.expanded == null || !activate || !['click', 'Enter', ' '].includes(key)) return false;
+  if (!lane || (lane.expanded == null && !lane.opens) || !activate || !['click', 'Enter', ' '].includes(key)) return false;
   activate(lane);
   return true;
 }

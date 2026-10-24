@@ -24,7 +24,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'fuel-branches', version: 1, title: 'Fuel by branch', icon: 'droplet', category: 'Economy',
   description: 'Fuel each military branch requested and received, and when shortages began.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 8 },
   countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS,
   variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Fuel by branch over time'),

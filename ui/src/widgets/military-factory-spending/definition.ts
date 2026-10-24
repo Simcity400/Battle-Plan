@@ -32,7 +32,7 @@ const variants = EQUIPMENT.flatMap(equipment => VIEWS.map(view => ({ equipment, 
 export const definition = {
   kind: 'military-factory-spending', version: 1, title: 'Military factory spending', icon: 'sunburst',
   description: 'Military factory IC spent on new and converted air or land equipment, by equipment type and design.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 11 },
   options: OPTIONS,
   variants,

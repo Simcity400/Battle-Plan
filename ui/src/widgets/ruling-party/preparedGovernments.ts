@@ -2,7 +2,10 @@ import { useCallback, useMemo, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { LedgerGovernment, MeasureDropReply, PoliticsLedgerReply } from '../../generated/dashboard';
 import type { MarkCluster } from '../../charts/markSummary';
-import { useProduct } from '../../dashboard/products';
+import { loadProduct, useProduct } from '../../dashboard/products';
+import { useContentRevision } from '../../dashboard/contentRevision';
+import { useHeldFailure } from '../../dashboard/heldFailures';
+import { useViewRead } from '../../dashboard/viewRead';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
 import { object, unsigned64 } from '../../dashboard/validation';
 import { validateGovernmentLedger } from './governmentData';
@@ -18,11 +21,16 @@ export function usePreparedGovernments(client: DashboardClient, source: Dashboar
   const [viewport, setViewport] = useState<{ owner: typeof owner; from: number; to: number; width: number }>();
   const view = viewport?.owner === owner ? viewport : { from: extent[0], to: Math.min(extent[1], through), width: 1 };
   const exact = view.to - view.from + 1 <= view.width;
-  const request = enabled ? { sourceId: source.id, revision: source.revision, product: 'politics-ledger', params: {
-    branchId, tag, view: 'governments', from: Math.ceil(view.from), hour: Math.floor(Math.min(view.to, through)),
-    ...(exact ? { matches: true } : { marks: { from: view.from, to: view.to, width: view.width } }),
-  } } : null;
-  const geometry = useProduct<PoliticsLedgerReply>(client, request, active && enabled, value => validateGovernmentLedger(value, { branchId: branchId!, tag: tag! }), source);
+  // One read at a time while the chart's view and the hour shown move (`useViewRead`).
+  // Exact and marked replies differ in kind, so crossing between them starts a new lane.
+  const content = useContentRevision(client);
+  const asked = { from: view.from, to: view.to, width: view.width, hour: Math.floor(Math.min(view.to, through)) };
+  const geometryRead = useViewRead<typeof asked, PoliticsLedgerReply>(enabled ? JSON.stringify([source.id, source.revision, branchId, tag, exact, content]) : null,
+    asked, JSON.stringify([asked.from, asked.to, asked.width, asked.hour]), active && enabled, (at, signal, publish, restart) => loadProduct(client,
+      { sourceId: source!.id, revision: source!.revision, product: 'politics-ledger', params: { branchId, tag, view: 'governments', from: Math.ceil(at.from), hour: at.hour,
+        ...(at.to - at.from + 1 <= at.width ? { matches: true } : { marks: { from: at.from, to: at.to, width: at.width } }) } },
+      signal, value => validateGovernmentLedger(value, { branchId: branchId!, tag: tag! }), source, restart, publish), client);
+  const geometry = { ...geometryRead, error: useHeldFailure(geometryRead.error, geometryRead.data !== undefined, geometryRead.retry) };
   const [hover, setHover] = useState<{ owner: typeof owner; hour: number | null }>();
   const reached = hover?.owner === owner ? hover.hour : null;
   const hoverRequest = enabled && reached != null ? { sourceId: source.id, revision: source.revision, product: 'politics-ledger',

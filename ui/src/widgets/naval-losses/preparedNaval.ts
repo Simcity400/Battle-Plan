@@ -6,6 +6,7 @@ import { useProductWindows, useWindowDisplay } from '../../dashboard/productWind
 import { preparedSeriesQuery, preparedWindowQuery } from '../../dashboard/preparedSeries';
 import type { PreparedBinding } from '../../dashboard/preparedSeries';
 import { useContentRevision } from '../../dashboard/contentRevision';
+import { useViewRead } from '../../dashboard/viewRead';
 import type { NavalLossesParams, NavalLossesReply, ChartSummary } from '../../generated/dashboard';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import { battleWindowIndex } from '../land-battles/landBattlesData';
@@ -35,23 +36,17 @@ export function usePreparedNaval(client: DashboardClient, track: BoundTrack | un
   const geometry = viewport?.owner === owner ? viewport : undefined;
   const dense = view !== 'race' && !!geometry && Math.floor(geometry.to)-Math.floor(geometry.from)+1 > geometry.width;
   const [attempt,setAttempt] = useState(0);
-  const [incomingState,setIncoming] = useState<{owner: typeof owner; key: string; data?: SummaryReply; error?: string}>();
   const summaryKey = JSON.stringify([geometry?.from,geometry?.to,geometry?.width,geometry?.series]);
   const pickOwner = useMemo(()=>({owner,summaryKey}),[owner,summaryKey]);
   const pickAlive = useRef(pickOwner); pickAlive.current=pickOwner;
   const sequence = useRef(0);
   const [keyboard,setKeyboard] = useState<{owner: typeof pickOwner; hour: number | null; revision: number}>();
-  useEffect(()=>{
-    if(!active || !track || !params || !geometry || !dense) return;
-    const controller = new AbortController();
-    void preparedWindowQuery(client,track.source,'naval-losses',{branchId:params.branchId,tags:params.tags,parts:view==='mix',
-      family:{navalKind:params.kind,attribution:params.attribution,period:params.period,top:params.top}},geometry,controller.signal,validateSummary,
-      (first,second)=>({series:[...first.series,...second.series],sampled:first.sampled&&second.sampled?mergeNavalWindows(first.sampled,[first.sampled,second.sampled]):first.sampled??second.sampled}),attempt>0)
-      .then(data=>{if(!controller.signal.aborted&&alive.current===owner)setIncoming({owner,key:summaryKey,data});})
-      .catch(error=>{if(!controller.signal.aborted&&alive.current===owner)setIncoming({owner,key:summaryKey,error:String(error)});});
-    return()=>controller.abort();
-  },[owner,summaryKey,active,dense,attempt]);
-  const incoming = incomingState?.owner===owner&&incomingState.key===summaryKey ? incomingState : undefined;
+  // One summary read at a time per series selection while the chart's view moves (`useViewRead`).
+  const incoming = useViewRead<NonNullable<typeof geometry>,SummaryReply>(identity && geometry && dense ? JSON.stringify([identity,geometry.series]) : null,
+    geometry,JSON.stringify([geometry?.from,geometry?.to,geometry?.width]),active,
+    (at,signal)=>preparedWindowQuery(client,track!.source,'naval-losses',{branchId:params!.branchId,tags:params!.tags,parts:view==='mix',
+      family:{navalKind:params!.kind,attribution:params!.attribution,period:params!.period,top:params!.top}},at,signal,validateSummary,
+      (first,second)=>({series:[...first.series,...second.series],sampled:first.sampled&&second.sampled?mergeNavalWindows(first.sampled,[first.sampled,second.sampled]):first.sampled??second.sampled}),attempt>0), client);
   const summaries = useMemo(() => new Map(incoming?.data?.series.map(line => [line.tag,line.summary])),[incoming?.data]);
   const reached = [...new Set([moment,...(hover?.owner === owner && hover.hour !== null ? [hover.hour] : []),
     ...(keyboard?.owner === pickOwner && keyboard.hour !== null ? [keyboard.hour] : []),
@@ -101,5 +96,5 @@ export function usePreparedNaval(client: DashboardClient, track: BoundTrack | un
     onSummaryView,onReachHour,exactLineTags,onNavigateHour,keyboardHour:keyboard?.owner===pickOwner?keyboard.hour:undefined,
     keyboardRevision:keyboard?.owner===pickOwner?keyboard.revision:undefined,complete:indices.every(index=>history.data.has(index)),
     error:manifest.error??history.errors.get(at)??incoming?.error??(navigationError?.owner===owner?navigationError.error:undefined),
-    retry:()=>{manifest.retry();history.retry();setAttempt(attempt=>attempt+1);setNavigationError(undefined);} };
+    retry:()=>{manifest.retry();history.retry();setAttempt(attempt=>attempt+1);incoming.retry();setNavigationError(undefined);} };
 }

@@ -3,7 +3,7 @@ import { Segmented } from '../../components/Segmented';
 import DrillParts from '../../charts/drill/DrillParts';
 import type { DrillPart } from '../../charts/drill/DrillParts';
 import { dayLabel, drawBands, drawPlayhead } from '../../charts/draw';
-import { drawApproximateSpans } from '../../charts/chartSummary';
+import { drawApproximateSpans, summaryFits } from '../../charts/chartSummary';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import TimeChart from '../../charts/TimeChart';
@@ -72,7 +72,7 @@ export default function StabilityDrill({ reply, numbers, pickOwner, presentation
       const colors = layers.map(layer => layer.color);
       const end = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
       const view = prepared.summaries?.series[0]?.summary;
-      if (prepared.enabled && (!view || view.from !== Math.floor(frame.x[0]) || view.to !== Math.ceil(end) || view.width !== Math.ceil(frame.plotWidth))) return;
+      if (prepared.enabled && (!view || !summaryFits(frame, view, end))) return;
       // The sample kept past the cutoff (so a band reaches it) is clipped away.
       ctx.save();
       ctx.beginPath();

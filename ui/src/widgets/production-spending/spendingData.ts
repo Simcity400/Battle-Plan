@@ -5,6 +5,7 @@ import { formatIc } from '../../dashboard/icDecimals.ts';
 import { DOMAINS, UNRESOLVED_ARM, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt } from '../../dashboard/reads.ts';
 import { preparedPrefix } from '../../dashboard/preparedPrefix.ts';
+import type { FactoryKind } from './definition.ts';
 
 export const LEVELS = ['domainLevel', 'typeLevel', 'variantLevel'] as const;
 /** The centre's unit. */
@@ -36,9 +37,14 @@ export const UNKNOWN_LABELS: Readonly<Record<ProductionSpendingUnknown, string>>
   preparing: 'Still being prepared.',
 };
 
-type UnknownReason = ProductionSpendingUnknown | 'outsideRead' | 'observationChanged';
+type UnknownReason = ProductionSpendingUnknown | 'outsideRead' | 'observationChanged' | 'unattributed';
 export const unknownLabel = (reason: string) => UNKNOWN_LABELS[reason as ProductionSpendingUnknown]
-  ?? (reason === 'observationChanged' ? 'Campaign total unavailable.' : 'Spending unavailable at this time.');
+  ?? (reason === 'observationChanged' ? 'Campaign total unavailable.' : reason === 'unattributed' ? ATTRIBUTION_NOTE : 'Spending unavailable at this time.');
+
+/** A design whose domain is unresolved could be either, so both charts keep it. */
+const unattributed = (leaf: ProductionSpendingLeaf) => !leaf.rocket && leaf.domain == null;
+export const inFactoryKind = (leaf: ProductionSpendingLeaf, kind: FactoryKind) =>
+  unattributed(leaf) || (kind === 'dockyards' ? !leaf.rocket && leaf.domain === 'naval' : leaf.rocket || leaf.domain !== 'naval');
 
 const RAW = /^-?\d{1,39}$/;
 /** What a reply split by purpose keys its leaves by. */
@@ -114,12 +120,13 @@ export const noProductionAt = (reply: ProductionSpendingReply, hour: number) => 
   return evidence?.present === false && evidence.emptyCensusHour != null && spendingAt(reply.total, hour).exact === 0n;
 };
 
-export function spendingEmptyLabel(reply: ProductionSpendingReply, hour: number, from: number | null = null): string {
-  const amount = amountIn(reply, reply.total, from, hour);
+export function spendingEmptyLabel(reply: ProductionSpendingReply, hour: number, from: number | null = null, kind?: FactoryKind): string {
+  const amount = kindAmount(reply, from, hour, kind);
   if (amount.exact == null) return unknownLabel(amount.reason ?? 'outsideRead');
   if (noProductionAt(reply, hour)) return 'No military production yet.';
+  const factories = kind === 'dockyards' ? 'dockyard' : kind === 'military' ? 'military factory' : 'factory';
   return runAt(reply.production, Math.floor(hour))?.present == null
-    ? 'No factory IC spending recorded.' : 'No factory IC spent in this view.';
+    ? `No ${factories} IC spending recorded.` : `No ${factories} IC spent in this view.`;
 }
 
 /** The amount `values` reached at `hour`, or spent since `from` within one
@@ -144,8 +151,8 @@ export interface SpendingFinal { exact: bigint | null; geometry: number }
 
 /** Prepared once per date window. An unknown endpoint's earlier maximum is only a
  * stable colour/order key, never a claimed whole total. */
-export function spendingFinals(reply: ProductionSpendingReply, from: number | null, end: number): SpendingFinal[] {
-  return reply.leaves.map(leaf => {
+export function spendingFinals(reply: ProductionSpendingReply, from: number | null, end: number, kind?: FactoryKind): SpendingFinal[] {
+  return shownLeaves(reply, kind).map(leaf => {
     const observations = leaf.rocket ? reply.rocketObservations : reply.equipmentObservations;
     const amount = amountIn(reply, leaf.runs, from, end, observations, leaf.rocket ? 'rocket' : 'equipment');
     if (amount.exact != null) return { exact: amount.exact, geometry: Number(amount.exact) };
@@ -169,14 +176,15 @@ export function spendingFinals(reply: ProductionSpendingReply, from: number | nu
 
 /** The shared sunburst owns grouping, navigation, colours and missing totals. */
 export function productionSpendingItems(reply: ProductionSpendingReply, window: SpendingWindow,
-  finals = spendingFinals(reply, window.from, window.end)): SunburstItem[] {
-  const amounts = reply.leaves.map(leaf => amountIn(reply, leaf.runs, window.from, window.hour,
+  finals = spendingFinals(reply, window.from, window.end), kind?: FactoryKind): SunburstItem[] {
+  const leaves = shownLeaves(reply, kind);
+  const amounts = leaves.map(leaf => amountIn(reply, leaf.runs, window.from, window.hour,
     leaf.rocket ? reply.rocketObservations : reply.equipmentObservations, leaf.rocket ? 'rocket' : 'equipment'));
-  const unresolved = reply.leaves.some((leaf, index) => !leaf.rocket && leaf.domain == null && amounts[index].exact !== 0n);
-  const unresolvedAtEnd = reply.leaves.some((leaf, index) => !leaf.rocket && leaf.domain == null && finals[index].exact !== 0n);
-  const unresolvedRocket = reply.leaves.some((leaf, index) => leaf.rocket && leaf.domain == null && amounts[index].exact !== 0n);
-  const unresolvedRocketAtEnd = reply.leaves.some((leaf, index) => leaf.rocket && leaf.domain == null && finals[index].exact !== 0n);
-  const items: SunburstItem[] = reply.leaves.map((leaf, index) => {
+  const unresolved = leaves.some((leaf, index) => !leaf.rocket && leaf.domain == null && amounts[index].exact !== 0n);
+  const unresolvedAtEnd = leaves.some((leaf, index) => !leaf.rocket && leaf.domain == null && finals[index].exact !== 0n);
+  const unresolvedRocket = leaves.some((leaf, index) => leaf.rocket && leaf.domain == null && amounts[index].exact !== 0n);
+  const unresolvedRocketAtEnd = leaves.some((leaf, index) => leaf.rocket && leaf.domain == null && finals[index].exact !== 0n);
+  const items: SunburstItem[] = leaves.map((leaf, index) => {
     const amount = amounts[index];
     const final = finals[index];
     const observed = amount.exact == null || amount.exact !== 0n;
@@ -201,8 +209,8 @@ export function productionSpendingItems(reply: ProductionSpendingReply, window: 
       present: observed || typeAttribution, counted: observed ? [identity] : [],
     };
   });
-  const total = amountIn(reply, reply.total, window.from, window.hour);
-  const finalTotal = amountIn(reply, reply.total, window.from, window.end);
+  const total = kindAmount(reply, window.from, window.hour, kind);
+  const finalTotal = kindAmount(reply, window.from, window.end, kind);
   const hasParts = items.some(item => item.present);
   if (total.exact == null || !hasParts || finalTotal.exact == null) items.push({
     path: [], value: total.exact == null ? null : hasParts ? 0 : Number(total.exact), exact: total.exact == null ? null : hasParts ? 0n : total.exact,
@@ -212,10 +220,29 @@ export function productionSpendingItems(reply: ProductionSpendingReply, window: 
   return items;
 }
 
-/** Country totals do not depend on whether content can attribute every design. */
-export function spendingTotal(reply: ProductionSpendingReply, window: SpendingWindow): SunburstTotal {
-  const amount = amountIn(reply, reply.total, window.from, window.hour);
-  const final = amountIn(reply, reply.total, window.from, window.end);
+const shownLeaves = (reply: ProductionSpendingReply, kind?: FactoryKind) =>
+  kind ? reply.leaves.filter(leaf => inFactoryKind(leaf, kind)) : reply.leaves;
+
+/** The country's total, or one kind's: the sum of its designs, unknown while any of
+ * them is, or while spending on a design of unresolved domain could belong to either. */
+function kindAmount(reply: ProductionSpendingReply, from: number | null, hour: number, kind?: FactoryKind): SpendingAmount {
+  const all = amountIn(reply, reply.total, from, hour);
+  if (!kind || all.exact == null) return all;
+  let exact = 0n;
+  for (const leaf of shownLeaves(reply, kind)) {
+    const amount = amountIn(reply, leaf.runs, from, hour, leaf.rocket ? reply.rocketObservations : reply.equipmentObservations, leaf.rocket ? 'rocket' : 'equipment');
+    if (amount.exact == null) return amount;
+    if (amount.exact !== 0n && unattributed(leaf)) return { exact: null, reason: 'unattributed' };
+    exact += amount.exact;
+  }
+  return { exact, reason: null };
+}
+
+/** Country totals do not depend on whether content can attribute every design; a
+ * kind's total does, as it is the sum of that kind's designs. */
+export function spendingTotal(reply: ProductionSpendingReply, window: SpendingWindow, kind?: FactoryKind): SunburstTotal {
+  const amount = kindAmount(reply, window.from, window.hour, kind);
+  const final = kindAmount(reply, window.from, window.end, kind);
   return {
     value: amount.exact == null ? null : Number(amount.exact), exact: amount.exact,
     unknownValue: amount.exact == null, note: amount.reason ? unknownLabel(amount.reason) : undefined,

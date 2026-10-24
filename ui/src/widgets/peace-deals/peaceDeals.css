@@ -1,32 +1,54 @@
 .peace-deals { display: flex; flex-direction: column; height: 100%; min-height: 0; padding-top: 4px; }
 .peace-deals .log-scroll { padding: 0 12px 12px; }
-.peace-deal { margin-bottom: 10px; border-radius: var(--r-md); padding: 10px 12px; background: color-mix(in srgb, var(--text) 4%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 70%, transparent); }
-.peace-heading { display: flex; align-items: baseline; gap: 8px; }
-.peace-heading b { flex: 1; min-width: 0; font-size: 0.8125rem; font-weight: 600; overflow-wrap: anywhere; }
-.peace-heading small { color: var(--muted); font-size: 0.6875rem; font-variant-numeric: tabular-nums; text-align: right; }
+.peace-summary { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 4px 12px 8px; color: var(--muted); font-size: var(--type-sm); }
+.peace-summary b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .peace-muted { color: var(--muted); }
-.peace-heading b.peace-muted { font-weight: 400; }
-.peace-sides { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px; margin: 6px 0 8px; font-size: 0.6875rem; color: var(--muted); }
-.peace-side { min-width: 0; }
-.peace-countries { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
-.peace-countries .peace-country { white-space: nowrap; }
-.peace-versus { margin: 0 4px; }
-.peace-country { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
-.peace-flag { display: inline-flex; width: 18px; height: 12px; flex: none; border-radius: 1px; overflow: hidden; object-fit: cover; }
-.peace-flag.country-flag-unavailable { display: inline-block; width: 25px; height: 16px; flex: 0 0 25px; border-radius: 2px; }
-.peace-sides .peace-flag { width: 21px; height: 14px; }
-.peace-actions { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 4px 10px; align-items: start; font-size: 0.75rem; }
-.peace-action { display: contents; }
-.peace-action-label { display: flex; align-items: center; gap: 6px; max-width: 14em; overflow-wrap: anywhere; }
-.peace-action-label em { font-style: normal; color: var(--muted); }
-.peace-chips { position: relative; display: flex; align-items: start; gap: 4px; min-width: 0; font-size: 0.6875rem; }
-.peace-chip { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--text) 8%, transparent); font-size: 0.6875rem; }
-.peace-chip > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.peace-more { color: var(--muted); cursor: help; }
-.peace-derived { display: inline-block; margin-top: 6px; color: var(--muted); font-size: 0.625rem; }
-.peace-observation { margin-top: 5px; color: var(--muted); font-size: 0.6875rem; overflow-wrap: anywhere; }
-.peace-note { margin: 0; padding: 0 12px 6px; color: var(--muted); font-size: 0.6875rem; cursor: help; }
-.peace-deals .log.is-compact .peace-deal { margin-bottom: 6px; padding: 6px 8px; }
-.peace-deals .log.is-compact .peace-heading b { font-size: 0.75rem; }
-.peace-deals .log.is-compact .peace-sides { gap: 4px; margin: 4px 0 6px; }
-.peace-deals .log.is-compact .peace-actions { gap: 3px 8px; font-size: 0.6875rem; }
+.peace-note { margin: 0; padding: 0 12px 6px; color: var(--muted); font-size: var(--type-xs); cursor: help; }
+
+/* A deal sits flat on the widget; a hairline separates it from the next. */
+.peace-deal { padding: 10px 0 12px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.peace-deal time { color: var(--muted); font-size: var(--type-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.peace-meta { display: flex; align-items: center; gap: 8px; min-height: 18px; }
+.peace-spacer { flex: 1; }
+.peace-tag { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--text) 6%, transparent); font-size: var(--type-xs); white-space: nowrap; }
+.peace-tag svg { width: 11px; height: 11px; }
+.peace-tag.is-estimate { color: var(--warning); background: var(--warning-soft); cursor: help; }
+
+.peace-sides { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin-top: 3px; font-size: var(--type-md); font-weight: 500; min-width: 0; }
+.peace-side { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.peace-side-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.peace-side small { color: var(--muted); font-weight: 400; }
+.peace-defeated { color: var(--muted); font-size: var(--type-sm); font-weight: 400; }
+.peace-flags { display: inline-flex; flex: none; }
+.peace-flags > * + * { margin-left: -6px; box-shadow: 0 0 0 2px var(--surface); }
+.peace-flag { display: inline-flex; width: 20px; height: 14px; flex: none; border-radius: 2px; overflow: hidden; object-fit: cover; }
+.peace-flag.country-flag-unavailable { display: inline-block; width: 20px; height: 14px; flex: 0 0 20px; border-radius: 2px; }
+
+.peace-take { margin-top: 9px; }
+.peace-take-head { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 8px; font-size: var(--type-sm); }
+.peace-taker { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.peace-taker b { font-weight: 600; }
+.peace-take-head em { flex: 1; min-width: 0; font-style: normal; color: var(--muted); }
+.peace-nums { display: flex; gap: 12px; margin-left: auto; color: var(--muted); font-size: var(--type-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.peace-nums b { color: var(--text); font-weight: 600; }
+.peace-vp-bar { display: flex; gap: 2px; height: 5px; margin: 6px 0 6px 28px; }
+.peace-vp-bar i { display: block; flex: 1 1 0; min-width: 2px; border-radius: 2px; background: color-mix(in srgb, var(--accent) 70%, transparent); }
+.peace-chips { position: relative; display: flex; align-items: start; gap: 5px; min-width: 0; margin: 6px 0 0 28px; font-size: var(--type-xs); }
+.peace-vp-bar + .peace-chips { margin-top: 0; }
+.peace-chip { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; padding: 1px 8px; border-radius: 5px; background: color-mix(in srgb, var(--text) 7%, transparent); font-size: var(--type-xs); }
+.peace-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.peace-chip small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.peace-chip .peace-flag { align-self: center; }
+.peace-more { color: var(--accent); background: transparent; box-shadow: inset 0 0 0 1px var(--border); cursor: help; }
+.peace-source { margin: 7px 0 0 28px; color: var(--muted); font-size: var(--type-xs); }
+
+/* A conference with nothing recorded to show is one line. */
+.peace-quiet { display: flex; align-items: center; gap: 8px; padding: 8px 0; min-width: 0; font-size: var(--type-sm); }
+.peace-quiet time { width: 7.5em; flex: none; }
+.peace-quiet > svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
+.peace-quiet .peace-side { flex: 0 1 auto; }
+.peace-quiet-note { margin-left: auto; padding-left: 8px; color: var(--muted); font-size: var(--type-xs); white-space: nowrap; }
+
+.peace-deals .log.is-compact .peace-deal { padding: 6px 0 8px; }
+.peace-deals .log.is-compact .peace-quiet { padding: 5px 0; }
+.peace-deals .log.is-compact .peace-take { margin-top: 6px; }

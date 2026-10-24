@@ -8,7 +8,7 @@ import type { EventBadge } from '../../charts/badges';
 import { dayLabel, drawBandLine, drawBands } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { runAt } from '../../charts/series';
-import { drawApproximateSpans, drawLineSummary, extentOfSummary, summaryStack } from '../../charts/chartSummary';
+import { drawApproximateSpans, drawLineSummary, extentOfSummary, summaryStack, summaryFits } from '../../charts/chartSummary';
 import { heldStackSegment } from '../../charts/race/countryRace';
 import { nudgeApart } from '../../charts/palette';
 import { compactStackExtent, forEachCompactStackSegment, stackedSegments, stackExtent } from '../../charts/stack';
@@ -160,7 +160,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
     draw: (ctx, frame, chartTokens, state) => {
       const to = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
       const summary = data?.summaries.world;
-      if (!prepared.geometryReady || !summary || summary.from !== frame.x[0] || summary.to !== to || summary.width !== Math.ceil(frame.plotWidth)) return;
+      if (!prepared.geometryReady || !summary || !summaryFits(frame, summary, to)) return;
       if (!summary.runs || summary.approximate?.length) {
         if (denseStack) { ctx.save(); ctx.globalAlpha = 0.85;
           drawApproximateSpans(ctx,frame,denseStack.approximate,state.playhead,() => {

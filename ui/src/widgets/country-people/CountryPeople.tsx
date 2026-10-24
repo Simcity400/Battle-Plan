@@ -6,7 +6,7 @@ import { dayLabel } from '../../charts/draw';
 import { usNumber } from '../../charts/numberFormat';
 import type { BoundTrack } from '../../dashboard/model';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct } from '../../dashboard/products';
 import type { PeopleReply } from '../../generated/dashboard';
 import { peopleValue, validatePeople } from './peopleData';
 import './people.css';
@@ -21,12 +21,13 @@ export default function CountryPeople({ runtime, track, tag, hour, active, view,
   const exileScroll = useRef<HTMLDivElement>(null);
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-people',
     params: { branchId: track.branch.id, tag, hour: Math.floor(hour) } } : null;
-  const result = useProduct<PeopleReply>(runtime.client, request, active, validatePeople);
-  const current = result.data?.tag === tag && result.data?.branchId === track?.branch.id && result.data?.hour === Math.floor(hour);
+  // During playback the last read hour stays shown while the next loads.
+  const result = useFollowedProduct<PeopleReply>(runtime.client, request, ['hour'], active, validatePeople);
+  const current = result.data?.tag === tag && result.data?.branchId === track?.branch.id;
   useEffect(() => { onWarnings?.(current ? result.data?.warnings ?? [] : []); return () => onWarnings?.([]); }, [current, result.data, onWarnings]);
   if (!tag || !track) return null;
   if (result.error) return <WidgetState kind="error" what="manpower and politics" detail={result.error} onRetry={result.retry} />;
-  if (!result.data || result.data.tag !== tag || result.data.branchId !== track.branch.id || result.data.hour !== Math.floor(hour)) return <WidgetState kind="loading" label="Loading country details…" />;
+  if (!result.data || !current) return <WidgetState kind="loading" label="Loading country details…" />;
   const data = result.data;
   const number = (value: number | null) => value === null ? 'Not recorded' : usNumber.format(value);
   return <section className="country-people" aria-label={view === 'manpower' ? 'Recruitment and manpower pools' : 'Elections and governments in exile'}>

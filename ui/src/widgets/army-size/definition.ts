@@ -27,7 +27,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'army-size', version: 2, title: 'Army size', icon: 'shield',
   description: 'A land army race, country lines or battalions by unit group.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES, options: OPTIONS,
   migrate: (_from, widget) => ({ ...widget, configVersion: 2, options: normaliseArmyOptions(widget.options) }),

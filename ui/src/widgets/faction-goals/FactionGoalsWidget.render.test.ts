@@ -7,7 +7,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import type { FactionGoalDefinition, FactionGoalsReply } from '../../generated/dashboard';
 import { mountModule } from '../../dashboard/pendingGroups.fixture.ts';
 
-const definition = (token: string): FactionGoalDefinition => ({ progress: [], sections: [], conditions: [], rewards: [], flags: [], token,
+const definition = (token: string): FactionGoalDefinition => ({ progress: [], sections: [], bands: [], conditions: [], rewards: [], flags: [], token,
   name: `Mod ${token}`, description: null, icon: null, category: 'mod_term', categoryName: 'A mod term', reason: null });
 /** Lists from 10; unreadable lists from 100; absent from 150; still being prepared after 180. */
 const prepared = (pendingFrom: number): FactionGoalsReply => ({

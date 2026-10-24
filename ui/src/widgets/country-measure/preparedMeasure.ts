@@ -7,6 +7,8 @@ import { reachedMeasureReply, validateMeasureStates, validateMeasureSummaries } 
 import type { MeasureStates, MeasureSummaries } from './preparedMeasureData';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
 import { useHeldFailure } from '../../dashboard/heldFailures';
+import { useContentRevision } from '../../dashboard/contentRevision';
+import { useViewRead } from '../../dashboard/viewRead';
 
 /** One viewport reply and one set of reached exact hours; no campaign history
  * cache. Request ownership masks source changes before passive cleanup runs. */
@@ -18,7 +20,6 @@ export function usePreparedMeasure<M extends string>(client: DashboardClient, so
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
   const alive = useRef(owner); alive.current = owner;
   const [viewport, setViewport] = useState<{ owner: typeof owner; from: number; to: number; width: number }>();
-  const [summaries, setSummaries] = useState<{ owner: typeof owner; data?: MeasureSummaries; error?: string }>();
   const [states, setStates] = useState<{ owner: typeof owner; data?: MeasureStates; error?: string }>();
   const [attempt, setAttempt] = useState(0);
   const [pendingSummary, setPendingSummary] = useState<{ owner: typeof owner; pending: boolean }>();
@@ -32,19 +33,17 @@ export function usePreparedMeasure<M extends string>(client: DashboardClient, so
       ? previous : { owner, ...view });
   }, [owner]);
   const view = viewport?.owner === owner ? viewport : undefined;
-  const summaryKey = JSON.stringify(view && [view.from, view.to, view.width, withMarks]);
-  useEffect(() => {
-    if (!enabled || !active || !view) return;
-    const controller = new AbortController();
-    void preparedSeriesQuery(client, source!, 'series-summary', { branchId, family: { kind: family, measure }, tags, from: view.from, to: view.to, width: view.width, withMarks, within: within && Object.fromEntries(within) }, controller.signal, attempt > 0,
-      () => { if (!controller.signal.aborted && alive.current === owner) setPendingSummary({ owner, pending: true }); }, undefined,
-      value => { if (!controller.signal.aborted && alive.current === owner) setSummaries({ owner, data: validateMeasureSummaries(value) }); }).then(
-      value => { if (!controller.signal.aborted && alive.current === owner) { setSummaries({ owner, data: validateMeasureSummaries(value) }); setPendingSummary({ owner, pending: false }); } }).catch(
-      error => { if (!controller.signal.aborted && alive.current === owner) setSummaries(previous => ({ ...previous, owner, error: String(error) })); },
-    );
-    return () => controller.abort();
-  }, [owner, summaryKey, active, enabled, attempt]);
-  const currentSummaries = summaries?.owner === owner ? summaries.data : undefined;
+  // One summary read at a time while the chart's view moves (`useViewRead`).
+  const content = useContentRevision(client);
+  const summaries = useViewRead<{ from: number; to: number; width: number }, MeasureSummaries>(enabled ? JSON.stringify([ownerKey, withMarks, content]) : null,
+    view, JSON.stringify([view?.from, view?.to, view?.width]), active, (at, signal, publish) => preparedSeriesQuery(client, source!, 'series-summary',
+      { branchId, family: { kind: family, measure }, tags, from: at.from, to: at.to, width: at.width, withMarks, within: within && Object.fromEntries(within) }, signal, attempt > 0,
+      () => { if (!signal.aborted && alive.current === owner) setPendingSummary({ owner, pending: true }); }, undefined,
+      value => publish(validateMeasureSummaries(value))).then(value => {
+      if (!signal.aborted && alive.current === owner) setPendingSummary({ owner, pending: false });
+      return validateMeasureSummaries(value);
+    }), client);
+  const currentSummaries = summaries.data;
   const summaryByTag = useMemo(() => new Map(currentSummaries?.series.map(series => [series.tag, series]) ?? []), [currentSummaries]);
   const reads = withStateReads ? tags.flatMap(tag => {
     const line = summaryByTag.get(tag)?.summary;
@@ -93,8 +92,8 @@ export function usePreparedMeasure<M extends string>(client: DashboardClient, so
   const currentStates = states?.owner === owner ? states.data : undefined;
   const data = useMemo(() => enabled && currentStates ? reachedMeasureReply(branchId!, measure, tags, currentStates) : undefined,
     [owner, enabled, currentStates]);
-  const retry = () => { setAttempt(previous => previous + 1); };
-  const error = useHeldFailure((states?.owner === owner ? states.error : undefined) ?? (summaries?.owner === owner ? summaries.error : undefined),
+  const retry = () => { setAttempt(previous => previous + 1); summaries.retry(); };
+  const error = useHeldFailure((states?.owner === owner ? states.error : undefined) ?? summaries.error,
     data !== undefined || currentSummaries !== undefined, retry);
   return { enabled, owner, data, states: currentStates, summaries: currentSummaries, summaryByTag, onSummaryView, onNavigateHour, exactAt,
     pending: currentSummaries?.pending,

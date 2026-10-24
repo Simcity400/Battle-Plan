@@ -219,7 +219,7 @@ impl Resume {
             + walk
                 .open
                 .iter()
-                .map(|(_, relations)| 1 + relations.len())
+                .map(|war| 1 + war.relations.len() + war.loss_pairs.len())
                 .sum::<usize>()
             + walk.seen_caps.len()
             + walk.dated_caps.values().map(Vec::len).sum::<usize>()

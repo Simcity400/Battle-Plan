@@ -105,6 +105,30 @@ test('complete-empty evidence validation scales with its ordered read inventory'
   assert.throws(() => validateProductionSpendingReply(data), /malformed/);
 });
 
+test('military factories and dockyards each chart only their own IC, with its own total', () => {
+  const data = reply();
+  const window = { from: null, hour: 148, end: 171 };
+  const paths = (kind: 'military' | 'dockyards') => productionSpendingItems(data, window, spendingFinals(data, null, 171, kind), kind)
+    .map(item => item.path[0]?.id);
+  assert.deepEqual(paths('military'), ['land', 'air']);
+  assert.deepEqual(paths('dockyards'), ['naval']);
+  assert.equal(spendingTotal(data, window, 'military').exact, 6000001n);
+  assert.equal(spendingTotal(data, window, 'dockyards').exact, 5000000n);
+  assert.equal(spendingTotal(data, window).exact, 11000001n);
+  // A mod's rocket factories are military production.
+  data.leaves.push(leaf({ variant: 'r/1', typeKey: 'mod_rocket', rocket: true, domain: 'air', names: [], runs: [known(100, 171, '7')] }));
+  assert.deepEqual(paths('military'), ['land', 'air', 'rocket']);
+  assert.deepEqual(paths('dockyards'), ['naval']);
+  // A design whose domain is unresolved stays in both, and spending on it leaves neither total known.
+  data.leaves.push(leaf({ variant: 'u/1', typeKey: 'mod_mystery', domain: null, names: [], runs: [known(100, 171, '3')] }));
+  for (const kind of ['military', 'dockyards'] as const) {
+    assert.ok(paths(kind).includes('unresolved'));
+    assert.equal(spendingTotal(data, window, kind).exact, null);
+    assert.equal(spendingTotal(data, window, kind).note, 'Equipment type unknown.');
+  }
+  assert.equal(spendingEmptyLabel({ ...data, leaves: [] }, 148, null, 'dockyards'), 'No dockyard IC spent in this view.');
+});
+
 test('signed cumulative corrections and negative range changes remain selectable exact rows', () => {
   const data = reply();
   data.leaves = [leaf({ runs: [known(100, 123, '400000'), known(124, 171, '-100000')] })];
@@ -323,7 +347,7 @@ test('a later country-level gap marks the whole endpoint unknown without replaci
 
 test('all sunburst settings and levels default to the shared construction behaviour', () => {
   const options = resolveOptions(OPTIONS, {});
-  assert.equal(definition.defaultTime, 'campaign');
+  assert.equal(definition.defaultTime, 'follow');
   assert.equal(options.refits, false);
   assert.equal(OPTIONS.find(option => option.key === 'domainLevel')?.label, 'Production source');
   assert.deepEqual(levelsShown(options, ['domainLevel', 'typeLevel', 'variantLevel']), [true, true, true]);

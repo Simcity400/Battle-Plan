@@ -191,7 +191,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     extent: x => {
       if (!prepared.enabled) return extentOf(line.runs, x[0], Math.min(x[1], until ?? x[1]));
       const ranges = line.parts.flatMap(part => { const summary = prepared.summary(part.country.tag, part.country.identities?.[0], line.branch);
-        const range = summary && summary.from === x[0] && summary.to === Math.min(x[1], until ?? x[1]) ? extentOfSummary(summary) : null; return range ? [range] : []; });
+        const range = summary && summary.to <= Math.min(x[1], until ?? x[1]) && summary.to >= x[0] ? extentOfSummary(summary) : null; return range ? [range] : []; });
       return ranges.length ? [Math.min(...ranges.map(range => range[0])), Math.max(...ranges.map(range => range[1]))] : null;
     },
   })), [lines, until, prepared.summary]);

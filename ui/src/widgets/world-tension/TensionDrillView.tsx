@@ -8,7 +8,7 @@ import { nudgeApart } from '../../charts/palette';
 import { compactStack, compactStackExtent, forEachCompactStackSegment } from '../../charts/stack';
 import { heldStackSegment } from '../../charts/race/countryRace';
 import { extentOf } from '../../charts/series';
-import { drawApproximateSpans, drawLineSummary, extentOfSummary, summaryStack } from '../../charts/chartSummary';
+import { drawApproximateSpans, drawLineSummary, extentOfSummary, summaryStack, summaryFits } from '../../charts/chartSummary';
 import TimeChart from '../../charts/TimeChart';
 import { pendingLayer } from '../../charts/prepared';
 import { PreparedKey } from '../../charts/PreparedKey';
@@ -110,7 +110,7 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
     draw: (ctx, frame, chartTokens, state) => {
       const to = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
       const summary = prepared.data?.summaries.world;
-      if (!prepared.geometryReady || !summary || summary.from !== frame.x[0] || summary.to !== to || summary.width !== Math.ceil(frame.plotWidth)) return;
+      if (!prepared.geometryReady || !summary || !summaryFits(frame, summary, to)) return;
       if (!summary.runs || summary.approximate?.length) {
         if (denseStack) drawApproximateSpans(ctx,frame,denseStack.approximate,state.playhead,() => forEachCompactStackSegment(denseStack.model,frame.x[0],to,0,piece => {
           const segment=heldStackSegment(piece);

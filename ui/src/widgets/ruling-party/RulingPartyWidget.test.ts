@@ -47,7 +47,7 @@ test('dense ruling-party combines census, native and tail marks and chooses the 
       const path = id.replaceAll('\\', '/'), replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
       if (replacement) return replacement[1];
       if (path.endsWith('/dashboard/contentRevision.ts')) return source.replace('return useSyncExternalStore(revision.subscribe, revision.snapshot, revision.snapshot);', 'return revision.snapshot();');
-      if (['/ruling-party/RulingPartyWidget.tsx', '/ruling-party/preparedParty.ts', '/ruling-party/preparedGovernments.ts', '/dashboard/products.ts'].some(suffix => path.endsWith(suffix)))
+      if (['/ruling-party/RulingPartyWidget.tsx', '/ruling-party/preparedParty.ts', '/ruling-party/preparedGovernments.ts', '/dashboard/products.ts', '/dashboard/viewRead.ts'].some(suffix => path.endsWith(suffix)))
         return source.replace(/\b(useMemo|useCallback|useState|useRef|useEffect)(?:<[\s\S]*?>)?\(/g, (_match, name) => `globalThis.__politicsHook(${JSON.stringify(name)}, `);
     } }] });
   const reply = (): PartyHistoryReply => ({ branchId: '1', tag: 'mod country', decimals: 5, warnings: [], ideologies: [], ideologyTypes: [], people: [], leaders: [],

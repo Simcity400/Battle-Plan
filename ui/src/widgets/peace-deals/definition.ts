@@ -11,7 +11,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'peace-deals', version: 1, title: 'Peace deals', icon: 'history', category: 'Diplomacy',
   description: 'Peace conferences, winners and outcomes.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countrySelection: false,
   countries: { max: Number.MAX_SAFE_INTEGER },
   defaultCountries: { kind: 'all' }, minSize: { w: 4, h: 6 }, defaultSize: { w: 7, h: 12 },

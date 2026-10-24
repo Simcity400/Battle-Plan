@@ -13,7 +13,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'casualties', version: 1, title: 'Casualties', icon: 'target',
   description: 'Each country’s casualties dealt and taken, with their ratio.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS,

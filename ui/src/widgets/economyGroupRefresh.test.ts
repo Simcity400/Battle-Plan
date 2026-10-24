@@ -65,10 +65,17 @@ test('actual economy group requests and open drills retain pending/name refreshe
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/products.ts')) return source.slice(0, source.indexOf('export function useProducts<T>'))
+          .replace('export async function loadProduct<T>(', 'async function unusedLoadProduct<T>(')
           + `export const useProducts = () => ({ retry() {} });
             export const useProduct = (_client, request, _active, validate) => {
               if (request) globalThis.__economyGroup.requests.push(request);
-              return { data: request && globalThis.__economyGroup.data !== undefined ? validate(globalThis.__economyGroup.data) : undefined, retry() {} }; };`;
+              return { data: request && globalThis.__economyGroup.data !== undefined ? validate(globalThis.__economyGroup.data) : undefined, retry() {} }; };
+            export const loadProduct = (client, request, _signal, validate, _source, _restart, publish) => {
+              const { data } = useProduct(client, request, true, validate); if (data !== undefined) publish?.(data); return new Promise(() => {}); };`;
+        // The race's view read answers in the same render, as its products do here.
+        if (path.endsWith('/dashboard/viewRead.ts')) return `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
+          if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });
+          return { data, retry() {} }; };`;
         const replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
         if (replacement) return replacement[1];
         const module = memoModules.find(suffix => path.endsWith(suffix));

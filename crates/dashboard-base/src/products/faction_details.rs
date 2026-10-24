@@ -37,6 +37,7 @@ pub struct FactionDetailParams {
 pub struct FactionGoalDefinition {
     pub progress: Vec<FactionRewardDetail>,
     pub sections: Vec<FactionRewardDetail>,
+    pub bands: Vec<FactionProgressBand>,
     pub conditions: Vec<FactionConditionDetail>,
     pub rewards: Vec<FactionRewardDetail>,
     pub flags: Vec<FactionConditionDetail>,
@@ -63,6 +64,15 @@ pub struct FactionRewardDetail {
     pub kind: String,
     pub text: String,
     pub reasons: Vec<String>,
+}
+/// A progress section the game activates while the goal's progress lies in its
+/// range, as fractions of that progress, named when the content localises its key.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FactionProgressBand {
+    pub name: Option<String>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -111,6 +121,9 @@ pub struct FactionDetailReply {
     pub cancelled: Vec<FactionGoalDefinition>,
     pub extra_slots: Vec<i32>,
     pub term_dates: Vec<i32>,
+    /// The faction's logo as the game draws it: its template's sprite, else the
+    /// content's default faction icon.
+    pub logo: Option<String>,
     pub warnings: Vec<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -141,6 +154,7 @@ impl Product for FactionDetails {
             FactionGoalDefinition::decl(),
             FactionConditionDetail::decl(),
             FactionRewardDetail::decl(),
+            FactionProgressBand::decl(),
             FactionGoalDetail::decl(),
             FactionRuleDetail::decl(),
             FactionProgramDetail::decl(),
@@ -402,6 +416,16 @@ impl Product for FactionDetails {
             &mut reply,
         )?;
         collect_icon_refusals(&mut reply);
+        if let Some(cat) = cat.as_deref() {
+            match faction_logo(&frame, faction, cat, &defines) {
+                Ok(logo) => reply.logo = Some(logo),
+                Err(reason) => reply.refusals.push(FactionRefusalDetail {
+                    fact: "faction logo".into(),
+                    count: 1,
+                    reason,
+                }),
+            }
+        }
         reply.warnings.extend(warnings);
         check_reply_budget(&reply)?;
         Ok(reply)
@@ -521,6 +545,53 @@ fn goal_icon(cat: &catalogue::Catalogue, group: Option<&[u8]>) -> Result<Option<
     .get()
     .clone()
     .map(Some)
+}
+
+/// The faction's logo as the game draws it: its template's sprite, else the
+/// content's default for a faction without one.
+fn faction_logo(
+    frame: &DecodedFrame,
+    faction: u64,
+    cat: &catalogue::Catalogue,
+    defines: &SharedDefines,
+) -> Result<String, String> {
+    let row = frame
+        .complete::<tables::Factions>()
+        .map_err(|why| why.to_string())?
+        .iter()
+        .find(|row| row.id == faction)
+        .ok_or("Faction logo: the faction is absent at this hour")?
+        .clone();
+    let templated = match faction_names::template_spelling(frame, row.template_token)? {
+        Some(spelling) => cat
+            .content
+            .layers
+            .faction_templates()?
+            .icon(&spelling)?
+            .map(<[u8]>::to_vec),
+        None => None,
+    };
+    let name = match templated {
+        Some(name) => {
+            String::from_utf8(name).map_err(|_| "Faction logo sprite name is not UTF-8".to_owned())?
+        }
+        None => defines
+            .get(cat)?
+            .text("NFactions", "FACTION_DEFAULT_ICON")
+            .map_err(|why| format!("Faction logo: {why}"))?,
+    };
+    let read = |cat: &catalogue::Catalogue| -> io::Result<String> {
+        let sprite = cat.sprites.lookup(&name).map_err(invalid)?;
+        let decode = cat.gui_decode.as_ref().map_err(invalid)?;
+        catalogue::sprite_frame_png(&cat.content.layers, sprite, *decode, 0, 128)
+    };
+    catalogue::draw(
+        || format!("faction logo {name}"),
+        cat,
+        |cat| read(cat).map_err(|why| format!("Faction logo {name}: {why}")),
+    )
+    .get()
+    .clone()
 }
 
 fn collect_icon_refusals(reply: &mut FactionDetailReply) {
@@ -665,6 +736,7 @@ pub fn finish_goal(label: &GoalLabel, cat: Option<&catalogue::Catalogue>) -> Fac
     FactionGoalDefinition {
         progress: Vec::new(),
         sections: Vec::new(),
+        bands: Vec::new(),
         conditions: Vec::new(),
         rewards: Vec::new(),
         flags: Vec::new(),
@@ -965,6 +1037,7 @@ mod tests {
             FactionGoalDefinition {
                 progress: Vec::new(),
                 sections: Vec::new(),
+                bands: Vec::new(),
                 conditions: Vec::new(),
                 rewards: Vec::new(),
                 flags: Vec::new(),

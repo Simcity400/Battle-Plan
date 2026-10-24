@@ -21,7 +21,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'research', version: 2, title: 'Research history', icon: 'flask',
   description: 'The order each research slot worked through, when each technology finished and when slots opened, as columns or a list.',
-  timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'campaign', scope: 'moment', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'moment', data: true, history: true,
   minSize: { w: 3, h: 5 }, defaultSize: { w: 7, h: 12 }, options: OPTIONS,
   // Version 1 was titled Research; an unchanged title follows the new name.
   migrate: (from, widget) => from < 2 && widget.title === 'Research' ? { ...widget, title: 'Research history' } : widget,

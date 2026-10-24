@@ -81,8 +81,9 @@ function paintLane(ctx: CanvasRenderingContext2D, lane: SubjectLane, geometry: L
   ctx.strokeStyle = tokens.text; ctx.lineWidth = tokens.lineWidth.series; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
   if (summary && !summary.runs) drawLineSummary(ctx,
     { ...frame, toY: value => toY(value / 1e9) }, tokens, { ...summary, approximate: undefined }, tokens.text, false, end === Infinity ? null : end, { endDot: false });
-  const fine = summary?.runs && summary.from === geometry.hours[0] && summary.to === last
-    && summary.width === Math.ceil(geometry.right - geometry.left);
+  // A summary asked for a moment ago (the view moved on) still says the resolution is fine.
+  const fine = summary?.runs && summary.width === Math.ceil(geometry.right - geometry.left)
+    && summary.to <= last && summary.to >= geometry.hours[0];
   for (const { points, path } of curveSegments(fine ? lane.progress : [], geometry.hours[0], last, geometry.toX, toY)) {
     ctx.beginPath(); tracePath(ctx, path);
     if (points.length === 1) ctx.arc(points[0].x, points[0].y, tokens.lineWidth.series / 2, 0, Math.PI * 2);

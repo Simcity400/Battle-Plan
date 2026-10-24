@@ -31,7 +31,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'world-tension', version: 1, title: 'World tension & threat', icon: 'alert',
   description: 'World tension over time, stacked by the countries whose actions generated it, with the events that did.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 10 },
   // Every country by default; chosen countries or a group narrow the layers to them.
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },

@@ -11,6 +11,6 @@ export const OPTIONS: readonly OptionField[] = [...AIR_OPTIONS,
 export const definition = {
   kind: 'air-superiority-timeline', version: 1, title: 'Air superiority timeline', icon: 'plane',
   description: 'Daily air scores per region, in each leading side’s colour or split into shares.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, countries: { max: 1 }, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, countries: { max: 1 }, history: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 10, h: 8 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

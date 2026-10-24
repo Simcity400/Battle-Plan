@@ -19,6 +19,6 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'army-losses-by-month', version: 1, title: 'Army losses by month', icon: 'chart-bars', category: 'Army',
   description: 'A country’s army losses per month from the game’s combat log, by source, army group or equipment type.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: 1 }, minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 8 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

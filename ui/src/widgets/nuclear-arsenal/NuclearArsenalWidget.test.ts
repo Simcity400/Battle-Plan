@@ -28,7 +28,13 @@ test('actual nuclear widget aligns drill playback and projects manual roots thro
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = (_runtime, _track, active) => {
       globalThis.__nuclearGroupsActive = active; return { data: ${JSON.stringify(groups)}, retry() {} }; };`,
     '/dashboard/products.ts': `export const useProduct = (_client, request) => {
-      if (request) globalThis.__nuclearRequests.push(request); return { data: ${JSON.stringify(reply)}, retry() {} }; };`,
+      if (request) globalThis.__nuclearRequests.push(request); return { data: ${JSON.stringify(reply)}, retry() {} }; };
+      export const loadProduct = (client, request, _signal, _validate, _source, _restart, publish) => {
+        publish?.(useProduct(client, request).data); return new Promise(() => {}); };`,
+    // The race's view read answers in the same render, as its products do here.
+    '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
+      if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });
+      return { data, retry() {} }; };`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag: () => undefined });',

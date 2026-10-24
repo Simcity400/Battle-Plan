@@ -7,7 +7,7 @@ import type { DashboardClient } from './client';
 import type { BoundTrack } from './model';
 import { validateFactionTotalsReply } from './factionTotals.ts';
 import { preparedSeriesQuery } from './preparedSeries.ts';
-import { useProduct } from './products.ts';
+import { useFollowedProduct, useProduct } from './products.ts';
 import { NumericReply } from './numericReply.ts';
 import { factionNumbers } from '../charts/race/factionParts.ts';
 
@@ -87,12 +87,14 @@ export function usePreparedFactionTotals(client: DashboardClient, track: BoundTr
   const [navigation, setNavigation] = useState<{ owner: typeof owner; params: unknown; revision: number }>();
   const request = (product: string, extra: object) => track && selection ? { sourceId: track.source.id, revision: track.source.revision,
     product, params: { branchId: track.branch.id, family: { kind: 'faction-totals', selection }, ...extra } } : null;
-  const head = useProduct<PreparedFactionTotals>(client, request('series-state', { reads: [{ hour }] }), active, validatePreparedFactionTotals, track?.source);
+  const head = useFollowedProduct<PreparedFactionTotals>(client, request('series-state', { reads: [{ hour }] }), ['reads'], active, validatePreparedFactionTotals, track?.source);
   const hovered = hover?.owner === owner ? hover.hour : null;
   const reached = useProduct<PreparedFactionTotals>(client, hovered == null ? null : request('series-state', { reads: [{ hour: hovered }] }), active, validatePreparedFactionTotals, track?.source);
   const anchor = useProduct<PreparedFactionTotals>(client, origin === undefined || origin === hour ? null : request('series-state', { reads: [{ hour: Math.floor(origin) }] }), active, validatePreparedFactionTotals, track?.source);
   const viewport = view?.owner === owner ? view : { from: extent[0], to: extent[1], width: 1 };
-  const summary = useProduct<PreparedFactionTotals>(client, summarize ? request('series-summary', viewport) : null, active, validatePreparedFactionTotals, track?.source);
+  // One summary read at a time while the chart's view moves.
+  const summary = useFollowedProduct<PreparedFactionTotals>(client, summarize ? request('series-summary', { from: viewport.from, to: viewport.to, width: viewport.width }) : null,
+    ['from', 'to', 'width'], active, validatePreparedFactionTotals, track?.source);
   const retained = useMemo(() => new NumericReply<PreparedFactionTotals>(), [client]);
   const geometryData = summarize ? retained.update(key, summary.data, reply => factionNumbers(reply)) : undefined;
   const pickOwner = useMemo(() => ({ owner, geometryData }), [owner, geometryData]);

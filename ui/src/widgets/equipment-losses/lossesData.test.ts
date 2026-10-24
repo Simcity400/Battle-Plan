@@ -219,7 +219,7 @@ test('all three levels are optional and default behaviour uses the shared sunbur
   const options = resolveOptions(OPTIONS, undefined);
   assert.deepEqual(levelsShown(options, LEVELS), [true, true, true]);
   assert.deepEqual(sunburstSettings(options), { growth: 'share', labels: true, legend: true, breadcrumb: true, dimming: true });
-  assert.equal(definition.defaultTime, 'campaign');
+  assert.equal(definition.defaultTime, 'follow');
   const data = reply();
   for (const levels of [[false, true, true], [true, false, true], [true, true, false], [false, false, false]]) {
     assert.equal(groupTree(lossItems(data, whole), ROOT, levels).exact, 450001n);

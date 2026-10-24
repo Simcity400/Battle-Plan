@@ -17,6 +17,6 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'agency-comparison', version: 1, title: 'Agency comparison', icon: 'shield',
   description: 'Compare countries’ agencies, defence and operatives.',
-  timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, all: true, ranked: true }, minSize: { w: 4, h: 6 }, defaultSize: { w: 10, h: 12 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

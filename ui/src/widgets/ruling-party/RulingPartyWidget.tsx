@@ -30,7 +30,7 @@ import { readTokens, subscribeTokens } from '../../charts/tokens';
 import { OPTIONS } from './definition';
 import { bands, buildStack, formatPopularity, leaderAt, leaderShown, partyBadges, partyNameAt, rawAt, rulingAt, rulingFirst, stackedSegments, validatePartyHistoryReply } from './partyData';
 import { governmentBadges, governmentEventRows, governmentRows, validateGovernmentLedger, visibleGovernmentChanges } from './governmentData';
-import { drawApproximateSpans, summaryStack } from '../../charts/chartSummary';
+import { drawApproximateSpans, summaryStack, summaryFits } from '../../charts/chartSummary';
 import { forEachCompactStackSegment } from '../../charts/stack';
 import PartyEventList from './PartyEventList';
 import { partyMarkSummaries, usePreparedParty } from './preparedParty';
@@ -146,9 +146,9 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     draw: (ctx, frame, tokens, state) => {
       const to = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
       const hoursPerPixel = (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth);
-      if (party.enabled && (!party.summary || party.summary.summaries.some(line => line.summary.from !== frame.x[0] || line.summary.to !== to || line.summary.width !== Math.ceil(frame.plotWidth)))) return;
+      if (party.enabled && (!party.summary || party.summary.summaries.some(line => !summaryFits(frame, line.summary, to)))) return;
       if (dense) {
-        if (party.summary?.summaries.some(line => line.summary.from !== frame.x[0] || line.summary.to !== to || line.summary.width !== Math.ceil(frame.plotWidth))) return;
+        if (party.summary?.summaries.some(line => !summaryFits(frame, line.summary, to))) return;
         drawApproximateSpans(ctx, frame, dense.approximate, to, () => {
           forEachCompactStackSegment(dense.model,frame.x[0],to,hoursPerPixel/2,segment => drawBands(ctx,frame,tokens,segment.hours,segment.bands,plotted.map(band=>band.color)),dense.sample);
         });

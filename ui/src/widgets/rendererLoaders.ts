@@ -75,7 +75,6 @@ export const rendererLoaders = {
   'faction-upgrades': () => import('./faction-upgrades'),
   'diplomatic-pacts': () => import('./diplomatic-pacts'),
   'diplomatic-relations': () => import('./diplomatic-relations'),
-  'faction-influence': () => import('./faction-influence'),
   'faction-pooled-strength': () => import('./faction-pooled-strength'),
   'faction-goals': () => import('./faction-goals'),
   'war-contribution': () => import('./war-contribution'),

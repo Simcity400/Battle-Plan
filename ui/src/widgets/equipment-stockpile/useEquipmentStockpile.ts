@@ -3,7 +3,7 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { contentKey, contentSet, setToken } from '../../dashboard/options';
-import { useProduct, useProducts } from '../../dashboard/products';
+import { useFollowedProduct, useProducts } from '../../dashboard/products';
 import { NumericReply } from '../../dashboard/numericReply';
 import type { EquipmentStockpileReply } from '../../generated/dashboard';
 import { chartChoices, choiceKey, CHOSEN_KEYS, stockGroups, typeName, validateStockpileReply } from './stockpileData';
@@ -29,7 +29,7 @@ export function useEquipmentStockpile(widget: WidgetSpec, runtime: WidgetRuntime
   const prepared = !!runtime.client.preparedQuery;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-stockpile',
     params: { branchId: track.branch.id, tag, ...(prepared ? { from: hour, to: hour, width: 1, within, included: contentSet(typeof widget.options?.included === 'string' ? widget.options.included : '').map(contentKey) } : {}) } } : null;
-  const product = useProduct<EquipmentStockpileReply>(runtime.client, request, active, validateStockpileReply, prepared ? track?.source : undefined);
+  const product = useFollowedProduct<EquipmentStockpileReply>(runtime.client, request, ['from', 'to'], active, validateStockpileReply, prepared ? track?.source : undefined);
   const retained = useMemo(() => new NumericReply<EquipmentStockpileReply>(), [runtime.client]);
   const numbers = retained.update(JSON.stringify(request), product.data, stockpileNumbers);
   return { track, tag, ...product, numbers, data: product.data ?? numbers, contentPending: !!numbers && !product.data && !product.error };
@@ -73,10 +73,10 @@ export function useStockpileCountry(selection: DatedCountrySelection | null, run
   };
   const prepared = !!runtime.client.preparedQuery;
   const legacy = useProducts<EquipmentStockpileReply>(runtime.client, prepared ? [] : requests, active && !!selection && !prepared, validate);
-  const incoming = useProduct<EquipmentStockpileReply[]>(runtime.client, prepared && track && spans && selection ? {
+  const incoming = useFollowedProduct<EquipmentStockpileReply[]>(runtime.client, prepared && track && spans && selection ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'equipment-stockpile',
     params: { branchId: track.branch.id, tag: selection.tag, tags: [...spans.keys()], withinByTag: Object.fromEntries(spans), from: hour, to: hour, width: 1 },
-  } : null, active && !!selection && prepared, value => {
+  } : null, ['from', 'to'], active && !!selection && prepared, value => {
     if (!Array.isArray(value)) throw new Error('The selected stockpile country reply is malformed.');
     return value.map(validate);
   }, track?.source);

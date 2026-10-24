@@ -12,7 +12,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'division-log', version: 1, title: 'Division log', icon: 'shield',
   description: 'Division creations, losses and transfers, with templates, locations and attackers.',
-  timeModes: ['campaign', 'follow', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 7, h: 14 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   availability: { product: 'division-log-manifest', params: {} }, options: OPTIONS,
 } as const satisfies WidgetMeta;

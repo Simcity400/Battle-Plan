@@ -94,7 +94,7 @@ test('presentation has no content count cap at 5000 projects and defaults are sa
   assert.equal(projectHistory(data,120).lanes.length,5000);
   assert.equal('completedRetentionDays' in resolveOptions(OPTIONS,{}),false);
   assert.equal(resolveOptions(OPTIONS,{view:'history'}).view,'history');
-  assert.equal(definition.defaultTime,'campaign');
+  assert.equal(definition.defaultTime, 'follow');
 });
 
 test('paused cards are named and cancelled episodes end by observation without a completion tick', () => {

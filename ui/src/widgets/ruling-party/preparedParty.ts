@@ -11,6 +11,8 @@ import type { HourSpan } from "../../generated/dashboard";
 import type { PartyHistoryReply } from '../../generated/dashboard';
 import { validatePartyHistoryReply } from './partyData';
 import { useContentRevision } from '../../dashboard/contentRevision';
+import { useHeldFailure } from '../../dashboard/heldFailures';
+import { useViewRead } from '../../dashboard/viewRead';
 import { isPreparationExtent } from '../../dashboard/preparedPrefix';
 import type { PreparedCoverage } from '../../shell/preparation/contract';
 
@@ -59,7 +61,12 @@ export function usePreparedParty(client: DashboardClient, source: DashboardSourc
   const previous = useRef<{owner:typeof owner;data:PartyPreparedReply;hour:number}>(undefined);
   const currentView = view?.owner === owner ? view : undefined;
   const viewKey = JSON.stringify(currentView && [currentView.from,currentView.to,currentView.width]);
-  const summary = useProduct(client, currentView ? request({ mode: 'summary', from: currentView.from, to: currentView.to, width: currentView.width, fields, values: withValues }) : null, active, validatePreparedParty, source);
+  // One summary read at a time while the chart's view moves (`useViewRead`).
+  const summaryRequest = request({ mode: 'summary', fields, values: withValues });
+  const summaryRead = useViewRead<{ from: number; to: number; width: number }, PartyPreparedReply>(summaryRequest && ownerKey, currentView,
+    JSON.stringify([currentView?.from, currentView?.to, currentView?.width]), active, (at, signal, publish, restart) => loadProduct(client,
+      request({ mode: 'summary', from: at.from, to: at.to, width: at.width, fields, values: withValues })!, signal, validatePreparedParty, source, restart, publish), client);
+  const summary = { ...summaryRead, error: useHeldFailure(summaryRead.error, summaryRead.data !== undefined, summaryRead.retry) };
   const hours = [...new Set([Math.floor(head), ...(hover == null ? [] : [Math.floor(hover)])])].sort((a, b) => a - b);
   const state = useProduct(client, withValues ? request({ mode: 'state', hours }) : null, active, validatePreparedParty, source);
   const currentPage = page?.owner === owner ? page : undefined;

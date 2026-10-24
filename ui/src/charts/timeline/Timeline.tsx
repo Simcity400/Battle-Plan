@@ -97,6 +97,8 @@ export interface TimelineProps {
 
 /** The narrowest time span a zoom may reach: two weeks. */
 const MIN_SPAN = 14 * 24;
+/** The least time between summary view reports while the view keeps moving. */
+const SUMMARY_INTERVAL_MS = 150;
 const ICON = 32;
 const BAR_ICON = 20;
 const PAD_RIGHT = 14;
@@ -172,6 +174,20 @@ export default function Timeline(props: TimelineProps) {
     let tokens = readTokens();
     let view: ViewState = EMPTY_VIEW;
     let eased: [number, number] | null = null;
+    // The summary view last reported, when, and a newer one waiting for the interval.
+    // The lanes in view, by identity: a changed selection of the same size is a new view.
+    // Lanes rebuilt every hour of playback still wait for the interval.
+    type SummaryView = { from: number; to: number; width: number; lanes: readonly TimelineLane[] };
+    const sameLanes = (a: readonly TimelineLane[], b: readonly TimelineLane[]) => a.length === b.length && a.every((lane, index) => lane === b[index]);
+    let summarySent: SummaryView | null = null, summaryLatest: SummaryView | null = null;
+    let summaryAt = -Infinity, summaryTimer: ReturnType<typeof setTimeout> | null = null;
+    const sendSummary = () => {
+      summaryTimer = null;
+      const sent = summaryLatest, props = latest.current;
+      if (!sent) return;
+      summarySent = sent; summaryAt = performance.now();
+      props.onSummaryView?.({ from: sent.from, to: sent.to, width: sent.width }, sent.lanes);
+    };
     let x: [number, number] = [0, 1];
     let left = 120;
     let fitted = 120;
@@ -343,10 +359,19 @@ export default function Timeline(props: TimelineProps) {
       if (keyed.current && (viewed.current?.[0] !== target[0] || viewed.current?.[1] !== target[1])) queueMicrotask(() => refreshKeyed.current());
       viewed.current = target;
       eased = x;
-      const summaryView = { from: x[0], to: Math.min(x[1], p.playhead ?? x[1]), width: Math.ceil(plotWidth()) };
-      if (summaryView.to >= summaryView.from) queueMicrotask(() => {
-        if (latest.current === p) p.onSummaryView?.(summaryView, p.lanes.slice(Math.max(0, inView[0]), inView[1] + 1));
-      });
+      // Whole hours, at most once per interval while the view glides or plays, the
+      // newest sent when it settles: not once per animation frame.
+      const summaryView = { from: Math.floor(x[0]), to: Math.floor(Math.min(x[1], p.playhead ?? x[1])), width: Math.ceil(plotWidth()),
+        lanes: p.lanes.slice(Math.max(0, inView[0]), inView[1] + 1) };
+      const same = (view: SummaryView | null) => !!view && view.from === summaryView.from && view.to === summaryView.to && view.width === summaryView.width
+        && sameLanes(view.lanes, summaryView.lanes);
+      if (summaryView.to >= summaryView.from && !same(summaryLatest)) {
+        summaryLatest = summaryView;
+        if (same(summarySent)) { if (summaryTimer) clearTimeout(summaryTimer); summaryTimer = null; }
+        else if (!summarySent || summarySent.width !== summaryView.width || performance.now() - summaryAt >= SUMMARY_INTERVAL_MS) {
+          if (summaryTimer) clearTimeout(summaryTimer); queueMicrotask(sendSummary);
+        } else summaryTimer ??= setTimeout(sendSummary, SUMMARY_INTERVAL_MS - (performance.now() - summaryAt));
+      }
       const bottom = AXIS_HEIGHT + geometry.current.height;
       const right = left + plotWidth();
       const fallback = (id: string, px: number, top: number, width: number, height: number, opacity: number, icon: 'flask' | 'sparkle', plot = false) => {
@@ -608,7 +633,8 @@ export default function Timeline(props: TimelineProps) {
           undefined, flagLoaded, globalThis.innerHeight);
         if (content) showTooltip(owner, content, pointer.clientX, pointer.clientY, `${lane.id}:${span?.id ?? ''}:${hour}`); else hideTooltip(owner);
       } else if (!keyed.current) { hideTooltip(owner); notifyHover(null); }
-      const cursor = drag?.mode === 'pan' ? 'grabbing' : pointer && pointer.y < axisTop + AXIS_HEIGHT && pointer.x > left ? 'ew-resize' : 'default';
+      const cursor = drag?.mode === 'pan' ? 'grabbing' : pointer && pointer.y < axisTop + AXIS_HEIGHT && pointer.x > left ? 'ew-resize'
+        : index != null && p.onLaneActivate && (p.lanes[index].opens || p.lanes[index].expanded != null) ? 'pointer' : 'default';
       if (element.style.cursor !== cursor) element.style.cursor = cursor;
 
       const settled = Math.abs(x[0] - target[0]) + Math.abs(x[1] - target[1]) < 1e-3;
@@ -717,6 +743,7 @@ export default function Timeline(props: TimelineProps) {
     element.addEventListener('click', click);
     element.addEventListener('contextmenu', menu);
     return () => {
+      if (summaryTimer) clearTimeout(summaryTimer);
       remove(); unsubscribe(); observer.disconnect(); hideTooltip(owner);
       document.removeEventListener('scroll', scroll, true);
       window.removeEventListener('resize', scroll);
@@ -828,7 +855,8 @@ export default function Timeline(props: TimelineProps) {
       : laneTop(at.lane, rows) + rows.rowHeights[at.lane];
     showTooltip(owner, content, bounds.left + bounds.width / 2, bounds.top + tooltipY * scale, `key:${lane.id}:${stop?.id ?? shown?.id ?? ''}`);
     // Read out in full: every row, not only those the window fits.
-    setSpoken([tooltipText(content), lane.expanded == null ? null : `${lane.expanded ? 'Expanded' : 'Collapsed'}. Enter or Space to ${lane.expanded ? 'collapse' : 'expand'}.`]
+    setSpoken([tooltipText(content), lane.opens ? 'Enter or Space to open.'
+      : lane.expanded == null ? null : `${lane.expanded ? 'Expanded' : 'Collapsed'}. Enter or Space to ${lane.expanded ? 'collapse' : 'expand'}.`]
       .filter(Boolean).join('; '));
   };
   // Only while no other chart holds the shared tooltip: one hovered since keeps it. A hidden

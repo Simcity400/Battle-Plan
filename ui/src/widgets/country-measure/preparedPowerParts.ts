@@ -1,7 +1,10 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { HourSpan, PoliticsLedgerReply } from '../../generated/dashboard';
-import { useProduct, useProducts } from '../../dashboard/products';
+import { loadProduct, useProducts } from '../../dashboard/products';
+import { useContentRevision } from '../../dashboard/contentRevision';
+import { useHeldFailure } from '../../dashboard/heldFailures';
+import { useViewRead } from '../../dashboard/viewRead';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
 import { validatePowerBalance, powerBalanceIndex } from '../../dashboard/powerBalance';
 import { isChartSummary } from '../../charts/chartSummary';
@@ -35,9 +38,15 @@ export function usePreparedPowerParts(client: DashboardClient | undefined, sourc
   const [hover, setHover] = useState<{ owner: typeof owner; hour: number | null }>();
   const asked = [...new Set([hour, hover?.owner === owner ? hover.hour : null].filter((hour): hour is number => hour !== null).map(Math.floor))];
   const binding = Object.fromEntries(bindings ?? []);
-  const summaryRequest = enabled ? { sourceId: source.id, revision: source.revision, product: 'politics-ledger',
-    params: { branchId, tag, view: 'balance', hour: Math.ceil(view.to), summary: { from: view.from, to: view.to, width: view.width, currency, mode }, bindings: binding } } : null;
-  const geometry = useProduct<PoliticsLedgerReply>(requestClient, summaryRequest, active && enabled, validate, source);
+  // One summary read at a time while the chart's view moves (`useViewRead`).
+  const content = useContentRevision(requestClient);
+  const read = useViewRead<{ from: number; to: number; width: number }, PoliticsLedgerReply>(
+    enabled ? JSON.stringify([source.id, source.revision, branchId, tag, countryId, currency, mode, bindingKey, content]) : null,
+    view, JSON.stringify([view.from, view.to, view.width]), active && enabled,
+    (at, signal, publish, restart) => loadProduct(requestClient, { sourceId: source!.id, revision: source!.revision, product: 'politics-ledger',
+      params: { branchId, tag, view: 'balance', hour: Math.ceil(at.to), summary: { from: at.from, to: at.to, width: at.width, currency, mode }, bindings: binding } },
+    signal, validate, source, restart, publish), requestClient);
+  const geometry = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
   const requests = enabled ? asked.flatMap(hour => [...bindings!].flatMap(([tag, within]) => {
     const from = Math.floor(hour / 24) * 24, to = Math.min(hour, Math.floor(through));
     return to < from ? [] : [{ sourceId: source.id, revision: source.revision, product: 'politics-ledger',

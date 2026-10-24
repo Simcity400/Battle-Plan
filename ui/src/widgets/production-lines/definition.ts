@@ -26,7 +26,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'production-lines', version: 1, title: 'Production lines', icon: 'grid',
   description: 'A country’s production lines: factories, efficiency, output and totals, live or across the campaign.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 5, h: 6 }, defaultSize: { w: 12, h: 14 },
   options: OPTIONS,
 } as const satisfies WidgetMeta;

@@ -78,10 +78,18 @@ test('mounted force views keep witnessed actors through pending names and reject
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/products.ts')) return source.slice(0, source.indexOf('export function useProducts<T>'))
+          .replace('export async function loadProduct<T>(', 'async function unusedLoadProduct<T>(')
           + `export const useProducts = () => ({ data: undefined, retry() {} });
             export const useProduct = (_client, request) => { const s = globalThis.__forceNumeric;
               return { data: !request ? undefined : request.product === 'country-groups' ? s.groups
-                : request.params.tags.length === 1 ? s.detail : s.main, error: s.error, retry() {} }; };`;
+                : request.params.tags.length === 1 ? s.detail : s.main, error: s.error, retry() {} }; };
+            export const loadProduct = (client, request, _signal, _validate, _source, _restart, publish) => {
+              const { data, error } = useProduct(client, request); if (error) throw Error(error);
+              if (data !== undefined) publish?.(data); return new Promise(() => {}); };`;
+        // The race's view read answers in the same render, as its products do here.
+        if (path.endsWith('/dashboard/viewRead.ts')) return `export const useViewRead = (lane, view, _viewKey, active, read) => { let data, error;
+          if (active && lane != null && view != null) try { void read(view, new AbortController().signal, value => { data = value; }); } catch (failure) { error = failure.message; }
+          return { data, error, retry() {} }; };`;
         const replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
         if (replacement) return replacement[1];
         const module = ['/charts/race/PartsRaceView.tsx', '/charts/race/CountryRaceView.tsx'].find(suffix => path.endsWith(suffix));

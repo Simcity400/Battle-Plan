@@ -13,6 +13,6 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'ships-sunk', version: 1, title: 'Ships sunk log', icon: 'history',
   description: 'Ships sunk, with their owners, credited countries, classes and sea zones.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 7, h: 14 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true }, options: OPTIONS,
 } as const satisfies WidgetMeta;

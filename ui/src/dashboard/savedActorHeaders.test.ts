@@ -87,7 +87,14 @@ test('registered saved native-actor bodies supply country headers at their displ
           : request.product === 'country-nukes' ? request.params.originHour == null ? state.nuclear : state.nuclearOrigin
           : request.product === 'military-air-ledger' ? { ...state.ledger, family: request.params.family } : null;
         try { return { data: reply ? validate(reply) : undefined, retry() {} }; } catch (error) { return { error: error.message, retry() {} }; }
-      } export const loadProduct = () => Promise.resolve({ flags: [] });`,
+      } export const loadProduct = (client, request, _signal, validate, _source, _restart, publish) => {
+        if (!publish) return Promise.resolve({ flags: [] });
+        const { data, error } = useProduct(client, request, true, validate); if (error) throw Error(error);
+        if (data !== undefined) publish(data); return new Promise(() => {}); };`,
+    // View reads answer in the same render through the transport above.
+    '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data, error;
+      if (active && lane != null && view != null) try { void read(view, new AbortController().signal, value => { data = value; }); } catch (failure) { error = failure.message; }
+      return { data, error, retry() {} }; };`,
     '/dashboard/productWindows.ts': `export function useProductWindows(client, _identity, request, wanted, active, validate) {
       const state = globalThis.__savedActorHeaders; if (active) for (const window of wanted) state.products.push({ client, request: request(window) });
       if (!active || state.pending) return { data: new Map(), errors: new Map(), retry() {} };

@@ -15,7 +15,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'air-force-size', version: 1, title: 'Air force size', icon: 'layers',
   description: 'Compare aircraft in countries’ air wings over time and by type.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES, options: OPTIONS,
   variants: [...raceViewVariants('Air force size', OPTIONS), ...breakdownVariants('Air force size', OPTIONS)],

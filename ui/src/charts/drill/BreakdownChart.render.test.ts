@@ -58,7 +58,7 @@ test('BreakdownChart keeps the exact signed canvas path and uses shared dense ge
     assert.ok(approximate.some(command => command[0] === 'setLineDash' && JSON.stringify(command[1]) === '[4,4]'));
     assert.ok(approximate.some(command => command[0] === 'clip'));
     assert.ok(approximate.some(command => command[0] === 'fill'), 'unprepared parts draw immediately');
-    const late = draw({ ...props, summaries: { parts: parts.map(() => ({ ...summary, from: summary.from + 1 })) } });
-    assert.ok(!late.some(command => command[0] === 'fill'), 'an older viewport cannot paint a new viewport');
+    const late = draw({ ...props, summaries: { parts: parts.map(() => ({ ...summary, width: summary.width + 1 })) } });
+    assert.ok(!late.some(command => command[0] === 'fill'), 'a reply for another width cannot paint this one');
   } finally { await vite.close(); delete globals.__preparedBreakdown; }
 });

@@ -17,6 +17,6 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'volunteers', version: 1, title: 'Volunteers & expeditionaries', icon: 'flows', category: 'Diplomacy',
   description: 'Volunteer and expeditionary forces from each sender to each host.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true }, options: OPTIONS,
 } as const satisfies WidgetMeta;

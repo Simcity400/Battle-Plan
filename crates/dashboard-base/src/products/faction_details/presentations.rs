@@ -185,6 +185,7 @@ pub(super) fn attach(
                     icon: None,
                     progress: Vec::new(),
                     sections: Vec::new(),
+                    bands: Vec::new(),
                     conditions: Vec::new(),
                     rewards: Vec::new(),
                     flags: Vec::new(),
@@ -207,6 +208,27 @@ pub(super) fn attach(
             }
         }
         reply.sections.push(value);
+        let number = |kind: &str| {
+            section
+                .iter()
+                .rfind(|field| field.keyword_is(kind))
+                .and_then(|field| field.value.scalar())
+                .and_then(|value| std::str::from_utf8(value).ok()?.parse::<f64>().ok())
+                .filter(|value| value.is_finite())
+        };
+        let localisation = &texts.cat.localisation;
+        reply.bands.push(FactionProgressBand {
+            name: definition
+                .progress_section_keys
+                .get(index)
+                .and_then(Option::as_deref)
+                .and_then(|key| std::str::from_utf8(key).ok())
+                .filter(|key| localisation.get(key).is_some())
+                .and_then(|key| catalogue::localised(localisation, key, catalogue::View::Plain).ok())
+                .filter(|name| !name.is_empty()),
+            min: number("min"),
+            max: number("max"),
+        });
     }
     for kind in ["allowed", "visible", "available", "completed", "cancel"] {
         let body = definition
@@ -564,16 +586,6 @@ fn command_gates(
         result: Some(true),
         reasons: Vec::new(),
     });
-    let dates = frame
-        .complete::<tables::FactionGoalEntries>()
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter(|row| row.faction == faction && row.kind == 4)
-        .map(|row| format!("term {} date {}", row.ordinal, row.date))
-        .collect::<Vec<_>>()
-        .join("; ");
-    reply.rewards.push(FactionRewardDetail{kind:"Command timing".into(),text:format!("No independent clock cooldown in the add/change command. Authored availability and allowed conditions apply at hour {}. {dates}",frame.hour),reasons:Vec::new()});
 }
 
 #[cfg(test)]

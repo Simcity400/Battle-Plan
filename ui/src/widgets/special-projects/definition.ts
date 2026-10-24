@@ -10,7 +10,7 @@ export const OPTIONS: readonly OptionField[] = [
 ];
 export const definition = {
   kind: 'special-projects', version: 2, title: 'Special projects', description: 'Projects in progress with their scientists, completed projects, or each project’s progress over the campaign.',
-  icon: 'flask', timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  icon: 'flask', timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER }, minSize: { w: 4, h: 5 }, defaultSize: { w: 7, h: 9 }, options: OPTIONS,
   // Current once dropped completed projects after a chosen number of game days; it now lists them all.
   migrate: (_from, { options: { completedRetentionDays: _retention, ...options } = {}, ...widget }) => ({ ...widget,

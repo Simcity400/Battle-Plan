@@ -119,9 +119,10 @@ test('gaps and identity breaks never become a connecting summary stroke', () => 
   assert.ok(dots.some(point => point[1] === frame.toY(8)));
 });
 
-test('late viewport, resize or playback replies cannot paint geometry at a new owner range', () => {
+test('resize, playback or out-of-view replies cannot paint geometry at a new owner range', () => {
   const { context, paths, dots } = canvas();
-  assert.equal(drawLineSummary(context, frame, tokens, { ...summary, from: 1 }, '#123'), null);
+  assert.equal(drawLineSummary(context, frame, tokens, { ...summary, to: 50_001 }, '#123'), null);
+  assert.equal(drawLineSummary(context, frame, tokens, { ...summary, from: 50_001, to: 60_000 }, '#123'), null);
   assert.equal(drawLineSummary(context, frame, tokens, { ...summary, width: 99 }, '#123'), null);
   assert.equal(drawLineSummary(context, frame, tokens, summary, '#123', true, 100), null);
   assert.deepEqual(paths, []); assert.deepEqual(dots, []);

@@ -18,7 +18,8 @@ test('faction preparation requests only reached hours and bounded geometry, reta
     plugins: [{ name: 'prepared-faction-request-fixture', enforce: 'pre', transform(_source, id) {
       if (id.replaceAll('\\', '/').endsWith('/dashboard/products.ts')) return `const data=${JSON.stringify(data)};
         export const useProduct=(_client,request,_active,validate)=>{if(request)globalThis.__preparedFactionHook.requests.push(request);
-          return {data:request && request.product==='series-state' ? validate(data) : undefined,retry(){}};};`;
+          return {data:request && request.product==='series-state' ? validate(data) : undefined,retry(){}};};
+        export const useFollowedProduct=(client,request,_moving,active,validate)=>useProduct(client,request,active,validate);`;
     } }] });
   try {
     const { usePreparedFactionTotals } = await vite.ssrLoadModule('/ui/src/dashboard/preparedFactionTotals.ts');

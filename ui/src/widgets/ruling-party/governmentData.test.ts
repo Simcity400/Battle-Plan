@@ -72,7 +72,10 @@ test('registered ruling-party renderer requests causes conditionally, respects P
   host.__governmentLedger = ledger; host.__governmentRequests = requests;
   const replacements: Record<string, string> = {
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
-    '/dashboard/products.ts': `export const loadProduct = () => { throw new Error('SSR must not navigate'); };
+    '/dashboard/products.ts': `export const loadProduct = (client, request, _signal, validate, _source, _restart, publish) => {
+      if (!publish) throw new Error('SSR must not navigate');
+      const { data, error } = useProduct(client, request, true, validate); if (error) throw Error(error);
+      if (data !== undefined) publish(data); return new Promise(() => {}); };
     export const useProduct = (_client, request, active, validate) => {
       if (!request || !active) return { retry() {} }; globalThis.__governmentRequests.push(request);
       if (request.product === 'country-people') return { data: validate({ ...request.params,
@@ -80,7 +83,12 @@ test('registered ruling-party renderer requests causes conditionally, respects P
       if (request.product === 'politics-ledger' && globalThis.__governmentError) return { error: globalThis.__governmentError, retry() {} };
       const party = request.params.mode ? { coverage: { firstHour: 24, lastHour: 30, complete: true }, reply: globalThis.__governmentParty, summaries: [], marks: [], cursor: null, total: '0' } : globalThis.__governmentParty;
       return { data: validate(request.product === 'party-history' ? party : globalThis.__governmentLedger), retry() {} };
-    };`,
+    };
+    export const useFollowedProduct = (client, request, _moving, active, validate) => useProduct(client, request, active, validate);`,
+    // View reads answer in the same render through the transport above.
+    '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data, error;
+      if (active && lane != null && view != null) try { void read(view, new AbortController().signal, value => { data = value; }); } catch (failure) { error = failure.message; }
+      return { data, error, retry() {} }; };`,
     '/charts/TimeChart.tsx': 'export default props => { globalThis.__governmentChart = props; return null; };',
     '/charts/Legend.tsx': 'export default () => null;',
     '/charts/tokens.ts': 'export const readTokens = () => ({ surface: "#101820" }); export const subscribeTokens = () => () => {};',

@@ -15,6 +15,6 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'equipment-designs', version: 1, title: 'Equipment designs', icon: 'layers', category: 'Economy',
   description: 'A country’s current and obsolete equipment designs, when each and its obsolete flag were first recorded.',
-  timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 6, h: 10 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

@@ -15,7 +15,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'raid-tally', version: 1, title: 'Raid tally', icon: 'target',
   description: 'Raid launches and successes by country.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES, availability: RAIDS_AVAILABILITY, options: OPTIONS,
   variants: raceViewVariants('Raid tally', OPTIONS),

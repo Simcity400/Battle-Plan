@@ -17,7 +17,12 @@ test('trade viewport, followed drill and pointer hours acquire independent prepa
     plugins: [{ name: 'trade-exact-demand', enforce: 'pre', transform(code, id) {
       const path = id.replaceAll('\\', '/');
       if (path.endsWith('/dashboard/useCountryGroups.ts')) return 'export const useCountryGroups = () => ({});';
-      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = (_client, request, _active, _validate, source) => { if (request) { globalThis.__tradeAcquisition.requests.push(request); globalThis.__tradeAcquisition.sources.push(source); } return { retry() {} }; };';
+      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = (_client, request, _active, _validate, source) => { if (request) { globalThis.__tradeAcquisition.requests.push(request); globalThis.__tradeAcquisition.sources.push(source); } return { retry() {} }; };'
+        + ' export const loadProduct = (client, request, _signal, validate, source) => { useProduct(client, request, true, validate, source); return new Promise(() => {}); };';
+      // The viewport read asks synchronously, as each render's demand.
+      if (path.endsWith('/dashboard/viewRead.ts')) return `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
+        if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });
+        return { data, retry() {} }; };`;
       if (path.endsWith('/widgets/trade-flows/useTradeFlows.ts')) return code.replace(/const \[(viewport|point|detail), (\w+)\] = useState<.*>\(\);/g,
         (_whole, name, setter) => `const [${name}, ${setter}] = [globalThis.__tradeAcquisition.${name}, () => {}];`);
     } }] });

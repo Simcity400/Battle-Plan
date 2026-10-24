@@ -13,7 +13,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'bombing-damage-breakdown', version: 1, title: 'Bombing damage breakdown', icon: 'sunburst',
   description: 'One country’s applied bombing damage, by building type and state.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 11 },
   availability: { product: 'military-air-ledger', params: { availability: true, family: 'bombing' } }, options: OPTIONS,
 } as const satisfies WidgetMeta;

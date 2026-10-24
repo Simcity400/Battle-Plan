@@ -101,6 +101,11 @@ async function fixture() {
           globalThis.__stockRequests?.push(request);
           return { data: globalThis.__stockReply ? validate(globalThis.__stockReply) : undefined, retry() {} };
         }
+        // A followed read answers the hour it was asked for at once.
+        export function useFollowedProduct(client, request, moving, active, validate) {
+          const product = useProduct(client, request, active, validate);
+          return { ...product, moment: product.data === undefined ? undefined : JSON.stringify(moving.map(name => request.params[name])) };
+        }
         export function useProducts(_client, requests, active, validate) {
           if (active) globalThis.__stockRequests?.push(...requests);
           const replies = requests.map(request => globalThis.__stockReplies?.find(reply => reply.tag === request.params.tag) ?? globalThis.__stockReply);

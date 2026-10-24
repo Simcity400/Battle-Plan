@@ -1,3 +1,4 @@
+import { summaryFits } from './chartSummary.ts';
 import { BADGE_STRIP, drawBadges } from './badges.ts';
 import type { EventBadge } from './badges.ts';
 import type { PlotFrame } from './frame.ts';
@@ -24,8 +25,7 @@ export interface MarkSummary {
 }
 
 export function markSummaryMatches(summary: MarkSummary, frame: PlotFrame, until: number | null): boolean {
-  return summary.from === frame.x[0] && summary.to === Math.min(frame.x[1], until ?? frame.x[1])
-    && summary.width === Math.ceil(frame.plotWidth);
+  return summaryFits(frame, summary, until);
 }
 
 export function clusterHour(cluster: MarkCluster): number { return (cluster.firstHour + cluster.lastHour) / 2; }

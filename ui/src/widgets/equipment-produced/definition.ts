@@ -32,7 +32,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'equipment-produced', version: 1, title: 'Equipment produced', icon: 'layers',
   description: 'Equipment each country delivers, one type at a time, or the IC it puts into all of it.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES,

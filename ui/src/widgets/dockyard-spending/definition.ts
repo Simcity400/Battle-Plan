@@ -21,7 +21,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'dockyard-spending', version: 1, title: 'Dockyard spending', icon: 'sunburst',
   description: 'Dockyard IC spent on new ships, refits and repairs, by equipment type and design.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 11 },
   options: OPTIONS,
   variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Dockyard spending by month'),

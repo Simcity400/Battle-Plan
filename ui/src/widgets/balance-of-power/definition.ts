@@ -42,7 +42,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'balance-of-power', version: 1, title: 'Balance of power', category: 'Politics', icon: 'sliders',
   description: 'Each internal power struggle over time: where it stands, its ranges and what moves it.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 10 },
   countries: { max: Number.MAX_SAFE_INTEGER, all: true }, defaultCountries: { kind: 'selected' },
   options: OPTIONS,

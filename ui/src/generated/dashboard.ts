@@ -1216,7 +1216,7 @@ runs: Array<CountryColourRun>,
  */
 unread: Array<UnreadColourHour>, warnings: Array<string>, };
 export type FactionDetailParams = { branchId: string, hour: number, faction: string, };
-export type FactionGoalDefinition = { progress: Array<FactionRewardDetail>, sections: Array<FactionRewardDetail>, conditions: Array<FactionConditionDetail>, rewards: Array<FactionRewardDetail>, flags: Array<FactionConditionDetail>, token: string | null, name: string | null, description: string | null, icon: string | null, category: string | null,
+export type FactionGoalDefinition = { progress: Array<FactionRewardDetail>, sections: Array<FactionRewardDetail>, bands: Array<FactionProgressBand>, conditions: Array<FactionConditionDetail>, rewards: Array<FactionRewardDetail>, flags: Array<FactionConditionDetail>, token: string | null, name: string | null, description: string | null, icon: string | null, category: string | null,
 /**
  * The term's name as the game's interface names it, from the localisation key
  * the native term carries; null when the content does not define it.
@@ -1224,6 +1224,7 @@ export type FactionGoalDefinition = { progress: Array<FactionRewardDetail>, sect
 categoryName: string | null, reason: string | null, };
 export type FactionConditionDetail = { kind: string, result: boolean | null, reasons: Array<string>, };
 export type FactionRewardDetail = { kind: string, text: string, reasons: Array<string>, };
+export type FactionProgressBand = { name: string | null, min: number | null, max: number | null, };
 export type FactionGoalDetail = { ordinal: number, definition: FactionGoalDefinition, status: number,
 /**
  * Exact retained fixed-point cache as decimal text.
@@ -1241,7 +1242,12 @@ export type FactionVariableDetail = { ordinal: number,
 nameBytes: Array<number>, name: string, valueRaw: string, };
 export type FactionResourceDetail = { ordinal: number, token: string | null, name: string | null, icon: string | null, raw: string, reason: string | null, };
 export type FactionRefusalDetail = { fact: string, count: number, reason: string, };
-export type FactionDetailReply = { presentations: Array<FactionRewardDetail>, projectionRaw: string | null, influenceTotalRaw: string | null, projectionEffectsRaw: string | null, resources: Array<FactionResourceDetail> | null, systemResources: Array<FactionResourceDetail> | null, refusals: Array<FactionRefusalDetail>, minimumUpgrades: Array<FactionUpgradeDetail> | null, doctrineFolders: Array<FactionRuleDetail> | null, researchBaseRaw: string | null, researchCountries: Array<string> | null, researchBonuses: Array<string> | null, accounts: Array<FactionAccountDetail> | null, variableSeed: number | null, variables: Array<FactionVariableDetail> | null, branchId: string, hour: number, faction: string, goalReason: string | null, researchUnlocked: boolean | null, manpowerUnlocked: boolean | null, rules: Array<FactionRuleDetail> | null, programmes: Array<FactionProgramDetail> | null, programmesReadHour: number | null, manpower: Array<FactionManpowerDetail> | null, manpowerTotal: number | null, manifest: FactionGoalDefinition | null, goals: Array<FactionGoalDetail>, completed: Array<FactionGoalDefinition>, cancelled: Array<FactionGoalDefinition>, extraSlots: Array<number>, termDates: Array<number>, warnings: Array<string>, };
+export type FactionDetailReply = { presentations: Array<FactionRewardDetail>, projectionRaw: string | null, influenceTotalRaw: string | null, projectionEffectsRaw: string | null, resources: Array<FactionResourceDetail> | null, systemResources: Array<FactionResourceDetail> | null, refusals: Array<FactionRefusalDetail>, minimumUpgrades: Array<FactionUpgradeDetail> | null, doctrineFolders: Array<FactionRuleDetail> | null, researchBaseRaw: string | null, researchCountries: Array<string> | null, researchBonuses: Array<string> | null, accounts: Array<FactionAccountDetail> | null, variableSeed: number | null, variables: Array<FactionVariableDetail> | null, branchId: string, hour: number, faction: string, goalReason: string | null, researchUnlocked: boolean | null, manpowerUnlocked: boolean | null, rules: Array<FactionRuleDetail> | null, programmes: Array<FactionProgramDetail> | null, programmesReadHour: number | null, manpower: Array<FactionManpowerDetail> | null, manpowerTotal: number | null, manifest: FactionGoalDefinition | null, goals: Array<FactionGoalDetail>, completed: Array<FactionGoalDefinition>, cancelled: Array<FactionGoalDefinition>, extraSlots: Array<number>, termDates: Array<number>,
+/**
+ * The faction's logo as the game draws it: its template's sprite, else the
+ * content's default faction icon.
+ */
+logo: string | null, warnings: Array<string>, };
 export type CountryGroupParams = { branchId: string, };
 export type MembershipRun = { tag: string, firstHour: number, lastHour: number, };
 export type FactionNameRun = { firstHour: number, lastHour: number, name: string | null, reason: string | null, };
@@ -1424,12 +1430,15 @@ export type WarContributionCountry = { tag: string, side: WarSide,
  */
 equipmentDamage: string, occupation: string, airDamage: string, strategicBombing: string, shipDamage: string, convoyDamage: string, casualties: string, unknownCasualties: string, lendLeaseSent: string, lendLeaseReceived: string, score: string, participation: string, };
 export type WargoalsParams = { branchId: string, hour: number, tag: string, };
-export type WargoalEntry = { handle: string, name: string, actor: string, recipient: string, available: boolean, expires: number | null, states: Array<number>, liberate: Array<string>, puppets: Array<string>, terms: WargoalTerms | null, };
-export type WargoalTerms = { allowed: string | null, available: string | null, annex: boolean, baseGenerationCost: number, perStateGenerationCost: number, expiryDays: number, threat: string, peace: Array<WargoalTerm>, };
-export type WargoalTerm = { name: string, limit: number, costFactor: string, threatFactor: string, conditioned: boolean, };
-export type WargoalJustification = { ordinal: number, name: string, actor: string, recipient: string, states: Array<number>, total: string, points: string, daily: string, payUpfront: boolean, start: number | null, completion: number, threat: string, paused: boolean | null, terms: WargoalTerms | null, };
-export type WargoalsReply = { branchId: string, hour: number, tag: string, eligibility: Array<WargoalEligibility>, goals: Array<WargoalEntry>, justifications: Array<WargoalJustification>, warnings: Array<string>, stateNames: Array<WargoalStateName>, };
-export type WargoalEligibility = { actor: string, recipient: string, justify: boolean | null, declare: boolean | null, justifyReason: string, declareReason: string, };
+export type WargoalEntry = { handle: string, name: string, actor: string, recipient: string, available: boolean, expires: number | null, states: Array<number>, liberate: Array<string>, puppets: Array<string>, };
+export type WargoalJustification = { ordinal: number, name: string, actor: string, recipient: string, states: Array<number>, total: string, points: string, daily: string, payUpfront: boolean, start: number | null, completion: number, paused: boolean | null, };
+export type WargoalsReply = { branchId: string, hour: number, tag: string, standings: Array<WargoalPair>, goals: Array<WargoalEntry>, justifications: Array<WargoalJustification>, warnings: Array<string>, stateNames: Array<WargoalStateName>, };
+export type WargoalPair = { actor: string, recipient: string,
+/**
+ * What the recorded wars and factions prove about the pair; none when neither applies.
+ */
+standing: WargoalStanding | null, };
+export type WargoalStanding = "atWar" | "sameFaction";
 export type WargoalStateName = { id: number, name: string, known: boolean, };
 export type CountryStabilityParams = { branchId: string, tags: Array<string>,
 /**

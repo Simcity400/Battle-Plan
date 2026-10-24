@@ -112,7 +112,7 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
           assert.equal(source.split(defaultWait).length, 2, 'one shared polling wait is injected');
           return source.replace(defaultWait, 'wait: (signal: AbortSignal) => Promise<void> = async () => {}');
         }
-        if (['/naval-losses/NavalLossesWidget.tsx','/naval-losses/preparedNaval.ts','/dashboard/productWindows.ts'].some(suffix=>path.endsWith(suffix))) return source.replace("from 'react'", "from 'naval-pin-hooks'").replace("from 'react-dom'", "from 'naval-pin-portals'");
+        if (['/naval-losses/NavalLossesWidget.tsx','/naval-losses/preparedNaval.ts','/dashboard/productWindows.ts','/dashboard/viewRead.ts'].some(suffix=>path.endsWith(suffix))) return source.replace("from 'react'", "from 'naval-pin-hooks'").replace("from 'react-dom'", "from 'naval-pin-portals'");
         if (path.endsWith('/dashboard/DashboardGrid.tsx')) return source.replace('const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);',
           'const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(globalThis.__navalPinLifecycle.countrySlot);')
           .replace('onDiagnostics={setDiagnostics}', 'onDiagnostics={() => {}}');

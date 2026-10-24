@@ -69,8 +69,14 @@ test('registered force breakdowns date their native headers and follow an indepe
       export const createWidget = (kind, id) => ({ kind, id: 'new pin', configVersion: 1, trackIds: [id], options: {} });`,
     '/dashboard/playback.ts': `export const usePlaybackHour = (_clock, on) => { globalThis.__partsIdentity.subscriptions.push(on); };
       export const usePlaybackSpeed = () => 24;`,
-    '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request?.product === 'country-groups' ? undefined
-      : request ? globalThis.__partsIdentity.reply : undefined, retry() {} });`,
+    '/dashboard/products.ts': `const reply = request => request?.product === 'country-groups' ? undefined : request ? globalThis.__partsIdentity.reply : undefined;
+      export const useProduct = (_client, request) => ({ data: reply(request), retry() {} });
+      export const loadProduct = (_client, request, _signal, _validate, _source, _restart, publish) => {
+        const data = reply(request); if (data !== undefined) publish?.(data); return new Promise(() => {}); };`,
+    // The race's view read answers in the same render, as its products do here.
+    '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
+      if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });
+      return { data, retry() {} }; };`,
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({ name: tag => tag, color: () => [50,100,150], flag: () => undefined, revision: 0 });`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted, active) => {
       if (active) globalThis.__partsIdentity.demands.push(...wanted);

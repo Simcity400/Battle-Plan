@@ -221,10 +221,11 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
   const current = useRef(owner); current.current = owner;
   const navigation = useRef(new Set<AbortController>());
   const [view, setView] = useState<{ owner: typeof owner; from: number; to: number; width: number; series: PreparedBinding[] }>();
-  const [summaries, setSummaries] = useState<{ owner: typeof owner; geometryKey: string; data?: T; error?: string }>();
+  const [summaries, setSummaries] = useState<{ owner: typeof owner; geometryKey: string; seriesKey: string; data?: T; error?: string }>();
   const [states, setStates] = useState<{ owner: typeof owner; data?: T; error?: string }>();
   const [attempt, setAttempt] = useState(0);
   const viewport = view?.owner === owner ? view : { from: bounds[0], to: bounds[1], width: 1, series: [] };
+  const seriesKey = JSON.stringify(viewport.series);
   const geometryKey = JSON.stringify([viewport.from, viewport.to, viewport.width, viewport.series]);
   const pickOwner = useMemo(() => ({ owner,geometryKey }),[owner,geometryKey]);
   const currentPick = useRef(pickOwner); currentPick.current = pickOwner;
@@ -232,16 +233,36 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
   const sequence = useRef(0);
   const readHours = [...new Set([...hours,...(keyboard?.owner===pickOwner && keyboard.hour!==null ? [keyboard.hour] : [])].map(Math.floor))].sort((a,b) => a-b);
   const readKey = JSON.stringify(readHours);
+  // One summary read at a time per series selection: a view that moves on (playback,
+  // a pan) lets the running read finish and be drawn, then asks for the newest view,
+  // so a slow connection still shows the chart instead of cancelling every read.
+  const flight = useRef<{ owner: typeof owner; lane: string; geometryKey: string; shown: boolean; controller: AbortController } | null>(null);
+  const wanted = useRef({ viewport, geometryKey }); wanted.current = { viewport, geometryKey };
+  const [landed, setLanded] = useState(0);
   useEffect(() => {
     if (!source || !active) return;
+    const lane = JSON.stringify([seriesKey, attempt]);
+    // A read still preparing publishes partial replies: once one is shown, a moved view replaces it.
+    if (flight.current?.owner === owner && flight.current.lane === lane && (!flight.current.shown || flight.current.geometryKey === geometryKey)) return;
+    flight.current?.controller.abort();
     const controller = new AbortController();
+    const asked = wanted.current;
+    const mine = { owner, lane, geometryKey: asked.geometryKey, shown: false, controller };
+    flight.current = mine;
     const publish = (data: T) => {
-      if (!controller.signal.aborted && current.current === owner) setSummaries({ owner, geometryKey, data });
+      if (controller.signal.aborted || current.current !== owner) return;
+      setSummaries({ owner, geometryKey: asked.geometryKey, seriesKey, data });
+      if (!mine.shown) { mine.shown = true; if (wanted.current.geometryKey !== asked.geometryKey) setLanded(value => value + 1); }
     };
-    void preparedWindowQuery(client,source,family,params,viewport,controller.signal,validate,merge,attempt > 0,publish).then(publish)
-      .catch(error => { if (!controller.signal.aborted && current.current === owner) setSummaries(previous => ({ ...(previous?.owner === owner ? previous : {}), owner, geometryKey, error: String(error) })); });
-    return () => controller.abort();
-  }, [owner, geometryKey, active, attempt]);
+    void preparedWindowQuery(client,source,family,params,asked.viewport,controller.signal,validate,merge,attempt > 0,publish).then(publish)
+      .catch(error => { if (!controller.signal.aborted && current.current === owner) setSummaries(previous => ({ ...(previous?.owner === owner ? previous : {}), owner, geometryKey: asked.geometryKey, seriesKey, error: String(error) })); })
+      .finally(() => {
+        if (flight.current?.controller !== controller) return;
+        flight.current = null;
+        if (!controller.signal.aborted && wanted.current.geometryKey !== asked.geometryKey) setLanded(value => value + 1);
+      });
+  }, [owner, geometryKey, seriesKey, active, attempt, landed]);
+  useEffect(() => () => { if (flight.current?.owner === owner) { flight.current.controller.abort(); flight.current = null; } }, [owner, active]);
   useEffect(() => {
     if (!source || !active) return;
     const controller = new AbortController();
@@ -278,6 +299,7 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
   const data=useMemo(()=>geometry && exact ? overlayReached(geometry,exact) : exact ?? geometry,[geometry,exact,overlayReached]);
   return { data, error: (summaries?.owner === owner ? summaries.error : undefined) ?? (states?.owner===owner ? states.error : undefined),
     pickOwner,onNavigateHour,keyboardHour: keyboard?.owner === pickOwner ? keyboard.hour : undefined, keyboardRevision: keyboard?.owner===pickOwner ? keyboard.revision : undefined,
-    geometryReady: !!geometry && summaries!.geometryKey === geometryKey,
+    // Drawn while the selected series are the same; the chart places it by hour (`summaryFits`).
+    geometryReady: !!geometry && summaries!.seriesKey === seriesKey,
     retry: () => setAttempt(value => value + 1), onSummaryView, navigate };
 }

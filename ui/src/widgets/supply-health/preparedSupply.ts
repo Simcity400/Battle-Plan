@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
-import { useProduct } from '../../dashboard/products';
+import { loadProduct, useProduct } from '../../dashboard/products';
+import { useContentRevision } from '../../dashboard/contentRevision';
+import { useHeldFailure } from '../../dashboard/heldFailures';
+import { useViewRead } from '../../dashboard/viewRead';
 import type { SupplyHealthReply } from '../../generated/dashboard';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import { validateSupplyHealthReply } from './supplyHealthData';
@@ -36,8 +39,15 @@ export function usePreparedSupply(client: DashboardClient, track: BoundTrack | u
     sourceId: track.source.id, revision: track.source.revision, product: 'supply-health',
     params: { branchId: track.branch.id, tags: selected, ...(prepared ? { from, to, width } : {}) },
   } : null;
-  const display = useProduct<PreparedReply>(client, request(view.from, view.to, view.width, parity?.requested || viewport?.key !== key ? tags : drawnTags), active,
-    value => validateSupplyHealthReply(value) as PreparedReply, prepared ? track?.source : undefined);
+  // One display read at a time while the chart's view moves (`useViewRead`).
+  const content = useContentRevision(client);
+  const selected = parity?.requested || viewport?.key !== key ? tags : drawnTags;
+  const read = useViewRead<{ from: number; to: number; width?: number }, PreparedReply>(
+    request(view.from, view.to, view.width, selected) ? JSON.stringify([key, selected, prepared, !!parity?.requested, content]) : null,
+    view, prepared ? JSON.stringify([view.from, view.to, view.width]) : '', active,
+    (at, signal, publish, restart) => loadProduct(client, request(at.from, at.to, at.width, selected)!, signal,
+      value => validateSupplyHealthReply(value) as PreparedReply, prepared ? track?.source : undefined, restart, publish), client);
+  const display = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
   const reached = useProduct<SupplyHealthReply>(client, request(hour, hour), active,
     validateSupplyHealthReply, prepared ? track?.source : undefined);
   const pointed = useProduct<SupplyHealthReply>(client, request(hover ?? origin ?? hour, hover ?? origin ?? hour), active,

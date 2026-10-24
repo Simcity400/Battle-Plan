@@ -124,6 +124,8 @@ const DEFAULT_PADDING: Padding = { left: 44, right: CHART_LAYOUT.right, top: 12,
 const LABEL_MARGIN = 4;
 /** The narrowest time span a zoom may reach: two weeks. */
 const MIN_SPAN = 14 * 24;
+/** The least time between summary requests while the view keeps moving. */
+const SUMMARY_INTERVAL_MS = 150;
 const BOX_THRESHOLD = 8;
 
 /** What a pointer is over: the crosshair's hour, the hour it is about and any badges. */
@@ -189,7 +191,16 @@ export default function TimeChart(props: TimeChartProps) {
     // badges or the data change.
     let hovered: { hour: number; row: number; badges: readonly EventBadge[]; cluster?: MarkCluster; markTooltip: TimeChartProps['markTooltip']; rows: TimeChartProps['rows']; tooltip: TimeChartProps['tooltip']; revision: unknown; content: TooltipContent | null; key: string } | null = null;
     let keyedBadges: { source: TimeChartProps['badges']; hour: number; badges: readonly EventBadge[] } | null = null;
-    let summaryView: { callback: TimeChartProps['onSummaryView']; from: number; to: number; width: number } | null = null;
+    type SummaryView = { callback: TimeChartProps['onSummaryView']; from: number; to: number; width: number };
+    // The view last asked for, when, and a newer one waiting for the interval.
+    let summaryView: SummaryView | null = null, summaryLatest: SummaryView | null = null;
+    let summaryAt = -Infinity, summaryTimer: ReturnType<typeof setTimeout> | null = null;
+    const sendSummary = () => {
+      summaryTimer = null;
+      if (!summaryLatest) return;
+      summaryView = summaryLatest; summaryAt = performance.now();
+      summaryView.callback?.({ from: summaryView.from, to: summaryView.to, width: summaryView.width });
+    };
 
     const dispatch = (action: ViewAction) => {
       if (!frame) return;
@@ -277,10 +288,20 @@ export default function TimeChart(props: TimeChartProps) {
       const summaries = [...(p.markSummary ? [p.markSummary] : []), ...(p.markSummaries ?? [])].filter(summary => markSummaryMatches(summary, frame!, until));
       for (const summary of summaries) drawMarkSummary(context, frame, tokens, summary);
       if (!preparedMarks && p.badges) drawBadges(context, frame, tokens, p.badges, until);
-      const summaryRequest = { callback: p.onSummaryView, from: frame.x[0], to: Math.min(frame.x[1], until ?? frame.x[1]), width: Math.ceil(frame.plotWidth) };
-      if (!summaryView || summaryView.callback !== summaryRequest.callback || summaryView.from !== summaryRequest.from
-        || summaryView.to !== summaryRequest.to || summaryView.width !== summaryRequest.width) {
-        summaryView = summaryRequest; p.onSummaryView?.({ from: summaryRequest.from, to: summaryRequest.to, width: summaryRequest.width });
+      // Whole hours, and while the view keeps moving (playback, a pan or zoom) at most
+      // one request per interval, the newest view sent when it ends: not one per
+      // animation frame. The last summary draws in place until the next arrives
+      // (`summaryFits`); a settled view always gets its own.
+      const summaryRequest = { callback: p.onSummaryView, from: Math.floor(frame.x[0]),
+        to: Math.floor(Math.min(frame.x[1], until ?? frame.x[1])), width: Math.ceil(frame.plotWidth) };
+      const sameView = (view: SummaryView | null) => !!view && view.callback === summaryRequest.callback && view.from === summaryRequest.from
+        && view.to === summaryRequest.to && view.width === summaryRequest.width;
+      if (!sameView(summaryLatest)) {
+        summaryLatest = summaryRequest;
+        if (sameView(summaryView)) { if (summaryTimer) clearTimeout(summaryTimer); summaryTimer = null; }
+        else if (!summaryView || summaryView.callback !== summaryRequest.callback || summaryView.width !== summaryRequest.width
+          || performance.now() - summaryAt >= SUMMARY_INTERVAL_MS) { if (summaryTimer) clearTimeout(summaryTimer); sendSummary(); }
+        else summaryTimer ??= setTimeout(sendSummary, SUMMARY_INTERVAL_MS - (performance.now() - summaryAt));
       }
       const drawn = !preparedMarks && p.badges ? visibleBadges(p.badges, frame.x, until) : [];
       if (!preparedMarks && (spokeSummary || drawn.length !== spokenFor.length || drawn.some((badge, index) => badge !== spokenFor[index]))) {
@@ -489,6 +510,7 @@ export default function TimeChart(props: TimeChartProps) {
     element.addEventListener('dblclick', doubleClick);
     element.addEventListener('contextmenu', menu);
     return () => {
+      if (summaryTimer) clearTimeout(summaryTimer);
       remove(); unsubscribe(); surface.disconnect(); hideTooltip(owner);
       element.removeEventListener('pointerdown', down);
       element.removeEventListener('pointermove', move);

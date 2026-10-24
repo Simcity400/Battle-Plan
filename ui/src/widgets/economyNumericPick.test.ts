@@ -56,6 +56,12 @@ test('economy and shared race picks keep their mounted numeric owner through con
     '/dashboard/comparisonCountries.ts', '/dashboard/CountryComparisons.tsx', '/dashboard/useDiagnostics.ts'];
   const replacements: Record<string, string> = {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => globalThis.__economyNumeric.groups;',
+    // A view read lands in the same render, as the fixture's products do; a read that throws is its error.
+    '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data, error;
+      if (active && lane != null && view != null) {
+        try { void read(view, new AbortController().signal, value => { data = value; }); } catch (reason) { error = reason.message; }
+      }
+      return { data, error, retry() {} }; };`,
     '/dashboard/model.ts': `export const resolveWindow = (widget, track) => widget.time.mode === 'pin'
       ? { firstHour: track.branch.firstHour + widget.time.windows[track.id].firstOffset,
         lastHour: track.branch.firstHour + widget.time.windows[track.id].lastOffset }
@@ -81,12 +87,21 @@ test('economy and shared race picks keep their mounted numeric owner through con
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/products.ts')) return source.slice(0, source.indexOf('export function useProducts<T>'))
+          .replace('export async function loadProduct<T>(', 'async function unusedLoadProduct<T>(')
           + `const idle = { retry() {} };
             function check(data, request, validate) {
               if (data === undefined) return;
               validate(data);
               if (data.branchId !== request.params.branchId || request.product !== 'country-groups' && data.tag !== request.params.tag)
                 throw Error('The economy fixture reply belongs to another requested country or branch.');
+            }
+            export function loadProduct(_client, request, _signal, validate, _source, _restart, publish) {
+              const state = request.product === 'resource-balance' ? globalThis.__economyNumeric.product : null;
+              if (!state) throw Error('Unexpected economy product: ' + request.product);
+              if (state.error) throw Error(state.error);
+              check(state.data, request, validate);
+              if (state.data !== undefined) publish?.(state.data);
+              return new Promise(() => {});
             }
             export function useProducts(_client, requests, active, validate) {
               if (!active || !requests.length) return idle;

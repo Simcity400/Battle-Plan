@@ -28,7 +28,7 @@ test('manpower keeps every native occurrence, largest first, with shares of the 
 });
 
 const definition = (name: string | null, category: string | null, categoryName: string | null, reason: string | null = null) =>
-  ({ name, token: name ? 'tok' : null, icon: null, category, categoryName, reason, description: null, progress: [], sections: [], conditions: [], rewards: [], flags: [] }) as FactionGoalDefinition;
+  ({ name, token: name ? 'tok' : null, icon: null, category, categoryName, reason, description: null, progress: [], sections: [], bands: [], conditions: [], rewards: [], flags: [] }) as FactionGoalDefinition;
 
 test('goal rows keep held state, list-only history without dates, and terms in native order', () => {
   const data = reply({

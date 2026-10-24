@@ -12,7 +12,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'war-contribution', version: 1, title: 'War contribution', icon: 'swords', category: 'Diplomacy',
   description: 'Who carried each side of a war: every member’s share of damage, ground, losses and lend-lease.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 6, h: 6 }, defaultSize: { w: 12, h: 10 },
   countries: { max: 1 }, options: OPTIONS, factionColours: true,
 } as const satisfies WidgetMeta;

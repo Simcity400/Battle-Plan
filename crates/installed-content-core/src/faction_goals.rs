@@ -21,6 +21,8 @@ pub struct Definition {
     pub group: Option<Vec<u8>>,
     pub progress_inputs: Vec<Item>,
     pub progress_sections: Vec<Vec<Item>>,
+    /// Each progress section's key, in the same order: its localisation names it.
+    pub progress_section_keys: Vec<Option<Vec<u8>>>,
     pub conditions: BTreeMap<String, Vec<Item>>,
     pub effects: BTreeMap<String, Vec<Item>>,
     pub flags: BTreeMap<String, Result<bool, String>>,
@@ -113,6 +115,9 @@ fn apply(catalog: &mut Catalog, key: Option<&[u8]>, fields: &[Item], inline: boo
                     for section in input.value.items().unwrap_or_default() {
                         if let Some(body) = section.value.items() {
                             definition.progress_sections.push(body.to_vec());
+                            definition
+                                .progress_section_keys
+                                .push(section.key.as_deref().map(<[u8]>::to_vec));
                         }
                     }
                 } else {
@@ -292,6 +297,10 @@ mod progress_tests {
         assert_eq!(definition.effects["complete_effect"].len(), 1);
         assert_eq!(definition.progress_inputs.len(), 2);
         assert_eq!(definition.progress_sections.len(), 2);
+        assert_eq!(
+            definition.progress_section_keys,
+            [Some(b"a".to_vec()), Some(b"b".to_vec())]
+        );
         assert!(
             definition.progress_sections[0]
                 .iter()

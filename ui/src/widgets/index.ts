@@ -114,7 +114,6 @@ const renderers = {
   'faction-upgrades': lazyWidget('faction-upgrades', ['render']),
   'diplomatic-pacts': lazyWidget('diplomatic-pacts', ['render']),
   'diplomatic-relations': lazyWidget('diplomatic-relations', ['render']),
-  'faction-influence': lazyWidget('faction-influence', ['render']),
   'faction-pooled-strength': lazyWidget('faction-pooled-strength', ['render']),
   'faction-goals': lazyWidget('faction-goals', ['render']),
   'war-contribution': lazyWidget('war-contribution', ['render']),

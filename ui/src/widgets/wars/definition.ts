@@ -14,7 +14,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'wars', version: 3, title: 'Wars timeline', icon: 'shield',
   description: 'Wars over time, with participants, capitulations and casualties.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 8, h: 10 },
   countries: { max: 1 }, options: OPTIONS,
   factionColours: true,

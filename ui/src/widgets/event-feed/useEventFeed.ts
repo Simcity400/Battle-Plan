@@ -5,7 +5,7 @@ import { useContentRevision } from '../../dashboard/contentRevision';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { useProductWindows } from '../../dashboard/productWindows';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct } from '../../dashboard/products';
 import { filteredEventRows, validateEventFeedPage } from './eventFeedData';
 import type { FeedEvent, FeedFilter, PreparedFeedPage } from './eventFeedData';
 
@@ -19,19 +19,21 @@ export function useEventFeed(runtime: WidgetRuntime, track: BoundTrack | undefin
   hour: number | null, filter: FeedFilter, filterKey: string, prepareAll = false) {
   const content = useContentRevision(runtime.client);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : null;
-  const request = (cursor: string | null) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'event-feed',
-    params: { branchId: track!.branch.id, firstHour: filter.firstHour, lastHour: hour,
+  const request = (cursor: string | null, lastHour: number | null) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'event-feed',
+    params: { branchId: track!.branch.id, firstHour: filter.firstHour, lastHour,
       categories: [...filter.categories], cursor, pageSize: PAGE_SIZE } });
-  const first = useProduct<PreparedFeedPage>(runtime.client, track && hour !== null ? request(null) : null, active, validateEventFeedPage, track?.source);
+  const first = useFollowedProduct<PreparedFeedPage>(runtime.client, track && hour !== null ? request(null, hour) : null, ['lastHour'], active, validateEventFeedPage, track?.source);
+  // The page chain follows the hour the first page answers; rows still stop at `hour`.
+  const read = first.data && first.moment ? (JSON.parse(first.moment) as [number | null])[0] : hour;
   // A first page answered from the prepared prefix reads back from the prefix's
   // last hour, and its continuations keep that hour: a grown prefix starts the
   // chain again.
   const live = first.data?.prefix?.pending.length ? first.data.prefix.coverage.lastHour : null;
-  const boundsKey = JSON.stringify([identity, filterKey, hour, live]);
+  const boundsKey = JSON.stringify([identity, filterKey, read, live]);
   const owner = useMemo(() => ({ client: runtime.client, boundsKey, filter }), [runtime.client, boundsKey, filter]);
   const current = useRef(owner); current.current = owner;
   const [chain, setChain] = useState<{ owner: typeof owner; pages: PageInfo[]; error?: string }>({ owner, pages: [] });
-  const initial: PageInfo = { cursor: null, start: Math.max(filter.firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: hour ?? 0, count: PAGE_SIZE };
+  const initial: PageInfo = { cursor: null, start: Math.max(filter.firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: read ?? 0, count: PAGE_SIZE };
   const descriptors = chain.owner === owner && chain.pages.length ? chain.pages : [initial];
   const [wanted, setWanted] = useState<{ owner: typeof owner; pages: readonly string[] }>({ owner, pages: [] });
   const completeDemand = import.meta.env.MODE === 'parity' && prepareAll;
@@ -40,7 +42,7 @@ export function useEventFeed(runtime: WidgetRuntime, track: BoundTrack | undefin
   const indices = [...new Set(chosen.flatMap(page => Number.isInteger(Number(page)) && Number(page) > 0
     && Number(page) < descriptors.length ? [Number(page)] : []))];
   const chunks = useProductWindows<PreparedFeedPage>(runtime.client, boundsKey,
-    index => request(descriptors[index].cursor), indices, active && !!first.data, validateEventFeedPage, track?.source);
+    index => request(descriptors[index].cursor, read), indices, active && !!first.data, validateEventFeedPage, track?.source);
   const loaded = useMemo(() => new Map<number, PreparedFeedPage>([...chunks.data, ...(first.data ? [[0, first.data] as const] : [])]), [chunks.data, first.data]);
   const rendered = useMemo(() => new Map([...loaded].map(([index, page]) => [index, filteredEventRows(page.reply, filter).filter(row => hour !== null && row.revealedHour! <= hour)
     // Native ledgers can repeat an occurrence in different supplying rows/pages.

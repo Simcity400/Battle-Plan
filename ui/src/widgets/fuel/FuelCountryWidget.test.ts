@@ -160,7 +160,8 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
             'const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(globalThis.__fuelCountryMount.summarySlot);')
           .replace('const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);',
             'const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(globalThis.__fuelCountryMount.slot);');
-        if (path.endsWith('/fuel/FuelWidget.tsx') || path.endsWith('/fuel/preparedFuel.ts') || path.endsWith('/dashboard/comparisonCountries.ts') || path.endsWith('/dashboard/useDiagnostics.ts'))
+        if (path.endsWith('/fuel/FuelWidget.tsx') || path.endsWith('/fuel/preparedFuel.ts') || path.endsWith('/dashboard/viewRead.ts')
+          || path.endsWith('/dashboard/comparisonCountries.ts') || path.endsWith('/dashboard/useDiagnostics.ts'))
           return source.replaceAll("from 'react'", "from 'fuel-country-hooks'").replace("from 'react-dom'", "from 'fuel-country-portals'");
         if (path.endsWith('/supply-health/SupplyHealthWidget.tsx')) return source.replace("from 'react-dom'", "from 'fuel-country-portals'");
       },

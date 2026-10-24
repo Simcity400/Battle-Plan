@@ -868,6 +868,7 @@ fn observation(hour: i32, relations: &[(u32, u32, i32)]) -> Observed {
             .collect(),
         loss_pairs: Vec::new(),
         losses: std::array::from_fn(|_| "0".into()),
+        representative: None,
         data: WarObservation {
             first_hour: hour,
             last_hour: hour,
@@ -880,6 +881,78 @@ fn observation(hour: i32, relations: &[(u32, u32, i32)]) -> Observed {
         },
     }
 }
+/// Losses for groups that never share a war.
+fn unmerged(_: &[(Pair, bool)]) -> [String; 4] {
+    unreachable!("no war holds two groups")
+}
+/// A group named for its first relation, with its members and loss pairs.
+fn group(hour: i32, viewpoint: &[&str], opposing: &[&str], relations: &[(u32, u32, i32)]) -> Observed {
+    let mut observed = observation(hour, relations);
+    observed.representative = observed.relations.first().map(|r| r.identity.clone());
+    observed.loss_pairs = relations.iter().map(|&(a, b, _)| (pair(a, b), true)).collect();
+    observed.data.viewpoint_side = viewpoint.iter().map(|t| t.to_string()).collect();
+    observed.data.opposing_side = opposing.iter().map(|t| t.to_string()).collect();
+    observed
+}
+#[test]
+fn a_declaration_listed_beside_the_war_it_is_named_for_joins_that_war() {
+    let pairs_losses = |pairs: &[(Pair, bool)]| -> [String; 4] {
+        [pairs.len().to_string(), "0".into(), "0".into(), "0".into()]
+    };
+    let mut wars = Vec::new();
+    // 1 at war with 2 and 3 (named for 1--2).
+    let mut open = continue_wars(
+        &mut wars,
+        &[],
+        vec![group(1, &["1"], &["2", "3"], &[(1, 2, 0), (1, 3, 0)])],
+        None,
+        &pairs_losses,
+    );
+    // 1 declares on 4: the game lists 4 in a second group, still named for 1--2,
+    // in either order.
+    for (hour, order) in [(2, false), (3, true)] {
+        let mut current = vec![
+            group(hour, &["1"], &["2", "3"], &[(1, 2, 0), (1, 3, 0)]),
+            group(hour, &["1"], &["4", "2", "3"], &[(1, 2, 0), (1, 4, 1), (1, 3, 0)]),
+        ];
+        if order {
+            current.reverse();
+        }
+        open = continue_wars(&mut wars, &open, current, Some(hour - 1), &pairs_losses);
+        assert_eq!(open.len(), 1);
+        assert_eq!((open[0].id, open[0].groups), (0, 2));
+        assert_eq!(wars.len(), 1, "no war starts for the listed declaration");
+        // Each relation counts once though both groups hold 1--2 and 1--3.
+        assert_eq!(wars[0].casualties.last().unwrap().2, "3");
+        let observed = wars[0].observations.last().unwrap();
+        let mut opposing = observed.opposing_side.clone();
+        opposing.sort();
+        assert_eq!(opposing, ["2", "3", "4"]);
+    }
+    assert!(wars[0].participants.iter().any(|p| p.tag == "4" && p.first_hour == 2));
+    // A group named for a relation no war holds is a war of its own, though it
+    // shares the viewpoint's other relations.
+    let mut wars = Vec::new();
+    let open = continue_wars(
+        &mut wars,
+        &[],
+        vec![group(1, &["1"], &["2"], &[(1, 2, 0)])],
+        None,
+        &pairs_losses,
+    );
+    let next = continue_wars(
+        &mut wars,
+        &open,
+        vec![
+            group(2, &["1"], &["2"], &[(1, 2, 0)]),
+            group(2, &["1"], &["5", "2"], &[(1, 5, 2), (1, 2, 0)]),
+        ],
+        Some(1),
+        &pairs_losses,
+    );
+    assert_eq!(next.iter().map(|war| war.id).collect::<Vec<_>>(), [0, 1]);
+    assert_eq!(wars.len(), 2);
+}
 #[test]
 fn continuity_split_merge_gaps_redeclarations_and_observation_bounds() {
     let mut wars = Vec::new();
@@ -888,24 +961,24 @@ fn continuity_split_merge_gaps_redeclarations_and_observation_bounds() {
         &[],
         vec![observation(1, &[(1, 2, 0), (1, 3, 0)])],
         None,
+        &unmerged,
     );
     let split = continue_wars(
         &mut wars,
         &open,
         vec![observation(2, &[(1, 2, 0)]), observation(2, &[(1, 3, 0)])],
         Some(1),
+        &unmerged,
     );
-    assert_eq!(
-        split.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-        vec![0, 1]
-    );
+    assert_eq!(split.iter().map(|war| war.id).collect::<Vec<_>>(), vec![0, 1]);
     let merge = continue_wars(
         &mut wars,
         &split,
         vec![observation(3, &[(1, 2, 0), (1, 3, 0)])],
         Some(2),
+        &unmerged,
     );
-    assert_eq!(merge[0].0, 0);
+    assert_eq!(merge[0].id, 0);
     assert!(!wars[1].ended_by);
     assert!(wars[0].started_by);
     let restarted = continue_wars(
@@ -913,11 +986,18 @@ fn continuity_split_merge_gaps_redeclarations_and_observation_bounds() {
         &merge,
         vec![observation(4, &[(1, 2, 4)])],
         Some(3),
+        &unmerged,
     );
-    assert_eq!(restarted[0].0, 2);
+    assert_eq!(restarted[0].id, 2);
     assert!(!wars[0].ended_by && !wars[2].started_by);
-    let after_gap = continue_wars(&mut wars, &[], vec![observation(6, &[(1, 2, 4)])], None);
-    assert_eq!(after_gap[0].0, 3);
+    let after_gap = continue_wars(
+        &mut wars,
+        &[],
+        vec![observation(6, &[(1, 2, 4)])],
+        None,
+        &unmerged,
+    );
+    assert_eq!(after_gap[0].id, 3);
     assert!(wars[2].ended_by && wars[3].started_by);
     assert_eq!(wars[0].observations.len(), 1);
     assert_eq!(wars[0].observations[0].last_hour, 3);
@@ -1188,7 +1268,7 @@ fn overlapping_groups_keep_casualties_out_of_membership_reply_size() {
                 "-7".into(),
             ];
         }
-        open = continue_wars(&mut wars, &open, current, hour.checked_sub(1));
+        open = continue_wars(&mut wars, &open, current, hour.checked_sub(1), &unmerged);
     }
     assert_eq!(wars.len(), 4);
     assert!(
@@ -2702,7 +2782,7 @@ fn resumable_walks_keep_each_open_wars_continuation_and_not_its_history() {
     for hour in 100..140 {
         walk.observe(&losses(hour), None, None, None);
     }
-    let ids = |walk: &Walk| walk.open.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    let ids = |walk: &Walk| walk.open.iter().map(|war| war.id).collect::<Vec<_>>();
     let open = ids(&walk);
     assert!(!open.is_empty(), "the fixture's wars are open");
     let mut copy = walk.resumable();
@@ -2727,7 +2807,7 @@ fn resumable_walks_keep_each_open_wars_continuation_and_not_its_history() {
     fn json(value: impl Serialize) -> serde_json::Value {
         serde_json::to_value(value).unwrap()
     }
-    for (id, _) in &walk.open {
+    for OpenWar { id, .. } in &walk.open {
         let (full, kept) = (&walk.reply.wars[*id], &copy.reply.wars[*id]);
         assert_eq!(json(full.casualties.last()), json(kept.casualties.last()));
         assert_eq!(

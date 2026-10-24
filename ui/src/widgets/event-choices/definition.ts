@@ -20,7 +20,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'event-choices', version: 1, title: 'Event choices', icon: 'ballot', category: 'Politics',
   description: 'Events each country received, the option it chose and how long it took.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 6, h: 8 }, defaultSize: { w: 12, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, all: true }, options: OPTIONS,
 } as const satisfies WidgetMeta;

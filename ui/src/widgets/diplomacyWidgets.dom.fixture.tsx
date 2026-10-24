@@ -17,8 +17,6 @@ import type { DashboardClient, ProductReply, ProductRequest } from '../dashboard
 import type { BranchMetadata, CountryGroupReply, CountryStyle, FactionDetailReply } from '../generated/dashboard';
 import { definition as pooledDefinition } from './faction-pooled-strength/definition';
 import FactionPooledStrengthWidget from './faction-pooled-strength/FactionPooledStrengthWidget';
-import { definition as influenceDefinition } from './faction-influence/definition';
-import FactionInfluenceWidget from './faction-influence/FactionInfluenceWidget';
 import { definition as relationsDefinition } from './diplomatic-relations/definition';
 import DiplomaticRelationsWidget from './diplomatic-relations/DiplomaticRelationsWidget';
 import { definition as warDefinition } from './war-contribution/definition';
@@ -27,12 +25,11 @@ import { definition as volunteersDefinition } from './volunteers/definition';
 import VolunteersWidget from './volunteers/VolunteersWidget';
 import '../styles.css';
 import './faction-pooled-strength/factionPooledStrength.css';
-import './faction-influence/factionInfluence.css';
 import './diplomatic-relations/diplomaticRelations.css';
 import './war-contribution/warContribution.css';
 import './volunteers/volunteers.css';
 
-registerWidgets([pooledDefinition, influenceDefinition, relationsDefinition, warDefinition, volunteersDefinition]);
+registerWidgets([pooledDefinition, relationsDefinition, warDefinition, volunteersDefinition]);
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 async function settle() { for (let i = 0; i < 12; i++) await frame(); }
 const host = document.createElement('div'); document.body.replaceChildren(host);
@@ -73,16 +70,10 @@ function styleOf(tag: string, hour: number): CountryStyle | null {
   if (tag === 'SSS') return { tag, name: 'Synthetic SSS', color: GREEN };
   return null; // The recording has no name for BBB.
 }
-const account = (tag: string, raw: string) => ({ ordinal: tag === 'RRR' ? 0 : 1, country: tag === 'RRR' ? 6 : 7, tag, currentMember: true, influence: [], projection: [],
-  influenceShareRaw: raw, projectionShareRaw: '0', projectionRank: 0, initiativeRaw: '0', contributionRaw: '0', contributionGain: [], previousWarScoreRaw: '0', upgrades: [], completed: [] });
 const details = (hour: number, id: string) => ({ branchId: '1', hour, faction: id, warnings: [], refusals: [], ...(id === 'f1' ? {
   manpower: [{ ordinal: 0, tag: 'AAA', value: 300 }, { ordinal: 1, tag: 'BBB', value: 100 }], manpowerTotal: 400, manpowerUnlocked: true,
   resources: [{ ordinal: 0, token: 'mod_oil', name: 'Synthetic oil', icon: null, raw: '100000', reason: null }],
-  researchUnlocked: false, researchBaseRaw: null, researchCountries: null, doctrineFolders: null } : { accounts: [account('RRR', '40000'), account('SSS', '30000')] }) } as unknown as FactionDetailReply);
-const share = (key: string, tag: string, slot: number, firstHour: number, lastHour: number, shareRaw: string) => ({ key, tag, slot, countryId: slot * 10, retained: [],
-  member: [{ firstHour, lastHour }], runs: [{ firstHour, lastHour, shareRaw, startsSegment: false }] });
-const influence = { accounts: [share('old', 'RRR', 5, 0, 23, '50000'), share('new', 'RRR', 6, 24, 200, '40000'), share('sss', 'SSS', 7, 0, 200, '30000')],
-  unobserved: [], pending: [], coverage: COVERED, channels: [], warnings: [] };
+  researchUnlocked: false, researchBaseRaw: null, researchCountries: null, doctrineFolders: null } : {}) } as unknown as FactionDetailReply);
 const opinion = (value: number) => [{ ...span, value, startsSegment: false }];
 const observation = { ...span, viewpointTag: 'SSS', viewpointSide: ['SSS'], opposingSide: ['RRR'], attackersAreViewpoint: true, representative: null,
   name: { text: 'Synthetic war', known: true, reason: null, key: null } };
@@ -116,7 +107,6 @@ const client: DashboardClient = { available: true,
     const params = request.params as { hour: number; tags: string[]; size?: string; faction?: string; view?: string; reads?: { hour: number }[] };
     if (request.product === 'country-groups') return reply(request, groupsByRevision[request.revision] as T);
     if (request.product === 'faction-details') return reply(request, details(params.hour, params.faction!) as T);
-    if (request.product === 'faction-state') return reply(request, influence as T);
     if (request.product === 'diplomacy-state') return reply(request, (params.view === 'pair'
       ? { forward: opinion(50), reverse: opinion(-30), unobserved: [], first: null, second: null, coverage: COVERED, pending: [], warnings: [] }
       : { hour: params.hour, owners: [], unresolved: 0, snapshot: false, coverage: COVERED, pending: [], warnings: [] }) as T);
@@ -138,7 +128,7 @@ clock.setBounds({ firstHour: 0, lastHour: 200 });
 const runtimeFor = (revision: string) => ({ tracks: [{ id: 'track', axisOffset: 0, selectedTag: 'AAA', source: { id: 'synthetic', revision, metadata: { campaignKey: 'campaign-a', countries: [] } }, branch }],
   campaignTracks: [], client, clock, addWidgetBelow() {} } as unknown as WidgetProps['runtime']);
 let runtime = runtimeFor('1');
-const widgets: Record<string, ComponentType<WidgetProps>> = { 'faction-pooled-strength': FactionPooledStrengthWidget, 'faction-influence': FactionInfluenceWidget,
+const widgets: Record<string, ComponentType<WidgetProps>> = { 'faction-pooled-strength': FactionPooledStrengthWidget,
   'diplomatic-relations': DiplomaticRelationsWidget, 'war-contribution': WarContributionWidget, volunteers: VolunteersWidget };
 const pin = (hour: number): WidgetTime => ({ mode: 'pin', windows: { track: { firstOffset: hour, lastOffset: hour } } });
 let mounted = 0;
@@ -187,17 +177,7 @@ export const fixture = {
       return false;
     });
   },
-  /** Each legend entry's text and swatch colour. */
-  legend: () => [...host.querySelectorAll('.chart-legend li')].map(item => [item.textContent?.trim() ?? '',
-    getComputedStyle(item.querySelector('i') ?? item).backgroundColor]),
   labels: () => [...host.querySelectorAll('canvas[aria-label]')].map(canvas => canvas.getAttribute('aria-label')),
-  /** Clicks the table row that reads `text`. */
-  async clickRow(text: string) {
-    const row = [...host.querySelectorAll<HTMLElement>('tbody tr')].find(item => item.textContent?.includes(text));
-    row?.click();
-    for (let i = 0; i < 6; i++) { await settle(); await later(); }
-    return !!row;
-  },
 };
 declare global { interface Window { widgetsFixture: typeof fixture } }
 window.widgetsFixture = fixture;

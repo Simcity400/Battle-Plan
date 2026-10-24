@@ -15,7 +15,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'generals', version: 1, title: 'Generals leaderboard', icon: 'star',
   description: 'Generals and admirals, their skills, traits and battles.',
-  timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   minSize: { w: 6, h: 6 }, defaultSize: { w: 12, h: 10 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

@@ -3,7 +3,10 @@ import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
 import type { LossesParams, LossesReply, LossSource } from '../../generated/dashboard';
 import type { TimeChartProps } from '../../charts/TimeChart';
-import { loadProduct, useProduct } from '../../dashboard/products.ts';
+import { loadProduct } from '../../dashboard/products.ts';
+import { useContentRevision } from '../../dashboard/contentRevision.ts';
+import { useHeldFailure } from '../../dashboard/heldFailures.ts';
+import { useViewRead } from '../../dashboard/viewRead.ts';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries.ts';
 import { validateLossesReply } from './lossesData.ts';
 import type { LossWindow } from './lossesData';
@@ -84,7 +87,14 @@ export function usePreparedLosses(client: DashboardClient, track: BoundTrack | u
     ...(reachedHover === null || reachedHover < view.first || reachedHover > view.end ? [] : [reachedHover])])].sort((a, b) => a - b) : [];
   const request = track && selection && view ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-losses',
     params: { selection, from, to, width: geometry?.width ?? 1, reads, headHour: view.hour, detailHour } } : null;
-  const product = useProduct<PreparedLosses>(client, request, active, validatePreparedLosses, track?.source);
+  // One read at a time while the chart's view and the reached hours move (`useViewRead`);
+  // `preparedLossWindow` places a reply asked for an older head hour.
+  const content = useContentRevision(client);
+  const asked = request?.params;
+  const read = useViewRead<NonNullable<typeof asked>, PreparedLosses>(request ? JSON.stringify([key, content]) : null, asked,
+    JSON.stringify([asked?.from, asked?.to, asked?.width, asked?.reads, asked?.headHour, asked?.detailHour]), active,
+    (at, signal, publish, restart) => loadProduct(client, { ...request!, params: at }, signal, validatePreparedLosses, track?.source, restart, publish), client);
+  const product = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
   const exactAt = useCallback(async (hour: number) => {
     if (!active || !track || !request || !view) return null;
     const controller = new AbortController(); picks.current.add(controller);

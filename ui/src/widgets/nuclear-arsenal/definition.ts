@@ -19,7 +19,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'nuclear-arsenal', version: 1, title: 'Nuclear arsenal', icon: 'target',
   description: 'Nuclear stockpiles by country and weapon type.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES, options: OPTIONS,
   variants: [...raceViewVariants('Nuclear arsenal', OPTIONS), ...breakdownVariants('Nuclear arsenal', OPTIONS)],

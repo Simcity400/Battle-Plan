@@ -4,20 +4,29 @@ import type { TooltipRow } from '../../charts/tooltip';
 import type { NameAt } from '../../dashboard/countryFacts';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { StateAt } from '../../dashboard/stateNamesData';
-import { peaceDealHour, peaceDealKnownAt, peaceDealAt, peaceDealIsBy, peaceWarName } from '../../dashboard/peaceDealsData.ts';
+import { peaceDealHour, peaceDealKnownAt, peaceDealAt, peaceDealIsBy } from '../../dashboard/peaceDealsData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { setToken } from '../../dashboard/options.ts';
+import { usNumber } from '../../charts/numberFormat.ts';
 
-export interface PeaceChip { key: string; hour: number; state?: number; tag?: string; missing?: string; note?: string; derived: boolean }
-export interface PeaceActionRow { key: string; winner: string | null; name: string | null; token: string | null; outcome: boolean; chips: PeaceChip[] }
-export interface PeaceCard { deal: PeaceDeal; actions: PeaceActionRow[]; hour: number; knownAt: number; by: boolean }
+/** `vp`: the state's victory points as an exact decimal, null when not recorded. */
+export interface PeaceChip { key: string; hour: number; state?: number; vp?: string | null; tag?: string; missing?: string; note?: string; derived: boolean }
+/** `warScore`: the recorded cost of this row's captured actions, null when none was captured.
+ * `automatic`: the game's own transfer list, with no action or demand. */
+export interface PeaceActionRow { key: string; winner: string | null; name: string | null; token: string | null; outcome: boolean; automatic?: boolean;
+  warScore: number | null; chips: PeaceChip[] }
+/** `warEnd`: outcomes read from ownership when the war ended joined this conference. */
+export interface PeaceCard { deal: PeaceDeal; actions: PeaceActionRow[]; hour: number; knownAt: number; by: boolean; warEnd?: boolean }
 export type PeaceRow = LogRow<PeaceCard>;
 /** Conference cards newest first, and the merged unrecorded stretches that could hide one. */
 export interface PeaceLog { rows: readonly PeaceRow[]; gaps: readonly HourSpan[] }
-export const peaceActionName = (row: PeaceActionRow) => row.outcome ? 'Outcome; action unknown' : row.name ?? 'Action name not recorded';
+export const peaceActionName = (row: PeaceActionRow) => row.automatic ? 'Automatic transfer'
+  : row.outcome ? 'Outcome; action unknown' : row.name ?? 'Action name not recorded';
 const UNRECORDED_ACTION = JSON.stringify(['unrecorded']);
 const NO_ACTIONS = JSON.stringify(['noActions']);
-const actionCategory = (action: PeaceActionRow) => action.outcome || action.name == null ? UNRECORDED_ACTION : JSON.stringify(['action', action.token ?? action.name]);
+const AUTOMATIC = JSON.stringify(['automatic']);
+const actionCategory = (action: PeaceActionRow) => action.automatic ? AUTOMATIC
+  : action.outcome || action.name == null ? UNRECORDED_ACTION : JSON.stringify(['action', action.token ?? action.name]);
 const emptyCategory = (card: PeaceCard) => card.deal.captured && card.deal.captureUnavailable == null ? NO_ACTIONS : UNRECORDED_ACTION;
 
 export function peaceActionChoices(log: PeaceLog | null): { value: string; label: string }[] {
@@ -55,9 +64,10 @@ export function peaceTooltipRows(card: PeaceCard, countryAt: (hour: number) => C
     ...card.actions.flatMap(action => [
       { label: action.winner == null ? 'Taker not recorded' : country(action.winner).name,
         countryFlag: action.winner == null ? undefined : country(action.winner), value: peaceActionName(action), strong: true },
+      ...(action.warScore == null ? [] : [{ label: 'War score', value: usNumber.format(action.warScore), indent: true }]),
       ...action.chips.map(chip => ({ label: chipLabel(chip),
         countryFlag: chip.tag == null ? undefined : countryAt(chip.hour)(chip.tag),
-        value: chip.note, indent: true })),
+        value: chip.note ?? (chip.vp != null ? `${chip.vp} VP` : undefined), indent: true })),
     ]),
   ];
 }
@@ -67,10 +77,17 @@ export function peaceActions(deal: PeaceDeal): PeaceActionRow[] {
   const rows = new Map<string, PeaceActionRow>();
   const seen = new Map<string, Set<string>>();
   const covered = new Set<number>();
-  const add = (winner: string | null, name: string | null, token: string | null, kind: string, chip: PeaceChip) => {
+  const vp = stateVictoryPoints(deal);
+  const add = (winner: string | null, name: string | null, token: string | null, kind: string, chip: PeaceChip, cost: number | null = null) => {
     const key = JSON.stringify([winner, kind, token, name]);
     let row = rows.get(key);
-    if (!row) { row = { key, winner, name, token, outcome: kind === 'capturedOutcome', chips: [] }; rows.set(key, row); seen.set(key, new Set()); }
+    if (!row) {
+      row = { key, winner, name, token, outcome: kind === 'capturedOutcome' || kind === 'automaticOutcome', warScore: null, chips: [],
+        ...(kind === 'automaticOutcome' ? { automatic: true } : {}) };
+      rows.set(key, row); seen.set(key, new Set());
+    }
+    if (cost != null) row.warScore = (row.warScore ?? 0) + cost;
+    if (chip.state != null && chip.vp === undefined) chip.vp = vp.get(chip.state) ?? null;
     if (!seen.get(key)!.has(chip.key)) { seen.get(key)!.add(chip.key); row.chips.push(chip); }
   };
   if (deal.captured) {
@@ -83,7 +100,7 @@ export function peaceActions(deal: PeaceDeal): PeaceActionRow[] {
       const chip: PeaceChip = state != null ? { key: `state:${state}`, hour, state, derived: false }
         : tag != null ? { key: JSON.stringify(['country', tag]), hour, tag, derived: false }
           : { key: JSON.stringify(['unrecorded', action.country, action.turn, action.ordinal]), hour, missing: 'Target not recorded', derived: false };
-      add(action.takerTag, action.name, action.nameKey ?? action.tokenName, `captured:${action.token}`, chip);
+      add(action.takerTag, action.name, action.nameKey ?? action.tokenName, `captured:${action.token}`, chip, action.cost);
     }
   }
   // Captured outcomes are usable at the finalizer hour even when the graph
@@ -91,7 +108,8 @@ export function peaceActions(deal: PeaceDeal): PeaceActionRow[] {
   for (const transfer of deal.captured?.transfers ?? []) {
     if (transfer.state < 0 || covered.has(transfer.state)) continue;
     covered.add(transfer.state);
-    add(transfer.to, null, null, 'capturedOutcome', { key: `state:${transfer.state}`, hour: transfer.hour, state: transfer.state, derived: false });
+    add(transfer.to, null, null, transfer.automatic ? 'automaticOutcome' : 'capturedOutcome',
+      { key: `state:${transfer.state}`, hour: transfer.hour, state: transfer.state, derived: false });
   }
   // The final subject may be newly allocated, so an action's country operand
   // cannot identify this output or establish which action produced it.
@@ -105,7 +123,7 @@ export function peaceActions(deal: PeaceDeal): PeaceActionRow[] {
   const addItem = (item: PeaceItem) => {
     const hour = item.dates.afterHour;
     const change = item.change;
-    const chip: PeaceChip = change.kind === 'stateTransfer' ? { key: `state:${change.state}`, hour, state: change.state, derived: item.derived }
+    const chip: PeaceChip = change.kind === 'stateTransfer' ? { key: `state:${change.state}`, hour, state: change.state, vp: change.victoryPoints, derived: item.derived }
       : { key: JSON.stringify(['country', change.kind === 'newSubject' ? change.subject : change.country]), hour,
         tag: change.kind === 'newSubject' ? change.subject : change.country, derived: item.derived };
     add(item.winner, item.action.name, item.action.key, item.action.kind, chip);
@@ -116,6 +134,58 @@ export function peaceActions(deal: PeaceDeal): PeaceActionRow[] {
     if (item.change.kind === 'stateTransfer') covered.add(item.change.state);
   }
   return [...rows.values()];
+}
+
+/** Each transferred state's recorded victory points, from the deal's ownership
+ * outcomes and transfer graph; a state recorded without them stays unknown. */
+function stateVictoryPoints(deal: PeaceDeal): Map<number, string | null> {
+  const points = new Map<number, string | null>();
+  const note = (state: number, value: string | null) => { if (points.get(state) == null) points.set(state, value); };
+  for (const item of deal.items) if (item.change.kind === 'stateTransfer') note(item.change.state, item.change.victoryPoints);
+  for (const link of deal.transfers.links) for (const state of link.states) note(state.state, state.victoryPoints);
+  return points;
+}
+
+/** An action row's states, their victory points (only when every state's is
+ * recorded) and its war score. */
+export function peaceActionTotals(row: PeaceActionRow): { states: number; vp: bigint | null; warScore: number | null } {
+  const states = row.chips.filter(chip => chip.state != null);
+  const vp = states.length && states.every(chip => chip.vp != null)
+    ? states.reduce((sum, chip) => sum + BigInt(chip.vp!), 0n) : null;
+  return { states: states.length, vp, warScore: row.warScore };
+}
+
+/** States most valuable first; one without recorded points follows them. */
+export function chipsByValue(chips: readonly PeaceChip[]): PeaceChip[] {
+  const value = (chip: PeaceChip) => chip.vp == null ? null : BigInt(chip.vp);
+  return chips.map((chip, index) => ({ chip, index })).sort((a, b) => {
+    const x = value(a.chip), y = value(b.chip);
+    if (x == null || y == null) return x == null && y == null ? a.index - b.index : x == null ? 1 : -1;
+    return x === y ? a.index - b.index : x > y ? -1 : 1;
+  }).map(entry => entry.chip);
+}
+
+/** A grouped war-end outcome at the hour of a recorded conference that names each
+ * of its winners as a winner and each loser as a loser is that conference's
+ * settlement: one card, never two. An outcome matching no conference, or more
+ * than one, stays its own card. */
+export function joinWarEndOutcomes(deals: readonly PeaceDeal[]): { deal: PeaceDeal; warEnd: PeaceDeal | null }[] {
+  const conferences = deals.filter(deal => deal.observation === 'recordedConference' && deal.captured != null);
+  const joined = new Map<PeaceDeal, PeaceDeal>();
+  const used = new Set<PeaceDeal>();
+  for (const outcome of deals) {
+    if (outcome.observation !== 'conferenceNotRecorded') continue;
+    const hour = peaceDealHour(outcome);
+    const matches = conferences.filter(conference => peaceDealHour(conference) === hour && !joined.has(conference)
+      && outcome.winners.every(tag => conference.winners.includes(tag)) && outcome.losers.every(tag => conference.losers.includes(tag)));
+    if (matches.length !== 1) continue;
+    joined.set(matches[0], outcome);
+    used.add(outcome);
+  }
+  return deals.filter(deal => !used.has(deal)).map(deal => {
+    const warEnd = joined.get(deal);
+    return { deal: warEnd ? { ...deal, items: [...deal.items, ...warEnd.items] } : deal, warEnd: warEnd ?? null };
+  });
 }
 
 /** Unrecorded hours that could hide a conference: those of the hourly finalizer
@@ -135,8 +205,10 @@ export function peaceGaps(reply: PeaceDealsReply): HourSpan[] {
   return spans;
 }
 export function preparePeaceLog(reply: PeaceDealsReply): PeaceLog {
-  const rows: PeaceRow[] = reply.deals.map(deal => {
-    const card = { deal, actions: peaceActions(deal), hour: peaceDealHour(deal), knownAt: peaceDealKnownAt(deal), by: peaceDealIsBy(deal) };
+  const rows: PeaceRow[] = joinWarEndOutcomes(reply.deals).map(({ deal, warEnd }) => {
+    const card: PeaceCard = { deal, actions: peaceActions(deal), hour: peaceDealHour(deal),
+      knownAt: Math.max(peaceDealKnownAt(deal), warEnd ? peaceDealKnownAt(warEnd) : -Infinity), by: peaceDealIsBy(deal),
+      ...(warEnd ? { warEnd: true } : {}) };
     return { key: JSON.stringify(['conference', deal.id]), hour: card.hour, by: card.by, item: card };
   });
   rows.sort((a, b) => b.hour - a.hour);
@@ -177,6 +249,8 @@ export function derivedNote(deal: PeaceDeal): string {
 }
 export const conferenceLabel = (deal: PeaceDeal) => deal.observation === 'recordedConference' ? null
   : deal.observation === 'conferenceNotRecorded' ? 'War-end outcomes' : 'Conference unknown';
+/** Where a joined card's states and victory points came from. */
+export const WAR_END_NOTE = 'States and victory points read from ownership when the war ended.';
 export function peaceWanted(rows: readonly PeaceRow[]): { countries: NameAt[]; states: StateAt[] } {
   const countries = new Map<string, NameAt>();
   const states = new Map<string, StateAt>();
@@ -196,8 +270,11 @@ export function peaceWanted(rows: readonly PeaceRow[]): { countries: NameAt[]; s
 /** Offscreen estimate; the log measures actual wrapping only for drawn cards. */
 export function peaceRowHeight({ item: card }: PeaceRow, density: LogDensity): number {
   const compact = density === 'compact';
-  return (compact ? 70 : 88) + card.actions.length * (compact ? 24 : 28) + (derivedNote(card.deal) ? 20 : 0) + (conferenceLabel(card.deal) ? 20 : 0);
+  if (!card.actions.length) return compact ? 30 : 36;
+  return (compact ? 50 : 60) + card.actions.length * (compact ? 50 : 58) + (card.warEnd || derivedNote(card.deal) ? 18 : 0);
 }
+/** No war name is recorded; the widget's own description leads with the sides. */
 export function peaceDescription({ item: card }: PeaceRow): string {
-  return [peaceWarName(card.deal), `${card.by ? 'by ' : ''}${formatDateTime(card.hour)}`, conferenceLabel(card.deal), derivedNote(card.deal)].filter(Boolean).join(' · ');
+  return [`${card.by ? 'by ' : ''}${formatDateTime(card.hour)}`, conferenceLabel(card.deal), derivedNote(card.deal),
+    card.warEnd ? WAR_END_NOTE : null].filter(Boolean).join(' · ');
 }

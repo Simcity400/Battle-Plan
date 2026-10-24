@@ -2,7 +2,7 @@
 // apart from the drawings so saved appearance can be checked without rendering anything.
 export const ICON_NAMES = [
   'plane', 'walk', 'map', 'globe', 'grid', 'chart-bars', 'parliament', 'handshake', 'flag', 'eye', 'layout', 'settings', 'folder', 'folder-open',
-  'file', 'arrow', 'refresh-cw', 'refresh', 'info', 'alert', 'close', 'check', 'trash', 'calendar', 'clock', 'link', 'edit', 'save', 'plus', 'minus',
+  'file', 'arrow', 'refresh-cw', 'refresh', 'info', 'alert', 'close', 'check', 'crown', 'trash', 'calendar', 'clock', 'link', 'edit', 'save', 'plus', 'minus',
   'chevron-left', 'chevron-right', 'chevron-down', 'chevron-up', 'chevrons-left', 'chevrons-right', 'sidebar', 'search', 'star', 'star-filled',
   'copy', 'download', 'upload', 'image', 'palette', 'type', 'sun', 'moon', 'monitor', 'gamepad', 'sliders', 'grip', 'more', 'eject', 'pin',
   'target', 'flask', 'sparkle', 'play', 'volume', 'volume-off', 'pause', 'layers', 'history', 'helmet', 'anchor', 'droplet', 'hammer',

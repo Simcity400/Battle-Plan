@@ -747,7 +747,7 @@ pub(crate) fn projection(
             {
                 return Ok(());
             }
-            let Some((inputs, observed)) = walk
+            let Some((inputs, _)) = walk
                 .held
                 .as_ref()
                 .and_then(|held| held.observed.as_ref().ok())
@@ -777,9 +777,9 @@ pub(crate) fn projection(
                     ))
                 })
                 .collect::<io::Result<_>>()?;
-            let losses = hydrate_losses(&mut reader, &state, &counters, observed, span, hours)?;
-            for ((id, _), runs) in walk.open.iter().zip(losses) {
-                casualties.entry(*id).or_default().extend(runs);
+            let losses = hydrate_losses(&mut reader, &state, &counters, &walk.open, span, hours)?;
+            for (war, runs) in walk.open.iter().zip(losses) {
+                casualties.entry(war.id).or_default().extend(runs);
             }
             Ok(())
         },
@@ -831,7 +831,7 @@ fn hydrate_losses(
     reader: &mut Reader<'_>,
     state: &QueryCounters,
     counters: &HashMap<Pair, (u64, bool)>,
-    observed: &[Observed],
+    open: &[OpenWar],
     span: series::Run,
     hours: &BTreeSet<i32>,
 ) -> io::Result<Vec<Vec<WarCasualtyRun>>> {
@@ -841,7 +841,7 @@ fn hydrate_losses(
         .copied()
         .collect();
     let mut sums =
-        vec![vec![(span.first_hour, span.last_hour, [0_i128; 4]); hours.len()]; observed.len()];
+        vec![vec![(span.first_hour, span.last_hour, [0_i128; 4]); hours.len()]; open.len()];
     let mut windows: Vec<(i32, i32)> = Vec::new();
     for &hour in &hours {
         match windows.last_mut() {
@@ -850,8 +850,8 @@ fn hydrate_losses(
         }
     }
     let mut targets = BTreeMap::new();
-    for (group, observation) in observed.iter().enumerate() {
-        for &(pair, first) in &observation.loss_pairs {
+    for (group, war) in open.iter().enumerate() {
+        for &(pair, first) in &war.loss_pairs {
             let (index, canonical) = counters[&pair];
             let order = if first == canonical {
                 [0, 1, 2, 3]

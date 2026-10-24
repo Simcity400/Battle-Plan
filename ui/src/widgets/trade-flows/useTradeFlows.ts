@@ -9,7 +9,10 @@ import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import { worldFilter, resolveCountries } from '../../dashboard/groups';
 import type { ResolvedCountries } from '../../dashboard/groups';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
-import { useProduct } from '../../dashboard/products';
+import { loadProduct, useProduct } from '../../dashboard/products';
+import { useContentRevision } from '../../dashboard/contentRevision';
+import { useHeldFailure } from '../../dashboard/heldFailures';
+import { useViewRead } from '../../dashboard/viewRead';
 import type { ProductRequest } from '../../dashboard/client';
 import { NumericReply } from '../../dashboard/numericReply';
 import type { MarketLendLeaseReply } from '../../generated/dashboard';
@@ -64,17 +67,23 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
     active, validateMarketReply, track?.source);
   const prepared = !!runtime.client.preparedQuery;
   const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
-  const view = parity?.requested ? { from: first, to: last } : viewport?.key === key ? viewport : { from: first, to: last, width: 1 };
+  const view: { from: number; to: number; width?: number } = parity?.requested ? { from: first, to: last } : viewport?.key === key ? viewport : { from: first, to: last, width: 1 };
   const groupTrade = useMemo(() => groups.data ? decodeTrade({ branchId: groups.data.branchId, decimals: 5, resources: [], countries: [], flows: [], reads: [], known: [], partial: [], warnings: [],
     countryIdentities: groups.data.countryIdentities.map(country => ({ tag: country.tag, runs: country.identities })) }) : null, [groups.data]);
   const groupScope = useMemo(() => groupTrade ? tradeScope(groupTrade, widget.countries, resolved, groups.data, lastHour, widget.options?.between === 'between') : null,
     [groupTrade, widget.countries, resolved, groups.data, lastHour, widget.options?.between]);
   const selection = groupScope?.kind === 'countries' ? { identities: [...(groupScope.countryIds ?? [])],
     ...(groupScope.membership ? { membership: Object.fromEntries(groupScope.membership), unobserved: groupScope.unobserved ?? [] } : {}), between: groupScope.between } : { between: widget.options?.between === 'between' };
-  const page = prepared ? { ...view, basis: first, measure: widget.options?.measure ?? 'current', ...selection,
+  const pageAt = (at: typeof view) => prepared ? { ...at, basis: first, measure: widget.options?.measure ?? 'current', ...selection,
     hours: [last], ...(parity?.requested ? { requireComplete: true } : {}) } : undefined;
-  const request = ready ? tradeFlowsRequest(track, tags, page) : null;
-  const product = useProduct<PreparedTradeReply>(runtime.client, request, active, value => validateTradeFlowsReply(value) as PreparedTradeReply, track?.source);
+  const page = pageAt(view);
+  // One read at a time while the chart's view moves (`useViewRead`).
+  const content = useContentRevision(runtime.client);
+  const read = useViewRead<typeof view, PreparedTradeReply>(ready ? JSON.stringify([key, first, last, selection, prepared, !!parity?.requested, content]) : null,
+    view, prepared ? JSON.stringify([view.from, view.to, view.width]) : '', active,
+    (at, signal, publish, restart) => loadProduct(runtime.client, tradeFlowsRequest(track!, tags, pageAt(at)), signal,
+      value => validateTradeFlowsReply(value) as PreparedTradeReply, track?.source, restart, publish), runtime.client);
+  const product = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
   const scale = useProduct<PreparedTradeReply>(runtime.client, prepared && ready && widget.options?.scale !== 'moment'
     ? tradeFlowsRequest(track, tags, { ...page, from: first, to: last, width: 1, hours: [last] }) : null, active,
   value => validateTradeFlowsReply(value) as PreparedTradeReply, track?.source);

@@ -21,8 +21,10 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { loadProduct, useProduct } from '../../dashboard/products';
 import { useHeldFailure } from '../../dashboard/heldFailures';
+import { useContentRevision } from '../../dashboard/contentRevision';
+import { useViewRead } from '../../dashboard/viewRead';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { dayLabel } from '../draw';
 import DrillHost from '../drill/DrillHost';
@@ -468,12 +470,17 @@ export function usePreparedRace<T extends { series: { tag: string; runs: { first
   const dense = enabled && Math.ceil(bounds.to) - Math.floor(bounds.from) + 1 > bounds.width;
   const page = (from: number, to: number, width: number): ProductRequest | null => !request ? null : enabled
     ? { ...request, product: 'series-summary', params: { branchId, tags, family, from, to, width, requireParts, within: within && Object.fromEntries(within) } } : request;
-  const display = useProduct<T & Pick<PreparedPartsReply, 'summaries'>>(client, page(bounds.from, bounds.to, bounds.width), active, value => {
-    const reply = validate(value) as T & Pick<PreparedPartsReply, 'summaries'>;
-    if (reply.summaries !== undefined && (!Array.isArray(reply.summaries)
-      || reply.summaries.some(line => typeof line.tag !== 'string' || !Array.isArray(line.summary?.buckets)))) throw Error('The prepared force summary is malformed.');
-    return reply;
-  }, enabled ? track?.source : undefined);
+  // One summary read at a time while the chart's view moves (`useViewRead`).
+  const content = useContentRevision(client);
+  const read = useViewRead<{ from: number; to: number; width: number }, T & Pick<PreparedPartsReply, 'summaries'>>(
+    request ? JSON.stringify([key, enabled, content]) : null, bounds, enabled ? JSON.stringify([bounds.from, bounds.to, bounds.width]) : '', active,
+    (at, signal, publish, restart) => loadProduct(client, page(at.from, at.to, at.width)!, signal, value => {
+      const reply = validate(value) as T & Pick<PreparedPartsReply, 'summaries'>;
+      if (reply.summaries !== undefined && (!Array.isArray(reply.summaries)
+        || reply.summaries.some(line => typeof line.tag !== 'string' || !Array.isArray(line.summary?.buckets)))) throw Error('The prepared force summary is malformed.');
+      return reply;
+    }, enabled ? track?.source : undefined, restart, publish), client);
+  const display = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
   const reached = useProduct(client, enabled ? page(hour, hour, 1) : null, active, validate, track?.source);
   const pointedHour = hover?.key === key ? hover.hour : null;
   const pointed = useProduct(client, enabled && pointedHour != null ? page(pointedHour, pointedHour, 1) : null, active, validate, track?.source);

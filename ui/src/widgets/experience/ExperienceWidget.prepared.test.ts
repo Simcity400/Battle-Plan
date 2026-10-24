@@ -63,7 +63,8 @@ test('experience widget reads only viewport summaries and reached hours while pr
     plugins: [{ name: 'prepared-experience-fixture', enforce: 'pre', transform(source, id) {
       const path = id.replaceAll('\\', '/'), replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
       if (replacement) return replacement[1];
-      if (path.endsWith('/widgets/experience/ExperienceWidget.tsx') || path.endsWith('/widgets/experience/preparedExperience.ts') || path.endsWith('/widgets/country-measure/preparedMeasure.ts'))
+      if (path.endsWith('/widgets/experience/ExperienceWidget.tsx') || path.endsWith('/widgets/experience/preparedExperience.ts') || path.endsWith('/widgets/country-measure/preparedMeasure.ts')
+        || path.endsWith('/dashboard/viewRead.ts'))
         return source.replace(/\b(useMemo|useCallback|useState|useReducer|useRef|useEffect)(?:<[\s\S]*?>)?\(/g,
           (_match, name) => `globalThis.__preparedExperienceHook(${JSON.stringify(name)}, `);
     } }] });

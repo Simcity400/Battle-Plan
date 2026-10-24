@@ -70,18 +70,22 @@ export function extentOfSummary(summary: ChartSummary, from = summary.from, to =
   return low <= high ? [low, high] : null;
 }
 
-const summaryMatches = (frame: PlotFrame, summary: ChartSummary, until: number | null) => summary.from === frame.x[0]
-  && summary.to === Math.min(frame.x[1], until ?? frame.x[1]) && summary.width === Math.ceil(frame.plotWidth);
+/** Whether a summary can be drawn in this frame: one requested at the plot's width
+ * that overlaps it and ends at or before the hours shown end. Its geometry is placed
+ * by hour, so a summary asked for a moment ago (the view has moved on during
+ * playback or a zoom) draws in place, never past the playhead, until the next arrives. */
+export const summaryFits = (frame: Pick<PlotFrame, 'x' | 'plotWidth'>, summary: { from: number; to: number; width: number }, until: number | null) => summary.width === Math.ceil(frame.plotWidth)
+  && summary.to <= Math.min(frame.x[1], until ?? frame.x[1]) && summary.to >= frame.x[0] && summary.from <= frame.x[1];
 
 /** A bounded summary never substitutes for exact picks, hover or keyboard reads.
  * Broken columns show separate extrema dots: no stroke crosses an unknown span.
  * Continuous columns retain the time order of extrema and held step direction. */
 export function summaryGeometry(frame: PlotFrame, summary: ChartSummary, held = false, until: number | null = null):
   { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
-  // A retained reply belongs to its requested view; awaiting a new view cannot
-  // stretch old geometry into the new range or reveal data after its playhead.
+  // A retained reply keeps its own hours: drawn in a moved view it is never
+  // stretched, and it never reaches past the hours shown.
   const paths: PathCommand[][] = [], dots: Point[] = [];
-  if (!summaryMatches(frame, summary, until)) return { paths, dots, end: null };
+  if (!summaryFits(frame, summary, until)) return { paths, dots, end: null };
   const runs = exactRuns(summary);
   if (runs) {
     const segments = (held ? heldSegments : curveSegments)(runs, frame.x[0], summary.to, frame.toX, frame.toY);
@@ -158,7 +162,7 @@ export function drawApproximateSpans(ctx: CanvasRenderingContext2D, frame: PlotF
 export function drawLineSummary(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
   summary: ChartSummary, color: string, held = false, until: number | null = null,
   options: { area?: boolean; dash?: readonly number[]; endDot?: boolean } = {}): Point | null {
-  if (!summaryMatches(frame, summary, until)) return null;
+  if (!summaryFits(frame, summary, until)) return null;
   if (summary.approximate?.length) {
     let end: Point | null = null;
     drawApproximateSpans(ctx, frame, summary.approximate, until, approximate => {
@@ -219,7 +223,7 @@ export function pickSummaryLines(lines: readonly { key: string; summary: ChartSu
 export function drawGapSummary(ctx: CanvasRenderingContext2D, frame: PlotFrame, _tokens: ChartTokens,
   first: ChartSummary, second: ChartSummary, aboveColor: string, belowColor: string,
   until: number | null = null, options: { alpha?: number } = {}): void {
-  if (!summaryMatches(frame, first, until) || !summaryMatches(frame, second, until)) return;
+  if (!summaryFits(frame, first, until) || !summaryFits(frame, second, until)) return;
   const approximate = [...(first.approximate ?? []), ...(second.approximate ?? [])];
   if (approximate.length) {
     drawApproximateSpans(ctx, frame, approximate, until, approximate => {
@@ -294,11 +298,13 @@ export function summaryStack(parts: readonly ChartSummary[], total?: ChartSummar
     [bucket.maxHour,bucket.maxValue],[bucket.lastValueHour,bucket.lastValue],
     [bucket.lastHour,bucket.lastValue],
   ]).entries()].sort(([a],[b])=>a-b).map(([,value])=>value);
+  // Drawing samples every screen point, so each bucket's samples are built once.
+  const sampled = summaries.map(summary => summary.buckets.map(bucket => bucket ? samples(bucket) : null));
   const points: {firstHour:number;lastHour:number;column:number;stage:number;count:number;breakBefore:boolean}[]=[];
   for (let column=0;column<(summaries[0]?.buckets.length ?? 0);column++) {
     const buckets=summaries.map(summary=>summary.buckets[column]);
     if (buckets.some(bucket=>!bucket)) continue;
-    const count=buckets.reduce((count,bucket)=>Math.max(count,samples(bucket!).length),1);
+    const count=sampled.reduce((count,columns)=>Math.max(count,columns[column]!.length),1);
     const range=buckets.at(-1)!;
     const broken=buckets.some(bucket=>bucket!.hasBreak);
     const firstBreak=buckets.some(bucket=>bucket!.firstBreak);
@@ -310,8 +316,8 @@ export function summaryStack(parts: readonly ChartSummary[], total?: ChartSummar
     });
   }
   const valuesAt = (point:typeof points[number]) => {
-    const values=summaries.map(summary=> {
-      const values=samples(summary.buckets[point.column]!);
+    const values=sampled.map(columns=> {
+      const values=columns[point.column]!;
       return values[point.count===1 ? 0 : Math.floor(point.stage*(values.length-1)/(point.count-1))];
     });
     if (total) {

@@ -12,6 +12,7 @@ import type { Run } from '../../charts/series';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
 import { useContentRevision } from '../../dashboard/contentRevision';
+import { useViewRead } from '../../dashboard/viewRead';
 import { object, signed32 } from '../../dashboard/validation';
 import { validateFuelReply } from './fuelData';
 import { validateFuelConsumption } from './fuelConsumption';
@@ -118,7 +119,6 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
   const [view,setView]=useState<{owner:typeof owner;from:number;to:number;width:number}>();
   const [hover,setHover]=useState<number|null>(null);
   const [states,setStates]=useState<{owner:typeof owner;data:FuelStates}>();
-  const [summaries,setSummaries]=useState<{owner:typeof owner;data:FuelSummaries}>();
   const [error,setError]=useState<{owner:typeof owner;message:string}>();
   const [attempt,setAttempt]=useState(0);
   const [keyboard,setKeyboard]=useState<{owner:typeof owner;hour:number|null;revision:number}>();
@@ -126,17 +126,12 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
   const onSummaryView=useCallback<NonNullable<TimeChartProps['onSummaryView']>>(value=>setView(previous=>previous?.owner===owner
     && previous.from===value.from && previous.to===value.to && previous.width===value.width ? previous : {owner,...value}),[owner]);
   const currentView=view?.owner===owner ? view : undefined;
-  const currentSummary=summaries?.owner===owner ? summaries.data : undefined;
-  const summaryKey=JSON.stringify(currentView && [currentView.from,currentView.to,currentView.width]);
-  useEffect(()=>{
-    if(!enabled || !active || !currentView) return;
-    const controller=new AbortController();
-    void preparedSeriesQuery(client,track!.source,'series-summary',{branchId:track!.branch.id,family:{kind:'country-fuel'},tags,measures,
-      from:currentView.from,to:currentView.to,width:currentView.width,within:within && Object.fromEntries(within)},controller.signal,attempt>0,undefined,undefined,
-      value=>{if(!controller.signal.aborted && alive.current===owner)setSummaries({owner,data:validateFuelSummaries(value)});})
-      .catch(reason=>{if(!controller.signal.aborted && alive.current===owner)setError({owner,message:String(reason)});});
-    return ()=>controller.abort();
-  },[owner,summaryKey,active,enabled,attempt,content]);
+  // One summary read at a time while the chart's view moves (`useViewRead`).
+  const summaries=useViewRead<{from:number;to:number;width:number},FuelSummaries>(enabled ? JSON.stringify([identity,content]) : null,currentView,
+    JSON.stringify([currentView?.from,currentView?.to,currentView?.width]),active,(at,signal,publish)=>preparedSeriesQuery(client,track!.source,'series-summary',
+      {branchId:track!.branch.id,family:{kind:'country-fuel'},tags,measures,from:at.from,to:at.to,width:at.width,within:within && Object.fromEntries(within)},
+      signal,attempt>0,undefined,undefined,value=>publish(validateFuelSummaries(value))).then(validateFuelSummaries), client);
+  const currentSummary=summaries.data;
   const wanted=[Math.floor(hour),...(originHour===undefined?[]:[originHour]),...(hover===null?[]:[Math.floor(hover)]),...(currentView?[Math.floor(currentView.from),Math.floor(currentView.to)]:[])];
   const reads=fuelReadRequests(tags,wanted,currentSummary);
   const readKey=JSON.stringify(reads);
@@ -179,7 +174,7 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
     summary:(tag:string,measure:string)=>currentSummary?.series.find(line=>line.tag===tag && line.measure===measure)?.summary,
     onSummaryView,onHover:setHover,onNavigateHour,keyboardHour:keyboard?.owner===owner?keyboard.hour:undefined,
     keyboardRevision:keyboard?.owner===owner?keyboard.revision:undefined,exactAt,
-    error:error?.owner===owner?error.message:undefined,retry:()=>{setError(undefined);setAttempt(value=>value+1);}};
+    error:(error?.owner===owner?error.message:undefined) ?? summaries.error,retry:()=>{setError(undefined);setAttempt(value=>value+1);summaries.retry();}};
 }
 
 /** Both strip halves keep their own dated peak; exact bins retain every day. */

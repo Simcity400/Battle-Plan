@@ -23,7 +23,13 @@ test('the loss overview combines data availability with amount completeness and 
   const host = globalThis as typeof globalThis & { __lossReply?: LossesReply; __lossSunburst?: SunburstProps; __lossChart?: TimeChartProps };
   host.__lossReply = reply;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__lossReply, retry() {} });',
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: globalThis.__lossReply, retry() {} });
+      export const loadProduct = (_client, _request, _signal, _validate, _source, _restart, publish) => {
+        if (globalThis.__lossReply !== undefined) publish?.(globalThis.__lossReply); return new Promise(() => {}); };`,
+    // Effects never run here: the view read lands within the render, as the reply it is given.
+    '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
+      if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });
+      return { data, retry() {} }; };`,
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: { countryIdentities: [
       { tag: 'AAA', identities: [{ firstHour: 100, lastHour: 109, slot: 7, countryId: 77 }] }] } });`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
@@ -78,7 +84,7 @@ test('the loss overview combines data availability with amount completeness and 
     assert.ok(fills > 0, 'prepared data through 109 draws against the chart extent ending at 110');
     fills = 0;
     for (const layer of history.layers) layer.draw(context, { ...frame, x: [100, 108] }, { surface: '#000' } as ChartTokens, { playhead: null });
-    assert.equal(fills, 0, 'pending zoom never paints geometry for another viewport');
+    assert.equal(fills, 0, 'a landed summary never paints past the hours a zoomed view shows');
     assert.equal(history.tooltip?.(105, frame, []), null, 'sampled chart geometry does not establish exact hover values');
   } finally {
     delete host.__lossReply; delete host.__lossSunburst; delete host.__lossChart;

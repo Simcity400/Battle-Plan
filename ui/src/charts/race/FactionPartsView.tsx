@@ -12,7 +12,7 @@ import type { DrillPart } from '../drill/DrillParts';
 import { dayLabel, drawBands, drawPlayhead } from '../draw';
 import { runAt } from '../series';
 import { compactStack, compactStackExtent, forEachCompactStackSegment } from '../stack';
-import { drawApproximateSpans, summaryStack } from '../chartSummary';
+import { drawApproximateSpans, summaryStack, summaryFits } from '../chartSummary';
 import type { ChartSummary } from '../chartSummary';
 import TimeChart from '../TimeChart';
 import type { ChartLayer, TimeChartProps } from '../TimeChart';
@@ -72,7 +72,7 @@ export default function FactionPartsView({ model, runtime, track, hour, followin
     draw: (ctx, frame, chartTokens, state) => {
       const end = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
       if (totalSummary) {
-        if (totalSummary.from !== frame.x[0] || totalSummary.to !== end || totalSummary.width !== Math.ceil(frame.plotWidth)) return;
+        if (!summaryFits(frame, totalSummary, end)) return;
         if (!totalSummary.runs || totalSummary.approximate?.length) {
           if (dense) drawApproximateSpans(ctx, frame, dense.approximate, end, () => {
             forEachCompactStackSegment(dense.model, frame.x[0], end, 0, segment => {

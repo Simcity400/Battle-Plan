@@ -13,7 +13,7 @@ export const VIEWS = [{ value: 'log', label: 'Log' }, { value: 'biggest', label:
 export const definition = {
   kind: 'land-battles', version: 1, title: 'Land battles', icon: 'shield',
   description: 'Land battles: where and when, who fought and who won, and what each side lost.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 10, h: 14 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   availability: { product: 'land-battles-manifest', params: {} },
   options: OPTIONS,

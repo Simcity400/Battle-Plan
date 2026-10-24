@@ -36,7 +36,7 @@ export const STABILITY_OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'stability', version: 1, title: 'Stability & War support', icon: 'sliders',
   description: 'Stability and war support over time, with what makes up each value.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 10 },
   countries: { max: Number.MAX_SAFE_INTEGER },
   options: STABILITY_OPTIONS,

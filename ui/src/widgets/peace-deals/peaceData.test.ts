@@ -10,7 +10,7 @@ import type { PeaceCapturedAction, PeaceDeal, PeaceDealsReply, PeaceItem } from 
 import { peaceCaptureLabel as captureLabel, peaceDealHour, peaceDealKnownAt, peaceDealLabel, validatePeaceDealsReply } from '../../dashboard/peaceDealsData.ts';
 import { validateStateNamesReply } from '../../dashboard/stateNamesData.ts';
 import { contentKey, storableToken } from '../../dashboard/options.ts';
-import { derivedNote, filterPeaceLog, peaceActionChoices, peaceActionName, peaceActions, peaceDescription, peaceGapHint, peaceGapsIn, peaceRowsAt, peaceTooltipRows, peaceWanted, preparePeaceLog } from './peaceData.ts';
+import { chipsByValue, derivedNote, filterPeaceLog, peaceActionChoices, peaceActionName, peaceActions, peaceActionTotals, peaceDescription, peaceGapHint, peaceGapsIn, peaceRowsAt, peaceTooltipRows, peaceWanted, preparePeaceLog } from './peaceData.ts';
 import { definition } from './definition.ts';
 import { resolveWindow } from '../../dashboard/model.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
@@ -153,6 +153,45 @@ test('captured subject results use exact country chips without inventing a named
   assert.equal(rows[2].winner, null);
   assert.equal(rows[2].chips[0].tag, undefined);
   assert.equal(rows[2].chips[0].missing, 'Subject country not recorded');
+});
+
+test('a war-end outcome joins the one recorded conference at its hour naming its winners and losers, with its states and victory points', () => {
+  const conference = deal('conference', 20); conference.derived = false; conference.items = []; conference.endIsBy = false;
+  conference.captured = { hour: 20, publicationHour: 20, winners: [2], losers: [1], actions: [], subjects: [],
+    transfers: [{ derived: false, hour: 20, state: 1, taker: 1, to: 'winner/opaque', giver: null, from: null, fromCountry: null, toCountry: null, automatic: true },
+      { derived: false, hour: 20, state: 2, taker: 1, to: 'winner/opaque', giver: null, from: null, fromCountry: null, toCountry: null, automatic: true }] };
+  const outcome = deal('outcome', 20); outcome.observation = 'conferenceNotRecorded'; outcome.conferenceId = null;
+  outcome.items = [item(1, 20), { ...item(2, 20), change: { ...item(2, 20).change, victoryPoints: '7' } as PeaceItem['change'] }];
+  const elsewhere = deal('elsewhere', 30); elsewhere.observation = 'conferenceNotRecorded'; elsewhere.conferenceId = null;
+  const log = preparePeaceLog(reply([elsewhere, conference, outcome]));
+  assert.deepEqual(log.rows.map(row => row.item.deal.id), ['elsewhere', 'conference']);
+  const card = log.rows[1].item;
+  assert.equal(card.warEnd, true);
+  assert.equal(log.rows[0].item.warEnd, undefined);
+  // The game's own transfer list names no action; the outcome's ownership supplies the points.
+  assert.equal(card.actions.length, 1);
+  assert.equal(peaceActionName(card.actions[0]), 'Automatic transfer');
+  assert.deepEqual(peaceActionTotals(card.actions[0]), { states: 2, vp: 10n, warScore: null });
+  assert.deepEqual(chipsByValue(card.actions[0].chips).map(chip => chip.state), [2, 1]);
+  assert.match(peaceDescription(log.rows[1]), /read from ownership when the war ended/);
+  // An outcome whose sides are the conference's the other way round is not its settlement.
+  const reversed = { ...outcome, winners: outcome.losers, losers: outcome.winners };
+  assert.equal(preparePeaceLog(reply([conference, reversed])).rows.length, 2);
+  // Two conferences at that hour leave the outcome its own card.
+  const twin = { ...conference, id: 'twin' };
+  assert.equal(preparePeaceLog(reply([conference, twin, outcome])).rows.length, 3);
+});
+test('war score sums the captured actions; victory points total only when every state records them', () => {
+  const card = deal(); card.derived = false; card.items = [item(4, 19)];
+  card.captured = { hour: 19, publicationHour: 20, winners: [1], losers: [2], actions: [capturedAction(4), capturedAction(5)], transfers: [], subjects: [] };
+  const [row] = peaceActions(card);
+  assert.deepEqual(row.chips.map(chip => [chip.state, chip.vp]), [[4, '3'], [5, null]]);
+  assert.deepEqual(peaceActionTotals(row), { states: 2, vp: null, warScore: 20 });
+  assert.deepEqual(chipsByValue(row.chips).map(chip => chip.state), [4, 5]);
+  const rows = peaceTooltipRows({ deal: card, actions: [row], hour: 20, knownAt: 20, by: false }, () => tag => ({ name: tag }), chip => `State ${chip.state}`);
+  assert.equal(rows.find(entry => entry.label === 'War score')?.value, '20');
+  assert.equal(rows.find(entry => entry.label === 'State 4')?.value, '3 VP');
+  assert.equal(rows.find(entry => entry.label === 'State 5')?.value, undefined);
 });
 
 test('failed capture is visible even without fallback items', () => {

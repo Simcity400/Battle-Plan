@@ -23,7 +23,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'game-score', version: 2, title: 'Game score', icon: 'grid',
   description: 'The game’s current end-screen scores for every country, as a table or a race.',
-  timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, all: true },
   minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 12 }, options: OPTIONS,
   // The global score multiplier was a column with its own precision option; a sort on it

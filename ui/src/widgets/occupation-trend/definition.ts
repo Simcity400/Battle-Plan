@@ -19,7 +19,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'occupation-trend', version: 1, title: 'Occupation trend', icon: 'globe',
   description: 'Average resistance and compliance in every occupier’s held states over time.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, all: true },
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 }, options: OPTIONS,
   variants: raceViewVariants('Occupation trend', OPTIONS, { mix: 'Occupation trend of one country' }),

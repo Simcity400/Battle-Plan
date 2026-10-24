@@ -13,7 +13,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'decisions', version: 1, title: 'Decisions', icon: 'ballot', category: 'Politics',
   description: 'Decisions and missions each country took, what they cost and how they ended.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 7, h: 14 },
   countries: { max: Number.MAX_SAFE_INTEGER, all: true }, defaultCountries: { kind: 'selected' },
   options: OPTIONS,

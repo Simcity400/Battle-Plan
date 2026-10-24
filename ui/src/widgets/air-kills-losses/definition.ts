@@ -23,7 +23,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'air-kills-losses', version: 2, title: 'Air kills & losses', icon: 'target',
   description: 'Aircraft losses and enemy aircraft destroyed, including operational losses.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true }, defaultCountries: TOP_COUNTRIES,
   migrate: (_from, widget) => ({ ...widget, configVersion: 2, options: normaliseAirOptions(widget.options) }),
   availability: { product: 'military-air-ledger', params: { availability: true, family: 'airLosses' } }, options: OPTIONS,

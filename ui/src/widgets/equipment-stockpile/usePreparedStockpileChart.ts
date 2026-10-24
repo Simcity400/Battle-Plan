@@ -5,6 +5,8 @@ import type { Span } from '../../charts/series';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
 import { loadProduct, useProduct } from '../../dashboard/products';
+import { useContentRevision } from '../../dashboard/contentRevision';
+import { useViewRead } from '../../dashboard/viewRead';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
 import { validateStockpileReply } from './stockpileData';
 import type { Grouping, StockGroup } from './stockpileData';
@@ -37,40 +39,37 @@ export function usePreparedStockpileChart(client: DashboardClient, track: BoundT
   const request = useCallback((from: number, to: number, width?: number) => ({ sourceId: track.source.id, revision: track.source.revision,
     product: 'equipment-stockpile', params: { ...selection, from, to, width } }), [owner]);
   const validate = (value: unknown): PreparedStockpileReply => aliases ? stockpileCountryData((value as unknown[]).map(validateStockpileReply), aliases, tag)! : validateStockpileReply(value);
-  const [display, setDisplay] = useState<{ owner: typeof owner; view: StockpileView; summaries: ReadonlyMap<string, ChartSummary>; needed?: ChartSummary; data?: PreparedStockpileReply; error?: string }>();
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    if (!prepared || !active || !groups.length) return;
-    const controller = new AbortController();
-    const read = (hour: number) => loadProduct<PreparedStockpileReply>(client, request(hour, hour, 1), controller.signal, validate, track.source);
-    const next = async (hour: number, forward: boolean, fields: readonly string[]) => {
-      const value = await preparedSeriesQuery(client, track.source, 'equipment-stockpile', {
-        ...selection, from: track.branch.firstHour, to: track.branch.lastHour, kind: 'edge', fields,
-        navigation: { key: forward ? 'ArrowRight' : 'ArrowLeft', from: hour, firstHour: track.branch.firstHour, lastHour: track.branch.lastHour },
-      }, controller.signal);
-      return navigationHour(value, forward, hour);
-    };
-    const viewportRequest = request(viewport.from, viewport.to, viewport.width);
-    void loadProduct<PreparedStockpileReply>(client, { ...viewportRequest, params: { ...viewportRequest.params,
-      fields: ['stock', 'balance', 'logistics-stock', 'available'] } }, controller.signal,
-      validate, track.source).then(async data => {
+  // One display read at a time while the chart's view moves (`useViewRead`); the scope
+  // records each group's exact membership and inclusion operands.
+  const content = useContentRevision(client);
+  const display = useViewRead<StockpileView, { summaries: ReadonlyMap<string, ChartSummary>; needed?: ChartSummary; data: PreparedStockpileReply }>(
+    prepared && groups.length ? JSON.stringify([scope, content]) : null, viewport, JSON.stringify([viewport.from, viewport.to, viewport.width]), active,
+    async (at, signal, _publish, restart) => {
+      const read = (hour: number) => loadProduct<PreparedStockpileReply>(client, request(hour, hour, 1), signal, validate, track.source, restart);
+      const next = async (hour: number, forward: boolean, fields: readonly string[]) => {
+        const value = await preparedSeriesQuery(client, track.source, 'equipment-stockpile', {
+          ...selection, from: track.branch.firstHour, to: track.branch.lastHour, kind: 'edge', fields,
+          navigation: { key: forward ? 'ArrowRight' : 'ArrowLeft', from: hour, firstHour: track.branch.firstHour, lastHour: track.branch.lastHour },
+        }, signal, restart);
+        return navigationHour(value, forward, hour);
+      };
+      const viewportRequest = request(at.from, at.to, at.width);
+      const data = await loadProduct<PreparedStockpileReply>(client, { ...viewportRequest, params: { ...viewportRequest.params,
+        fields: ['stock', 'balance', 'logistics-stock', 'available'] } }, signal, validate, track.source, restart);
       const exact = data.prepared?.coverage.every(summary => summary.runs !== undefined) ?? false;
-      let summaries = stockpileSummaries(data, groups, grouping, viewport, exact);
+      let summaries = stockpileSummaries(data, groups, grouping, at, exact);
       let needed = neededGroup ? stockpileAmountSummary(data, neededGroup, 'need') : undefined;
       if (exact) {
-        const runs = await exactStockpileRuns(data, groups, grouping, viewport, [track.branch.firstHour, track.branch.lastHour], read, next);
+        const runs = await exactStockpileRuns(data, groups, grouping, at, [track.branch.firstHour, track.branch.lastHour], read, next);
         summaries = new Map([...summaries].map(([key, summary]) => [key, { ...summary, runs: runs.get(key) ?? [] }]));
         if (neededGroup) {
-          const runs = await exactStockpileRuns(data, [neededGroup], grouping, viewport, [track.branch.firstHour, track.branch.lastHour], read, next, 'need');
-          needed = { ...viewport, buckets: [], runs: runs.get(neededGroup.key) ?? [] };
+          const runs = await exactStockpileRuns(data, [neededGroup], grouping, at, [track.branch.firstHour, track.branch.lastHour], read, next, 'need');
+          needed = { ...at, buckets: [], runs: runs.get(neededGroup.key) ?? [] };
         }
       }
-      if (!controller.signal.aborted) setDisplay({ owner, view: viewport, summaries, needed, data });
-    }).catch(error => { if (!controller.signal.aborted) setDisplay({ owner, view: viewport, summaries: new Map(), error: String(error) }); });
-    return () => controller.abort();
-    // The scope records each group's exact membership and inclusion operands.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [owner, prepared, active, viewport.from, viewport.to, viewport.width, attempt]);
+      return { summaries, needed, data };
+    }, client);
+  const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: string }>();
   const [hover, setHover] = useState<number | null>(null);
   const pointed = useProduct<PreparedStockpileReply>(client, prepared ? request(hover ?? head, hover ?? head, 1) : null,
     active && prepared, validate, track.source);
@@ -79,22 +78,24 @@ export function usePreparedStockpileChart(client: DashboardClient, track: BoundT
   useEffect(() => () => navigation.current?.abort(), [owner, active]);
   const onNavigateHour = useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((key, from, x, until) => {
     navigation.current?.abort(); const controller = new AbortController(); navigation.current = controller;
+    setNavigationError(undefined);
     void preparedSeriesQuery(client, track.source, 'equipment-stockpile', { ...selection,
       from: x[0], to: Math.min(x[1], until ?? x[1]), kind: keyboardFields.every(field => field.startsWith('reads-')) ? 'next-change' : 'edge', fields: keyboardFields,
       navigation: { key, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) } }, controller.signal).then(value => {
       if (!controller.signal.aborted && current.current === owner) setKeyboard(previous => ({ owner, hour: navigationHour(value, key === 'Home' || key === 'ArrowRight', from), revision: (previous?.revision ?? 0) + 1 }));
-    }).catch(error => { if (!controller.signal.aborted && current.current === owner) setDisplay({ owner, view: viewport, summaries: new Map(), error: String(error) }); });
+    }).catch(error => { if (!controller.signal.aborted && current.current === owner) setNavigationError({ owner, error: String(error) }); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner]);
   const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(next => {
     if (next.to < next.from) return;
     setView(before => before?.scope === scope && before.view.from === next.from && before.view.to === next.to && before.view.width === next.width ? before : { scope, view: next });
   }, [scope]);
-  return { prepared, summaries: display?.owner === owner ? display.summaries : new Map<string, ChartSummary>(),
-    data: pointed.data, displayData: display?.owner === owner ? display.data : undefined, error: (display?.owner === owner ? display.error : undefined) ?? pointed.error,
-    needed: display?.owner === owner ? display.needed : undefined,
+  return { prepared, summaries: display.data?.summaries ?? new Map<string, ChartSummary>(),
+    data: pointed.data, displayData: display.data?.data,
+    error: display.error ?? (navigationError?.owner === owner ? navigationError.error : undefined) ?? pointed.error,
+    needed: display.data?.needed,
     onSummaryView: prepared ? onSummaryView : undefined, onNavigateHour: prepared ? onNavigateHour : undefined,
     keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined, keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined,
     onHover: prepared ? (hour: number | null) => setHover(hour === null ? null : Math.floor(hour)) : undefined,
-    retry: () => { setAttempt(value => value + 1); pointed.retry(); } };
+    retry: () => { setNavigationError(undefined); display.retry(); pointed.retry(); } };
 }

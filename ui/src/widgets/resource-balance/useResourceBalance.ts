@@ -10,7 +10,10 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { CountrySelection, WidgetSpec } from '../../dashboard/model';
 import { setToken } from '../../dashboard/options';
-import { useProduct, useProducts } from '../../dashboard/products';
+import { loadProduct, useProduct, useProducts } from '../../dashboard/products';
+import { useContentRevision } from '../../dashboard/contentRevision';
+import { useHeldFailure } from '../../dashboard/heldFailures';
+import { useViewRead } from '../../dashboard/viewRead';
 import { NumericReply } from '../../dashboard/numericReply';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -59,14 +62,19 @@ export function useResourceBalance(widget: WidgetSpec, runtime: WidgetRuntime, a
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const prepared = !!runtime.client.preparedQuery;
   const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
-  const view = parity?.requested && track ? { from: track.branch.firstHour, to: track.branch.lastHour }
+  const view: { from: number; to: number; width?: number; resources?: readonly number[] } = parity?.requested && track ? { from: track.branch.firstHour, to: track.branch.lastHour }
     : viewport?.key === key ? viewport : widget.options?.view === 'time' && track
       ? { from: window?.firstHour ?? track.branch.firstHour, to: hour, width: 1 } : { from: hour, to: hour };
   const exact = [hour, ...(hover?.key === key && hover.hour !== null ? [hover.hour] : [])];
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'resource-balance',
-    params: { branchId: track.branch.id, tag, ...(prepared ? { ...view, hours: [Math.floor(view.to)], within, ...(parity?.requested ? { requireComplete: true } : {}) } : {}) } } : null;
-  const product = useProduct<PreparedResourceReply>(runtime.client, request, active,
-    value => validateResourceBalanceReply(value) as PreparedResourceReply, track?.source);
+  // One read at a time while the chart's view moves (`useViewRead`).
+  const content = useContentRevision(runtime.client);
+  const read = useViewRead<typeof view, PreparedResourceReply>(track && tag
+    ? JSON.stringify([key, view.resources ?? [], within, prepared, !!parity?.requested, content]) : null,
+    view, prepared ? JSON.stringify([view.from, view.to, view.width]) : '', active,
+    (at, signal, publish, restart) => loadProduct(runtime.client, { sourceId: track!.source.id, revision: track!.source.revision, product: 'resource-balance',
+      params: { branchId: track!.branch.id, tag, ...(prepared ? { ...at, hours: [Math.floor(at.to)], within, ...(parity?.requested ? { requireComplete: true } : {}) } : {}) } },
+    signal, value => validateResourceBalanceReply(value) as PreparedResourceReply, track?.source, restart, publish), runtime.client);
+  const product = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
   const points = useProduct<PreparedResourceReply>(runtime.client, track && tag && prepared ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'resource-balance',
     params: { branchId: track.branch.id, tag, from: hour, to: hour, hours: exact, within } } : null, active,
@@ -122,15 +130,29 @@ export function useResourceCountry(selection: ResourceCountrySelection | null, r
     && selection.campaign === track.source.metadata.campaignKey && selection.branch === track.branch.id
     ? resourceCountrySpans(history.countryIdentities, selection, track.branch.firstHour, track.branch.lastHour, members?.reason ? new Map() : members?.membership) : null,
   [selection, history, track?.source.metadata.campaignKey, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour, members]);
-  const requests = track && spans ? [...spans.keys()].map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
-    product: 'resource-balance', params: { branchId: track.branch.id, tag, ...(runtime.client.preparedQuery ? { ...view,
-      within: spans.get(tag)?.map(({ firstHour, lastHour }) => ({ firstHour, lastHour })), hours: [Math.floor(view?.to ?? track.branch.lastHour)] } : {}) } })) : [];
+  const requestsAt = (at: typeof view) => track && spans ? [...spans.keys()].map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'resource-balance', params: { branchId: track.branch.id, tag, ...(runtime.client.preparedQuery ? { ...at,
+      within: spans.get(tag)?.map(({ firstHour, lastHour }) => ({ firstHour, lastHour })), hours: [Math.floor(at?.to ?? track.branch.lastHour)] } : {}) } })) : [];
+  const requests = requestsAt(view);
   const validate = (value: unknown) => {
     const reply = validateResourceBalanceReply(value);
     if (!track || reply.branchId !== track.branch.id || !spans?.has(reply.tag)) throw new Error('The selected resource history belongs to another country or branch.');
     return reply as PreparedResourceReply;
   };
-  const product = useProducts<PreparedResourceReply>(runtime.client, requests, active && !!selection, validate, track?.source);
+  // One read at a time while the main chart's view moves (`useViewRead`); the view's
+  // other fields (its drawn resources) choose what is read.
+  const content = useContentRevision(runtime.client);
+  const { from: _from, to: _to, width: _width, hours: _hours, ...chosen } = view ?? { from: 0, to: 0, hours: [] };
+  const read = useViewRead<{ at: typeof view }, PreparedResourceReply[]>(track && spans?.size && selection
+    ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, selection, [...spans], !!runtime.client.preparedQuery, view ? chosen : null, content]) : null,
+    { at: view }, runtime.client.preparedQuery ? JSON.stringify([view?.from, view?.to, view?.width]) : '', active && !!selection,
+    ({ at }, signal, publish, restart) => {
+      const asked = requestsAt(at), values = new Map<number, PreparedResourceReply>();
+      const commit = () => { if (values.size === asked.length) publish(asked.map((_, index) => values.get(index)!)); };
+      return Promise.all(asked.map((request, index) => loadProduct(runtime.client, request, signal, validate, track?.source, restart,
+        value => { values.set(index, value); commit(); })));
+    }, runtime.client);
+  const product = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
   const hours = [...new Set([...(view?.hours ?? []), ...(moment === null || moment === undefined ? [] : [moment])])];
   const points = useProducts<PreparedResourceReply>(runtime.client, runtime.client.preparedQuery && hours.length ? requests.map(request => ({ ...request,
     params: { ...request.params, from: hours[0], to: hours[0], width: undefined, hours } })) : [], active && !!selection, validate, track?.source);

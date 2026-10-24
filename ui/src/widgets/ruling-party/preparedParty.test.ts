@@ -80,7 +80,7 @@ test('ruling-party renders bounded prepared views, masks departed owners and ref
       if(replacement)return replacement[1];
       if(path.endsWith('/dashboard/contentRevision.ts'))return source.replace('return useSyncExternalStore(revision.subscribe, revision.snapshot, revision.snapshot);','return revision.snapshot();');
       // Held failures run on the same synthetic hooks, outside a widget frame.
-      if(['/ruling-party/RulingPartyWidget.tsx','/ruling-party/preparedParty.ts','/ruling-party/preparedGovernments.ts','/dashboard/products.ts','/dashboard/heldFailures.ts'].some(suffix=>path.endsWith(suffix)))
+      if(['/ruling-party/RulingPartyWidget.tsx','/ruling-party/preparedParty.ts','/ruling-party/preparedGovernments.ts','/dashboard/products.ts','/dashboard/heldFailures.ts','/dashboard/viewRead.ts'].some(suffix=>path.endsWith(suffix)))
         return source.replace('useContext(HeldFailuresContext)','null').replace(/\b(useMemo|useCallback|useState|useRef|useEffect)(?:<[\s\S]*?>)?\(/g,(_match,name)=>`globalThis.__partyHook(${JSON.stringify(name)}, `);
     }}]});
   const client={product:()=>{throw new Error('Party history must come from preparation.');},

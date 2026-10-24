@@ -34,6 +34,7 @@ test('cluster hit returns its exact ordinal range and range date, with playback 
   assert.equal(markClusterAt({ x: frame.toX(3), y: 40 }, frame, summary), null);
   assert.equal(markSummaryMatches(summary, frame, 10), true);
   assert.equal(markSummaryMatches(summary, frame, 5), false);
-  assert.equal(markSummaryMatches(summary, frame, null), false);
+  assert.equal(markSummaryMatches(summary, frame, null), true, 'a reply for a moment-old view still places its marks by hour');
+  assert.equal(markSummaryMatches(index.summary(0, 10, 17), frame, null), false);
   assert.equal(index.summary(90, 90, 18).clusters[0].badge?.label, 'Future');
 });

@@ -102,15 +102,16 @@ test('a country at an hour sums the chosen groups and knows its unbroken stretch
   assert.equal(factoriesAt(model, 'GER', 100, ['civilian'], 'built')!.total, 40);
 });
 
-test('Built shows each type total once and keeps its ownership and damage breakdown', () => {
+test('Built shows each type total once and keeps its ownership and damage breakdown, without lines that are zero', () => {
   const model = factoryModel(REPLY);
   const group = REPLY.groups.find(group => group.key === 'civilian')!;
-  const built = groupRows(model, GERMANY, group, 'built', undefined, true);
+  const built = groupRows(model, GERMANY, group, 'built', undefined);
   assert.equal(built[0].value, '40');
   assert.ok(!built.some(row => row.label === 'Total'));
-  for (const label of ['Owned', 'From occupation', 'From subjects', 'Damaged']) assert.ok(built.some(row => row.label === label));
+  for (const label of ['Owned', 'From occupation', 'Damaged']) assert.ok(built.some(row => row.label === label));
+  assert.ok(!built.some(row => row.label === 'From subjects'));
   for (const mode of ['free', 'topBar'] as const) {
-    const rows = groupRows(model, GERMANY, group, mode, undefined, true);
+    const rows = groupRows(model, GERMANY, group, mode, undefined);
     assert.equal(rows.find(row => row.label === 'Total')?.value, '40');
   }
 });
@@ -160,18 +161,17 @@ test('a modded content stack: its own factory types appear, removed ones vanish 
   assert.equal(mixCountry({ kind: 'tags', tags: ['MY TAG'] }, null, []), 'MY TAG');
 });
 
-test('the tooltip gives the game’s breakdown, then only what is not zero, then the counts alone', () => {
+test('the tooltip gives the game’s breakdown without lines that are zero, then the counts alone', () => {
   const model = factoryModel(REPLY);
   const at = factoriesAt(model, 'GER', 100, ['civilian'], 'free')!;
-  const [full, compact, counts] = [...factoryTooltips(model, 'Germany', at, '1 Jan 1936', 'free', new Map())];
-  assert.equal(full.title, 'Germany');
-  assert.equal(full.subtitle, '1 Jan 1936 · Available');
-  const labels = (rows: typeof full.rows) => rows.map(row => `${row.label} ${row.value}`);
+  const [compact, counts] = [...factoryTooltips(model, 'Germany', at, '1 Jan 1936', 'free', new Map())];
+  assert.equal(compact.title, 'Germany');
+  assert.equal(compact.subtitle, '1 Jan 1936 · Available');
+  const labels = (rows: typeof compact.rows) => rows.map(row => `${row.label} ${row.value}`);
   assert.deepEqual(labels(compact.rows), [
     'Civilian Factory · Building name unavailable 22', 'Total 40', 'Owned 30', 'From occupation +8', 'Trade exports +3', 'Damaged −3',
     'Consumer Goods −5', 'Trade imports −4', 'National Projects −2', 'License imports −1', 'Market Contracts −1', 'Given to other countries −2',
   ]);
-  assert.ok(full.rows.length > compact.rows.length);
   assert.deepEqual(labels(counts.rows), ['Civilian Factory · Building name unavailable 22']);
   assert.equal(formatCount(-1234), '−1,234');
   // A deduction is shown as what it does to the count: a recorded damaged total of −1
@@ -181,7 +181,7 @@ test('the tooltip gives the game’s breakdown, then only what is not zero, then
   const oddModel = factoryModel(odd);
   const oddAt = factoriesAt(oddModel, 'GER', 100, ['civilian'], 'free')!;
   assert.equal(oddAt.total, 11);
-  const [, shown] = [...factoryTooltips(oddModel, 'Germany', oddAt, 'day', 'free', new Map())];
+  const [shown] = [...factoryTooltips(oddModel, 'Germany', oddAt, 'day', 'free', new Map())];
   const damaged = shown.rows.find(row => row.label === 'Damaged')!;
   assert.deepEqual([damaged.value, damaged.tone], ['+1', 'positive']);
   assert.deepEqual(compact.rows.find(row => row.label === 'Damaged')!.tone, 'negative');

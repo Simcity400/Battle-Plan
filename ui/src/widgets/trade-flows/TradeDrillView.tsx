@@ -3,7 +3,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import DrillParts from '../../charts/drill/DrillParts';
 import type { DrillPart } from '../../charts/drill/DrillParts';
 import { dayLabel, drawBands, drawPlayhead } from '../../charts/draw';
-import { drawApproximateSpans } from '../../charts/chartSummary';
+import { drawApproximateSpans, summaryFits } from '../../charts/chartSummary';
 import { usNumber } from '../../charts/numberFormat';
 import { compactStack, compactStackExtent, forEachCompactStackSegment } from '../../charts/stack';
 import { heldStackSegment } from '../../charts/race/countryRace';
@@ -85,7 +85,7 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
     draw: (ctx, frame, chartTokens, state) => {
       const end = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
       const minHours = (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth);
-      if (dense && (dense.from !== frame.x[0] || dense.to !== end || dense.width !== Math.ceil(frame.plotWidth))) return;
+      if (dense && !summaryFits(frame, dense, end)) return;
       if (dense) drawApproximateSpans(ctx, frame, dense.approximate, end, () => forEachCompactStackSegment(dense.model, frame.x[0], end, minHours, piece => {
         const geometry = measure === 'current' ? heldStackSegment(piece) : piece;
         drawBands(ctx, frame, chartTokens, geometry.hours, geometry.bands, colors, geometry);

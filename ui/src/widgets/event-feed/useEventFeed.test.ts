@@ -54,9 +54,10 @@ test('actual feed hook isolates filtered counts and wanted pages across identica
       resolveId(id) { if (id === 'event-feed-inputs') return '\0event-feed-inputs'; },
       load(id) { if (id === '\0event-feed-inputs') return `
         export const useContentRevision = () => 0;
-        export const useProduct = (client, request, active, validate) => {
+        // The first page answers the hour it was asked for at once.
+        export const useFollowedProduct = (client, request, moving, active, validate) => {
           const data = globalThis.__eventFeedHooks.inputs.get(client)?.manifest;
-          return { data: data && validate(data), retry() {} };
+          return { data: data && validate(data), moment: data && request ? JSON.stringify(moving.map(name => request.params[name])) : undefined, retry() {} };
         };
         const empty = new Map();
         export const useProductWindows = (client, identity, request, wanted, active, validate) => {

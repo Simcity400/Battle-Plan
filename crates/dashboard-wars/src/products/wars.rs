@@ -328,6 +328,17 @@ struct Observed {
     relations: Vec<RelationRun>,
     losses: [String; 4],
     loss_pairs: Vec<(Pair, bool)>,
+    /// The relation the game names the group by.
+    representative: Option<WarRelationKey>,
+}
+/// A war continued at the walk's last hour, with every native group it holds.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct OpenWar {
+    id: usize,
+    groups: usize,
+    relations: Vec<RelationRun>,
+    /// Each distinct relation once, so overlapping groups never count twice.
+    loss_pairs: Vec<(Pair, bool)>,
 }
 #[derive(Clone)]
 struct Hour {
@@ -603,6 +614,13 @@ impl Hour {
                     })
                     .collect();
                 let representative = self.world.representative(&blob);
+                let identity = representative.as_ref().ok().map(|p| {
+                    WarRelationKey::new(
+                        self.identities[&p.0],
+                        self.identities[&p.1],
+                        self.world.relations[p].start_hour,
+                    )
+                });
                 let (orientation, represented, name) = match representative {
                     Ok(p) => {
                         let r = &self.world.relations[&p];
@@ -627,6 +645,7 @@ impl Hour {
                     relations,
                     losses,
                     loss_pairs,
+                    representative: identity,
                     data: WarObservation {
                         first_hour: frame.hour,
                         last_hour: frame.hour,
@@ -807,70 +826,153 @@ fn resumable_war(war: &WarTimeline) -> WarTimeline {
             .collect(),
     }
 }
+/// One war's native groups at an hour as one observation: the first group's
+/// name and orientation, every member once, and each relation once.
+fn merge_groups(mut groups: Vec<Observed>, losses: &dyn Fn(&[(Pair, bool)]) -> [String; 4]) -> Observed {
+    let mut merged = groups.remove(0);
+    if groups.is_empty() {
+        return merged;
+    }
+    let mut viewpoint: HashSet<String> = merged.data.viewpoint_side.iter().cloned().collect();
+    let mut opposing: HashSet<String> = merged.data.opposing_side.iter().cloned().collect();
+    let mut relations: HashSet<WarRelationKey> =
+        merged.relations.iter().map(|r| r.identity.clone()).collect();
+    let mut pairs: HashSet<Pair> = merged.loss_pairs.iter().map(|(p, _)| *p).collect();
+    for group in groups {
+        merged.data.viewpoint_side.extend(
+            group.data.viewpoint_side.into_iter().filter(|tag| viewpoint.insert(tag.clone())),
+        );
+        merged.data.opposing_side.extend(
+            group.data.opposing_side.into_iter().filter(|tag| opposing.insert(tag.clone())),
+        );
+        merged
+            .relations
+            .extend(group.relations.into_iter().filter(|r| relations.insert(r.identity.clone())));
+        merged
+            .loss_pairs
+            .extend(group.loss_pairs.into_iter().filter(|(p, _)| pairs.insert(*p)));
+    }
+    merged.losses = losses(&merged.loss_pairs);
+    merged
+}
 fn continue_wars(
     wars: &mut Vec<WarTimeline>,
-    open: &[(usize, Vec<RelationRun>)],
+    open: &[OpenWar],
     current: Vec<Observed>,
     previous: Option<i32>,
-) -> Vec<(usize, Vec<RelationRun>)> {
+    losses: &dyn Fn(&[(Pair, bool)]) -> [String; 4],
+) -> Vec<OpenWar> {
     // App rule: greedy one-to-one in native blob order. Choose the earlier
     // group's most continuing bilateral relations; tie: lowest app id.
     let mut inverted: HashMap<&RelationRun, Vec<usize>> = HashMap::new();
-    for (id, relations) in open {
-        for relation in relations {
-            inverted.entry(relation).or_default().push(*id);
+    for war in open {
+        for relation in &war.relations {
+            inverted.entry(relation).or_default().push(war.id);
         }
     }
     let mut used = HashSet::new();
-    let mut next = Vec::new();
-    for observation in current {
-        let mut counts = HashMap::<usize, usize>::new();
-        for relation in &observation.relations {
-            for &id in inverted.get(relation).into_iter().flatten() {
-                if !used.contains(&id) {
-                    *counts.entry(id).or_default() += 1;
+    let mut continued: Vec<Option<usize>> = current
+        .iter()
+        .map(|observation| {
+            let mut counts = HashMap::<usize, usize>::new();
+            for relation in &observation.relations {
+                for &id in inverted.get(relation).into_iter().flatten() {
+                    if !used.contains(&id) {
+                        *counts.entry(id).or_default() += 1;
+                    }
                 }
             }
+            let id = counts
+                .into_iter()
+                .max_by(|(a, ac), (b, bc)| ac.cmp(bc).then(b.cmp(a)))
+                .map(|(id, _)| id)?;
+            used.insert(id);
+            Some(id)
+        })
+        .collect();
+    // The game lists a new declaration as its own group beside the war it
+    // joins, named for that war, for a day or more. A group no open war
+    // continues joins the war this hour that holds the relation the group is
+    // named for, the one sharing most relations; tie: lowest app id.
+    let mut held: HashMap<usize, HashSet<&WarRelationKey>> = HashMap::new();
+    for (observation, id) in current.iter().zip(&continued) {
+        if let Some(id) = id {
+            held.entry(*id)
+                .or_default()
+                .extend(observation.relations.iter().map(|r| &r.identity));
         }
-        let id = counts
-            .into_iter()
-            .max_by(|(a, ac), (b, bc)| ac.cmp(bc).then(b.cmp(a)))
-            .map(|(id, _)| id)
-            .unwrap_or_else(|| {
-                let id = wars.len();
-                wars.push(WarTimeline {
-                    id: id.to_string(),
-                    first_hour: observation.data.first_hour,
-                    last_hour: observation.data.first_hour,
-                    started_by: previous.is_none(),
-                    ended_by: true,
-                    observations: Vec::new(),
-                    casualties: Vec::new(),
-                    participants: Vec::new(),
-                    capitulations: Vec::new(),
-                    relations: Vec::new(),
-                    open_relations: HashMap::new(),
-                    open_participants: HashMap::new(),
-                });
-                id
+    }
+    for (index, observation) in current.iter().enumerate() {
+        if continued[index].is_some() {
+            continue;
+        }
+        let joined = observation.representative.as_ref().and_then(|named| {
+            held.iter()
+                .filter(|(_, relations)| relations.contains(named))
+                .map(|(&id, relations)| {
+                    let shared = observation
+                        .relations
+                        .iter()
+                        .filter(|r| relations.contains(&r.identity))
+                        .count();
+                    (id, shared)
+                })
+                .max_by(|(a, ac), (b, bc)| ac.cmp(bc).then(b.cmp(a)))
+                .map(|(id, _)| id)
+        });
+        let id = joined.unwrap_or_else(|| {
+            let id = wars.len();
+            wars.push(WarTimeline {
+                id: id.to_string(),
+                first_hour: observation.data.first_hour,
+                last_hour: observation.data.first_hour,
+                started_by: previous.is_none(),
+                ended_by: true,
+                observations: Vec::new(),
+                casualties: Vec::new(),
+                participants: Vec::new(),
+                capitulations: Vec::new(),
+                relations: Vec::new(),
+                open_relations: HashMap::new(),
+                open_participants: HashMap::new(),
             });
+            id
+        });
         used.insert(id);
-        append_relations(
-            &mut wars[id],
-            observation.data.first_hour,
-            &observation.relations,
-        );
-        append_losses(
-            &mut wars[id],
-            observation.data.first_hour,
-            observation.losses,
-            previous,
-        );
+        continued[index] = Some(id);
+        held.entry(id)
+            .or_default()
+            .extend(observation.relations.iter().map(|r| &r.identity));
+    }
+    drop(held);
+    // Wars in the native order of their first group.
+    let mut order: Vec<usize> = Vec::new();
+    let mut groups: HashMap<usize, Vec<Observed>> = HashMap::new();
+    for (observation, id) in current.into_iter().zip(continued) {
+        let id = id.expect("every group continues or starts a war");
+        if !groups.contains_key(&id) {
+            order.push(id);
+        }
+        groups.entry(id).or_default().push(observation);
+    }
+    let mut next = Vec::new();
+    for id in order {
+        let held = groups.remove(&id).expect("ordered war");
+        let count = held.len();
+        let observation = merge_groups(held, losses);
+        let hour = observation.data.first_hour;
+        append_relations(&mut wars[id], hour, &observation.relations);
+        append_losses(&mut wars[id], hour, observation.losses, previous);
         add_observation(&mut wars[id], observation.data, previous);
-        next.push((id, observation.relations));
+        next.push(OpenWar {
+            id,
+            groups: count,
+            relations: observation.relations,
+            loss_pairs: observation.loss_pairs,
+        });
     }
     if previous.is_some() {
-        for (id, _) in open {
+        for OpenWar { id, .. } in open {
             if !used.contains(id) {
                 wars[*id].ended_by = false;
                 let indices = std::mem::take(&mut wars[*id].open_participants);
@@ -1025,7 +1127,7 @@ struct Walk {
     reply: WarsReply,
     previous: Option<i32>,
     previous_view: Option<String>,
-    open: Vec<(usize, Vec<RelationRun>)>,
+    open: Vec<OpenWar>,
     seen_caps: HashSet<(String, i32)>,
     dated_caps: HashMap<String, Vec<i32>>,
     identity_since: HashMap<u32, (String, i32)>,
@@ -1040,7 +1142,7 @@ struct Walk {
 }
 impl Walk {
     fn new(branch: u64, first: i32) -> Self {
-        let reply=WarsReply{branch_id:branch.to_string(),available:false,viewpoints:Vec::new(),country_names:Vec::new(),wars:Vec::new(),unobserved:Vec::new(),capitulations_unobserved:Vec::new(),warnings:vec!["War continuity and participant runs are app observations; the game stores no grouped war identity, start/end or join/leave hours.".into(),"Attackers and defenders are oriented by the representative relation's instigator.".into(),"Native groups can overlap; casualties belong to each group's distinct bilateral relations and must not be summed across groups.".into()]};
+        let reply=WarsReply{branch_id:branch.to_string(),available:false,viewpoints:Vec::new(),country_names:Vec::new(),wars:Vec::new(),unobserved:Vec::new(),capitulations_unobserved:Vec::new(),warnings:vec!["War continuity and participant runs are app observations; the game stores no grouped war identity, start/end or join/leave hours.".into(),"Attackers and defenders are oriented by the representative relation's instigator.".into(),"Native groups can overlap. A group the game lists beside the war it is named for, as it does for a new declaration, joins that war; a war's casualties count each of its bilateral relations once.".into()]};
         let compared: Vec<_> = TABLES
             .iter()
             .copied()
@@ -1100,7 +1202,7 @@ impl Walk {
                 before + 1,
                 hour - 1,
             );
-            for (id, _) in &self.open {
+            for OpenWar { id, .. } in &self.open {
                 let war: &mut WarTimeline = &mut self.reply.wars[*id];
                 for &index in war.open_participants.values() {
                     war.participants[index].last_hour = war.last_hour;
@@ -1146,7 +1248,7 @@ impl Walk {
             }
             append_viewpoint(&mut self.reply, inputs, hour);
             if self.previous_view.as_ref() != inputs.tags.get(&inputs.view) {
-                for (id, _) in &self.open {
+                for OpenWar { id, .. } in &self.open {
                     let war = &mut self.reply.wars[*id];
                     for &index in war.open_participants.values() {
                         war.participants[index].last_hour = war.last_hour;
@@ -1156,18 +1258,16 @@ impl Walk {
                 self.open.clear();
             }
             self.previous_view = inputs.tags.get(&inputs.view).cloned();
-            if same && self.previous.is_some() && self.open.len() == observed.len() {
+            if same
+                && self.previous.is_some()
+                && self.open.iter().map(|war| war.groups).sum::<usize>() == observed.len()
+            {
                 // Loss-only hours retain native groups and continuity. No
                 // side lists, membership sets or relation runs are rebuilt.
-                for ((id, _), observed) in self.open.iter().zip(observed) {
-                    let war = &mut self.reply.wars[*id];
-                    append_losses(
-                        war,
-                        hour,
-                        inputs.losses(&observed.loss_pairs),
-                        self.previous,
-                    );
-                    append_relations(war, hour, &observed.relations);
+                for open in &self.open {
+                    let war = &mut self.reply.wars[open.id];
+                    append_losses(war, hour, inputs.losses(&open.loss_pairs), self.previous);
+                    append_relations(war, hour, &open.relations);
                     war.last_hour = hour;
                     war.observations
                         .last_mut()
@@ -1178,7 +1278,7 @@ impl Walk {
                 // A structural change settles the held participant bounds
                 // before splitting, merging or ending the previous groups.
                 if let Some(last) = self.previous {
-                    for (id, _) in &self.open {
+                    for OpenWar { id, .. } in &self.open {
                         let war = &mut self.reply.wars[*id];
                         for &index in war.open_participants.values() {
                             war.participants[index].last_hour = last;
@@ -1196,6 +1296,7 @@ impl Walk {
                         relations: o.relations.clone(),
                         losses: inputs.losses(&o.loss_pairs),
                         loss_pairs: o.loss_pairs.clone(),
+                        representative: o.representative.clone(),
                     })
                     .collect();
                 self.open = continue_wars(
@@ -1203,6 +1304,7 @@ impl Walk {
                     &self.open,
                     observations,
                     self.previous,
+                    &|pairs| inputs.losses(pairs),
                 );
             }
             self.identity_since.retain(|raw, _| {
@@ -1258,7 +1360,7 @@ impl Walk {
             );
             span(&mut self.reply.unobserved, hour, hour);
             span(&mut self.reply.capitulations_unobserved, hour, hour);
-            for (id, _) in &self.open {
+            for OpenWar { id, .. } in &self.open {
                 let war: &mut WarTimeline = &mut self.reply.wars[*id];
                 for &index in war.open_participants.values() {
                     war.participants[index].last_hour = war.last_hour;
@@ -1280,7 +1382,7 @@ impl Walk {
             if let Some(viewpoint) = self.reply.viewpoints.last_mut() {
                 viewpoint.last_hour = last;
             }
-            for (id, _) in &self.open {
+            for OpenWar { id, .. } in &self.open {
                 let war = &mut self.reply.wars[*id];
                 war.last_hour = last;
                 if let Some(observation) = war.observations.last_mut() {
@@ -1316,7 +1418,7 @@ impl Walk {
     /// are collected for a reply. Its size follows the open wars, not the
     /// hours they lasted.
     fn resumable(&self) -> Self {
-        let open: HashSet<usize> = self.open.iter().map(|(id, _)| *id).collect();
+        let open: HashSet<usize> = self.open.iter().map(|war| war.id).collect();
         let wars = self
             .reply
             .wars

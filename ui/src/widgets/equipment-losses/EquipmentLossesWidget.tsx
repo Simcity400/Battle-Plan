@@ -11,7 +11,7 @@ import WidgetState from '../../components/WidgetState';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useContextMenu } from '../../components/ContextMenu';
 import { dayLabel, drawBands } from '../../charts/draw';
-import { drawApproximateSpans } from '../../charts/chartSummary';
+import { drawApproximateSpans, summaryFits } from '../../charts/chartSummary';
 import { PreparedKey } from '../../charts/PreparedKey';
 import { PreparedLogCoverage } from '../../charts/log/LogList';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -129,9 +129,7 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
   const layers = useMemo<ChartLayer[]>(() => stack ? [{
     draw: (ctx, frame, theme, state) => {
       const to = Math.min(view?.end ?? frame.x[1], frame.x[1], state.playhead ?? frame.x[1]);
-      const from = Math.min(to, Math.max(view?.first ?? frame.x[0], frame.x[0]));
-      if (!data || data.preparedFrom !== from || data.preparedTo !== to
-        || data.preparedWidth !== Math.ceil(frame.plotWidth)) return;
+      if (!data || !summaryFits(frame, { from: data.preparedFrom, to: data.preparedTo, width: data.preparedWidth }, to)) return;
       drawApproximateSpans(ctx, frame, data.prefix?.approximate, state.playhead, () => {
         for (const segment of lossSegments(stack.model, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),
           (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth))) drawBands(ctx, frame, theme, segment.hours, segment.bands, colors, segment);

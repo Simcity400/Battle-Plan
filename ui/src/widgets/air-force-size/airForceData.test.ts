@@ -8,7 +8,7 @@ test('air force defaults to planes, roster ownership and the shared top-ten race
   const options = resolveOptions(OPTIONS, {});
   assert.equal(options.measure, 'planes'); assert.equal(options.ownership, 'roster');
   assert.equal(options.view, 'race'); assert.equal(options.split, false); assert.equal(options.dateOverlay, false);
-  assert.equal(options.playback, 'draw-in'); assert.equal(definition.defaultTime, 'campaign');
+  assert.equal(options.playback, 'draw-in'); assert.equal(definition.defaultTime, 'follow');
   assert.deepEqual(definition.defaultCountries, { kind: 'group', group: { type: 'top', count: 10 }, membership: 'hour', aggregate: false });
   assert.deepEqual(airForceRequest('branch', { tags: ['ignored'], top: 10 }, options),
     { branchId: 'branch', tags: [], top: 10, measure: 'planes', ownership: 'roster' });

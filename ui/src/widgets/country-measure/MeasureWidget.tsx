@@ -367,7 +367,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
       extent: (x: readonly [number, number]) => {
         if (!prepared.enabled) return extentOf(item.runs as Run[], x[0], Math.min(x[1], until ?? x[1]));
         const summary = prepared.summaryByTag.get(item.tag)?.summary;
-        if (!summary || summary.from !== x[0] || summary.to !== Math.min(x[1], until ?? x[1])) return null;
+        if (!summary || summary.to > Math.min(x[1], until ?? x[1]) || summary.to < x[0]) return null;
         return extentOfSummary(summary);
       },
     }));
@@ -381,7 +381,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
       extent: (x: readonly [number, number]) => {
         if (!ceilingPrepared.enabled) return extentOf(item.ceilingRuns as Run[], x[0], Math.min(x[1], until ?? x[1]));
         const summary = ceilingPrepared.summaryByTag.get(item.tag)?.summary;
-        const buckets = summary?.from === x[0] && summary.to === Math.min(x[1], until ?? x[1]) ? summary.buckets.filter(bucket => bucket !== null) : [];
+        const buckets = summary && summary.to <= Math.min(x[1], until ?? x[1]) && summary.to >= x[0] ? summary.buckets.filter(bucket => bucket !== null) : [];
         return buckets.length ? [Math.min(...buckets.map(bucket => bucket.minValue)), Math.max(...buckets.map(bucket => bucket.maxValue))] : null;
       },
     });

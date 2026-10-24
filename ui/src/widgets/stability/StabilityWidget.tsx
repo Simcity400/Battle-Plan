@@ -377,7 +377,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     extent: (x: readonly [number, number]) => {
       if (!prepared.enabled) return extentOf(item.lines[measure.key], x[0], Math.min(x[1], until ?? x[1]));
       const summary = prepared[measure.key].summaryByTag.get(item.tag)?.summary;
-      const buckets = summary?.from === x[0] && summary.to === Math.min(x[1], until ?? x[1]) ? summary.buckets.filter(bucket => bucket !== null) : [];
+      const buckets = summary && summary.to <= Math.min(x[1], until ?? x[1]) && summary.to >= x[0] ? summary.buckets.filter(bucket => bucket !== null) : [];
       return buckets.length ? [Math.min(...buckets.map(bucket => bucket.minValue * 100)), Math.max(...buckets.map(bucket => bucket.maxValue * 100))] : null;
     },
   }))), [series, shown, until, prepared.enabled, prepared.stability.summaryByTag, prepared.warSupport.summaryByTag]);

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
-import { loadProduct, useProduct } from '../../dashboard/products';
+import { loadProduct } from '../../dashboard/products';
+import { useContentRevision } from '../../dashboard/contentRevision';
+import { useViewRead } from '../../dashboard/viewRead';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import type { ArmySizeParams, ArmySizeReply, ChartSummary, CountryIdentityRun } from '../../generated/dashboard';
@@ -19,14 +21,18 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
   useEffect(() => () => { for (const request of pending.current) request.abort(); pending.current.clear(); }, [owner, active]);
   const [view, setView] = useState<{ key: string; from: number; to: number; width: number }>();
   const dense = !!client.preparedQuery && view?.key === key && Math.ceil(view.to) - Math.floor(view.from) + 1 > view.width;
-  const request = view?.key === key && track && params ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-summary',
-    params: { branchId: params.branchId, family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: params.top },
-      tags: params.tags, from: view!.from, to: view!.to, width: view!.width } } : null;
-  const incoming = useProduct<{ series: { tag: string; summary: ChartSummary; identities?: CountryIdentityRun[] }[] }>(client, request, active, value => {
-    const reply = value as { series: { tag: string; summary: ChartSummary; identities?: CountryIdentityRun[] }[] };
-    if (!Array.isArray(reply?.series) || reply.series.some(line => typeof line.tag !== 'string' || !Array.isArray(line.summary?.buckets))) throw Error('The army summary is malformed.');
-    return reply;
-  }, track?.source);
+  // One summary read at a time while the chart's view moves (`useViewRead`).
+  const content = useContentRevision(client);
+  const shown = view?.key === key ? view : null;
+  const incoming = useViewRead<{ from: number; to: number; width: number }, { series: { tag: string; summary: ChartSummary; identities?: CountryIdentityRun[] }[] }>(
+    track && params ? JSON.stringify([key, content]) : null, shown, JSON.stringify([shown?.from, shown?.to, shown?.width]), active,
+    (at, signal, publish, restart) => loadProduct(client, { sourceId: track!.source.id, revision: track!.source.revision, product: 'series-summary',
+      params: { branchId: params!.branchId, family: { kind: 'army-size', measure: params!.measure, countFor: params!.countFor, top: params!.top },
+        tags: params!.tags, from: at.from, to: at.to, width: at.width } }, signal, value => {
+      const reply = value as { series: { tag: string; summary: ChartSummary; identities?: CountryIdentityRun[] }[] };
+      if (!Array.isArray(reply?.series) || reply.series.some(line => typeof line.tag !== 'string' || !Array.isArray(line.summary?.buckets))) throw Error('The army summary is malformed.');
+      return reply;
+    }, track!.source, restart, publish), client);
   const summaries = useMemo(() => new Map(incoming.data?.series.map(line => [line.tag, line.summary])), [incoming.data]);
   const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(next => {
     if (next.to < next.from) return;

@@ -211,13 +211,13 @@ export const formatCount = (value: number) => value < 0 ? `−${usNumber.format(
 
 /** The game's own breakdown of one group (its construction and top-bar tooltips):
  * Total, Owned, From occupation and what was added; then Damaged and what is
- * withheld; then the count shown. `all` keeps lines that are zero. */
-export function groupRows(model: FactoryModel, values: readonly number[], group: FactoryGroupInfo, mode: CountMode, color: string | undefined, all: boolean): TooltipRow[] {
+ * withheld; then the count shown. Lines that are zero are left out. */
+export function groupRows(model: FactoryModel, values: readonly number[], group: FactoryGroupInfo, mode: CountMode, color: string | undefined): TooltipRow[] {
   const key = group.key;
   const get = (name: FactoryPart) => part(model, values, key, name);
   const { count } = groupCount(model, values, key, mode);
   const line = (label: string, value: number, text: string, tone?: TooltipRow['tone']): TooltipRow[] =>
-    all || value !== 0 ? [{ label, value: text, indent: true, ...(tone ? { tone } : {}) }] : [];
+    value !== 0 ? [{ label, value: text, indent: true, ...(tone ? { tone } : {}) }] : [];
   // An addition (From …) keeps its sign; a deduction (Damaged, withheld) is shown as
   // what it does to the count: its value negated, never a doubled minus.
   const added = (label: string, value: number) => line(label, value, signed(value));
@@ -243,17 +243,15 @@ export function groupRows(model: FactoryModel, values: readonly number[], group:
   ];
 }
 
-/** The tooltip for a country at a read, fullest first: every line of every group,
- * then only the lines that are not zero, then the groups' counts alone. */
+/** The tooltip for a country at a read, fullest first: every line of every group
+ * that is not zero, then the groups' counts alone. */
 export function* factoryTooltips(model: FactoryModel, name: string, at: FactoriesAt, date: string, mode: CountMode,
   colors: ReadonlyMap<string, string>): Generator<TooltipContent> {
   const groups = at.groups.map(item => model.reply.groups.find(group => group.key === item.key)!).filter(Boolean);
   const label = COUNT_MODES.find(item => item.value === mode)!.label;
   const total: TooltipRow = { label, value: formatCount(at.total), strong: true, divider: true };
   const base = { title: name, subtitle: `${date} · ${label}` };
-  for (const all of [true, false]) {
-    yield { ...base, rows: [...groups.flatMap(group => groupRows(model, at.run.values, group, mode, colors.get(group.key), all)), ...(groups.length > 1 ? [total] : [])] };
-  }
+  yield { ...base, rows: [...groups.flatMap(group => groupRows(model, at.run.values, group, mode, colors.get(group.key))), ...(groups.length > 1 ? [total] : [])] };
   yield { ...base, rows: [...at.groups.map(item => {
     const group = model.reply.groups.find(entry => entry.key === item.key)!;
     return { label: groupName(group), value: formatCount(item.count), ...(colors.get(item.key) ? { swatch: colors.get(item.key) } : {}) };

@@ -2,8 +2,9 @@
 import type { IconName } from '../components/Icons';
 import type { WidgetKind } from './model';
 
-/** A default widget: kind, then x, y, width and height on the 12-column grid, in reading order. */
-type Panel = readonly [WidgetKind, number, number, number, number];
+/** A default widget: kind, then x, y, width and height on the 12-column grid, in reading order,
+ * and optionally the key of the catalogue variant it starts as. */
+type Panel = readonly [WidgetKind, number, number, number, number, string?];
 
 /** Analytics pages. Each keeps its own saved layouts and starts from this arrangement. */
 export const PAGES = [
@@ -32,7 +33,7 @@ export const PAGES = [
     ['peace-deals', 0, 30, 6, 10], ['territory-transfers', 6, 30, 6, 10],
     ['war-goals', 0, 40, 12, 9],
     ['war-contribution', 0, 49, 12, 10],
-    ['faction-influence', 0, 59, 6, 10], ['faction-goals', 6, 59, 6, 10],
+    ['faction-goals', 0, 59, 12, 10],
     ['faction-upgrades', 0, 69, 8, 9], ['faction-pooled-strength', 8, 69, 4, 9],
     ['diplomatic-relations', 0, 78, 6, 10], ['volunteers', 6, 78, 6, 10],
     ['diplomatic-pacts', 0, 88, 12, 10],
@@ -40,15 +41,15 @@ export const PAGES = [
   { id: 'economy', label: 'Economy', icon: 'factory', panels: [
     ['factories', 0, 0, 6, 10], ['equipment-produced', 6, 0, 6, 10],
     ['production-lines', 0, 10, 12, 11],
-    ['production-spending', 0, 21, 6, 10], ['equipment-stockpile', 6, 21, 6, 10],
-    ['resource-balance', 0, 31, 6, 11], ['trade-flows', 6, 31, 6, 11],
-    ['fuel', 0, 42, 4, 10], ['construction-spending', 4, 42, 8, 10],
-    ['construction-log', 0, 52, 12, 10],
-    ['fuel-branches', 0, 62, 6, 8], ['lend-lease-balance', 6, 62, 6, 10],
-    ['lend-lease-agreements', 0, 72, 6, 10], ['market-ledger', 6, 72, 6, 10],
-    ['international-market', 0, 82, 12, 10],
-    ['production-licences', 0, 92, 6, 10], ['industrial-organisations', 6, 92, 6, 10],
-    ['equipment-designs', 0, 102, 6, 10],
+    ['production-spending', 0, 21, 6, 10], ['production-spending', 6, 21, 6, 10, 'factories=dockyards'],
+    ['equipment-stockpile', 0, 31, 6, 10], ['equipment-designs', 6, 31, 6, 10],
+    ['resource-balance', 0, 41, 6, 11], ['trade-flows', 6, 41, 6, 11],
+    ['fuel', 0, 52, 4, 10], ['construction-spending', 4, 52, 8, 10],
+    ['construction-log', 0, 62, 12, 10],
+    ['fuel-branches', 0, 72, 6, 8], ['lend-lease-balance', 6, 72, 6, 10],
+    ['lend-lease-agreements', 0, 82, 6, 10], ['market-ledger', 6, 82, 6, 10],
+    ['international-market', 0, 92, 12, 10],
+    ['production-licences', 0, 102, 6, 10], ['industrial-organisations', 6, 102, 6, 10],
     ['convoy-health', 0, 112, 12, 8],
     ['dockyard-spending', 0, 120, 12, 10],
     ['military-factory-spending', 0, 130, 12, 10],

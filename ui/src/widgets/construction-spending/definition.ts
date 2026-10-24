@@ -14,7 +14,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'construction-spending', version: 1, title: 'Construction spending', icon: 'sunburst',
   description: 'Where a country’s civilian-factory output went: new buildings and repairs, each building type and each state.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 11 },
   options: OPTIONS,
 } as const satisfies WidgetMeta;

@@ -13,7 +13,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'ruling-party', version: 1, title: 'Ruling party', icon: 'palette',
   description: 'The country leader and party popularity over time, with changes of government, leader and elections.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 },
   options: OPTIONS,
 } as const satisfies WidgetMeta;

@@ -40,7 +40,7 @@ test('Diplomacy registers an uncapped faction race, with only Factories and Terr
   assert.equal(options.view, 'race');
   assert.equal(options.measure, 'factories');
   assert.equal(options.count, 'free');
-  assert.equal(definition.defaultTime, 'campaign');
+  assert.equal(definition.defaultTime, 'follow');
   assert.equal(options.dateOverlay, false);
   assert.equal(SMOOTH_TOTALS_PRESENTATION.exact, false);
   assert.equal(SMOOTH_TOTALS_PRESENTATION.held, false);

@@ -15,7 +15,7 @@ import { powerActionDetails, powerPartHistory, powerPartsAt } from './powerDrill
 import type { PowerBreakdown } from './powerDrillData';
 import { powerLedgerModelKey } from './powerPickModel';
 import { usePreparedPowerParts } from './preparedPowerParts';
-import { summaryStack } from '../../charts/chartSummary';
+import { summaryStack, summaryFits } from '../../charts/chartSummary';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useParityRows } from '../../dashboard/parityRows';
 
@@ -59,7 +59,7 @@ export default function PowerDrill({ client, source, branchId, bindings, country
   const chartLayers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, chartTokens, state) => {
       const end = Math.min(frame.x[1], state.playhead ?? frame.x[1]);
-      if (prepared.enabled && (!total || total.summary.from !== frame.x[0] || total.summary.to !== end || total.summary.width !== Math.ceil(frame.plotWidth))) return;
+      if (prepared.enabled && (!total || !summaryFits(frame, total.summary, end))) return;
       const resolution = (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth) / 2;
       if (dense) {
         forEachCompactStackSegment(dense.model, frame.x[0], end, resolution, segment =>

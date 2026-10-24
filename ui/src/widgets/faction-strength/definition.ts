@@ -26,7 +26,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'faction-strength', version: 1, title: 'Faction strength', category: 'Diplomacy', icon: 'shield',
   description: 'Faction factories and territory over time.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, aggregate: true, factions: true },
   factionColours: true,

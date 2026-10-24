@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
-import { useProduct } from '../../dashboard/products.ts';
+import { useFollowedProduct, useProduct } from '../../dashboard/products.ts';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import type { TerritoryMeasure, TerritoryParams, TerritoryReply, TerritoryRule, TerritorySeries, HourSpan } from '../../generated/dashboard';
 import type { Run } from '../../charts/series';
@@ -32,7 +32,9 @@ export function usePreparedTerritory(client: DashboardClient, track: BoundTrack 
   const hovered = hover?.owner===owner ? hover.hour : null;
   const reached = useProduct<TerritoryReply>(client,hovered===null ? null : request('series-state',{reads:[{hour:hovered}]}),active,validateTerritoryReply,track?.source);
   const viewport = view?.owner===owner ? view : undefined;
-  const summaries = useProduct<MeasureSummaries>(client,viewport ? request('series-summary',{from:viewport.from,to:viewport.to,width:viewport.width}) : null,active,validateMeasureSummaries,track?.source);
+  // One summary read at a time while the chart's view moves.
+  const summaries = useFollowedProduct<MeasureSummaries>(client,viewport ? request('series-summary',{from:viewport.from,to:viewport.to,width:viewport.width}) : null,
+    ['from','to','width'],active,validateMeasureSummaries,track?.source);
   const next = useProduct<{hour:number|null}>(client,navigation?.owner===owner && track ? {sourceId:track.source.id,revision:track.source.revision,product:'series-next-change',params:navigation.params} : null,
     active,value=>{const reply=value as {hour:number|null};if(reply?.hour!==null && (typeof reply?.hour!=='number' || !Number.isFinite(reply.hour))) throw new Error('The prepared territory navigation reply is malformed.');return reply;},track?.source);
   const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(value=>{

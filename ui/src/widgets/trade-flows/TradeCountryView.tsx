@@ -3,7 +3,7 @@ import { useCallback, useMemo, useState } from 'react';
 import DrillParts from '../../charts/drill/DrillParts';
 import type { DrillPart } from '../../charts/drill/DrillParts';
 import { dayLabel, drawBands, drawPlayhead, drawValueRule } from '../../charts/draw';
-import { drawApproximateSpans } from '../../charts/chartSummary';
+import { drawApproximateSpans, summaryFits } from '../../charts/chartSummary';
 import Legend from '../../charts/Legend';
 import type { LegendItem } from '../../charts/Legend';
 import { compactStack, compactStackExtent, forEachCompactStackSegment } from '../../charts/stack';
@@ -125,7 +125,7 @@ export default function TradeCountryView({ prepared, holder, trade, resources, t
           return direction === 'imports' ? mirrored(merged) : merged;
         };
         const summary = dense[direction];
-        if (summary && (summary.from !== frame.x[0] || summary.to !== end || summary.width !== Math.ceil(frame.plotWidth))) continue;
+        if (summary && !summaryFits(frame, summary, end)) continue;
         if (summary) drawApproximateSpans(ctx, frame, summary.approximate, end, () => forEachCompactStackSegment(summary.model, frame.x[0], end, minHours, piece => {
           const geometry = measure === 'current' ? heldStackSegment(piece) : piece;
           drawBands(ctx, frame, chartTokens, geometry.hours, place(geometry).bands, colors, geometry);

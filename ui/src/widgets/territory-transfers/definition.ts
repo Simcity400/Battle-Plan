@@ -41,7 +41,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'territory-transfers', version: 2, title: 'Territory transfers', category: 'Diplomacy', icon: 'flows',
   description: 'Who gained and lost states in peace settlements, and when.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   defaultCountries: { kind: 'all' }, minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 12 }, options: OPTIONS,
   // Version 1 drew a flow diagram; its size and ribbon-colour settings stay stored, unused.

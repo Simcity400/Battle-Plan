@@ -89,7 +89,10 @@ export function widgetAtDefault(widget: WidgetSpec, trackId: string): boolean {
 export function defaultTemplate(page: PageId = 'overview'): DashboardTemplate {
   const panels = pageDefinition(page)?.panels ?? [];
   const minSize = (kind: WidgetKind) => widgetDefinition(kind)?.minSize ?? { w: 1, h: 4 };
-  const widgets = panels.map(([kind]) => createWidget(kind, 'main', `${page}-${kind}`));
+  const widgets = panels.map(([kind, , , , , variant]) => {
+    const preset = variant === undefined ? undefined : widgetDefinition(kind)?.variants?.find(item => item.key === variant);
+    return { ...createWidget(kind, 'main', `${page}-${kind}${variant === undefined ? '' : `-${variant.replace(/[^\w-]/g, '-')}`}`), ...preset?.initial };
+  });
   const wide = panels.map(([kind, x, y, w, h], index) => ({ i: widgets[index].id, x, y, w, h, minW: minSize(kind).w, minH: minSize(kind).h }));
   const narrow = (cols: number) => {
     let y = 0;

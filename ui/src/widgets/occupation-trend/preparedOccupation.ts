@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
-import { useProduct } from '../../dashboard/products.ts';
+import { useFollowedProduct, useProduct } from '../../dashboard/products.ts';
 import { overlayCountryIdentities } from '../../dashboard/countryIdentity.ts';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import type { ChartSummary } from '../../charts/chartSummary';
@@ -41,10 +41,11 @@ export function usePreparedOccupation(client: DashboardClient, track: BoundTrack
   const hovered = hover?.owner === owner ? hover.hour : null;
   const reached = useProduct<OccupationTrendReply>(client, hovered == null ? null : request('series-state', rank, { reads: [{ hour: hovered }] }), active, validateOccupationTrendReply, track?.source);
   const viewport = view?.owner === owner ? view : undefined;
-  const resistance = useProduct<MeasureSummaries>(client, viewport && shown !== 'compliance' ? request('series-summary', 'resistance', viewport) : null,
-    active, validateOccupationSummaries, track?.source);
-  const compliance = useProduct<MeasureSummaries>(client, viewport && shown !== 'resistance' ? request('series-summary', 'compliance', viewport) : null,
-    active, validateOccupationSummaries, track?.source);
+  // One summary read at a time per measure while the chart's view moves.
+  const resistance = useFollowedProduct<MeasureSummaries>(client, shown !== 'compliance' && viewport
+    ? request('series-summary', 'resistance', { from: viewport.from, to: viewport.to, width: viewport.width }) : null, ['from', 'to', 'width'], active, validateOccupationSummaries, track?.source);
+  const compliance = useFollowedProduct<MeasureSummaries>(client, shown !== 'resistance' && viewport
+    ? request('series-summary', 'compliance', { from: viewport.from, to: viewport.to, width: viewport.width }) : null, ['from', 'to', 'width'], active, validateOccupationSummaries, track?.source);
   const next = useProduct<{ hour: number | null }>(client, navigation?.owner === owner && track ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change', params: navigation.params,
   } : null, active, value => {

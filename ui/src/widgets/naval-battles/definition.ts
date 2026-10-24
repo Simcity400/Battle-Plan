@@ -7,7 +7,7 @@ export const OPTIONS = battleOptions([
 export const definition = {
   kind: 'naval-battles', version: 1, title: 'Naval battles', icon: 'shield',
   description: 'Sea battles, ships sunk and results.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 10, h: 14 }, countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   availability: { product: 'naval-battles-manifest', params: {} }, options: OPTIONS,
   variants: battleVariants('Naval battles', OPTIONS),

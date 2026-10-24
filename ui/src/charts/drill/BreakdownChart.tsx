@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { drawBands, drawPlayhead } from '../draw';
 import { clipToSpans, runAt } from '../series';
 import type { Run, Span } from '../series';
-import { drawApproximateSpans, exactRuns, summaryStack } from '../chartSummary';
+import { drawApproximateSpans, exactRuns, summaryStack, summaryFits } from '../chartSummary';
 import type { ChartSummary } from '../chartSummary';
 import { compactStackExtent, forEachCompactStackSegment, buildStack, stackExtent } from '../stack';
 import { countryRaceSegments } from '../race/countryRace';
@@ -35,8 +35,7 @@ export default function BreakdownChart({ series, within, selectedHour, tooltipHe
     draw: (ctx: CanvasRenderingContext2D, frame: Parameters<typeof drawBands>[1], tokens: Parameters<typeof drawBands>[2], state: { playhead: number | null }) => {
       if (dense) {
         const view = summaries!.parts[0];
-        if (view.from !== frame.x[0] || view.to !== Math.min(frame.x[1], state.playhead ?? frame.x[1])
-          || view.width !== Math.ceil(frame.plotWidth)) return;
+        if (!summaryFits(frame, view, state.playhead ?? null)) return;
         drawApproximateSpans(ctx, frame, dense.approximate, state.playhead, () => forEachCompactStackSegment(dense.model, frame.x[0], Math.min(frame.x[1], state.playhead ?? frame.x[1]),
           (frame.x[1] - frame.x[0]) / Math.max(1, frame.plotWidth), segment => {
             drawBands(ctx, frame, tokens, segment.hours, segment.bands, parts.map(part => part.color));

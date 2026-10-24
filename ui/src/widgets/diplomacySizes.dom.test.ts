@@ -127,21 +127,6 @@ test('the Diplomacy widgets’ chart forms fit their cards at every size', async
         assert.deepEqual(await hours('RRR'), [48], `read at the war’s read hour itself: ${await widget('text()')}`);
         assert.deepEqual([await widget(`drawn('blue')`), await widget(`drawn('green')`), await widget(`drawn('magenta')`)], [true, true, false]);
       });
-      await context.test('a mounted influence chart names and colours each account as its own holder, and its ranking reads no historical looks', async () => {
-        await widget('reset()');
-        await widget(`show('faction-influence', { options: { faction: 'f2', view: 'time' } })`);
-        assert.deepEqual(await hours('RRR'), [23, 200], `each account at the last hour it was a member: ${await widget('text()')}`);
-        assert.deepEqual(await widget('legend()'), [['Other accounts', (await widget('legend()') as string[][])[0][1]],
-          ['Synthetic SSS', 'rgb(0, 200, 0)'], ['Later holder', 'rgb(0, 0, 255)'], ['Earlier holder', 'rgb(250, 0, 250)']],
-          'two holders of one tag keep their own names and colours');
-        await widget('reset()');
-        await widget(`show('faction-influence', { options: { faction: 'f2', view: 'ranking' } })`);
-        assert.deepEqual(await hours('RRR'), [200], 'the ranking names its members at the hour shown and reads no account’s historical look');
-        const before = (await widget(`styleHours('RRR')`) as number[]).length;
-        assert.ok(await widget(`clickRow('Later holder')`), `the ranking lists the later holder: ${await widget('text()')}`);
-        assert.deepEqual(await hours('RRR'), [200], 'opening a member reads only its own holder’s look');
-        assert.equal((await widget(`styleHours('RRR')`) as number[]).length, before + 1, 'one read, for the opened member');
-      });
       await context.test('a mounted volunteer diagram asks only for the chosen country’s tags across the branch', async () => {
         await widget('reset()');
         await widget(`show('volunteers', { countries: { kind: 'tags', tags: ['RRR'] } })`);

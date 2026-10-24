@@ -63,7 +63,7 @@ struct SavedWalk {
     wars: Vec<SavedWar>,
     previous: Option<i32>,
     previous_view: Option<String>,
-    open: Vec<(usize, Vec<RelationRun>)>,
+    open: Vec<OpenWar>,
     seen_caps: Vec<(String, i32)>,
     dated_caps: BTreeMap<String, Vec<i32>>,
     identity_since: BTreeMap<u32, (String, i32)>,
@@ -479,12 +479,12 @@ impl Prepared {
         for index in changed {
             current.tables[index] = packet.tables[index].clone();
         }
-        let open: Vec<usize> = self.walk.open.iter().map(|(id, _)| *id).collect();
+        let open: Vec<usize> = self.walk.open.iter().map(|war| war.id).collect();
         self.walk.observe(&current, None, None, self.cat.as_deref());
         self.decoded = Some(current);
         self.walked = true;
         for id in open {
-            if !self.walk.open.iter().any(|(open, _)| *open == id) {
+            if !self.walk.open.iter().any(|open| open.id == id) {
                 self.close(id);
             }
         }
@@ -500,7 +500,7 @@ impl Prepared {
             // Its open wars' continuation only, without the wars no longer
             // open, published as `series::write_reply` writes a reply.
             let resumable = self.walk.resumable();
-            let mut open: Vec<usize> = resumable.open.iter().map(|(id, _)| *id).collect();
+            let mut open: Vec<usize> = resumable.open.iter().map(|war| war.id).collect();
             open.sort_unstable();
             open.dedup();
             let (walk, wars) = elide(save(&resumable), &open);

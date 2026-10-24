@@ -59,7 +59,7 @@ test('actual balance widget uses prepared viewport, exact hour and keyboard read
     plugins: [{ name: 'prepared-balance-fixture', enforce: 'pre', transform(source, id) {
       const path = id.replaceAll('\\', '/'), replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
       if (replacement) return replacement[1];
-      if (path.endsWith('/widgets/country-measure/MeasureWidget.tsx') || path.endsWith('/widgets/country-measure/preparedMeasure.ts'))
+      if (path.endsWith('/widgets/country-measure/MeasureWidget.tsx') || path.endsWith('/widgets/country-measure/preparedMeasure.ts') || path.endsWith('/dashboard/viewRead.ts'))
         return source.replace(/\b(useMemo|useCallback|useState|useReducer|useRef|useEffect)(?:<[\s\S]*?>)?\(/g,
           (_match, name) => `globalThis.__preparedBalanceHook(${JSON.stringify(name)}, `);
     } }] });
@@ -125,7 +125,7 @@ test('actual balance widget uses prepared viewport, exact hour and keyboard read
     operations = 0;
     const laterFrame = plotFrame(100, 100, { left: 0, right: 0, top: 0, bottom: 0 }, [0, 101], [0, 2e14], false);
     fixture.chart!.layers[0].draw(context, laterFrame, fixture.tokens, { playhead: null });
-    assert.equal(operations, 0, 'old coverage cannot claim to paint the pending terminal viewport');
+    assert.ok(operations > 0, 'the landed summary keeps painting its hours while the next viewport prepares');
     fixture.chart!.onNavigateHour!('ArrowLeft', 100, [0, 100], null); await settle();
     assert.equal(fixture.chart!.keyboardHour, 90);
     fixture.chart!.onNavigateHour!('ArrowRight', 90, [0, 100], null);

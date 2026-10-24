@@ -230,7 +230,7 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
     const headingId = laneId(view.id, null);
     info.set(headingId, { faction: view, member: null });
     lanes.push({
-      id: headingId, heading: true, label: state, identity: { label: name }, icons: false, names: false,
+      id: headingId, heading: true, opens: true, label: state, identity: { label: name }, icons: false, names: false,
       muted: !exists,
       spans: stretchesOf(view.counts).map(stretch => ({
         id: `${stretch.firstHour}`, firstHour: stretch.firstHour, lastHour: stretch.lastHour,

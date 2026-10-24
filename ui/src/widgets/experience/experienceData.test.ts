@@ -128,7 +128,7 @@ test('settings default to banked with all branches on and retain standard playba
   const options = resolveOptions(OPTIONS, {});
   assert.deepEqual([options.measure, ...BRANCHES.map(branch => options[branch]), options.endLabels, options.afterPlayhead], ['banked', true, true, true, true, false]);
   assert.equal(resolveOptions(OPTIONS, { measure: 'daily-gain', navy: 'off' }).measure, 'banked');
-  assert.equal(definition.defaultTime, 'campaign');
+  assert.equal(definition.defaultTime, 'follow');
   assert.equal(definition.history, true);
   assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
   assert.equal('aggregate' in definition.countries, false);

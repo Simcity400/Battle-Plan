@@ -15,7 +15,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'convoy-health', version: 1, title: 'Convoy health', icon: 'anchor', category: 'Economy',
   description: 'Daily convoy efficiency by sea region, and the trade efficiency of each import deal.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, countries: { max: 1 }, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, countries: { max: 1 }, history: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 10, h: 8 }, options: OPTIONS,
   variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), choice => choice.label),
 } as const satisfies WidgetMeta;

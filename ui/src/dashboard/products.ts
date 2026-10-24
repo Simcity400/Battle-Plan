@@ -11,6 +11,7 @@ import { CONTENT_PRODUCTS } from '../generated/dashboard.ts';
 import { newId } from '../shell/ids.ts';
 import { finalPreparedReply } from './preparedPrefix.ts';
 import { useHeldFailure, useHeldFailures } from './heldFailures.ts';
+import { useViewRead } from './viewRead.ts';
 
 /** Each reply's length as the transport received it, so the cache sizes a reply
  * without serialising it again; a reply without one is measured by serialising. */
@@ -196,4 +197,20 @@ export function useProduct<T>(client: DashboardClient, request: ProductRequest |
   const retry = () => { setState(undefined); setAttempt(value => value + 1); };
   const error = useHeldFailure(current?.error, current?.data !== undefined, retry);
   return { data: current?.data, error, retry };
+}
+
+/** `useProduct` for a read that follows playback: a change to the `moving` params (its
+ * hour) does not cancel the running read, which lands and stays shown while the newest
+ * moment is read. Cancelled reads hold a connection until they end, so restarting a
+ * slow read every hour would starve every other widget. `moment` names the shown reply. */
+export function useFollowedProduct<T>(client: DashboardClient, request: ProductRequest | null, moving: readonly string[], active: boolean,
+  validate?: (data: unknown) => T, source?: DashboardSource): ProductState<T> & { moment?: string } {
+  const content = useContentRevision(client);
+  const params = (request?.params ?? {}) as Record<string, unknown>;
+  const lane = request ? JSON.stringify([request.sourceId, request.revision, request.product, !!source, content,
+    Object.entries(params).filter(([name]) => !moving.includes(name))]) : null;
+  const read = useViewRead<ProductRequest, T>(lane, request, JSON.stringify(moving.map(name => params[name])), active,
+    (at, signal, publish, restart) => loadProduct<T>(client, at, signal, validate, source, restart, publish), client);
+  const error = useHeldFailure(read.error, read.data !== undefined, read.retry);
+  return { data: read.data, error, retry: read.retry, moment: read.viewKey };
 }

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
-import WarGoalsPanel from '../war-goals/WarGoalsPanel';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { laneRequests } from '../../charts/timeline/laneRequests';
@@ -30,7 +29,7 @@ import { formatAmount } from '../../charts/valueAxis';
 import type { CountryStyle, WarsAtHour } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color';
 import { OPTIONS } from './definition';
-import { NAME_WORDS, casualtiesAt, countryTagAt, currentWarsAt, labelObservationAt, laneCountries, observationAt, participantHoldingAt, prepareWars, retainExpandedWars, validateWarsReply, viewpointAt, viewpointSummary, warsLanes, warsReplyState } from './warsData';
+import { NAME_WORDS, casualtiesAt, countryTagAt, currentWarsAt, labelObservationAt, laneCountries, observationAt, participantHoldingAt, prepareWars, retainExpandedWars, validateWarsReply, viewpointAt, viewpointSummary, warContributions, warsLanes, warsReplyState } from './warsData';
 import type { CountryResolver, WarsColour, WarsLaneInfo, WarsView } from './warsData';
 import { warTooltip } from './warsTooltip';
 import { warsColourPlan, warsCountryColours, warsFixedColourKey, warsLookStart, warsSideColours } from './warsColours';
@@ -70,7 +69,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   // The viewpoint is the widget's country: the dashboard's unless one is picked.
   const viewpointTag = selectedTags(widget.countries, track)[0] ?? null;
-  const [goalWarnings, setGoalWarnings] = useState<string[]>([]);
   const [hoverHour,setHoverHour]=useState<number|null>(null);
   const product = useProduct(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
     params: { branchId: track.branch.id, viewpointTag } } : null, active, validateWarsReply, track?.source);
@@ -151,13 +149,13 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const hover = useHoverLabels(runtime.client, track, active, pendingCountry, NAME_WORDS.missing);
   const menu = useContextMenu('Timeline actions');
   useEffect(() => {
-    const warnings = [...new Set([...goalWarnings, ...(data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...factions.warnings,
+    const warnings = [...new Set([...(data?.warnings ?? []), ...(groups.data?.warnings ?? []), ...factions.warnings,
       ...(factions.error ? [factions.error] : []), ...(groups.error ? [`Country history unavailable: ${groups.error}`] : []),
       ...(exact.error ? [`War casualty values unavailable: ${exact.error}`] : []),
       ...(prepared?.unidentifiedHours ? [`${prepared.unidentifiedHours} participant-hours have unknown countries; those lanes keep unknown labels and colours.`] : [])])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [goalWarnings, data, groups.data, groups.error, factions.warnings, factions.error, exact.error, prepared, onDiagnostics]);
+  }, [data, groups.data, groups.error, factions.warnings, factions.error, exact.error, prepared, onDiagnostics]);
 
   const root=useRef<HTMLDivElement>(null);
   useParityRows(root,()=>({kind:'chart',label:'Wars and casualties',scope:'displayed-hour',hour:at,
@@ -204,9 +202,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
     if (recorded) hover.ask(hour, tags.filter(tag => prepared.identities?.keyAt(tag, hour) !== null));
     const participant = about.kind === 'participant' ? about.participant : bar?.participant;
     const content = warTooltip({ war, observation, losses: exactWars.has(war.id) ? casualtiesAt(exactWars.get(war.id)!,hour) : null,
-      contributions: currentWarsAt(exact.data, hour)?.contributions.find(group => observation
-        && JSON.stringify(group.viewpointSide) === JSON.stringify(observation.viewpointSide)
-        && JSON.stringify(group.opposingSide) === JSON.stringify(observation.opposingSide)) ?? null,
+      contributions: warContributions(currentWarsAt(exact.data, hour)?.contributions, observation),
       contributionsPending: !currentWarsAt(exact.data, hour),
       lossesPending:!exact.data, hour, until: at, preparedThrough,
       branchLast: track.branch.lastHour, unobserved: data.unobserved, branchGaps: track.branch.gaps, capitulationsUnobserved: data.capitulationsUnobserved,
@@ -236,7 +232,6 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
           menu.open(x, y, [jumpItem(runtime, track.id, bounded)]);
         }} />}
     <PreparedKey pending={prefix?.pending} approximate={prefix?.approximate} />
-    <WarGoalsPanel runtime={runtime} track={track} tag={viewpointTag ?? viewpoint} hour={at} active={active} onWarnings={setGoalWarnings} />
     {menu.menu}
   </div>;
 }

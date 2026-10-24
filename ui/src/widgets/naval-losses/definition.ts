@@ -25,7 +25,7 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'naval-losses', version: 1, title: 'Naval losses', icon: 'shield',
   description: 'Ships and convoys lost or sunk by each country, as a race or lines over time.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 12 }, countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES, options: OPTIONS,
   variants: [...raceViewVariants('Naval losses', OPTIONS), ...breakdownVariants('Naval losses', OPTIONS)],
