@@ -12,6 +12,8 @@ const N: usize = 12;
 pub struct Capacities {
     pub rows: [usize; N],
 }
+
+collector_primitives::capacity_max!(Capacities { rows });
 impl Capacities {
     pub fn raise(&mut self, rows: [usize; N]) {
         for (available, required) in self.rows.iter_mut().zip(rows) {

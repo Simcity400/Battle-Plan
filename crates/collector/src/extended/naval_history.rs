@@ -76,6 +76,16 @@ pub struct Capacities {
     pub rail_levels: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    theatre_names,
+    sunk_names,
+    orders_sources,
+    wing_sources,
+    roster_scratch,
+    rail_levels,
+});
+
 impl Capacities {
     /// Explicit storage for fixed synthetic read/fault fixtures.
     #[cfg(test)]

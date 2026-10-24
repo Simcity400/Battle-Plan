@@ -66,6 +66,14 @@ pub struct Capacities {
     pub hosts: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    missions,
+    reached,
+    rows,
+    keys,
+    hosts
+});
+
 impl Capacities {
     pub fn presize(
         &mut self,

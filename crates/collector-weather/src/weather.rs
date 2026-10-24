@@ -52,6 +52,11 @@ pub struct Capacities {
     pub display_bytes: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    display_bytes
+});
+
 impl Default for Capacities {
     fn default() -> Self {
         Self {

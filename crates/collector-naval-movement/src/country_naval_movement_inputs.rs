@@ -16,10 +16,14 @@ pub struct Capacities {
     pub navies: usize,
 }
 
+collector_primitives::capacity_max!(Capacities { navies });
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct LaunchCapacities {
     pub launch_bases: usize,
 }
+
+collector_primitives::capacity_max!(LaunchCapacities { launch_bases });
 
 impl Capacities {
     /// Hint floors are observed from the live manager.

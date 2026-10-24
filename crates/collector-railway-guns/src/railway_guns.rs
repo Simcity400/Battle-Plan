@@ -156,6 +156,15 @@ pub struct Capacities {
     supply_origins: usize,
     combat_references: usize,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    paths,
+    names,
+    named_bonuses,
+    supply_origins,
+    combat_references
+});
 impl Default for Capacities {
     fn default() -> Self {
         Self {

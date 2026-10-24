@@ -26,6 +26,8 @@ pub struct Capacities {
     text: usize,
 }
 
+collector_primitives::capacity_max!(Capacities { rows, text });
+
 impl Capacities {
     pub fn presize(
         &mut self,

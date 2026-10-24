@@ -41,6 +41,8 @@ pub struct Capacities {
     rows: usize,
     arena: usize,
 }
+
+collector_primitives::capacity_max!(Capacities { rows, arena });
 impl Capacities {
     pub(crate) fn presize(
         &mut self,

@@ -27,6 +27,14 @@ pub struct Capacities {
     pub transfers: usize,
     pub name_bytes: usize,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    events,
+    countries,
+    actions,
+    transfers,
+    name_bytes
+});
 impl Capacities {
     pub fn for_counts(countries: usize, states: usize) -> Self {
         Self {

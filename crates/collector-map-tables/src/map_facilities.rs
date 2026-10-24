@@ -26,6 +26,11 @@ pub struct Capacities {
     facilities: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    deployments,
+    facilities
+});
+
 impl Capacities {
     pub fn presize(
         &mut self,

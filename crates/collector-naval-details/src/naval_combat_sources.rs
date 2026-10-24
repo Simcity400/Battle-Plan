@@ -41,6 +41,15 @@ pub struct Capacities {
     unit_handles: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    provinces,
+    province_combats,
+    combats,
+    transfer_handles,
+    transfers,
+    unit_handles
+});
+
 impl Capacities {
     /// Live attach/cadence floor for the original map-icon vectors and
     /// transfer/unit rosters. The temporary owned walk keeps distinct-reference

@@ -238,6 +238,8 @@ pub struct Capacities {
     rows: usize,
     lend_lease: usize,
 }
+
+collector_primitives::capacity_max!(Capacities { rows, lend_lease });
 impl Capacities {
     pub fn presize(
         &mut self,

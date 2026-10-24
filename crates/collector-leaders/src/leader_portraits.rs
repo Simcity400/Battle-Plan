@@ -19,6 +19,8 @@ pub struct Capacities {
     sources: usize,
 }
 
+collector_primitives::capacity_max!(Capacities { rows, sources });
+
 impl Capacities {
     pub fn presize(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
         // Select at most one leader per orders root.

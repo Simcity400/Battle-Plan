@@ -76,6 +76,14 @@ pub struct Capacities {
     sites: usize,
     wings: usize,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    enabled,
+    countries,
+    fleets,
+    sites,
+    wings
+});
 impl Default for Capacities {
     fn default() -> Self {
         Self {

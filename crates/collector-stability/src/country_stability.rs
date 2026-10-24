@@ -46,6 +46,13 @@ pub struct Capacities {
     bytes: usize,
     demand: native::Demand,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    inputs,
+    lines,
+    bytes,
+    demand { inputs, lines, bytes, children, candidates, values },
+});
 impl Capacities {
     /// One input row per country slot. Native line/text demand is independent.
     pub fn raise_for_countries(&mut self, slots: usize) {

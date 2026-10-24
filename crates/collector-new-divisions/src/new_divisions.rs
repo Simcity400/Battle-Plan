@@ -89,6 +89,8 @@ pub fn next_mark(
 pub struct Capacities {
     rows: usize,
 }
+
+collector_primitives::capacity_max!(Capacities { rows });
 impl Capacities {
     pub fn raise_for_equipment(&mut self, rows: usize) {
         self.rows = self.rows.max(rows);

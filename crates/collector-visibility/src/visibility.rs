@@ -98,6 +98,15 @@ pub struct Capacities {
     war_links: usize,
     naval_access: usize,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    countries,
+    states,
+    links,
+    wars,
+    war_links,
+    naval_access
+});
 impl Capacities {
     /// Advisory live demand at attach and the input-demand cadence.
     pub fn presize(

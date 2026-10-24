@@ -337,6 +337,24 @@ pub struct Capacities {
     pub tokens: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    intel_scratch,
+    subject_names,
+    autonomy_names,
+    agency_names,
+    agency_upgrade_definitions,
+    operation_descriptions,
+    operative_names,
+    operative_mission_bytes,
+    operation_parts,
+    strategic_operative_entries,
+    agency_operation_entries,
+    variable_entries,
+    variable_names,
+    tokens,
+});
+
 impl Capacities {
     /// Count each original nonzero cached opinion and retained typed relation;
     /// an empty walk counts their exact live demand.

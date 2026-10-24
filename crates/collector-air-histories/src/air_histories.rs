@@ -102,6 +102,14 @@ pub struct Capacities {
     regions: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    countries,
+    histories,
+    channels,
+    regions
+});
+
 impl Capacities {
     const VACANT: Self = Self {
         rows: 0,

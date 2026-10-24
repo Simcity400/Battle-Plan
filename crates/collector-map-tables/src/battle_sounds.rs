@@ -21,6 +21,8 @@ pub struct Capacities {
     provinces: usize,
 }
 
+collector_primitives::capacity_max!(Capacities { battles, provinces });
+
 impl Capacities {
     /// Off-thread sizing from the live list. Never lowers a capacity.
     pub fn raise(&mut self, demand: native::Demand) {

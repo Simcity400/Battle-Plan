@@ -348,6 +348,18 @@ pub struct Capacities {
     naval: naval::Capacities,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    civil_wars,
+    states,
+    leaders,
+    neighbors,
+    policies,
+    co_belligerents,
+    pride_names,
+    naval,
+});
+
 impl Capacities {
     pub fn raise_for_pride_names(&mut self, bytes: usize) {
         crate::country_scale::raise(&mut self.pride_names, crate::country_scale::rows(bytes, 1));

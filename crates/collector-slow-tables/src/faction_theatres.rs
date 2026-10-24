@@ -32,6 +32,15 @@ pub struct Capacities {
     advisor_bytes: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    icons,
+    regions,
+    hidden,
+    advisors,
+    advisor_bytes
+});
+
 impl Capacities {
     pub fn presize(
         &mut self,

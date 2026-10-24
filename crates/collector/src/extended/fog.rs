@@ -49,6 +49,13 @@ pub struct Capacities {
     pub wings: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    radar_provinces,
+    area_provinces,
+    wings
+});
+
 impl Capacities {
     /// Advisory original-header demand at attach and the input-demand cadence.
     pub(crate) fn presize(

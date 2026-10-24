@@ -123,6 +123,22 @@ pub struct Capacities {
     port_answers: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    task_forces,
+    fleets,
+    rosters,
+    motion,
+    paths,
+    missions,
+    regions,
+    names,
+    supply_origins,
+    port_searchers,
+    port_avoided,
+    port_bytes,
+    port_answers,
+});
+
 impl Capacities {
     /// Fleet/task rosters and both unit traversal routes size every
     /// independent motion/counter arena.

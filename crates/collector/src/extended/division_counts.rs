@@ -15,6 +15,8 @@ pub struct Capacities {
     rows: usize,
 }
 
+collector_primitives::capacity_max!(Capacities { rows });
+
 impl Capacities {
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.rows, crate::country_scale::rows(slots, 1));

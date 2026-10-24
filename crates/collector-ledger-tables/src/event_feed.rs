@@ -10,6 +10,8 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 pub struct Capacities {
     pub events: usize,
 }
+
+collector_primitives::capacity_max!(Capacities { events });
 const ASSEMBLED: &str = "Event feed assembled by spool";
 
 pub struct Captured {

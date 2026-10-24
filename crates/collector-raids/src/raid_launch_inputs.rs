@@ -48,6 +48,12 @@ pub struct Capacities {
     command_power: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    reservations,
+    command_power
+});
+
 impl Capacities {
     /// One launch-input row and one command-power row per country.
     pub fn raise_for_countries(&mut self, slots: usize) {

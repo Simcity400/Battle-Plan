@@ -67,6 +67,8 @@ pub struct Capacities {
     pub bytes: [usize; N],
 }
 
+collector_primitives::capacity_max!(Capacities { rows, bytes });
+
 impl Capacities {
     /// Off-thread live unit/trait demand, independent of country count.
     pub(crate) fn presize(

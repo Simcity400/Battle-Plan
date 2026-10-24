@@ -45,6 +45,12 @@ pub struct Capacities {
     entries: usize,
     bytes: usize,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    countries,
+    entries,
+    bytes
+});
 impl Capacities {
     pub fn raise_for_countries(&mut self, slots: usize) {
         grow_capacity(&mut self.countries, slots);

@@ -2,6 +2,7 @@
 
 use collector_status::status;
 
+pub mod capacity;
 pub mod clock;
 pub mod country_slots;
 pub mod raw_memory;

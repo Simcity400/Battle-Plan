@@ -94,6 +94,19 @@ pub struct Capacities {
     locals: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    bytes,
+    counts,
+    variants,
+    icon_rows,
+    country_rows,
+    icon_bytes,
+    name_bytes,
+    database,
+    locals,
+});
+
 impl Capacities {
     /// Country templates retain grouped subunits, model representatives,
     /// and the literal or fallback name. Empty outputs still visit every

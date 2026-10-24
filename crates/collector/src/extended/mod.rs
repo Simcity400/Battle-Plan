@@ -339,6 +339,15 @@ pub(crate) struct LentCaches<'a, 'cache> {
     pub(crate) variables_scratch: Option<&'a mut intel::ScriptVariableComparison>,
 }
 
+macro_rules! merge_pack_capacity {
+    (saved_event_targets, $current:expr, $raised:expr) => {
+        $current = $current.max($raised);
+    };
+    ($pack:ident, $current:expr, $raised:expr) => {
+        collector_primitives::capacity::CapacityMax::merge_max(&mut $current, $raised);
+    };
+}
+
 macro_rules! packs {
     ($($pack:ident $(@ $helper:ident)?),+ $(,)?) => {
         pub const PACK_NAMES: &[&str] = &[$(stringify!($pack)),+];
@@ -380,6 +389,14 @@ macro_rules! packs {
             pub fuel_awards: fuel_awards::Capacities,
             pub division_sources: usize,
             pub variant_registry: usize,
+        }
+        impl collector_primitives::capacity::CapacityMax for Capacities {
+            fn merge_max(&mut self, other: Self) {
+                $(merge_pack_capacity!($pack, self.$pack, other.$pack);)+
+                collector_primitives::capacity::CapacityMax::merge_max(&mut self.fuel_awards, other.fuel_awards);
+                self.division_sources = self.division_sources.max(other.division_sources);
+                self.variant_registry = self.variant_registry.max(other.variant_registry);
+            }
         }
         impl Default for Capacities {
             fn default() -> Self {

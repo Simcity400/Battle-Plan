@@ -32,9 +32,10 @@ pub struct Capacities {
     rows: usize,
     variants: usize,
 }
+
+collector_primitives::capacity_max!(Capacities { rows, variants });
 impl Capacities {
-    /// At attach, or under the spool's capacity lock: live headers size all
-    /// side pools, with no cap.
+    /// Live headers size the side pools outside the shared capacity mutex.
     pub(crate) fn presize(
         &mut self,
         memory: &impl Memory,

@@ -60,6 +60,15 @@ pub struct Capacities {
     equipment: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    routes,
+    law_bytes,
+    occupied,
+    group_laws,
+    equipment
+});
+
 impl Capacities {
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test_buildings(rows: usize) -> Self {

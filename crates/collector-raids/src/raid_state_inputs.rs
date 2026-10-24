@@ -57,6 +57,11 @@ pub struct Capacities {
     core_links: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    walk { states, resources, resource_rows, modifier_rows, token_bytes, override_rows, origins, routes, provinces, entries, countries, definitions, name_bytes, batch_bytes },
+    core_links,
+});
+
 impl Default for Capacities {
     fn default() -> Self {
         Self {

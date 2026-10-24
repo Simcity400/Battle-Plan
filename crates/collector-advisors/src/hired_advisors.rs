@@ -46,6 +46,17 @@ pub struct Capacities {
     available_bytes: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    bytes,
+    active,
+    tokens,
+    token_bytes,
+    retired,
+    available,
+    available_bytes
+});
+
 impl Capacities {
     pub fn presize(
         &mut self,

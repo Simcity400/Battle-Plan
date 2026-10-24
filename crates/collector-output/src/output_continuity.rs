@@ -18,6 +18,8 @@ pub struct Capacities {
     pub entries: usize,
 }
 
+collector_primitives::capacity_max!(Capacities { entries });
+
 pub trait Observation {
     type Entry: Copy + Default;
     const ASSEMBLED_BY_SPOOL: &'static str;

@@ -69,6 +69,24 @@ pub struct Capacities {
     country_references: usize,
     country_links: usize,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    plans,
+    groups,
+    fronts,
+    assigned,
+    child_sections,
+    links,
+    names,
+    root_orders,
+    sections,
+    pairs,
+    handles,
+    invasions,
+    execution { units, groups, orders, memberships, scalar_observations, modifiers { nodes, entries } },
+    country_references,
+    country_links,
+});
 impl Capacities {
     pub(crate) fn presize_execution(
         &mut self,

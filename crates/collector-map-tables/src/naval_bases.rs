@@ -24,6 +24,8 @@ pub struct Capacities {
     countries: usize,
 }
 
+collector_primitives::capacity_max!(Capacities { rows, countries });
+
 impl Capacities {
     pub fn presize(
         &mut self,

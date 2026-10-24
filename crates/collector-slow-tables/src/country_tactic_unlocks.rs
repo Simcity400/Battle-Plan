@@ -43,6 +43,13 @@ pub struct Capacities {
     list: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    unlocks,
+    registry,
+    list
+});
+
 impl Capacities {
     pub fn presize(
         &mut self,

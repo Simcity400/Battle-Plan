@@ -88,6 +88,19 @@ pub struct Capacities {
     launch: naval::LaunchCapacities,
     raw: engine_native::raw_country_observations::Capacity,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    subjects,
+    naming_bytes,
+    original_tag_buckets,
+    original_tag_members,
+    country_array,
+    launch_states,
+    reverse_visibility,
+    launch,
+    raw { occurrences, links, bytes },
+});
 impl Capacities {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_rows(rows: usize) -> Self {

@@ -50,6 +50,12 @@ pub struct Capacities {
     countries: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    bytes,
+    countries
+});
+
 impl Capacities {
     pub fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.countries, slots);

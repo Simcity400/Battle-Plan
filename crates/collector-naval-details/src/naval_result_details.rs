@@ -53,6 +53,18 @@ pub struct Capacities {
     commander_timed_traits: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    results,
+    ships,
+    planes,
+    air,
+    hits,
+    sources,
+    terms,
+    commanders,
+    commander_timed_traits,
+});
+
 impl Capacities {
     /// Each side retains its ship and plane vectors, including their hit lists.
     pub fn presize(

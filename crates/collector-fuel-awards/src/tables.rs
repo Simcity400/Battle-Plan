@@ -22,6 +22,8 @@ pub struct Capacities {
     pub entries: usize,
     pub names: usize,
 }
+
+collector_primitives::capacity_max!(Capacities { entries, names });
 pub struct Captured {
     entries: Vec<Entry>,
     names: Vec<u8>,

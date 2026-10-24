@@ -18,6 +18,8 @@ pub(crate) const ASSEMBLED_BY_SPOOL: &str = "assembled by the spool from the hou
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities;
 
+collector_primitives::capacity_max!(Capacities;);
+
 pub struct Captured;
 impl Captured {
     pub fn with_capacities(_capacity: &Capacities) -> Self {

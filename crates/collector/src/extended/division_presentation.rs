@@ -431,6 +431,20 @@ pub struct Capacities {
     supply_origins: usize,
     combat_references: usize,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    movement,
+    status,
+    bans,
+    paths,
+    name_bytes,
+    name_groups,
+    cached_name_bytes,
+    geometry { provinces, neighbour_entries },
+    membership { queries, groups, roots, chunks },
+    supply_origins,
+    combat_references,
+});
 impl Default for Capacities {
     fn default() -> Self {
         Self {

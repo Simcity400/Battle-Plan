@@ -51,6 +51,8 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities;
 
+collector_primitives::capacity_max!(Capacities;);
+
 /// The family's owner store, loaned for one capture, and the hook marks that join each
 /// hour's read.
 pub struct Stores<'a> {

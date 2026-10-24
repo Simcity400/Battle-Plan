@@ -42,6 +42,14 @@ pub struct Capacities {
     definitions: usize,
     bytes: usize,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    traits,
+    values,
+    operatives,
+    definitions,
+    bytes
+});
 impl Capacities {
     /// From the live walk with no storage, with the three-quarters growth
     /// rule's headroom. Never lowers.

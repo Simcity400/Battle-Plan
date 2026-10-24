@@ -61,6 +61,12 @@ pub struct Capacities {
     pub demand: super::fuel_demand::Capacities,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    foreign_sources,
+    demand
+});
+
 /// Consumer rows per country, fixed by the engine's fuel status.
 const FUEL_CONSUMERS: usize = ccountry_fuel_status::MAX_CONSUMERS as usize;
 

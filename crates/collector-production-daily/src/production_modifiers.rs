@@ -35,6 +35,16 @@ pub struct Capacities {
     text: usize,
     stack: usize,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    countries,
+    lines,
+    efficiencies,
+    requests,
+    nodes,
+    text,
+    stack
+});
 impl Capacities {
     pub fn raise_for_demand(&mut self, demand: native::Demand) {
         for (capacity, required) in [

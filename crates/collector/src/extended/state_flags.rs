@@ -20,6 +20,8 @@ pub struct Capacities {
     rows: usize,
 }
 
+collector_primitives::capacity_max!(Capacities { rows });
+
 impl Capacities {
     pub(crate) fn raise_for_states(&mut self, states: usize) {
         self.rows = self.rows.max(states);

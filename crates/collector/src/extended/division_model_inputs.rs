@@ -15,6 +15,8 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities;
 
+collector_primitives::capacity_max!(Capacities;);
+
 pub struct Captured {
     rows: CaptureRows<carmy::ModelInputsRow>,
     /// Status's reads and memos, grown with the census inside the job.

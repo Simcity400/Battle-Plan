@@ -19,6 +19,8 @@ pub struct Capacities {
     pub events: usize,
     pub roster: usize,
 }
+
+collector_primitives::capacity_max!(Capacities { events, roster });
 impl Capacities {
     pub fn raise_for_countries(&mut self, slots: usize) {
         self.roster = self.roster.max(slots);

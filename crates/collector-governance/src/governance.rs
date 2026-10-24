@@ -134,6 +134,30 @@ pub struct Capacities {
     dictionary: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    focus_text,
+    definition_text,
+    party_text,
+    idea_text,
+    timed_idea_text,
+    random_item_text,
+    decision_text,
+    modifier_text,
+    modifier_values,
+    tactic_text,
+    balance_text,
+    party_countries,
+    idea_countries,
+    decision_countries,
+    effect_tokens,
+    effect_frames,
+    effect_names,
+    effect_bytes,
+    effect_events,
+    dictionary,
+});
+
 impl Capacities {
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test_research(rows: usize) -> Self {

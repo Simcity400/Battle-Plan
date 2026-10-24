@@ -107,6 +107,31 @@ pub struct Capacities {
     wing_types: usize,
     plane_wings: usize,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    details,
+    ships,
+    groups,
+    damage,
+    air,
+    hits,
+    planes,
+    plane_air,
+    plane_hits,
+    plane_kills,
+    commanders,
+    commander_timed_traits,
+    weapon_sources,
+    weapon_terms,
+    dense_bases,
+    dense_wings,
+    side_units,
+    custom_sea,
+    summary_countries,
+    damage_sources,
+    wing_types,
+    plane_wings,
+});
 impl Capacities {
     /// Live combat/header demand before attach and on the spool's sizing thread.
     /// Full capture still supplies growth after a change between observations.

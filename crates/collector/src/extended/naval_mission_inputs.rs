@@ -75,6 +75,17 @@ pub struct Capacities {
     hubs: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    task_forces,
+    headquarters,
+    census,
+    ledgers,
+    entries,
+    countries,
+    commanders,
+    hubs,
+});
+
 impl Capacities {
     /// Native attach/cadence demand; no sampled values or retry witness.
     pub(crate) fn presize(

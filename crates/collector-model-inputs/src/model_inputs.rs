@@ -37,6 +37,13 @@ pub struct Capacities {
     bonuses: unit_bonuses::Counts,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    local_rows,
+    requirements,
+    rosters,
+    bonuses { rows, targets, grants, stats, label_bytes },
+});
+
 impl Capacities {
     /// Three independent live equipment rosters provide their own counts,
     /// with duplicates retained; the unit-bonus lists, their entries and

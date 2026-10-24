@@ -116,6 +116,18 @@ pub struct Capacities {
     pub counteroperatives: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    program_names,
+    program_candidates,
+    raid_type_tokens,
+    raid_show_for,
+    raid_transports,
+    raid_equipment_items,
+    raid_equipment_archetypes,
+    counteroperatives,
+});
+
 impl Capacities {
     /// The live pool extent and each project's reward-history array set demand.
     /// Empty outputs count every authenticated pool/header without reading

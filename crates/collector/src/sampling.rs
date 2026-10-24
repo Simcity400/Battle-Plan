@@ -672,7 +672,7 @@ impl Captured {
         report
     }
 
-    /// Only the spool thread grows a frame while it owns that frame's queue index.
+    /// Growth requires exclusive ownership of the frame's queue index.
     pub fn grow(&mut self, capacities: &mut [usize; 12]) {
         engine_allocation::advisory(|| self.grow_hints(capacities));
     }
@@ -1720,6 +1720,16 @@ impl Shared {
         index
     }
 
+    /// Check after popping so a concurrent game pop cannot hide the last free frame.
+    pub(crate) fn take_idle_frame_for_growth(&self) -> Option<usize> {
+        let index = self.free.pop()?;
+        if self.free.is_empty() {
+            self.recycle_frame(index);
+            return None;
+        }
+        Some(index)
+    }
+
     /// End the spool loop's idle wait. Allocation-free and lock-free, so the
     /// game thread may call it; a wake before the wait begins is kept and ends
     /// that wait at once, so none is lost.
@@ -1741,11 +1751,8 @@ impl Shared {
         crate::allocation::failed() || self.acquisition_panics.load(Ordering::Acquire) != 0
     }
 
-    /// Spool only: an in-service frame may have missed a new preparation
-    /// request while it was absent from the free queue.
-    /// The frame's verdicts are reset for the next hour here, after any
-    /// growth, so the callback does not ([`Captured::reset_verdicts`]).
-    pub(crate) fn recycle_frame_prepared(&self, index: usize) {
+    /// Requires the frame's exclusive queue lease; clock preparation may allocate.
+    pub(crate) fn prepare_frame_for_reuse(&self, index: usize) {
         let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
         frame.reset_verdicts();
         frame.verdicts_reset = true;
@@ -1757,6 +1764,10 @@ impl Shared {
             self.cancel_buffer_wait.store(true, Ordering::Release);
             self.recording.store(false, Ordering::Release);
         }
+    }
+
+    pub(crate) fn recycle_frame_prepared(&self, index: usize) {
+        self.prepare_frame_for_reuse(index);
         self.recycle_frame(index);
     }
 

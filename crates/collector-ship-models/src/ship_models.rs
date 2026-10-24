@@ -458,6 +458,8 @@ pub struct Capacities {
     modifiers: SnapshotCapacity,
 }
 
+collector_primitives::capacity_max!(Capacities { rows, modifiers { nodes, entries } });
+
 /// One ship's held read: its census handle and task force, its certificate
 /// and own objects, and its two modifier arrays with their addresses
 /// (address zero: none), owned so that carrying the read moves them.

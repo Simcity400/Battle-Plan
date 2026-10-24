@@ -22,6 +22,8 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 pub struct Capacities {
     pub words: usize,
 }
+
+collector_primitives::capacity_max!(Capacities { words });
 pub struct Captured {
     words: Vec<u64>,
     drained: Option<Drain>,

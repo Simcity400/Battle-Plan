@@ -291,6 +291,15 @@ pub struct Capacities {
     access_runs: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    nodes,
+    countries,
+    paths,
+    entries,
+    access,
+    access_runs
+});
+
 impl Capacities {
     /// TrainInventory has one row per country supply system.
     pub fn raise_for_countries(&mut self, slots: usize) {

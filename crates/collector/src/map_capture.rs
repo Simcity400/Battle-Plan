@@ -154,6 +154,17 @@ pub struct MapCapacities {
     naval_groups: usize,
 }
 
+collector_primitives::capacity_max!(MapCapacities {
+    rows,
+    player_names,
+    air_wing_names,
+    land_participants,
+    order_geometry,
+    order_groups,
+    order_visits,
+    naval_groups,
+});
+
 impl Default for MapCapacities {
     fn default() -> Self {
         Self {
@@ -1019,7 +1030,7 @@ impl MapCaptured {
         ]
     }
 
-    /// Exclusive spool-thread ownership is required, including for scratch buffers.
+    /// Exclusive frame ownership is required, including for scratch buffers.
     pub fn grow(&mut self, capacities: &mut MapCapacities) {
         self.players.grow(&mut capacities.rows[0]);
         self.human_controllers.grow(&mut capacities.rows[1]);

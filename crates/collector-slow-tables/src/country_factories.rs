@@ -17,6 +17,8 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 pub struct Capacities {
     rows: usize,
 }
+
+collector_primitives::capacity_max!(Capacities { rows });
 impl Capacities {
     /// One row per canonical country slot. Never lowers.
     pub fn raise_for_countries(&mut self, slots: usize) {

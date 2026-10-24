@@ -11,6 +11,8 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 pub struct Capacities {
     rows: usize,
 }
+
+collector_primitives::capacity_max!(Capacities { rows });
 impl Capacities {
     pub fn presize(
         &mut self,

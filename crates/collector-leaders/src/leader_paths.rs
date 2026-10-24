@@ -13,6 +13,8 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 pub struct Capacities {
     rows: usize,
 }
+
+collector_primitives::capacity_max!(Capacities { rows });
 impl Capacities {
     pub fn presize(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
         let count = collector_extended_support::demand::rows(

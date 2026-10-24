@@ -85,6 +85,14 @@ pub struct Capacities {
     pub license_handles: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    definition_bytes,
+    conveyor_name_bytes,
+    line_custom_name_bytes,
+    license_handles,
+});
+
 impl Capacities {
     /// Advisory attach/refresh demand includes the embedded pool, army-owned
     /// requests and every delivery, including groups absent from the active

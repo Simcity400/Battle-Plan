@@ -15,6 +15,8 @@ const UNSEALED: &str = "map event interval not sealed this hour";
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities;
 
+collector_primitives::capacity_max!(Capacities;);
+
 pub struct Captured {
     interval: Option<map_events::interval::Interval>,
 }

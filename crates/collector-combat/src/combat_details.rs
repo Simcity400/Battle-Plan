@@ -123,6 +123,29 @@ pub struct Capacities {
     air_counts: usize,
     learning_traits: usize,
 }
+
+collector_primitives::capacity_max!(Capacities {
+    combats,
+    census_participants,
+    details,
+    divisions,
+    sides,
+    combat_sides,
+    country_tags,
+    rosters,
+    modifier_members,
+    modifiers,
+    width_terms,
+    exile_tags,
+    division_names,
+    name_templates,
+    name_groups,
+    commander_traits,
+    detail_text,
+    timed_traits,
+    air_counts,
+    learning_traits,
+});
 impl Capacities {
     /// Before attach and on the spool's sizing thread, from the live combat census
     /// and the shared count-only detail walk. Capture keeps its growth fallback.

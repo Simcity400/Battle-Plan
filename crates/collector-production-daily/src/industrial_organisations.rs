@@ -38,6 +38,12 @@ pub struct Capacities {
     bytes: usize,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    organisations,
+    history,
+    bytes
+});
+
 impl Capacities {
     pub fn presize(
         &mut self,

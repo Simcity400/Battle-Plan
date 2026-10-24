@@ -89,12 +89,26 @@ pub struct Capacities {
     pub scores: ScoreCapacities,
 }
 
+collector_primitives::capacity_max!(Capacities {
+    rows,
+    ace_names,
+    wings,
+    sorties,
+    scores
+});
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct ScoreCapacities {
     pub rows: usize,
     pub regions: usize,
     pub countries: usize,
 }
+
+collector_primitives::capacity_max!(ScoreCapacities {
+    rows,
+    regions,
+    countries
+});
 
 impl Capacities {
     /// Off-thread attach/cadence hints; capture still follows its own original
