@@ -27,10 +27,10 @@
 //! A watch whose visit fails stops there with its error, and the others go on.
 
 use super::*;
-use crate::frame::{IntoRecordedFrame, RecordedFrame, recorded::Updates};
+use crate::frame::{IntoRecordedFrame, RecordedFrame, advance_public_table, recorded::Updates};
 use crate::{
     BranchId,
-    frame::{SharedView, TableUpdate, advance_table, keyframe_update, not_selected},
+    frame::{SharedView, TableUpdate, keyframe_update, not_selected},
     rows::{compatibility::HISTORY, full_mask},
 };
 use std::sync::Arc;
@@ -448,9 +448,9 @@ impl<'r> BlockTables<'r> {
                 self.count[position] = before.as_deref().and_then(complete_len);
                 self.before[position] = None;
                 self.rebuilt[position] = true;
-                advance_table(table, update, baseline(before_hour, before), hour, read)?
+                advance_public_table(table, update, baseline(before_hour, before), hour, read)?
             } else {
-                let view = advance_table(
+                let view = advance_public_table(
                     table,
                     update,
                     baseline(before_hour, before.clone()),

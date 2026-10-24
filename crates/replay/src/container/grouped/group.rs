@@ -212,6 +212,8 @@ fn raw_column(
         if check.failed() || allocation::is_allocation_error(&error) {
             Err(error)
         } else {
+            let _table = replay_data::measurement::table(table);
+            replay_data::measurement::count(replay_data::measurement::Counter::DirectRetries, 1);
             raw_stage(context, table, false, check)
         }
     })
@@ -630,23 +632,29 @@ impl Supply for Sources<'_, '_, '_> {
         &mut self,
         index: usize,
         at: usize,
-        keys: &mut Vec<u128>,
+        relevant: &dyn Fn(u128, u64) -> bool,
+        keys: &mut Vec<(u128, u64)>,
         check: &mut Check<'_>,
     ) -> io::Result<bool> {
         let entry = &self.entries[index];
         match &entry.from {
-            Origin::Column(column) => entry.followed.changed_keys(column, at, keys, check),
-            Origin::Plain(plain) => {
-                entry
-                    .followed
-                    .changed_keys(&self.state.plains[*plain].column, at, keys, check)
-            }
+            Origin::Column(column) => entry
+                .followed
+                .changed_keys(column, at, relevant, keys, check),
+            Origin::Plain(plain) => entry.followed.changed_keys(
+                &self.state.plains[*plain].column,
+                at,
+                relevant,
+                keys,
+                check,
+            ),
             Origin::Member(member) => {
                 let member = *member;
                 self.state.pull(member, at, check)?;
                 self.entries[index].followed.changed_keys(
                     self.state.updates(member),
                     at,
+                    relevant,
                     keys,
                     check,
                 )

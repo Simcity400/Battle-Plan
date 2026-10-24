@@ -3696,11 +3696,18 @@ fn table_updates_admitted(
     let cache = &context.replay.decoded_sections;
     let updates = if group::resolves(context, table) {
         cache.read_updates(key, context.hours.len(), false, || {
-            measured(context, table, || {
+            let _cpu = crate::cpu::scope("decode_alias_group", None);
+            let started = crate::cpu::thread_cycles();
+            let column = (|| {
                 let column = group_column(context, table, check)?;
                 check.run()?;
                 Ok(column)
-            })
+            })();
+            if crate::cpu::enabled() {
+                let label = format!("{table:?}");
+                crate::cpu::note_named("alias_group_inclusive", &label, started);
+            }
+            column
         })?
     } else {
         cache.read(key, context.hours.len(), false, || {
@@ -3812,6 +3819,7 @@ fn raw_stage(
     use_direct: bool,
     check: &mut Check<'_>,
 ) -> io::Result<RawColumn> {
+    let _cpu = crate::cpu::reader("reader_raw_grammar", table);
     #[cfg(test)]
     let _step = super::check::Scope::enter(super::check::Step::Raw(table, 0));
     check.run()?;
@@ -4271,6 +4279,7 @@ fn anchored_keyframe_with(
     keep_root: bool,
     check: &mut Check<'_>,
 ) -> io::Result<Resolved> {
+    let _table = replay_data::measurement::table(table);
     let version = format.version();
     let change: &LastChange = &HISTORY[table.index()];
     let decode = |plain: &[u8], keyframe: bool| -> io::Result<TableUpdate> {
@@ -4389,6 +4398,21 @@ fn anchored_keyframe_with(
             Some(rows) => Some(apply_anchor_change(rows, decode(&plain, false)?)?),
         };
         if snapshot && keep_root {
+            if replay_data::measurement::enabled() {
+                replay_data::measurement::count(replay_data::measurement::Counter::AnchorCopies, 1);
+                replay_data::measurement::count(
+                    replay_data::measurement::Counter::AnchorRows,
+                    rows.as_ref().map_or(0, TableRows::len),
+                );
+                replay_data::measurement::count(
+                    replay_data::measurement::Counter::AnchorShadowBytes,
+                    shadow
+                        .values()
+                        .flat_map(|fields| fields.values())
+                        .map(Vec::len)
+                        .sum(),
+                );
+            }
             root_state = Some(AnchorState {
                 rows: rows.as_ref().map(TableRows::try_clone).transpose()?,
                 shadow: shadow.clone(),

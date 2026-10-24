@@ -66,13 +66,13 @@ fn a_few_insertions_and_deletions_apply_in_place_checking_only_their_rows() {
 }
 
 #[test]
-fn many_insertions_and_deletions_merge_and_check_the_whole_table() {
+fn many_insertions_and_deletions_merge_and_check_only_changed_rows() {
     let changed = [slot_change(500, 1), slot_change(1500, 7)];
     let deleted = [3, 5, 7];
     let (rows, checked) = validated(|| links(1000).apply_delta_validated(&changed, &deleted));
     let rows = rows.unwrap();
     assert_eq!(rows, merged(&links(1000), &changed, &deleted).unwrap());
-    assert_eq!(checked, rows.len());
+    assert_eq!(checked, changed.len());
 }
 
 #[test]
@@ -123,4 +123,84 @@ fn every_mix_of_changes_insertions_and_deletions_matches_the_merge() {
         kept > 1000 && edited > 500,
         "{kept} applied, {edited} with edits"
     );
+}
+
+#[test]
+fn bulk_merge_every_hour_matches_the_original_merge_including_deletion_only_hours() {
+    let mut actual = links(1000);
+    let mut reference = actual.clone();
+    for hour in 0..32_u128 {
+        let deleted: Vec<_> = (hour * 3 + 1..=hour * 3 + 3).collect();
+        let changed = if hour % 4 == 0 {
+            vec![]
+        } else {
+            vec![slot_change(500 + hour, 1), slot_change(1500 + hour, 7)]
+        };
+        let expected = merged(&reference, &changed, &deleted).unwrap();
+        let (next, checked) = validated(|| actual.apply_delta_validated(&changed, &deleted));
+        actual = next.unwrap();
+        reference = expected;
+        assert_eq!(actual, reference, "hour {hour}");
+        assert_eq!(checked, changed.len(), "hour {hour}");
+        let (mut actual_bytes, mut reference_bytes) = (Vec::new(), Vec::new());
+        actual.encode_rows(&mut actual_bytes).unwrap();
+        reference.encode_rows(&mut reference_bytes).unwrap();
+        assert_eq!(actual_bytes, reference_bytes, "hour {hour}");
+    }
+}
+
+#[test]
+fn bulk_merge_keeps_apply_before_final_validation_and_absent_delete_precedence() {
+    let baseline = TableRows::LandCombatDivisions(
+        (0..10)
+            .map(|ordinal| LandCombatDivisionRow {
+                combat: 7,
+                ordinal,
+                ..Default::default()
+            })
+            .collect(),
+    );
+    let key = |ordinal| (7_u128 << 33) | ordinal;
+    let mut bad_value = Vec::new();
+    encode_native_change(
+        &Some(LandCombatDivisionRow::SPEED_SHARE_MAXIMUM + 1),
+        Some(&None),
+        None,
+        &mut bad_value,
+    )
+    .unwrap();
+    let semantic = DeltaRow {
+        key: key(4),
+        mask: 1 << 30,
+        format: crate::FORMAT_VERSION,
+        recorded_fields: TableId::LandCombatDivisions.field_count(),
+        values: bad_value,
+    };
+    let malformed = DeltaRow {
+        key: key(8),
+        mask: 1 << 9,
+        format: crate::FORMAT_VERSION,
+        recorded_fields: TableId::LandCombatDivisions.field_count(),
+        values: vec![],
+    };
+    for changed in [
+        vec![semantic.clone()],
+        vec![semantic.clone(), malformed.clone()],
+    ] {
+        for deleted in [
+            vec![key(0), key(1), key(2)],
+            vec![key(0), key(1), key(2), key(11)],
+        ] {
+            let expected = merged(&baseline, &changed, &deleted).unwrap_err();
+            let actual = baseline
+                .clone()
+                .apply_delta_validated(&changed, &deleted)
+                .unwrap_err();
+            assert_eq!(
+                (actual.kind(), actual.to_string()),
+                (expected.kind(), expected.to_string()),
+                "{changed:?} {deleted:?}"
+            );
+        }
+    }
 }

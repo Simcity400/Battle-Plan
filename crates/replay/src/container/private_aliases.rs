@@ -11,7 +11,12 @@ use crate::{
     rows::{self, LandCombatDivisionRow, Recorded, TableId, TableRows, tables},
 };
 use engine_allocation as allocation;
+use replay_data::measurement::{self, Counter};
 use std::io;
+
+#[path = "private_aliases/sparse.rs"]
+mod sparse;
+use sparse::Sparse;
 
 pub(crate) const TABLES: &[TableId] = &[
     TableId::DivisionMovement,
@@ -356,7 +361,11 @@ fn transform(
 ) -> io::Result<SharedView> {
     let result = match view {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
-            let rows = rows.try_clone_validated()?;
+            let rows = {
+                let _cpu = crate::cpu::reader("reader_clone", rows.table());
+                measurement::count(Counter::WholeCloneBytes, sparse::clone_bytes(rows));
+                rows.try_clone_validated()?
+            };
             // The observers' state totals sum the view's own damage rows.
             let totals = match &rows {
                 TableRows::CombatLogObservers(_) => Some(damage_totals(view)?),
@@ -371,6 +380,7 @@ fn transform(
                 marks,
                 encode,
                 default,
+                None,
             )?;
             match view {
                 TableView::Truncated { missing, .. } => TableView::Truncated {
@@ -409,7 +419,9 @@ fn transform_rows(
     marks: &mut Marks,
     encode: bool,
     default: u16,
+    province_index: Option<&sparse::Provinces>,
 ) -> io::Result<TableRows> {
+    let _cpu = crate::cpu::reader("reader_transform", rows.table());
     let mut seen = 0;
     match &mut rows {
         TableRows::LandCombatDivisions(rows) => {
@@ -471,11 +483,18 @@ fn transform_rows(
             if encode {
                 allocation::reserve(marks, rows.len())?;
             }
-            let members = province_members(sources)?;
+            let members = if province_index.is_none() {
+                province_members(sources)?
+            } else {
+                Vec::new()
+            };
             for row in rows {
                 let key = row.key();
                 let mut bits = row_bits(marks, key, encode, &mut seen, default);
-                let candidate = unique_province(&members, row.id);
+                let candidate = match province_index {
+                    Some(index) => index.unique(row.id),
+                    None => unique_province(&members, row.id),
+                };
                 if encode {
                     if candidate == Some(row.province) {
                         bits |= 1;
@@ -1128,6 +1147,7 @@ trait Candidate {
 /// Observers total whole rows; combat divisions join through division identities.
 fn candidate<C: Candidate>(table: TableId, work: C) -> Option<io::Result<C::Output>> {
     Some(match table {
+        TableId::LandCombatDivisions => work.typed::<tables::LandCombatDivisions>(),
         TableId::DivisionStatus => work.typed::<tables::DivisionStatus>(),
         TableId::DivisionMovement => work.typed::<tables::DivisionMovement>(),
         TableId::Divisions => work.typed::<tables::Divisions>(),
@@ -1155,6 +1175,8 @@ enum Feeds {
     Key,
     /// Every occurrence of the row's key among the source rows' members.
     Members,
+    /// All combat members naming a division handle.
+    Division,
     /// Every row of the source: a change resolves the whole table.
     Table,
 }
@@ -1163,6 +1185,7 @@ fn feeds(table: TableId, source: TableId) -> Feeds {
     match (table, source) {
         (TableId::DivisionStatus, TableId::SimulationFeatures) => Feeds::Table,
         (TableId::Divisions, TableId::ProvinceUnitOrder) => Feeds::Members,
+        (TableId::LandCombatDivisions, _) => Feeds::Division,
         _ => Feeds::Key,
     }
 }
@@ -1206,6 +1229,7 @@ fn catch_up(
             .take()
             .filter(|view| matches!(&**view, TableView::Complete(_)))
             .map(|view| (hours[*source_at - 1], view));
+        let _cpu = crate::cpu::reader("reader_raw_apply", source);
         *view = Some(advance_table(
             source,
             column.update(*source_at),
@@ -1223,7 +1247,8 @@ fn source_keys(
     column: &(impl Column + ?Sized),
     from: usize,
     at: usize,
-    keys: &mut Vec<u128>,
+    relevant: &dyn Fn(u128, u64) -> bool,
+    keys: &mut Vec<(u128, u64)>,
     check: &mut Check<'_>,
 ) -> io::Result<bool> {
     for hour in from..=at {
@@ -1234,9 +1259,23 @@ fn source_keys(
             TableUpdate::Delta {
                 changed, deleted, ..
             } => {
-                allocation::reserve(keys, allocation::add(changed.len(), deleted.len())?)?;
-                keys.extend(changed.iter().map(|row| row.key));
-                keys.extend_from_slice(deleted);
+                for row in changed {
+                    let mask = if row.recorded_fields <= u64::BITS as usize {
+                        row.mask | !rows::full_mask(row.recorded_fields)
+                    } else {
+                        u64::MAX
+                    };
+                    if relevant(row.key, mask) {
+                        allocation::reserve(keys, 1)?;
+                        keys.push((row.key, mask));
+                    }
+                }
+                for &key in deleted {
+                    if relevant(key, u64::MAX) {
+                        allocation::reserve(keys, 1)?;
+                        keys.push((key, u64::MAX));
+                    }
+                }
             }
             TableUpdate::Unchanged { .. } => {}
             _ => return Ok(false),
@@ -1279,10 +1318,11 @@ impl Followed {
         &self,
         column: &(impl Column + ?Sized),
         at: usize,
-        keys: &mut Vec<u128>,
+        relevant: &dyn Fn(u128, u64) -> bool,
+        keys: &mut Vec<(u128, u64)>,
         check: &mut Check<'_>,
     ) -> io::Result<bool> {
-        source_keys(column, self.source_at, at, keys, check)
+        source_keys(column, self.source_at, at, relevant, keys, check)
     }
 
     pub(crate) fn complete(&self) -> bool {
@@ -1332,7 +1372,8 @@ pub(crate) trait Supply {
         &mut self,
         index: usize,
         at: usize,
-        keys: &mut Vec<u128>,
+        relevant: &dyn Fn(u128, u64) -> bool,
+        keys: &mut Vec<(u128, u64)>,
         check: &mut Check<'_>,
     ) -> io::Result<bool>;
     /// Whether the source was complete at the hour it was last brought up to.
@@ -1380,11 +1421,12 @@ impl<F: FnMut(TableId, &mut Check<'_>) -> io::Result<Updates>> Supply for Own<F>
         &mut self,
         index: usize,
         at: usize,
-        keys: &mut Vec<u128>,
+        relevant: &dyn Fn(u128, u64) -> bool,
+        keys: &mut Vec<(u128, u64)>,
         check: &mut Check<'_>,
     ) -> io::Result<bool> {
         let (_, column, followed) = &self.loaded[index];
-        followed.changed_keys(column, at, keys, check)
+        followed.changed_keys(column, at, relevant, keys, check)
     }
 
     fn complete(&self, index: usize) -> bool {
@@ -1570,6 +1612,7 @@ impl Candidate for Merge<'_> {
             _ => Vec::new(),
         };
         allocation::reserve(&mut out, count)?;
+        measurement::count(Counter::MergedRows, rows.len());
         let mut old = std::mem::take(rows);
         let mut before = old.drain(..).peekable();
         let mut changed = changed.into_iter().peekable();
@@ -1614,7 +1657,8 @@ fn candidate_hour(
     default: u16,
     previous: &(Hour, SharedView),
     supply: &mut impl Supply,
-    source_changes: &mut Vec<u128>,
+    source_changes: &mut Vec<(u128, u64)>,
+    sparse: &mut Sparse,
     check: &mut Check<'_>,
 ) -> io::Result<Option<CandidateHour>> {
     let (TableView::Complete(raw_rows), TableView::Complete(resolved)) = (view, &*previous.1)
@@ -1624,54 +1668,112 @@ fn candidate_hour(
     #[cfg(test)]
     let _scope = hooks::Scope::enter();
     at_step(Step::Keys);
-    let mut keys = match raw {
-        TableUpdate::Delta {
-            changed, deleted, ..
-        } => allocation::collect_vec(
-            changed
-                .iter()
-                .map(|row| row.key)
-                .chain(deleted.iter().copied()),
-        )?,
-        TableUpdate::Unchanged { .. } => Vec::new(),
-        _ => return Ok(None),
-    };
+    let _keys_cpu = crate::cpu::reader("reader_candidate_keys", table);
+    if !matches!(
+        raw,
+        TableUpdate::Delta { .. } | TableUpdate::Unchanged { .. }
+    ) {
+        return Ok(None);
+    }
+    measurement::count(Counter::CandidateHours, 1);
+    let mut keys = std::mem::take(&mut sparse.keys);
+    keys.clear();
+    if let TableUpdate::Delta {
+        changed, deleted, ..
+    } = raw
+    {
+        allocation::reserve(&mut keys, allocation::add(changed.len(), deleted.len())?)?;
+        keys.extend(changed.iter().map(|row| row.key));
+        let from = keys.len();
+        keys.extend_from_slice(deleted);
+        sparse.union_tail(&mut keys, from)?;
+    }
     allocation::reserve(&mut keys, mark_keys.len())?;
+    let from = keys.len();
     keys.extend_from_slice(mark_keys);
+    sparse.union_tail(&mut keys, from)?;
     for index in 0..supply.loaded() {
         check.run()?;
         let source = supply.table(index);
         let changed = &mut *source_changes;
         changed.clear();
-        if !supply.changed_keys(index, at, changed, check)? {
+        let reads = feeds(table, source);
+        let relevant =
+            |key, mask| sparse.relevant(table, source, raw_rows, marks, default, key, mask);
+        if !supply.changed_keys(index, at, &relevant, changed, check)? {
             return Ok(None);
         }
         let was_complete = supply.complete(index);
-        let reads = feeds(table, source);
+        let from = keys.len();
+        changed.sort_unstable_by_key(|&(key, _)| key);
+        let mut used = 0;
+        for at in 0..changed.len() {
+            let (key, mask) = changed[at];
+            if used != 0 && changed[used - 1].0 == key {
+                changed[used - 1].1 |= mask;
+            } else {
+                changed[used] = (key, mask);
+                used += 1;
+            }
+        }
+        changed.truncate(used);
+        sparse.source_keys.clear();
+        allocation::reserve(&mut sparse.source_keys, changed.len())?;
+        sparse
+            .source_keys
+            .extend(changed.iter().map(|&(key, _)| key));
         // A member's location reads its rows before and after.
         if matches!(reads, Feeds::Members) {
-            supply.members(index, changed, &mut keys)?;
+            if measurement::enabled() {
+                let before = supply.view(index);
+                // Membership projection needs only keys; retain old demanded fields for accounting.
+                for (key, mask) in changed.iter_mut() {
+                    *mask &= sparse.member_fields(raw_rows, marks, default, &before, *key);
+                }
+            }
+            supply.members(index, &sparse.source_keys, &mut keys)?;
+            sparse
+                .provinces
+                .remove(&supply.view(index), &sparse.source_keys);
         }
         at_step(Step::CatchUp);
         supply.catch_up(index, hours, at, check)?;
         at_step(Step::Keys);
+        if matches!(reads, Feeds::Members) {
+            sparse
+                .provinces
+                .add(&supply.view(index), &sparse.source_keys)?;
+        }
         if supply.complete(index) != was_complete {
             return Ok(None);
         }
         if !was_complete || changed.is_empty() {
             continue;
         }
+        if matches!(reads, Feeds::Members) && measurement::enabled() {
+            let after = supply.view(index);
+            for &(key, old_fields) in changed.iter() {
+                let fields =
+                    old_fields | sparse.member_fields(raw_rows, marks, default, &after, key);
+                measurement::source(table, source, fields);
+            }
+        }
         match reads {
             Feeds::Key => {
                 allocation::reserve(&mut keys, changed.len())?;
-                keys.extend_from_slice(changed);
+                keys.extend_from_slice(&sparse.source_keys);
             }
-            Feeds::Members => supply.members(index, changed, &mut keys)?,
+            Feeds::Members => supply.members(index, &sparse.source_keys, &mut keys)?,
+            Feeds::Division => sparse
+                .combat
+                .project(changed, source, marks, default, &mut keys)?,
             Feeds::Table => return Ok(None),
         }
+        sparse.retain_source_keys(table, source, raw_rows, marks, default, &mut keys, from);
+        sparse.union_tail(&mut keys, from)?;
     }
-    keys.sort_unstable();
-    keys.dedup();
+    let clone_cpu = crate::cpu::reader("reader_clone", table);
+    measurement::count(Counter::CandidateKeys, keys.len());
     // The candidate rows, their marks and the sources they read.
     at_step(Step::Rows);
     let Some(rows) = candidate(
@@ -1683,14 +1785,20 @@ fn candidate_hour(
     ) else {
         return Ok(None);
     };
-    let candidates = TableView::Complete(rows?);
+    let rows = rows?;
+    measurement::count(Counter::CandidateRows, rows.len());
+    measurement::count(Counter::CandidateCloneBytes, sparse::clone_bytes(&rows));
+    let candidates = TableView::Complete(rows);
     // Each candidate key's mark, found by one search per key.
-    let mut candidate_marks = allocation::vec(keys.len().min(marks.len()))?;
+    let mut candidate_marks = std::mem::take(&mut sparse.candidate_marks);
+    candidate_marks.clear();
+    allocation::reserve(&mut candidate_marks, keys.len().min(marks.len()))?;
     for key in &keys {
         if let Ok(at) = marks.binary_search_by_key(key, |&(key, _)| key) {
             candidate_marks.push(marks[at]);
         }
     }
+    drop(clone_cpu);
     let mut sources = Vec::new();
     for &source in dependencies(table) {
         check.run()?;
@@ -1710,6 +1818,9 @@ fn candidate_hour(
         allocation::reserve(&mut sources, 1)?;
         sources.push((source, supply.view(index)));
     }
+    if table == TableId::Divisions {
+        sparse.provinces.ensure(&sources)?;
+    }
     at_step(Step::Resolve);
     // The copied candidate rows resolve in place.
     let TableView::Complete(candidate_rows) = candidates else {
@@ -1723,8 +1834,10 @@ fn candidate_hour(
         &mut candidate_marks,
         false,
         default,
+        (table == TableId::Divisions).then_some(&sparse.provinces),
     )?;
     at_step(Step::Encode);
+    let _cpu = crate::cpu::reader("reader_canonical_diff", table);
     let (plain, emitted) = candidate(
         table,
         Plain {
@@ -1735,6 +1848,7 @@ fn candidate_hour(
         },
     )
     .expect("a candidate table")?;
+    sparse.candidate_marks = candidate_marks;
     Ok(Some(CandidateHour {
         keys,
         rows: resolved_rows,
@@ -1773,7 +1887,11 @@ fn whole_hour(
         allocation::reserve(sources, 1)?;
         sources.push((source, supply.view(index)));
     }
+    let _table = measurement::table(table);
+    measurement::count(Counter::WholeHours, 1);
+    measurement::count(Counter::WholeRows, sparse::view_len(view));
     let resolved = transform(view, sources, marks, false, default)?;
+    let _cpu = crate::cpu::reader("reader_canonical_diff", table);
     let plain = plain(
         &resolved,
         previous.map(|(hour, view)| (*hour, &**view)),
@@ -1800,7 +1918,8 @@ pub(crate) struct TableResolution<'m> {
     mark_keys: Vec<u128>,
     // Buffers kept from one candidate hour to the next.
     spare: Option<TableRows>,
-    source_changes: Vec<u128>,
+    source_changes: Vec<(u128, u64)>,
+    sparse: Sparse,
 }
 
 impl<'m> TableResolution<'m> {
@@ -1837,6 +1956,7 @@ impl<'m> TableResolution<'m> {
             mark_keys: Vec::new(),
             spare: None,
             source_changes: Vec::new(),
+            sparse: Sparse::default(),
         })
     }
 
@@ -1859,12 +1979,17 @@ impl<'m> TableResolution<'m> {
             .previous_raw
             .take()
             .filter(|(_, view)| matches!(&**view, TableView::Complete(_)));
-        let view = advance_table(table, &raw, before, hours[at], false)?;
+        let _table = measurement::table(table);
+        let view = {
+            let _cpu = crate::cpu::reader("reader_raw_apply", table);
+            advance_table(table, &raw, before, hours[at], false)?
+        };
         let rows = match &*view {
             TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len(),
             TableView::Unavailable { .. } | TableView::NotRecorded { .. } => 0,
         };
         self.mark_keys.clear();
+        let marks_cpu = crate::cpu::reader("reader_raw_grammar", table);
         if at == 0 {
             self.marks = take_marks(table, &mut self.key_input, &[], rows)?;
         } else if let Some(input) = &mut self.later_input {
@@ -1876,6 +2001,11 @@ impl<'m> TableResolution<'m> {
             } else {
                 take_marks(table, input, &self.marks, rows)?
             };
+        }
+        drop(marks_cpu);
+        if candidates && table == TableId::LandCombatDivisions {
+            let _cpu = crate::cpu::reader("reader_candidate_keys", table);
+            self.sparse.combat.advance(&view, &raw)?;
         }
         // Refusals fall back whole; allocation failures propagate because source views may be gone.
         let hour = match self.previous.as_ref().filter(|_| candidates && at != 0) {
@@ -1891,6 +2021,7 @@ impl<'m> TableResolution<'m> {
                 previous,
                 supply,
                 &mut self.source_changes,
+                &mut self.sparse,
                 check,
             ) {
                 Ok(hour) => hour,
@@ -1932,6 +2063,7 @@ impl<'m> TableResolution<'m> {
                 #[cfg(test)]
                 let merging = hooks::Scope::enter();
                 at_step(Step::Merge);
+                let merge_cpu = crate::cpu::reader("reader_legacy_merge", table);
                 candidate(
                     table,
                     Merge {
@@ -1942,8 +2074,11 @@ impl<'m> TableResolution<'m> {
                     },
                 )
                 .expect("a candidate table")?;
+                drop(merge_cpu);
+                self.sparse.keys = keys;
                 #[cfg(test)]
                 {
+                    self.sparse.hours += 1;
                     drop(merging);
                     if let Some(whole) = whole {
                         let (whole_plain, whole_view) =
@@ -1977,6 +2112,10 @@ impl<'m> TableResolution<'m> {
                     check,
                 )?;
                 if candidates {
+                    if table == TableId::Divisions {
+                        let _cpu = crate::cpu::reader("reader_candidate_keys", table);
+                        self.sparse.provinces.reset(&self.sources)?;
+                    }
                     self.sources.clear();
                 }
                 (plain, resolved, None)
@@ -1994,7 +2133,10 @@ impl<'m> TableResolution<'m> {
         }
         self.out.push(match emitted {
             Some(emitted) => emitted,
-            None => update(table, &plain, at == 0)?,
+            None => {
+                let _cpu = crate::cpu::reader("reader_canonical_diff", table);
+                update(table, &plain, at == 0)?
+            }
         });
         self.previous_raw = Some((hours[at], view));
         self.previous = Some((hours[at], resolved));
@@ -2470,3 +2612,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "private_aliases/sparse_tests.rs"]
+mod sparse_tests;

@@ -466,6 +466,10 @@ impl Model {
                 last.get(&keys[added[index]]).copied().unwrap_or(0)
             })?;
             self.held_keys.clear();
+            replay_data::measurement::count(
+                replay_data::measurement::Counter::ModelCopyBytes,
+                std::mem::size_of_val(held.keys()),
+            );
             self.held_keys.extend_from_slice(held.keys());
             self.held_changes = Some(held.changes());
             return Ok(());
@@ -487,8 +491,13 @@ impl Model {
                 }
             });
         }
+        let masks_bytes = std::mem::size_of_val(masks.as_slice());
         self.spare_masks = std::mem::replace(&mut self.held_masks, masks);
         self.held_keys.clear();
+        replay_data::measurement::count(
+            replay_data::measurement::Counter::ModelCopyBytes,
+            std::mem::size_of_val(held.keys()) + masks_bytes,
+        );
         self.held_keys.extend_from_slice(held.keys());
         self.held_changes = Some(held.changes());
         Ok(())

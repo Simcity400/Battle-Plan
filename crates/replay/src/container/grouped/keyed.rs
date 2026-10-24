@@ -29,6 +29,7 @@ use crate::{
     rows::{TableId, Token},
 };
 use engine_allocation as allocation;
+use replay_data::measurement::{self, Counter};
 use std::io;
 
 /// Masks a [`MaskList`] keeps.
@@ -82,6 +83,14 @@ pub(super) fn remove_at<T: Copy>(values: &mut Vec<T>, removed: &[usize]) {
     let mut write = first;
     for (index, &at) in removed.iter().enumerate() {
         let end = removed.get(index + 1).copied().unwrap_or(values.len());
+        measurement::count(
+            if std::mem::size_of::<T>() == 16 {
+                Counter::KeyCopyBytes
+            } else {
+                Counter::ModelCopyBytes
+            },
+            (end - at - 1) * std::mem::size_of::<T>(),
+        );
         values.copy_within(at + 1..end, write);
         write += end - at - 1;
     }
@@ -100,6 +109,14 @@ pub(super) fn insert_at<T: Copy + Default>(
     let mut end = old;
     for (index, &place) in added.iter().enumerate().rev() {
         let at = place - index;
+        measurement::count(
+            if std::mem::size_of::<T>() == 16 {
+                Counter::KeyCopyBytes
+            } else {
+                Counter::ModelCopyBytes
+            },
+            (end - at) * std::mem::size_of::<T>(),
+        );
         values.copy_within(at..end, place + 1);
         values[place] = value(index);
         end = at;
@@ -271,11 +288,26 @@ impl KeySet {
                 merged.push(key);
             }
             merged.extend(held);
+            measurement::count(
+                Counter::KeyCopyBytes,
+                merged.len() * std::mem::size_of::<u128>(),
+            );
             self.keys = merged;
         }
         if !changes.deleted.is_empty() {
             let deleted = &changes.deleted;
-            self.keys.retain(|key| deleted.binary_search(key).is_err());
+            if measurement::enabled() {
+                let (mut removed, mut copied) = (false, 0);
+                self.keys.retain(|key| {
+                    let keep = deleted.binary_search(key).is_err();
+                    copied += usize::from(keep && removed);
+                    removed |= !keep;
+                    keep
+                });
+                measurement::count(Counter::KeyCopyBytes, copied * std::mem::size_of::<u128>());
+            } else {
+                self.keys.retain(|key| deleted.binary_search(key).is_err());
+            }
         }
         self.unordered = !increasing(&self.keys);
         Ok(())

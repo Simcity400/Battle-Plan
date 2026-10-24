@@ -74,6 +74,7 @@ pub fn enabled() -> bool {
 /// counter's rate first.
 pub fn enable() {
     TSC_HZ.get_or_init(calibrate);
+    replay_data::measurement::enable();
     ENABLED.store(true, Ordering::Release);
 }
 
@@ -134,6 +135,46 @@ pub fn scope_phase(family: &'static str) -> Scope {
     )
 }
 
+/// An exclusive reader phase labelled by table, with nested native operation attribution.
+pub struct ReaderScope {
+    active: bool,
+    _table: replay_data::measurement::TableScope,
+}
+
+impl Drop for ReaderScope {
+    fn drop(&mut self) {
+        if self.active {
+            with_local(ThreadAcc::pop_reader);
+        }
+    }
+}
+
+#[inline]
+pub fn reader(phase: &'static str, table: TableId) -> ReaderScope {
+    #[cfg(any(test, feature = "test-support"))]
+    READER_CALLS.with(|calls| {
+        if let Some(calls) = &mut *calls.borrow_mut() {
+            *calls.entry((phase, table)).or_default() += 1;
+        }
+    });
+    let active = if enabled() {
+        static NAMES: OnceLock<Vec<&'static str>> = OnceLock::new();
+        let names = NAMES.get_or_init(|| {
+            TableId::ALL
+                .iter()
+                .map(|table| intern(&format!("{table:?}")))
+                .collect()
+        });
+        with_local(|acc| acc.push_reader(phase, names[table.index()])).is_some()
+    } else {
+        false
+    };
+    ReaderScope {
+        active,
+        _table: replay_data::measurement::table(table),
+    }
+}
+
 /// [`scope`] with a family named at run time (a product's name), kept
 /// once per distinct name.
 pub fn scope_named(category: &'static str, family: &str) -> Scope {
@@ -187,6 +228,12 @@ pub fn note(category: &'static str, family: &'static str, started: u64) {
         .or_default();
     entry[0] += spent;
     entry[1] += 1;
+}
+
+pub fn note_named(category: &'static str, family: &str, started: u64) {
+    if enabled() {
+        note(category, intern(family), started);
+    }
 }
 
 /// One table section of one block decoded, taking `cycles` of thread time.
@@ -264,6 +311,7 @@ pub fn snapshot() -> Value {
     let ns = |cycles: u64| (cycles as f64 / hz * 1e9).round() as u64;
     let mut labels: HashMap<(String, &'static str, &'static str), [u64; 2]> = HashMap::new();
     let mut tables = vec![[0u64; 6]; TABLE_COUNT];
+    let mut reader_phases: HashMap<Label, [u64; 2]> = HashMap::new();
     let mut threads = Vec::new();
     let registry: Vec<_> = REGISTRY
         .lock()
@@ -284,6 +332,14 @@ pub fn snapshot() -> Value {
             labels
                 .entry((acc.role.to_owned(), top.0, top.1))
                 .or_default()[0] += pending;
+        }
+        for (label, value) in &acc.reader_phases {
+            let entry = reader_phases.entry(*label).or_default();
+            entry[0] += value[0];
+            entry[1] += value[1];
+        }
+        if let Some(label) = acc.reader_stack.last() {
+            reader_phases.entry(*label).or_default()[0] += pending;
         }
         for (into, from) in tables.iter_mut().zip(&acc.tables) {
             for (into, from) in into.iter_mut().zip(from) {
@@ -310,6 +366,11 @@ pub fn snapshot() -> Value {
             entry[0] += value[0];
             entry[1] += value[1];
             *exited_ns.entry(role).or_default() += value[0];
+        }
+        for (label, value) in &exited.reader_phases {
+            let entry = reader_phases.entry(*label).or_default();
+            entry[0] += value[0];
+            entry[1] += value[1];
         }
         for (into, from) in tables.iter_mut().zip(&exited.tables) {
             for (into, from) in into.iter_mut().zip(from) {
@@ -406,9 +467,23 @@ pub fn snapshot() -> Value {
         })
         .unwrap_or_default();
     json!({
+        "readerPhases": ({
+            let mut phases: Vec<_> = reader_phases.into_iter().collect();
+            phases.sort_unstable_by_key(|(label, _)| *label);
+            phases.into_iter().map(|((phase, table), value)| json!({"phase": phase, "table": table, "ns": ns(value[0]), "calls": value[1]})).collect::<Vec<_>>()
+        }),
+        "readerOperations": replay_data::measurement::snapshot().into_iter().map(|(table, values)| {
+            let mut row = serde_json::Map::new();
+            row.insert("table".into(), json!(table.map_or_else(|| "unattributed".to_owned(), |table| format!("{table:?}"))));
+            for (name, value) in values { row.insert(name.into(), json!(value)); }
+            Value::Object(row)
+        }).collect::<Vec<_>>(),
+        "relevantSourceMasks": replay_data::measurement::source_masks().into_iter().map(|(target, source, mask)| {
+            json!({"table": format!("{target:?}"), "source": format!("{source:?}"), "mask": mask})
+        }).collect::<Vec<_>>(),
         "notes": notes,
         "deltaCopies": copies,
-        "scope": "Thread cycle time (QueryThreadCycleTime, which a blocked thread does not accrue) charged to the (category, family) label on top of each thread's stack, converted at the calibrated counter rate. A thread's time before its first label is its base label from its thread name. Live threads include their current label's open span. decodeTables: each table section decode of a block, first, by another family after one had, or by the same family again. reconstructTables: each reconstructed table-hour, first or repeated (by any decoder) by hour, ignoring branch.",
+        "scope": "Thread cycle time (QueryThreadCycleTime, which a blocked thread does not accrue) charged to the (category, family) label on top of each thread's stack, converted at the calibrated counter rate. A thread's time before its first label is its base label from its thread name. Live threads include their current label's open span. readerPhases are exclusive among reader phases by table (nested generic inflate/wire/shadow scopes remain within the active reader phase); alias_group_inclusive notes overlap phases and source decoding and must not be added to them. readerOperations are operation counts, copy bytes are source-level element traffic, not allocator or hardware measurements. relevantSourceMasks OR the propagated source-field masks. decodeTables: each non-group table section decode of a block, first, by another family after one had, or by the same family again. reconstructTables: each reconstructed table-hour, first or repeated (by any decoder) by hour, ignoring branch.",
         "tscHz": hz,
         "processCpuNs": process_ns(),
         "labels": labels,
@@ -444,6 +519,7 @@ struct Exited {
     threads: u64,
     labels: HashMap<(&'static str, &'static str, &'static str), [u64; 2]>,
     tables: Vec<[u64; 6]>,
+    reader_phases: HashMap<Label, [u64; 2]>,
 }
 
 struct ThreadAcc {
@@ -451,10 +527,12 @@ struct ThreadAcc {
     name: String,
     role: &'static str,
     stack: Vec<Label>,
+    reader_stack: Vec<Label>,
     last: u64,
     totals: HashMap<Label, [u64; 2]>,
     /// Reconstruct cycles and counts: first, repeated, untracked.
     tables: Vec<[u64; 6]>,
+    reader_phases: HashMap<Label, [u64; 2]>,
 }
 
 impl ThreadAcc {
@@ -463,6 +541,9 @@ impl ThreadAcc {
         self.last = now;
         if let Some(top) = self.stack.last() {
             self.totals.entry(*top).or_default()[0] += spent;
+        }
+        if let Some(label) = self.reader_stack.last() {
+            self.reader_phases.entry(*label).or_default()[0] += spent;
         }
     }
 
@@ -475,6 +556,18 @@ impl ThreadAcc {
         let label = (category, family);
         self.totals.entry(label).or_default()[1] += 1;
         self.stack.push(label);
+    }
+
+    fn push_reader(&mut self, phase: &'static str, table: &'static str) {
+        self.push(phase, None);
+        let label = (phase, table);
+        self.reader_phases.entry(label).or_default()[1] += 1;
+        self.reader_stack.push(label);
+    }
+
+    fn pop_reader(&mut self) {
+        self.pop();
+        self.reader_stack.pop();
     }
 
     fn pop(&mut self) {
@@ -502,6 +595,11 @@ impl Drop for Local {
         let role = acc.role;
         for (label, value) in acc.totals.drain() {
             let entry = exited.labels.entry((role, label.0, label.1)).or_default();
+            entry[0] += value[0];
+            entry[1] += value[1];
+        }
+        for (label, value) in acc.reader_phases.drain() {
+            let entry = exited.reader_phases.entry(label).or_default();
             entry[0] += value[0];
             entry[1] += value[1];
         }
@@ -553,10 +651,12 @@ fn register() -> Local {
         name,
         role,
         stack: vec![base],
+        reader_stack: Vec::new(),
         // From the thread's start: its time before this is its base label's.
         last: 0,
         totals,
         tables: vec![[0; 6]; TABLE_COUNT],
+        reader_phases: HashMap::new(),
     }));
     REGISTRY
         .lock()
@@ -709,4 +809,65 @@ fn current_cycles() -> u64 {
 #[cfg(not(windows))]
 fn process_ns() -> Option<u64> {
     None
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+
+    #[test]
+    fn reader_phases_are_exclusive_across_nested_tables_but_keep_nested_grammar_categories() {
+        let family = ("thread", "observer");
+        let grammar = ("reader_raw_grammar", "DivisionStatus");
+        let apply = ("reader_raw_apply", "DivisionPanelStats");
+        let mut acc = ThreadAcc {
+            handle: Handle::current(),
+            name: "synthetic".into(),
+            role: "synthetic",
+            stack: vec![family],
+            reader_stack: Vec::new(),
+            last: 0,
+            totals: HashMap::new(),
+            tables: Vec::new(),
+            reader_phases: HashMap::new(),
+        };
+        acc.charge(10);
+        acc.reader_stack.push(grammar);
+        acc.stack.push(("reader_raw_grammar", "observer"));
+        acc.charge(30);
+        acc.stack.push(("decode_wire", "observer"));
+        acc.charge(40);
+        acc.reader_stack.push(apply);
+        acc.stack.push(("reader_raw_apply", "observer"));
+        acc.charge(70);
+        acc.reader_stack.pop();
+        acc.stack.pop();
+        acc.charge(90);
+        assert_eq!(acc.reader_phases[&grammar][0], 50);
+        assert_eq!(acc.reader_phases[&apply][0], 30);
+        assert_eq!(acc.totals.values().map(|value| value[0]).sum::<u64>(), 90);
+        assert_eq!(acc.stack.last().unwrap().1, "observer");
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static READER_CALLS: RefCell<Option<HashMap<(&'static str, TableId), u64>>> =
+        const { RefCell::new(None) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn capture_reader_calls<T>(
+    work: impl FnOnce() -> T,
+) -> (T, HashMap<(&'static str, TableId), u64>) {
+    struct Restore(Option<HashMap<(&'static str, TableId), u64>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            READER_CALLS.set(self.0.take());
+        }
+    }
+    let _restore = Restore(READER_CALLS.replace(Some(HashMap::new())));
+    let result = work();
+    (result, READER_CALLS.take().unwrap())
 }

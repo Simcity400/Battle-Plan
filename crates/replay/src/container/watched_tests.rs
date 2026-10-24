@@ -729,3 +729,58 @@ fn clock_hours_keep_no_change_only_division_updates() {
         }
     }
 }
+
+#[test]
+fn watched_and_frame_decoders_attribute_each_public_table_application() {
+    let table = TableId::Countries;
+    let mut chosen = [false; TABLE_COUNT];
+    chosen[table.index()] = true;
+    let mut watched = BlockTables::new(CAMPAIGN, FormatVersion::CURRENT, &chosen).unwrap();
+    let mut decoder = FrameDecoder::for_tables(&[table]);
+    let mut encoder = FrameEncoder::new();
+    for hour in 1..=3 {
+        let mut captured = source(1, hour);
+        *captured.tables[table.index()] =
+            TableView::Complete(TableRows::Countries(vec![CountryRow {
+                id: 1,
+                canonical_slot: 1,
+                command_power_raw: i64::from(hour.min(2)),
+                ..Default::default()
+            }]));
+        let frame = encoder.encode(captured, hour == 1).unwrap().into_recorded();
+        assert!(match hour {
+            1 => matches!(frame.tables[table.index()], TableUpdate::Snapshot(_)),
+            2 => matches!(frame.tables[table.index()], TableUpdate::Delta { .. }),
+            3 => matches!(frame.tables[table.index()], TableUpdate::Unchanged { .. }),
+            _ => unreachable!(),
+        });
+        let (_, ordinary) = crate::cpu::capture_reader_calls(|| {
+            decoder.advance(&*frame).unwrap();
+        });
+        let (_, shared) =
+            crate::cpu::capture_reader_calls(|| watched.advance(&frame, &[0]).unwrap());
+        let expected = std::collections::HashMap::from([(("reader_public_apply", table), 1)]);
+        assert_eq!(ordinary, expected);
+        assert_eq!(shared, expected);
+        let actual = watched.views[0].as_ref().unwrap();
+        let expected = &decoder.current().unwrap().tables[table.index()];
+        assert_eq!(actual, expected);
+        assert_eq!(actual.sampled_at(), expected.sampled_at());
+        watched.release_before();
+    }
+    let (_, private) = crate::cpu::capture_reader_calls(|| {
+        let _cpu = crate::cpu::reader("reader_raw_apply", table);
+        crate::frame::advance_table(
+            table,
+            &TableUpdate::Unchanged { baseline: 3 },
+            None,
+            4,
+            false,
+        )
+        .unwrap()
+    });
+    assert_eq!(
+        private,
+        std::collections::HashMap::from([(("reader_raw_apply", table), 1)])
+    );
+}

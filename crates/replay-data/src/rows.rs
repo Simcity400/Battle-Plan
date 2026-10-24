@@ -8,6 +8,7 @@ pub use crate::event_feed_rows::EventFeedHistoryRow;
 #[cfg(test)]
 use crate::format::FormatVersion;
 pub use crate::map_event_rows::*;
+use crate::measurement::{self, Counter};
 pub use crate::nuclear_rows::*;
 pub use crate::peace_rows::*;
 use crate::value::{EncodeValue, Value};
@@ -753,6 +754,9 @@ macro_rules! define_tables {
             }
             pub(crate) fn apply_range_update(self, previous: &mut TableRows, ranges: &[std::ops::Range<u128>]) -> io::Result<TableRows> {
                 match (self, previous) { $((Self::$table(fresh), Self::$table(old)) => crate::sliced::ranges::apply(old, fresh, ranges).map(Self::$table)),+, _ => Err(invalid("key range table type mismatch")) }
+            }
+            pub fn inline_bytes(&self) -> usize {
+                match self { $(Self::$table(rows) => rows.len() * std::mem::size_of::<$row>()),+ }
             }
             /// Bytes of the row allocation: its capacity at this table's own
             /// row size. Strings and lists a row owns on the heap are not counted.
@@ -1756,6 +1760,7 @@ fn validate_typed<T: RowCodec>(rows: &[T]) -> io::Result<()> {
     for row in rows {
         #[cfg(test)]
         VALIDATED_ROWS.with(|count| count.set(count.get() + 1));
+        measurement::count(Counter::ValidatedRows, 1);
         let key = row.key();
         check_native_key(key, T::KEY_BITS)?;
         row.check_key_fields()?;
@@ -1897,8 +1902,7 @@ fn apply_typed<T: RowCodec>(
     apply_typed_at(previous, changed, deleted).map(|(rows, _)| rows)
 }
 
-/// [`apply_typed`], and the positions of the changed rows when the changes
-/// applied in place.
+/// [`apply_typed`], and the changed rows' final positions when deletions were located.
 fn apply_typed_at<T: RowCodec>(
     mut previous: Vec<T>,
     changed: &[DeltaRow],
@@ -1939,7 +1943,8 @@ fn apply_typed_at<T: RowCodec>(
     // A merge moves every row once; an insertion or deletion in place moves the
     // rows after it, so only a few edits are cheaper in place.
     if inserted + gone.len() > IN_PLACE_EDITS {
-        return merge_runs(previous, changed, &at, &gone).map(|rows| (rows, None));
+        return merge_runs(previous, changed, &at, &gone)
+            .map(|(rows, positions)| (rows, Some(positions)));
     }
     // Rows change in key order, as a merge changes them, then the edits move rows.
     let mut rows_in = allocation::vec(inserted)?;
@@ -1953,6 +1958,7 @@ fn apply_typed_at<T: RowCodec>(
         }
     }
     for &position in gone.iter().rev() {
+        measurement::count(Counter::ShiftedRows, previous.len() - position - 1);
         previous.remove(position);
     }
     allocation::reserve(&mut previous, rows_in.len())?;
@@ -1962,7 +1968,9 @@ fn apply_typed_at<T: RowCodec>(
         while removed.next_if(|&&gone| gone < position).is_some() {
             removed_before += 1;
         }
-        previous.insert(position - removed_before + earlier, row);
+        let position = position - removed_before + earlier;
+        measurement::count(Counter::ShiftedRows, previous.len() - position);
+        previous.insert(position, row);
     }
     let mut positions = allocation::vec(changed.len())?;
     let mut from = 0;
@@ -2001,8 +2009,10 @@ fn merge_runs<T: RowCodec>(
     changed: &[DeltaRow],
     at: &[Result<usize, usize>],
     gone: &[usize],
-) -> io::Result<Vec<T>> {
+) -> io::Result<(Vec<T>, Vec<usize>)> {
     let mut rows = allocation::vec(allocation::add(previous.len(), changed.len())?)?;
+    let mut positions = allocation::vec(changed.len())?;
+    measurement::count(Counter::MergedRows, previous.len());
     let mut source = Runs {
         rows: previous.into_iter(),
         next: 0,
@@ -2015,6 +2025,7 @@ fn merge_runs<T: RowCodec>(
             source.take();
         }
         source.move_to(&mut rows, place);
+        positions.push(rows.len());
         match found {
             Ok(_) => rows.push(delta.apply(Some(source.take()))?),
             Err(_) => rows.push(delta.apply::<T>(None)?),
@@ -2025,7 +2036,7 @@ fn merge_runs<T: RowCodec>(
         source.take();
     }
     rows.extend(source.rows);
-    Ok(rows)
+    Ok((rows, positions))
 }
 
 /// A baseline's rows moved out in order, `next` the position of the first left.
@@ -2047,10 +2058,7 @@ impl<T> Runs<T> {
     }
 }
 
-/// [`apply_typed`] to rows with valid keys, then [`validate_typed`] of the
-/// result. Changes applied in place leave every other row as it was, so only
-/// the changed rows and the order beside them can fail: they are checked in
-/// the order a whole-table check meets them, which reports the same error.
+/// Kept baseline rows stay valid; check changed rows in whole-validation error order.
 fn apply_typed_validated<T: RowCodec>(
     previous: Vec<T>,
     changed: &[DeltaRow],
@@ -2071,6 +2079,7 @@ fn validate_typed_at<T: RowCodec>(rows: &[T], at: &[usize]) -> io::Result<()> {
     for (index, &position) in at.iter().enumerate() {
         #[cfg(test)]
         VALIDATED_ROWS.with(|count| count.set(count.get() + 1));
+        measurement::count(Counter::ValidatedRows, 1);
         let key = rows[position].key();
         check_native_key(key, T::KEY_BITS)?;
         rows[position].check_key_fields()?;
@@ -2114,6 +2123,7 @@ fn merge_typed<T: RowCodec, R: std::borrow::Borrow<T>>(
     own: impl Fn(R) -> io::Result<T>,
 ) -> io::Result<Vec<T>> {
     let mut rows = allocation::vec(allocation::add(len, changed.len())?)?;
+    measurement::count(Counter::MergedRows, len);
     let mut changed = changed.iter().peekable();
     let mut deleted = deleted.iter().peekable();
     for previous in previous {
@@ -3222,6 +3232,7 @@ macro_rules! opaque_value {
                 let Field::Opaque(Opaque::Encoded(bytes, format)) = field else {
                     return Err(invalid("structured field requires encoded native bytes"));
                 };
+                measurement::count(Counter::NativeOpaqueBytes, bytes.len());
                 let mut input = Decoder::new(bytes);
                 input.format = format;
                 let value = <$ty as Value>::decode(&mut input)?;

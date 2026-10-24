@@ -25,7 +25,7 @@ mod wire;
 #[doc(hidden)]
 pub use self::decoder::count_unselected;
 #[doc(hidden)]
-pub use self::decoder::{advance_table, keyframe_update, not_selected};
+pub use self::decoder::{advance_public_table, advance_table, keyframe_update, not_selected};
 #[doc(hidden)]
 pub use self::wire::decode_update;
 pub use self::{

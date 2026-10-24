@@ -104,7 +104,7 @@ impl FrameDecoder {
                 .filter(|view| matches!(**view, TableView::Complete(_)))
                 .map(|view| (previous_hour, view));
             let started = if measured { crate::cpu::stamp() } else { 0 };
-            let advanced = advance_table(
+            let advanced = advance_public_table(
                 table,
                 frame.update(index),
                 previous,
@@ -151,6 +151,18 @@ pub fn keyframe_update(update: &TableUpdate) -> bool {
     )
 }
 
+/// Apply a public table view, separately attributed from private alias source applications.
+pub fn advance_public_table(
+    table: TableId,
+    update: &TableUpdate,
+    previous: Option<(Hour, SharedView)>,
+    hour: Hour,
+    read: bool,
+) -> io::Result<SharedView> {
+    let _cpu = crate::cpu::reader("reader_public_apply", table);
+    advance_table(table, update, previous, hour, read)
+}
+
 /// One table's view at `hour`, from its update and the hour before's complete
 /// view with that hour (`previous`), as [`FrameDecoder::advance`] reconstructs
 /// it: a failed update becomes a named unavailable view, and a complete table
@@ -163,6 +175,7 @@ pub fn advance_table(
     hour: Hour,
     read: bool,
 ) -> io::Result<SharedView> {
+    let _table = replay_data::measurement::table(table);
     match apply_table(table, update, previous, hour) {
         Ok(mut view) => {
             // The collector exports zero timing for skipped tables
@@ -224,15 +237,27 @@ fn apply_table(
     match update {
         TableUpdate::Snapshot(values) => {
             validate_complete(table, values, hour)?;
-            Ok(TableView::Complete(values.try_clone_validated()?).into())
+            let rows = values.try_clone_validated()?;
+            replay_data::measurement::count(replay_data::measurement::Counter::SnapshotCopies, 1);
+            replay_data::measurement::count(
+                replay_data::measurement::Counter::SnapshotRows,
+                values.len(),
+            );
+            Ok(TableView::Complete(rows).into())
         }
         TableUpdate::Truncated { rows, missing } => {
             validate_rows(table, rows)?;
             if *missing == 0 {
                 return Err(invalid("truncated table has no missing rows"));
             }
+            let rows = rows.try_clone_validated()?;
+            replay_data::measurement::count(replay_data::measurement::Counter::SnapshotCopies, 1);
+            replay_data::measurement::count(
+                replay_data::measurement::Counter::SnapshotRows,
+                rows.len(),
+            );
             Ok(TableView::Truncated {
-                rows: rows.try_clone_validated()?,
+                rows,
                 missing: *missing,
             }
             .into())

@@ -1136,6 +1136,11 @@ fn take_residual_rows<R: Residuals>(
             }
         }
         if plain_mask != 0 {
+            replay_data::measurement::count(replay_data::measurement::Counter::PredictedRows, 1);
+            replay_data::measurement::count(
+                replay_data::measurement::Counter::PredictedFields,
+                plain_mask.count_ones() as usize,
+            );
             output.push_row(key, plain_mask, &mut values, &spans)?;
             budget.check(output.written())?;
         }

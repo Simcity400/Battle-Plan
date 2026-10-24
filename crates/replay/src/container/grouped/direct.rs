@@ -17,6 +17,8 @@ pub(super) fn table_updates(
         if check.failed() || allocation::is_allocation_error(&error) {
             Err(error)
         } else {
+            let _table = replay_data::measurement::table(table);
+            replay_data::measurement::count(replay_data::measurement::Counter::DirectRetries, 1);
             super::table_updates_body(context, table, false, check)
         }
     })

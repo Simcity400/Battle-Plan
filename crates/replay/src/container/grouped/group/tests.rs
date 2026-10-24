@@ -595,3 +595,73 @@ fn overlapping_groups_decode_a_shared_member_twice_and_admit_it_once() {
     assert_eq!(admitted.len(), 1, "one admission: {admitted:?}");
     assert!(admitted[0].returned && !admitted[0].keyframe_only);
 }
+
+#[test]
+fn grouped_and_standalone_raw_retries_count_even_when_both_attempts_refuse() {
+    use replay_data::measurement::{self, Counter};
+    let (replay, _) = alias_fixture(Layout::Chosen);
+    let index = &replay.index[0];
+    let mut block = Block::new(&replay, index);
+    let table = TableId::DivisionStatus;
+    block.directory.sections[super::super::keyframe_section(table)] = None;
+    let memo: Vec<_> = TableId::ALL.iter().map(|_| OnceLock::new()).collect();
+    let context = Context {
+        replay: &replay,
+        index,
+        position: replay.block_position(index),
+        block: &block.bytes,
+        directory: &block.directory,
+        format: replay.format,
+        present: &block.present,
+        hours: &block.hours,
+        entries: &block.entries,
+        selected: None,
+        complete: true,
+        memo: &memo,
+        group: &OnceLock::new(),
+    };
+    for grouped in [false, true] {
+        for cancelled in [false, true] {
+            let mut stop = || Err(io::Error::from(io::ErrorKind::Interrupted));
+            let mut check = if cancelled {
+                Check::new(&mut stop)
+            } else {
+                Check::disabled()
+            };
+            let ((result, operations), phases) = crate::cpu::capture_reader_calls(|| {
+                measurement::capture(|| {
+                    if grouped {
+                        super::raw_column(&context, table, &mut check).map(|_| ())
+                    } else {
+                        super::super::direct::table_updates(&context, table, &mut check).map(|_| ())
+                    }
+                })
+            });
+            let error = result.unwrap_err();
+            assert_eq!(
+                error.kind(),
+                if cancelled {
+                    io::ErrorKind::Interrupted
+                } else {
+                    io::ErrorKind::InvalidData
+                }
+            );
+            if !cancelled {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("no keyframe entry for DivisionStatus"),
+                    "{error}"
+                );
+            }
+            assert_eq!(
+                operations.counter(table, Counter::DirectRetries),
+                u64::from(!cancelled)
+            );
+            assert_eq!(
+                phases.get(&("reader_raw_grammar", table)),
+                Some(&(if cancelled { 1 } else { 2 }))
+            );
+        }
+    }
+}

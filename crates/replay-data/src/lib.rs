@@ -12,6 +12,8 @@ pub mod format;
 pub mod identity;
 pub mod intel_estimates;
 mod map_event_rows;
+#[doc(hidden)]
+pub mod measurement;
 pub mod military_aid;
 pub mod naval_trees;
 mod nuclear_rows;
