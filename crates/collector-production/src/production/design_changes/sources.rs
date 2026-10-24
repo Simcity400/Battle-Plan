@@ -16,6 +16,12 @@ pub(super) struct Interests {
     pub(super) organisation_pointers: HashMap<usize, u64>,
 }
 impl Interests {
+    pub(super) fn allocated_bytes(&self) -> usize {
+        self.entries.capacity() * std::mem::size_of::<(Key, (u32, bool))>()
+            + self.dirty_authors.capacity() * std::mem::size_of::<u64>()
+            + self.organisations.capacity() * std::mem::size_of::<(u64, usize)>()
+            + self.organisation_pointers.capacity() * std::mem::size_of::<(usize, u64)>()
+    }
     pub fn prepare(&mut self, entries: usize) -> Result<(), &'static str> {
         engine_allocation::reserve_map(&mut self.entries, entries)
             .map_err(|_| "design source watch allocation failed")
@@ -635,6 +641,26 @@ mod tests {
             rows::RowCodec::check_key_fields(row).unwrap();
         }
         assert_ne!(output[2].sources, output[3].sources);
+    }
+    #[test]
+    fn interest_capacity_counts_every_map_and_the_dirty_author_set_after_clear() {
+        let mut interests = Interests::default();
+        assert_eq!(interests.allocated_bytes(), 0);
+        interests.prepare(7).unwrap();
+        interests.prepare_organisations(11).unwrap();
+        let expected = interests.entries.capacity() * std::mem::size_of::<(Key, (u32, bool))>()
+            + interests.dirty_authors.capacity() * std::mem::size_of::<u64>()
+            + interests.organisations.capacity() * std::mem::size_of::<(u64, usize)>()
+            + interests.organisation_pointers.capacity() * std::mem::size_of::<(usize, u64)>();
+        assert!(interests.dirty_authors.capacity() > 0);
+        interests.insert(Key::Direct(0x1000), 5).unwrap();
+        interests.organisation(1, Some(0x2000)).unwrap();
+        interests.author_changed(1);
+        interests.entries.clear();
+        interests.dirty_authors.clear();
+        interests.organisations.clear();
+        interests.organisation_pointers.clear();
+        assert_eq!(interests.allocated_bytes(), expected);
     }
     #[test]
     fn prepared_hash_watches_keep_owner_lifetimes_without_native_reads_or_allocation() {

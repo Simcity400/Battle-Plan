@@ -39,30 +39,15 @@ pub(in super::super) fn certified() -> Option<Certified> {
 /// prefix. Only untouched deep values from the last complete dependency
 /// interval survive a local occurrence-log refusal.
 pub(in super::super) struct Census {
-    store: MutexGuard<'static, Store>,
-    held: MutexGuard<'static, HashMap<u64, Entry>>,
-    bindings: sources::CertifiedBindings,
+    proof: CensusProof,
+}
+// Callback revisions revoke carried values even after STORE has been released.
+pub(in super::super) struct CensusProof {
     revision: u64,
     epoch: u64,
     dependencies: u64,
 }
-impl Census {
-    pub(in super::super) fn get(
-        &self,
-        source: &native::RegistryRow,
-    ) -> Option<Arc<rows::VariantDesignState>> {
-        let watch = self.store.watched.get(&source.pointer())?;
-        if watch.id != source.id
-            || watch.dirty
-            || !self.bindings.unchanged(source.id, &self.store.interests)
-        {
-            return None;
-        }
-        self.held
-            .get(&source.id)
-            .filter(|(pointer, _)| *pointer == source.pointer())
-            .map(|(_, state)| Arc::clone(state))
-    }
+impl CensusProof {
     pub(in super::super) fn is_current(&self) -> bool {
         enabled()
             && active() == 0
@@ -70,6 +55,38 @@ impl Census {
             && self.revision == REVISION.load(Ordering::Acquire)
             && self.dependencies == CENSUS_REVISION.load(Ordering::Acquire)
             && !repair::pending()
+    }
+}
+impl Census {
+    /// Holds STORE for this one receiver only; no callback waits for a walk.
+    pub(in super::super) fn get(
+        &self,
+        source: &native::RegistryRow,
+    ) -> Option<Arc<rows::VariantDesignState>> {
+        {
+            let store = STORE
+                .get()?
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let watch = store.watched.get(&source.pointer())?;
+            if store.epoch != self.proof.epoch
+                || watch.id != source.id
+                || watch.dirty
+                || !sources::certified_bindings().unchanged(source.id, &store.interests)
+            {
+                return None;
+            }
+        }
+        cache()
+            .get(&source.id)
+            .filter(|(pointer, _)| *pointer == source.pointer())
+            .map(|(_, state)| Arc::clone(state))
+    }
+    pub(in super::super) fn is_current(&self) -> bool {
+        self.proof.is_current()
+    }
+    pub(in super::super) fn release(self) -> CensusProof {
+        self.proof
     }
 }
 #[cfg(test)]
@@ -101,12 +118,11 @@ pub(in super::super) fn census() -> Option<Census> {
         }
     });
     Some(Census {
-        epoch: store.epoch,
-        store,
-        held: cache(),
-        bindings: sources::certified_bindings(),
-        revision,
-        dependencies,
+        proof: CensusProof {
+            revision,
+            epoch: store.epoch,
+            dependencies,
+        },
     })
 }
 pub(super) fn seed(
@@ -515,7 +531,7 @@ mod census_tests {
         writer.join().unwrap();
         assert!(!repair::pending());
         assert!(pending());
-        assert_eq!(status().lock_contentions, 1);
+        assert!(status().lock_contentions >= 1);
         assert_eq!(recovered.definitions.rows[0].design.design_team_traits, 23);
         assert!(!Arc::ptr_eq(
             &recovered.definitions.rows[0].design,
@@ -527,13 +543,69 @@ mod census_tests {
         );
     }
     #[test]
+    fn partitioned_recovery_never_holds_store_during_native_reads_and_rechecks_its_proof() {
+        let (space, sources, _) = setup();
+        struct Invalidate<'a> {
+            space: &'a Space,
+            trigger: usize,
+            changed: Cell<bool>,
+        }
+        impl Memory for Invalidate<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                assert!(STORE.get().unwrap().try_lock().is_ok());
+                if address == self.trigger && !self.changed.replace(true) {
+                    unobserved!();
+                }
+                self.space.memory().copy(address, output)
+            }
+        }
+        let memory = Invalidate {
+            space: &space,
+            trigger: sources[0].pointer() + native::EQUIPMENT_TOKEN,
+            changed: Cell::new(false),
+        };
+        let mut recovered = Variants::vacant();
+        recovered.capture_partitioned(
+            space.base,
+            Sources {
+                rows: &sources,
+                outcome: Outcome::Rows { len: sources.len() },
+            },
+            7,
+            true,
+            true,
+            3,
+            &mut |mut parts| {
+                for part in &mut parts {
+                    part.capture(&memory, space.base);
+                }
+                Ok(parts)
+            },
+        );
+        assert!(memory.changed.get());
+        assert!(
+            recovered
+                .definitions
+                .rows
+                .iter()
+                .all(|row| row.source_links.is_some())
+        );
+        assert_eq!(
+            views(recovered),
+            views(acquire(&space.memory(), space.base, &sources, false))
+        );
+    }
+    #[test]
     fn variant_census_final_proof_rechecks_pending_receiver_marks() {
         let (_space, sources, _) = setup();
         let proof = census().unwrap();
         repair::mark(sources[0].pointer());
         // Even unchanged writer/dependency revisions cannot certify a mark.
-        assert_eq!(proof.revision, REVISION.load(Ordering::Acquire));
-        assert_eq!(proof.dependencies, CENSUS_REVISION.load(Ordering::Acquire));
+        assert_eq!(proof.proof.revision, REVISION.load(Ordering::Acquire));
+        assert_eq!(
+            proof.proof.dependencies,
+            CENSUS_REVISION.load(Ordering::Acquire)
+        );
         assert!(!proof.is_current());
     }
     #[test]
@@ -695,7 +767,7 @@ mod census_tests {
         let shared_active = world_input_changes::design_forwarder_active();
         let private_active = ACTIVE.load(Ordering::SeqCst);
         let private_revision = REVISION.load(Ordering::Acquire);
-        let watch_dirty = proof.store.watched[&sources[0].pointer()].dirty;
+        let watch_dirty = STORE.get().unwrap().lock().unwrap().watched[&sources[0].pointer()].dirty;
         let traits = engine_native::read::<i32>(
             &space.memory(),
             sources[0].pointer() + native::DESIGN_TEAM_TRAITS,
@@ -866,6 +938,61 @@ mod census_tests {
                 .iter()
                 .all(|row| row.source_links.is_some()),
             "an invalidated read must discard every carried value"
+        );
+        assert_eq!(
+            views(reduced),
+            views(acquire(&space.memory(), space.base, &sources, false))
+        );
+    }
+    #[test]
+    fn partitioned_recovery_retries_every_definition_after_census_invalidation() {
+        let (space, sources, _) = setup();
+        struct Invalidate<'a> {
+            space: &'a Space,
+            trigger: usize,
+            changed: Cell<bool>,
+        }
+        impl Memory for Invalidate<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address == self.trigger && !self.changed.replace(true) {
+                    unobserved!();
+                }
+                self.space.memory().copy(address, output)
+            }
+        }
+        let memory = Invalidate {
+            space: &space,
+            trigger: sources[0].pointer() + native::EQUIPMENT_TOKEN,
+            changed: Cell::new(false),
+        };
+        let mut reduced = Variants::vacant();
+        let mut passes = 0;
+        reduced.capture_partitioned(
+            space.base,
+            Sources {
+                rows: &sources,
+                outcome: Outcome::Rows { len: sources.len() },
+            },
+            7,
+            true,
+            true,
+            2,
+            &mut |mut parts| {
+                passes += 1;
+                for part in &mut parts {
+                    part.capture(&memory, space.base);
+                }
+                Ok(parts)
+            },
+        );
+        assert!(memory.changed.get());
+        assert_eq!(passes, 2);
+        assert!(
+            reduced
+                .definitions
+                .rows
+                .iter()
+                .all(|row| row.source_links.is_some())
         );
         assert_eq!(
             views(reduced),

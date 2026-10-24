@@ -726,16 +726,18 @@ fn immutable_key(
     cache.insert(token, key);
     Ok(key)
 }
-pub(super) fn seed(
+pub(super) fn seed_partitioned(
     memory: &impl Memory,
     base: usize,
     variants: &Variants,
     full: bool,
+    lanes: usize,
+    acquire: &mut impl FnMut(Vec<CountryPart>) -> Result<Vec<CountryPart>, &'static str>,
 ) -> Result<Snapshots, &'static str> {
     let _reads = read_accounting::table(TableId::DesignCountryModifiers);
     let mut cache = cache();
     worker_reset(&mut cache);
-    seed_cached(
+    seed_cached_with(
         &mut cache,
         memory,
         base,
@@ -743,8 +745,16 @@ pub(super) fn seed(
         full,
         super::design_changes::enabled(),
         Cache::admit_templates,
+        |cache| {
+            if lanes > 1 {
+                cache.refresh_partitioned(lanes, acquire)
+            } else {
+                cache.refresh(memory, base)
+            }
+        },
     )
 }
+#[cfg(test)]
 fn seed_cached(
     cache: &mut Cache,
     memory: &impl Memory,
@@ -753,6 +763,27 @@ fn seed_cached(
     full: bool,
     designs_observed: bool,
     admit_templates: impl FnOnce(&mut Cache) -> Result<(), &'static str>,
+) -> Result<Snapshots, &'static str> {
+    seed_cached_with(
+        cache,
+        memory,
+        base,
+        variants,
+        full,
+        designs_observed,
+        admit_templates,
+        |cache| cache.refresh(memory, base),
+    )
+}
+fn seed_cached_with(
+    cache: &mut Cache,
+    memory: &impl Memory,
+    base: usize,
+    variants: &Variants,
+    full: bool,
+    designs_observed: bool,
+    admit_templates: impl FnOnce(&mut Cache) -> Result<(), &'static str>,
+    refresh: impl FnOnce(&mut Cache) -> Result<Snapshot, &'static str>,
 ) -> Result<Snapshots, &'static str> {
     // Country-context admission is independent of the three design proofs.
     // Retry only on this existing daily visit, never by forcing design reads.
@@ -770,6 +801,7 @@ fn seed_cached(
         full,
         designs_observed,
         admit_templates,
+        refresh,
     );
     if let Err(reason) = result {
         cache.seeded = false;
@@ -790,6 +822,7 @@ fn seed_demands(
     full: bool,
     designs_observed: bool,
     admit_templates: impl FnOnce(&mut Cache) -> Result<(), &'static str>,
+    refresh: impl FnOnce(&mut Cache) -> Result<Snapshot, &'static str>,
 ) -> Result<Snapshots, &'static str> {
     admit_templates(cache)?;
     cache.generation = cache
@@ -858,7 +891,7 @@ fn seed_demands(
         }
     }
     cache.seeded = true;
-    let modifiers = cache.refresh(memory, base)?;
+    let modifiers = refresh(cache)?;
     let templates = cache.publish_templates()?;
     Ok((modifiers, templates))
 }
@@ -930,8 +963,27 @@ pub(super) fn author(
 }
 
 pub(super) fn capture(memory: &impl Memory, base: usize) -> Result<Snapshots, &'static str> {
+    capture_partitioned(memory, base, 1, &mut |mut parts| {
+        for part in &mut parts {
+            part.capture(memory, base);
+        }
+        Ok(parts)
+    })
+}
+pub(super) fn capture_partitioned(
+    memory: &impl Memory,
+    base: usize,
+    lanes: usize,
+    acquire: &mut impl FnMut(Vec<CountryPart>) -> Result<Vec<CountryPart>, &'static str>,
+) -> Result<Snapshots, &'static str> {
     let _reads = read_accounting::table(TableId::DesignCountryModifiers);
-    let result = capture_inner(memory, base);
+    let result = capture_inner(|cache| {
+        if lanes > 1 {
+            cache.refresh_partitioned(lanes, acquire)
+        } else {
+            cache.refresh(memory, base)
+        }
+    });
     let mut cache = cache();
     if let Err(reason) = result {
         cache.last_refusal = Some(reason);
@@ -946,7 +998,9 @@ pub(super) fn capture(memory: &impl Memory, base: usize) -> Result<Snapshots, &'
     }
     result
 }
-fn capture_inner(memory: &impl Memory, base: usize) -> Result<Snapshots, &'static str> {
+fn capture_inner(
+    refresh: impl FnOnce(&mut Cache) -> Result<Snapshot, &'static str>,
+) -> Result<Snapshots, &'static str> {
     let mut cache = cache();
     worker_reset(&mut cache);
     if let Some(reason) = cache.failure {
@@ -985,7 +1039,7 @@ fn capture_inner(memory: &impl Memory, base: usize) -> Result<Snapshots, &'stati
         return Err("design country context census not acquired");
     }
     cache.admit_templates()?;
-    let modifiers = cache.refresh(memory, base)?;
+    let modifiers = refresh(&mut cache)?;
     let templates = cache.publish_templates()?;
     Ok((modifiers, templates))
 }
@@ -1563,5 +1617,328 @@ mod tests {
         .unwrap();
         assert_eq!(cache.designs[&70].keys.as_ptr(), demand);
         assert_eq!(cache.spare_keys.as_ptr(), scratch);
+    }
+}
+
+struct CountryDemand {
+    country: u32,
+    keys: Vec<u32>,
+    template: bool,
+    observe_template: bool,
+}
+pub struct CountryPart {
+    ordinal: usize,
+    demands: Vec<CountryDemand>,
+    owners: Vec<(u32, u32)>,
+    modifiers: Vec<rows::DesignCountryModifierRow>,
+    templates: Vec<rows::DesignCountryTemplatesRow>,
+    failure: Option<&'static str>,
+    complete: bool,
+}
+impl CountryPart {
+    pub fn capture(&mut self, memory: &impl Memory, base: usize) {
+        self.owners.clear();
+        self.modifiers.clear();
+        self.templates.clear();
+        self.complete = false;
+        self.failure = self.read(memory, base).err();
+        self.complete = self.failure.is_none();
+    }
+    fn read(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
+        let _reads = read_accounting::table(TableId::DesignCountryModifiers);
+        engine_allocation::reserve(&mut self.owners, self.demands.len())
+            .map_err(|_| "design context partition allocation failed")?;
+        engine_allocation::reserve(&mut self.templates, self.demands.len())
+            .map_err(|_| "design context partition allocation failed")?;
+        engine_allocation::reserve(
+            &mut self.modifiers,
+            self.demands.iter().map(|demand| demand.keys.len()).sum(),
+        )
+        .map_err(|_| "design context partition allocation failed")?;
+        let reader = country_reader(memory, base);
+        for demand in &self.demands {
+            let owner = reader
+                .as_ref()
+                .map_err(|e| *e)
+                .and_then(|reader| reader.resolve(demand.country));
+            if let Ok(owner) = &owner {
+                self.owners.push((demand.country, owner.id));
+                if demand.observe_template {
+                    super::design_template_changes::observe_owner(owner.id);
+                }
+            }
+            if demand.template {
+                self.templates.push(template_row(
+                    memory,
+                    base,
+                    demand.country,
+                    owner.as_ref().map_err(|e| *e),
+                ));
+            }
+            for key in &demand.keys {
+                let value = owner.as_ref().map_err(|e| *e).and_then(|owner| {
+                    let address = owner
+                        .pointer
+                        .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+                        .ok_or("design country accumulator address overflow")?;
+                    engine_native::modifier_accumulator::requested_effective_at(
+                        memory, base, address, *key,
+                    )
+                });
+                self.modifiers.push(rows::DesignCountryModifierRow {
+                    country: demand.country,
+                    modifier: *key,
+                    value: value.as_ref().ok().copied(),
+                    failure: if value.is_ok() {
+                        0
+                    } else if owner.is_err() {
+                        1
+                    } else {
+                        2
+                    },
+                });
+            }
+        }
+        Ok(())
+    }
+}
+impl Cache {
+    fn refresh_partitioned(
+        &mut self,
+        lanes: usize,
+        acquire: &mut impl FnMut(Vec<CountryPart>) -> Result<Vec<CountryPart>, &'static str>,
+    ) -> Result<Snapshot, &'static str> {
+        if self.dirty.is_empty() && (!self.template_admitted || self.template_dirty.is_empty()) {
+            return self.publish();
+        }
+        let mut demands = engine_allocation::vec(self.dirty.len() + self.template_dirty.len())
+            .map_err(|_| "design context partition allocation failed")?;
+        for (country, all) in self.dirty.drain() {
+            let Some(keys) = self.countries.get(&country) else {
+                continue;
+            };
+            let mut demanded = engine_allocation::vec(keys.len())
+                .map_err(|_| "design context partition allocation failed")?;
+            demanded.extend(
+                keys.keys()
+                    .filter(|key| all || !self.values.contains_key(&(country, **key)))
+                    .copied(),
+            );
+            demands.push(CountryDemand {
+                country,
+                keys: demanded,
+                template: self.template_admitted && self.template_dirty.remove(&country).is_some(),
+                observe_template: self.template_demands.contains_key(&country),
+            });
+        }
+        if self.template_admitted {
+            for (country, _) in self.template_dirty.drain() {
+                if self.template_demands.contains_key(&country) {
+                    demands.push(CountryDemand {
+                        country,
+                        keys: Vec::new(),
+                        template: true,
+                        observe_template: true,
+                    });
+                }
+            }
+        }
+        let mut parts = engine_allocation::vec(lanes.min(demands.len()))
+            .map_err(|_| "design context partition allocation failed")?;
+        let width = demands.len().div_ceil(lanes.max(1)).max(1);
+        for (index, demand) in demands.into_iter().enumerate() {
+            if index % width == 0 {
+                parts.push(CountryPart {
+                    ordinal: parts.len(),
+                    demands: engine_allocation::vec(width)
+                        .map_err(|_| "design context partition allocation failed")?,
+                    owners: Vec::new(),
+                    modifiers: Vec::new(),
+                    templates: Vec::new(),
+                    failure: None,
+                    complete: false,
+                });
+            }
+            parts.last_mut().unwrap().demands.push(demand);
+        }
+        let count = parts.len();
+        let mut parts = acquire(parts)?;
+        parts.sort_unstable_by_key(|part| part.ordinal);
+        if parts.len() != count
+            || parts
+                .iter()
+                .enumerate()
+                .any(|(index, part)| part.ordinal != index || !part.complete)
+        {
+            return Err(parts
+                .iter()
+                .find_map(|part| part.failure)
+                .unwrap_or("design context partition acquisition incomplete"));
+        }
+        for part in parts {
+            for (country, owner) in part.owners {
+                self.owners.bind(country, owner)?;
+            }
+            for row in part.modifiers {
+                self.failures = self.failures.saturating_add(u64::from(row.failure != 0));
+                if self.values.get(&(row.country, row.modifier)) != Some(&row) {
+                    reserve(&mut self.values)?;
+                    self.values.insert((row.country, row.modifier), row);
+                    self.changed = true;
+                }
+            }
+            for row in part.templates {
+                put_template(
+                    &mut self.template_values,
+                    &mut self.template_heap_bytes,
+                    &mut self.template_changed,
+                    &mut self.failures,
+                    row,
+                )?;
+            }
+        }
+        super::design_template_changes::prepare();
+        self.publish()
+    }
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::*;
+    use std::sync::{
+        Barrier,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct World {
+        bytes: Vec<u8>,
+        reads: AtomicUsize,
+    }
+    impl Memory for World {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+                output.copy_from_slice(&0x1000_u64.to_le_bytes());
+                true
+            } else if address == engine_native::modifier_definition::TABLE_RVA && output.len() == 8
+            {
+                output.copy_from_slice(&0x14000_u64.to_le_bytes());
+                true
+            } else {
+                engine_native::memory::SliceMemory {
+                    base: 0x1000,
+                    bytes: &self.bytes,
+                }
+                .copy(address, output)
+            }
+        }
+    }
+    fn world() -> World {
+        let mut bytes = super::super::production_rest_test_kit::fixture();
+        bytes.resize(0x15000, 0);
+        let mut put = |at: usize, value: &[u8]| {
+            bytes[at - 0x1000..at - 0x1000 + value.len()].copy_from_slice(value)
+        };
+        let accumulator = 0x3000 + ccountry::MODIFIER_ACCUMULATOR;
+        put(accumulator, &0x13500_u64.to_le_bytes());
+        put(accumulator + 8, &1_u32.to_le_bytes());
+        put(accumulator + 12, &1_u32.to_le_bytes());
+        put(0x13500, &1_u32.to_le_bytes());
+        put(0x13508, &2375_i64.to_le_bytes());
+        World {
+            bytes,
+            reads: AtomicUsize::new(0),
+        }
+    }
+    fn cache() -> Cache {
+        let mut cache = Cache::default();
+        cache.template_admitted = true;
+        for country in 1..=1500 {
+            cache
+                .replace(u64::from(country), country, vec![1, 2, 500])
+                .unwrap();
+        }
+        cache
+    }
+    #[test]
+    fn country_parts_publish_identical_modifiers_templates_and_missing_values() {
+        let world = world();
+        let mut expected = cache();
+        let modifiers = expected.refresh(&world, 0).unwrap();
+        let templates = expected.publish_templates().unwrap();
+        let mut actual = cache();
+        let result = actual
+            .refresh_partitioned(15, &mut |parts| {
+                let barrier = Barrier::new(parts.len());
+                Ok(std::thread::scope(|scope| {
+                    let jobs: Vec<_> = parts
+                        .into_iter()
+                        .map(|mut part| {
+                            let barrier = &barrier;
+                            let world = &world;
+                            scope.spawn(move || {
+                                barrier.wait();
+                                part.capture(world, 0);
+                                part
+                            })
+                        })
+                        .collect();
+                    jobs.into_iter()
+                        .rev()
+                        .map(|job| job.join().unwrap())
+                        .collect()
+                }))
+            })
+            .unwrap();
+        assert_eq!(result, modifiers);
+        assert_eq!(actual.publish_templates().unwrap(), templates);
+        assert_eq!(actual.failures, expected.failures);
+        assert_eq!(actual.owners.aliases, expected.owners.aliases);
+        let values = result
+            .as_ref()
+            .unwrap()
+            .rows::<tables::DesignCountryModifiers>()
+            .unwrap();
+        assert!(
+            values
+                .iter()
+                .any(|row| row.country == 2 && row.modifier == 1 && row.value == Some(2375))
+        );
+        assert!(
+            values
+                .iter()
+                .filter(|row| row.failure != 0)
+                .all(|row| row.value.is_none())
+        );
+        let reads = world.reads.load(Ordering::Relaxed);
+        let quiet = collector_test_support::with_allocations_denied(|| {
+            actual.refresh_partitioned(15, &mut |_| panic!("quiet context must dispatch nothing"))
+        })
+        .unwrap();
+        assert!(Arc::ptr_eq(
+            quiet.as_ref().unwrap(),
+            result.as_ref().unwrap()
+        ));
+        assert_eq!(world.reads.load(Ordering::Relaxed), reads);
+    }
+    #[test]
+    fn a_missing_or_unrun_country_partition_cannot_publish_partial_context() {
+        let world = world();
+        for unrun in [false, true] {
+            let mut cache = cache();
+            let result = cache.refresh_partitioned(3, &mut |mut parts| {
+                if unrun {
+                    return Ok(parts);
+                }
+                for part in &mut parts {
+                    part.capture(&world, 0);
+                }
+                parts.pop();
+                Ok(parts)
+            });
+            assert!(result.is_err());
+            assert!(cache.values.is_empty());
+            assert!(cache.template_values.is_empty());
+        }
     }
 }

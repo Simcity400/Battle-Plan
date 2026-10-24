@@ -8,6 +8,8 @@ pub(super) mod held;
 pub(super) mod liveness;
 mod repair;
 mod scalar;
+mod storage;
+pub use storage::{ScratchPoolAccounting, account_scratch, presize};
 mod source_hooks;
 mod sources;
 mod writers;
@@ -27,7 +29,7 @@ static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
 // callback lock is STORE -> WRITERS; WRITERS never takes STORE. Same-thread
 // nesting happens inside originals, after releasing both mutexes.
 fn callback_store(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {
-    match store.try_lock() {
+    let guard = match store.try_lock() {
         Ok(store) => store,
         Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
         Err(std::sync::TryLockError::WouldBlock) => {
@@ -38,12 +40,20 @@ fn callback_store(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {
                     hook();
                 }
             });
-            store
+            let begin = std::time::Instant::now();
+            let store = store
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ns = u64::try_from(begin.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            STORE_WAIT_NS.fetch_add(ns, Ordering::Relaxed);
+            STORE_MAX_WAIT_NS.fetch_max(ns, Ordering::Relaxed);
+            store
         }
-    }
+    };
+    STAGING_REVISION.fetch_add(1, Ordering::Relaxed);
+    guard
 }
+static STAGING_REVISION: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 thread_local! {
     static BEFORE_STORE_WAIT: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
@@ -57,6 +67,8 @@ static RUNNING_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static MISSED_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static COMPETING_WRITER_REJECTIONS: AtomicU64 = AtomicU64::new(0);
 static LOCK_CONTENTIONS: AtomicU64 = AtomicU64::new(0);
+static STORE_WAIT_NS: AtomicU64 = AtomicU64::new(0);
+static STORE_MAX_WAIT_NS: AtomicU64 = AtomicU64::new(0);
 static UNKNOWN_RECEIVERS: AtomicU64 = AtomicU64::new(0);
 static REPAIRED_INTERVALS: AtomicU64 = AtomicU64::new(0);
 static REPAIRED_RECEIVERS: AtomicU64 = AtomicU64::new(0);
@@ -224,6 +236,8 @@ struct Batch {
     log: RawLog<1>,
     events: Vec<Event>,
     required_events: usize,
+    required_spans: usize,
+    required_bytes: usize,
     failure: Option<&'static str>,
 }
 impl Batch {
@@ -232,6 +246,8 @@ impl Batch {
             log: RawLog::new(0, 0),
             events: Vec::new(),
             required_events: 0,
+            required_spans: 0,
+            required_bytes: 0,
             failure: None,
         }
     }
@@ -240,6 +256,8 @@ impl Batch {
         self.events.clear();
         self.failure = None;
         self.required_events = 0;
+        self.required_spans = 0;
+        self.required_bytes = 0;
     }
     fn prepare(&mut self, events: usize, spans: usize, bytes: usize) {
         self.log.grow();
@@ -323,7 +341,11 @@ fn take(
     size: usize,
 ) -> Result<usize, &'static str> {
     log.take_bulk(memory, pointer, size, 1)
-        .ok_or("variant change raw storage exhausted or unreadable")
+        .ok_or(if log.overflowed {
+            "variant change raw storage exhausted"
+        } else {
+            "variant change raw memory unreadable"
+        })
 }
 fn string(log: &mut RawLog<1>, memory: &impl Memory, header: usize) -> Result<(), &'static str> {
     let length = usize::try_from(u64_at(log, header + 16))
@@ -621,12 +643,15 @@ fn stage(
 pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
     let mut bytes = registry.len().saturating_mul(ROOT_BYTES + 36);
     let mut spans = registry.len().saturating_mul(21);
+    let (mut single_spans, mut single_bytes) = (21, ROOT_BYTES + 36);
+    let (mut module_at, mut upgrade_at) = (0, 0);
     for row in variants
         .definitions
         .rows
         .iter()
         .take(variants.definitions.outcome.len())
     {
+        let (before_spans, before_bytes) = (spans, bytes);
         bytes = bytes.saturating_add(
             row.display_name.len
                 + row.variant_name.len
@@ -681,6 +706,32 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
                 .map_or(0, |s| 41 + s.len())
                 + usize::from(state.parent.is_some()) * 16,
         );
+        let first_module = module_at;
+        let first_upgrade = upgrade_at;
+        while variants
+            .modules
+            .rows
+            .get(module_at)
+            .is_some_and(|entry| entry.variant == row.identity.id)
+        {
+            module_at += 1;
+        }
+        while variants
+            .upgrades
+            .rows
+            .get(upgrade_at)
+            .is_some_and(|entry| entry.variant == row.identity.id)
+        {
+            upgrade_at += 1;
+        }
+        single_spans = single_spans.max(
+            21 + spans - before_spans + (module_at - first_module) * 3 + upgrade_at - first_upgrade,
+        );
+        single_bytes = single_bytes.max(
+            ROOT_BYTES + 36 + bytes - before_bytes
+                + (module_at - first_module) * 33
+                + (upgrade_at - first_upgrade) * 28,
+        );
     }
     let modules = variants.modules.outcome.len();
     let upgrades = variants.upgrades.outcome.len();
@@ -695,134 +746,152 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
             epoch: EPOCH.load(Ordering::Acquire),
         })
     });
-    let mut store = store
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    storage::census(
+        registry.len().saturating_mul(2).max(1),
+        spans,
+        bytes,
+        single_spans,
+        single_bytes,
+    );
     let epoch = EPOCH.load(Ordering::Acquire);
     let revision = SEED_REVISION.load(Ordering::Acquire);
-    if !RECOVER.load(Ordering::Acquire) && store.epoch == epoch && !store.batch.events.is_empty() {
-        return;
-    }
+    let (old_epoch, organisations, pointers, cold) = {
+        let store = store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !RECOVER.load(Ordering::Acquire)
+            && store.epoch == epoch
+            && !store.batch.events.is_empty()
+        {
+            return;
+        }
+        (
+            store.epoch,
+            store.interests.organisations.len(),
+            store.interests.organisation_pointers.len(),
+            store.batch.events.capacity() == 0,
+        )
+    };
     let mut attempt = BaselineAttempt { accepted: false };
     if SEED_EPOCH.load(Ordering::Acquire) != epoch
         || REVISION.load(Ordering::Acquire) != revision
         || active() != 0
     {
         unobserved!();
-        RECOVER.store(true, Ordering::Release);
         return;
     }
-    if store.epoch != epoch {
-        store.watched.clear();
-        store.interests = sources::Interests::default();
-        store.batch.clear();
-        sources::release();
-        liveness::release();
-        held::release();
-        store.epoch = epoch;
+    if cold {
+        presize();
     }
-    store
-        .batch
-        .prepare(registry.len().saturating_mul(2).max(1), spans, bytes);
-    store
-        .spare
-        .prepare(registry.len().saturating_mul(2).max(1), spans, bytes);
-    if let Err(reason) = writers::prepare(registry.len().saturating_mul(2).max(1)) {
-        store.batch.failure = Some(reason);
-        return;
-    }
-    let mut identities = HashMap::new();
-    if engine_allocation::reserve_map(&mut identities, registry.len()).is_err() {
-        store.batch.failure = Some("variant change identity allocation failed");
-        return;
-    }
-    for source in registry {
-        if identities.insert(source.id, source.pointer()).is_some() {
-            store.batch.failure =
-                Some("variant change census contains duplicate identity or address");
+    let prepared = (|| {
+        writers::prepare(registry.len().saturating_mul(2).max(1))?;
+        let mut identities = HashMap::new();
+        let mut watched = HashMap::new();
+        engine_allocation::reserve_map(&mut identities, registry.len())
+            .map_err(|_| "variant change identity allocation failed")?;
+        engine_allocation::reserve_map(&mut watched, registry.len().saturating_mul(2).max(1))
+            .map_err(|_| "variant change watch allocation failed")?;
+        for (source, definition) in registry.iter().zip(&variants.definitions.rows) {
+            if identities.insert(source.id, source.pointer()).is_some()
+                || watched
+                    .insert(
+                        source.pointer(),
+                        Watch {
+                            id: source.id,
+                            pointer: source.pointer(),
+                            dirty: false,
+                            flags: [
+                                definition.design.can_upgrade_type,
+                                definition.design.can_upgrade_variant,
+                                definition.design.can_upgrade_modules,
+                            ],
+                        },
+                    )
+                    .is_some()
+            {
+                return Err("variant change census contains duplicate identity or address");
+            }
+        }
+        let mut interests = sources::Interests::default();
+        if old_epoch == epoch {
+            interests.prepare_organisations(organisations.max(pointers))?;
+            let store = store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if store.interests.organisations.len() > interests.organisations.capacity()
+                || store.interests.organisation_pointers.len()
+                    > interests.organisation_pointers.capacity()
+            {
+                return Err("variant organisation demand changed during census");
+            }
+            interests.organisations.extend(
+                store
+                    .interests
+                    .organisations
+                    .iter()
+                    .map(|(key, value)| (*key, *value)),
+            );
+            interests.organisation_pointers.extend(
+                store
+                    .interests
+                    .organisation_pointers
+                    .iter()
+                    .map(|(key, value)| (*key, *value)),
+            );
+        } else {
+            sources::release();
+            liveness::release();
+            held::release();
+        }
+        repair::prepare(&watched)?;
+        held::seed(registry, variants, &watched)?;
+        liveness::seed(variants, &mut interests)?;
+        sources::seed(variants, &mut interests)?;
+        Ok((watched, interests))
+    })();
+    let (mut watched, mut interests) = match prepared {
+        Ok(prepared) => prepared,
+        Err(reason) => {
+            store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .batch
+                .failure = Some(reason);
             return;
         }
-    }
-    store
-        .watched
-        .retain(|pointer, watch| identities.get(&watch.id) == Some(pointer));
-    let additional = registry
-        .len()
-        .saturating_mul(2)
-        .max(1)
-        .saturating_sub(store.watched.len());
-    if engine_allocation::reserve_map(&mut store.watched, additional).is_err() {
-        RECOVER.store(true, Ordering::Release);
-        unobserved!();
-        return;
-    }
-    for watch in store.watched.values_mut() {
-        watch.dirty = true;
-    }
-    for (source, definition) in registry.iter().zip(&variants.definitions.rows) {
-        let watch = store.watched.entry(source.pointer()).or_insert(Watch {
-            id: source.id,
-            pointer: source.pointer(),
-            flags: [0; 3],
-            dirty: true,
-        });
-        if !watch.dirty {
-            store.batch.failure =
-                Some("variant change census contains duplicate identity or address");
-            return;
-        }
-        *watch = Watch {
-            id: source.id,
-            pointer: source.pointer(),
-            flags: [
-                definition.design.can_upgrade_type,
-                definition.design.can_upgrade_variant,
-                definition.design.can_upgrade_modules,
-            ],
-            dirty: false,
-        };
-    }
-    SAVED_POPULATION.store(store.watched.len(), Ordering::Release);
-    if let Err(reason) = repair::prepare(&store.watched) {
-        store.batch.failure = Some(reason);
-        return;
-    }
-    if let Err(reason) = held::seed(registry, variants, &store.watched) {
-        store.batch.failure = Some(reason);
-        RECOVER.store(true, Ordering::Release);
-        return;
-    }
-    if let Err(reason) = liveness::seed(variants, &mut store.interests) {
-        store.batch.failure = Some(reason);
-        RECOVER.store(true, Ordering::Release);
-        return;
-    }
-    if let Err(reason) = sources::seed(variants, &mut store.interests) {
-        store.batch.failure = Some(reason);
-        RECOVER.store(true, Ordering::Release);
-        return;
-    }
-    if active() != 0
-        || store.epoch != EPOCH.load(Ordering::Acquire)
-        || REVISION.load(Ordering::Acquire) != revision
+    };
     {
-        unobserved!();
-        return;
+        let mut store = store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        STAGING_REVISION.fetch_add(1, Ordering::Relaxed);
+        if active() != 0
+            || epoch != EPOCH.load(Ordering::Acquire)
+            || REVISION.load(Ordering::Acquire) != revision
+        {
+            unobserved!();
+            return;
+        }
+        if store.epoch != epoch {
+            store.batch.clear();
+        }
+        std::mem::swap(&mut store.watched, &mut watched);
+        std::mem::swap(&mut store.interests, &mut interests);
+        store.epoch = epoch;
+        SAVED_POPULATION.store(store.watched.len(), Ordering::Release);
+        SAVED_BASELINE.store(true, Ordering::Release);
+        SOURCE_BASELINE.store(true, Ordering::Release);
+        LIVENESS_BASELINE.store(true, Ordering::Release);
+        RECOVER.store(false, Ordering::Release);
+        MISSED.store(false, Ordering::Release);
+        CENSUS_BASELINE.store(CENSUS_REVISION.load(Ordering::Acquire), Ordering::Release);
+        diagnostics::clear();
     }
-    SAVED_BASELINE.store(true, Ordering::Release);
-    SOURCE_BASELINE.store(true, Ordering::Release);
-    LIVENESS_BASELINE.store(true, Ordering::Release);
-    RECOVER.store(false, Ordering::Release);
-    MISSED.store(false, Ordering::Release);
-    CENSUS_BASELINE.store(CENSUS_REVISION.load(Ordering::Acquire), Ordering::Release);
-    diagnostics::clear();
-    drop(store);
     if REVISION.load(Ordering::Acquire) != revision
         || active() != 0
         || EPOCH.load(Ordering::Acquire) != epoch
     {
         unobserved!();
-        RECOVER.store(true, Ordering::Release);
         withdraw_baselines();
     } else {
         attempt.accepted = true;
@@ -846,14 +915,154 @@ impl Drop for BaselineAttempt {
 }
 
 fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, published: bool) {
-    let Some(store) = STORE.get() else {
+    let Some(mutex) = STORE.get() else {
         unobserved!();
         return;
     };
-    let mut store = callback_store(store);
-    if store.epoch != EPOCH.load(Ordering::Acquire) {
+    let Some(mut scratch) = storage::scratch() else {
+        let mut store = callback_store(mutex);
+        if store.epoch == EPOCH.load(Ordering::Acquire) {
+            observe_locked(&mut store, memory, base, pointer, removed, published);
+        }
+        return;
+    };
+    let (epoch, revision) = {
+        let mut store = callback_store(mutex);
+        if store.epoch != EPOCH.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(watch) = store.watched.get_mut(&pointer) {
+            watch.dirty = true;
+        } else if !published {
+            return;
+        }
+        (store.epoch, STAGING_REVISION.load(Ordering::Relaxed))
+    };
+    let staged = stage_private(&mut scratch, memory, base, pointer);
+    let mut store = callback_store(mutex);
+    if store.epoch != epoch || epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
+    // Any intervening observer, including an uninterested source, keeps the serial path's order.
+    if STAGING_REVISION.load(Ordering::Relaxed) != revision.wrapping_add(1)
+        || scratch.log.overflowed
+        || staged.is_err()
+    {
+        observe_locked(&mut store, memory, base, pointer, removed, published);
+        return;
+    }
+    let (identity, flags, hour) = staged.unwrap();
+    if let Some(watch) = store.watched.get_mut(&pointer) {
+        if watch.id != identity {
+            store.batch.failure = Some("variant identity changed without observed replacement");
+            return;
+        }
+        watch.flags = flags;
+    } else if published {
+        if store.watched.len() == store.watched.capacity() {
+            store.batch.failure = Some("variant change watch capacity exhausted");
+            return;
+        }
+        repair::added();
+        store.watched.insert(
+            pointer,
+            Watch {
+                id: identity,
+                pointer,
+                flags,
+                dirty: true,
+            },
+        );
+        SAVED_POPULATION.fetch_max(store.watched.len(), Ordering::AcqRel);
+    } else {
+        return;
+    }
+    store.batch.required_events = store.batch.required_events.saturating_add(1);
+    storage::occurrence(&mut store.batch, &scratch.log);
+    let result = (|| {
+        if store.batch.events.len() == store.batch.events.capacity() {
+            return Err("variant change event capacity exhausted");
+        }
+        for (key, (owner, _)) in &scratch.interests.entries {
+            store.interests.insert(*key, *owner)?;
+        }
+        for (handle, pointer) in &scratch.interests.organisations {
+            store
+                .interests
+                .organisation(*handle, (*pointer != 0).then_some(*pointer))?;
+        }
+        let (start, end) = storage::append(&mut store.batch.log, &scratch.log)?;
+        store.batch.events.push(Event {
+            kind: Kind::Design,
+            sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            hour,
+            pointer,
+            variant: identity,
+            flags: None,
+            removed,
+            start,
+            end,
+        });
+        Ok(())
+    })();
+    if let Err(reason) = result {
+        store.batch.failure = Some(reason);
+    }
+}
+fn stage_private(
+    scratch: &mut storage::Scratch,
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+) -> Result<(u64, [u8; 3], i32), &'static str> {
+    let identity = native::identity(memory, base, pointer)?;
+    let state = base
+        .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .ok_or("variant change clock unreadable")?;
+    let hour = (state as usize)
+        .checked_add(engine_native::cgame_state::CURRENT_HOUR)
+        .and_then(|at| engine_native::read(memory, at))
+        .ok_or("variant change hour unreadable")?;
+    let flags = pointer
+        .checked_add(native::CAN_UPGRADE_TYPE)
+        .and_then(|at| engine_native::read(memory, at))
+        .ok_or("variant change flags unreadable")?;
+    let parent = pointer
+        .checked_add(native::PARENT)
+        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .ok_or("variant change parent unreadable")?;
+    let claim = if parent != 0 {
+        let claim = writers::enter(parent as usize, None, writers::Footprint::Identity)
+            .ok_or("variant parent snapshot has a competing writer")?;
+        if !claim.admitted() {
+            return Err("variant parent snapshot has a competing writer");
+        }
+        Some(claim)
+    } else {
+        None
+    };
+    let result = stage_interests(
+        &mut scratch.log,
+        memory,
+        base,
+        pointer,
+        Some(&mut scratch.interests),
+    );
+    if claim.is_some_and(writers::Flight::finish) {
+        return Err("variant parent snapshot has a competing writer");
+    }
+    result?;
+    Ok((identity, flags, hour))
+}
+fn observe_locked(
+    store: &mut Store,
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    removed: bool,
+    published: bool,
+) {
     let watched = store.watched.get_mut(&pointer).map(|watch| {
         watch.dirty = true;
         *watch
@@ -947,7 +1156,16 @@ fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, pub
     let Store {
         batch, interests, ..
     } = &mut *store;
-    match stage_interests(&mut batch.log, memory, base, pointer, Some(interests)) {
+    let before_spans = batch.log.spans.len();
+    let before_bytes = batch.log.bytes.len();
+    let staged = stage_interests(&mut batch.log, memory, base, pointer, Some(interests));
+    batch.required_spans = batch
+        .required_spans
+        .saturating_add(batch.log.spans.len() - before_spans);
+    batch.required_bytes = batch
+        .required_bytes
+        .saturating_add(batch.log.bytes.len() - before_bytes);
+    match staged {
         Ok(()) => {
             let end = store.batch.log.spans.len();
             store.batch.events.push(Event {
@@ -1646,10 +1864,12 @@ fn replace<S: rows::TableSchema>(
         .iter()
         .all(|(index, row)| baseline.get(*index).is_some_and(|old| old == row))
     {
-        return Ok(Some(match projection.and_then(Projection::observed_shared_baseline::<S>) {
-            Some(rows) => TableInput::SharedComplete(std::sync::Arc::clone(rows)),
-            None => TableInput::ComparedEqual(token),
-        }));
+        return Ok(Some(
+            match projection.and_then(Projection::observed_shared_baseline::<S>) {
+                Some(rows) => TableInput::SharedComplete(std::sync::Arc::clone(rows)),
+                None => TableInput::ComparedEqual(token),
+            },
+        ));
     }
     if !token.allows_row_updates() {
         return Ok(None);
@@ -2004,14 +2224,9 @@ fn drain_with(
             RECOVERY_READ.store(true, Ordering::Release);
         }
     }
-    let required_events = batch.required_events;
-    batch.prepare(required_events, 0, 0);
+    storage::completed(&batch);
     batch.clear();
-    batch.log.grow();
-    store
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .spare = batch;
+    storage::recycle(batch);
     result
 }
 
@@ -2340,6 +2555,39 @@ impl Captured {
     /// keeps held-design reuse closed until the drain's final proof succeeds;
     /// settle this verdict before the same worker decides its census read.
     pub fn capture(&mut self, base: usize, hour: i32) {
+        self.capture_with(base, hour, |memory| {
+            super::design_context::capture(memory, base)
+        });
+    }
+    /// `capture`, with the dirty country context parts acquired by `acquire`.
+    pub fn capture_partitioned(
+        &mut self,
+        base: usize,
+        hour: i32,
+        lanes: usize,
+        mut acquire: impl FnMut(
+            Vec<super::design_context::CountryPart>,
+        )
+            -> Result<Vec<super::design_context::CountryPart>, &'static str>,
+    ) {
+        self.capture_with(base, hour, |memory| {
+            super::design_context::capture_partitioned(memory, base, lanes, &mut acquire)
+        });
+    }
+    fn capture_with(
+        &mut self,
+        base: usize,
+        hour: i32,
+        context: impl FnOnce(
+            &engine_native::memory::LiveMemory,
+        ) -> Result<
+            (
+                super::design_context::Snapshot,
+                super::design_context::Snapshot,
+            ),
+            &'static str,
+        >,
+    ) {
         // Country accumulator admission is independent of the saved-design
         // observer. Its worker consumes only demanded, dirtied numeric owners.
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -2352,8 +2600,7 @@ impl Captured {
             self.dictionary = super::bonus_snapshots::snapshot()?;
             Ok(())
         });
-        (self.context, self.templates) =
-            super::design_context::capture(&memory, base).unwrap_or_default();
+        (self.context, self.templates) = context(&memory).unwrap_or_default();
         self.context_acquired = true;
         self.outcome = match result {
             Ok(()) => Outcome::Rows {
@@ -2495,6 +2742,7 @@ impl Drop for Hooks {
                 epoch: EPOCH.load(Ordering::Acquire),
             };
         }
+        storage::release();
         writers::release();
         unsafe { repair::release() };
         super::bonus_snapshots::release();
@@ -2524,6 +2772,8 @@ pub struct Status {
     missed_refusals: u64,
     competing_writer_rejections: u64,
     lock_contentions: u64,
+    store_wait_ns: u64,
+    store_max_wait_ns: u64,
     unknown_receivers: u64,
     claim_capacity_refusals: u64,
     repaired_intervals: u64,
@@ -2549,6 +2799,8 @@ pub fn status() -> Status {
         missed_refusals: MISSED_REFUSALS.load(Ordering::Relaxed),
         competing_writer_rejections: COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed),
         lock_contentions: LOCK_CONTENTIONS.load(Ordering::Relaxed),
+        store_wait_ns: STORE_WAIT_NS.load(Ordering::Relaxed),
+        store_max_wait_ns: STORE_MAX_WAIT_NS.load(Ordering::Relaxed),
         unknown_receivers: UNKNOWN_RECEIVERS.load(Ordering::Relaxed),
         claim_capacity_refusals: CLAIM_CAPACITY_REFUSALS.load(Ordering::Relaxed),
         repaired_intervals: REPAIRED_INTERVALS.load(Ordering::Relaxed),

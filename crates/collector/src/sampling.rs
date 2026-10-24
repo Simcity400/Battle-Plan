@@ -1329,6 +1329,18 @@ pub struct CountryCacheSwap {
 // before the trampoline, so its single-writer fields stay single-writer.
 unsafe impl Sync for Shared {}
 
+impl crate::design_changes::ScratchPoolAccounting for Shared {
+    fn replace_scratch_bytes(&self, previous: usize, next: usize) {
+        if next >= previous {
+            self.pool_bytes
+                .fetch_add((next - previous) as u64, Ordering::Relaxed);
+        } else {
+            self.pool_bytes
+                .fetch_sub((previous - next) as u64, Ordering::Relaxed);
+        }
+    }
+}
+
 impl Shared {
     /// A published table shortage needs fresh acquisition, while its native
     /// mutation observers retain the interval they have already captured.

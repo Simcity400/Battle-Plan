@@ -25,6 +25,9 @@ use engine_native::{
 use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::{frame::TableInput, frame::TableView};
 
+mod variant_parts;
+pub use variant_parts::VariantPart;
+
 pub const N: usize = 23;
 pub const TABLES: [TableId; N] = [
     TableId::ProductionLines,
@@ -364,6 +367,39 @@ impl Variants {
         hour: i32,
         full: bool,
     ) -> [u64; N] {
+        self.capture_deferred_partitioned(
+            memory,
+            base,
+            variants,
+            hour,
+            full,
+            1,
+            |mut parts| {
+                for part in &mut parts {
+                    part.capture(memory, base);
+                }
+                Ok(parts)
+            },
+            |mut parts| {
+                for part in &mut parts {
+                    part.capture(memory, base);
+                }
+                Ok(parts)
+            },
+        )
+    }
+
+    pub fn capture_deferred_partitioned(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        variants: Sources<'_, cequipment_variant::RegistryRow>,
+        hour: i32,
+        full: bool,
+        lanes: usize,
+        mut acquire: impl FnMut(Vec<VariantPart>) -> Result<Vec<VariantPart>, &'static str>,
+        mut context: impl FnMut(Vec<DesignContextPart>) -> Result<Vec<DesignContextPart>, &'static str>,
+    ) -> [u64; N] {
         self.baseline_admitted = false;
         let recovery = design_changes::needs_full();
         if !full
@@ -386,7 +422,11 @@ impl Variants {
         self.fog = design_fog::capture(memory, base);
         let registry = variants.rows;
         let outcome = variants.outcome;
-        let ticks = self.capture_state_carried(memory, base, variants, hour, full, !forced);
+        let ticks = if lanes > 1 && matches!(outcome, Outcome::Rows { .. }) {
+            self.capture_partitioned(base, variants, hour, full, !forced, lanes, &mut acquire)
+        } else {
+            self.capture_state_carried(memory, base, variants, hour, full, !forced)
+        };
         match bonus_snapshots::snapshot() {
             Ok(snapshot) => self.dictionary = snapshot,
             Err(reason) => {
@@ -416,7 +456,8 @@ impl Variants {
             .all(|o| matches!(o, Outcome::Rows { .. }))
         {
             (self.context, self.templates) =
-                design_context::seed(memory, base, self, full).unwrap_or_default();
+                design_context::seed_partitioned(memory, base, self, full, lanes, &mut context)
+                    .unwrap_or_default();
             if design_changes::enabled() {
                 design_changes::prepare(&registry[..len], self);
                 self.baseline_admitted = full && design_changes::baseline_admitted();
@@ -1135,6 +1176,7 @@ impl Captured {
 mod bonus_snapshots;
 pub mod design_changes;
 mod design_context;
+pub use design_context::CountryPart as DesignContextPart;
 mod design_fog;
 mod design_template_changes;
 pub mod registry;

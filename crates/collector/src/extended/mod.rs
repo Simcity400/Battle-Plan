@@ -1868,6 +1868,7 @@ impl Captured {
             changes: self.production.take_design_changes(),
             changes_ticks: 0,
             changes_finished: false,
+            workers: Default::default(),
         }
     }
 

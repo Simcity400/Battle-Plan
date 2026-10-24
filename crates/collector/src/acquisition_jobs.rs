@@ -20,6 +20,7 @@ use crate::{
 };
 pub(crate) use acquisition::{Completion, Failure, SubmitError, Ticket};
 mod presentation;
+mod variant_workers;
 use engine_native::{memory::CountedMemory, memory::LiveMemory};
 pub(crate) use presentation::{
     FinalInputsDispatch, PresentationDispatch, PresentationFanIn, PresentationInputs,
@@ -116,6 +117,7 @@ pub(crate) struct VariantsRequest {
     pub changes: production::design_changes::Captured,
     pub changes_ticks: u64,
     pub changes_finished: bool,
+    pub workers: variant_workers::Dispatch,
 }
 impl VariantsRequest {
     pub(crate) fn allocated_bytes(&self) -> usize {
@@ -797,6 +799,7 @@ pub(crate) enum Job {
     Economy(EconomyRequest),
     Governance(GovernanceRequest),
     Variants(VariantsRequest),
+    VariantPart(variant_workers::Request),
     Research(ResearchRequest),
     Intel(IntelRequest),
     PresentationPrepare(PresentationRequest),
@@ -880,6 +883,7 @@ pub(crate) enum Report {
     Economy(economy::EconomyRestCopyReport),
     Governance(GovernanceReport),
     Variants([u64; production::N]),
+    VariantPart,
     Research(ResearchReport),
     Intel(fog::IntelCopyReport),
     PresentationPrepare(()),
@@ -1357,7 +1361,7 @@ impl Job {
             Self::World(..) => Role::World,
             Self::Economy(..) => Role::Economy,
             Self::Governance(..) => Role::Governance,
-            Self::Variants(..) => Role::Variants,
+            Self::Variants(..) | Self::VariantPart(..) => Role::Variants,
             Self::Research(..) => Role::Research,
             Self::Intel(..) => Role::Intel,
             Self::FinalInputs(..) => Role::FinalInputs,
@@ -1876,7 +1880,12 @@ fn run_with_memory(
             // Repair before deciding recovery: the drain may withdraw the census.
             let begin = sampling::qpc();
             crate::read_accounting::with_table(replay_data::rows::TableId::VariantChanges, || {
-                request.changes.capture(context.base, context.hour);
+                request.changes.capture_partitioned(
+                    context.base,
+                    context.hour,
+                    request.workers.lanes(),
+                    |parts| request.workers.context(parts, memory, context.base),
+                );
             });
             request.changes_ticks = sampling::qpc().saturating_sub(begin).max(0) as u64;
             request.changes_finished = true;
@@ -1896,15 +1905,23 @@ fn run_with_memory(
                 request.registry.mark_skipped();
             }
             let registry_ticks = sampling::qpc().saturating_sub(begin).max(0) as u64;
-            let mut variants = request.variants.capture_deferred(
+            let workers = &request.workers;
+            let mut variants = request.variants.capture_deferred_partitioned(
                 memory,
                 context.base,
                 request.registry.sources(),
                 context.hour,
                 fresh,
+                workers.lanes(),
+                |parts| workers.acquire(parts, memory, context.base),
+                |parts| workers.context(parts, memory, context.base),
             );
             variants[3] = variants[3].saturating_add(registry_ticks);
             Report::Variants(variants)
+        }
+        Job::VariantPart(request) => {
+            request.part.capture(memory, request.base);
+            Report::VariantPart
         }
         Job::Research(request) => {
             let cached = request.countries.roster_view(memory);
@@ -2448,6 +2465,7 @@ impl Role {
     /// Slots this role contributes to the peak hourly request reservation.
     const fn jobs_per_hour(self) -> usize {
         match self {
+            Self::Variants => acquisition::MAX_WORKERS,
             Self::AirWing => air::WING_PARTS,
             Self::AirRelations => crate::extended::air_relations::PARTS,
             Self::AirHistories => crate::extended::air_histories::PARTS,
@@ -2555,6 +2573,9 @@ impl Pool {
         request: &mut Option<Job>,
         wake: bool,
     ) -> Result<Ticket, acquisition::SubmitError> {
+        if let Some(Job::Variants(request)) = request.as_mut() {
+            request.workers.arm(self);
+        }
         let role = request.as_ref().map(Job::role);
         let worker_only = request.as_ref().is_some_and(Job::worker_only);
         // SAFETY: the caller retains the admitted callback lease.

@@ -1268,6 +1268,8 @@ fn run(
         .prepare_clock_capture(&memory)
         .map_err(|_| "clock preparation allocation failed")?;
     let shared = Arc::new(shared);
+    let accounting = Arc::downgrade(&shared);
+    crate::design_changes::account_scratch(accounting);
     progress.step("shared_started", None);
     let mut spool_state = SpoolState {
         sizing,
@@ -5193,6 +5195,7 @@ fn sizing_pass(
     crate::army_stat_changes::collect();
     crate::country_input_changes::presize();
     crate::country_input_changes::collect();
+    crate::design_changes::presize();
     crate::raid_changes::presize();
     crate::raid_changes::collect();
     crate::naval_tree_changes::presize();

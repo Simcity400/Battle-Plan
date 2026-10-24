@@ -1255,9 +1255,8 @@ fn shared_variant_projection_reuses_quiet_groups_and_keeps_identical_frame_bytes
                 }
                 input => input,
             };
-            for (table, (actual, expected)) in TABLES[3..7]
-                .iter()
-                .zip(actual.into_iter().zip(expected))
+            for (table, (actual, expected)) in
+                TABLES[3..7].iter().zip(actual.into_iter().zip(expected))
             {
                 // Daily complete inputs enter the real spool's recovery cache.
                 next.tables[table.index()] = shared(actual);
@@ -1270,4 +1269,113 @@ fn shared_variant_projection_reuses_quiet_groups_and_keeps_identical_frame_bytes
             );
         }
     }
+}
+
+#[test]
+fn private_snapshots_read_outside_store_and_intervening_observers_use_the_exact_serial_fallback() {
+    use std::cell::Cell;
+    struct Fixture<'a> {
+        bytes: &'a [u8],
+        interfere: bool,
+        injected: Cell<bool>,
+        locked: Cell<usize>,
+    }
+    impl Memory for Fixture<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if let Some(mutex) = STORE.get() {
+                let free = mutex.try_lock().is_ok();
+                if !free {
+                    self.locked.set(self.locked.get() + 1);
+                }
+                if self.interfere && free && !self.injected.replace(true) {
+                    drop(callback_store(mutex));
+                }
+            }
+            if address == engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
+                output.copy_from_slice(&0x12000_u64.to_le_bytes());
+                true
+            } else if address == 0x12000 + engine_native::cgame_state::CURRENT_HOUR
+                && output.len() == 4
+            {
+                output.copy_from_slice(&7_i32.to_le_bytes());
+                true
+            } else {
+                engine_native::memory::SliceMemory {
+                    base: kit::BASE,
+                    bytes: self.bytes,
+                }
+                .copy(address, output)
+            }
+        }
+    }
+    fn store() -> Store {
+        let mut batch = Batch::empty();
+        batch.prepare(8, 1024, ROOT_BYTES * 32);
+        let mut watched = HashMap::new();
+        watched.insert(
+            kit::VARIANT,
+            Watch {
+                id: 0xfedc_ba98_0000_0046,
+                pointer: kit::VARIANT,
+                flags: [0; 3],
+                dirty: false,
+            },
+        );
+        let mut interests = sources::Interests::default();
+        interests.prepare(1024).unwrap();
+        interests.prepare_organisations(1024).unwrap();
+        Store {
+            batch,
+            spare: Batch::empty(),
+            watched,
+            interests,
+            epoch: EPOCH.load(Ordering::Acquire),
+        }
+    }
+    let mut bytes = fixture();
+    edit(&mut bytes, b'A', 17);
+    let fixture = Fixture {
+        bytes: &bytes,
+        interfere: false,
+        injected: Cell::new(false),
+        locked: Cell::new(0),
+    };
+    writers::prepare(8).unwrap();
+    let mut reference = store();
+    observe_locked(&mut reference, &fixture, 0, kit::VARIANT, false, false);
+    let mut expected = Vec::new();
+    decode_batch(&reference.batch, 0, 7, &mut expected).unwrap();
+    assert_eq!(expected.len(), 1);
+    assert!(STORE.set(Mutex::new(store())).is_ok());
+    storage::census(8, 1024, ROOT_BYTES * 32, 1024, ROOT_BYTES * 32);
+    presize();
+    collector_test_support::with_allocations_denied(|| {
+        observe(&fixture, 0, kit::VARIANT, false, false)
+    });
+    assert_eq!(
+        fixture.locked.get(),
+        0,
+        "the common path must not read native memory under STORE"
+    );
+    let interfering = Fixture {
+        interfere: true,
+        ..fixture
+    };
+    collector_test_support::with_allocations_denied(|| {
+        observe(&interfering, 0, kit::VARIANT, false, false)
+    });
+    assert!(interfering.injected.get());
+    assert!(
+        interfering.locked.get() > 0,
+        "the intervening observer must select the serial fallback"
+    );
+    let store = STORE.get().unwrap().lock().unwrap();
+    assert!(store.batch.failure.is_none());
+    let mut actual = Vec::new();
+    decode_batch(&store.batch, 0, 7, &mut actual).unwrap();
+    assert_eq!(actual.len(), 2);
+    for row in actual {
+        assert_eq!(row.snapshot, expected[0].snapshot);
+    }
+    assert!(!MISSED.load(Ordering::Acquire));
 }

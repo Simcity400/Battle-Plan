@@ -495,6 +495,7 @@ struct Shared<J, R> {
     uncollected: AtomicUsize,
     /// One sleeping collector: slot + 1, optionally AWAITED_SPIN, or zero.
     awaited: AtomicU64,
+    worker_waiters: AtomicUsize,
     /// Eligibility waits use this address because an idle transition does not
     /// change the awaited slot word. Publication advances and wakes it too.
     spin_wake: AtomicU64,
@@ -569,6 +570,10 @@ impl<J, R> Shared<J, R> {
                 // SAFETY: stable, aligned atomic storage lives through every wait.
                 unsafe { WakeByAddressSingle(self.words[index].as_ptr().cast()) };
             }
+        }
+        if self.worker_waiters.load(Ordering::SeqCst) != 0 {
+            // Worker joins never overwrite the callback's single awaited registration.
+            unsafe { WakeByAddressAll(self.words[index].as_ptr().cast()) };
         }
         published_qpc
     }
@@ -1022,6 +1027,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             stopped: AtomicBool::new(false),
             uncollected: AtomicUsize::new(0),
             awaited: AtomicU64::new(0),
+            worker_waiters: AtomicUsize::new(0),
             spin_wake: AtomicU64::new(0),
             ready_waiting: AtomicBool::new(false),
             ready_wake: AtomicU64::new(0),
@@ -1106,8 +1112,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     /// Keep the foreign live-read lease until EVERY accepted ticket and
     /// continuation successor is drained, then settle active publishers,
     /// including on failure. Mutable outputs must be disjoint; shared
-    /// seeds live through all consumers. One collector of pending tickets,
-    /// never recursive; the acquire CAS also contains racing ready collectors.
+    /// seeds live through all consumers. Each ticket has one collecting owner.
+    /// Nested workers collect only their children through finish_worker_into.
     #[cfg(test)]
     pub(crate) unsafe fn submit(&self, request: &mut Option<J>) -> Result<Ticket, SubmitError> {
         unsafe { self.submit_with_priority(request, 0, false, true) }
@@ -1396,6 +1402,49 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         }
         collected
     }
+    pub(crate) fn finish_worker_into(
+        &self,
+        ticket: Ticket,
+        out: &mut Option<Completion<J, R>>,
+    ) -> bool {
+        assert!(out.is_none());
+        if ticket.pool != self.shared.id || ticket.slot >= self.shared.words.len() {
+            return false;
+        }
+        struct Waiting<'a>(&'a AtomicUsize);
+        impl Drop for Waiting<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        self.shared.worker_waiters.fetch_add(1, Ordering::SeqCst);
+        let _waiting = Waiting(&self.shared.worker_waiters);
+        let value = &self.shared.words[ticket.slot];
+        loop {
+            if self.collect(ticket, out, 0) {
+                return true;
+            }
+            let observed = value.load(Ordering::SeqCst);
+            if observed == word(ticket.generation, PUBLISHED) {
+                continue;
+            }
+            if observed != word(ticket.generation, PENDING)
+                && observed != word(ticket.generation, RUNNING)
+            {
+                return false;
+            }
+            // Registration/reload pairs with publication's SC store/load, including cancellation.
+            unsafe {
+                WaitOnAddress(
+                    value.as_ptr().cast(),
+                    (&observed as *const u64).cast(),
+                    size_of::<u64>(),
+                    u32::MAX,
+                )
+            };
+        }
+    }
+
     fn collect(&self, ticket: Ticket, out: &mut Option<Completion<J, R>>, lock_ticks: u64) -> bool {
         let Some(value) = self.shared.words.get(ticket.slot) else {
             return false;
@@ -4214,6 +4263,52 @@ mod tests {
             for spinner in spinners {
                 spinner.join().unwrap();
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod worker_join_tests {
+    use super::*;
+    use std::sync::Weak;
+
+    #[test]
+    fn parent_and_child_worker_joins_keep_the_callback_lease_and_its_own_waiter() {
+        for panic_child in [false, true] {
+            let binding = Arc::new(OnceLock::<Weak<Pool<u8, u32>>>::new());
+            let worker_binding = Arc::clone(&binding);
+            let caller = unsafe { GetCurrentThreadId() };
+            let pool = Arc::new(
+                Pool::start(2, 3, move |request: &mut u8| {
+                    let thread = unsafe { GetCurrentThreadId() };
+                    assert_ne!(thread, caller);
+                    if *request == 1 {
+                        assert!(!panic_child, "synthetic child acquisition failure");
+                        return thread;
+                    }
+                    let pool = worker_binding.get().unwrap().upgrade().unwrap();
+                    let mut child = Some(1);
+                    let ticket =
+                        unsafe { pool.submit_with_priority(&mut child, 0, true, true) }.unwrap();
+                    let mut completed = None;
+                    assert!(pool.finish_worker_into(ticket, &mut completed));
+                    match completed.unwrap().report {
+                        Ok(child) => assert_ne!(thread, child),
+                        Err(failure) => assert_eq!(failure, Failure::Panicked),
+                    }
+                    thread
+                })
+                .unwrap(),
+            );
+            binding.set(Arc::downgrade(&pool)).unwrap();
+            let mut parent = Some(0);
+            let ticket = unsafe { pool.submit_with_priority(&mut parent, 0, true, true) }.unwrap();
+            let mut completed = None;
+            assert!(pool.finish_into(ticket, &mut completed));
+            assert_ne!(completed.unwrap().report.unwrap(), caller);
+            assert_eq!(pool.shared.worker_waiters.load(Ordering::SeqCst), 0);
+            assert_eq!(pool.calibration().uncollected, 0);
+            assert_eq!(pool.calibration().panicked, u64::from(panic_child));
         }
     }
 }
