@@ -96,7 +96,13 @@ pub struct Totals<L> {
     pub complete: bool,
     pub census: Baseline,
     pub lines: OutputMap<L>,
-    publication_written: bool,
+    /// The last prepared publication; never reset, so stamps outlive branches.
+    publications: u64,
+    /// The publication a frame written now would hold.
+    held: Option<u64>,
+    /// Lines ended no later than this were in a written publication.
+    written_through: u64,
+    retired_through: u64,
 }
 impl<L> Default for Totals<L> {
     fn default() -> Self {
@@ -106,10 +112,18 @@ impl<L> Default for Totals<L> {
             complete: false,
             census: Baseline::default(),
             lines: OutputMap::default(),
-            publication_written: false,
+            publications: 0,
+            held: None,
+            written_through: 0,
+            retired_through: 0,
         }
     }
 }
+
+/// What a written frame proves was published; dropping it retires nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Receipt(Option<u64>);
+
 impl<L> Totals<L> {
     pub fn observe(
         &mut self,
@@ -130,30 +144,59 @@ impl<L> Totals<L> {
         if matches!(progress, Progress::Restart) {
             self.lines.clear();
             self.census = Baseline::default();
-            self.publication_written = false;
+            self.held = None;
         }
         progress
     }
-    pub fn written(&mut self, held: bool) {
-        self.publication_written |= held;
+    /// Drop lines a written publication showed ended, before entries touch them.
+    pub fn retire(&mut self, ended: impl Fn(&L) -> Option<u64>) {
+        if self.written_through > self.retired_through {
+            let through = self.written_through;
+            self.lines
+                .retain(|_, line| ended(line).is_none_or(|at| at > through));
+            self.retired_through = through;
+        }
     }
-    /// Only a written publication retires ended lines. Seed the baseline once,
-    /// from the first complete census; earlier drains do not prove creation.
+    /// Seed the baseline once, from the first complete census; earlier drains
+    /// do not prove creation.
     pub fn prepare_publication(
         &mut self,
         hour: i32,
         handles: impl ExactSizeIterator<Item = u64>,
-        ended: impl Fn(&L) -> bool,
-    ) -> io::Result<()> {
+    ) -> io::Result<u64> {
         if self.census.0.is_none() {
             let mut baseline = collect_vec(handles)?;
             baseline.sort_unstable();
             self.census.0 = Some((hour, baseline));
         }
-        if std::mem::take(&mut self.publication_written) {
-            self.lines.retain(|_, line| !ended(line));
+        self.publications += 1;
+        Ok(self.publications)
+    }
+    /// Before this hour's publication: the one an off-slot skip carries.
+    pub fn take_held(&mut self) -> Option<u64> {
+        self.held.take()
+    }
+    /// Once this hour's rows are complete.
+    pub fn published(&mut self, publication: u64) {
+        self.held = Some(publication);
+    }
+    /// A skip carries the last on-slot table, so it holds what that one held.
+    pub fn carry(&mut self, output: &TableView, carried: Option<u64>) {
+        if let TableView::Unavailable { reason } = output
+            && reason == replay_data::cadence::SKIPPED_REASON
+        {
+            self.held = carried;
         }
-        Ok(())
+    }
+    /// Taken before the frame with `output` is queued, after its assembly.
+    pub fn receipt(&self, output: &TableInput) -> Receipt {
+        Receipt(self.held.filter(|_| holds_publication(output)))
+    }
+    /// After the frame of `receipt` was actually written.
+    pub fn written(&mut self, receipt: Receipt) {
+        if let Receipt(Some(publication)) = receipt {
+            self.written_through = self.written_through.max(publication);
+        }
     }
 }
 #[derive(Debug, Default)]

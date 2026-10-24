@@ -2021,6 +2021,33 @@ fn recovered_frame_wins_over_uncertain_flush_gap_and_parent_claim_survives_damag
 }
 
 #[test]
+fn a_flushed_gap_retried_after_close_failure_is_kept_once_across_segments_and_appends() {
+    let gap = Gap {
+        branch: 1,
+        first_hour: 2,
+        last_hour: 2,
+        reason: "spool write failed".into(),
+    };
+    let mut first = records(1, &[1]);
+    first.push(Record::Gap(gap.clone()));
+    let mut retried = vec![
+        Record::SessionStart(session(1)),
+        Record::BranchStart(branch(1, 1)),
+        Record::Gap(gap.clone()),
+    ];
+    let mut encoder = FrameEncoder::new();
+    retried.push(Record::Frame(encoder.encode(source(1, 3), true).unwrap()));
+    let combined =
+        Replay::from_records(CAMPAIGN.into(), &[first.clone(), retried.clone()]).unwrap();
+    assert_eq!(combined.gaps, [gap.clone()]);
+    assert_eq!(combined.recorded_hours(1).unwrap(), [1, 3]);
+    let saved = Replay::from_records(CAMPAIGN.into(), &[first]).unwrap();
+    let appended = saved.append(&[retried]).unwrap();
+    assert_eq!(appended.gaps, [gap]);
+    assert_eq!(appended.recorded_hours(1).unwrap(), [1, 3]);
+}
+
+#[test]
 fn recovery_orders_segments_numerically_and_rejects_duplicate_numbers() {
     let first = records(1, &[1]);
     let mut later = vec![Record::BranchStart(branch(1, 1))];

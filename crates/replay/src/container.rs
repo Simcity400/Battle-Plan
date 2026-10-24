@@ -2527,7 +2527,11 @@ fn write_blocks<R: SpoolRecord>(
                     if current_branch != Some(gap.branch) {
                         return Err(invalid("gap has no matching branch context"));
                     }
-                    pending.gaps.push(gap.clone());
+                    if !pending.gaps.contains(gap)
+                        && !existing.is_some_and(|replay| replay.gaps.contains(gap))
+                    {
+                        pending.gaps.push(gap.clone());
+                    }
                 }
                 RecordRef::Control(control) => {
                     if current_session != Some(control.session()) {

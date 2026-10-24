@@ -163,6 +163,9 @@ struct Lane {
     consumed: AtomicU64,
     consumed_attempts: AtomicU64,
     consumed_byte_demand: AtomicU64,
+    // Spool side: where the next interval assembles, at least `consumed`.
+    assembled: AtomicU64,
+    assembled_attempts: AtomicU64,
     required_entries: AtomicUsize,
     required_bytes: AtomicUsize,
 }
@@ -195,6 +198,8 @@ impl Lane {
             consumed: AtomicU64::new(0),
             consumed_attempts: AtomicU64::new(0),
             consumed_byte_demand: AtomicU64::new(0),
+            assembled: AtomicU64::new(0),
+            assembled_attempts: AtomicU64::new(0),
             required_entries: AtomicUsize::new(0),
             required_bytes: AtomicUsize::new(0),
         })
@@ -238,6 +243,9 @@ struct Log {
     sequence: AtomicU64,
     consumed: AtomicU64,
     consumed_epoch: AtomicU64,
+    // Admission skips events without releasing their storage.
+    assembled: AtomicU64,
+    assembled_epoch: AtomicU64,
     // Sealed at the lane boundary that installs `next`; stale callbacks
     // holding this generation follow it instead of losing a completion.
     publishers: AtomicUsize,
@@ -300,9 +308,32 @@ impl Log {
             sequence: AtomicU64::new(0),
             consumed: AtomicU64::new(0),
             consumed_epoch: AtomicU64::new(0),
+            assembled: AtomicU64::new(0),
+            assembled_epoch: AtomicU64::new(0),
             publishers: AtomicUsize::new(0),
             next: AtomicUsize::new(0),
         })
+    }
+    /// Assemble again from what the writer committed.
+    fn reset_admitted(&self) {
+        for lane in &self.lanes {
+            lane.assembled
+                .store(lane.consumed.load(Ordering::Acquire), Ordering::Release);
+            lane.assembled_attempts.store(
+                lane.consumed_attempts.load(Ordering::Acquire),
+                Ordering::Release,
+            );
+        }
+        self.assembled
+            .store(self.consumed.load(Ordering::Acquire), Ordering::Release);
+        // Read before the consumed epoch so reset cannot undo boundary priming.
+        let assembled = self.assembled_epoch.load(Ordering::SeqCst);
+        let _ = self.assembled_epoch.compare_exchange(
+            assembled,
+            self.consumed_epoch.load(Ordering::SeqCst),
+            Ordering::SeqCst,
+            Ordering::Relaxed,
+        );
     }
 }
 struct Call {
@@ -440,9 +471,9 @@ fn seal_offered(log: &'static Log) -> &'static Log {
     let Some(offered) = offered() else {
         return log;
     };
-    offered
-        .consumed_epoch
-        .store(EPOCH.load(Ordering::Acquire), Ordering::Release);
+    let epoch = EPOCH.load(Ordering::Acquire);
+    offered.consumed_epoch.store(epoch, Ordering::SeqCst);
+    offered.assembled_epoch.store(epoch, Ordering::SeqCst);
     log.next
         .store(offered as *const Log as usize, Ordering::Release);
     if log
@@ -562,6 +593,23 @@ pub fn presize(entries: usize, bytes: usize) {
         LOG.store(pointer, Ordering::Release);
     } else {
         OFFERED.store(pointer, Ordering::Release);
+    }
+}
+/// After draining lost frames, assemble again from the last written interval.
+pub fn reset_admitted() {
+    let current = LOG.load(Ordering::Acquire);
+    for log in LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+    {
+        // Replaced generations cannot hand off again; report their unwritten events lost.
+        if &**log as *const Log as usize != current
+            && log.assembled.load(Ordering::Acquire) != log.consumed.load(Ordering::Acquire)
+        {
+            lost_drain();
+        }
+        log.reset_admitted();
     }
 }
 /// # Safety
@@ -838,20 +886,21 @@ pub struct Drained {
     pub bytes: usize,
 }
 impl Handoff {
+    /// Completions after every admitted or written interval.
     pub fn pending(self) -> usize {
         let log = unsafe { &*(self.log as *const Log) };
         self.sequence
-            .saturating_sub(log.consumed.load(Ordering::Acquire)) as usize
+            .saturating_sub(log.assembled.load(Ordering::Acquire)) as usize
     }
     pub fn description_capacity(self, cursors: &[LaneCursor]) -> Result<usize, &'static str> {
         let log = unsafe { &*(self.log as *const Log) };
-        if self.sequence < log.consumed.load(Ordering::Acquire) {
+        if self.sequence < log.assembled.load(Ordering::Acquire) {
             return Ok(0);
         }
         let mut bytes = 0_usize;
         for (lane, end) in log.lanes.iter().zip(cursors).take(self.lanes) {
             // These sealed records cannot be reused until the spool releases them.
-            for cursor in lane.consumed.load(Ordering::Acquire)..end.cursor {
+            for cursor in lane.assembled.load(Ordering::Acquire)..end.cursor {
                 let length = unsafe {
                     (*lane.records[cursor as usize & (lane.records.len() - 1)].get())
                         .event
@@ -869,7 +918,7 @@ impl Handoff {
     }
     /// Published shared records of this interval in log-wide order.
     fn shared(self, log: &Log) -> Result<Vec<(u64, u64)>, &'static str> {
-        let first = log.consumed.load(Ordering::Acquire);
+        let first = log.assembled.load(Ordering::Acquire);
         let mut shared = log
             .shared
             .published(|record| record.order)
@@ -877,8 +926,29 @@ impl Handoff {
         shared.retain(|&(order, _)| order > first && order <= self.sequence);
         Ok(shared)
     }
+    /// Allocation-free admission skips this interval without releasing records or bytes.
+    pub fn admitted(self, cursors: &[LaneCursor]) {
+        let log = unsafe { &*(self.log as *const Log) };
+        let assembled = log.assembled.load(Ordering::Acquire);
+        // Handoffs seal in order: an older one, idle or not, admits nothing.
+        if self.sequence < assembled
+            || (self.sequence == assembled
+                && self.epoch < log.assembled_epoch.load(Ordering::Acquire))
+            || cursors.len() < self.lanes
+        {
+            return;
+        }
+        for (lane, end) in log.lanes.iter().zip(cursors).take(self.lanes) {
+            lane.assembled.fetch_max(end.cursor, Ordering::Release);
+            lane.assembled_attempts
+                .fetch_max(end.attempts, Ordering::Release);
+        }
+        log.assembled.store(self.sequence, Ordering::Release);
+        log.assembled_epoch.store(self.epoch, Ordering::Release);
+    }
     /// Only after the sealed frame (complete or refused) was written. Failed
     /// conversion/encoding/I/O leaves both lane and byte-ring consumption intact.
+    /// A frame written without admission is admitted too.
     pub fn commit(self, cursors: &[LaneCursor]) {
         let log = unsafe { &*(self.log as *const Log) };
         if self.sequence < log.consumed.load(Ordering::Acquire)
@@ -895,7 +965,9 @@ impl Handoff {
         {
             return;
         }
-        let pending = self.pending();
+        let pending = self
+            .sequence
+            .saturating_sub(log.consumed.load(Ordering::Acquire));
         for (lane, end) in log.lanes.iter().zip(cursors).take(self.lanes) {
             for cursor in lane.consumed.load(Ordering::Acquire)..end.cursor {
                 let record =
@@ -928,7 +1000,8 @@ impl Handoff {
         log.shared.advance(self.shared_rejected);
         log.consumed.store(self.sequence, Ordering::Release);
         log.consumed_epoch.store(self.epoch, Ordering::Release);
-        COUNTERS[2].fetch_add(pending as u64, Ordering::Relaxed);
+        self.admitted(cursors);
+        COUNTERS[2].fetch_add(pending, Ordering::Relaxed);
     }
     #[cfg(test)]
     fn drain(
@@ -953,10 +1026,10 @@ impl Handoff {
         let cursors = cursors
             .get(..self.lanes)
             .ok_or("operation completion drain cursors short")?;
-        let first = log.consumed.load(Ordering::Acquire);
+        let first = log.assembled.load(Ordering::Acquire);
         if log.lanes.iter().zip(cursors).any(|(lane, end)| {
-            end.cursor < lane.consumed.load(Ordering::Acquire)
-                || end.attempts < lane.consumed_attempts.load(Ordering::Acquire)
+            end.cursor < lane.assembled.load(Ordering::Acquire)
+                || end.attempts < lane.assembled_attempts.load(Ordering::Acquire)
         }) {
             count("operation completion stale handoff");
             return Err("operation completion stale handoff");
@@ -970,7 +1043,7 @@ impl Handoff {
             count("operation completion stale handoff");
             return Err("operation completion stale handoff");
         };
-        if log.consumed_epoch.load(Ordering::Acquire) != self.epoch
+        if log.assembled_epoch.load(Ordering::Acquire) != self.epoch
             || self.epoch != EPOCH.load(Ordering::Acquire)
         {
             return Err("operation completion observation restarted or lost");
@@ -983,7 +1056,7 @@ impl Handoff {
             log.lanes
                 .iter()
                 .take(self.lanes)
-                .map(|lane| lane.consumed.load(Ordering::Acquire)),
+                .map(|lane| lane.assembled.load(Ordering::Acquire)),
         )
         .map_err(|_| "operation completion description allocation failed")?;
         let mut shared = self.shared(log)?.into_iter().peekable();
@@ -2097,6 +2170,221 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(bytes, b"after seal");
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
+        REQUIRED_LANES.store(required, Ordering::Relaxed);
+        unsafe {
+            release();
+        }
+    }
+
+    #[test]
+    fn operation_completion_queued_intervals_assemble_disjointly_and_hold_storage_until_written() {
+        use crate::extended::operation_outcomes::{Captured, Ledger};
+        use replay_data::{rows::TableId, rows::TableRows};
+        use replay_frame::{frame::TableInput, frame::TableView};
+        let _serial = TEST.lock().unwrap();
+        let log = new_log(4, 32);
+        prime(&log);
+        let lane = &log.lanes[0];
+        let sealed = || {
+            let mut cursors = vec![LaneCursor::default()];
+            let handoff = handoff_from(&log, &mut cursors).unwrap();
+            Captured::sealed(handoff, cursors)
+        };
+        let shared = |description: &[u8]| {
+            observe_return(
+                &log,
+                Target::Shared,
+                &Fixture::new(description),
+                BASE,
+                INSTANCE,
+                1,
+            )
+        };
+        let rows = |tables: &[TableInput]| match &tables[TableId::OperationCompletions.index()] {
+            TableInput::Sampled(TableView::Complete(TableRows::OperationCompletions(rows))) => rows
+                .iter()
+                .map(|row| row.effect_description.clone())
+                .collect::<Vec<_>>(),
+            _ => panic!("operation completions unavailable"),
+        };
+        let mut ledger = Ledger::default();
+        let mut tables = vec![
+            TableInput::Sampled(TableView::Unavailable {
+                reason: "test".into(),
+            });
+            TableId::ALL.len()
+        ];
+        complete(&log, &Fixture::new(b"first"), 1);
+        shared(b"first shared");
+        let first = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
+        assert_eq!(rows(&tables), [b"first".to_vec(), b"first shared".to_vec()]);
+        first.admitted();
+        complete(&log, &Fixture::new(b"second"), 1);
+        shared(b"second shared");
+        // The first frame is still queued: the second interval starts after it.
+        let second = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
+        assert_eq!(
+            rows(&tables),
+            [b"second".to_vec(), b"second shared".to_vec()]
+        );
+        second.admitted();
+        let quiet = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
+        assert!(rows(&tables).is_empty());
+        quiet.admitted();
+        assert_eq!(lane.assembled.load(Ordering::Acquire), 2);
+        assert_eq!(lane.assembled_attempts.load(Ordering::Acquire), 2);
+        // Nothing queued was written, so no record, byte or demand is free.
+        assert_eq!(log.consumed.load(Ordering::Acquire), 0);
+        assert_eq!(lane.consumed.load(Ordering::Acquire), 0);
+        assert_eq!(lane.consumed_attempts.load(Ordering::Acquire), 0);
+        assert_eq!(lane.ring().consumed.load(Ordering::Acquire), 0);
+        assert_eq!(
+            log.shared.published(|record| record.order).unwrap().len(),
+            2
+        );
+        assert_eq!(
+            lane.required_bytes.load(Ordering::Relaxed),
+            b"firstsecond".len()
+        );
+        first.commit();
+        assert_eq!(log.consumed.load(Ordering::Acquire), 2);
+        assert_eq!(lane.consumed.load(Ordering::Acquire), 1);
+        assert_eq!(lane.consumed_attempts.load(Ordering::Acquire), 1);
+        assert_eq!(lane.consumed_byte_demand.load(Ordering::Acquire), 5);
+        assert_eq!(lane.ring().consumed.load(Ordering::Acquire), 5);
+        assert_eq!(
+            log.shared.published(|record| record.order).unwrap().len(),
+            1
+        );
+        // Writing the older frame leaves the queued one's place.
+        assert_eq!(log.assembled.load(Ordering::Acquire), 4);
+        second.commit();
+        quiet.commit();
+        assert_eq!(log.consumed.load(Ordering::Acquire), 4);
+        assert_eq!(lane.ring().consumed.load(Ordering::Acquire), 11);
+        assert!(
+            log.shared
+                .published(|record| record.order)
+                .unwrap()
+                .is_empty()
+        );
+        complete(&log, &Fixture::new(b"third"), 1);
+        assert_eq!(drain(&log).unwrap().1, b"third");
+    }
+
+    #[test]
+    fn operation_completion_lost_queue_assembles_again_from_the_written_interval() {
+        let _serial = TEST.lock().unwrap();
+        let log = new_log(4, 32);
+        prime(&log);
+        complete(&log, &Fixture::new(b"written"), 1);
+        assert_eq!(drain(&log).unwrap().1, b"written");
+        complete(&log, &Fixture::new(b"lost"), 1);
+        observe_return(
+            &log,
+            Target::Shared,
+            &Fixture::new(b"lost shared"),
+            BASE,
+            INSTANCE,
+            1,
+        );
+        let mut first = [LaneCursor::default()];
+        let queued = handoff_from(&log, &mut first).unwrap();
+        let mut events = [Event::default(); 2];
+        let mut bytes = [0; 32];
+        assert_eq!(
+            queued.prepare(&first, &mut events, &mut bytes).unwrap(),
+            Drained {
+                copied: 2,
+                bytes: 15
+            }
+        );
+        queued.admitted(&first);
+        // Admitting again, or an older handoff, moves nothing.
+        queued.admitted(&first);
+        complete(&log, &Fixture::new(b"later"), 1);
+        let mut second = [LaneCursor::default()];
+        let later = handoff_from(&log, &mut second).unwrap();
+        assert_eq!(later.pending(), 1);
+        later.admitted(&second);
+        queued.admitted(&first);
+        assert_eq!(log.assembled.load(Ordering::Acquire), 4);
+        // The writer lost both frames.
+        log.reset_admitted();
+        let lane = &log.lanes[0];
+        assert_eq!(log.assembled.load(Ordering::Acquire), 1);
+        assert_eq!(
+            log.assembled_epoch.load(Ordering::Acquire),
+            log.consumed_epoch.load(Ordering::Acquire)
+        );
+        assert_eq!(lane.assembled.load(Ordering::Acquire), 1);
+        assert_eq!(lane.assembled_attempts.load(Ordering::Acquire), 1);
+        let (events, bytes) = drain(&log).unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(bytes, b"lostlost sharedlater");
+        // A span rolled back over an invalidation is lost as a whole.
+        complete(&log, &Fixture::new(b"before"), 1);
+        let mut cursors = [LaneCursor::default()];
+        handoff_from(&log, &mut cursors).unwrap().admitted(&cursors);
+        invalidate();
+        complete(&log, &Fixture::new(b"after"), 1);
+        handoff_from(&log, &mut cursors).unwrap().admitted(&cursors);
+        log.reset_admitted();
+        assert_eq!(
+            drain(&log),
+            Err("operation completion observation restarted or lost")
+        );
+        complete(&log, &Fixture::new(b"recovered"), 1);
+        assert_eq!(drain(&log).unwrap().1, b"recovered");
+    }
+
+    #[test]
+    fn operation_completion_queued_backlog_raises_entry_demand_past_one_interval() {
+        let _serial = TEST.lock().unwrap();
+        let log = new_log(2, 32);
+        prime(&log);
+        let fixture = Fixture::new(b"held");
+        for _ in 0..2 {
+            complete(&log, &fixture, 1);
+            let mut cursors = [LaneCursor::default()];
+            handoff_from(&log, &mut cursors).unwrap().admitted(&cursors);
+        }
+        // Each queued interval holds one record; together they fill the lane.
+        complete(&log, &fixture, 1);
+        assert_eq!(log.lanes[0].required_entries.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn operation_completion_lost_queue_of_a_replaced_generation_reports_the_loss() {
+        let _serial = TEST.lock().unwrap();
+        unsafe {
+            release();
+        }
+        let required = REQUIRED_LANES.load(Ordering::Relaxed);
+        presize(8, 64);
+        let old = log().unwrap();
+        old.registered.store(1, Ordering::Relaxed);
+        prime(old);
+        complete(old, &Fixture::new(b"held by the old generation"), 1);
+        REQUIRED_LANES.fetch_max(old.lanes.len() + 1, Ordering::Relaxed);
+        presize(8, 64);
+        let sealed = seal_offered(old);
+        assert!(!std::ptr::eq(log().unwrap(), old));
+        let mut cursors = [LaneCursor::default()];
+        handoff_from(sealed, &mut cursors)
+            .unwrap()
+            .admitted(&cursors);
+        let lost = COUNTERS[7].load(Ordering::Relaxed);
+        let epoch = EPOCH.load(Ordering::Acquire);
+        // The writer lost the frame; no later handoff drains the old generation.
+        reset_admitted();
+        assert_eq!(COUNTERS[7].load(Ordering::Relaxed), lost + 1);
+        assert_eq!(EPOCH.load(Ordering::Acquire), epoch + 1);
+        assert_eq!(old.assembled.load(Ordering::Acquire), 0);
+        assert_eq!(old.lanes[0].consumed.load(Ordering::Acquire), 0);
+        // Nothing else was queued: a second reset reports nothing.
+        reset_admitted();
+        assert_eq!(COUNTERS[7].load(Ordering::Relaxed), lost + 1);
         REQUIRED_LANES.store(required, Ordering::Relaxed);
         unsafe {
             release();

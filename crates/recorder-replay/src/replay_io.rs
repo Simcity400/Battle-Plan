@@ -22,10 +22,13 @@ use replay_data::{
     identity::Verification, identity::is_campaign_uuid, rows::TableId, rows::TableRows,
     rows::tables,
 };
-use replay_data::{witness::TerminalWitness, witness::WITNESS_BYTES, witness::WITNESS_FILE_NAME};
+use replay_data::{
+    witness::TerminalWitness, witness::UncommittedRange, witness::WITNESS_BYTES,
+    witness::WITNESS_FILE_NAME,
+};
 use replay_frame::{
-    branches::Gap, branches::Parentage, frame::DecodedFrame, frame::Frame, frame::FrameDecoder,
-    frame::TableUpdate, frame::TableView,
+    branches::BranchStart, branches::BranchTracker, branches::Gap, branches::Parentage,
+    frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::TableUpdate, frame::TableView,
 };
 
 use crate::{recording_name::Contents, recording_name::SpoolName, windows};
@@ -659,6 +662,10 @@ impl FinalizationFrames {
 
 /// A prepared identity record means no collector failure was published.
 pub fn read_failure_witness(session_dir: &Path) -> Result<Option<TerminalWitness>> {
+    Ok(read_failure_witnesses(session_dir)?.first().copied())
+}
+
+fn read_failure_witnesses(session_dir: &Path) -> Result<Vec<TerminalWitness>> {
     let path = session_dir.join(WITNESS_FILE_NAME);
     let config_path = session_dir.join("bin/collector.json");
     let modern = config_path.is_file();
@@ -668,18 +675,18 @@ pub fn read_failure_witness(session_dir: &Path) -> Result<Option<TerminalWitness
             if modern {
                 return Err(failure(&path, "precreated terminal witness is missing"));
             }
-            return Ok(None);
+            return Ok(Vec::new());
         }
         Err(error) => return Err(failure(&path, error)),
     };
-    if bytes.len() != WITNESS_BYTES {
+    if bytes.len() < WITNESS_BYTES || !bytes.len().is_multiple_of(WITNESS_BYTES) {
         return Err(failure(&path, "terminal witness has the wrong length"));
     }
     if bytes.iter().all(|byte| *byte == 0) {
         if modern {
             return Err(failure(&path, "modern terminal witness is uninitialised"));
         }
-        return Ok(None);
+        return Ok(Vec::new());
     }
     if let Ok(identity) = TerminalWitness::decode_prepared(&bytes) {
         if modern {
@@ -705,11 +712,159 @@ pub fn read_failure_witness(session_dir: &Path) -> Result<Option<TerminalWitness
                 ));
             }
         }
-        return Ok(None);
+        return Ok(Vec::new());
     }
-    TerminalWitness::decode(&bytes)
-        .map(Some)
-        .map_err(|error| failure(&path, error))
+    replay_data::witness::decode_bundle(&bytes).map_err(|error| failure(&path, error))
+}
+
+struct CampaignFailure {
+    witness: TerminalWitness,
+    ranges: Vec<UncommittedRange>,
+    empty_prefix: bool,
+    bundled: bool,
+}
+
+fn campaign_failure(
+    session_dir: &Path,
+    campaign: &[u8],
+    primary: &TerminalWitness,
+) -> Result<CampaignFailure> {
+    let mut records = if session_dir.join(WITNESS_FILE_NAME).is_file() {
+        read_failure_witnesses(session_dir)?
+    } else {
+        Vec::new()
+    };
+    if records.is_empty() {
+        records.push(*primary);
+    } else if records[0] != *primary {
+        return Err(failure(
+            session_dir,
+            "terminal witness changed during finalization",
+        ));
+    }
+    let mut ranges: Vec<UncommittedRange> = Vec::new();
+    for range in records
+        .iter()
+        .filter_map(|record| record.uncommitted)
+        .filter(|range| range.campaign_id.as_slice() == campaign)
+    {
+        if let Some(known) = ranges.iter_mut().find(|known| known.branch == range.branch) {
+            if known.load_signal != range.load_signal {
+                return Err(failure(
+                    session_dir,
+                    "conflicting terminal range load signals",
+                ));
+            }
+            known.first_hour = known.first_hour.min(range.first_hour);
+            known.last_hour = known.last_hour.max(range.last_hour);
+        } else {
+            ranges.push(range);
+        }
+    }
+    ranges.sort_by_key(|range| range.branch);
+    let mut projected = *primary;
+    let mut prefix = records
+        .iter()
+        .filter(|record| {
+            record
+                .committed_campaign_id
+                .as_ref()
+                .map(|id| id.as_slice())
+                == Some(campaign)
+        })
+        .filter_map(|record| {
+            record
+                .committed_segment
+                .map(|segment| (segment, record.committed_bytes))
+        })
+        .max();
+    if primary.pending_campaign_id.as_ref().map(|id| id.as_slice()) == Some(campaign) {
+        let pending = primary
+            .pending_segment
+            .map(|segment| (segment, primary.pending_bytes));
+        prefix = match (prefix, pending) {
+            (Some(prefix), Some(pending)) => Some(prefix.min(pending)),
+            _ => None,
+        };
+    }
+    let empty_prefix = prefix.is_none() && !ranges.is_empty();
+    if let Some((segment, bytes)) = prefix {
+        projected.committed_campaign_id = Some(
+            campaign
+                .try_into()
+                .map_err(|_| failure(session_dir, "invalid campaign identity"))?,
+        );
+        projected.committed_segment = Some(segment);
+        projected.committed_bytes = bytes;
+    } else if empty_prefix {
+        projected.committed_campaign_id = None;
+        projected.committed_segment = None;
+        projected.committed_bytes = 0;
+    }
+    Ok(CampaignFailure {
+        witness: projected,
+        ranges,
+        empty_prefix,
+        bundled: records.len() > 1,
+    })
+}
+
+fn failure_session(session_dir: &Path, witness: &TerminalWitness) -> Result<SessionStart> {
+    let config_path = session_dir.join("bin/collector.json");
+    if config_path.is_file() {
+        let config: serde_json::Value = serde_json::from_slice(
+            &fs::read(&config_path).map_err(|error| failure(&config_path, error))?,
+        )
+        .map_err(|error| failure(&config_path, error))?;
+        let bytes: Vec<u8> = serde_json::from_value(config["session_start"].clone())
+            .map_err(|error| failure(&config_path, error))?;
+        let mut decoder = replay_data::codec::Decoder::new(&bytes);
+        let session =
+            SessionStart::decode(&mut decoder).map_err(|error| failure(&config_path, error))?;
+        decoder
+            .finish()
+            .map_err(|error| failure(&config_path, error))?;
+        if config["session_id"].as_u64() != Some(session.id)
+            || session.id != witness.session
+            || session.process_start_time != witness.process_start_time
+        {
+            return Err(failure(
+                &config_path,
+                "terminal witness does not match the prepared process session",
+            ));
+        }
+        return Ok(session);
+    }
+    for entry in fs::read_dir(session_dir).map_err(|error| failure(session_dir, error))? {
+        let entry = entry.map_err(|error| failure(session_dir, error))?;
+        if !entry
+            .file_type()
+            .map_err(|error| failure(&entry.path(), error))?
+            .is_dir()
+        {
+            continue;
+        }
+        for (_, path) in segment_paths(&entry.path())? {
+            let file = fs::File::open(&path).map_err(|error| failure(&path, error))?;
+            let length = usize::try_from(
+                file.metadata()
+                    .map_err(|error| failure(&path, error))?
+                    .len(),
+            )
+            .map_err(|error| failure(&path, error))?;
+            if let Ok(Some(Record::SessionStart(session))) =
+                RecordReader::new(file, length).next_record()
+                && session.id == witness.session
+                && session.process_start_time == witness.process_start_time
+            {
+                return Ok(session);
+            }
+        }
+    }
+    Err(failure(
+        session_dir,
+        "terminal ranges have no surviving process session identity",
+    ))
 }
 
 fn failure(path: &Path, error: impl std::fmt::Display) -> String {
@@ -1015,6 +1170,16 @@ pub fn spooled_campaigns(session_dir: &Path) -> Result<Vec<String>> {
         }
         if let Some(name) = entry.file_name().to_str() {
             campaigns.push(name.to_owned());
+        }
+    }
+    for range in read_failure_witnesses(session_dir)?
+        .iter()
+        .filter_map(|record| record.uncommitted)
+    {
+        let campaign = String::from_utf8(range.campaign_id.to_vec())
+            .map_err(|error| failure(session_dir, error))?;
+        if !campaigns.contains(&campaign) {
+            campaigns.push(campaign);
         }
     }
     campaigns.sort();
@@ -1364,26 +1529,18 @@ pub fn spooled_loads(session_dir: &Path) -> Result<Vec<(String, i64)>> {
         .collect())
 }
 
-/// Keep only the branches of a campaign's recovered spool whose load is
-/// admitted. Each load starts its own branch, and a branch's load is the first
-/// load signal its clock witnesses carry; a branch with none is not admitted.
-/// `known` gives the load of the branch a validated failure witness names, for
-/// a branch that failed before its first clock witness. Dropping a branch
-/// drops every record in its context (its start, gaps, frames, clock witnesses
-/// and the controls after them), including its start repeated at the head of
-/// a later segment. Returns the dropped branches, and each left-out load with
-/// the hours it recorded.
+/// Keep admitted branches; checked witness or saved-recording evidence can supply a missing clock.
 fn keep_admitted_loads(
     segments: &mut [(u32, Recovery<Recovered>)],
     admitted: &BTreeSet<i64>,
-    known: Option<(BranchId, i64)>,
+    known: &[(BranchId, i64)],
 ) -> (BTreeSet<BranchId>, Vec<(Option<i64>, u64)>) {
     let mut branches = BranchLoads::default();
     for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
         branches.observe(record.view());
     }
-    if let Some((branch, load)) = known {
-        branches.loads.entry(branch).or_insert(load);
+    for (branch, load) in known {
+        branches.loads.entry(*branch).or_insert(*load);
     }
     let dropped = branches.dropped(admitted);
     for (_, recovery) in segments.iter_mut() {
@@ -1525,51 +1682,57 @@ pub fn finalize_session_ahead(
     let witness = session_witness(session_dir)?;
     fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
     let mut campaigns = Vec::new();
-    for entry in fs::read_dir(session_dir).map_err(|error| failure(session_dir, error))? {
-        let entry = entry.map_err(|error| failure(session_dir, error))?;
-        if entry
-            .file_type()
-            .map_err(|error| failure(&entry.path(), error))?
-            .is_dir()
-        {
-            let segments = segment_paths(&entry.path())?;
-            if segments.is_empty()
-                && !(session_ended(session_dir) && read_saved(&entry.path()).is_some())
+    let mut campaign_names = spooled_campaigns(session_dir)?;
+    if session_ended(session_dir) {
+        for entry in fs::read_dir(session_dir).map_err(|error| failure(session_dir, error))? {
+            let entry = entry.map_err(|error| failure(session_dir, error))?;
+            if entry
+                .file_type()
+                .map_err(|error| failure(&entry.path(), error))?
+                .is_dir()
+                && read_saved(&entry.path()).is_some()
+                && let Some(name) = entry.file_name().to_str()
+                && !campaign_names.iter().any(|known| known == name)
             {
-                continue;
+                campaign_names.push(name.to_owned());
             }
-            let name = entry.file_name().to_str().map(str::to_owned);
-            let unsaved = match name.as_deref().map_or(Destination::Recording, destination) {
-                Destination::Recording => false,
-                Destination::Unsaved => true,
-                Destination::Neither => continue,
-            };
-            // A Battle Plan Recorder session publishes nothing of a campaign without
-            // an admitted load; its hours are reported as left out.
-            let admitted = match &admissions {
-                None => None,
-                Some(admissions) => {
-                    match name.as_deref().and_then(|name| admissions.loads.get(name)) {
-                        Some(loads) => Some(loads),
-                        None => {
-                            if let Some(name) = &name {
-                                match spool_loads(&entry.path()) {
-                                    Ok(loads) => finalized.omitted.extend(loads.into_iter().map(
-                                        |(load, hours)| admissions.omission(name, load, hours),
-                                    )),
-                                    Err(error) => {
-                                        finalized.failed_campaigns.insert(name.clone());
-                                        finalized.errors.push(error);
-                                    }
-                                }
+        }
+    }
+    for campaign in campaign_names {
+        let campaign_dir = session_dir.join(&campaign);
+        fs::create_dir_all(&campaign_dir).map_err(|error| failure(&campaign_dir, error))?;
+        let segments = segment_paths(&campaign_dir)?;
+        let name = Some(campaign);
+        let unsaved = match name.as_deref().map_or(Destination::Recording, destination) {
+            Destination::Recording => false,
+            Destination::Unsaved => true,
+            Destination::Neither => continue,
+        };
+        // A Battle Plan Recorder session publishes nothing of a campaign without
+        // an admitted load; its hours are reported as left out.
+        let admitted = match &admissions {
+            None => None,
+            Some(admissions) => match name.as_deref().and_then(|name| admissions.loads.get(name)) {
+                Some(loads) => Some(loads),
+                None => {
+                    if let Some(name) = &name {
+                        match spool_loads(&campaign_dir) {
+                            Ok(loads) => finalized.omitted.extend(
+                                loads
+                                    .into_iter()
+                                    .map(|(load, hours)| admissions.omission(name, load, hours)),
+                            ),
+                            Err(error) => {
+                                finalized.failed_campaigns.insert(name.clone());
+                                finalized.errors.push(error);
                             }
-                            continue;
                         }
                     }
+                    continue;
                 }
-            };
-            campaigns.push((entry.path(), name, segments, admitted, unsaved));
-        }
+            },
+        };
+        campaigns.push((campaign_dir, name, segments, admitted, unsaved));
     }
     campaigns.sort_by(|left, right| left.0.cmp(&right.0));
     if campaigns.is_empty() && admissions.is_none() {
@@ -2903,10 +3066,30 @@ fn finalize_campaign_with_publisher(
         Some(base) => known_roster(base).map_err(|error| failure(base, error))?,
         None => Some(false),
     };
+    let projected = witness
+        .map(|witness| campaign_failure(session_dir, folder.as_bytes(), witness))
+        .transpose()?;
+    let witness = projected.as_ref().map(|failure| &failure.witness);
+    let empty_prefix = projected
+        .as_ref()
+        .is_some_and(|failure| failure.empty_prefix);
+    let bundled = projected.as_ref().is_some_and(|failure| failure.bundled);
     // Appends and publication preserve earlier saves even when their path or newest revision changes.
     let saved_record =
         verified_saved(campaign_dir, replay_dir, base.as_deref(), previous.as_ref())?;
-    if paths.is_empty() && saved_record.is_none() {
+    let terminal_session = if paths.is_empty()
+        && previous.is_none()
+        && empty_prefix
+        && !campaign_dir
+            .join(SAVED_FILE)
+            .try_exists()
+            .map_err(|error| failure(campaign_dir, error))?
+    {
+        Some(failure_session(session_dir, witness.unwrap())?)
+    } else {
+        None
+    };
+    if paths.is_empty() && saved_record.is_none() && terminal_session.is_none() {
         return Err(failure(
             campaign_dir,
             "saved revision cannot be verified; spool retained",
@@ -2928,7 +3111,42 @@ fn finalize_campaign_with_publisher(
             })
         })
         .collect();
-    if paths.is_empty() {
+    let mut ranges = projected
+        .as_ref()
+        .map(|failure| failure.ranges.clone())
+        .unwrap_or_default();
+    let failing_campaign = witness.is_some_and(|witness| {
+        witness.campaign_id.as_ref().is_some_and(|campaign| {
+            campaign_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::as_bytes)
+                == Some(campaign.as_slice())
+        })
+    });
+    let lost_hours = !ranges.is_empty()
+        || (failing_campaign && witness.is_some_and(|witness| witness.failed_hour.is_some()));
+    let admitted_load = |signal: Option<i64>| {
+        admitted.is_none_or(|admitted| signal.is_none_or(|signal| admitted.contains(&signal)))
+    };
+    let mut failure_only = None;
+    if paths.is_empty()
+        && let (Some(witness), Some(recording), Some(path)) = (witness, &previous, &base)
+    {
+        failure_only = failure_segment_ranges(
+            Held { recording, path },
+            witness,
+            failing_campaign && admitted_load(witness.load_signal),
+            &ranges
+                .iter()
+                .copied()
+                .filter(|range| admitted_load(range.load_signal))
+                .collect::<Vec<_>>(),
+            bundled,
+        )
+        .map_err(|error| failure(campaign_dir, error))?;
+    }
+    if paths.is_empty() && failure_only.is_none() && !lost_hours {
         // Nothing new: the base already holds every hour.
         let (Some(base), Some(previous)) = (base, previous) else {
             return Ok(CampaignOutcome {
@@ -3000,15 +3218,6 @@ fn finalize_campaign_with_publisher(
     }
     let mut spool_bytes = 0_u64;
     let mut segments = Vec::with_capacity(paths.len());
-    let failing_campaign = witness.is_some_and(|witness| {
-        witness.campaign_id.as_ref().is_some_and(|campaign| {
-            campaign_dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(str::as_bytes)
-                == Some(campaign.as_slice())
-        })
-    });
     let committed_campaign = witness.is_some_and(|witness| {
         witness
             .committed_campaign_id
@@ -3033,8 +3242,9 @@ fn finalize_campaign_with_publisher(
                     == Some(campaign.as_slice())
             })
     });
-    if witness.is_some_and(|witness| witness.committed_campaign_id.is_none())
-        || (pending_campaign && witness.unwrap().pending_segment.is_none())
+    if !empty_prefix
+        && (witness.is_some_and(|witness| witness.committed_campaign_id.is_none())
+            || (pending_campaign && witness.unwrap().pending_segment.is_none()))
     {
         return Err(failure(
             campaign_dir,
@@ -3042,19 +3252,28 @@ fn finalize_campaign_with_publisher(
         ));
     }
     let watermark = witness.and_then(|witness| {
-        let committed = committed_campaign
-            .then(|| (witness.committed_segment.unwrap(), witness.committed_bytes));
-        let pending =
-            pending_campaign.then(|| (witness.pending_segment.unwrap(), witness.pending_bytes));
+        let committed = witness
+            .committed_segment
+            .filter(|_| committed_campaign)
+            .map(|segment| (segment, witness.committed_bytes));
+        let pending = witness
+            .pending_segment
+            .filter(|_| pending_campaign)
+            .map(|segment| (segment, witness.pending_bytes));
         match (committed, pending) {
             (Some(committed), Some(pending)) => Some(committed.min(pending)),
             (committed, pending) => committed.or(pending),
         }
     });
-    let mut watermark_found = watermark.is_none();
+    // A checkpoint's verified save holds a whole segment it no longer reads.
+    let mut watermark_found =
+        watermark.is_none_or(|(segment, bytes)| saved.get(&segment) == Some(&bytes));
     let mut held = BTreeMap::new();
     let mut lengths = BTreeMap::new();
     for (number, path) in paths {
+        if empty_prefix {
+            continue;
+        }
         let file = open_held(path).map_err(|error| failure(path, error))?;
         let length = file.metadata().map_err(|error| failure(path, error))?.len();
         spool_bytes += length;
@@ -3118,6 +3337,30 @@ fn finalize_campaign_with_publisher(
             "failure witness committed segment is missing",
         ));
     }
+    if segments.is_empty() && lost_hours {
+        let witness = witness.unwrap();
+        let session = terminal_session
+            .or_else(|| {
+                previous.as_ref().and_then(|recording| {
+                    recording
+                        .sessions
+                        .iter()
+                        .find(|session| session.id == witness.session)
+                        .cloned()
+                })
+            })
+            .map(Ok)
+            .unwrap_or_else(|| failure_session(session_dir, witness))?;
+        segments.push((
+            FAILURE_SEGMENT,
+            Recovery {
+                format: Some(FormatVersion::CURRENT),
+                records: vec![Recovered::SessionStart(session)],
+                valid_bytes: 0,
+                damage: None,
+            },
+        ));
+    }
     for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
         if let Recovered::SessionStart(session) = record {
             if witness.is_some_and(|witness| {
@@ -3144,64 +3387,82 @@ fn finalize_campaign_with_publisher(
             *process_context = Some(context);
         }
     }
-    // Trimming leaves context, but a frameless damaged segment can still hold new metadata.
-    if admitted.is_some()
-        && witness.is_none()
-        && !saved.is_empty()
-        && !segments.iter().any(|(_, recovery)| {
+    let frameless = !segments.iter().any(|(_, recovery)| {
+        recovery
+            .records
+            .iter()
+            .any(|record| matches!(record, Recovered::Frame(_)))
+    });
+    // A saved recording's frameless tail adds nothing or explicit loss; anything else is refused.
+    let mut explicit_loss = witness.is_some()
+        && previous.is_some()
+        && frameless
+        && segments.iter().any(|(_, recovery)| {
             recovery
                 .records
                 .iter()
-                .any(|record| matches!(record, Recovered::Frame(_)))
-        })
-    {
-        let Some(previous) = previous
-            .as_ref()
-            .filter(|previous| unchanged_context(previous, &segments))
-        else {
-            return Err(failure(
-                campaign_dir,
-                "frameless spool has damage or metadata not held by its saved recording; spool retained",
-            ));
-        };
-        let destination = base.as_ref().unwrap();
-        covered_saved.extend(
-            lengths
-                .iter()
-                .map(|(number, length)| (*number, (*length, 0, None))),
-        );
-        let spool_bytes = lengths.values().sum();
-        saved.extend(lengths);
-        write_saved(
-            campaign_dir,
-            &Saved {
-                replay: destination.clone(),
-                revision: previous.revision(),
-                segments: saved,
-                covered: covered_saved,
-                omitted: omitted.clone(),
-            },
-        )?;
-        if !journaled {
-            accept_checkpoints(campaign_dir)?;
-        }
-        return Ok(CampaignOutcome {
-            replay: promoted.or_else(|| base.filter(|base| !unsaved || *base == staged)),
-            omitted,
-            report: Some(Box::new(FinalizationReport {
-                revision: Some(previous.revision()),
-                spool_bytes,
-                ..Default::default()
-            })),
-            ..CampaignOutcome::default()
+                .any(|record| matches!(record, Recovered::Gap(_)))
         });
+    if witness.is_none() && !saved.is_empty() && frameless {
+        if admitted.is_some()
+            && let Some(previous) = previous
+                .as_ref()
+                .filter(|previous| unchanged_context(previous, &segments))
+        {
+            let spool_bytes = lengths.values().sum();
+            keep_saved_tail(
+                campaign_dir,
+                base.as_ref().unwrap(),
+                previous.revision(),
+                saved,
+                covered_saved,
+                lengths,
+                &omitted,
+                journaled,
+            )?;
+            return Ok(CampaignOutcome {
+                replay: promoted.or_else(|| base.filter(|base| !unsaved || *base == staged)),
+                omitted,
+                report: Some(Box::new(FinalizationReport {
+                    revision: Some(previous.revision()),
+                    spool_bytes,
+                    ..Default::default()
+                })),
+                ..CampaignOutcome::default()
+            });
+        }
+        match previous
+            .as_ref()
+            .and_then(|previous| loss_tail(previous, &segments))
+        {
+            Some(loss) => {
+                segments = loss;
+                explicit_loss = true;
+            }
+            None if admitted.is_some() => {
+                return Err(failure(
+                    campaign_dir,
+                    "frameless spool has damage or metadata not held by its saved recording; spool retained",
+                ));
+            }
+            None => {}
+        }
     }
-    let id = campaign_id(
-        segments
-            .iter()
-            .map(|(_, recovery)| recovery.records.as_slice()),
-    )
-    .map_err(|error| failure(campaign_dir, error))?;
+    let id = match (
+        campaign_id(
+            segments
+                .iter()
+                .map(|(_, recovery)| recovery.records.as_slice()),
+        ),
+        &previous,
+    ) {
+        // Checkpoints can leave a failed session only spool context; its recording names it.
+        (Err(_), Some(previous)) if frameless && (lost_hours || explicit_loss) => {
+            previous.campaign_id.clone()
+        }
+        (Err(_), None) if frameless && !ranges.is_empty() => ranges[0].campaign_id.to_vec(),
+        (id, _) => id.map_err(|error| failure(campaign_dir, error))?,
+    };
     let name = campaign_filename(&id).map_err(|error| failure(campaign_dir, error))?;
     if campaign_dir.file_name().and_then(|name| name.to_str()) != Some(name) {
         return Err(failure(
@@ -3225,29 +3486,49 @@ fn finalize_campaign_with_publisher(
                 _ => None,
             })
             .next_back();
-        let known = witness
-            .filter(|_| failing_campaign)
-            .and_then(|witness| Some((witness.branch?, witness.load_signal?)));
+        let mut known: Vec<_> = ranges
+            .iter()
+            .filter_map(|range| Some((range.branch, range.load_signal?)))
+            .chain(
+                witness
+                    .filter(|_| failing_campaign)
+                    .and_then(|witness| Some((witness.branch?, witness.load_signal?))),
+            )
+            .collect();
+        // A saved branch's loss has its saved hours' load; a new branch needs its own clock.
+        if (explicit_loss || witness.is_some())
+            && let Some(previous) = &previous
+        {
+            for branch in previous.branches.iter().filter(|branch| {
+                segments
+                    .iter()
+                    .flat_map(|(_, recovery)| &recovery.records)
+                    .any(|record| {
+                        matches!(record, Recovered::BranchStart(start) if start == *branch)
+                    })
+            }) {
+                if known.iter().any(|(id, _)| *id == branch.id) {
+                    continue;
+                }
+                if let Some(signal) = held_signal(previous, branch.id)
+                    .map_err(|error| failure(campaign_dir, error))?
+                {
+                    known.push((branch.id, signal));
+                }
+            }
+        }
+        // Explicit loss of a load left out keeps its segment for a later admission.
+        let counted = |record: &&Recovered| {
+            matches!(record, Recovered::Frame(_))
+                || explicit_loss && matches!(record, Recovered::Gap(_))
+        };
         let frames_before: BTreeMap<_, _> = segments
             .iter()
-            .map(|(number, recovery)| {
-                (
-                    *number,
-                    recovery
-                        .records
-                        .iter()
-                        .filter(|record| matches!(record, Recovered::Frame(_)))
-                        .count(),
-                )
-            })
+            .map(|(number, recovery)| (*number, recovery.records.iter().filter(counted).count()))
             .collect();
-        let (dropped, left_out) = keep_admitted_loads(&mut segments, admitted, known);
+        let (dropped, left_out) = keep_admitted_loads(&mut segments, admitted, &known);
         incomplete.extend(segments.iter().filter_map(|(number, recovery)| {
-            let kept = recovery
-                .records
-                .iter()
-                .filter(|record| matches!(record, Recovered::Frame(_)))
-                .count();
+            let kept = recovery.records.iter().filter(counted).count();
             (frames_before[number] != kept).then_some(*number)
         }));
         for (load, hours) in left_out {
@@ -3256,12 +3537,59 @@ fn finalize_campaign_with_publisher(
                 None => omitted.push((load, hours)),
             }
         }
-        if !segments.iter().any(|(_, recovery)| {
-            recovery
-                .records
-                .iter()
-                .any(|record| matches!(record, Recovered::Frame(_)))
-        }) {
+        // A branch its saved recording holds was admitted, even with only context left in the spool.
+        let kept = |branch: &BranchId| {
+            !dropped.contains(branch)
+                || previous.as_ref().is_some_and(|previous| {
+                    previous.branches.iter().any(|known| known.id == *branch)
+                })
+        };
+        failure_published = last_branch.is_none_or(|branch| kept(&branch))
+            && (!failing_campaign
+                || witness
+                    .and_then(|witness| witness.load_signal)
+                    .is_none_or(|signal| admitted.contains(&signal)));
+        // Admitted hours of a load left out are not this recording's to gap.
+        ranges.retain(|range| {
+            kept(&range.branch)
+                && range
+                    .load_signal
+                    .is_none_or(|signal| admitted.contains(&signal))
+        });
+        let lost_hours = failure_only.is_some()
+            || !ranges.is_empty()
+            || (failing_campaign
+                && failure_published
+                && witness.is_some_and(|witness| witness.failed_hour.is_some()));
+        if !lost_hours
+            && !segments.iter().any(|(_, recovery)| {
+                recovery.records.iter().any(|record| {
+                    matches!(record, Recovered::Frame(_))
+                        || explicit_loss && matches!(record, Recovered::Gap(_))
+                })
+            })
+        {
+            if explicit_loss && let (Some(base), Some(previous)) = (&base, &previous) {
+                keep_saved_tail(
+                    campaign_dir,
+                    base,
+                    previous.revision(),
+                    saved,
+                    covered_saved,
+                    lengths
+                        .into_iter()
+                        .filter(|(number, _)| !incomplete.contains(number))
+                        .collect(),
+                    &omitted,
+                    journaled,
+                )?;
+                return Ok(CampaignOutcome {
+                    replay: promoted
+                        .or_else(|| (!unsaved || *base == staged).then(|| base.clone())),
+                    omitted,
+                    ..CampaignOutcome::default()
+                });
+            }
             if promoted.is_none() {
                 println!(
                     "{}: no admitted load recorded an hour; nothing published",
@@ -3274,11 +3602,6 @@ fn finalize_campaign_with_publisher(
                 ..CampaignOutcome::default()
             });
         }
-        failure_published = last_branch.is_none_or(|branch| !dropped.contains(&branch))
-            && (!failing_campaign
-                || witness
-                    .and_then(|witness| witness.load_signal)
-                    .is_none_or(|signal| admitted.contains(&signal)));
     }
     if let (Some(base), Some(previous)) = (&base, &previous)
         && previous.campaign_id != id
@@ -3311,23 +3634,49 @@ fn finalize_campaign_with_publisher(
             frames.read(number, frame)
         })?;
     }
-    let published = match &previous {
+    let prefix = match &previous {
         Some(previous) => published_prefix(previous, &segments, |number, frame| {
             progress()?;
             frames.read(number, frame)
         })?,
         None => 0,
     };
-    let unchanged = published == segments.len();
+    let saved_recording = previous
+        .as_ref()
+        .zip(base.as_deref())
+        .map(|(recording, path)| Held { recording, path });
+    if prefix == segments.len()
+        && failure_only.is_none()
+        && let (Some(witness), Some(held)) = (witness, saved_recording)
+    {
+        // The recording holds every committed hour: only the failure's lost hours are new.
+        failure_only = failure_segment_ranges(
+            held,
+            witness,
+            failing_campaign && failure_published,
+            &ranges,
+            bundled,
+        )
+        .map_err(|error| failure(campaign_dir, error))?;
+    }
     // Saved before a failure elsewhere: it stays as it was saved.
     if let Some(witness) = witness
-        && failure_published
-        && !unchanged
+        && (failure_published || !ranges.is_empty())
+        && prefix != segments.len()
     {
-        apply_failure_witness(&mut segments, witness, failing_campaign)
-            .map_err(|error| failure(campaign_dir, error))?;
+        apply_failure_ranges(
+            &mut segments,
+            witness,
+            failing_campaign && failure_published,
+            &ranges,
+            bundled,
+            saved_recording,
+        )
+        .map_err(|error| failure(campaign_dir, error))?;
     }
-    let mut sorted: Vec<_> = segments[published..]
+    segments.extend(failure_only);
+    let unchanged = prefix == segments.len();
+    let mut sorted: Vec<_> = segments[prefix..]
         .iter()
         .map(|(number, recovery)| (*number, recovery.records.as_slice()))
         .collect();
@@ -3377,7 +3726,7 @@ fn finalize_campaign_with_publisher(
             drop(previous);
             appending
                 .append_in_place(
-                    &segments[published..],
+                    &segments[prefix..],
                     read,
                     progress,
                     observe,
@@ -3594,15 +3943,328 @@ fn write_saved_record(
     }
 }
 
+/// The branch tracker after the committed history, for a branch whose start records were torn.
+fn failure_tracker(
+    campaign: &[u8; 36],
+    segments: &[(u32, Recovery<Recovered>)],
+    session: SessionId,
+    held: Option<&Path>,
+    contexts: &[UncommittedRange],
+) -> Result<BranchTracker> {
+    let spool = Replay::from_recovered(campaign.to_vec(), segments)
+        .and_then(Replay::into_history)
+        .map_err(|error| error.to_string())?;
+    if let Some(found) = spool.sessions.iter().find(|known| known.id == session)
+        && spool.session_tail(session).is_some()
+        && contexts.is_empty()
+    {
+        return spool.tracker_for(found).map_err(|error| error.to_string());
+    }
+    // Checkpoints moved the session's earlier hours from the spool into the saved recording.
+    let recorded = held
+        .map(|path| {
+            held_recording(path)?
+                .into_history()
+                .map_err(|error| failure(path, error))
+        })
+        .transpose()?;
+    let saved = |id: BranchId| {
+        recorded
+            .as_ref()
+            .is_some_and(|history| history.branches.iter().any(|known| known.start.id == id))
+    };
+    let mut tracker = BranchTracker::new();
+    for branch in recorded.iter().flat_map(|history| &history.branches).chain(
+        spool
+            .branches
+            .iter()
+            .filter(|branch| !saved(branch.start.id)),
+    ) {
+        let mut hours = branch.hours.clone();
+        if saved(branch.start.id)
+            && let Some(tail) = spool
+                .branches
+                .iter()
+                .find(|tail| tail.start.id == branch.start.id)
+        {
+            if tail.start != branch.start {
+                return Err("spool branch conflicts with saved branch history".into());
+            }
+            hours.extend_from_slice(&tail.hours);
+            hours.sort_unstable();
+            hours.dedup();
+        }
+        tracker
+            .seed_recorded_branch(branch.start.clone(), hours)
+            .map_err(|error| error.to_string())?;
+    }
+    let tail = spool.session_tail(session).or_else(|| {
+        recorded
+            .as_ref()
+            .and_then(|history| history.session_tail(session))
+    });
+    let latest = spool
+        .branches
+        .iter()
+        .filter(|branch| branch.start.session == session)
+        .max_by_key(|branch| branch.start.id);
+    if let Some(branch) =
+        latest.filter(|branch| tail.is_none_or(|tail| branch.start.id > tail.branch))
+        && !contexts.is_empty()
+    {
+        let range = contexts
+            .iter()
+            .find(|range| range.branch == branch.start.id);
+        let observed = segments
+            .iter()
+            .flat_map(|(_, recovery)| &recovery.records)
+            .filter_map(|record| match record {
+                Recovered::Gap(gap) if gap.branch == branch.start.id => Some(gap.last_hour),
+                _ => None,
+            })
+            .max()
+            .or_else(|| range.map(|range| range.last_hour))
+            .ok_or("gap-only branch has no witnessed observation")?;
+        tracker
+            .resume_observation(
+                session,
+                branch.start.id,
+                observed,
+                range.and_then(|range| range.load_signal),
+            )
+            .map_err(|error| error.to_string())?;
+    } else {
+        match tail {
+            Some(tail) => tracker.resume_session(session, tail.branch, tail.hour, tail.load_signal),
+            None => tracker.begin_session(session),
+        }
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(tracker)
+}
+
+/// The load signal of `branch`'s last saved frame, read from its last block alone.
+fn held_signal(recording: &Replay, branch: BranchId) -> Result<Option<i64>> {
+    let Some(block) = recording
+        .index
+        .iter()
+        .rev()
+        .find(|block| block.branch == branch)
+    else {
+        return Ok(None);
+    };
+    let mut decoder = FrameDecoder::for_tables(&[TableId::Clock]);
+    let mut signal = None;
+    for frame in recording
+        .read_block(block)
+        .map_err(|error| error.to_string())?
+    {
+        let decoded = decoder.advance(&frame).map_err(|error| error.to_string())?;
+        signal = decoded
+            .complete::<tables::Clock>()
+            .ok()
+            .and_then(|rows| rows.first())
+            .map(|clock| clock.play_session_started_at);
+    }
+    Ok(signal)
+}
+
+/// A saved recording of the campaign: checkpoints may have moved committed records into it.
+#[derive(Clone, Copy)]
+struct Held<'a> {
+    recording: &'a Replay,
+    path: &'a Path,
+}
+
+/// `uncommitted` is the witnessed range only when it names this campaign.
 fn apply_failure_witness(
     segments: &mut [(u32, Recovery<Recovered>)],
     witness: &TerminalWitness,
     failing_campaign: bool,
+    uncommitted: Option<&UncommittedRange>,
+    held: Option<Held<'_>>,
 ) -> Result<()> {
-    let mut current_branch = None;
+    let (inserted, derived) =
+        failure_records(segments, witness, failing_campaign, uncommitted, held)?;
+    let target = segments
+        .iter_mut()
+        .rev()
+        .find(|(_, recovery)| !recovery.records.is_empty())
+        .ok_or("failure witness has no recoverable record prefix")?;
+    let position = target
+        .1
+        .records
+        .iter()
+        .position(|record| matches!(record, Recovered::Control(ControlRecord::Detach { .. })))
+        .unwrap_or(target.1.records.len());
+    if derived
+        && let Some(Recovered::Control(ControlRecord::Detach { last_hour, .. })) =
+            target.1.records.get_mut(position)
+    {
+        *last_hour = None;
+    }
+    target
+        .1
+        .records
+        .splice(position..position, inserted)
+        .for_each(drop);
+    Ok(())
+}
+
+/// No spool segment holds this number: a failure-only segment has no file.
+const FAILURE_SEGMENT: u32 = u32::MAX;
+
+/// Append only lost hours a checkpoint does not already hold.
+fn failure_segment(
+    held: Held<'_>,
+    witness: &TerminalWitness,
+    failing_campaign: bool,
+    uncommitted: Option<&UncommittedRange>,
+) -> Result<Option<(u32, Recovery<Recovered>)>> {
+    if uncommitted.is_none() && !(failing_campaign && witness.failed_hour.is_some()) {
+        return Ok(None);
+    }
+    let recording = held.recording;
+    let Some(session) = recording
+        .sessions
+        .iter()
+        .find(|session| session.id == witness.session)
+    else {
+        return Ok(None);
+    };
+    // An earlier save already added this failure: its outcome and every lost hour are recorded.
+    let partial = ControlRecord::Partial {
+        session: session.id,
+        reason: ALLOCATION_GAP_REASON.into(),
+        failed_hour: witness.failed_hour.filter(|_| failing_campaign),
+    };
+    let gapped = |branch: Option<BranchId>, first: Hour, last: Hour| {
+        let mut gaps: Vec<_> = recording
+            .gaps
+            .iter()
+            .filter(|gap| {
+                branch.is_none_or(|branch| gap.branch == branch)
+                    && recording
+                        .branches
+                        .iter()
+                        .any(|known| known.id == gap.branch && known.session == session.id)
+            })
+            .collect();
+        gaps.sort_by_key(|gap| gap.first_hour);
+        let mut next = i64::from(first);
+        for gap in gaps {
+            if i64::from(gap.first_hour) <= next && i64::from(gap.last_hour) >= next {
+                next = i64::from(gap.last_hour) + 1;
+            }
+        }
+        next > i64::from(last)
+    };
+    if recording.controls.contains(&partial)
+        && uncommitted
+            .is_none_or(|range| gapped(Some(range.branch), range.first_hour, range.last_hour))
+        && witness
+            .failed_hour
+            .filter(|_| failing_campaign)
+            .is_none_or(|hour| gapped(witness.branch, hour, hour))
+    {
+        return Ok(None);
+    }
+    let mut records = vec![Recovered::SessionStart(session.clone())];
+    records.extend(
+        recording
+            .branches
+            .iter()
+            .rev()
+            .find(|branch| branch.session == session.id)
+            .cloned()
+            .map(Recovered::BranchStart),
+    );
+    let segment = [(
+        FAILURE_SEGMENT,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records,
+            valid_bytes: 0,
+            damage: None,
+        },
+    )];
+    let (inserted, _) =
+        failure_records(&segment, witness, failing_campaign, uncommitted, Some(held))?;
+    if inserted.is_empty() {
+        return Ok(None);
+    }
+    let [(number, mut recovery)] = segment;
+    // A new branch follows the session directly: its context branch has no keyframe here.
+    if matches!(inserted.first(), Some(Recovered::BranchStart(_))) {
+        recovery.records.truncate(1);
+    }
+    recovery.records.extend(inserted);
+    Ok(Some((number, recovery)))
+}
+
+/// The records a failure adds after the committed prefix, and whether it derives a branch.
+fn failure_records(
+    segments: &[(u32, Recovery<Recovered>)],
+    witness: &TerminalWitness,
+    failing_campaign: bool,
+    uncommitted: Option<&UncommittedRange>,
+    held: Option<Held<'_>>,
+) -> Result<(Vec<Recovered>, bool)> {
+    failure_records_inner(
+        segments,
+        witness,
+        failing_campaign,
+        uncommitted,
+        held,
+        None,
+        None,
+    )
+}
+
+fn failure_observation(
+    tracker: &mut BranchTracker,
+    hour: Hour,
+    signal: Option<i64>,
+    gaps: &[Gap],
+    expected: Option<BranchId>,
+    bundled: bool,
+) -> Result<replay_frame::branches::Observation> {
+    let mut observation = tracker
+        .observe(None, hour, signal, gaps)
+        .map_err(|error| error.to_string())?;
+    if bundled
+        && expected.is_some()
+        && observation.start.is_none()
+        && tracker
+            .branches()
+            .last()
+            .and_then(|branch| branch.id.checked_add(1))
+            == expected
+    {
+        // A continuous clock with the next witnessed branch proves native invalidation.
+        tracker.world_changed();
+        observation = tracker
+            .observe(None, hour, signal, &[])
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(observation)
+}
+
+fn failure_records_inner(
+    segments: &[(u32, Recovery<Recovered>)],
+    witness: &TerminalWitness,
+    failing_campaign: bool,
+    uncommitted: Option<&UncommittedRange>,
+    held: Option<Held<'_>>,
+    partial_override: Option<&ControlRecord>,
+    contexts: Option<&[UncommittedRange]>,
+) -> Result<(Vec<Recovered>, bool)> {
+    let earlier_contexts = contexts.is_some();
+    let mut current_branch: Option<BranchStart> = None;
     let mut current_signal = None;
     let mut current_observed = false;
     let mut matching_session = false;
+    let mut recorded_branches = BTreeSet::new();
     for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
         match record {
             Recovered::SessionStart(session) => {
@@ -3617,13 +4279,12 @@ fn apply_failure_witness(
                 if branch.session != witness.session {
                     return Err("failure witness does not match the spool branch session".into());
                 }
-                if current_branch.map(|previous: &replay_frame::branches::BranchStart| previous.id)
-                    != Some(branch.id)
-                {
+                if current_branch.as_ref().map(|previous| previous.id) != Some(branch.id) {
                     current_signal = None;
                     current_observed = false;
                 }
-                current_branch = Some(branch);
+                recorded_branches.insert(branch.id);
+                current_branch = Some(branch.clone());
             }
             Recovered::Frame(_) | Recovered::Gap(_) => current_observed = true,
             Recovered::Control(ControlRecord::ClockWitness {
@@ -3643,40 +4304,274 @@ fn apply_failure_witness(
     if !matching_session {
         return Err("failure witness has no recorded session identity".into());
     }
-    let mut resolved_branch = witness.branch;
-    let recovered_branch = if failing_campaign
-        && let Some(failed_hour) = witness.failed_hour
-        && witness
-            .branch
-            .is_none_or(|branch| current_branch.map(|current| current.id) != Some(branch))
-    {
-        let history = Replay::from_recovered(witness.campaign_id.unwrap().to_vec(), segments)
-            .and_then(Replay::into_history)
-            .map_err(|error| error.to_string())?;
-        let session = history
-            .sessions
-            .iter()
-            .find(|session| session.id == witness.session)
-            .ok_or("failure witness has no matching history session")?;
-        let mut tracker = history
-            .tracker_for(session)
-            .map_err(|error| error.to_string())?;
-        let known_gaps: Vec<_> = segments
+    if let Some(held) = held {
+        recorded_branches.extend(held.recording.branches.iter().map(|branch| branch.id));
+        if let Some(current) = &current_branch
+            && held
+                .recording
+                .index
+                .iter()
+                .any(|block| block.branch == current.id)
+        {
+            current_observed = true;
+            if current_signal.is_none() {
+                current_signal = held_signal(held.recording, current.id)?;
+            }
+        }
+        current_observed |= current_branch.as_ref().is_some_and(|current| {
+            held.recording
+                .gaps
+                .iter()
+                .any(|gap| gap.branch == current.id)
+        });
+    }
+    // The last committed hour of each branch, in the spool or saved by a checkpoint.
+    let committed_hour = |branch: BranchId| {
+        segments
             .iter()
             .flat_map(|(_, recovery)| &recovery.records)
             .filter_map(|record| match record {
-                Recovered::Gap(gap)
-                    if Some(gap.branch) == tracker.current_branch()
-                        && gap.last_hour < failed_hour =>
-                {
-                    Some(gap.clone())
-                }
+                Recovered::Frame(frame) if frame.branch == branch => Some(frame.hour),
                 _ => None,
             })
-            .collect();
-        let observation = tracker
-            .observe(None, failed_hour, witness.load_signal, &known_gaps)
-            .map_err(|error| error.to_string())?;
+            .chain(
+                held.iter()
+                    .flat_map(|held| &held.recording.index)
+                    .filter(|block| block.branch == branch)
+                    .map(|block| block.last_hour),
+            )
+            .max()
+    };
+    let all_gaps = || {
+        segments
+            .iter()
+            .flat_map(|(_, recovery)| &recovery.records)
+            .filter_map(|record| match record {
+                Recovered::Gap(gap) => Some(gap),
+                _ => None,
+            })
+            .chain(held.iter().flat_map(|held| &held.recording.gaps))
+    };
+    let recorded_gaps = |branch: Option<BranchId>, before: Hour| -> Vec<Gap> {
+        all_gaps()
+            .filter(|gap| Some(gap.branch) == branch && gap.last_hour < before)
+            .cloned()
+            .collect()
+    };
+    let known_context = |id: BranchId| -> Result<Option<(BranchStart, Option<i64>)>> {
+        let start = segments
+            .iter()
+            .flat_map(|(_, recovery)| &recovery.records)
+            .find_map(|record| match record {
+                Recovered::BranchStart(start) if start.id == id => Some(start.clone()),
+                _ => None,
+            })
+            .or_else(|| {
+                held.and_then(|held| {
+                    held.recording
+                        .branches
+                        .iter()
+                        .find(|start| start.id == id)
+                        .cloned()
+                })
+            });
+        let Some(start) = start else { return Ok(None) };
+        let mut active = None;
+        let mut signal = None;
+        for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
+            match record {
+                Recovered::BranchStart(start) => active = Some(start.id),
+                Recovered::Control(ControlRecord::ClockWitness { load_signal, .. })
+                    if active == Some(id) =>
+                {
+                    signal = *load_signal
+                }
+                _ => {}
+            }
+        }
+        if signal.is_none()
+            && let Some(held) = held
+        {
+            signal = held_signal(held.recording, id)?;
+        }
+        signal = signal.or_else(|| {
+            contexts
+                .and_then(|ranges| ranges.iter().find(|range| range.branch == id))
+                .and_then(|range| range.load_signal)
+        });
+        Ok(Some((start, signal)))
+    };
+    if earlier_contexts
+        && current_branch.is_none()
+        && let Some(held) = held
+    {
+        current_branch = held
+            .recording
+            .branches
+            .iter()
+            .rev()
+            .find(|branch| branch.session == witness.session)
+            .cloned();
+        if let Some(branch) = &current_branch {
+            current_signal = held_signal(held.recording, branch.id)?;
+            current_observed = true;
+        }
+    }
+    if earlier_contexts && current_signal.is_none() {
+        current_signal = current_branch
+            .as_ref()
+            .and_then(|branch| {
+                contexts.and_then(|ranges| ranges.iter().find(|range| range.branch == branch.id))
+            })
+            .and_then(|range| range.load_signal);
+    }
+    let mut tracker: Option<BranchTracker> = None;
+    // The admitted range precedes the attempt that failed: resolve it first.
+    let mut range_start = None;
+    let mut range_gap = None;
+    if let Some(range) = uncommitted {
+        if recorded_branches.contains(&range.branch) {
+            if current_branch.as_ref().map(|branch| branch.id) != Some(range.branch) {
+                if !earlier_contexts {
+                    return Err("uncommitted range branch is not the last committed context".into());
+                }
+                let (start, signal) = known_context(range.branch)?
+                    .ok_or("uncommitted range has no recorded branch")?;
+                range_start = Some(start.clone());
+                current_branch = Some(start);
+                current_signal = signal;
+            }
+            if let (Some(expected), Some(recorded)) = (range.load_signal, current_signal)
+                && expected != recorded
+            {
+                return Err(
+                    "uncommitted range load signal has no matching committed context".into(),
+                );
+            }
+        } else {
+            if tracker.is_none() {
+                tracker = Some(failure_tracker(
+                    &range.campaign_id,
+                    segments,
+                    witness.session,
+                    held.map(|held| held.path),
+                    contexts.unwrap_or_default(),
+                )?);
+            }
+            let tracker = tracker.as_mut().unwrap();
+            let known_gaps = recorded_gaps(tracker.current_branch(), range.first_hour);
+            let observation = failure_observation(
+                tracker,
+                range.first_hour,
+                range.load_signal,
+                &known_gaps,
+                Some(range.branch),
+                earlier_contexts,
+            )?;
+            let start = observation
+                .start
+                .filter(|start| start.id == range.branch)
+                .ok_or("uncommitted range branch differs from the witnessed clock context")?;
+            current_branch = Some(start.clone());
+            range_start = Some(start);
+        }
+        if earlier_contexts && !segments.iter().flat_map(|(_, recovery)| &recovery.records).any(|record| matches!(record, Recovered::BranchStart(start) if start.id == range.branch)) {
+            range_start = current_branch.clone();
+        }
+        let branch = current_branch.as_ref().unwrap();
+        if range.first_hour < branch.first_hour {
+            return Err("uncommitted range precedes the recorded branch context".into());
+        }
+        current_signal = range.load_signal.or(current_signal);
+        current_observed = true;
+        let mut first_hour = Some(range.first_hour);
+        if committed_hour(range.branch).is_some_and(|hour| hour >= range.first_hour) {
+            return Err("uncommitted range overlaps or precedes a committed frame".into());
+        }
+        // Hours a committed gap already accounts for lead the range, never follow it.
+        let gaps = recorded_gaps(Some(range.branch), Hour::MAX);
+        while let Some(first) = first_hour
+            && let Some(covering) = gaps
+                .iter()
+                .find(|gap| gap.first_hour <= first && gap.last_hour >= first)
+        {
+            first_hour = (covering.last_hour < range.last_hour).then(|| covering.last_hour + 1);
+        }
+        if let Some(first_hour) = first_hour {
+            if gaps
+                .iter()
+                .any(|gap| gap.first_hour <= range.last_hour && gap.last_hour >= first_hour)
+            {
+                return Err("uncommitted range overlaps a recorded gap".into());
+            }
+            range_gap = Some(Gap {
+                branch: range.branch,
+                first_hour,
+                last_hour: range.last_hour,
+                reason: ALLOCATION_GAP_REASON.into(),
+            });
+        }
+    }
+    let mut resolved_branch = witness.branch;
+    let mut attempt_start = None;
+    if earlier_contexts
+        && failing_campaign
+        && let Some(branch) = witness.branch
+        && current_branch.as_ref().map(|current| current.id) != Some(branch)
+        && let Some((start, signal)) = known_context(branch)?
+    {
+        attempt_start = Some(start.clone());
+        current_branch = Some(start);
+        current_signal = signal;
+        current_observed = true;
+    }
+    let in_range = uncommitted.is_some_and(|range| {
+        witness
+            .failed_hour
+            .is_some_and(|hour| (range.first_hour..=range.last_hour).contains(&hour))
+            && witness.branch.is_none_or(|branch| branch == range.branch)
+            && !matches!((witness.load_signal, range.load_signal),
+                (Some(attempted), Some(admitted)) if attempted != admitted)
+    });
+    if failing_campaign && in_range {
+        resolved_branch = uncommitted.map(|range| range.branch);
+        current_signal = current_signal.or(witness.load_signal);
+    } else if failing_campaign
+        && let Some(failed_hour) = witness.failed_hour
+        && witness
+            .branch
+            .is_none_or(|branch| current_branch.as_ref().map(|current| current.id) != Some(branch))
+    {
+        if tracker.is_none() {
+            tracker = Some(failure_tracker(
+                &witness.campaign_id.unwrap(),
+                segments,
+                witness.session,
+                held.map(|held| held.path),
+                contexts.unwrap_or_default(),
+            )?);
+        }
+        let tracker = tracker.as_mut().unwrap();
+        let mut known_gaps = recorded_gaps(tracker.current_branch(), failed_hour);
+        if let Some(range) = uncommitted
+            && Some(range.branch) == tracker.current_branch()
+            && range.last_hour < failed_hour
+        {
+            known_gaps.push(Gap {
+                branch: range.branch,
+                first_hour: range.first_hour,
+                last_hour: range.last_hour,
+                reason: ALLOCATION_GAP_REASON.into(),
+            });
+        }
+        let observation = failure_observation(
+            tracker,
+            failed_hour,
+            witness.load_signal,
+            &known_gaps,
+            witness.branch,
+            earlier_contexts,
+        )?;
         if witness
             .branch
             .is_some_and(|expected| expected != observation.branch)
@@ -3685,17 +4580,18 @@ fn apply_failure_witness(
         }
         resolved_branch = Some(observation.branch);
         current_signal = witness.load_signal.or(current_signal);
-        observation.start
-    } else {
-        None
-    };
-    if let Some(branch) = recovered_branch.as_ref() {
-        current_branch = Some(branch);
+        if let Some(start) = observation.start {
+            current_branch = Some(start.clone());
+            attempt_start = Some(start);
+        }
     }
-    let mut gap = None;
+    if earlier_contexts && failing_campaign && !segments.iter().flat_map(|(_, recovery)| &recovery.records).any(|record| matches!(record, Recovered::BranchStart(start) if Some(start.id) == resolved_branch)) {
+        attempt_start = current_branch.clone();
+    }
+    let mut attempt_gap = None;
     if failing_campaign {
         if let Some(expected) = witness.branch
-            && current_branch.map(|branch| branch.id) != Some(expected)
+            && current_branch.as_ref().map(|branch| branch.id) != Some(expected)
         {
             return Err("failure witness branch has no matching committed context".into());
         }
@@ -3705,7 +4601,7 @@ fn apply_failure_witness(
             // A context record can commit before the new branch's first clock.
             let first_clock_failed = !current_observed
                 && current_signal.is_none()
-                && current_branch.is_some_and(|branch| {
+                && current_branch.as_ref().is_some_and(|branch| {
                     witness.branch == Some(branch.id)
                         && witness.failed_hour == Some(branch.first_hour)
                 });
@@ -3715,35 +4611,30 @@ fn apply_failure_witness(
         }
         if let Some(hour) = witness.failed_hour {
             let branch = current_branch
+                .as_ref()
                 .filter(|branch| Some(branch.id) == resolved_branch)
                 .ok_or("known failure hour has no unambiguous recorded branch context")?;
             if hour < branch.first_hour {
                 return Err("failure hour precedes the recorded branch context".into());
             }
+            if committed_hour(branch.id).is_some_and(|committed| committed >= hour) {
+                return Err("failure hour overlaps or precedes a committed frame".into());
+            }
             let mut already_gapped = false;
-            for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
-                match record {
-                    Recovered::Frame(frame) if frame.branch == branch.id && frame.hour >= hour => {
-                        return Err("failure hour overlaps or precedes a committed frame".into());
-                    }
-                    Recovered::Gap(existing)
-                        if existing.branch == branch.id
-                            && existing.first_hour <= hour
-                            && existing.last_hour >= hour =>
-                    {
-                        if existing.reason != ALLOCATION_GAP_REASON {
-                            return Err(
-                                "failure hour already belongs to a gap with a different reason"
-                                    .into(),
-                            );
-                        }
-                        already_gapped = true;
-                    }
-                    _ => {}
+            for existing in all_gaps().filter(|existing| {
+                existing.branch == branch.id
+                    && existing.first_hour <= hour
+                    && existing.last_hour >= hour
+            }) {
+                if existing.reason != ALLOCATION_GAP_REASON {
+                    return Err(
+                        "failure hour already belongs to a gap with a different reason".into(),
+                    );
                 }
+                already_gapped = true;
             }
             if !already_gapped {
-                gap = Some(Gap {
+                attempt_gap = Some(Gap {
                     branch: branch.id,
                     first_hour: hour,
                     last_hour: hour,
@@ -3752,7 +4643,7 @@ fn apply_failure_witness(
             }
         }
     }
-    let partial = ControlRecord::Partial {
+    let partial = partial_override.cloned().unwrap_or(ControlRecord::Partial {
         session: witness.session,
         reason: ALLOCATION_GAP_REASON.into(),
         failed_hour: if failing_campaign {
@@ -3760,7 +4651,7 @@ fn apply_failure_witness(
         } else {
             None
         },
-    };
+    });
     let mut partial_exists = false;
     for control in segments
         .iter()
@@ -3772,46 +4663,242 @@ fn apply_failure_witness(
                 None
             }
         })
+        .chain(
+            held.iter()
+                .flat_map(|held| &held.recording.controls)
+                .filter(|control| {
+                    matches!(control, ControlRecord::Partial { session, .. } if *session == witness.session)
+                }),
+        )
     {
         if control != &partial {
             return Err("recorded partial outcome differs from the failure witness".into());
         }
         partial_exists = true;
     }
-    let target = segments
-        .iter_mut()
-        .rev()
-        .find(|(_, recovery)| !recovery.records.is_empty())
-        .ok_or("failure witness has no recoverable record prefix")?;
-    let mut position = target
-        .1
-        .records
-        .iter()
-        .position(|record| matches!(record, Recovered::Control(ControlRecord::Detach { .. })))
-        .unwrap_or(target.1.records.len());
-    if let Some(branch) = recovered_branch {
-        target
-            .1
-            .records
-            .insert(position, Recovered::BranchStart(branch));
-        position += 1;
-        if let Some(Recovered::Control(ControlRecord::Detach { last_hour, .. })) =
-            target.1.records.get_mut(position)
-        {
-            *last_hour = None;
+    // The range and the attempt on one branch become one gap when they touch.
+    if range_gap.is_none() {
+        range_start = None;
+    }
+    if attempt_gap.is_none() {
+        attempt_start = None;
+    }
+    let mut inserted = Vec::new();
+    let derived = range_start.is_some() || attempt_start.is_some();
+    if let Some(start) = range_start {
+        inserted.push(Recovered::BranchStart(start));
+    }
+    match (range_gap, attempt_gap) {
+        (Some(range), Some(attempt)) if range.branch == attempt.branch => {
+            if i64::from(attempt.first_hour) <= i64::from(range.last_hour) + 1
+                && i64::from(range.first_hour) <= i64::from(attempt.last_hour) + 1
+            {
+                inserted.push(Recovered::Gap(Gap {
+                    first_hour: range.first_hour.min(attempt.first_hour),
+                    last_hour: range.last_hour.max(attempt.last_hour),
+                    ..range
+                }));
+            } else if attempt.first_hour < range.first_hour {
+                inserted.extend([Recovered::Gap(attempt), Recovered::Gap(range)]);
+            } else {
+                inserted.extend([Recovered::Gap(range), Recovered::Gap(attempt)]);
+            }
+        }
+        (range, attempt) => {
+            inserted.extend(range.map(Recovered::Gap));
+            inserted.extend(attempt_start.map(Recovered::BranchStart));
+            inserted.extend(attempt.map(Recovered::Gap));
         }
     }
-    if let Some(gap) = gap {
-        target.1.records.insert(position, Recovered::Gap(gap));
-        position += 1;
-    }
     if !partial_exists {
-        target
-            .1
-            .records
-            .insert(position, Recovered::Control(partial));
+        inserted.push(Recovered::Control(partial));
     }
+    Ok((inserted, derived))
+}
+
+fn insert_failure_records(
+    segments: &mut [(u32, Recovery<Recovered>)],
+    mut records: Vec<Recovered>,
+    branch: Option<BranchId>,
+) -> Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let mut place = None;
+    if let Some(branch) = branch {
+        for (segment, (_, recovery)) in segments.iter().enumerate() {
+            let mut active = None;
+            for (index, record) in recovery.records.iter().enumerate() {
+                if matches!(
+                    record,
+                    Recovered::BranchStart(_) | Recovered::Control(ControlRecord::Detach { .. })
+                ) && active == Some(branch)
+                {
+                    place = Some((segment, index));
+                    if matches!(record, Recovered::Control(ControlRecord::Detach { .. })) {
+                        active = None;
+                    }
+                }
+                if let Recovered::BranchStart(start) = record {
+                    active = Some(start.id);
+                }
+            }
+            if active == Some(branch) {
+                place = Some((segment, recovery.records.len()));
+            }
+        }
+        if place.is_some()
+            && matches!(records.first(), Some(Recovered::BranchStart(start)) if start.id == branch)
+        {
+            records.remove(0);
+        }
+        if place.is_none() {
+            place = segments.iter().enumerate().find_map(|(segment, (_, recovery))| {
+                recovery.records.iter().position(|record| matches!(record, Recovered::BranchStart(start) if start.id > branch)).map(|index| (segment, index))
+            });
+        }
+    }
+    let (segment, index) = place
+        .or_else(|| {
+            segments
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, (_, recovery))| !recovery.records.is_empty())
+                .map(|(segment, (_, recovery))| {
+                    let index = recovery
+                        .records
+                        .iter()
+                        .position(|record| {
+                            matches!(record, Recovered::Control(ControlRecord::Detach { .. }))
+                        })
+                        .unwrap_or(recovery.records.len());
+                    (segment, index)
+                })
+        })
+        .ok_or("failure witness has no recoverable record prefix")?;
+    if records
+        .iter()
+        .any(|record| matches!(record, Recovered::BranchStart(_)))
+        && let Some(Recovered::Control(ControlRecord::Detach { last_hour, .. })) =
+            segments[segment].1.records.get_mut(index)
+    {
+        *last_hour = None;
+    }
+    segments[segment]
+        .1
+        .records
+        .splice(index..index, records)
+        .for_each(drop);
     Ok(())
+}
+
+fn apply_failure_ranges(
+    segments: &mut [(u32, Recovery<Recovered>)],
+    witness: &TerminalWitness,
+    failing_campaign: bool,
+    ranges: &[UncommittedRange],
+    bundled: bool,
+    held: Option<Held<'_>>,
+) -> Result<()> {
+    if !bundled && ranges.len() <= 1 {
+        return apply_failure_witness(segments, witness, failing_campaign, ranges.first(), held);
+    }
+    let partial = ControlRecord::Partial {
+        session: witness.session,
+        reason: ALLOCATION_GAP_REASON.into(),
+        failed_hour: witness.failed_hour.filter(|_| failing_campaign),
+    };
+    let mut ranges = ranges.to_vec();
+    ranges.sort_by_key(|range| range.branch);
+    if failing_campaign && let Some(hour) = witness.failed_hour {
+        for range in &mut ranges {
+            if witness.branch == Some(range.branch)
+                && witness.load_signal == range.load_signal
+                && i64::from(hour) >= i64::from(range.first_hour) - 1
+                && i64::from(hour) <= i64::from(range.last_hour) + 1
+            {
+                range.first_hour = range.first_hour.min(hour);
+                range.last_hour = range.last_hour.max(hour);
+                break;
+            }
+        }
+    }
+    for range in &ranges {
+        let (mut inserted, _) = failure_records_inner(
+            segments,
+            witness,
+            false,
+            Some(range),
+            held,
+            Some(&partial),
+            Some(&ranges),
+        )?;
+        inserted
+            .retain(|record| !matches!(record, Recovered::Control(ControlRecord::Partial { .. })));
+        insert_failure_records(segments, inserted, Some(range.branch))?;
+    }
+    let (inserted, _) = failure_records_inner(
+        segments,
+        witness,
+        failing_campaign,
+        None,
+        held,
+        Some(&partial),
+        Some(&ranges),
+    )?;
+    insert_failure_records(
+        segments,
+        inserted,
+        witness.branch.filter(|_| failing_campaign),
+    )
+}
+
+fn failure_segment_ranges(
+    held: Held<'_>,
+    witness: &TerminalWitness,
+    failing_campaign: bool,
+    ranges: &[UncommittedRange],
+    bundled: bool,
+) -> Result<Option<(u32, Recovery<Recovered>)>> {
+    if ranges.is_empty() && !(failing_campaign && witness.failed_hour.is_some()) {
+        return Ok(None);
+    }
+    if !bundled && ranges.len() <= 1 {
+        return failure_segment(held, witness, failing_campaign, ranges.first());
+    }
+    let Some(session) = held
+        .recording
+        .sessions
+        .iter()
+        .find(|session| session.id == witness.session)
+    else {
+        return Ok(None);
+    };
+    let records = vec![Recovered::SessionStart(session.clone())];
+    let mut segments = [(
+        FAILURE_SEGMENT,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records,
+            valid_bytes: 0,
+            damage: None,
+        },
+    )];
+    let before = segments[0].1.records.len();
+    apply_failure_ranges(
+        &mut segments,
+        witness,
+        failing_campaign,
+        ranges,
+        bundled,
+        Some(held),
+    )?;
+    if segments[0].1.records.len() == before {
+        return Ok(None);
+    }
+    let [segment] = segments;
+    Ok(Some(segment))
 }
 
 fn open(path: &Path) -> Result<Replay> {
@@ -4360,6 +5447,183 @@ fn unchanged_context(previous: &Replay, segments: &[(u32, Recovery<Recovered>)])
         }
     }
     is_subsequence(previous.controls.iter(), controls.into_iter())
+}
+
+/// Note a frameless tail whose saved recording already holds all it adds.
+#[allow(clippy::too_many_arguments)]
+fn keep_saved_tail(
+    campaign_dir: &Path,
+    replay: &Path,
+    revision: Revision,
+    mut saved: BTreeMap<u32, u64>,
+    mut covered: BTreeMap<u32, (u64, u64, Option<(Hour, Hour)>)>,
+    lengths: BTreeMap<u32, u64>,
+    omitted: &[(Option<i64>, u64)],
+    journaled: bool,
+) -> Result<()> {
+    covered.extend(
+        lengths
+            .iter()
+            .map(|(number, length)| (*number, (*length, 0, None))),
+    );
+    saved.extend(lengths);
+    write_saved(
+        campaign_dir,
+        &Saved {
+            replay: replay.to_owned(),
+            revision,
+            segments: saved,
+            covered,
+            omitted: omitted.to_vec(),
+        },
+    )?;
+    if !journaled {
+        accept_checkpoints(campaign_dir)?;
+    }
+    Ok(())
+}
+
+/// A frameless tail that adds only complete explicit loss, less what the recording holds.
+fn loss_tail(
+    previous: &Replay,
+    segments: &[(u32, Recovery<Recovered>)],
+) -> Option<Vec<(u32, Recovery<Recovered>)>> {
+    let mut recorded = previous.gaps.clone();
+    let mut held = Vec::new();
+    let mut clocks = Vec::new();
+    let mut added = false;
+    let mut tail = Vec::with_capacity(segments.len());
+    for (number, recovery) in segments {
+        if recovery.damage.is_some() {
+            return None;
+        }
+        let mut records = Vec::new();
+        let mut session = None;
+        let mut branch = None;
+        let mut section = Vec::new();
+        let mut lost = false;
+        for record in &recovery.records {
+            match record {
+                Recovered::Frame(_) => return None,
+                Recovered::SessionStart(start) => {
+                    if !previous.sessions.contains(start) {
+                        return None;
+                    }
+                    session = Some(start);
+                }
+                Recovered::BranchStart(start) => {
+                    if !previous.branches.contains(start)
+                        && previous.branches.iter().any(|known| known.id == start.id)
+                    {
+                        return None;
+                    }
+                    loss_section(&mut records, session, branch, &mut section, lost, false)?;
+                    branch = Some(start);
+                    lost = false;
+                }
+                Recovered::Gap(gap) if previous.gaps.contains(gap) => {}
+                Recovered::Gap(gap) => {
+                    lost = true;
+                    // Hours an earlier gap already accounts for lead this one, never follow it.
+                    let mut first = Some(gap.first_hour);
+                    while let Some(hour) = first
+                        && let Some(covering) = recorded.iter().find(|known| {
+                            known.branch == gap.branch
+                                && known.first_hour <= hour
+                                && known.last_hour >= hour
+                        })
+                    {
+                        first =
+                            (covering.last_hour < gap.last_hour).then(|| covering.last_hour + 1);
+                    }
+                    let Some(first) = first else {
+                        continue;
+                    };
+                    if recorded.iter().any(|known| {
+                        known.branch == gap.branch
+                            && known.first_hour <= gap.last_hour
+                            && first <= known.last_hour
+                    }) || previous.index.iter().any(|block| {
+                        block.branch == gap.branch
+                            && block.first_hour <= gap.last_hour
+                            && first <= block.last_hour
+                    }) {
+                        return None;
+                    }
+                    let gap = Gap {
+                        first_hour: first,
+                        ..gap.clone()
+                    };
+                    recorded.push(gap.clone());
+                    section.push(Recovered::Gap(gap));
+                    added = true;
+                }
+                Recovered::Control(control) if previous.controls.contains(control) => {
+                    if !(matches!(control, ControlRecord::EventLoss { .. })
+                        && held.contains(&control))
+                    {
+                        held.push(control);
+                    }
+                }
+                Recovered::Control(control) => {
+                    match control {
+                        ControlRecord::ClockWitness { hour, .. } => {
+                            clocks.push((branch?.id, *hour));
+                        }
+                        ControlRecord::EventLoss { .. } | ControlRecord::GapSummary { .. } => {}
+                        _ => return None,
+                    }
+                    section.push(record.clone());
+                }
+            }
+        }
+        loss_section(&mut records, session, branch, &mut section, lost, true)?;
+        tail.push((
+            *number,
+            Recovery {
+                format: recovery.format,
+                records,
+                valid_bytes: recovery.valid_bytes,
+                damage: None,
+            },
+        ));
+    }
+    // A clock of an hour no frame holds must be explained by a gap.
+    let gapped = clocks.iter().all(|(branch, hour)| {
+        recorded
+            .iter()
+            .any(|gap| gap.branch == *branch && gap.first_hour <= *hour && gap.last_hour >= *hour)
+    });
+    (added && gapped && is_subsequence(previous.controls.iter(), held.into_iter())).then_some(tail)
+}
+
+/// One branch's new loss records after its context; `lost` says the spool gapped it.
+fn loss_section(
+    records: &mut Vec<Recovered>,
+    session: Option<&SessionStart>,
+    branch: Option<&BranchStart>,
+    section: &mut Vec<Recovered>,
+    lost: bool,
+    last: bool,
+) -> Option<()> {
+    if section.is_empty() {
+        return Some(());
+    }
+    // A branch without a gap may only end its segment, as the spool's own rules allow.
+    if !lost
+        || (!last
+            && !section
+                .iter()
+                .any(|record| matches!(record, Recovered::Gap(_))))
+    {
+        return None;
+    }
+    if records.is_empty() {
+        records.push(Recovered::SessionStart(session?.clone()));
+    }
+    records.push(Recovered::BranchStart(branch?.clone()));
+    records.append(section);
+    Some(())
 }
 
 /// How many leading segments the recording holds exactly; the rest must share no hour with it.
@@ -7689,8 +8953,8 @@ mod tests {
             },
         )];
         let witness = allocation_witness(1);
-        apply_failure_witness(&mut segments, &witness, true).unwrap();
-        apply_failure_witness(&mut segments, &witness, true).unwrap();
+        apply_failure_witness(&mut segments, &witness, true, None, None).unwrap();
+        apply_failure_witness(&mut segments, &witness, true, None, None).unwrap();
         let records = &segments[0].1.records;
         assert_eq!(
             records
@@ -7713,6 +8977,524 @@ mod tests {
             records[records.len() - 1],
             Recovered::Control(ControlRecord::Detach { .. })
         ));
+    }
+
+    fn write_allocation_spool(session: &Path, records: &[Record]) -> (PathBuf, Vec<u8>) {
+        let campaign =
+            session.join(std::str::from_utf8(crate::test_support::ALLOCATION_CAMPAIGN).unwrap());
+        let mut spool = Vec::new();
+        for record in records {
+            spool.extend(replay::spool::encode_record(record).unwrap());
+        }
+        let path = campaign.join("spool.0000.h4s");
+        fs::write(&path, &spool).unwrap();
+        (path, spool)
+    }
+
+    fn allocation_gaps(branch: BranchId, hours: &[(Hour, Hour)]) -> Vec<Gap> {
+        hours
+            .iter()
+            .map(|&(first_hour, last_hour)| Gap {
+                branch,
+                first_hour,
+                last_hour,
+                reason: ALLOCATION_GAP_REASON.into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn allocation_failure_gaps_the_whole_uncommitted_range_beside_the_attempt_idempotently() {
+        use crate::test_support::allocation_range;
+        for (name, failed_hour, expected) in [
+            ("range-adjacent-attempt", Some(8), vec![(5, 8)]),
+            ("range-inner-attempt", Some(6), vec![(5, 7)]),
+            ("range-idle", None, vec![(5, 7)]),
+            ("range-later-attempt", Some(99), vec![(5, 7), (99, 99)]),
+        ] {
+            let (session, output, mut witness) = allocation_session(name);
+            witness.failed_hour = failed_hour;
+            witness.uncommitted = Some(allocation_range(9, Some(19), 5..=7));
+            fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+            let paths = finalize_session(&session, &output).unwrap();
+            let bytes = fs::read(&paths[0]).unwrap();
+            let replay = Replay::open(bytes.clone()).unwrap();
+            assert_eq!(replay.gaps, allocation_gaps(9, &expected), "{name}");
+            assert_eq!(replay.branches.len(), 1);
+            assert!(matches!(replay.seek(9, 4).unwrap(), SeekResult::Frame(_)));
+            for hour in 5..=7 {
+                assert!(
+                    matches!(replay.seek(9, hour).unwrap(), SeekResult::Gap { reason, .. } if reason == ALLOCATION_GAP_REASON)
+                );
+            }
+            assert!(replay.controls.iter().any(|control| matches!(control,
+                ControlRecord::Partial { failed_hour: actual, .. } if *actual == failed_hour)));
+            assert_eq!(finalize_session(&session, &output).unwrap(), paths);
+            assert_eq!(fs::read(&paths[0]).unwrap(), bytes);
+            assert_eq!(read_failure_witness(&session).unwrap(), Some(witness));
+        }
+    }
+
+    #[test]
+    fn allocation_failure_uncommitted_range_gaps_only_hours_no_commit_covers() {
+        use crate::test_support::{allocation_frame, allocation_range, allocation_records};
+        // A frame written past the watermark is not committed; one inside it is never gapped.
+        for (name, committed_late, range, expected) in [
+            ("range-written-uncommitted", false, 5..=6, (5, 6)),
+            ("range-clipped-committed", true, 6..=6, (6, 6)),
+        ] {
+            let (session, output, mut witness) = allocation_session(name);
+            let mut records = allocation_records();
+            records.pop();
+            let late = || {
+                [
+                    Record::Frame(allocation_frame(9, 5, 19)),
+                    Record::Control(ControlRecord::ClockWitness {
+                        session: 7,
+                        qpc: 500,
+                        hour: 5,
+                        load_signal: Some(19),
+                    }),
+                ]
+            };
+            if committed_late {
+                records.extend(late());
+            }
+            let (path, mut spool) = write_allocation_spool(&session, &records);
+            witness.committed_bytes = spool.len() as u64;
+            witness.pending_campaign_id = witness.committed_campaign_id;
+            witness.pending_segment = Some(0);
+            witness.pending_bytes = spool.len() as u64;
+            witness.failed_hour = None;
+            witness.uncommitted = Some(allocation_range(9, Some(19), range));
+            if !committed_late {
+                for record in &late() {
+                    spool.extend(replay::spool::encode_record(record).unwrap());
+                }
+                assert_eq!(recover_prefix(&spool).valid_bytes, spool.len());
+                fs::write(&path, &spool).unwrap();
+            }
+            fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+            let paths = finalize_session(&session, &output).unwrap();
+            let replay = open(&paths[0]).unwrap();
+            assert_eq!(replay.gaps, allocation_gaps(9, &[expected]), "{name}");
+            let last_frame = if committed_late { 5 } else { 4 };
+            assert_eq!(
+                crate::test_support::recorded_frames(&paths[0]),
+                (2..=last_frame).map(|hour| (9, hour)).collect::<Vec<_>>()
+            );
+            assert!(matches!(replay.seek(9, 6).unwrap(), SeekResult::Gap { .. }));
+            assert_eq!(fs::read(&path).unwrap(), spool);
+        }
+    }
+
+    #[test]
+    fn allocation_failure_uncommitted_range_follows_recorded_gaps_and_refuses_inner_ones() {
+        use crate::test_support::{allocation_range, allocation_records};
+        let overflow = |first_hour, last_hour| Gap {
+            branch: 9,
+            first_hour,
+            last_hour,
+            reason: "collector queue overflow".into(),
+        };
+        for (name, recorded, expected) in [
+            (
+                "range-after-overflow",
+                overflow(5, 5),
+                Some(vec![
+                    overflow(5, 5),
+                    allocation_gaps(9, &[(6, 7)]).remove(0),
+                ]),
+            ),
+            (
+                "range-already-gapped",
+                allocation_gaps(9, &[(5, 7)]).remove(0),
+                Some(allocation_gaps(9, &[(5, 7)])),
+            ),
+            ("range-inner-gap", overflow(6, 6), None),
+        ] {
+            let (session, output, mut witness) = allocation_session(name);
+            let mut records = allocation_records();
+            records.insert(records.len() - 1, Record::Gap(recorded));
+            let (path, spool) = write_allocation_spool(&session, &records);
+            witness.committed_bytes = spool.len() as u64;
+            witness.failed_hour = None;
+            witness.uncommitted = Some(allocation_range(9, Some(19), 5..=7));
+            fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+            let result = finalize_session(&session, &output);
+            match expected {
+                Some(gaps) => assert_eq!(open(&result.unwrap()[0]).unwrap().gaps, gaps, "{name}"),
+                None => {
+                    assert!(result.unwrap_err().contains("overlaps a recorded gap"));
+                    assert_only_naming_lock(&output);
+                }
+            }
+            assert_eq!(fs::read(&path).unwrap(), spool);
+        }
+    }
+
+    #[test]
+    fn allocation_failure_uncommitted_range_derives_its_torn_branch_start() {
+        use crate::test_support::allocation_range;
+        for (name, failed_hour, expected) in [
+            ("range-torn-branch", None, (21, 22)),
+            ("range-torn-branch-attempt", Some(23), (21, 23)),
+        ] {
+            let (session, output, mut witness) = allocation_session(name);
+            witness.branch = None;
+            witness.failed_hour = failed_hour;
+            witness.load_signal = Some(20);
+            if failed_hour.is_none() {
+                // Failed elsewhere: only the queue names this campaign's lost hours.
+                witness.campaign_id = None;
+                witness.load_signal = None;
+            }
+            witness.uncommitted = Some(allocation_range(10, Some(20), 21..=22));
+            fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+            let paths = finalize_session(&session, &output).unwrap();
+            let bytes = fs::read(&paths[0]).unwrap();
+            let replay = Replay::open(bytes.clone()).unwrap();
+            assert_eq!(replay.branches.len(), 2);
+            assert_eq!(
+                replay.branches[1],
+                BranchStart {
+                    id: 10,
+                    session: 7,
+                    loaded_hour: None,
+                    first_hour: 21,
+                    parent: Parentage::Unknown,
+                    reason: BranchReason::LoadSignal,
+                }
+            );
+            assert_eq!(replay.gaps, allocation_gaps(10, &[expected]), "{name}");
+            assert!(matches!(replay.seek(9, 4).unwrap(), SeekResult::Frame(_)));
+            assert!(replay.controls.iter().any(|control| matches!(control,
+                ControlRecord::Partial { failed_hour: actual, .. } if *actual == failed_hour)));
+            assert!(matches!(
+                replay.controls.last().unwrap(),
+                ControlRecord::Detach {
+                    last_hour: None,
+                    ..
+                }
+            ));
+            assert_eq!(finalize_session(&session, &output).unwrap(), paths);
+            assert_eq!(fs::read(&paths[0]).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn allocation_failure_uncommitted_range_in_another_campaign_keeps_both_gaps() {
+        use crate::test_support::{allocation_range, allocation_records};
+        let (session, output, mut witness) = allocation_session("range-other-campaign");
+        let other = *b"22b7cc84-3028-4f65-8e0d-adf2f37ca1a6";
+        let mut spool = Vec::new();
+        for mut record in allocation_records() {
+            if let Record::Frame(frame) = &mut record {
+                let TableUpdate::Snapshot(TableRows::Campaign(rows)) =
+                    &mut frame.tables[TableId::Campaign.index()]
+                else {
+                    unreachable!()
+                };
+                rows[0].id = other.to_vec();
+            }
+            spool.extend(replay::spool::encode_record(&record).unwrap());
+        }
+        let current = session.join(std::str::from_utf8(&other).unwrap());
+        fs::create_dir_all(&current).unwrap();
+        fs::write(current.join("spool.0000.h4s"), &spool).unwrap();
+        witness.committed_campaign_id = Some(other);
+        witness.committed_bytes = spool.len() as u64;
+        witness.uncommitted = Some(UncommittedRange {
+            campaign_id: other,
+            ..allocation_range(9, Some(19), 5..=6)
+        });
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let (paths, issues) = finalize_session_outcome(&session, &output).unwrap().parts();
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(paths.len(), 2);
+        let mut before = Vec::new();
+        for path in &paths {
+            let replay = open(path).unwrap();
+            let (gaps, failed_hour) = if replay.campaign_id == other {
+                (allocation_gaps(9, &[(5, 6)]), None)
+            } else {
+                (allocation_gaps(9, &[(99, 99)]), Some(99))
+            };
+            assert_eq!(replay.gaps, gaps);
+            assert!(replay.controls.iter().any(|control| matches!(control,
+                ControlRecord::Partial { failed_hour: actual, .. } if *actual == failed_hour)));
+            before.push(fs::read(path).unwrap());
+        }
+        assert_eq!(
+            finalize_session_outcome(&session, &output).unwrap().parts(),
+            (paths.clone(), Vec::new())
+        );
+        for (path, bytes) in paths.iter().zip(before) {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn allocation_failure_reapplied_uncommitted_range_reuses_its_gap() {
+        use crate::test_support::{allocation_range, allocation_records, allocation_witness};
+        let mut segments = vec![(
+            0,
+            Recovery {
+                format: Some(replay_data::format::FormatVersion::CURRENT),
+                records: allocation_records()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(at, record)| {
+                        Recovered::keep(
+                            record,
+                            replay::spool::Placement {
+                                offset: at,
+                                ..Default::default()
+                            },
+                        )
+                    })
+                    .collect(),
+                valid_bytes: 1,
+                damage: None,
+            },
+        )];
+        let witness = TerminalWitness {
+            failed_hour: None,
+            uncommitted: Some(allocation_range(9, Some(19), 5..=7)),
+            ..allocation_witness(1)
+        };
+        for _ in 0..2 {
+            apply_failure_witness(
+                &mut segments,
+                &witness,
+                true,
+                witness.uncommitted.as_ref(),
+                None,
+            )
+            .unwrap();
+        }
+        let records = &segments[0].1.records;
+        let gaps: Vec<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                Recovered::Gap(gap) => Some(gap.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(gaps, allocation_gaps(9, &[(5, 7)]));
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(
+                    record,
+                    Recovered::Control(ControlRecord::Partial { .. })
+                ))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            records[records.len() - 1],
+            Recovered::Control(ControlRecord::Detach { .. })
+        ));
+    }
+
+    /// A checkpoint followed by a failed capture, optionally with a context-only segment.
+    fn checkpointed_failure(
+        name: &str,
+        auto_save: bool,
+        context_segment: bool,
+        witness: impl FnOnce(&mut TerminalWitness),
+    ) -> (PathBuf, PathBuf, PathBuf, Vec<u8>) {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_test_directory, allocation_witness, write_load_segment,
+        };
+        let root = allocation_test_directory(name);
+        let session = root.join("session");
+        let output = root.join("replays");
+        let campaign_name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let campaign = session.join(campaign_name);
+        let first = write_load_segment(&campaign, 0, 9, 2..=4, 19);
+        let mut committed = (0, fs::metadata(&first).unwrap().len());
+        if context_segment {
+            let context: Vec<u8> = recover_prefix(&fs::read(&first).unwrap())
+                .records
+                .iter()
+                .take(2)
+                .flat_map(|record| replay::spool::encode_record(record).unwrap())
+                .collect();
+            fs::write(campaign.join("spool.0001.h4s"), &context).unwrap();
+            committed = (1, context.len() as u64);
+        }
+        let checkpoint = checkpoint_campaign(
+            &session,
+            &output,
+            campaign_name,
+            0,
+            auto_save,
+            &mut Ahead::default(),
+            unnamed(),
+            &|| Ok(()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(checkpoint.hours, 3);
+        assert_eq!(checkpoint.deleted, usize::from(context_segment));
+        let mut failure = TerminalWitness {
+            committed_segment: Some(committed.0),
+            committed_bytes: committed.1,
+            failed_hour: None,
+            ..allocation_witness(0)
+        };
+        witness(&mut failure);
+        fs::write(session.join(WITNESS_FILE_NAME), failure.encode()).unwrap();
+        let bytes = fs::read(&checkpoint.recording).unwrap();
+        (session, output, checkpoint.recording, bytes)
+    }
+
+    /// `after` adds to `before` in place: every byte but the commit slot is kept.
+    fn assert_added_after(before: &[u8], after: &[u8]) {
+        let slot = Replay::open(before.to_vec()).unwrap().index[0].offset as usize - 32;
+        assert!(after.len() > before.len());
+        assert_eq!(after[..slot], before[..slot]);
+        assert_eq!(after[slot + 32..before.len()], before[slot + 32..]);
+    }
+
+    fn has_partial(replay: &Replay, failed_hour: Option<Hour>) -> bool {
+        replay.controls.iter().any(|control| {
+            matches!(control, ControlRecord::Partial { session: 7, failed_hour: actual, reason }
+                if *actual == failed_hour && reason == ALLOCATION_GAP_REASON)
+        })
+    }
+
+    #[test]
+    fn allocation_failure_after_an_auto_save_checkpoint_adds_only_its_lost_hours() {
+        use crate::test_support::{allocation_range, recorded_frames};
+        for context_segment in [false, true] {
+            for (failed_hour, range, expected) in [
+                (Some(8), Some(5..=7), (5, 8)),
+                (Some(5), None, (5, 5)),
+                (None, Some(5..=6), (5, 6)),
+            ] {
+                let name = format!("checkpoint-failure-saved-{context_segment}-{}", expected.1);
+                let (session, output, _, checkpointed) =
+                    checkpointed_failure(&name, true, context_segment, |witness| {
+                        witness.failed_hour = failed_hour;
+                        witness.uncommitted =
+                            range.map(|hours| allocation_range(9, Some(19), hours));
+                    });
+                let paths = finalize_session(&session, &output).unwrap();
+                assert_eq!(paths.len(), 1);
+                let bytes = fs::read(&paths[0]).unwrap();
+                assert_added_after(&checkpointed, &bytes);
+                let replay = Replay::open(bytes.clone()).unwrap();
+                assert_eq!(recorded_frames(&paths[0]), [(9, 2), (9, 3), (9, 4)]);
+                assert_eq!(replay.gaps, allocation_gaps(9, &[expected]), "{name}");
+                assert!(has_partial(&replay, failed_hour));
+                assert_eq!(finalize_session(&session, &output).unwrap(), paths);
+                assert_eq!(fs::read(&paths[0]).unwrap(), bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn allocation_failure_elsewhere_leaves_an_auto_save_checkpoint_exactly_as_saved() {
+        let (session, output, _, checkpointed) =
+            checkpointed_failure("checkpoint-failure-elsewhere", true, false, |witness| {
+                witness.campaign_id = Some(*b"22b7cc84-3028-4f65-8e0d-adf2f37ca1a6");
+                witness.branch = None;
+                witness.failed_hour = Some(5);
+            });
+        let paths = finalize_session(&session, &output).unwrap();
+        assert_eq!(fs::read(&paths[0]).unwrap(), checkpointed);
+    }
+
+    #[test]
+    fn allocation_failure_after_an_unsaved_checkpoint_waits_and_discards_with_it() {
+        use crate::test_support::{ALLOCATION_CAMPAIGN, allocation_range};
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        for context_segment in [false, true] {
+            let (session, output, staged, checkpointed) = checkpointed_failure(
+                &format!("checkpoint-failure-unsaved-{context_segment}"),
+                false,
+                context_segment,
+                |witness| witness.uncommitted = Some(allocation_range(9, Some(19), 5..=7)),
+            );
+            let save = || {
+                save_campaign(
+                    &session,
+                    &output,
+                    name,
+                    true,
+                    &|| Ok(()),
+                    &mut Ahead::default(),
+                    unnamed(),
+                )
+                .unwrap()
+                .0
+            };
+            assert_eq!(save(), Some(staged.clone()));
+            let bytes = fs::read(&staged).unwrap();
+            assert_added_after(&checkpointed, &bytes);
+            let replay = Replay::open(bytes.clone()).unwrap();
+            assert_eq!(replay.gaps, allocation_gaps(9, &[(5, 7)]));
+            assert!(has_partial(&replay, None));
+            assert_eq!(
+                recording_files::recording_of(&output, ALLOCATION_CAMPAIGN).unwrap(),
+                None
+            );
+            let campaign = session.join(name);
+            let journal = read_checkpointed(&campaign).unwrap().unwrap();
+            assert_eq!(journal.before, None);
+            assert_eq!(journal.after, Some(replay.revision()));
+            assert!(!journal.pending);
+            assert_eq!(save(), Some(staged.clone()));
+            assert_eq!(fs::read(&staged).unwrap(), bytes);
+            // Discard takes back the failure's hours with the checkpoint they follow.
+            discard_checkpoints(&session, name).unwrap();
+            assert!(!staged.exists());
+            assert!(segment_paths(&campaign).unwrap().is_empty());
+            assert!(!campaign.join(CHECKPOINT_FILE).exists());
+        }
+    }
+
+    #[test]
+    fn allocation_failure_after_a_checkpoint_derives_a_torn_branch_from_the_saved_history() {
+        use crate::test_support::allocation_range;
+        for context_segment in [false, true] {
+            let (session, output, _, checkpointed) = checkpointed_failure(
+                &format!("checkpoint-failure-torn-{context_segment}"),
+                true,
+                context_segment,
+                |witness| {
+                    witness.campaign_id = None;
+                    witness.branch = None;
+                    witness.load_signal = None;
+                    witness.uncommitted = Some(allocation_range(10, Some(20), 21..=22));
+                },
+            );
+            let paths = finalize_session(&session, &output).unwrap();
+            let bytes = fs::read(&paths[0]).unwrap();
+            assert_added_after(&checkpointed, &bytes);
+            let replay = Replay::open(bytes.clone()).unwrap();
+            assert_eq!(
+                replay.branches,
+                [
+                    Replay::open(checkpointed.clone()).unwrap().branches[0].clone(),
+                    BranchStart {
+                        id: 10,
+                        session: 7,
+                        loaded_hour: None,
+                        first_hour: 21,
+                        parent: Parentage::Unknown,
+                        reason: BranchReason::LoadSignal,
+                    }
+                ]
+            );
+            assert_eq!(replay.gaps, allocation_gaps(10, &[(21, 22)]));
+            assert!(has_partial(&replay, None));
+            assert_eq!(finalize_session(&session, &output).unwrap(), paths);
+            assert_eq!(fs::read(&paths[0]).unwrap(), bytes);
+        }
     }
 
     #[test]
@@ -7749,6 +9531,22 @@ mod tests {
             },
             TerminalWitness {
                 committed_bytes: u64::MAX,
+                ..witness
+            },
+            TerminalWitness {
+                uncommitted: Some(crate::test_support::allocation_range(9, Some(19), 4..=5)),
+                ..witness
+            },
+            TerminalWitness {
+                uncommitted: Some(crate::test_support::allocation_range(9, Some(20), 5..=5)),
+                ..witness
+            },
+            TerminalWitness {
+                uncommitted: Some(crate::test_support::allocation_range(100, Some(19), 5..=5)),
+                ..witness
+            },
+            TerminalWitness {
+                uncommitted: Some(crate::test_support::allocation_range(9, Some(19), 1..=1)),
                 ..witness
             },
         ] {
@@ -8077,3 +9875,6 @@ mod tests {
 mod checkpoint_tests;
 #[cfg(test)]
 mod naming_tests;
+
+#[cfg(test)]
+mod multi_context_tests;

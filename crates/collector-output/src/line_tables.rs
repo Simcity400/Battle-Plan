@@ -10,8 +10,8 @@
 //! census's daily slot: off it, the spool carries the last publication, until
 //! a tick goes unobserved.
 use super::output_continuity::OutputMap;
-pub use super::output_continuity::holds_publication;
 use super::output_continuity::{self, Progress, Reasons, State};
+pub use super::output_continuity::{Receipt, holds_publication};
 use crate::line_output::{Drained, Entry, OutputKind};
 use crate::table_conversion::unavailable;
 use engine_allocation::{owned_vec, reserve, reserve_exact, reserve_map};
@@ -63,8 +63,8 @@ struct Line {
     /// The first hour whose drain or census showed the line.
     first_hour: i32,
     outputs: Vec<Output>,
-    /// Published as ended; dropped at the next publication.
-    ended: bool,
+    /// The publication that first showed it ended; dropped once one written did.
+    ended: Option<u64>,
     pending: usize,
 }
 
@@ -87,10 +87,14 @@ impl Totals {
         captured: &Captured,
         tables: &mut [TableInput],
     ) {
-        if self.observe(branch, hour, captured).is_err() {
+        self.shared.retire(|line| line.ended);
+        let observed = self.observe(branch, hour, captured);
+        let carried = self.shared.take_held();
+        if observed.is_err() {
             return;
         }
         let published = self.publish(hour, &tables[TableId::ProductionLines.index()]);
+        self.shared.carry(&published, carried);
         tables[TableId::ProductionLineOutput.index()] = TableInput::Sampled(published);
         let rockets = match self
             .rocket
@@ -111,10 +115,13 @@ impl Totals {
     ) -> io::Result<Result<Vec<replay_data::rows::RocketProductionOutputRow>, &'static str>> {
         self.rocket.publication(production_lines)
     }
-    /// After a frame of this campaign was written, with whether it held the
-    /// last publication ([`holds_publication`], taken before the write).
-    pub fn written(&mut self, held_publication: bool) {
-        self.shared.written(held_publication);
+    /// Taken after a frame's assembly, before it is queued, from its scoped table.
+    pub fn receipt(&self, output: &TableInput) -> Receipt {
+        self.shared.receipt(output)
+    }
+    /// After the frame of `receipt` was actually written.
+    pub fn written(&mut self, receipt: Receipt) {
+        self.shared.written(receipt);
     }
 
     fn observe(&mut self, branch: BranchId, hour: i32, captured: &Captured) -> io::Result<()> {
@@ -155,9 +162,11 @@ impl Totals {
                     let line = self.shared.lines.entry(entry.line).or_insert_with(|| Line {
                         first_hour: hour,
                         outputs: Vec::new(),
-                        ended: false,
+                        ended: None,
                         pending: 0,
                     });
+                    // New output is in no publication yet.
+                    line.ended = None;
                     line.pending = line.pending.saturating_add(1);
                 }
                 for entry in equipment() {
@@ -212,15 +221,16 @@ impl Totals {
                 .binary_search_by_key(&handle, |row| row.handle)
                 .is_ok()
         };
-        self.shared
-            .prepare_publication(hour, census.iter().map(|row| row.handle), |line| line.ended)?;
+        let publication = self
+            .shared
+            .prepare_publication(hour, census.iter().map(|row| row.handle))?;
         reserve_map(&mut self.shared.lines, census.len())?;
         let baseline = &self.shared.census;
         for row in census {
             let line = self.shared.lines.entry(row.handle).or_insert_with(|| Line {
                 first_hour: hour,
                 outputs: Vec::new(),
-                ended: false,
+                ended: None,
                 pending: 0,
             });
             // Every live line has a row, zero until it produces, with the
@@ -249,7 +259,11 @@ impl Totals {
         reserve_exact(&mut rows, count)?;
         let delivery_exact = !self.unknown_delivery;
         for (&handle, line) in &mut self.shared.lines {
-            line.ended = !live(handle);
+            line.ended = if live(handle) {
+                None
+            } else {
+                line.ended.or(Some(publication))
+            };
             // Absent from the first census and first seen after it: created
             // after that census, so every tick of its life was observed.
             let observed_since_creation = baseline.observed_since_creation(handle, line.first_hour);
@@ -264,7 +278,7 @@ impl Totals {
                     mio_credit: replay_data::rows::RetiredI64::default(),
                     since_hour,
                     observed_since_creation,
-                    ended: line.ended,
+                    ended: line.ended.is_some(),
                     exact: output.exact && delivery_exact,
                     spent_raw: Recorded::Value(output.spent),
                     instant_raw: Recorded::Value(replay_data::rows::RetiredOptionalI64::default()),
@@ -273,6 +287,7 @@ impl Totals {
             }));
         }
         rows.sort_unstable_by_key(|row| (row.line, row.ordinal));
+        self.shared.published(publication);
         Ok(rows)
     }
 }
@@ -405,7 +420,7 @@ mod tests {
         lines: TableInput,
     ) -> TableInput {
         let output = unwritten(totals, branch, hour, captured, lines);
-        totals.written(holds_publication(&output));
+        totals.written(totals.receipt(&output));
         output
     }
 
@@ -482,7 +497,10 @@ mod tests {
         };
         let seeded = rows(assemble(&mut totals, 7, 100, &frame(1, 0, &[]), lines()));
         assert_eq!(
-            seeded.iter().map(ProductionLineOutputRow::purpose).collect::<Vec<_>>(),
+            seeded
+                .iter()
+                .map(ProductionLineOutputRow::purpose)
+                .collect::<Vec<_>>(),
             [OutputPurpose::New, OutputPurpose::Refit]
         );
         let tick = |purpose, spent| Entry {
@@ -1097,5 +1115,117 @@ mod tests {
         let rocket = totals.rocket_publication(&census(&lines)).unwrap().unwrap();
         let design = rocket.iter().find(|row| row.variant == SHIP).unwrap();
         assert_eq!((design.spent_raw, design.units), (17, 1));
+    }
+
+    /// One frame through the totals, with the receipt its queued write carries.
+    fn queue(
+        totals: &mut Totals,
+        hour: i32,
+        lines: &[(u64, u64, u64)],
+    ) -> (Vec<ProductionLineOutputRow>, Receipt) {
+        let output = unwritten(totals, 7, hour, &frame(1, 10, &[]), census(lines));
+        let receipt = totals.receipt(&output);
+        (rows(output), receipt)
+    }
+
+    fn ended(rows: &[ProductionLineOutputRow]) -> Vec<u64> {
+        rows.iter()
+            .filter(|row| row.ended)
+            .map(|row| row.line)
+            .collect()
+    }
+
+    /// Each late write retires only the ends its own publication showed.
+    #[test]
+    fn backlogged_writes_retire_only_the_ends_their_publication_showed() {
+        let mut totals = Totals::default();
+        let all = [(LINE_A, TANK, ORG), (LINE_B, SHIP, 0), (LINE_C, TANK, ORG)];
+        assemble(&mut totals, 7, 100, &frame(1, 10, &[]), census(&all));
+        let (first, ended_a) = queue(&mut totals, 124, &all[1..]);
+        let (second, ended_b) = queue(&mut totals, 148, &all[2..]);
+        // This frame's write fails: its receipt is lost.
+        let (third, _lost) = queue(&mut totals, 172, &[]);
+        assert_eq!(ended(&first), [LINE_A]);
+        assert_eq!(ended(&second), [LINE_A, LINE_B]);
+        assert_eq!(ended(&third), [LINE_A, LINE_B, LINE_C]);
+        totals.written(ended_a);
+        let (after_a, _) = queue(&mut totals, 196, &[]);
+        assert_eq!(ended(&after_a), [LINE_B, LINE_C]);
+        totals.written(ended_b);
+        let (after_b, last) = queue(&mut totals, 220, &[]);
+        assert_eq!(ended(&after_b), [LINE_C]);
+        totals.written(last);
+        assert!(queue(&mut totals, 244, &[]).0.is_empty());
+    }
+
+    /// Ticks after an end still queued are in no written publication.
+    #[test]
+    fn ticks_after_an_unwritten_end_survive_its_late_write() {
+        let mut totals = Totals::default();
+        let lines = [(LINE_A, TANK, ORG)];
+        assemble(&mut totals, 7, 100, &frame(1, 10, &[]), census(&lines));
+        let (ended, receipt) = queue(&mut totals, 124, &[]);
+        assert_eq!(ended[0].units, 0);
+        let late = rows(unwritten(
+            &mut totals,
+            7,
+            125,
+            &frame(1, 10, &[entry(LINE_A, TANK, ORG, 2, 2)]),
+            census(&[]),
+        ));
+        totals.written(receipt);
+        let (after, _) = queue(&mut totals, 148, &[]);
+        assert_eq!(after, late);
+        assert_eq!((after[0].units, after[0].ended), (2, true));
+    }
+
+    /// A late write leaves a reused handle and a later branch's line alone.
+    #[test]
+    fn a_late_write_never_retires_a_reused_handle_or_a_new_branch_line() {
+        let mut totals = Totals::default();
+        let lines = [(LINE_A, TANK, ORG)];
+        assemble(&mut totals, 7, 100, &frame(1, 10, &[]), census(&lines));
+        let (ended_rows, receipt) = queue(&mut totals, 124, &[]);
+        assert!(ended_rows[0].ended);
+        let (reused, _) = queue(&mut totals, 148, &lines);
+        assert!(!reused[0].ended);
+        totals.written(receipt);
+        let (live, old) = queue(&mut totals, 172, &lines);
+        assert_eq!(
+            live.iter()
+                .map(|row| (row.line, row.ended))
+                .collect::<Vec<_>>(),
+            [(LINE_A, false)]
+        );
+        queue(&mut totals, 196, &[]);
+        let (_, gone) = queue(&mut totals, 220, &[]);
+        // A load before those writes complete: the new branch's line ends too.
+        let output = unwritten(&mut totals, 8, 300, &frame(1, 10, &[]), census(&lines));
+        assert!(!rows(output)[0].ended);
+        let new_branch = unwritten(&mut totals, 8, 324, &frame(1, 10, &[]), census(&[]));
+        assert!(rows(new_branch)[0].ended);
+        totals.written(old);
+        totals.written(gone);
+        let output = unwritten(&mut totals, 8, 348, &frame(1, 10, &[]), census(&[]));
+        assert_eq!(ended(&rows(output)), [LINE_A]);
+    }
+
+    /// A skip holds the publication it carries, if any; an unrecorded table none.
+    #[test]
+    fn a_skip_holds_only_a_carried_publication() {
+        let mut totals = Totals::default();
+        let lines = [(LINE_A, TANK, ORG)];
+        assemble(&mut totals, 7, 100, &frame(1, 10, &[]), census(&lines));
+        let (_, held) = queue(&mut totals, 124, &[]);
+        assert_ne!(held, Receipt::default());
+        let not_recorded = TableInput::Sampled(unavailable("not recorded"));
+        assert_eq!(totals.receipt(&not_recorded), Receipt::default());
+        let carried = unwritten(&mut totals, 7, 125, &frame(1, 10, &[]), skipped());
+        assert_eq!(totals.receipt(&carried), held);
+        let incomplete = TableInput::Sampled(unavailable("walk failed"));
+        let output = unwritten(&mut totals, 7, 148, &frame(1, 10, &[]), incomplete);
+        assert_eq!(totals.receipt(&output), Receipt::default());
+        let skip = unwritten(&mut totals, 7, 149, &frame(1, 10, &[]), skipped());
+        assert_eq!(totals.receipt(&skip), Receipt::default());
     }
 }

@@ -868,6 +868,79 @@ fn committed_frame_watermark_precedes_postwrite_durability_allocation_failure() 
 }
 
 #[test]
+fn sealed_records_publish_watermarks_only_after_the_real_write_and_flush() {
+    use replay_frame::frame::{DecodedFrame, FrameEncoder, TableView};
+    thread_local! {
+        static STORE: RefCell<Option<Rc<RefCell<Memory>>>> = const { RefCell::new(None) };
+        static START: std::cell::Cell<(Option<(u32, u64)>, usize)> = const { std::cell::Cell::new((None, 0)) };
+        static COMMITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    fn sealed(hour: i32) -> SealedRecord {
+        let source = DecodedFrame {
+            branch: 7,
+            hour,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|index| {
+                crate::frame::current_absence(crate::rows::TableId::ALL[index])
+                    .unwrap_or_else(|| TableView::Unavailable {
+                        reason: "fixture".into(),
+                    })
+                    .into()
+            }),
+        };
+        let mut prepared = FrameEncoder::new()
+            .prepare_bytes(source.into(), true)
+            .unwrap();
+        SealedRecord::frame(prepared.take_frame()).unwrap()
+    }
+    fn started(preceding: Option<(u32, u64)>) {
+        STORE.with_borrow(|store| {
+            START.set((preceding, store.as_ref().unwrap().borrow().flushes));
+        });
+    }
+    fn committed(segment: u32, bytes: u64, _frame: bool) {
+        STORE.with_borrow(|store| {
+            let memory = store.as_ref().unwrap().borrow();
+            assert!(memory.flushes > START.get().1);
+            assert_eq!(bytes as usize, memory.files[&segment].len());
+        });
+        COMMITS.set(COMMITS.get() + 1);
+    }
+    for fault in [Fault::Flush, Fault::StartSyncOom] {
+        let backend = MemoryBackend::default();
+        let memory = backend.0.clone();
+        STORE.set(Some(memory.clone()));
+        COMMITS.set(0);
+        let mut spool = SegmentedSpool::new(backend);
+        spool.set_write_start_hook(started);
+        spool.set_commit_hook(committed);
+        let records = vec![SealedRecord::context(branch()).unwrap(), sealed(10)];
+        assert_eq!(COMMITS.get(), 0);
+        assert_eq!(spool.committed_watermark(), None);
+        spool.start_sealed_segment(records).unwrap();
+        assert_eq!(COMMITS.get(), 2);
+        assert_eq!(spool.committed_frames(), 1);
+        let preceding = spool.committed_watermark();
+        let record = sealed(11);
+        assert_eq!(spool.committed_watermark(), preceding);
+        memory.borrow_mut().fault = Some(fault);
+        spool.last_sync = Instant::now() - SYNC_INTERVAL;
+        assert!(spool.append_sealed(record).is_err());
+        assert_eq!(START.get().0, preceding);
+        if matches!(fault, Fault::Flush) {
+            assert_eq!(COMMITS.get(), 2);
+            assert_eq!(spool.committed_frames(), 1);
+            assert_eq!(spool.committed_watermark(), preceding);
+        } else {
+            assert_eq!(COMMITS.get(), 3);
+            assert_eq!(spool.committed_frames(), 2);
+            assert_ne!(spool.committed_watermark(), preceding);
+        }
+        STORE.set(None);
+    }
+}
+
+#[test]
 fn pending_periodic_sync_allows_ordered_frames_but_detach_remains_forced() {
     let backend = MemoryBackend::default();
     let shared = backend.0.clone();
@@ -1757,4 +1830,34 @@ fn a_tail_of_a_segment_replaced_since_it_was_read_is_not_continued() {
     assert!(finish(same(), &bytes).is_some());
     assert!(finish(tail, &replaced).is_none());
     assert!(finish(same(), &bytes[..bytes.len() - 1]).is_none());
+}
+
+#[test]
+fn a_closed_context_only_failure_segment_keeps_explicit_gaps_without_a_fake_keyframe() {
+    let bytes = [
+        branch(),
+        Record::Gap(Gap {
+            branch: 7,
+            first_hour: 10,
+            last_hour: 12,
+            reason: "spool write failed".into(),
+        }),
+    ]
+    .iter()
+    .flat_map(|record| encode_record(record).unwrap())
+    .collect::<Vec<_>>();
+    let recovered = recover_prefix(&bytes);
+    assert!(recovered.damage.is_none());
+    assert_eq!(recovered.records.len(), 2);
+    assert!(
+        !recovered
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::Frame(_)))
+    );
+    assert!(
+        recover_prefix(&encode_record(&branch()).unwrap())
+            .damage
+            .is_some()
+    );
 }

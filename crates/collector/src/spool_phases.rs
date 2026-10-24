@@ -109,9 +109,9 @@ impl Phase {
                 "frame encoding against the campaign baselines; with the helpers, their share of the larger tables is in helper_phases"
             }
             Self::Write => {
-                "context, clock witness and frame records: framing, CRC, file writes and segment barriers"
+                "context, clock witness and frame records: framing, CRC, speculative baseline staging and owned writer-queue admission; waits only for byte backpressure or rare segment barriers"
             }
-            Self::Commit => "baseline commit, branch record and per-hour output statistics",
+            Self::Commit => "admitted per-hour state and completion-ledger handoff",
             Self::Observers => {
                 "between-tick observer and clock-capture storage preparation each pass"
             }
@@ -121,7 +121,9 @@ impl Phase {
             Self::Retire => {
                 "freeing the baselines, rows and inputs encoder commits handed back; on the sizing thread, or on the spool thread without one"
             }
-            Self::Flush => "periodic durability checks; the sync itself runs on its worker",
+            Self::Flush => {
+                "writer completions: recorded-hour evidence, publication receipts and deferred failures; file writes and sync run on the writer"
+            }
             Self::Status => "status snapshot construction, hand-over and refresh requests",
             Self::Wait => "idle wait for a ready buffer, a parked callback or the next deadline",
         }

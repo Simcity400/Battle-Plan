@@ -10,8 +10,7 @@
 //!
 //! The hourly cut ([`seal`]) reads two counters: when every sequence number
 //! taken has been published, the interval is exactly the events numbered up
-//! to the last one taken. The spool thread then copies them ([`assemble`])
-//! and frees their space once their frame is written ([`Assembled::commit`]).
+//! to the last one taken; admission skips copied events, but only writing frees their space.
 //! The sizing thread offers a larger generation ([`grow`]); callbacks move to
 //! it, the older one is drained until empty and kept until [`release`].
 use crate::shared_lane::SharedLane;
@@ -19,7 +18,7 @@ use std::{
     cell::{Cell, UnsafeCell},
     sync::{
         Mutex,
-        atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -46,6 +45,8 @@ struct Lane {
     write: UnsafeCell<u64>,
     published: AtomicU64,
     consumed: AtomicU64,
+    /// Spool-owned: where the next interval's copy starts, at least `consumed`.
+    assembled: AtomicU64,
     /// The largest pending byte count a refused frame needed.
     demand: AtomicUsize,
 }
@@ -69,6 +70,7 @@ impl Lane {
             write: UnsafeCell::new(0),
             published: AtomicU64::new(0),
             consumed: AtomicU64::new(0),
+            assembled: AtomicU64::new(0),
             demand: AtomicUsize::new(0),
         })
     }
@@ -107,6 +109,8 @@ struct Log {
     serial: u64,
     lanes: Box<[Lane]>,
     shared: SharedLane<SharedRecord>,
+    /// Per shared slot: its index + 1 while a queued interval holds it.
+    admitted: Box<[AtomicU64]>,
     registered: AtomicUsize,
     publishers: AtomicUsize,
     /// The generation this one replaced, while it still holds events.
@@ -121,11 +125,18 @@ impl Log {
         for _ in 0..lanes.max(1) {
             storage.push(Lane::new(lane_bytes)?);
         }
+        let shared = SharedLane::new(shared.0.max(1), shared.1.max(HEADER))
+            .map_err(|_| "map event lane allocation failed")?;
+        let mut admitted = Vec::new();
+        engine_allocation::reserve_exact(&mut admitted, shared.len())
+            .map_err(|_| "map event lane allocation failed")?;
+        admitted.resize_with(shared.len(), || AtomicU64::new(0));
         Ok(Self {
             serial: SERIAL.fetch_add(1, Ordering::Relaxed),
             lanes: engine_allocation::boxed_slice(storage)
                 .map_err(|_| "map event lane allocation failed")?,
-            shared: SharedLane::new(shared.0.max(1), shared.1.max(HEADER))
+            shared,
+            admitted: engine_allocation::boxed_slice(admitted)
                 .map_err(|_| "map event lane allocation failed")?,
             registered: AtomicUsize::new(0),
             publishers: AtomicUsize::new(0),
@@ -140,6 +151,10 @@ impl Log {
                 .map(|lane| size_of::<Lane>() + lane.capacity())
                 .sum::<usize>()
             + self.shared.allocated_bytes()
+            + self.admitted.len() * size_of::<AtomicU64>()
+    }
+    fn admission(&self, slot: u64) -> &AtomicU64 {
+        &self.admitted[slot as usize & (self.admitted.len() - 1)]
     }
 }
 
@@ -155,6 +170,8 @@ static PUBLISHED: AtomicU64 = AtomicU64::new(0);
 static SHARED_DEMAND: AtomicUsize = AtomicUsize::new(0);
 /// Threads that registered after a generation's lanes were all taken.
 static REQUIRED_LANES: AtomicUsize = AtomicUsize::new(0);
+/// Intervals admitted to the writer queue and not yet written.
+static ADMITTED: AtomicUsize = AtomicUsize::new(0);
 
 std::thread_local! {
     /// (generation address, its serial, this thread's lane index).
@@ -390,6 +407,7 @@ pub struct Assembled {
     lanes: Vec<(usize, usize, u64)>,
     shared: Vec<(usize, u64)>,
     rejected: Vec<(usize, u64)>,
+    admitted: AtomicBool,
 }
 
 fn generations() -> impl Iterator<Item = &'static Log> {
@@ -405,19 +423,20 @@ fn generations() -> impl Iterator<Item = &'static Log> {
 }
 
 /// Spool thread: copy every published event numbered up to `seal.last`
-/// that an earlier interval has not committed, in sequence order.
+/// that no earlier interval has committed or queued, in sequence order.
 pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> {
     output.frames.clear();
     output.bytes.clear();
     output.lanes.clear();
     output.shared.clear();
     output.rejected.clear();
+    output.admitted.store(false, Ordering::Relaxed);
     let mut header = [0_u8; HEADER];
     for log in generations() {
         let generation = log as *const Log as usize;
         for (index, lane) in log.lanes.iter().enumerate() {
             let published = lane.published.load(Ordering::Acquire);
-            let mut position = lane.consumed.load(Ordering::Acquire);
+            let mut position = lane.assembled.load(Ordering::Acquire);
             while position < published {
                 lane.copy_out(position, &mut header);
                 let len = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
@@ -452,7 +471,7 @@ pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> 
             .published(|record| record.sequence)
             .map_err(|_| "map event assembly allocation failed")?
         {
-            if sequence > seal.last {
+            if sequence > seal.last || log.admission(slot).load(Ordering::Acquire) == slot + 1 {
                 continue;
             }
             let (record, bytes) = log.shared.record(slot);
@@ -483,23 +502,57 @@ pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> 
     Ok(())
 }
 
+/// Generations stay allocated until `release`, including after replacement.
+fn generation(address: usize) -> &'static Log {
+    unsafe { &*(address as *const Log) }
+}
+
 impl Assembled {
-    /// After the interval's frame is written: free what it copied, and
-    /// unlink older generations that are empty and that no callback holds.
-    pub fn commit(&self) {
-        // Generations stay allocated until `release`, so an address from
-        // assembly still names its generation after a newer one installs.
-        let log = |generation: usize| unsafe { &*(generation as *const Log) };
-        for &(generation, index, position) in &self.lanes {
-            if let Some(lane) = log(generation).lanes.get(index) {
-                lane.consumed.fetch_max(position, Ordering::Release);
+    pub fn allocated_bytes(&self) -> usize {
+        self.frames.capacity() * size_of::<Frame>()
+            + self.bytes.capacity()
+            + self.lanes.capacity() * size_of::<(usize, usize, u64)>()
+            + (self.shared.capacity() + self.rejected.capacity()) * size_of::<(usize, u64)>()
+    }
+
+    /// Allocation-free admission skips these events without freeing their space.
+    pub fn admitted(&self) {
+        if self.admitted.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        ADMITTED.fetch_add(1, Ordering::AcqRel);
+        for &(address, index, position) in &self.lanes {
+            if let Some(lane) = generation(address).lanes.get(index) {
+                lane.assembled.fetch_max(position, Ordering::Release);
             }
         }
-        for &(generation, slot) in &self.shared {
-            log(generation).shared.release(slot);
+        for &(address, slot) in &self.shared {
+            generation(address)
+                .admission(slot)
+                .store(slot + 1, Ordering::Release);
         }
-        for &(generation, rejected) in &self.rejected {
-            log(generation).shared.advance(rejected);
+    }
+
+    /// After the interval's frame is written: free what it copied, and
+    /// unlink older generations that are empty and that no callback holds.
+    /// A frame written without admission counts as admitted too.
+    pub fn commit(&self) {
+        if self.admitted.swap(false, Ordering::AcqRel) {
+            let _ = ADMITTED.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_sub(1)
+            });
+        }
+        for &(address, index, position) in &self.lanes {
+            if let Some(lane) = generation(address).lanes.get(index) {
+                lane.consumed.fetch_max(position, Ordering::Release);
+                lane.assembled.fetch_max(position, Ordering::Release);
+            }
+        }
+        for &(address, slot) in &self.shared {
+            generation(address).shared.release(slot);
+        }
+        for &(address, rejected) in &self.rejected {
+            generation(address).shared.advance(rejected);
         }
         let mut newer: Option<&Log> = None;
         for log in generations() {
@@ -518,6 +571,23 @@ impl Assembled {
                 _ => newer = Some(log),
             }
         }
+    }
+}
+
+/// After draining lost frames, copy from the last write and report their lost output.
+pub fn reset_admitted() {
+    for log in generations() {
+        for lane in log.lanes.iter() {
+            lane.assembled
+                .store(lane.consumed.load(Ordering::Acquire), Ordering::Release);
+        }
+        for admission in log.admitted.iter() {
+            admission.store(0, Ordering::Release);
+        }
+    }
+    if ADMITTED.swap(0, Ordering::AcqRel) != 0 {
+        // The row and the faults its seal took were never written.
+        crate::interval::lost_output();
     }
 }
 
@@ -620,6 +690,7 @@ pub fn capacity() -> Capacity {
 /// one, and every reader of an assembled interval has finished.
 pub unsafe fn release() {
     CURRENT.store(std::ptr::null_mut(), Ordering::SeqCst);
+    ADMITTED.store(0, Ordering::SeqCst);
     LOGS.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();

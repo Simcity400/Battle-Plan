@@ -174,3 +174,149 @@ fn a_number_taken_but_not_published_at_the_cut_marks_the_seal_incomplete() {
     PUBLISHED.fetch_add(1, Ordering::SeqCst);
     assert!(super::seal().complete);
 }
+
+fn current() -> &'static Log {
+    unsafe { &*CURRENT.load(Ordering::SeqCst) }
+}
+
+fn sequences(assembled: &Assembled) -> Vec<u64> {
+    assembled
+        .frames
+        .iter()
+        .map(|frame| frame.sequence)
+        .collect()
+}
+
+fn shared_event(family: u8, hour: i32, payload: &[u8]) -> u64 {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| event(family, hour, payload).unwrap())
+            .join()
+            .unwrap()
+    })
+}
+
+#[test]
+fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
+    let _lock = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reset_for_tests();
+    grow(1, MINIMUM_LANE_BYTES).unwrap();
+    let quarter = vec![7_u8; MINIMUM_LANE_BYTES / 4];
+    assert_eq!(event(0, 1, &quarter), Ok(1));
+    // A thread past the only ring publishes through the shared lane.
+    assert_eq!(shared_event(1, 1, b"shared"), 2);
+    let mut first = Assembled::default();
+    assemble(seal(), &mut first).unwrap();
+    assert_eq!(sequences(&first), [1, 2]);
+    first.admitted();
+    assert_eq!(event(0, 2, &quarter), Ok(3));
+    assert_eq!(shared_event(1, 2, b"later"), 4);
+    // The first frame is still queued: the next interval starts after it.
+    let mut second = Assembled::default();
+    assemble(seal(), &mut second).unwrap();
+    assert_eq!(sequences(&second), [3, 4]);
+    assert_eq!(&second.bytes[second.frames[1].start..], b"later");
+    second.admitted();
+    let mut quiet = Assembled::default();
+    assemble(seal(), &mut quiet).unwrap();
+    assert!(quiet.frames.is_empty());
+    quiet.admitted();
+    // Nothing queued is written yet, so nothing is freed.
+    let log = current();
+    assert_eq!(log.lanes[0].consumed.load(Ordering::Acquire), 0);
+    assert_eq!(
+        log.shared
+            .published(|record| record.sequence)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(event(0, 3, &quarter), Ok(5));
+    assert_eq!(event(0, 3, &quarter), Err(Refusal::Capacity));
+    first.commit();
+    assert_eq!(
+        log.lanes[0].consumed.load(Ordering::Acquire),
+        (HEADER + quarter.len()) as u64
+    );
+    assert_eq!(
+        log.shared
+            .published(|record| record.sequence)
+            .unwrap()
+            .iter()
+            .map(|entry| entry.0)
+            .collect::<Vec<_>>(),
+        [4]
+    );
+    // Only the written interval's space came back.
+    assert_eq!(event(0, 3, &quarter), Ok(6));
+    assert_eq!(event(0, 3, &quarter), Err(Refusal::Capacity));
+    second.commit();
+    quiet.commit();
+    assert_eq!(ADMITTED.load(Ordering::Acquire), 0);
+    let rows = drained(seal());
+    assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), [5, 6]);
+    assert!(
+        log.shared
+            .published(|record| record.sequence)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        log.lanes[0].consumed.load(Ordering::Acquire),
+        log.lanes[0].published.load(Ordering::Acquire)
+    );
+}
+
+#[test]
+fn a_lost_queue_copies_its_intervals_again_and_reports_the_lost_output() {
+    use replay_data::rows::MapEventFault as Fault;
+    let _lock = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reset_for_tests();
+    crate::interval::reset_for_tests();
+    grow(1, MINIMUM_LANE_BYTES).unwrap();
+    assert_eq!(event(0, 1, b"ring"), Ok(1));
+    assert_eq!(shared_event(1, 1, b"shared"), 2);
+    let mut first = Assembled::default();
+    assemble(seal(), &mut first).unwrap();
+    first.admitted();
+    // Admitting twice is admitting once.
+    first.admitted();
+    assert_eq!(event(0, 2, b"next"), Ok(3));
+    let mut second = Assembled::default();
+    assemble(seal(), &mut second).unwrap();
+    assert_eq!(sequences(&second), [3]);
+    second.admitted();
+    assert_eq!(ADMITTED.load(Ordering::Acquire), 2);
+    // The writer lost both queued frames.
+    drop((first, second));
+    reset_admitted();
+    assert_eq!(ADMITTED.load(Ordering::Acquire), 0);
+    let lost = crate::interval::seal(3, Some(1));
+    assert!(
+        lost.health
+            .iter()
+            .all(|health| health.faults.contains(Fault::OutputLost))
+    );
+    // Their events are still held, and the next interval lists them again.
+    assert_eq!(
+        drained(seal()),
+        vec![
+            (1, 1, 0, b"ring".to_vec()),
+            (2, 1, 1, b"shared".to_vec()),
+            (3, 2, 0, b"next".to_vec()),
+        ]
+    );
+    // With nothing queued, a reset loses nothing.
+    reset_admitted();
+    assert!(
+        crate::interval::seal(4, Some(1))
+            .health
+            .iter()
+            .all(|health| !health.faults.contains(Fault::OutputLost))
+    );
+    assert!(drained(seal()).is_empty());
+}

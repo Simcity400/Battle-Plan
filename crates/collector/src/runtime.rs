@@ -6,7 +6,7 @@ use crate::{
     hook::{Hook, Threads},
     sampling::{self, ACTIVE, SHARED, Shared},
     spool_phases::Phase,
-    spooling::{Distribution, Processor, WallTotals},
+    spooling::{Distribution, HistoryReply, Processor, WallTotals},
 };
 use collector_primitives::capacity::CapacityMax;
 use engine_executable::build::PINNED_BUILD;
@@ -1268,6 +1268,7 @@ fn run(
         .prepare_clock_capture(&memory)
         .map_err(|_| "clock preparation allocation failed")?;
     let shared = Arc::new(shared);
+    processor.account_writer(Arc::clone(&shared.pool_bytes));
     let accounting = Arc::downgrade(&shared);
     crate::design_changes::account_scratch(accounting);
     progress.step("shared_started", None);
@@ -3089,7 +3090,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "join_costs": join_costs_status(shared, phase_calls),
                 "join_costs_scope": "per pool role, over its collected published jobs (published): those already published when their join began (ready_at_join); per acquired hour, the collector's first queue-lock wait only when its initial lock-free collection CAS failed (finish_lock_ns_per_hour; zero on the fast path), the stall from the later of join begin and atomic publication to collection (collect_stall_ns_per_hour: atomic handoff, address wake and rescheduling; optional helped bodies can also defer collection) and completion bookkeeping from body end to atomic publication (publish_wait_ns_per_hour; failures also stop/cancel under the queue mutex); and joins whose stall reached 0.25 and 1 ms (stalls_over_250us, stalls_over_1ms). With join help disabled, a role's join wait less its collect stall is time waiting on its unfinished body",
                 "table_costs_overlap": true,
-                "pool_bytes_scope": "reserved collector storage; shared CountryIntel growth is charged once by its atomic capacity high-water mark; executor bytes count its actual Arc shared allocation, payload cells, atomic words, metadata and ready-queue capacities, thread-id and join-handle capacities, boxed runner and enabled help history arrays",
+                "pool_bytes_scope": "reserved collector and writer storage, including queued/in-flight sealed records, deferred receipts and retained ledger capacities; shared CountryIntel growth is charged once by its atomic capacity high-water mark; executor bytes count its actual Arc shared allocation, payload cells, atomic words, metadata and ready-queue capacities, thread-id and join-handle capacities, boxed runner and enabled help history arrays",
                 "country_snapshot_scope": "one immutable country authentication snapshot shared with acquisition workers; production-rest acquires fresh country inputs for its discovery builder and validates its current read plan; payload counted once in pool_bytes; preparation charged once to Countries; worker calibration reports the borrowed snapshot status",
                 "world_country_cache": world.country_cache,
                 "world_acquisition_ns": shared.ns(i64::try_from(world.acquisition_ticks).unwrap_or(i64::MAX)),
@@ -4287,6 +4288,22 @@ pub(crate) fn wait_completed_callback(
     }
 }
 
+struct StopRecordingOnSpoolExit<'a> {
+    recording: &'a AtomicBool,
+    cancel_buffer_wait: &'a AtomicBool,
+}
+impl StopRecordingOnSpoolExit<'_> {
+    fn stop(&self) {
+        self.recording.store(false, Ordering::Release);
+        self.cancel_buffer_wait.store(true, Ordering::Release);
+    }
+}
+impl Drop for StopRecordingOnSpoolExit<'_> {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spool_loop(
     shared: &Shared,
@@ -4305,6 +4322,10 @@ fn spool_loop(
     // early return or unwind joins the sampler before either owner joins helpers.
     #[cfg(feature = "worker_sampler")]
     let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
+    let stop_recording = StopRecordingOnSpoolExit {
+        recording: &shared.recording,
+        cancel_buffer_wait: &shared.cancel_buffer_wait,
+    };
     let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
     let live = unsafe { LiveMemory::new() };
     let mut last_warning = None;
@@ -4411,6 +4432,7 @@ fn spool_loop(
                     // retaining this buffer. Ending the worker requests restore
                     // through the loader's JoinHandle check and preserves the
                     // precise error in its terminal status.
+                    stop_recording.stop();
                     let _ = processor.detach();
                     return Err("campaign recording refused; observations remain unwritten");
                 }
@@ -4429,6 +4451,7 @@ fn spool_loop(
                     // A persistent open failure cannot release a frame. Once
                     // all frames are occupied, end the worker so the loader
                     // cancels the callback wait and restores the hook.
+                    stop_recording.stop();
                     let _ = processor.detach();
                     return Err("cannot open campaign spool; observations remain unwritten");
                 }
@@ -5627,10 +5650,7 @@ fn sizing_pass(
     Ok(())
 }
 
-/// The spool loop's longest idle wait. Ready buffers, parked clock
-/// preparations and the stop request end it at once; the bound keeps the
-/// pass that checks durability within this latency while no hour arrives;
-/// the sizing thread waits as long between its passes.
+// Ready buffers, clock preparation and stop requests interrupt this idle wait.
 const SPOOL_IDLE_WAIT: Duration = Duration::from_millis(10);
 
 /// `recorder refresh` asks for one full-refresh hour: every scheduled table,
@@ -5680,6 +5700,7 @@ static REFRESH_ACCEPTED: AtomicU64 = AtomicU64::new(0);
 #[derive(Default)]
 struct HistoryRequests {
     last: Option<String>,
+    pending: Option<HistoryReply>,
 }
 
 pub(crate) const HISTORY_REQUEST: &str = "history.request";
@@ -5699,17 +5720,43 @@ fn take_history_request(session: &Path) -> io::Result<Option<String>> {
 
 impl HistoryRequests {
     fn poll(&mut self, session: &Path, processor: &mut Processor) -> io::Result<()> {
-        let Some(text) = take_history_request(session)? else {
-            return Ok(());
-        };
-        let token = text.split_whitespace().next().unwrap_or_default();
-        if token.is_empty() || self.last.as_deref() == Some(token) {
-            return Ok(());
+        let text = take_history_request(session)?;
+        self.poll_reply(
+            text.as_deref(),
+            |request| processor.begin_history_request(request),
+            |ack| fs::write(session.join(HISTORY_ACK), ack),
+        )
+    }
+
+    fn poll_reply(
+        &mut self,
+        text: Option<&str>,
+        begin: impl FnOnce(&str) -> HistoryReply,
+        acknowledge: impl FnOnce(&str) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if let Some(text) = text {
+            let token = text.split_whitespace().next().unwrap_or_default();
+            if !token.is_empty() && self.last.as_deref() != Some(token) {
+                // A newer request supersedes even a completed close awaiting acknowledgement.
+                self.pending = Some(begin(text));
+                self.last = Some(token.to_owned());
+                if matches!(self.pending.as_ref(), Some(HistoryReply::Closing { .. })) {
+                    return Ok(());
+                }
+            }
         }
-        let ack = processor.history_request(&text);
-        self.last = Some(token.to_owned());
-        // A late lend must never remove the recorder's newer retake request.
-        fs::write(session.join(HISTORY_ACK), ack)
+        let ack = match self.pending.as_ref() {
+            Some(HistoryReply::Ready(ack)) => ack.clone(),
+            Some(HistoryReply::Closing { token, receipt }) => match receipt.result() {
+                None => return Ok(()),
+                Some(Ok(())) => format!("{token} ok"),
+                Some(Err(_)) => format!("{token} refused its segment could not be closed"),
+            },
+            None => return Ok(()),
+        };
+        acknowledge(&ack)?;
+        self.pending = None;
+        Ok(())
     }
 }
 
@@ -6121,6 +6168,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn spool_error_stops_capture_before_synchronous_writer_cleanup() {
+        let recording = AtomicBool::new(true);
+        let cancelled = AtomicBool::new(false);
+        {
+            let stop = StopRecordingOnSpoolExit {
+                recording: &recording,
+                cancel_buffer_wait: &cancelled,
+            };
+            stop.stop();
+            assert!(!recording.load(Ordering::Acquire));
+            assert!(cancelled.load(Ordering::Acquire));
+            recording.store(true, Ordering::Release);
+            cancelled.store(false, Ordering::Release);
+        }
+        assert!(!recording.load(Ordering::Acquire));
+        assert!(cancelled.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn a_late_lend_cannot_consume_the_retake_sent_after_its_deadline() {
         let root = std::env::temp_dir().join(format!(
             "hoi4-history-request-{}-{}",
@@ -6144,6 +6210,241 @@ mod tests {
         assert!(take_history_request(&root).unwrap().is_none());
         fs::remove_file(root.join(HISTORY_ACK)).unwrap();
         fs::remove_dir(root).unwrap();
+    }
+
+    fn poll_history_reply(
+        requests: &mut HistoryRequests,
+        text: Option<&str>,
+        reply: Option<HistoryReply>,
+        acks: &mut Vec<String>,
+    ) {
+        requests
+            .poll_reply(
+                text,
+                |_| reply.expect("only a new request begins processing"),
+                |ack| {
+                    acks.push(ack.to_owned());
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn history_close_acknowledgement_waits_for_its_receipt() {
+        let mut requests = HistoryRequests::default();
+        let receipt = crate::spool_writer::CloseReceipt::pending();
+        let mut acks = Vec::new();
+        poll_history_reply(
+            &mut requests,
+            Some("original close campaign 42"),
+            Some(HistoryReply::Closing {
+                token: "original".to_owned(),
+                receipt: receipt.clone(),
+            }),
+            &mut acks,
+        );
+        for _ in 0..3 {
+            poll_history_reply(&mut requests, None, None, &mut acks);
+            assert!(acks.is_empty());
+            assert!(requests.pending.is_some());
+        }
+        receipt.complete(Ok(()));
+        poll_history_reply(&mut requests, None, None, &mut acks);
+        assert_eq!(acks, ["original ok"]);
+        assert!(requests.pending.is_none());
+        poll_history_reply(&mut requests, None, None, &mut acks);
+        assert_eq!(acks, ["original ok"]);
+    }
+
+    #[test]
+    fn history_close_failure_acknowledges_refusal_not_success() {
+        let mut requests = HistoryRequests::default();
+        let receipt = crate::spool_writer::CloseReceipt::pending();
+        let mut acks = Vec::new();
+        poll_history_reply(
+            &mut requests,
+            Some("failed close campaign 42"),
+            Some(HistoryReply::Closing {
+                token: "failed".to_owned(),
+                receipt: receipt.clone(),
+            }),
+            &mut acks,
+        );
+        receipt.complete(Err(io::ErrorKind::WriteZero));
+        poll_history_reply(&mut requests, None, None, &mut acks);
+        assert_eq!(acks, ["failed refused its segment could not be closed"]);
+        assert!(requests.pending.is_none());
+    }
+
+    #[test]
+    fn duplicate_history_tokens_do_not_restart_or_discard_a_pending_close() {
+        let mut requests = HistoryRequests::default();
+        let receipt = crate::spool_writer::CloseReceipt::pending();
+        let mut acks = Vec::new();
+        poll_history_reply(
+            &mut requests,
+            Some("same close campaign 42"),
+            Some(HistoryReply::Closing {
+                token: "same".to_owned(),
+                receipt: receipt.clone(),
+            }),
+            &mut acks,
+        );
+        poll_history_reply(
+            &mut requests,
+            Some("same close campaign 42"),
+            None,
+            &mut acks,
+        );
+        assert!(acks.is_empty());
+        receipt.complete(Ok(()));
+        poll_history_reply(
+            &mut requests,
+            Some("same close campaign 42"),
+            None,
+            &mut acks,
+        );
+        assert_eq!(acks, ["same ok"]);
+        poll_history_reply(
+            &mut requests,
+            Some("same close campaign 42"),
+            None,
+            &mut acks,
+        );
+        assert_eq!(acks, ["same ok"]);
+    }
+
+    #[test]
+    fn a_newer_retake_supersedes_pending_and_completed_history_closes() {
+        for result in [Ok(()), Err(io::ErrorKind::WriteZero)] {
+            for complete_before_retake in [false, true] {
+                let mut requests = HistoryRequests::default();
+                let receipt = crate::spool_writer::CloseReceipt::pending();
+                let mut acks = Vec::new();
+                poll_history_reply(
+                    &mut requests,
+                    Some("old close campaign 42"),
+                    Some(HistoryReply::Closing {
+                        token: "old".to_owned(),
+                        receipt: receipt.clone(),
+                    }),
+                    &mut acks,
+                );
+                if complete_before_retake {
+                    receipt.complete(result);
+                }
+                poll_history_reply(
+                    &mut requests,
+                    Some("new retake campaign"),
+                    Some(HistoryReply::Ready("new ok".to_owned())),
+                    &mut acks,
+                );
+                assert_eq!(acks, ["new ok"]);
+                if !complete_before_retake {
+                    receipt.complete(result);
+                }
+                poll_history_reply(&mut requests, None, None, &mut acks);
+                assert_eq!(acks, ["new ok"]);
+                assert_eq!(requests.last.as_deref(), Some("new"));
+                assert!(requests.pending.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn a_newer_history_close_keeps_its_own_receipt() {
+        let mut requests = HistoryRequests::default();
+        let old = crate::spool_writer::CloseReceipt::pending();
+        let new = crate::spool_writer::CloseReceipt::pending();
+        let mut acks = Vec::new();
+        for (token, receipt) in [("old", &old), ("new", &new)] {
+            poll_history_reply(
+                &mut requests,
+                Some(&format!("{token} close campaign 42")),
+                Some(HistoryReply::Closing {
+                    token: token.to_owned(),
+                    receipt: receipt.clone(),
+                }),
+                &mut acks,
+            );
+        }
+        old.complete(Ok(()));
+        poll_history_reply(&mut requests, None, None, &mut acks);
+        assert!(acks.is_empty());
+        new.complete(Ok(()));
+        poll_history_reply(&mut requests, None, None, &mut acks);
+        assert_eq!(acks, ["new ok"]);
+    }
+
+    #[test]
+    fn failed_history_acknowledgement_writes_retry_without_repeating_the_request() {
+        for result in [Ok(()), Err(io::ErrorKind::WriteZero)] {
+            let mut requests = HistoryRequests::default();
+            let receipt = crate::spool_writer::CloseReceipt::pending();
+            let mut acks = Vec::new();
+            poll_history_reply(
+                &mut requests,
+                Some("old close campaign 42"),
+                Some(HistoryReply::Closing {
+                    token: "old".to_owned(),
+                    receipt: receipt.clone(),
+                }),
+                &mut acks,
+            );
+            receipt.complete(result);
+            let expected = if result.is_ok() {
+                "old ok"
+            } else {
+                "old refused its segment could not be closed"
+            };
+            let error = requests
+                .poll_reply(
+                    None,
+                    |_| panic!("a pending reply must not repeat the request"),
+                    |ack| {
+                        assert_eq!(ack, expected);
+                        Err(io::ErrorKind::PermissionDenied.into())
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(requests.pending.is_some());
+            poll_history_reply(&mut requests, None, None, &mut acks);
+            assert_eq!(acks, [expected]);
+            assert!(requests.pending.is_none());
+        }
+    }
+
+    #[test]
+    fn newer_ready_history_reply_retries_instead_of_an_older_close() {
+        let mut requests = HistoryRequests::default();
+        let receipt = crate::spool_writer::CloseReceipt::pending();
+        let mut acks = Vec::new();
+        poll_history_reply(
+            &mut requests,
+            Some("old close campaign 42"),
+            Some(HistoryReply::Closing {
+                token: "old".to_owned(),
+                receipt: receipt.clone(),
+            }),
+            &mut acks,
+        );
+        let error = requests
+            .poll_reply(
+                Some("new retake campaign"),
+                |_| HistoryReply::Ready("new ok".to_owned()),
+                |ack| {
+                    assert_eq!(ack, "new ok");
+                    Err(io::ErrorKind::PermissionDenied.into())
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        receipt.complete(Ok(()));
+        poll_history_reply(&mut requests, Some("new retake campaign"), None, &mut acks);
+        assert_eq!(acks, ["new ok"]);
+        assert!(requests.pending.is_none());
     }
 
     /// Two logical processors per `(group, scheduling class, efficiency class,
@@ -7037,7 +7338,12 @@ mod tests {
         assert_eq!(wait, 0);
         assert_eq!(shared.buffer_wait_calls.load(Ordering::Relaxed), waits);
         sizing.recycle_frame(&shared, idle, before, &mut WorkerWork::new());
-        assert!(unsafe { &*shared.frames[idle].load(Ordering::Acquire) }.wars.len() >= wars);
+        assert!(
+            unsafe { &*shared.frames[idle].load(Ordering::Acquire) }
+                .wars
+                .len()
+                >= wars
+        );
         for index in held {
             shared.recycle_frame_prepared(index);
         }
@@ -7665,12 +7971,16 @@ mod tests {
             }),
             failures: [None; 2],
         };
-        let before =
-            unsafe { &*shared.frames[idle].load(Ordering::Acquire) }.allocated_bytes();
+        let before = unsafe { &*shared.frames[idle].load(Ordering::Acquire) }.allocated_bytes();
         let pool_before = shared.pool_bytes.load(Ordering::Relaxed);
         let waits = shared.buffer_wait_calls.load(Ordering::Relaxed);
         assert_eq!(shared.free.len(), 1);
-        assert!(!grow_combat_hints(&shared, &capacities, &hints, &mut applied));
+        assert!(!grow_combat_hints(
+            &shared,
+            &capacities,
+            &hints,
+            &mut applied
+        ));
         assert_eq!(shared.free.len(), 1);
         assert!(applied == [CombatHintState::default(); sampling::BUFFERS]);
         assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), pool_before);
@@ -7684,7 +7994,12 @@ mod tests {
         assert_eq!(shared.buffer_wait_calls.load(Ordering::Relaxed), waits);
         shared.recycle_frame_prepared(idle);
         shared.recycle_frame_prepared(held[0]);
-        assert!(!grow_combat_hints(&shared, &capacities, &hints, &mut applied));
+        assert!(!grow_combat_hints(
+            &shared,
+            &capacities,
+            &hints,
+            &mut applied
+        ));
         assert!(applied[idle].land.is_some() && applied[idle].naval.is_some());
         for index in held.into_iter().skip(1) {
             shared.recycle_frame_prepared(index);

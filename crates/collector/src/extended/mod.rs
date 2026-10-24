@@ -3926,8 +3926,10 @@ pub(crate) fn output_allocation_failure_exercise(arm: impl FnOnce(), disarm: imp
         if crate::allocation::failed() {
             break;
         }
-        construction_totals.written(true);
-        production_totals.written(true);
+        construction_totals
+            .written(construction_totals.receipt(&tables[TableId::ConstructionLineOutput.index()]));
+        production_totals
+            .written(production_totals.receipt(&tables[TableId::ProductionLineOutput.index()]));
     }
     drop(scope);
     disarm();

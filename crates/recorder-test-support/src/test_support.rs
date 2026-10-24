@@ -369,9 +369,25 @@ pub fn allocation_witness(committed_bytes: u64) -> replay_data::witness::Termina
         pending_campaign_id: None,
         pending_segment: None,
         pending_bytes: 0,
+        uncommitted: None,
         phase: 2,
         code: 1,
         drain_complete: false,
+    }
+}
+
+/// Hours of the synthetic campaign's `branch` an ordered writer admitted but did not commit.
+pub fn allocation_range(
+    branch: u64,
+    load_signal: Option<i64>,
+    hours: std::ops::RangeInclusive<i32>,
+) -> replay_data::witness::UncommittedRange {
+    replay_data::witness::UncommittedRange {
+        campaign_id: *ALLOCATION_CAMPAIGN,
+        branch,
+        load_signal,
+        first_hour: *hours.start(),
+        last_hour: *hours.end(),
     }
 }
 

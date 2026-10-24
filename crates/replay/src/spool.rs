@@ -351,6 +351,55 @@ fn encode_frame_record(frame: EncodedFrame) -> io::Result<Vec<u8>> {
     frame.into_spool_record()
 }
 
+/// An immutable envelope and the small context needed to validate its placement.
+pub struct SealedRecord {
+    bytes: Vec<u8>,
+    frame: Option<(BranchId, Hour, bool)>,
+    gap: Option<(BranchId, Hour, Hour)>,
+}
+
+impl SealedRecord {
+    pub fn context(record: Record) -> io::Result<Self> {
+        if matches!(record, Record::Frame(_)) {
+            return Err(invalid_static("seal frames through the encoded-frame API"));
+        }
+        Ok(Self {
+            bytes: encode_record(&record)?,
+            frame: None,
+            gap: match record {
+                Record::Gap(gap) => Some((gap.branch, gap.first_hour, gap.last_hour)),
+                _ => None,
+            },
+        })
+    }
+
+    pub fn frame(frame: EncodedFrame) -> io::Result<Self> {
+        let identity = (frame.branch(), frame.hour(), frame.keyframe());
+        Ok(Self {
+            bytes: frame.into_spool_record()?,
+            frame: Some(identity),
+            gap: None,
+        })
+    }
+
+    pub fn gap_range(&self) -> Option<(BranchId, Hour, Hour)> {
+        self.gap
+    }
+
+    pub fn storage_bytes(&self) -> usize {
+        self.bytes.capacity()
+    }
+
+    fn accept(&self, state: &mut SegmentState) -> io::Result<()> {
+        if let Some((branch, hour, keyframe)) = self.frame {
+            state.accept_frame(branch, hour, keyframe)
+        } else {
+            let mut input = Decoder::new(&self.bytes[RECORD_HEADER_BYTES..]);
+            state.accept(&Record::decode(&mut input)?)
+        }
+    }
+}
+
 /// This checks segment context, not table baselines, which belong to FrameDecoder.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SegmentState {
@@ -1059,7 +1108,8 @@ impl Accepted {
     }
 
     fn finished(&self) -> io::Result<()> {
-        if self.state.needs_keyframe && !self.state.partial {
+        // A failure-only segment closes with explicit loss, never a fabricated keyframe.
+        if self.state.needs_keyframe && !self.state.partial && !self.state.gap_before_keyframe {
             return Err(invalid("segment ended before initial keyframe"));
         }
         Ok(())
@@ -1145,6 +1195,7 @@ pub struct FileSink {
     worker: Option<DurabilityWorker>,
     pending: bool,
     work: BackgroundSyncWork,
+    ordered_sync: bool,
 }
 
 /// The segment's persistent durability thread. It starts at the first
@@ -1323,6 +1374,16 @@ impl SegmentSink for FileSink {
     }
 
     fn start_sync(&mut self) -> io::Result<()> {
+        if self.ordered_sync {
+            let started = Instant::now();
+            self.work.requested += 1;
+            let result = self.file.sync_all().map_err(allocation_error);
+            let elapsed = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            self.work.completed += 1;
+            self.work.total_ns = self.work.total_ns.saturating_add(elapsed);
+            self.work.max_ns = self.work.max_ns.max(elapsed);
+            return result;
+        }
         if !self.poll_sync()? {
             return Ok(());
         }
@@ -1370,17 +1431,31 @@ impl Drop for FileSink {
 pub trait SegmentBackend {
     type Sink: SegmentSink;
     fn create(&mut self, index: u32) -> io::Result<Self::Sink>;
+    fn allocated_bytes(&self) -> usize {
+        0
+    }
 }
 
 pub struct FileBackend {
     directory: PathBuf,
+    ordered_sync: bool,
 }
 
 impl FileBackend {
     pub fn new(directory: impl Into<PathBuf>) -> io::Result<Self> {
         let directory = directory.into();
         fs::create_dir_all(&directory).map_err(allocation_error)?;
-        Ok(Self { directory })
+        Ok(Self {
+            directory,
+            ordered_sync: false,
+        })
+    }
+
+    /// Write-behind owns durability too, so it never overlaps its own writes with sync.
+    pub fn ordered(directory: impl Into<PathBuf>) -> io::Result<Self> {
+        let mut backend = Self::new(directory)?;
+        backend.ordered_sync = true;
+        Ok(backend)
     }
 
     pub fn directory(&self) -> &Path {
@@ -1390,6 +1465,9 @@ impl FileBackend {
 
 impl SegmentBackend for FileBackend {
     type Sink = FileSink;
+    fn allocated_bytes(&self) -> usize {
+        self.directory.capacity()
+    }
 
     fn create(&mut self, index: u32) -> io::Result<FileSink> {
         let file = OpenOptions::new()
@@ -1404,6 +1482,7 @@ impl SegmentBackend for FileBackend {
             worker: None,
             pending: false,
             work: BackgroundSyncWork::default(),
+            ordered_sync: self.ordered_sync,
         })
     }
 }
@@ -1423,9 +1502,15 @@ pub struct SegmentedSpool<B: SegmentBackend = FileBackend> {
     current_bytes: u64,
     write_start_hook: Option<SpoolWriteStartHook>,
     commit_hook: Option<fn(u32, u64, bool)>,
+    committed_frames: u64,
+    closed_sync: BackgroundSyncWork,
 }
 
 impl<B: SegmentBackend> SegmentedSpool<B> {
+    pub fn allocated_bytes(&self) -> usize {
+        self.backend.allocated_bytes() + self.state.branches.capacity() * size_of::<u64>()
+    }
+
     pub fn new(backend: B) -> Self {
         Self::with_next_segment_index(backend, 0)
     }
@@ -1444,6 +1529,8 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
             current_bytes: 0,
             write_start_hook: None,
             commit_hook: None,
+            committed_frames: 0,
+            closed_sync: BackgroundSyncWork::default(),
         }
     }
 
@@ -1463,6 +1550,78 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
             .map(|segment| (segment, self.committed_bytes))
     }
 
+    pub fn committed_frames(&self) -> u64 {
+        self.committed_frames
+    }
+
+    pub fn start_sealed_segment(&mut self, records: Vec<SealedRecord>) -> io::Result<()> {
+        self.start_sealed(records, true)
+    }
+
+    pub fn start_sealed_context(&mut self, records: Vec<SealedRecord>) -> io::Result<()> {
+        self.start_sealed(records, false)
+    }
+
+    fn start_sealed(&mut self, records: Vec<SealedRecord>, frame: bool) -> io::Result<()> {
+        if self.is_open()
+            || records.is_empty()
+            || frame
+                && (records.len() < 2
+                    || !records.last().is_some_and(|record| {
+                        record.frame.is_some_and(|(_, _, keyframe)| keyframe)
+                    }))
+        {
+            return Err(invalid_static(
+                "segment start needs closed output and valid context",
+            ));
+        }
+        let mut state = SegmentState::default();
+        let context = records.len() - usize::from(frame);
+        for record in &records[..context] {
+            if record.frame.is_some() || matches!(record.bytes[RECORD_HEADER_BYTES], 4 | 7) {
+                return Err(invalid_static("segment context contains frame or detach"));
+            }
+            record.accept(&mut state)?;
+        }
+        if frame {
+            records.last().unwrap().accept(&mut state)?;
+        }
+        let index = self.next_segment;
+        self.next_segment = index
+            .checked_add(1)
+            .ok_or_else(|| invalid_static("segment index exhausted"))?;
+        let sink = match self.backend.create(index) {
+            Ok(sink) => sink,
+            Err(error) => return self.failed(error),
+        };
+        self.sink = Some(sink);
+        self.current_segment = Some(index);
+        self.current_bytes = 0;
+        for record in records {
+            if let Err(error) = self.write_flushed(&record.bytes) {
+                return self.failed(error);
+            }
+        }
+        if frame && let Err(error) = self.sync_current() {
+            return self.failed(error);
+        }
+        self.state = state;
+        self.last_error = None;
+        Ok(())
+    }
+
+    pub fn append_sealed(&mut self, record: SealedRecord) -> io::Result<()> {
+        if !self.is_open() {
+            return Err(invalid_static(
+                "no writable segment; restart with context and a keyframe",
+            ));
+        }
+        let force_sync = record.bytes[RECORD_HEADER_BYTES] == 4
+            || self.state.needs_keyframe && record.frame.is_some();
+        record.accept(&mut self.state)?;
+        self.append_bytes(record.bytes, force_sync)
+    }
+
     /// Publish before periodic sync can allocate; true identifies a complete frame.
     /// The callback must not allocate.
     pub fn set_commit_hook(&mut self, hook: fn(u32, u64, bool)) {
@@ -1478,6 +1637,29 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
     /// Current open segment only; completed durations exclude forced barriers.
     pub fn background_sync_work(&self) -> Option<BackgroundSyncWork> {
         self.sink.as_ref()?.background_sync_work()
+    }
+
+    pub fn background_sync_totals(&self) -> BackgroundSyncWork {
+        let current = self.background_sync_work().unwrap_or_default();
+        BackgroundSyncWork {
+            requested: self.closed_sync.requested.saturating_add(current.requested),
+            completed: self.closed_sync.completed.saturating_add(current.completed),
+            total_ns: self.closed_sync.total_ns.saturating_add(current.total_ns),
+            max_ns: self.closed_sync.max_ns.max(current.max_ns),
+            threads: self.closed_sync.threads.saturating_add(current.threads),
+            pending: current.pending,
+        }
+    }
+
+    fn retire_sink(&mut self) {
+        if let Some(sink) = self.sink.take() {
+            let work = sink.background_sync_work().unwrap_or_default();
+            self.closed_sync.requested = self.closed_sync.requested.saturating_add(work.requested);
+            self.closed_sync.completed = self.closed_sync.completed.saturating_add(work.completed);
+            self.closed_sync.total_ns = self.closed_sync.total_ns.saturating_add(work.total_ns);
+            self.closed_sync.max_ns = self.closed_sync.max_ns.max(work.max_ns);
+            self.closed_sync.threads = self.closed_sync.threads.saturating_add(work.threads);
+        }
     }
 
     /// The caller resets its table encoder and supplies a new keyframe on every restart.
@@ -1639,7 +1821,7 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         {
             return self.failed(error);
         }
-        self.sink = None;
+        self.retire_sink();
         self.state = SegmentState::default();
         Ok(())
     }
@@ -1664,6 +1846,9 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         self.current_bytes = self.current_bytes.saturating_add(bytes.len() as u64);
         self.committed_segment = self.current_segment;
         self.committed_bytes = self.current_bytes;
+        if bytes[RECORD_HEADER_BYTES] == 2 {
+            self.committed_frames = self.committed_frames.saturating_add(1);
+        }
         if let Some(hook) = self.commit_hook {
             hook(
                 self.committed_segment.unwrap(),
@@ -1687,7 +1872,7 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
 
     fn failed<T>(&mut self, error: io::Error) -> io::Result<T> {
         // Dropping this handle is final: even a partial record is never appended to again.
-        self.sink = None;
+        self.retire_sink();
         self.state = SegmentState::default();
         self.last_error = Some(error.kind());
         Err(error)

@@ -9,17 +9,14 @@ use crate::extended::lexical::{LexicalConversion, LexicalConversionStats};
 use crate::history::PreparedCampaigns;
 use crate::projection::{Projection, ProjectionScratch, project_table, scalar_table};
 use crate::sampling::{Captured, LossBatch, LostObservation, qpc as current_qpc};
-use crate::status::{
-    Choice, DebugValue, LossyBytes, map as status_map, owned_sequence, sequence, status,
-};
+use crate::status::{Choice, DebugValue, LossyBytes, map as status_map, sequence, status};
 use engine_native::{
     cgame_state::Clock, memory::ReadCounts, save_allocation_counters::AllocationCounters,
     walk::Outcome,
 };
-use replay::{
-    spool::ControlRecord, spool::FileBackend, spool::Record, spool::SegmentBackend,
-    spool::SegmentedSpool,
-};
+#[cfg(test)]
+use replay::spool::SegmentedSpool;
+use replay::{spool::ControlRecord, spool::FileBackend, spool::Record, spool::SegmentBackend};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{
     BranchId, codec::invalid_static as invalid, identity::SessionStart, identity::is_campaign_uuid,
@@ -179,17 +176,22 @@ impl ReadHours {
             })
             .ok_or_else(engine_allocation::oom)?;
         let rows = || {
-            frame_reads.iter().zip(&self.0).enumerate().flat_map(
-                |(table, (view, base))| {
-                    view.as_ref().unwrap_or(base).iter().map(
-                        move |&(owner, sample_hour)| replay_data::rows::SliceReadRow {
-                            table: table as u32,
-                            owner,
-                            sample_hour,
-                        },
-                    )
-                },
-            )
+            frame_reads
+                .iter()
+                .zip(&self.0)
+                .enumerate()
+                .flat_map(|(table, (view, base))| {
+                    view.as_ref()
+                        .unwrap_or(base)
+                        .iter()
+                        .map(
+                            move |&(owner, sample_hour)| replay_data::rows::SliceReadRow {
+                                table: table as u32,
+                                owner,
+                                sample_hour,
+                            },
+                        )
+                })
         };
         if let Some((token, baseline)) =
             encoder.comparison_baseline::<tables::SliceReads>(branch, hour, force)
@@ -246,6 +248,7 @@ fn set_aside_in_context(
     id: &str,
     campaign: &mut Campaign,
     counters: &mut OrderCounterWitness,
+    storage: Option<crate::spool_writer::ReceiptStorage>,
 ) -> io::Result<()> {
     let caller = crate::allocation::context();
     crate::allocation::set_context(crate::allocation::Context {
@@ -254,7 +257,7 @@ fn set_aside_in_context(
         load_signal: None,
         failed_hour: None,
     });
-    let result = campaign.set_aside();
+    let result = campaign.set_aside(storage);
     crate::allocation::set_context(caller);
     if let Err(error) = &result {
         counters.invalidate_write(id, error);
@@ -292,9 +295,6 @@ impl Campaigns {
         }
         Ok(())
     }
-    fn iter(&self) -> impl Clone + Iterator<Item = (&String, &Campaign)> {
-        self.0.iter().map(|(id, campaign)| (id, campaign))
-    }
     fn values(&self) -> impl Clone + Iterator<Item = &Campaign> {
         self.0.iter().map(|(_, campaign)| campaign)
     }
@@ -327,11 +327,11 @@ fn error_reason(error: &io::Error) -> Cow<'static, str> {
     }
 }
 
-fn committed_spool_record(segment: u32, bytes: u64, complete_hour: bool) {
+pub(crate) fn committed_spool_record(segment: u32, bytes: u64, complete_hour: bool) {
+    crate::allocation::committed_record(segment, bytes, complete_hour);
     if complete_hour {
         crate::allocation::attempted_hour(None);
     }
-    crate::allocation::committed(segment, bytes);
 }
 
 pub(crate) use collector_extended_support::distribution::Distribution;
@@ -379,11 +379,14 @@ struct PendingBranch {
 
 #[derive(Default)]
 struct WorkSample {
+    staged: Option<crate::spool_writer::StagedFrame>,
     validation_refused: bool,
     validation_families: u32,
     conversion: i64,
     frame_encoding: Option<i64>,
-    record_writes: Option<i64>,
+    viewed: Option<ViewedFlag>,
+    line_output_receipt: crate::extended::line_output::Receipt,
+    construction_ic_receipt: crate::extended::construction_ic::Receipt,
 }
 
 enum CachedTable {
@@ -603,10 +606,16 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     /// detached.
     resumed: Option<(BranchId, i32)>,
     encoder: FrameEncoder,
-    spool: SegmentedSpool<B>,
+    spool: crate::spool_writer::Output<B>,
     disk_branch: Option<BranchId>,
     last_written: Option<i32>,
     pending: Vec<PendingBranch>,
+    submitted_context: Vec<PendingBranch>,
+    closing: Vec<(
+        crate::spool_writer::CloseReceipt,
+        Vec<PendingBranch>,
+        Option<crate::spool_writer::ReceiptStorage>,
+    )>,
     staggered_cache: TableCache<CachedTable>,
     staggered_branch: Option<BranchId>,
     /// Paired with the latest CountryIntel cache, even before durable publication.
@@ -620,7 +629,7 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     sliced_reads: ReadHours,
     sliced_branch: Option<BranchId>,
     /// This frame's slice updates of `sliced_cache` rows, held until the
-    /// frame's write succeeds (the encoder then holds the updated rows) or
+    /// frame's admission succeeds (the encoder then holds the updated rows) or
     /// fails (the cache then takes the merged rows).
     pending_slices: Vec<(TableId, Arc<replay_data::sliced::SliceUpdate>)>,
     /// What this campaign's commits no longer hold, for freeing elsewhere.
@@ -647,6 +656,7 @@ impl Campaign {
         history: &mut PreparedCampaigns,
         id: &str,
         session: &SessionStart,
+        spool: crate::spool_writer::Output,
     ) -> io::Result<Self> {
         let directory = root.join(id);
         // An attach has its own root. Reusing an unfinalized root would conceal
@@ -664,11 +674,6 @@ impl Campaign {
                 "attach output already contains spool segments; use a fresh attach directory",
             ));
         }
-        let mut spool = SegmentedSpool::new(FileBackend::new(&directory)?);
-        if engine_allocation::capture_active() {
-            spool.set_commit_hook(committed_spool_record);
-            spool.set_write_start_hook(crate::allocation::record_start);
-        }
         let world_generation = history.campaign_world_generation(id);
         let (tracker, history_file) = history.take(id, session)?;
         Ok(Self {
@@ -683,6 +688,8 @@ impl Campaign {
             world_generation,
             last_written: None,
             pending: Vec::new(),
+            submitted_context: Vec::new(),
+            closing: Vec::new(),
             staggered_cache: TableCache::new(),
             staggered_branch: None,
             country_intel_sample: None,
@@ -709,10 +716,30 @@ impl Campaign {
 }
 
 impl<B: SegmentBackend> Campaign<B> {
+    fn reset_after_write_failure(&mut self) {
+        self.spool.invalidate();
+        self.disk_branch = None;
+        self.encoder = FrameEncoder::new();
+        self.pending_slices.clear();
+        self.staggered_cache.clear();
+        self.staggered_branch = None;
+        self.sliced_cache.clear();
+        self.sliced_reads.clear();
+        self.sliced_branch = None;
+        self.country_intel_sample = None;
+        self.country_intel_hour = None;
+        self.character_shadow = CharacterShadow::default();
+        self.intel_shadow = IntelShadow::default();
+        self.projection_scratch = ProjectionScratch::default();
+    }
+
     fn pending_branch(&mut self, branch: BranchId) -> io::Result<&mut PendingBranch> {
+        let index = self
+            .pending
+            .partition_point(|pending| pending.start.id < branch);
         if self
             .pending
-            .last()
+            .get(index)
             .is_none_or(|pending| pending.start.id != branch)
         {
             let start = self
@@ -721,13 +748,16 @@ impl<B: SegmentBackend> Campaign<B> {
                 .expect("observed branch exists")
                 .clone();
             engine_allocation::reserve(&mut self.pending, 1)?;
-            self.pending.push(PendingBranch {
-                start,
-                gaps: Vec::new(),
-                event_loss: None,
-            });
+            self.pending.insert(
+                index,
+                PendingBranch {
+                    start,
+                    gaps: Vec::new(),
+                    event_loss: None,
+                },
+            );
         }
-        Ok(self.pending.last_mut().unwrap())
+        Ok(&mut self.pending[index])
     }
 
     fn gap(
@@ -993,13 +1023,9 @@ impl<B: SegmentBackend> Campaign<B> {
             }
             retry = true;
         }
-        source.tables[TableId::SliceReads.index()] = self.sliced_reads.input(
-            &frame_reads,
-            &self.encoder,
-            source.branch,
-            hour,
-            force,
-        )?;
+        source.tables[TableId::SliceReads.index()] =
+            self.sliced_reads
+                .input(&frame_reads, &self.encoder, source.branch, hour, force)?;
         Ok((retry, unpublished))
     }
 
@@ -1342,29 +1368,27 @@ impl<B: SegmentBackend> Campaign<B> {
         source.scope_to(self.session.capture_mode);
         let _details = replay_data::codec::error_details_scope();
         let (branch, hour) = (source.branch, source.hour);
-        let held_line_output = crate::extended::line_output::holds_publication(
-            &source.tables[TableId::ProductionLineOutput.index()],
-        );
-        let held_construction_ic = crate::extended::construction_ic::holds_publication(
-            &source.tables[TableId::ConstructionLineOutput.index()],
-        );
+        work.line_output_receipt = self
+            .line_output
+            .receipt(&source.tables[TableId::ProductionLineOutput.index()]);
+        work.construction_ic_receipt = self
+            .construction_ic
+            .receipt(&source.tables[TableId::ConstructionLineOutput.index()]);
         let result = self.write_inner(source, qpc, signal, unknown, work, helpers);
-        if result.is_ok() {
-            self.line_output.written(held_line_output);
-            self.construction_ic.written(held_construction_ic);
+        if result.is_ok() && !self.spool.is_queued() {
+            self.line_output.written(work.line_output_receipt);
+            self.construction_ic.written(work.construction_ic_receipt);
         }
         if let Err(error) = &result {
-            if let Some((segment, bytes)) = self.spool.committed_watermark() {
-                crate::allocation::committed(segment, bytes);
-            }
             // Codec/validation errors are failures too. Closing also prevents a
             // partially published context from being reused after such an error.
             let _span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::Write);
-            let close_started = current_qpc();
             let _ = self.spool.finish_segment();
-            *work.record_writes.get_or_insert(0) += current_qpc() - close_started;
             self.disk_branch = None;
-            if error.kind() != io::ErrorKind::OutOfMemory && !crate::allocation::failed() {
+            if !self.spool.is_queued()
+                && error.kind() != io::ErrorKind::OutOfMemory
+                && !crate::allocation::failed()
+            {
                 self.encoder = FrameEncoder::new();
                 self.settle_failed_slices();
                 self.gap(
@@ -1422,6 +1446,15 @@ impl<B: SegmentBackend> Campaign<B> {
                     self.staggered_cache.remove(&table);
                     self.sliced_cache.remove(&table);
                     self.pending_slices.retain(|(id, _)| *id != table);
+                    match table {
+                        TableId::ProductionLineOutput => {
+                            work.line_output_receipt = Default::default()
+                        }
+                        TableId::ConstructionLineOutput => {
+                            work.construction_ic_receipt = Default::default()
+                        }
+                        _ => {}
+                    }
                     work.validation_refused = true;
                     if let Some(family) = crate::slicing::family_of(table) {
                         work.validation_families |= 1 << family;
@@ -1432,68 +1465,65 @@ impl<B: SegmentBackend> Campaign<B> {
         work.frame_encoding = Some(current_qpc() - encoding_started);
         let mut prepared = frame?;
         let span = span.switch(crate::spool_phases::Phase::Write);
-        let write_started = current_qpc();
-        let result = (|| {
-            let mut context = self.context(restarting, 2)?;
-            if unknown != 0 {
-                context.push(Record::Control(ControlRecord::GapSummary {
-                    session: self.session.id,
-                    dropped_frames: unknown,
-                    reason: engine_allocation::string(
-                        "collector lost clock metadata; campaign and hour range are unknown",
-                    )?,
-                }));
-            }
-            context.push(Record::Control(ControlRecord::ClockWitness {
+        let mut context = self.context(restarting, 2)?;
+        if unknown != 0 {
+            context.push(Record::Control(ControlRecord::GapSummary {
                 session: self.session.id,
-                qpc: u64::try_from(qpc).map_err(|_| invalid("negative callback QPC"))?,
-                hour,
-                load_signal: signal,
+                dropped_frames: unknown,
+                reason: engine_allocation::string(
+                    "collector lost clock metadata; campaign and hour range are unknown",
+                )?,
             }));
-            #[cfg(test)]
-            crate::allocation_failure_tests::before_spool_publication();
+        }
+        context.push(Record::Control(ControlRecord::ClockWitness {
+            session: self.session.id,
+            qpc: u64::try_from(qpc).map_err(|_| invalid("negative callback QPC"))?,
+            hour,
+            load_signal: signal,
+        }));
+        let encoded = prepared.take_frame();
+        let queued = self.spool.is_queued();
+        #[cfg(test)]
+        crate::allocation_failure_tests::before_spool_publication();
+        if crate::allocation::failed() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        if queued {
+            // No other hour can observe this staged baseline before admission succeeds.
+            self.commit_baseline(prepared)?;
+            set_viewed(&mut work.viewed, viewed_flag(&self.encoder))?;
+            work.staged = Some(crate::spool_writer::Output::<B>::stage_frame(
+                context, encoded, restarting,
+            )?);
+        } else {
+            let staged =
+                crate::spool_writer::Output::<B>::stage_frame(context, encoded, restarting)?;
+            self.spool.write_frame(staged, 0)?;
             if crate::allocation::failed() {
                 return Err(io::ErrorKind::OutOfMemory.into());
             }
-            if restarting {
-                self.spool
-                    .start_encoded_segment(&context, prepared.take_frame())
-            } else {
-                for record in &context {
-                    if crate::allocation::failed() {
-                        return Err(io::ErrorKind::OutOfMemory.into());
-                    }
-                    self.spool.append(record)?;
-                }
-                if crate::allocation::failed() {
-                    return Err(io::ErrorKind::OutOfMemory.into());
-                }
-                self.spool.append_encoded_frame(prepared.take_frame())
-            }
-        })();
-        work.record_writes = Some(current_qpc() - write_started);
-        let _span = span.switch(crate::spool_phases::Phase::Commit);
-        match result {
-            Ok(()) => {
-                if crate::allocation::failed() {
-                    return Err(io::ErrorKind::OutOfMemory.into());
-                }
-                let released = self.release_slices();
-                let retired = self.encoder.commit_retiring(prepared)?;
-                self.adopt_slices(released);
-                engine_allocation::reserve(&mut self.retired, 1)?;
-                self.retired.push(retired);
-                self.disk_branch = Some(branch);
-                self.last_written = Some(hour);
-                self.pending.clear();
-                crate::allocation::attempted_hour(None);
-                self.tracker.record_hour(branch, hour)?;
-                #[cfg(feature = "alloc-fault-injection")]
-                crate::allocation::committed_hour();
-                Ok(())
-            }
-            Err(error) => Err(error),
+            self.commit_baseline(prepared)?;
+            self.tracker.record_hour(branch, hour)?;
+            #[cfg(feature = "alloc-fault-injection")]
+            crate::allocation::committed_hour();
         }
+        let _span = span.switch(crate::spool_phases::Phase::Commit);
+        self.disk_branch = Some(branch);
+        self.last_written = Some(hour);
+        self.submitted_context = std::mem::take(&mut self.pending);
+        if !queued {
+            crate::allocation::attempted_hour(None);
+        }
+        Ok(())
+    }
+
+    fn commit_baseline(&mut self, prepared: replay_frame::frame::PreparedFrame) -> io::Result<()> {
+        engine_allocation::reserve(&mut self.retired, 1)?;
+        let released = self.release_slices();
+        let retired = self.encoder.commit_retiring(prepared)?;
+        self.adopt_slices(released);
+        self.retired.push(retired);
+        Ok(())
     }
 
     fn detach(&mut self, unknown: u64) -> io::Result<()> {
@@ -1501,16 +1531,34 @@ impl<B: SegmentBackend> Campaign<B> {
             if self.pending.is_empty() && unknown == 0 {
                 return Ok(());
             }
+            if self
+                .pending
+                .last()
+                .is_some_and(|pending| !pending.gaps.is_empty())
+            {
+                let mut context = self.context(true, usize::from(unknown != 0))?;
+                if unknown != 0 {
+                    context.push(Record::Control(ControlRecord::GapSummary {
+                        session: self.session.id,
+                        dropped_frames: unknown,
+                        reason: engine_allocation::string(
+                            "collector lost clock metadata; campaign and hour range are unknown",
+                        )?,
+                    }));
+                }
+                self.spool.start_context(context)?;
+                self.spool.finish_stopped_segment()?;
+                self.pending.clear();
+                return Ok(());
+            }
             return Err(invalid(
-                "spool unavailable at detach; pending gaps need another observed keyframe",
+                "spool unavailable at detach; pending context needs another observed keyframe",
             ));
         }
-        for record in self.context(false, 0)? {
-            self.spool.append(&record)?;
-        }
+        self.spool.append_context(self.context(false, 0)?)?;
         if unknown != 0 {
             self.spool
-                .append(&Record::Control(ControlRecord::GapSummary {
+                .append(Record::Control(ControlRecord::GapSummary {
                     session: self.session.id,
                     dropped_frames: unknown,
                     reason: engine_allocation::string(
@@ -1518,29 +1566,77 @@ impl<B: SegmentBackend> Campaign<B> {
                     )?,
                 }))?;
         }
-        self.spool.append(&Record::Control(ControlRecord::Detach {
+        self.spool.append(Record::Control(ControlRecord::Detach {
             session: self.session.id,
             last_hour: self.last_written,
         }))?;
+        self.spool.finish_stopped_segment()?;
         self.pending.clear();
-        self.spool.finish_segment()
+        Ok(())
     }
 
-    /// The game left this campaign: end its segment so the recorder can save it.
-    fn set_aside(&mut self) -> io::Result<()> {
-        if !self.spool.is_open() {
-            return Ok(());
+    fn close_storage_bytes(&self) -> usize {
+        if self.spool.is_queued()
+            && (self.spool.is_open()
+                || self
+                    .pending
+                    .last()
+                    .is_some_and(|pending| !pending.gaps.is_empty()))
+        {
+            pending_storage(&self.pending, self.pending.capacity())
+        } else {
+            0
         }
-        let written = self.context(false, 0).and_then(|context| {
-            context
-                .iter()
-                .try_for_each(|record| self.spool.append(record))
-        });
-        if written.is_ok() {
-            self.pending.clear();
+    }
+
+    fn queue_close(
+        &mut self,
+        storage: Option<crate::spool_writer::ReceiptStorage>,
+    ) -> io::Result<crate::spool_writer::CloseReceipt> {
+        let context_submitted = self.spool.is_open()
+            || self
+                .pending
+                .last()
+                .is_some_and(|pending| !pending.gaps.is_empty());
+        if context_submitted && !self.pending.is_empty() && self.spool.is_queued() {
+            engine_allocation::reserve(&mut self.closing, 1)?;
         }
-        let closed = self.spool.finish_segment();
-        written.and(closed)
+        if self.spool.is_open() {
+            self.spool.append_context(self.context(false, 0)?)?;
+        } else if self
+            .pending
+            .last()
+            .is_some_and(|pending| !pending.gaps.is_empty())
+        {
+            self.spool.start_context(self.context(true, 0)?)?;
+        }
+        let receipt = self.spool.close_segment()?;
+        if context_submitted && !self.pending.is_empty() {
+            if self.spool.is_queued() {
+                let pending = std::mem::take(&mut self.pending);
+                self.closing.push((receipt.clone(), pending, storage));
+            } else {
+                self.pending.clear();
+            }
+        }
+        Ok(receipt)
+    }
+
+    fn set_aside(
+        &mut self,
+        storage: Option<crate::spool_writer::ReceiptStorage>,
+    ) -> io::Result<()> {
+        self.queue_close(storage).map(|_| ())
+    }
+
+    fn restore_context(&mut self, context: Vec<PendingBranch>) -> io::Result<()> {
+        for pending in context {
+            let restored = self.pending_branch(pending.start.id)?;
+            engine_allocation::reserve(&mut restored.gaps, pending.gaps.len())?;
+            restored.gaps.splice(..0, pending.gaps);
+            restored.event_loss = restored.event_loss.or(pending.event_loss);
+        }
+        Ok(())
     }
 }
 
@@ -2014,7 +2110,6 @@ struct Statistics {
     conversion: Distribution,
     conversion_packs: [WallTotals; crate::extended::PACK_NAMES.len()],
     frame_encoding: Distribution,
-    record_writes: Distribution,
     slices: [SliceWork; crate::slicing::FAMILIES.len()],
     /// Cumulative torn memo copies and refused raid rows.
     raid_torn_memo_reads: u64,
@@ -2079,7 +2174,6 @@ impl Default for Statistics {
             conversion: Distribution::default(),
             conversion_packs: [WallTotals::default(); crate::extended::PACK_NAMES.len()],
             frame_encoding: Distribution::default(),
-            record_writes: Distribution::default(),
             slices: std::array::from_fn(|_| SliceWork::default()),
             raid_torn_memo_reads: 0,
             raid_refused_leaders: 0,
@@ -2117,6 +2211,7 @@ impl Statistics {
 /// hour, flushing or detaching: comparison tokens belong to the current encoder.
 #[must_use = "prepared observations must be written before processing another hour"]
 pub(crate) struct PreparedFrame {
+    writer_epoch: u64,
     source: FrameInput,
     id: String,
     clock: Clock,
@@ -2264,8 +2359,7 @@ impl CapturedStatistics {
     }
 }
 
-/// A forced diagnostic owns its row copy before the capture slot is released.
-/// Ordinary observations retain only the clock needed to invalidate an old witness.
+/// Deferred diagnostics own their witness before the capture slot is reused.
 struct PreparedOrderWitness {
     clock: Option<Clock>,
     forced: Option<OrderCounterWitness>,
@@ -2305,6 +2399,106 @@ impl PreparedOrderWitness {
     }
 }
 
+struct PublicationReceipt(Option<crate::event_feed_history::Prepared>);
+impl Drop for PublicationReceipt {
+    fn drop(&mut self) {
+        if let Some(publication) = &self.0 {
+            crate::event_feed_observer::discarded(publication.publication());
+        }
+    }
+}
+
+struct QueuedFrame {
+    storage: Option<crate::spool_writer::ReceiptStorage>,
+    ticket: u64,
+    context: Vec<PendingBranch>,
+    unknown: u64,
+    id: String,
+    branch: BranchId,
+    clock: Clock,
+    qpc: i64,
+    sampled: CapturedStatistics,
+    witness: PreparedOrderWitness,
+    operation_publication: Option<crate::extended::operation_outcomes::Publication>,
+    map_event_publication: Option<crate::extended::map_events::Publication>,
+    event_feed_publication: PublicationReceipt,
+    viewed: Option<ViewedFlag>,
+    line_output_receipt: crate::extended::line_output::Receipt,
+    construction_ic_receipt: crate::extended::construction_ic::Receipt,
+}
+
+fn pending_storage(context: &[PendingBranch], capacity: usize) -> usize {
+    capacity * size_of::<PendingBranch>()
+        + context
+            .iter()
+            .map(|pending| {
+                pending.gaps.capacity() * size_of::<Gap>()
+                    + pending
+                        .gaps
+                        .iter()
+                        .map(|gap| gap.reason.capacity())
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+}
+impl QueuedFrame {
+    fn storage_bytes(&self) -> usize {
+        size_of::<Self>()
+            + self.id.capacity()
+            + self.clock.campaign_id.allocated_bytes()
+            + pending_storage(&self.context, self.context.capacity())
+            + self.sampled.sampled_buffer_parts.capacity() * size_of::<(&'static str, usize)>()
+            + self
+                .witness
+                .clock
+                .as_ref()
+                .map_or(0, |clock| clock.campaign_id.allocated_bytes())
+            + self.witness.forced.as_ref().map_or(0, |witness| {
+                witness.rows.capacity() * size_of::<engine_native::ccountry::OrderInstanceCounter>()
+                    + witness.sample.as_ref().map_or(0, |sample| {
+                        sample
+                            .clock
+                            .as_ref()
+                            .map_or(0, |clock| clock.campaign_id.allocated_bytes())
+                            + [&sample.frame_write_error, &sample.subsequent_io_error]
+                                .into_iter()
+                                .map(|error| match error {
+                                    Some(Cow::Owned(text)) => text.capacity(),
+                                    _ => 0,
+                                })
+                                .sum::<usize>()
+                    })
+            })
+            + self
+                .operation_publication
+                .as_ref()
+                .map_or(0, |publication| publication.allocated_bytes())
+            + self
+                .map_event_publication
+                .as_ref()
+                .map_or(0, |publication| publication.allocated_bytes())
+            + self
+                .event_feed_publication
+                .0
+                .as_ref()
+                .map_or(0, |publication| publication.allocated_bytes())
+            + self.viewed.as_ref().map_or(0, |viewed| {
+                viewed.tag.capacity()
+                    + viewed.cosmetic.capacity()
+                    + viewed.original.as_ref().map_or(0, String::capacity)
+                    + viewed.group.capacity()
+            })
+    }
+}
+
+pub(crate) enum HistoryReply {
+    Ready(String),
+    Closing {
+        token: String,
+        receipt: crate::spool_writer::CloseReceipt,
+    },
+}
+
 pub struct Processor {
     root: PathBuf,
     history: PreparedCampaigns,
@@ -2328,9 +2522,116 @@ pub struct Processor {
     backlogged: bool,
     /// Decisions of the comparison before encoding.
     comparison: Box<crate::spool_compare::Counters>,
+    writer: crate::spool_writer::Writer,
+    queued: std::collections::VecDeque<Box<QueuedFrame>>,
+    flight: Option<(String, BranchId)>,
+    writer_error: Option<io::ErrorKind>,
+}
+
+impl Drop for Processor {
+    fn drop(&mut self) {
+        self.writer.shutdown();
+        while let Some(completion) = self.writer.completion() {
+            if completion.frame
+                && let Some(at) = self
+                    .queued
+                    .iter()
+                    .position(|frame| frame.ticket == completion.ticket)
+            {
+                let mut frame = self.queued.remove(at).unwrap();
+                if completion.committed
+                    && let Some(publication) = frame.event_feed_publication.0.take()
+                {
+                    let _ = crate::event_feed_observer::accepted(&publication);
+                }
+            }
+        }
+        self.queued.clear();
+        self.writer.ledger_storage(0);
+    }
 }
 
 impl Processor {
+    pub(crate) fn account_writer(&self, counter: Arc<std::sync::atomic::AtomicU64>) {
+        self.writer.account_to(counter);
+        self.account_ledger();
+    }
+    fn account_ledger(&self) {
+        let bytes = self.queued.capacity() * size_of::<Box<QueuedFrame>>()
+            + self
+                .campaigns
+                .values()
+                .map(|campaign| {
+                    campaign.closing.capacity()
+                        * size_of::<(
+                            crate::spool_writer::CloseReceipt,
+                            Vec<PendingBranch>,
+                            Option<crate::spool_writer::ReceiptStorage>,
+                        )>()
+                })
+                .sum::<usize>();
+        self.writer.ledger_storage(bytes);
+    }
+    fn close_storage(
+        &mut self,
+        id: &str,
+    ) -> io::Result<Option<crate::spool_writer::ReceiptStorage>> {
+        loop {
+            self.poll_writer()?;
+            let bytes = self
+                .campaigns
+                .get_mut(id)
+                .map_or(0, |campaign| campaign.close_storage_bytes());
+            if bytes == 0 {
+                return Ok(None);
+            }
+            if let Some(storage) = self.writer.try_receipt_storage(
+                bytes,
+                size_of::<(
+                    crate::spool_writer::CloseReceipt,
+                    Vec<PendingBranch>,
+                    Option<crate::spool_writer::ReceiptStorage>,
+                )>(),
+                0,
+            )? {
+                return Ok(Some(storage));
+            }
+            self.writer.wait_receipt_progress()?;
+        }
+    }
+
+    fn set_aside_campaign(&mut self, id: &str) -> io::Result<()> {
+        let storage = self.close_storage(id)?;
+        if let Some(campaign) = self.campaigns.get_mut(id) {
+            set_aside_in_context(id, campaign, &mut self.stats.order_counters, storage)?;
+        }
+        self.account_ledger();
+        Ok(())
+    }
+
+    fn receipt_storage(
+        &mut self,
+        bytes: usize,
+        epoch: u64,
+        write_bytes: usize,
+    ) -> io::Result<crate::spool_writer::ReceiptStorage> {
+        loop {
+            self.poll_writer()?;
+            if self.writer.failure_epoch() != epoch {
+                return Err(io::Error::other(
+                    "spool write failed during receipt admission",
+                ));
+            }
+            if let Some(storage) = self.writer.try_receipt_storage(
+                bytes,
+                size_of::<Box<QueuedFrame>>(),
+                write_bytes,
+            )? {
+                return Ok(storage);
+            }
+            self.writer.wait_receipt_progress()?;
+        }
+    }
     pub(crate) fn validation_refusals(&self) -> ValidationRefusals {
         self.stats.validation_refusals.clone()
     }
@@ -2345,6 +2646,7 @@ impl Processor {
         let _details = replay_data::codec::error_details_scope();
         session.validate()?;
         fs::create_dir_all(root).map_err(engine_allocation::allocation_error)?;
+        let writer = crate::spool_writer::Writer::start(root.into(), session.qpc_frequency)?;
         Ok(Self {
             root: root.into(),
             history,
@@ -2359,6 +2661,10 @@ impl Processor {
             second_helper: None,
             backlogged: false,
             comparison: Box::default(),
+            writer,
+            queued: std::collections::VecDeque::new(),
+            flight: None,
+            writer_error: None,
         })
     }
 
@@ -2386,7 +2692,13 @@ impl Processor {
 
     fn campaign(&mut self, id: &str) -> io::Result<&mut Campaign> {
         if !self.campaigns.contains_key(id) {
-            let mut campaign = Campaign::open(&self.root, &mut self.history, id, &self.session)?;
+            let campaign_id = id
+                .as_bytes()
+                .try_into()
+                .map_err(|_| invalid("invalid campaign identity"))?;
+            let output = self.writer.output(campaign_id);
+            let mut campaign =
+                Campaign::open(&self.root, &mut self.history, id, &self.session, output)?;
             campaign.validation_refusals = self.stats.validation_refusals.clone();
             self.campaigns
                 .insert(engine_allocation::string(id)?, campaign)?;
@@ -2492,6 +2804,7 @@ impl Processor {
     }
 
     pub fn lost(&mut self, loss: &LostObservation) -> io::Result<()> {
+        self.poll_writer()?;
         let _details = replay_data::codec::error_details_scope();
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
@@ -2527,10 +2840,50 @@ impl Processor {
     #[cfg(test)]
     pub fn frame(&mut self, captured: &Captured) -> io::Result<()> {
         let prepared = self.prepare_frame(captured)?;
-        self.write_prepared(prepared)
+        self.write_prepared(prepared)?;
+        self.drain_writer()?;
+        match self.writer_error.take() {
+            Some(kind) => Err(kind.into()),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn prepare_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
+        self.poll_writer()?;
+        if let Some(clock) = captured.clock.as_ref() {
+            let id = campaign_name(clock.campaign_id.as_bytes())?;
+            let boundary = self
+                .flight
+                .as_ref()
+                .is_some_and(|(previous, _)| previous != &id)
+                || self.campaigns.get_mut(&id).is_some_and(|campaign| {
+                    !campaign.spool.is_open()
+                        || campaign
+                            .world_generation
+                            .is_some_and(|previous| previous != captured.world_generation)
+                        || campaign
+                            .tracker
+                            .last_load_signal()
+                            .is_some_and(|load| load != clock.play_session_started_at)
+                        || campaign
+                            .tracker
+                            .last_observation()
+                            .is_some_and(|(_, hour)| hour.checked_add(1) != Some(clock.hour))
+                });
+            if boundary {
+                self.set_aside_others(&id);
+                if let Err(error) = self.set_aside_campaign(&id) {
+                    self.error(&error);
+                }
+                self.poll_writer()?;
+            }
+        }
+        let writer_epoch = loop {
+            self.poll_writer()?;
+            if let Some(epoch) = self.writer.ready_epoch()? {
+                break epoch;
+            }
+        };
         let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
         if crate::allocation::failed() {
@@ -2603,12 +2956,48 @@ impl Processor {
             captured.wars_snapshot.capacity(),
         );
         let mut branch = None;
-        let result = self.prepare_frame_inner(captured, &mut branch, span);
+        let result = self
+            .prepare_frame_inner(captured, &mut branch, span)
+            .map(|mut prepared| {
+                prepared.writer_epoch = writer_epoch;
+                prepared
+            });
+        self.finish_preparation(captured, branch, result)
+    }
+
+    fn finish_preparation(
+        &mut self,
+        captured: &Captured,
+        branch: Option<BranchId>,
+        result: io::Result<PreparedFrame>,
+    ) -> io::Result<PreparedFrame> {
         if let Err(error) = &result {
             self.stats
                 .order_counters
                 .observe_error(captured, branch, Some(error));
             self.error(error);
+            if error.kind() != io::ErrorKind::OutOfMemory
+                && !crate::allocation::failed()
+                && let (Some(branch), Some(clock)) = (branch, &captured.clock)
+            {
+                self.poll_writer()?;
+                let id = std::str::from_utf8(clock.campaign_id.as_bytes())
+                    .map_err(|_| invalid("prepared campaign has invalid identity"))?;
+                let campaign = self.campaigns.get_mut(id).unwrap();
+                if campaign.spool.is_open() {
+                    let _ = campaign.spool.finish_segment();
+                }
+                self.poll_writer()?;
+                let campaign = self.campaigns.get_mut(id).unwrap();
+                campaign.reset_after_write_failure();
+                campaign.gap(
+                    branch,
+                    clock.hour,
+                    clock.hour,
+                    engine_allocation::string("spool frame preparation failed")?,
+                )?;
+                self.retry_full = true;
+            }
         }
         result
     }
@@ -2782,6 +3171,7 @@ impl Processor {
         let clock = clock.copy_owned()?;
         span.finish();
         Ok(PreparedFrame {
+            writer_epoch: 0,
             source,
             id,
             clock,
@@ -2810,6 +3200,7 @@ impl Processor {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
         let PreparedFrame {
+            writer_epoch: epoch,
             mut source,
             id,
             clock,
@@ -2826,8 +3217,14 @@ impl Processor {
             map_event_publication,
             event_feed_publication,
         } = prepared;
+        let event_feed_publication = PublicationReceipt(event_feed_publication);
         self.unpublished_families |= unpublished_families;
         let branch = source.branch;
+        self.queued
+            .try_reserve(1)
+            .map_err(|_| engine_allocation::oom())?;
+        self.account_ledger();
+        let flight_id = engine_allocation::string(&id)?;
         crate::allocation::set_context(crate::allocation::Context {
             campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
             branch: Some(branch),
@@ -2870,7 +3267,7 @@ impl Processor {
             helpers,
         );
         let _span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::Commit);
-        witness.bind(&mut self.stats.order_counters, &result);
+
         if let Err(error) = &result {
             self.error(error);
         }
@@ -2896,11 +3293,127 @@ impl Processor {
         if let Some(ticks) = work.frame_encoding {
             self.stats.frame_encoding.record_ticks(ticks, frequency);
         }
-        if let Some(ticks) = work.record_writes {
-            self.stats.record_writes.record_ticks(ticks, frequency);
+        if let Err(error) = result {
+            if crate::allocation::failed() {
+                return Err(error);
+            }
+            witness.bind(
+                &mut self.stats.order_counters,
+                &Err(io::Error::from(error.kind())),
+            );
+            self.poll_writer()?;
+            let campaign = self.campaigns.get_mut(&id).unwrap();
+            campaign.reset_after_write_failure();
+            if !crate::allocation::failed() {
+                campaign.gap(
+                    branch,
+                    clock.hour,
+                    clock.hour,
+                    engine_allocation::string("spool write failed")?,
+                )?;
+                self.retry_full = true;
+            }
+            return Err(error);
         }
-        result?;
-        if let Some(publication) = event_feed_publication {
+        let campaign = self.campaigns.get_mut(&id).unwrap();
+        let mut frame = engine_allocation::boxed(QueuedFrame {
+            storage: None,
+            ticket: 0,
+            context: std::mem::take(&mut campaign.submitted_context),
+            unknown,
+            id,
+            branch,
+            clock,
+            qpc,
+            sampled,
+            witness,
+            operation_publication,
+            map_event_publication,
+            event_feed_publication,
+            viewed: work.viewed.take(),
+            line_output_receipt: work.line_output_receipt,
+            construction_ic_receipt: work.construction_ic_receipt,
+        })?;
+        let receipt_bytes = frame.storage_bytes();
+        let write_bytes = work
+            .staged
+            .as_ref()
+            .expect("queued frame was staged")
+            .admission_bytes()?;
+        let result = (|| {
+            frame.storage = Some(self.receipt_storage(receipt_bytes, epoch, write_bytes)?);
+            self.campaigns
+                .get_mut(&frame.id)
+                .unwrap()
+                .spool
+                .write_frame(
+                    work.staged.take().expect("queued frame was staged"),
+                    receipt_bytes,
+                )
+        })();
+        if let Err(error) = result {
+            if crate::allocation::failed() {
+                return Err(error);
+            }
+            self.error(&error);
+            frame.witness.bind(
+                &mut self.stats.order_counters,
+                &Err(io::Error::from(error.kind())),
+            );
+            self.poll_writer()?;
+            let campaign = self.campaigns.get_mut(&frame.id).unwrap();
+            campaign.restore_context(std::mem::take(&mut frame.context))?;
+            campaign.reset_after_write_failure();
+            campaign.gap(
+                frame.branch,
+                frame.clock.hour,
+                frame.clock.hour,
+                engine_allocation::string("spool write failed")?,
+            )?;
+            self.retry_full = true;
+            return Err(error);
+        }
+        crate::allocation::attempted_hour(None);
+        self.retry_full |= retry_full || work.validation_refused;
+        self.unpublished_families |= work.validation_families;
+        self.unknown_pending = 0;
+        self.suppress_origin = false;
+        frame.ticket = self
+            .campaigns
+            .get_mut(&frame.id)
+            .unwrap()
+            .spool
+            .last_ticket()
+            .expect("processor always uses its collector writer");
+        if let Some(publication) = &frame.operation_publication {
+            publication.admitted();
+        }
+        if let Some(publication) = &frame.map_event_publication {
+            publication.admitted();
+        }
+        self.queued.push_back(frame);
+        self.flight = Some((flight_id, branch));
+        Ok(())
+    }
+
+    fn complete_frame(&mut self, frame: Box<QueuedFrame>) -> io::Result<()> {
+        let QueuedFrame {
+            storage: _storage,
+            id,
+            branch,
+            clock,
+            qpc,
+            sampled,
+            witness,
+            operation_publication,
+            map_event_publication,
+            mut event_feed_publication,
+            viewed,
+            line_output_receipt,
+            construction_ic_receipt,
+            ..
+        } = *frame;
+        if let Some(publication) = event_feed_publication.0.take() {
             crate::event_feed_observer::accepted(&publication)?;
         }
         if let Some(publication) = operation_publication {
@@ -2909,29 +3422,18 @@ impl Processor {
         if let Some(publication) = map_event_publication {
             publication.commit();
         }
-        self.retry_full |= retry_full || work.validation_refused;
-        self.unpublished_families |= work.validation_families;
-        self.unknown_pending = 0;
-        self.suppress_origin = false;
-        if self
-            .stats
-            .previous
-            .as_ref()
-            .is_some_and(|(previous, ..)| *previous != id)
-        {
-            self.set_aside_others(&id);
-        }
-        // The status names the viewed country's flag operands from rows just
-        // committed; nothing is read from the game for it.
-        let viewed = self
-            .campaigns
-            .get_mut(&id)
-            .and_then(|campaign| viewed_flag(&campaign.encoder));
-        set_viewed(&mut self.stats.player, viewed)?;
+        let campaign = self.campaigns.get_mut(&id).unwrap();
+        campaign.line_output.written(line_output_receipt);
+        campaign.construction_ic.written(construction_ic_receipt);
+        campaign.tracker.record_hour(branch, clock.hour)?;
+        witness.bind(&mut self.stats.order_counters, &Ok(()));
+        #[cfg(feature = "alloc-fault-injection")]
+        crate::allocation::committed_hour();
         let stats = &mut self.stats;
         stats.hours += 1;
         stats.campaign = Some(engine_allocation::string(&id)?);
         stats.last_hour = Some(clock.hour);
+        stats.player = viewed;
         sampled.record(stats);
         if let Some((old_id, old_branch, hour, previous_qpc)) = &stats.previous
             && old_id == &id
@@ -2943,10 +3445,98 @@ impl Processor {
             stats.interval_qpc += (qpc - previous_qpc) as u64;
         }
         stats.previous = Some((id, branch, clock.hour, qpc));
-        if crate::allocation::failed() {
-            return Err(io::ErrorKind::OutOfMemory.into());
+        Ok(())
+    }
+
+    fn poll_writer(&mut self) -> io::Result<()> {
+        let caller = crate::allocation::context();
+        let result = self.poll_writer_inner();
+        self.account_ledger();
+        if result.is_err() && !crate::allocation::failed() {
+            crate::allocation::fail(
+                crate::allocation::Phase::Spool,
+                crate::allocation::Code::Thread,
+            );
+        }
+        crate::allocation::set_context(caller);
+        result
+    }
+
+    fn poll_writer_inner(&mut self) -> io::Result<()> {
+        let mut lost = false;
+        let mut failed = false;
+        while let Some(completion) = self.writer.completion() {
+            crate::allocation::set_context(completion.context);
+            if completion.frame {
+                if self
+                    .queued
+                    .front()
+                    .is_none_or(|frame| frame.ticket != completion.ticket)
+                {
+                    return Err(invalid("writer completions are out of order"));
+                }
+                let mut frame = self.queued.pop_front().unwrap();
+                if completion.committed {
+                    crate::allocation::attempted_hour(None);
+                    self.complete_frame(frame)?;
+                } else {
+                    lost = true;
+                    self.unknown_pending = self.unknown_pending.saturating_add(frame.unknown);
+                    self.suppress_origin |= frame.unknown != 0;
+                    let campaign = self.campaigns.get_mut(&frame.id).unwrap();
+                    campaign.restore_context(std::mem::take(&mut frame.context))?;
+                    campaign.gap(
+                        frame.branch,
+                        frame.clock.hour,
+                        frame.clock.hour,
+                        engine_allocation::string("spool write failed")?,
+                    )?;
+                }
+            }
+            if let Some(id) = completion.context.campaign_id {
+                let id = std::str::from_utf8(&id)
+                    .map_err(|_| invalid("writer completion has invalid campaign identity"))?;
+                if let Some(campaign) = self.campaigns.get_mut(id)
+                    && let Some(index) = campaign
+                        .closing
+                        .iter()
+                        .position(|(receipt, _, _)| receipt.ticket == completion.ticket)
+                {
+                    let (_, context, _storage) = campaign.closing.remove(index);
+                    if completion.result.is_err() {
+                        campaign.restore_context(context)?;
+                    }
+                }
+            }
+            if let Err(error) = completion.result {
+                failed = true;
+                self.error(&error);
+                self.writer_error.get_or_insert(error.kind());
+                if let Some(id) = completion.context.campaign_id {
+                    let id = std::str::from_utf8(&id)
+                        .map_err(|_| invalid("writer completion has invalid campaign identity"))?;
+                    self.stats.order_counters.invalidate_write(id, &error);
+                    if let Some(campaign) = self.campaigns.get_mut(id) {
+                        campaign.reset_after_write_failure();
+                    }
+                }
+                self.retry_full = true;
+            }
+        }
+        if lost {
+            crate::extended::operation_outcomes::reset_admitted();
+            crate::extended::map_events::reset_admitted();
+        }
+        if failed {
+            // A failure cancels the entire queued suffix before publishing its completion.
+            self.writer.resume_after_failure();
         }
         Ok(())
+    }
+
+    fn drain_writer(&mut self) -> io::Result<()> {
+        self.writer.drain()?;
+        self.poll_writer()
     }
 
     /// This hour is written, so a failure here is the other campaign's, as in a flush.
@@ -2955,40 +3545,62 @@ impl Processor {
             return;
         }
         let mut first_error = None;
-        for (id, campaign) in &mut self.campaigns {
-            if id == current {
+        for index in 0..self.campaigns.0.len() {
+            if self.campaigns.0[index].0 == current {
                 continue;
             }
-            if let Err(error) = set_aside_in_context(id, campaign, &mut self.stats.order_counters)
-            {
+            let result = engine_allocation::string(&self.campaigns.0[index].0)
+                .and_then(|id| self.set_aside_campaign(&id));
+            if let Err(error) = result {
                 first_error.get_or_insert(error);
             }
         }
+        self.account_ledger();
         if let Some(error) = first_error {
             self.error(&error);
         }
     }
 
-    /// The game loaded another campaign: close this one's segment now, not at that one's first hour.
-    /// `load` is the load it left; one loaded again since keeps recording.
-    pub(crate) fn close_campaign(&mut self, id: &str, load: Option<i64>) -> Result<(), &'static str> {
+    fn close_campaign(
+        &mut self,
+        id: &str,
+        load: Option<i64>,
+    ) -> Result<crate::spool_writer::CloseReceipt, &'static str> {
         if crate::allocation::failed() {
             return Err("allocation failed");
         }
         let Some(campaign) = self.campaigns.get_mut(id) else {
-            return Ok(());
+            let receipt = crate::spool_writer::CloseReceipt::default();
+            receipt.complete(Ok(()));
+            return Ok(receipt);
         };
-        if load.is_some_and(|load| campaign.tracker.last_load_signal().is_some_and(|now| now != load))
-        {
+        if load.is_some_and(|load| {
+            campaign
+                .tracker
+                .last_load_signal()
+                .is_some_and(|now| now != load)
+        }) {
             return Err("the campaign was loaded again");
         }
-        match set_aside_in_context(id, campaign, &mut self.stats.order_counters) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                self.error(&error);
-                Err("its segment could not be closed")
-            }
-        }
+        let storage = self.close_storage(id).map_err(|error| {
+            self.error(&error);
+            "its queued context could not be reserved"
+        })?;
+        let campaign = self.campaigns.get_mut(id).unwrap();
+        let caller = crate::allocation::context();
+        crate::allocation::set_context(crate::allocation::Context {
+            campaign_id: id.as_bytes().try_into().ok(),
+            branch: campaign.tracker.current_branch(),
+            load_signal: campaign.tracker.last_load_signal(),
+            failed_hour: None,
+        });
+        let result = campaign.queue_close(storage);
+        crate::allocation::set_context(caller);
+        self.account_ledger();
+        result.map_err(|error| {
+            self.error(&error);
+            "its segment could not be closed"
+        })
     }
 
     /// The recorder saves a campaign the game left: let go of its history file meanwhile.
@@ -3011,7 +3623,7 @@ impl Processor {
     }
 
     /// Answer the recorder's `<token> release|lend|retake <campaign>` with `<token> ok|refused <reason>`.
-    pub(crate) fn history_request(&mut self, request: &str) -> String {
+    pub(crate) fn begin_history_request(&mut self, request: &str) -> HistoryReply {
         let mut words = request.split_whitespace();
         let (token, action, campaign) = (words.next(), words.next(), words.next());
         let load = words.next().and_then(|load| load.parse::<i64>().ok());
@@ -3024,7 +3636,15 @@ impl Processor {
                 self.lend_history(&campaign);
                 None
             }
-            (Some(Ok(campaign)), Some("close")) => self.close_campaign(&campaign, load).err(),
+            (Some(Ok(campaign)), Some("close")) => match self.close_campaign(&campaign, load) {
+                Ok(receipt) => {
+                    return HistoryReply::Closing {
+                        token: token.unwrap_or_default().to_owned(),
+                        receipt,
+                    };
+                }
+                Err(reason) => Some(reason),
+            },
             (Some(Ok(campaign)), Some("retake")) => self
                 .retake_history(&campaign)
                 .err()
@@ -3032,9 +3652,23 @@ impl Processor {
             _ => Some("unknown request"),
         };
         let token = token.unwrap_or_default();
-        match refusal {
+        HistoryReply::Ready(match refusal {
             None => format!("{token} ok"),
             Some(reason) => format!("{token} refused {reason}"),
+        })
+    }
+
+    #[cfg(test)]
+    fn history_request(&mut self, request: &str) -> String {
+        match self.begin_history_request(request) {
+            HistoryReply::Ready(reply) => reply,
+            HistoryReply::Closing { token, receipt } => {
+                self.drain_writer().unwrap();
+                match receipt.result().unwrap() {
+                    Ok(()) => format!("{token} ok"),
+                    Err(_) => format!("{token} refused its segment could not be closed"),
+                }
+            }
         }
     }
 
@@ -3052,36 +3686,15 @@ impl Processor {
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
-        let _details = replay_data::codec::error_details_scope();
-        let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
-        crate::allocation::attempted_hour(None);
-        if crate::allocation::failed() {
-            return Err(io::ErrorKind::OutOfMemory.into());
-        }
-        let mut first_error = None;
-        for (id, campaign) in &mut self.campaigns {
-            crate::allocation::set_context(crate::allocation::Context {
-                campaign_id: id.as_bytes().try_into().ok(),
-                branch: campaign.tracker.current_branch(),
-                load_signal: None,
-                failed_hour: None,
-            });
-            if let Err(error) = campaign.spool.sync_if_due() {
-                self.stats.order_counters.invalidate_write(id, &error);
-                campaign.disk_branch = None;
-                campaign.encoder = FrameEncoder::new();
-                first_error.get_or_insert(error);
-            }
-        }
-        if let Some(error) = first_error {
-            self.error(&error);
-            Err(error)
-        } else {
-            Ok(())
+        self.poll_writer()?;
+        match self.writer_error.take() {
+            Some(kind) => Err(kind.into()),
+            None => Ok(()),
         }
     }
 
     pub fn detach(&mut self) -> io::Result<()> {
+        self.drain_writer()?;
         let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Teardown);
         crate::allocation::attempted_hour(None);
@@ -3121,6 +3734,10 @@ impl Processor {
                     first_error.get_or_insert(error);
                 }
             }
+        }
+        self.drain_writer()?;
+        if let Some(kind) = self.writer_error.take() {
+            first_error.get_or_insert_with(|| io::Error::from(kind));
         }
         if self.unknown_pending != 0 {
             first_error
@@ -3212,7 +3829,7 @@ impl Processor {
         let country_cache_cost = stats.country_cache_cost.status()?;
         let conversion = stats.conversion.status()?;
         let frame_encoding = stats.frame_encoding.status()?;
-        let record_writes = stats.record_writes.status()?;
+
         let country_rosters = stats.country_rosters.status()?;
         // Per-family copy-only mirrors, built outside the status `json!` so
         // the macro stays under its recursion limit as families move over.
@@ -3325,27 +3942,19 @@ impl Processor {
             stats.table_ns[decode::SESSION[1].index()],
             stats.table_ns[decode::SESSION[2].index()],
         ];
-        let mut background_sync = engine_allocation::vec(self.campaigns.0.len())?;
-        for (id, campaign) in self.campaigns.iter() {
-            if let Some(work) = campaign.spool.background_sync_work() {
-                background_sync.push(status!({
-                    "campaign": id.as_str(), "requested": work.requested, "completed": work.completed,
-                    "pending": work.pending, "total_ns": work.total_ns, "max_ns": work.max_ns,
-                    "threads": work.threads,
-                }));
-            }
-        }
+        let writer = self.writer.diagnostics();
         let spool_work = status!({
                 "conversion": conversion,
                 "conversion_packs": sequence(crate::extended::PACK_NAMES.iter().zip(&stats.conversion_packs)
                     .map(|(name, cost)| status!({"name": name, "cost": cost.status()}))),
                 "conversion_packs_scope": "cumulative calls, total and maximum wall per pack conversion, on the spool thread or, for packs with a helper marker, a conversion helper; nested within conversion; excludes core and map tables",
                 "frame_encoding": frame_encoding,
-                "record_writes": record_writes,
+                "record_writes": writer.writes(),
+                "writer_queue": writer.queue_status(),
                 "table_rows_storage_bytes": std::mem::size_of::<TableRows>(),
                 "background_sync": {
-                    "scope": "current open segments; periodic durability worker wall, overlapping normal spool work; completed includes failed requests; threads counts the segment's persistent worker, started once and reused by every request; forced barriers remain in record_writes",
-                    "segments": owned_sequence(background_sync),
+                    "scope": "collector writer periodic sync wall, serialized with writes; forced barriers are in record_writes",
+                    "writer": writer.sync_status(),
                 },
                 "native_projection": sequence(self.campaigns.values().map(|campaign| campaign.projection_scratch.status())),
                 "comparison": self.comparison.status(),
@@ -4246,6 +4855,10 @@ mod conversion_helper_tests;
 mod slice_reads_tests;
 
 #[cfg(test)]
+#[path = "spooling/write_behind_tests.rs"]
+mod write_behind_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use replay::{container::Replay, container::SeekResult};
@@ -4419,6 +5032,11 @@ mod tests {
             second_helper: None,
             backlogged: false,
             comparison: Box::default(),
+            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
+                .unwrap(),
+            queued: std::collections::VecDeque::new(),
+            flight: None,
+            writer_error: None,
         };
         let mut source = Captured::new();
         source.wars_snapshot_sampled = true;
@@ -4520,6 +5138,11 @@ mod tests {
             second_helper: None,
             backlogged: false,
             comparison: Box::default(),
+            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
+                .unwrap(),
+            queued: std::collections::VecDeque::new(),
+            flight: None,
+            writer_error: None,
         };
         let mut samples = vec![0];
         for floor_ms in [2, 4, 8, 16, 32, 64, 128, 256] {
@@ -4705,7 +5328,10 @@ mod tests {
             "1 refused the campaign was loaded again"
         );
         assert!(!settled(&segment));
-        assert_eq!(processor.history_request(&format!("2 close {name} 1234")), "2 ok");
+        assert_eq!(
+            processor.history_request(&format!("2 close {name} 1234")),
+            "2 ok"
+        );
         assert!(settled(&segment));
         drop(processor);
         fs::remove_dir_all(directory).unwrap();
@@ -5547,6 +6173,11 @@ mod tests {
             second_helper: None,
             backlogged: false,
             comparison: Box::default(),
+            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
+                .unwrap(),
+            queued: std::collections::VecDeque::new(),
+            flight: None,
+            writer_error: None,
         };
         let mut source = captured(10);
         prepare_order_counter_sample(&mut source, 10, 7);
@@ -5614,6 +6245,11 @@ mod tests {
             second_helper: None,
             backlogged: false,
             comparison: Box::default(),
+            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
+                .unwrap(),
+            queued: std::collections::VecDeque::new(),
+            flight: None,
+            writer_error: None,
         };
         for ns in [100, 200, 300] {
             processor.stats.callback.record_ns(ns);
@@ -5764,6 +6400,11 @@ mod tests {
             second_helper: None,
             backlogged: false,
             comparison: Box::default(),
+            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
+                .unwrap(),
+            queued: std::collections::VecDeque::new(),
+            flight: None,
+            writer_error: None,
         };
         assert_eq!(processor.json()["table_reads_recorded"], false);
         let counts = ReadCounts {
@@ -5819,6 +6460,11 @@ mod tests {
             second_helper: None,
             backlogged: false,
             comparison: Box::default(),
+            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
+                .unwrap(),
+            queued: std::collections::VecDeque::new(),
+            flight: None,
+            writer_error: None,
         };
         processor.stats.table_ns[replay_data::rows::TableId::ResearchTechnologies.index()] = 11;
         processor.stats.table_ns[replay_data::rows::TableId::ResearchSlots.index()] = 22;
@@ -5962,6 +6608,7 @@ mod tests {
         let source: FrameInput = decoded(captured, clock.clone(), branch).into();
         let retry_full = needs_retry(&source.tables);
         PreparedFrame {
+            writer_epoch: 0,
             source,
             id: std::str::from_utf8(ID).unwrap().into(),
             clock,
@@ -6951,10 +7598,14 @@ mod tests {
                 resumed: tracker.last_observation(),
                 tracker,
                 encoder: FrameEncoder::new(),
-                spool: SegmentedSpool::new(MemoryBackend(store.clone())),
+                spool: crate::spool_writer::Output::Direct(SegmentedSpool::new(MemoryBackend(
+                    store.clone(),
+                ))),
                 disk_branch: None,
                 last_written: None,
                 pending: Vec::new(),
+                submitted_context: Vec::new(),
+                closing: Vec::new(),
                 staggered_cache: TableCache::new(),
                 staggered_branch: None,
                 country_intel_sample: None,
@@ -7332,6 +7983,11 @@ mod tests {
             second_helper: None,
             backlogged: false,
             comparison: Box::default(),
+            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
+                .unwrap(),
+            queued: std::collections::VecDeque::new(),
+            flight: None,
+            writer_error: None,
         };
         let loss = LostObservation {
             campaign_id: owned_text(b"../invalid"),

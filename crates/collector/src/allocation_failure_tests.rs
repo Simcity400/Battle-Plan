@@ -661,22 +661,15 @@ fn read_witness(file: &File) -> io::Result<Option<replay_data::witness::Terminal
     use std::io::{Read, Seek, SeekFrom};
     let mut file = file;
     file.seek(SeekFrom::Start(0))?;
-    let mut bytes = [0; replay_data::witness::WITNESS_BYTES];
-    let mut len = 0;
-    while len < bytes.len() {
-        let read = file.read(&mut bytes[len..])?;
-        if read == 0 {
-            break;
-        }
-        len += read;
-    }
-    if len == 0 {
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    if bytes.is_empty() {
         return Ok(None);
     }
-    if replay_data::witness::TerminalWitness::decode_prepared(&bytes[..len]).is_ok() {
+    if replay_data::witness::TerminalWitness::decode_prepared(&bytes).is_ok() {
         return Ok(None);
     }
-    replay_data::witness::TerminalWitness::decode(&bytes[..len]).map(Some)
+    replay_data::witness::decode_bundle(&bytes).map(|records| records.first().copied())
 }
 
 fn validate(outcome: &Exercise, failed: bool) {

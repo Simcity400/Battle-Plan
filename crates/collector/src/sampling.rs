@@ -1122,7 +1122,7 @@ pub struct Shared {
     pub dropped: AtomicU64,
     /// Reserved collector storage; executor bytes use real allocation sizes
     /// and capacities, including synchronization and enabled help histories.
-    pub pool_bytes: AtomicU64,
+    pub pool_bytes: Arc<AtomicU64>,
     pub recording: AtomicBool,
     pub stop_spool: AtomicBool,
     /// The spool thread, set once when its loop starts. Its idle wait parks
@@ -1520,7 +1520,9 @@ impl Shared {
             ready: ArrayQueue::new(BUFFERS),
             decode_queue: decode::new_queue(),
             dropped: AtomicU64::new(0),
-            pool_bytes: AtomicU64::new(pool_bytes as u64),
+            pool_bytes: Arc::new(AtomicU64::new(
+                (pool_bytes + size_of::<AtomicU64>() + 2 * size_of::<usize>()) as u64,
+            )),
             recording: AtomicBool::new(true),
             stop_spool: AtomicBool::new(false),
             spool_waker: OnceLock::new(),

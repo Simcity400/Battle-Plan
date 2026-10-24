@@ -259,10 +259,28 @@ fn saving_only_checkpointed_hours_returns_the_publication_from_live_and_ended_se
 fn frameless_checkpoint_tails_require_unchanged_metadata_and_no_recovery_damage() {
     use crate::test_support::allocation_frame;
 
+    let lost = Gap {
+        branch: 9,
+        first_hour: 5,
+        last_hour: 6,
+        reason: "synthetic disk interruption".into(),
+    };
+    let clock = |hour: i32| {
+        Record::Control(ControlRecord::ClockWitness {
+            session: 7,
+            qpc: 9_000 + hour as u64,
+            hour,
+            load_signal: Some(19),
+        })
+    };
     for auto_save in [false, true] {
         for metadata in [
             "unchanged",
             "gap",
+            "gap-explained-clock",
+            "gap-unexplained-clock",
+            "gap-reordered-clocks",
+            "gap-over-saved-hour",
             "event-loss",
             "clock",
             "reordered-clocks",
@@ -289,11 +307,20 @@ fn frameless_checkpoint_tails_require_unchanged_metadata_and_no_recovery_damage(
                 assert_eq!(checkpoint.deleted, 1);
                 assert!(!first.exists());
                 match metadata {
-                    "gap" => context.push(Record::Gap(Gap {
-                        branch: 9,
-                        first_hour: 5,
-                        last_hour: 6,
-                        reason: "synthetic disk interruption".into(),
+                    "gap" => context.push(Record::Gap(lost.clone())),
+                    "gap-explained-clock" => {
+                        context.extend([Record::Gap(lost.clone()), clock(6)]);
+                    }
+                    "gap-unexplained-clock" => {
+                        context.extend([Record::Gap(lost.clone()), clock(7)]);
+                    }
+                    "gap-reordered-clocks" => {
+                        context[2..].reverse();
+                        context.push(Record::Gap(lost.clone()));
+                    }
+                    "gap-over-saved-hour" => context.push(Record::Gap(Gap {
+                        first_hour: 4,
+                        ..lost.clone()
                     })),
                     "event-loss" => context.push(Record::Control(ControlRecord::EventLoss {
                         session: 7,
@@ -301,12 +328,7 @@ fn frameless_checkpoint_tails_require_unchanged_metadata_and_no_recovery_damage(
                         after_hour: 4,
                         hour: 7,
                     })),
-                    "clock" => context.push(Record::Control(ControlRecord::ClockWitness {
-                        session: 7,
-                        qpc: 9_007,
-                        hour: 7,
-                        load_signal: Some(19),
-                    })),
+                    "clock" => context.push(clock(7)),
                     "reordered-clocks" => context[2..].reverse(),
                     "unchanged" => {}
                     _ => unreachable!(),
@@ -331,6 +353,14 @@ fn frameless_checkpoint_tails_require_unchanged_metadata_and_no_recovery_damage(
                         .any(|record| matches!(record, Record::Frame(_)))
                 );
                 let recording = fs::read(&checkpoint.recording).unwrap();
+                let (revision, gaps, controls) = {
+                    let before = held_recording(&checkpoint.recording).unwrap();
+                    (
+                        before.revision(),
+                        before.gaps.clone(),
+                        before.controls.clone(),
+                    )
+                };
                 let save = || {
                     save_campaign(
                         &fixture.session,
@@ -342,6 +372,36 @@ fn frameless_checkpoint_tails_require_unchanged_metadata_and_no_recovery_damage(
                         fixture.naming(),
                     )
                 };
+                if matches!(metadata, "gap" | "gap-explained-clock") && !torn {
+                    // Explicit loss adds its gap, and only its new clock, to the saved hours.
+                    let saved = save().unwrap().0.unwrap();
+                    if !auto_save {
+                        assert_eq!(saved, checkpoint.recording);
+                    }
+                    let mut controls = controls;
+                    if metadata == "gap-explained-clock" {
+                        let Record::Control(control) = clock(6) else {
+                            unreachable!()
+                        };
+                        controls.push(control);
+                    }
+                    {
+                        let after = held_recording(&saved).unwrap();
+                        assert!(after.contains_revision(revision).unwrap());
+                        assert_eq!(after.gaps, [gaps, vec![lost.clone()]].concat());
+                        assert_eq!(after.controls, controls);
+                    }
+                    assert_eq!(recorded_frames(&saved), [(9, 2), (9, 3), (9, 4)]);
+                    assert_eq!(
+                        read_saved(&campaign).unwrap().segments.get(&1),
+                        Some(&(bytes.len() as u64))
+                    );
+                    let added = fs::read(&saved).unwrap();
+                    assert_eq!(save().unwrap().0, Some(saved.clone()));
+                    assert_eq!(fs::read(&saved).unwrap(), added);
+                    assert_eq!(fs::read(&tail).unwrap(), bytes);
+                    continue;
+                }
                 if metadata == "unchanged" && !torn {
                     assert_eq!(save().unwrap().0, Some(checkpoint.recording.clone()));
                     assert_eq!(
@@ -366,6 +426,308 @@ fn frameless_checkpoint_tails_require_unchanged_metadata_and_no_recovery_damage(
                     [(9, 2), (9, 3), (9, 4)]
                 );
             }
+        }
+    }
+}
+
+/// Checkpoints load 19's hours 2..=4 on branch 9 and returns the session start that tails repeat.
+fn checkpointed_load(fixture: &Fixture, auto_save: bool, loads: &[i64]) -> (Checkpoint, Record) {
+    begin_admissions(&fixture.session, &fixture.output).unwrap();
+    let mut admissions = Admissions::default();
+    for load in loads {
+        admissions
+            .admit(&fixture.session, &fixture.output, Fixture::name(), *load)
+            .unwrap();
+    }
+    let campaign = fixture.campaign(&fixture.session);
+    let first = write_load_segment(&campaign, 0, 9, 2..=4, 19);
+    let session = replay::spool::recover_prefix(&fs::read(&first).unwrap())
+        .records
+        .remove(0);
+    assert!(matches!(session, Record::SessionStart(_)));
+    fs::write(campaign.join("spool.0001.h4s"), []).unwrap();
+    let checkpoint = fixture.checkpoint(0, auto_save, &mut Ahead::default());
+    assert_eq!(checkpoint.deleted, 1);
+    assert!(!first.exists());
+    (checkpoint, session)
+}
+
+fn write_tail(campaign: &Path, records: &[Record]) -> Vec<u8> {
+    let bytes: Vec<_> = records
+        .iter()
+        .flat_map(|record| replay::spool::encode_record(record).unwrap())
+        .collect();
+    let recovered = replay::spool::recover_prefix(&bytes);
+    assert!(recovered.damage.is_none());
+    assert_eq!(recovered.records.len(), records.len());
+    fs::write(campaign.join("spool.0001.h4s"), &bytes).unwrap();
+    bytes
+}
+
+#[test]
+fn a_context_only_loss_segment_after_a_checkpoint_appends_its_gaps_once_and_discards_cleanly() {
+    for auto_save in [false, true] {
+        let fixture = Fixture::new(&format!("checkpoint-explicit-loss-{auto_save}"));
+        let (checkpoint, session) = checkpointed_load(&fixture, auto_save, &[19]);
+        let campaign = fixture.campaign(&fixture.session);
+        let (revision, gaps, controls, branch) = {
+            let before = held_recording(&checkpoint.recording).unwrap();
+            let branch = before
+                .branches
+                .iter()
+                .find(|branch| branch.id == 9)
+                .cloned();
+            (
+                before.revision(),
+                before.gaps.clone(),
+                before.controls.clone(),
+                branch.unwrap(),
+            )
+        };
+        // As the collector closes a failed campaign: context, its gaps and event loss, no clock.
+        let lost = Gap {
+            branch: 9,
+            first_hour: 5,
+            last_hour: 7,
+            reason: "spool write failed".into(),
+        };
+        let event_loss = ControlRecord::EventLoss {
+            session: 7,
+            branch: 9,
+            after_hour: 4,
+            hour: 8,
+        };
+        let bytes = write_tail(
+            &campaign,
+            &[
+                session,
+                Record::BranchStart(branch),
+                Record::Gap(lost.clone()),
+                Record::Control(event_loss.clone()),
+            ],
+        );
+        let save = || {
+            save_campaign(
+                &fixture.session,
+                &fixture.output,
+                Fixture::name(),
+                !auto_save,
+                &|| Ok(()),
+                &mut Ahead::default(),
+                fixture.naming(),
+            )
+            .unwrap()
+        };
+        let capture = OutputCapture::new();
+        let (saved, omitted) = save();
+        let spool_bytes: u64 = read_saved(&campaign).unwrap().segments.values().sum();
+        let output = capture.take();
+        let headers: Vec<_> = output
+            .lines()
+            .filter(|line| line.starts_with("finalize_s="))
+            .collect();
+        assert_eq!(headers.len(), 1, "{output}");
+        assert!(
+            headers[0].ends_with(&format!("spool_bytes={spool_bytes}")),
+            "{output}"
+        );
+        let saved = saved.unwrap();
+        assert!(omitted.is_empty());
+        if !auto_save {
+            assert_eq!(saved, checkpoint.recording);
+        }
+        {
+            let after = held_recording(&saved).unwrap();
+            assert!(after.contains_revision(revision).unwrap());
+            assert_eq!(after.gaps, [gaps, vec![lost]].concat());
+            assert_eq!(after.controls, [controls, vec![event_loss]].concat());
+            assert!(after.index.iter().all(|block| block.last_hour <= 4));
+        }
+        assert_eq!(recorded_frames(&saved), [(9, 2), (9, 3), (9, 4)]);
+        assert_eq!(
+            read_saved(&campaign).unwrap().segments.get(&1),
+            Some(&(bytes.len() as u64))
+        );
+        let added = fs::read(&saved).unwrap();
+        assert_eq!(save().0, Some(saved.clone()));
+        let output = capture.take();
+        let headers: Vec<_> = output
+            .lines()
+            .filter(|line| line.starts_with("finalize_s="))
+            .collect();
+        assert_eq!(headers.len(), 1, "{output}");
+        assert!(
+            headers[0].ends_with(&format!("spool_bytes={spool_bytes}")),
+            "{output}"
+        );
+        assert_eq!(fs::read(&saved).unwrap(), added);
+        discard_checkpoints(&fixture.session, Fixture::name()).unwrap();
+        discard_unsaved(&fixture.session, Fixture::name()).unwrap();
+        // Off rolls back to before the first checkpoint; on keeps what it published.
+        if auto_save {
+            assert_eq!(fs::read(&saved).unwrap(), added);
+        } else {
+            assert!(!saved.exists());
+        }
+        assert!(segment_paths(&campaign).unwrap().is_empty());
+        assert!(!campaign.join(CHECKPOINT_FILE).exists());
+    }
+}
+
+#[test]
+fn a_later_failure_witness_keeps_committed_clockless_losses_of_a_saved_load() {
+    for auto_save in [false, true] {
+        for failed_here in [false, true] {
+            let fixture = Fixture::new(&format!(
+                "checkpoint-committed-loss-before-failure-{auto_save}-{failed_here}"
+            ));
+            let (checkpoint, session) = checkpointed_load(&fixture, auto_save, &[19]);
+            let campaign = fixture.campaign(&fixture.session);
+            let branch = held_recording(&checkpoint.recording)
+                .unwrap()
+                .branches
+                .iter()
+                .find(|branch| branch.id == 9)
+                .unwrap()
+                .clone();
+            let lost = Gap {
+                branch: 9,
+                first_hour: 5,
+                last_hour: 7,
+                reason: "spool write failed".into(),
+            };
+            let bytes = write_tail(
+                &campaign,
+                &[
+                    session,
+                    Record::BranchStart(branch),
+                    Record::Gap(lost.clone()),
+                ],
+            );
+            let mut witness = crate::test_support::allocation_witness(bytes.len() as u64);
+            witness.committed_segment = Some(1);
+            witness.branch = None;
+            witness.load_signal = None;
+            witness.failed_hour = None;
+            if !failed_here {
+                witness.campaign_id = Some(*b"31b7cc84-3028-4f65-8e0d-adf2f37ca1a6");
+            }
+            fs::write(fixture.session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+            let save = || {
+                save_campaign(
+                    &fixture.session,
+                    &fixture.output,
+                    Fixture::name(),
+                    !auto_save,
+                    &|| Ok(()),
+                    &mut Ahead::default(),
+                    fixture.naming(),
+                )
+                .unwrap()
+            };
+            let (saved, omitted) = save();
+            assert!(omitted.is_empty());
+            let saved = saved.unwrap();
+            let recording = fs::read(&saved).unwrap();
+            let replay = Replay::open(recording.clone()).unwrap();
+            assert_eq!(replay.gaps, [lost]);
+            assert!(replay.controls.iter().any(|control| {
+                matches!(
+                    control,
+                    ControlRecord::Partial {
+                        failed_hour: None,
+                        ..
+                    }
+                )
+            }));
+            assert_eq!(recorded_frames(&saved), [(9, 2), (9, 3), (9, 4)]);
+            assert_eq!(save().0, Some(saved.clone()));
+            assert_eq!(fs::read(saved).unwrap(), recording);
+        }
+    }
+}
+
+#[test]
+fn a_new_branch_lost_before_its_first_frame_is_added_only_with_admitted_clock_evidence() {
+    for auto_save in [false, true] {
+        for (clock, admitted) in [(true, true), (true, false), (false, true)] {
+            let fixture = Fixture::new(&format!(
+                "checkpoint-explicit-new-branch-{auto_save}-{clock}-{admitted}"
+            ));
+            let loads: &[i64] = if admitted { &[19, 21] } else { &[19] };
+            let (checkpoint, session) = checkpointed_load(&fixture, auto_save, loads);
+            let campaign = fixture.campaign(&fixture.session);
+            let branch = BranchStart {
+                id: 10,
+                session: 7,
+                loaded_hour: Some(4),
+                first_hour: 5,
+                parent: Parentage::Unknown,
+                reason: replay_frame::branches::BranchReason::LoadSignal,
+            };
+            let lost = Gap {
+                branch: 10,
+                first_hour: 5,
+                last_hour: 5,
+                reason: "spool write failed".into(),
+            };
+            let witnessed = ControlRecord::ClockWitness {
+                session: 7,
+                qpc: 10_005,
+                hour: 5,
+                load_signal: Some(21),
+            };
+            let mut records = vec![
+                session,
+                Record::BranchStart(branch.clone()),
+                Record::Gap(lost.clone()),
+            ];
+            if clock {
+                records.push(Record::Control(witnessed.clone()));
+            }
+            let bytes = write_tail(&campaign, &records);
+            let recording = fs::read(&checkpoint.recording).unwrap();
+            let before = read_saved(&campaign).unwrap().segments;
+            for _ in 0..2 {
+                let (saved, omitted) = save_campaign(
+                    &fixture.session,
+                    &fixture.output,
+                    Fixture::name(),
+                    !auto_save,
+                    &|| Ok(()),
+                    &mut Ahead::default(),
+                    fixture.naming(),
+                )
+                .unwrap();
+                let saved = saved.unwrap();
+                assert_eq!(recorded_frames(&saved), [(9, 2), (9, 3), (9, 4)]);
+                let after = held_recording(&saved).unwrap();
+                if clock && admitted {
+                    assert!(omitted.is_empty());
+                    assert_eq!(after.branches.last(), Some(&branch));
+                    assert_eq!(after.gaps.last(), Some(&lost));
+                    assert_eq!(after.controls.last(), Some(&witnessed));
+                    assert_eq!(
+                        read_saved(&campaign).unwrap().segments.get(&1),
+                        Some(&(bytes.len() as u64))
+                    );
+                } else {
+                    // No admitted load names the branch: nothing is guessed, and the spool waits.
+                    assert_eq!(saved, checkpoint.recording);
+                    assert_eq!(
+                        omitted
+                            .iter()
+                            .map(|omission| (omission.load, omission.hours))
+                            .collect::<Vec<_>>(),
+                        [(clock.then_some(21), 0)]
+                    );
+                    assert!(!after.branches.iter().any(|known| known.id == 10));
+                    drop(after);
+                    assert_eq!(fs::read(&saved).unwrap(), recording);
+                    assert_eq!(read_saved(&campaign).unwrap().segments, before);
+                }
+            }
+            assert_eq!(fs::read(campaign.join("spool.0001.h4s")).unwrap(), bytes);
         }
     }
 }
@@ -2074,5 +2436,97 @@ fn restarted_finalization_counts_checkpointed_and_pending_spool_segments_once() 
                 "{output}"
             );
         }
+    }
+}
+
+#[test]
+fn an_ended_checkpoint_without_spools_still_finalizes_and_reports_its_saved_bytes() {
+    let fixture = Fixture::new("ended-checkpoint-without-spools");
+    let campaign = fixture.campaign(&fixture.session);
+    let spool = write_load_segment(&campaign, 0, 9, 2..=4, 19);
+    let spool_bytes = fs::metadata(&spool).unwrap().len();
+    let checkpoint = fixture.checkpoint(0, true, &mut Ahead::default());
+    write_session_end(
+        &fixture.session,
+        &fixture.output,
+        "completed.json",
+        &json!({"waiting": []}),
+    )
+    .unwrap();
+    assert!(!spool.exists());
+    assert!(spooled_campaigns(&fixture.session).unwrap().is_empty());
+    let bytes = fs::read(&checkpoint.recording).unwrap();
+    let capture = OutputCapture::new();
+    for _ in 0..2 {
+        let done = finalize_session_ahead(
+            &fixture.session,
+            &fixture.output,
+            &|| Ok(()),
+            Ahead::default(),
+            fixture.naming(),
+            &|_| Destination::Recording,
+        )
+        .unwrap();
+        assert!(done.errors.is_empty(), "{:?}", done.errors);
+        assert!(done.failed_campaigns.is_empty());
+        assert_eq!(done.replays, [checkpoint.recording.clone()]);
+        assert_eq!(recorded_frames(&done.replays[0]), [(9, 2), (9, 3), (9, 4)]);
+        assert_eq!(fs::read(&done.replays[0]).unwrap(), bytes);
+        let output = capture.take();
+        let headers: Vec<_> = output
+            .lines()
+            .filter(|line| line.starts_with("finalize_s="))
+            .collect();
+        assert_eq!(headers.len(), 1, "{output}");
+        assert!(
+            headers[0].ends_with(&format!("spool_bytes={spool_bytes}")),
+            "{output}"
+        );
+        assert!(
+            output.lines().any(|line| line.starts_with("hours=3 ")),
+            "{output}"
+        );
+    }
+}
+
+#[test]
+fn an_unverifiable_saved_only_revision_is_refused_even_with_terminal_ranges() {
+    for with_range in [false, true] {
+        let fixture = Fixture::new(&format!("ended-unverified-checkpoint-{with_range}"));
+        let campaign = fixture.campaign(&fixture.session);
+        let spool = write_load_segment(&campaign, 0, 9, 2..=4, 19);
+        let checkpoint = fixture.checkpoint(0, true, &mut Ahead::default());
+        write_session_end(
+            &fixture.session,
+            &fixture.output,
+            "completed.json",
+            &json!({"waiting": []}),
+        )
+        .unwrap();
+        assert!(!spool.exists());
+        let mut saved = read_saved(&campaign).unwrap();
+        saved.revision.crc ^= 1;
+        write_saved(&campaign, &saved).unwrap();
+        let bookkeeping = fs::read(campaign.join(SAVED_FILE)).unwrap();
+        let bytes = fs::read(&checkpoint.recording).unwrap();
+        if with_range {
+            let witness = TerminalWitness {
+                committed_campaign_id: None,
+                committed_segment: None,
+                committed_bytes: 0,
+                failed_hour: None,
+                uncommitted: Some(crate::test_support::allocation_range(9, Some(19), 5..=6)),
+                ..crate::test_support::allocation_witness(0)
+            };
+            fs::write(fixture.session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        }
+        let done = finalize_session_outcome(&fixture.session, &fixture.output).unwrap();
+        assert!(done.replays.is_empty());
+        assert!(done.failed_campaigns.contains(Fixture::name()));
+        assert_eq!(done.errors.len(), 1);
+        assert!(done.errors[0].contains("saved revision cannot be verified; spool retained"));
+        assert_eq!(fs::read(&checkpoint.recording).unwrap(), bytes);
+        assert_eq!(fs::read(campaign.join(SAVED_FILE)).unwrap(), bookkeeping);
+        assert!(segment_paths(&campaign).unwrap().is_empty());
     }
 }

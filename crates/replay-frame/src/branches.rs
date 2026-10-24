@@ -337,6 +337,40 @@ impl BranchTracker {
         Ok(())
     }
 
+    /// Resume exact gap evidence without adding missing hours to recorded history.
+    pub fn resume_observation(
+        &mut self,
+        session: SessionId,
+        branch: BranchId,
+        hour: Hour,
+        load_signal: Option<i64>,
+    ) -> io::Result<()> {
+        if self.session.is_some() {
+            return Err(invalid("resume before beginning or observing a session"));
+        }
+        let history = self
+            .history(branch)
+            .ok_or_else(|| invalid("unknown observed branch"))?;
+        if history.start.session != session
+            || hour < history.start.first_hour
+            || history
+                .recorded
+                .last()
+                .is_some_and(|recorded| *recorded > hour)
+        {
+            return Err(invalid(
+                "observed tail conflicts with recorded branch history",
+            ));
+        }
+        self.session = Some(session);
+        self.last = Some(LastObservation {
+            branch,
+            hour,
+            load_signal,
+        });
+        Ok(())
+    }
+
     pub fn branch_start(&self, branch: BranchId) -> Option<&BranchStart> {
         self.history(branch).map(|history| &history.start)
     }
@@ -549,6 +583,33 @@ fn continues(previous: Hour, next: Hour, gaps: &[Gap]) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resuming_an_observed_gap_never_claims_missing_hours_as_recorded() {
+        let mut tracker = BranchTracker::new();
+        tracker
+            .seed_recorded_branch(
+                BranchStart {
+                    id: 1,
+                    session: 7,
+                    loaded_hour: None,
+                    first_hour: 2,
+                    parent: Parentage::Unknown,
+                    reason: BranchReason::SessionStart,
+                },
+                [],
+            )
+            .unwrap();
+        assert!(tracker.resume_observation(8, 1, 4, Some(19)).is_err());
+        assert!(tracker.resume_observation(7, 1, 1, Some(19)).is_err());
+        tracker.resume_observation(7, 1, 4, Some(19)).unwrap();
+        assert!(tracker.recorded_hours(1).unwrap().is_empty());
+        let next = tracker.observe(None, 9, Some(20), &[]).unwrap();
+        assert_eq!(next.branch, 2);
+        assert_eq!(next.start.unwrap().parent, Parentage::Unknown);
+        assert!(tracker.recorded_hours(1).unwrap().is_empty());
+        assert!(tracker.recorded_hours(2).unwrap().is_empty());
+    }
 
     #[test]
     fn native_world_change_splits_an_otherwise_continuous_clock_once() {

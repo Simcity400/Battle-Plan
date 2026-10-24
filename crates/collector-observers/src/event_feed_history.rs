@@ -36,8 +36,11 @@ struct Staged {
     consumed: bool,
 }
 
-// Spool recycles one captured frame before completing its prepared write.
-pub const PUBLICATION_CAPACITY: usize = collector_extended_support::hourly::BUFFERS + 1;
+/// A seal whose receipt room could not be grown off the lease.
+pub const RECEIPT_STORAGE: &str = "Event feed publication receipts need prepared storage";
+
+/// Publication outcome: accepted, discarded, or still in flight.
+pub type Receipt = (u64, Option<bool>);
 
 /// Bumped whenever an owner certificate is retired, or an owner the next
 /// census would baseline is refused. Constant work, so native callbacks may
@@ -333,6 +336,18 @@ pub struct DetachLosses {
     pub failed_batches: u64,
 }
 impl Prepared {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(row: EventFeedHistoryRow) -> Self {
+        Self { row, revision: 0 }
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        self.row.events.capacity() * size_of::<EventFeedEvent>()
+            + self.row.script_tokens.capacity()
+            + self.row.script_scopes.capacity() * size_of::<EventFeedScope>()
+            + self.row.failure.as_ref().map_or(0, Vec::capacity)
+    }
+
     pub fn row(&self) -> &EventFeedHistoryRow {
         &self.row
     }
@@ -360,8 +375,8 @@ pub struct Store {
     next_sequence: u64,
     revision: u64,
     accepted_revision: u64,
-    // Accounting-only snapshots also need an exact receipt for uncertain writes.
-    publications: [Option<u64>; PUBLICATION_CAPACITY],
+    /// Ascending pending seals, including accounting-only output; grown off-lease.
+    publications: Vec<u64>,
     failed_batches: u64,
     counts: EventFeedCounts,
     counts_valid: bool,
@@ -432,7 +447,7 @@ impl Store {
             next_sequence,
             revision: 0,
             accepted_revision: 0,
-            publications: [None; PUBLICATION_CAPACITY],
+            publications: Vec::new(),
             failed_batches: 0,
             counts: EventFeedCounts::default(),
             counts_valid: true,
@@ -1424,26 +1439,72 @@ impl Store {
     /// Only the hourly consumer touches live history. Output acknowledges an
     /// immutable publication number, so newer callbacks cannot stale its receipt.
     pub fn acknowledged(&mut self, publication: u64) {
-        let Some(pending) = self
-            .publications
-            .iter_mut()
-            .find(|pending| **pending == Some(publication))
-        else {
-            return;
+        self.receipts(&[(publication, Some(true))]);
+    }
+    pub fn discarded(&mut self, publication: u64) {
+        self.receipts(&[(publication, Some(false))]);
+    }
+    /// Strictly ascending receipts; one allocation-free entry pass per batch.
+    pub fn receipts(&mut self, receipts: &[Receipt]) {
+        let pending = &self.publications;
+        let received = |publication: u64| {
+            pending.binary_search(&publication).ok()?;
+            let index = receipts
+                .binary_search_by_key(&publication, |receipt| receipt.0)
+                .ok()?;
+            receipts[index].1
         };
-        *pending = None;
-        self.accepted_revision = self.accepted_revision.max(publication);
+        if !receipts
+            .iter()
+            .any(|&(publication, _)| received(publication).is_some())
+        {
+            return;
+        }
+        // Different publications touch different entries.
         for entry in &mut self.entries {
-            if entry.publication == Some(publication) {
-                entry.state = match entry.state {
-                    State::Known | State::Failed => State::Published,
-                    State::Pending if matches!(entry.proof, Some(Proof::Annex)) => {
-                        State::PublishedPending
-                    }
-                    state => state,
-                };
+            match entry.publication.and_then(received) {
+                Some(true) => {
+                    entry.state = match entry.state {
+                        State::Known | State::Failed => State::Published,
+                        State::Pending if matches!(entry.proof, Some(Proof::Annex)) => {
+                            State::PublishedPending
+                        }
+                        state => state,
+                    };
+                }
+                Some(false)
+                    if !matches!(entry.state, State::Published | State::PublishedPending) =>
+                {
+                    entry.publication = None;
+                }
+                _ => {}
             }
         }
+        let mut previous = None;
+        for &(publication, outcome) in receipts {
+            let Some(accepted) = outcome else {
+                continue;
+            };
+            if previous == Some(publication)
+                || self.publications.binary_search(&publication).is_err()
+            {
+                continue;
+            }
+            previous = Some(publication);
+            if accepted {
+                self.accept_publication(publication);
+            } else {
+                self.discard_publication(publication);
+            }
+        }
+        self.publications.retain(|&publication| {
+            receipts
+                .binary_search_by_key(&publication, |receipt| receipt.0)
+                .map_or(true, |index| receipts[index].1.is_none())
+        });
+    }
+    fn accept_publication(&mut self, publication: u64) {
+        self.accepted_revision = self.accepted_revision.max(publication);
         if self
             .handoff
             .is_some_and(|(handoff, _)| handoff == publication)
@@ -1455,23 +1516,8 @@ impl Store {
             self.handoff = None;
         }
     }
-    pub fn discarded(&mut self, publication: u64) {
-        let Some(pending) = self
-            .publications
-            .iter_mut()
-            .find(|pending| **pending == Some(publication))
-        else {
-            return;
-        };
-        *pending = None;
+    fn discard_publication(&mut self, publication: u64) {
         self.failed_batches += 1;
-        for entry in &mut self.entries {
-            if entry.publication == Some(publication)
-                && !matches!(entry.state, State::Published | State::PublishedPending)
-            {
-                entry.publication = None;
-            }
-        }
         // The next seal publishes these entries again.
         self.unpublished_from = 0;
         if self
@@ -1481,6 +1527,25 @@ impl Store {
             self.handoff = None;
         }
         self.invalidate("Event feed hourly snapshot discarded before output");
+    }
+    /// The receipt room the next seal needs, when it has none.
+    pub fn receipt_room(&self) -> Option<usize> {
+        let len = self.publications.len();
+        (len == self.publications.capacity()).then(|| len.saturating_mul(2).max(len + 1))
+    }
+    /// Adopt off-lease room; the caller frees the replaced storage off-lease.
+    pub fn install_receipts(&mut self, spare: &mut Vec<u64>) {
+        if self.publications.len() == self.publications.capacity()
+            && spare.capacity() > self.publications.len()
+        {
+            spare.clear();
+            spare.extend_from_slice(&self.publications);
+            std::mem::swap(&mut self.publications, spare);
+        }
+    }
+    #[cfg(test)]
+    fn reserve_receipt(&mut self) -> Result<(), &'static str> {
+        allocation::reserve(&mut self.publications, 1).map_err(|_| RECEIPT_STORAGE)
     }
     pub fn unacknowledged(&self) -> usize {
         self.entries
@@ -1505,7 +1570,7 @@ impl Store {
         if self.outstanding() != 0 || self.retained.is_some() {
             return Err("Event feed owner has unsettled native ownership");
         }
-        if self.publications.iter().any(Option::is_some) || self.unacknowledged() != 0 {
+        if !self.publications.is_empty() || self.unacknowledged() != 0 {
             return Err("Event feed output receipt remains uncertain");
         }
         Ok(DetachLosses {
@@ -1521,6 +1586,7 @@ impl Store {
         boundary: OwnerBoundary,
     ) -> Result<(), &'static str> {
         self.prepare_boundary::<engine_native::memory::LiveMemory>(boundary, None)?;
+        self.reserve_receipt()?;
         self.seal(output, boundary, false)
     }
     #[cfg(test)]
@@ -1661,8 +1727,7 @@ impl Store {
     }
     /// The boundary worker's second half: publish everything reached since
     /// the previous seal, including the prepared hour's census markers. In
-    /// production the output was grown off the lease from [`Self::seal_demand`]
-    /// and nothing grows here; a shortfall refuses the hour.
+    /// production output and receipt room grow off-lease; shortfalls refuse the hour.
     pub fn seal(
         &mut self,
         output: &mut Snapshot,
@@ -1734,17 +1799,18 @@ impl Store {
                 boundary_refusal = self.failure.is_some();
             }
         }
-        let publication_slot = self
-            .publications
-            .iter()
-            .position(Option::is_none)
-            .ok_or("Event feed publication receipts exceed pipeline capacity")?;
+        if growing {
+            allocation::reserve(&mut self.publications, 1).map_err(|_| RECEIPT_STORAGE)?;
+        }
+        if self.publications.len() == self.publications.capacity() {
+            return Err(RECEIPT_STORAGE);
+        }
         self.advance()?;
         if boundary_refusal {
             // An older in-flight publication cannot acknowledge this loss.
             self.failure_revision = self.revision;
         }
-        self.publications[publication_slot] = Some(self.revision);
+        self.publications.push(self.revision);
         output.events.clear();
         output.script_tokens.clear();
         output.script_scopes.clear();
@@ -1904,3 +1970,5 @@ pub(crate) mod recovery;
 pub(crate) mod registry;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod write_behind_tests;

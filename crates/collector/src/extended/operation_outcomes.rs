@@ -109,9 +109,22 @@ pub(crate) struct Publication {
     cursors: Vec<hooks::LaneCursor>,
 }
 impl Publication {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.cursors.capacity() * size_of::<hooks::LaneCursor>()
+    }
+
+    /// Allocation-free; call after queue admission and before assembling another interval.
+    pub(crate) fn admitted(&self) {
+        self.handoff.admitted(&self.cursors);
+    }
     pub(crate) fn commit(self) {
         self.handoff.commit(&self.cursors);
     }
+}
+
+/// After the writer lost admitted frames, once none of them is still queued.
+pub(crate) fn reset_admitted() {
+    hooks::reset_admitted();
 }
 impl Ledger {
     /// Spool worker only. A lost/short/overflown interval yields no event rows;

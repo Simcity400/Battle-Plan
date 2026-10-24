@@ -1,6 +1,6 @@
 //! The hourly map event interval. The game thread seals its coverage in
-//! constant time; the spool thread copies, decodes and writes its events and
-//! frees their lane space only after the frame is written.
+//! constant time; the spool thread copies, decodes and queues its events,
+//! and frees their lane space only after the frame is written.
 use crate::{map_events, spooling::unavailable};
 use engine_native::walk::Outcome;
 use replay_data::{rows::TableId, rows::TableRows};
@@ -54,9 +54,22 @@ pub struct Ledger;
 /// What committing a written interval frees.
 pub(crate) struct Publication(map_events::lanes::Assembled);
 impl Publication {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.0.allocated_bytes()
+    }
+
+    /// Allocation-free; call after queue admission and before assembling another interval.
+    pub(crate) fn admitted(&self) {
+        self.0.admitted();
+    }
     pub(crate) fn commit(self) {
         self.0.commit();
     }
+}
+
+/// After the writer lost admitted frames, once none of them is still queued.
+pub(crate) fn reset_admitted() {
+    map_events::lanes::reset_admitted();
 }
 
 impl Ledger {

@@ -151,6 +151,7 @@ mod spool_compare;
 mod spool_helper;
 mod spool_phases;
 mod spool_segments;
+mod spool_writer;
 mod spooling;
 pub(crate) use collector_status::status;
 #[cfg(test)]

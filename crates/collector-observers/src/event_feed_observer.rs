@@ -16,7 +16,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     ptr,
     sync::{
-        Arc, LazyLock, Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -34,9 +34,28 @@ static FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static FAULT: AtomicU32 = AtomicU32::new(0);
 static SHARED: AtomicPtr<Owner> = AtomicPtr::new(ptr::null_mut());
 static TARGETS: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
-static RECEIPTS: LazyLock<crossbeam_queue::ArrayQueue<(u64, bool)>> = LazyLock::new(|| {
-    crossbeam_queue::ArrayQueue::new(crate::event_feed_history::PUBLICATION_CAPACITY)
+/// One receipt cell per seal; a backlog cannot overflow it.
+struct Ledger {
+    /// The [`Owner::serial`] the cells belong to.
+    owner: u64,
+    cells: Vec<crate::event_feed_history::Receipt>,
+}
+static LEDGER: Mutex<Ledger> = Mutex::new(Ledger {
+    owner: 0,
+    cells: Vec::new(),
 });
+static OWNERS: AtomicU64 = AtomicU64::new(1);
+/// `owner`'s cells; an earlier owner's can never be received and are dropped.
+fn ledger(owner: &Owner) -> std::sync::MutexGuard<'static, Ledger> {
+    let mut ledger = LEDGER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if ledger.owner != owner.serial {
+        ledger.cells.clear();
+        ledger.owner = owner.serial;
+    }
+    ledger
+}
 static DEMAND: AtomicUsize = AtomicUsize::new(0);
 static CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static WITNESS_CAPACITY: AtomicUsize = AtomicUsize::new(0);
@@ -493,6 +512,8 @@ pub(crate) fn writer_cut_holds(cut: u64) -> bool {
 
 struct Owner {
     base: usize,
+    /// Unique per owner, unlike its address: keys its receipt cells.
+    serial: u64,
     armed: AtomicBool,
     /// [`HOLDER`] role, Candidate identity/wakeup flags and [`WORKER_WAITING`].
     busy: AtomicU64,
@@ -530,6 +551,7 @@ impl Owner {
     fn new(base: usize, store: Store) -> Arc<Self> {
         Arc::new(Self {
             base,
+            serial: OWNERS.fetch_add(1, Ordering::Relaxed),
             armed: AtomicBool::new(false),
             busy: AtomicU64::new(0),
             releases: AtomicU64::new(0),
@@ -1346,7 +1368,6 @@ impl Hooks {
     ) -> Result<Self, &'static str> {
         let mut store = Store::new(last_sequence)?;
         store.restore_counts(counts);
-        LazyLock::force(&RECEIPTS);
         let capacity = slots.saturating_mul(2).max(1024);
         store
             .prepare_capacity(capacity)
@@ -1483,7 +1504,7 @@ impl Held {
             return Err("Event feed owner has unsettled native ownership");
         }
         self.owner.access(Role::Detach, |store| {
-            take_receipts(store);
+            take_receipts(&self.owner, store);
             store.detach_losses()
         })?
     }
@@ -1496,14 +1517,11 @@ impl Drop for Hooks {
     }
 }
 
-fn take_receipts(store: &mut Store) {
-    while let Some((publication, accepted)) = RECEIPTS.pop() {
-        if accepted {
-            store.acknowledged(publication);
-        } else {
-            store.discarded(publication);
-        }
-    }
+/// Under the lease; resolved cells are applied without allocation.
+fn take_receipts(owner: &Owner, store: &mut Store) {
+    let mut ledger = ledger(owner);
+    store.receipts(&ledger.cells);
+    ledger.cells.retain(|(_, outcome)| outcome.is_none());
 }
 
 /// Native flights of the CALL hooks (bit 63 retains the owner) and the
@@ -1589,7 +1607,7 @@ pub fn prepare_growing(hour: i32, partial: bool) -> Result<(), &'static str> {
         unsafe { SHARED.load(Ordering::SeqCst).as_ref() }.ok_or("Event feed hooks unavailable")?;
     owner
         .worker(Role::BoundaryPrepare, |store| {
-            take_receipts(store);
+            take_receipts(owner, store);
             install_offered(store);
             let failure = input_failure(owner);
             let boundary = crate::event_feed_history::OwnerBoundary {
@@ -1641,8 +1659,7 @@ pub(crate) fn presize_owner_for_test(
 }
 
 /// The prepared hour's publication on a collector worker, after its census.
-/// One lease measures it, the output grows off the lease, and a second lease
-/// seals without growing. Nothing allocates under the shared-store lease.
+/// Grow output and receipts off-lease; one owner never seals concurrently.
 pub fn seal_growing(output: &mut Snapshot, hour: i32, partial: bool) {
     seal_hour(output, hour, partial, || {});
 }
@@ -1654,21 +1671,29 @@ fn seal_hour(output: &mut Snapshot, hour: i32, partial: bool, during: impl FnOnc
         output.refuse(generation, hour, "Event feed hooks unavailable");
         return;
     };
-    match owner.worker(Role::BoundarySeal, |store| store.seal_demand()) {
-        // A failed reservation leaves the sealing lease to refuse the hour
-        // with its storage shortage.
-        Ok(Ok(demand)) => {
-            let _ = output.reserve_with_headroom(demand);
+    let room = match owner.worker(Role::BoundarySeal, |store| {
+        (store.seal_demand(), store.receipt_room())
+    }) {
+        Ok((demand, room)) => {
+            // The sealing lease names any demand or storage failure.
+            if let Ok(demand) = demand {
+                let _ = output.reserve_with_headroom(demand);
+            }
+            room
         }
-        // The sealing lease names the same demand failure.
-        Ok(Err(_)) => {}
         Err(reason) => {
             owner.revoke_world();
             output.refuse(generation, hour, reason);
             return;
         }
-    }
+    };
+    // Receipts only free room, so what is grown here still fits the seal.
+    let mut spare = room
+        .and_then(|room| engine_allocation::vec(room).ok())
+        .unwrap_or_default();
+    let cell = engine_allocation::reserve(&mut ledger(owner).cells, 1).is_ok();
     let sealed = owner.sealing(Role::BoundarySeal, |store| {
+        store.install_receipts(&mut spare);
         let boundary = crate::event_feed_history::OwnerBoundary {
             generation,
             read_hour: hour,
@@ -1677,7 +1702,11 @@ fn seal_hour(output: &mut Snapshot, hour: i32, partial: bool, during: impl FnOnc
         };
         // Callbacks may have added facts since the measure: a shortfall
         // refuses the hour with its storage reason.
-        let result = store.seal(output, boundary, false);
+        let result = if cell {
+            store.seal(output, boundary, false)
+        } else {
+            Err(crate::event_feed_history::RECEIPT_STORAGE)
+        };
         if let Err(reason) = result {
             store.invalidate(reason);
         }
@@ -1688,8 +1717,18 @@ fn seal_hour(output: &mut Snapshot, hour: i32, partial: bool, during: impl FnOnc
         let publication = result.is_ok().then(|| output.publication());
         (result, publication)
     });
+    drop(spare);
     match sealed {
         Ok((Ok(()), declined)) => {
+            // Before the output leaves this boundary, so before its receipt.
+            let mut ledger = ledger(owner);
+            if ledger.cells.len() < ledger.cells.capacity() {
+                ledger.cells.push((output.publication(), None));
+            } else {
+                // Only seals add cells, one at a time, each into reserved room.
+                fault(OWNERSHIP_FAULT);
+            }
+            drop(ledger);
             if declined != 0 {
                 // Declined while this seal held the store: before the next
                 // interval began, so they refuse this row and only this row.
@@ -1705,19 +1744,30 @@ fn seal_hour(output: &mut Snapshot, hour: i32, partial: bool, during: impl FnOnc
     }
 }
 
+/// Resolve only after the real write; the reserved cell cannot overflow.
 pub fn accepted(pack: &crate::event_feed_history::Prepared) -> std::io::Result<()> {
-    if pack.publication() != 0 {
-        RECEIPTS
-            .push((pack.publication(), true))
-            .map_err(|_| std::io::Error::other("Event feed output receipt queue full"))?;
-    }
+    resolve(pack.publication(), true);
     Ok(())
 }
 
+/// Allocation-free rejection of an unwritten or uncertain publication.
 pub fn discarded(publication: u64) {
-    if publication != 0 && RECEIPTS.push((publication, false)).is_err() {
-        // The frame pool plus the prepared spool write bound receipts.
-        fault(OWNERSHIP_FAULT);
+    resolve(publication, false);
+}
+
+/// Only a pending publication's first outcome counts.
+fn resolve(publication: u64, accepted: bool) {
+    if publication == 0 {
+        return;
+    }
+    let mut ledger = LEDGER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Ok(index) = ledger
+        .cells
+        .binary_search_by_key(&publication, |cell| cell.0)
+    {
+        ledger.cells[index].1.get_or_insert(accepted);
     }
 }
 
@@ -2631,9 +2681,20 @@ mod tests {
         hour: i32,
         during: &dyn Fn(),
     ) -> crate::event_feed_history::Prepared {
+        let pack = seal_unwritten(owner, output, hour, during);
+        accepted(&pack).unwrap();
+        pack
+    }
+    /// One hour's boundary and seal, its output not yet written.
+    fn seal_unwritten(
+        owner: &Owner,
+        output: &mut Snapshot,
+        hour: i32,
+        during: &dyn Fn(),
+    ) -> crate::event_feed_history::Prepared {
         owner
             .worker(Role::BoundaryPrepare, |store| {
-                take_receipts(store);
+                take_receipts(owner, store);
                 store.prepare_boundary::<engine_native::memory::LiveMemory>(
                     crate::event_feed_history::OwnerBoundary {
                         generation: crate::world_lifetime::generation(),
@@ -2647,14 +2708,51 @@ mod tests {
             .unwrap()
             .unwrap();
         seal_hour(output, hour, false, during);
-        let pack = output.prepare_pack().unwrap();
-        accepted(&pack).unwrap();
-        pack
+        output.prepare_pack().unwrap()
     }
     /// Test only: the store while nothing holds it.
     fn store(owner: &Owner) -> &Store {
         assert_eq!(owner.busy.load(Ordering::SeqCst) & HOLDER, 0);
         unsafe { &*owner.store.get() }
+    }
+
+    #[test]
+    fn a_write_behind_backlog_seals_every_hour_and_counts_each_receipt_once() {
+        use replay_data::event_feed_rows::EventFeedCoverage;
+        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+        let _restore = RestoreTestGlobals::new();
+        let owner = sealing_owner();
+        let mut output = Snapshot::new(0);
+        // Far more hours than any frame pool, none written yet.
+        let packs: Vec<_> = (1..=64)
+            .map(|hour| seal_unwritten(&owner, &mut output, hour, &|| {}))
+            .collect();
+        assert!(packs.iter().all(|pack| pack.row().failure.is_none()));
+        assert_eq!(ledger(&owner).cells.len(), 64);
+        // First outcome wins, even when later receipts disagree.
+        discarded(packs[9].publication());
+        for pack in &packs {
+            accepted(pack).unwrap();
+        }
+        discarded(packs[20].publication());
+        accepted(&packs[9]).unwrap();
+        discarded(packs[63].publication() + 1000);
+        assert!(ledger(&owner).cells.iter().all(|cell| cell.1.is_some()));
+        let next = seal_unwritten(&owner, &mut output, 65, &|| {});
+        assert_eq!(next.row().coverage, EventFeedCoverage::Unavailable);
+        assert_eq!(ledger(&owner).cells.len(), 1);
+        accepted(&next).unwrap();
+        let losses = owner
+            .access(Role::Detach, |store| {
+                take_receipts(&owner, store);
+                store.detach_losses()
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(losses.failed_batches, 1);
+        assert!(ledger(&owner).cells.is_empty());
+        assert_eq!(store(&owner).unacknowledged(), 0);
+        forwarders_off();
     }
 
     #[test]
