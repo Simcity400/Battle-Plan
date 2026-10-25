@@ -8,6 +8,103 @@ use std::{io, sync::LazyLock};
 
 mod resume;
 
+pub struct FrameAdvance {
+    branch: crate::BranchId,
+    hour: Hour,
+    previous_hour: Hour,
+    metrics: super::Metrics,
+    tables: [Option<SharedView>; TABLE_COUNT],
+    pending: [bool; TABLE_COUNT],
+}
+
+impl FrameAdvance {
+    fn validate(
+        previous: Option<&DecodedFrame>,
+        frame: &(impl super::FrameSource + ?Sized),
+    ) -> io::Result<()> {
+        if previous
+            .is_some_and(|current| current.branch == frame.branch() && current.hour >= frame.hour())
+        {
+            return Err(invalid("frame hour did not advance on its branch"));
+        }
+        if frame.keyframe() && !(0..TABLE_COUNT).all(|index| keyframe_update(frame.update(index))) {
+            return Err(invalid("keyframe contains a dependent or partial table"));
+        }
+        Ok(())
+    }
+    pub fn begin(
+        previous: Option<DecodedFrame>,
+        frame: &(impl super::FrameSource + ?Sized),
+        selected: &[bool; TABLE_COUNT],
+    ) -> io::Result<Self> {
+        Self::validate(previous.as_ref(), frame)?;
+        let continues = previous
+            .as_ref()
+            .is_some_and(|current| !frame.keyframe() && current.branch == frame.branch());
+        let (previous_hour, mut tables) = match previous {
+            Some(frame) => (frame.hour, frame.tables.map(Some)),
+            None => (frame.hour(), std::array::from_fn(|_| None)),
+        };
+        for (index, view) in tables.iter_mut().enumerate() {
+            if selected[index] {
+                if !continues {
+                    *view = None;
+                }
+            } else if view.is_none() {
+                *view = Some(not_selected());
+            }
+        }
+        Ok(Self {
+            branch: frame.branch(),
+            hour: frame.hour(),
+            previous_hour,
+            metrics: frame.metrics().clone(),
+            tables,
+            pending: *selected,
+        })
+    }
+
+    pub fn previous(&self, table: TableId) -> Option<(Hour, &SharedView)> {
+        self.pending[table.index()]
+            .then(|| {
+                self.tables[table.index()]
+                    .as_ref()
+                    .map(|view| (self.previous_hour, view))
+            })
+            .flatten()
+    }
+
+    pub fn take_previous(&mut self, table: TableId) -> Option<(Hour, SharedView)> {
+        self.tables[table.index()]
+            .take()
+            .filter(|view| matches!(**view, TableView::Complete(_)))
+            .map(|view| (self.previous_hour, view))
+    }
+
+    pub fn install(&mut self, table: TableId, view: SharedView) {
+        self.tables[table.index()] = Some(view);
+        self.pending[table.index()] = false;
+    }
+
+    pub fn reached(&self, table: TableId) -> Option<&SharedView> {
+        (!self.pending[table.index()])
+            .then(|| self.tables[table.index()].as_ref())
+            .flatten()
+    }
+
+    pub fn finish(self) -> io::Result<DecodedFrame> {
+        if self.pending.iter().any(|pending| *pending) {
+            return Err(invalid("hour has unapplied tables"));
+        }
+        Ok(DecodedFrame {
+            branch: self.branch,
+            hour: self.hour,
+            metrics: self.metrics,
+            tables: self.tables.map(|view| view.expect("all tables applied")),
+        })
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct FrameDecoder {
     current: Option<DecodedFrame>,
@@ -48,92 +145,35 @@ impl FrameDecoder {
         &mut self,
         frame: &(impl super::FrameSource + ?Sized),
     ) -> io::Result<&DecodedFrame> {
-        // Measurement only: each table's reconstruct cycles, when enabled.
         let _cpu = crate::cpu::scope("reconstruct", None);
         let measured = crate::cpu::enabled();
-        let mut spent: Vec<(usize, u64)> = Vec::new();
-        if self
-            .current
-            .as_ref()
-            .is_some_and(|current| current.branch == frame.branch() && current.hour >= frame.hour())
-        {
-            return Err(invalid("frame hour did not advance on its branch"));
-        }
-        // Reject frame-wide errors before moving any baseline. From here onward,
-        // a failed update clears only its table and becomes a named unavailable view.
-        if frame.keyframe() && !(0..TABLE_COUNT).all(|index| keyframe_update(frame.update(index))) {
-            return Err(invalid("keyframe contains a dependent or partial table"));
-        }
-        let selected = |index: usize| {
-            self.selected
-                .as_ref()
-                .is_none_or(|selected| selected[index])
-        };
-        // The hour before's views. An unselected table's is the shared
-        // unselected view, which moves on unchanged; a selected table's is
-        // its baseline only on the same branch and outside a keyframe, and
-        // is released before this hour's views are built otherwise.
-        let current = self.current.take();
-        let continues = current
-            .as_ref()
-            .is_some_and(|current| !frame.keyframe() && current.branch == frame.branch());
-        let (previous_hour, mut held) = match current {
-            Some(current) => (current.hour, current.tables.map(Some)),
-            None => (frame.hour(), std::array::from_fn(|_| None)),
-        };
-        if !continues {
-            for (index, view) in held.iter_mut().enumerate() {
-                if selected(index) {
-                    *view = None;
-                }
+        let selected = self.selected.unwrap_or([true; TABLE_COUNT]);
+        FrameAdvance::validate(self.current.as_ref(), frame)?;
+        let mut advancing = FrameAdvance::begin(self.current.take(), frame, &selected)?;
+        let mut spent = Vec::new();
+        for table in TableId::ALL {
+            let index = table.index();
+            if !selected[index] {
+                continue;
             }
-        }
-        let mut allocation_failure = None;
-        let tables = std::array::from_fn(|index| {
-            if !selected(index) {
-                return held[index].take().unwrap_or_else(not_selected);
-            }
-            if allocation_failure.is_some() {
-                return not_selected();
-            }
-            let table = TableId::ALL[index];
-            // Every complete table advances its baseline to the enclosing
-            // hour, including unchanged tables after a recorded gap.
-            let previous = held[index]
-                .take()
-                .filter(|view| matches!(**view, TableView::Complete(_)))
-                .map(|view| (previous_hour, view));
             let started = if measured { crate::cpu::stamp() } else { 0 };
-            let advanced = advance_public_table(
+            let previous = advancing.take_previous(table);
+            let view = advance_public_table(
                 table,
                 frame.update(index),
                 previous,
                 frame.hour(),
                 frame.metrics().table_ns[index] != 0,
-            );
+            )?;
+            advancing.install(table, view);
             if measured {
                 spent.push((index, crate::cpu::stamp().wrapping_sub(started)));
             }
-            match advanced {
-                Ok(view) => view,
-                Err(error) => {
-                    allocation_failure = Some(error);
-                    not_selected()
-                }
-            }
-        });
+        }
         if measured {
             crate::cpu::reconstructed(frame.hour(), &spent);
         }
-        if let Some(error) = allocation_failure {
-            return Err(error);
-        }
-        self.current = Some(DecodedFrame {
-            branch: frame.branch(),
-            hour: frame.hour(),
-            tables,
-            metrics: frame.metrics().clone(),
-        });
+        self.current = Some(advancing.finish()?);
         Ok(self.current.as_ref().unwrap())
     }
 }

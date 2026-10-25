@@ -1,3 +1,4 @@
+use super::check::Check;
 use super::{
     BlockIndex, Replay, Section,
     grouped::{Directory, LATER_CHUNK_HOURS},
@@ -27,6 +28,15 @@ impl Replay {
         section: Section,
     ) -> io::Result<SectionChunks<'_>> {
         let directory = Directory::read(self, index)?;
+        self.section_chunks_from(index, section, &directory)
+    }
+
+    pub(super) fn section_chunks_from(
+        &self,
+        index: &BlockIndex,
+        section: Section,
+        directory: &Directory,
+    ) -> io::Result<SectionChunks<'_>> {
         let mut chunks = Vec::new();
         for (slot, (offset, stored, raw)) in
             directory.chunk_extents(section).into_iter().enumerate()
@@ -73,13 +83,27 @@ impl ExactSizeIterator for SectionChunks<'_> {}
 
 impl SectionChunk<'_> {
     pub fn inflate_into(&self, buffer: &mut Vec<u8>) -> io::Result<()> {
+        self.inflate_admitted(buffer, true, &mut |_, _, _| Ok(()), &mut Check::disabled())
+    }
+
+    pub(super) fn inflate_admitted(
+        &self,
+        buffer: &mut Vec<u8>,
+        keep: bool,
+        admit: &mut dyn FnMut(usize, &[u8], &mut Check<'_>) -> io::Result<()>,
+        check: &mut Check<'_>,
+    ) -> io::Result<()> {
         buffer.clear();
-        if self.stored_length == 0 {
-            return Ok(());
-        }
+        check.run()?;
         let bytes =
             self.replay
                 .block_range(&self.index, self.offset, self.stored_length as usize)?;
-        Directory::inflate_into(&bytes, self.raw_length as usize, buffer)
+        // Admission observes the exact compressed buffer subsequently inflated.
+        admit(self.offset, &bytes, check)?;
+        check.run()?;
+        if self.stored_length == 0 {
+            return Ok(());
+        }
+        Directory::inflate_checked(&bytes, self.raw_length as usize, buffer, keep, check)
     }
 }

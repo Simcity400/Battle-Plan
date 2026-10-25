@@ -49,6 +49,7 @@ pub(super) enum Step {
     CatchUp(crate::rows::TableId, usize),
     Keys(usize),
     Verify(usize),
+    Source(usize),
 }
 
 #[cfg(test)]

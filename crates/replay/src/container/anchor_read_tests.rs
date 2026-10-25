@@ -146,6 +146,42 @@ fn selected_keyframe_matches_first_frame_with_bounded_held_reads() {
         TableId::CountryCommandPower,
     ];
     for index in &resident.index {
+        let block = resident.block_bytes(index).unwrap();
+        let parsed = Directory::parse(&block, index).unwrap();
+        let end = parsed
+            .sections
+            .iter()
+            .flatten()
+            .map(|entry| entry.0)
+            .min()
+            .unwrap();
+        for replay in [&resident, &held] {
+            let mut admissions = 0;
+            let (directory, requested) = super::super::file_backed::measure_held_reads(|| {
+                Directory::read_admitted(
+                    replay,
+                    index,
+                    Directory::prefix(replay, index).unwrap(),
+                    &mut |offset, bytes| {
+                        admissions += 1;
+                        assert_eq!(offset, 0);
+                        assert_eq!(bytes, &block[..end]);
+                        if !replay.is_file_backed() {
+                            assert_eq!(bytes.as_ptr(), block.as_ptr());
+                        }
+                        Ok(())
+                    },
+                )
+                .unwrap()
+            });
+            assert_eq!(admissions, 1);
+            assert_eq!(directory.read_bytes as u64, requested);
+            assert!(requested < index.length);
+            if replay.is_file_backed() {
+                assert!(requested >= end as u64);
+                assert!(requested < end as u64 + 4096);
+            }
+        }
         let expected = resident.read_block_selected(index, &selected).unwrap();
         assert_eq!(expected.len(), 2);
         assert_ne!(

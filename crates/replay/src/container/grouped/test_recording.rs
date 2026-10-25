@@ -23,7 +23,26 @@ pub(super) fn build(
 pub(super) fn build_branches(
     campaign: &[u8],
     branches: &[(BranchId, &[Hour], &[Hour])],
+    fill: impl FnMut(BranchId, Hour, &mut [TableView; TABLE_COUNT]) -> Metrics,
+) -> Replay {
+    build_branches_limit(campaign, branches, fill, MAX_BLOCK_RAW_BYTES)
+}
+
+pub(super) fn build_branches_limit(
+    campaign: &[u8],
+    branches: &[(BranchId, &[Hour], &[Hour])],
+    fill: impl FnMut(BranchId, Hour, &mut [TableView; TABLE_COUNT]) -> Metrics,
+    limit: usize,
+) -> Replay {
+    build_branches_mode(campaign, branches, fill, limit, CaptureMode::Full)
+}
+
+pub(super) fn build_branches_mode(
+    campaign: &[u8],
+    branches: &[(BranchId, &[Hour], &[Hour])],
     mut fill: impl FnMut(BranchId, Hour, &mut [TableView; TABLE_COUNT]) -> Metrics,
+    limit: usize,
+    mode: CaptureMode,
 ) -> Replay {
     let mut records = vec![Record::SessionStart(SessionStart {
         id: 1,
@@ -31,7 +50,7 @@ pub(super) fn build_branches(
         process_start_time: 1,
         qpc_frequency: 10_000_000,
         sample_boundary: crate::identity::SampleBoundary::EndOfHour,
-        capture_mode: crate::identity::CaptureMode::Full,
+        capture_mode: mode,
         identity: Identity {
             game_version: "test".into(),
             exe_hash: [1; 32],
@@ -78,15 +97,26 @@ pub(super) fn build_branches(
                     ..Default::default()
                 }]));
             let metrics = fill(branch, hour, &mut tables);
-            let frame = crate::frame::retire_absent(DecodedFrame {
+            let mut frame = crate::frame::retire_absent(DecodedFrame {
                 branch,
                 hour,
                 tables: tables.map(Into::into),
                 metrics,
             });
+            for table in crate::scope::omitted(mode) {
+                frame.tables[table.index()] = TableView::NotRecorded { mode }.into();
+            }
             let keyframe = keyframes.contains(&hour);
             records.push(Record::Frame(encoder.encode(frame, keyframe).unwrap()));
         }
     }
-    Replay::from_records(campaign.to_vec(), &[records]).unwrap()
+    Replay::from_record_slices(
+        campaign.to_vec(),
+        &[records.as_slice()],
+        super::super::Observer::Nothing,
+        super::super::Frames::Kept,
+        limit,
+        None,
+    )
+    .unwrap()
 }

@@ -18,6 +18,9 @@ use std::io;
 mod sparse;
 use sparse::Sparse;
 
+#[path = "private_aliases/streaming.rs"]
+pub(crate) mod streaming;
+
 pub(crate) const TABLES: &[TableId] = &[
     TableId::DivisionMovement,
     TableId::DivisionStatus,
@@ -359,6 +362,25 @@ fn transform(
     encode: bool,
     default: u16,
 ) -> io::Result<SharedView> {
+    transform_checked(
+        view,
+        sources,
+        marks,
+        encode,
+        default,
+        &mut Check::disabled(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transform_checked(
+    view: &TableView,
+    sources: &[(TableId, SharedView)],
+    marks: &mut Marks,
+    encode: bool,
+    default: u16,
+    check: &mut Check<'_>,
+) -> io::Result<SharedView> {
     let result = match view {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
             let rows = {
@@ -372,7 +394,7 @@ fn transform(
                 _ => None,
             };
             let complete = matches!(view, TableView::Complete(_));
-            let rows = transform_rows(
+            let rows = transform_rows_checked(
                 rows,
                 complete,
                 totals.as_deref(),
@@ -381,6 +403,7 @@ fn transform(
                 encode,
                 default,
                 None,
+                check,
             )?;
             match view {
                 TableView::Truncated { missing, .. } => TableView::Truncated {
@@ -411,7 +434,7 @@ fn transform(
 
 /// Completeness and observer totals belong to the original view, not a candidate subset.
 #[allow(clippy::too_many_arguments)]
-fn transform_rows(
+fn transform_rows_checked(
     mut rows: TableRows,
     complete_view: bool,
     observer_totals: Option<&[(u128, i64)]>,
@@ -420,6 +443,7 @@ fn transform_rows(
     encode: bool,
     default: u16,
     province_index: Option<&sparse::Provinces>,
+    check: &mut Check<'_>,
 ) -> io::Result<TableRows> {
     let _cpu = crate::cpu::reader("reader_transform", rows.table());
     let mut seen = 0;
@@ -429,6 +453,7 @@ fn transform_rows(
                 allocation::reserve(marks, rows.len())?;
             }
             for row in rows {
+                check.run()?;
                 let key = row.key();
                 let mut bits = row_bits(marks, key, encode, &mut seen, default);
                 for (at, candidate) in candidates(row, sources).into_iter().enumerate() {
@@ -459,6 +484,7 @@ fn transform_rows(
                 allocation::reserve(marks, rows.len())?;
             }
             for row in rows {
+                check.run()?;
                 let key = row.key();
                 let mut bits = row_bits(marks, key, encode, &mut seen, default);
                 let candidate = find(complete::<tables::LandCombatDivisions>(sources), key)
@@ -489,6 +515,7 @@ fn transform_rows(
                 Vec::new()
             };
             for row in rows {
+                check.run()?;
                 let key = row.key();
                 let mut bits = row_bits(marks, key, encode, &mut seen, default);
                 let candidate = match province_index {
@@ -521,6 +548,7 @@ fn transform_rows(
                 allocation::reserve(marks, rows.len())?;
             }
             for row in rows {
+                check.run()?;
                 let key = row.key();
                 let mut bits = row_bits(marks, key, encode, &mut seen, default);
                 let candidate = find(complete::<tables::ProductionLineModifiers>(sources), key)
@@ -536,6 +564,7 @@ fn transform_rows(
                 allocation::reserve(marks, rows.len())?;
             }
             for row in rows {
+                check.run()?;
                 let key = row.key();
                 let bits = row_bits(marks, key, encode, &mut seen, default);
                 let panel = find(complete::<tables::DivisionPanelStats>(sources), key);
@@ -588,6 +617,7 @@ fn transform_rows(
                 allocation::reserve(marks, rows.len())?;
             }
             for row in rows {
+                check.run()?;
                 let key = row.key();
                 let mut bits = row_bits(marks, key, encode, &mut seen, default);
                 let panel = find(complete::<tables::DivisionPanelStats>(sources), key);
@@ -625,6 +655,7 @@ fn transform_rows(
                 allocation::reserve(marks, rows.len())?;
             }
             for row in rows {
+                check.run()?;
                 let key = row.key();
                 let mut bits = row_bits(marks, key, encode, &mut seen, default);
                 if row.kind == rows::CombatLogObserverKind::State as u8 {
@@ -652,6 +683,7 @@ fn transform_rows(
                 allocation::reserve(marks, rows.len())?;
             }
             for row in rows {
+                check.run()?;
                 let key = row.key();
                 let mut bits = row_bits(marks, key, encode, &mut seen, default);
                 for (side, bit) in row.sides.iter_mut().zip([1, 2]) {
@@ -672,6 +704,7 @@ fn transform_rows(
                 allocation::reserve(marks, rows.len())?;
             }
             for row in rows {
+                check.run()?;
                 let key = row.key();
                 let mut bits = row_bits(marks, key, encode, &mut seen, default);
                 if let Recorded::Value(day) = &mut row.award_day
@@ -1826,7 +1859,7 @@ fn candidate_hour(
     let TableView::Complete(candidate_rows) = candidates else {
         unreachable!("candidate rows are a complete view")
     };
-    let resolved_rows = transform_rows(
+    let resolved_rows = transform_rows_checked(
         candidate_rows,
         true,
         None,
@@ -1835,6 +1868,7 @@ fn candidate_hour(
         false,
         default,
         (table == TableId::Divisions).then_some(&sparse.provinces),
+        check,
     )?;
     at_step(Step::Encode);
     let _cpu = crate::cpu::reader("reader_canonical_diff", table);
@@ -1890,7 +1924,7 @@ fn whole_hour(
     let _table = measurement::table(table);
     measurement::count(Counter::WholeHours, 1);
     measurement::count(Counter::WholeRows, sparse::view_len(view));
-    let resolved = transform(view, sources, marks, false, default)?;
+    let resolved = transform_checked(view, sources, marks, false, default, check)?;
     let _cpu = crate::cpu::reader("reader_canonical_diff", table);
     let plain = plain(
         &resolved,

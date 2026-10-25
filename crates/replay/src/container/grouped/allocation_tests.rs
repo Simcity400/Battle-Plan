@@ -14,6 +14,36 @@ fn fail_allocation() -> bool {
     FAIL_AT.get() == Some(attempt)
 }
 
+#[test]
+fn streaming_allocation_failure_is_fatal_and_releases_its_block_credit() {
+    if !child("streaming_allocation_failure_is_fatal_and_releases_its_block_credit") {
+        return;
+    }
+    use crate::container::{ReaderExecution, ReaderSelection, SequentialReader};
+    let (replay, _) = super::direct_tests::alias_fixture(Layout::Chosen);
+    let replay = std::sync::Arc::new(replay);
+    replay.log_section_decodes();
+    for fail_at in [1, 8, 32] {
+        let mut reader = SequentialReader::new(
+            ReaderSelection::new(&TableId::ALL).unwrap(),
+            ReaderExecution {
+                workers: 1,
+                read_ahead: false,
+            },
+        )
+        .unwrap();
+        let (error, attempts) = checked(Some(fail_at), || {
+            reader.advance(&replay, || Ok(())).err().unwrap()
+        });
+        assert!(engine_allocation::is_allocation_error(&error));
+        assert!(attempts >= fail_at);
+        assert_eq!(reader.census().raw_blocks, 0);
+        assert_eq!(reader.cursor().next_block, 0);
+        assert!(reader.current().is_none());
+        assert!(replay.section_decodes().is_empty());
+    }
+}
+
 fn checked<T>(fail_at: Option<usize>, work: impl FnOnce() -> T) -> (T, usize) {
     struct Reset;
     impl Drop for Reset {

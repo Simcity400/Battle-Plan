@@ -40,8 +40,15 @@ pub use decoded_sections::{SectionCacheCensus, SectionConsumer};
 #[cfg(any(test, feature = "test-support"))]
 pub use decoded_sections::{SectionDecode, WireDecode, WireRoute};
 mod file_backed;
+mod hour;
+mod reader;
 mod section_chunks;
 mod stream;
+pub use hour::{HourReader, PointResult};
+pub use reader::{
+    BlockReceipt, ReadStep, ReaderCensus, ReaderCheckpoint, ReaderExecution, ReaderSelection,
+    SequentialReader,
+};
 pub use section_chunks::{SectionChunk, SectionChunks};
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_work;
@@ -1201,92 +1208,7 @@ impl Replay {
         tables: Option<&[TableId]>,
         check: &mut Check<'_>,
     ) -> io::Result<SeekResult> {
-        check.run()?;
-        let gap = |reason| SeekResult::Gap {
-            branch,
-            hour,
-            reason,
-        };
-        if !self.branches.iter().any(|entry| entry.id == branch) {
-            return Ok(gap("unknown branch".into()));
-        }
-        let Some(index) = self.index.iter().find(|index| {
-            index.branch == branch && index.first_hour <= hour && hour <= index.last_hour
-        }) else {
-            return Ok(gap(self.gap_reason(branch, hour)?));
-        };
-        let selected = tables
-            .map(|tables| -> io::Result<_> {
-                let include_campaign = !tables.contains(&TableId::Campaign);
-                let capacity = engine_allocation::add(tables.len(), usize::from(include_campaign))?;
-                let mut selected = engine_allocation::vec(capacity)?;
-                selected.extend_from_slice(tables);
-                if include_campaign {
-                    selected.push(TableId::Campaign);
-                }
-                Ok(selected)
-            })
-            .transpose()?;
-        let mut decoder = selected
-            .as_deref()
-            .map_or_else(FrameDecoder::new, FrameDecoder::for_tables);
-        let mut found = None;
-        let read = self
-            .read_block_selected_through_checked(index, selected.as_deref(), hour, None, check)
-            .and_then(|frames| {
-                let mut visit = |frame: Frame| {
-                    check.run()?;
-                    if frame.hour > hour {
-                        return Ok(false);
-                    }
-                    let decoded = match decoder.advance(&frame) {
-                        Ok(decoded) => decoded,
-                        Err(error) => {
-                            if !recording_damage(&error) {
-                                return Err(error);
-                            }
-                            found = Some(gap(crate::codec::try_format(format_args!(
-                                "invalid frame baseline at hour {}: {}",
-                                frame.hour,
-                                crate::codec::diagnostic_text(&error.to_string())
-                            ))?));
-                            return Ok(false);
-                        }
-                    };
-                    if let Err(error) = validate_campaign(decoded, &self.campaign_id) {
-                        found = Some(gap(engine_allocation::string(
-                            crate::codec::diagnostic_text(&error.to_string()),
-                        )?));
-                        return Ok(false);
-                    }
-                    if frame.hour == hour {
-                        found = Some(SeekResult::Frame(engine_allocation::boxed(
-                            decoded.clone(),
-                        )?));
-                        return Ok(false);
-                    }
-                    Ok(true)
-                };
-                for frame in frames {
-                    if !visit(frame)? {
-                        break;
-                    }
-                }
-                Ok(())
-            });
-        if let Err(error) = read {
-            if !recording_damage(&error) {
-                return Err(error);
-            }
-            return Ok(gap(crate::codec::try_format(format_args!(
-                "unreadable block: {}",
-                crate::codec::diagnostic_text(&error.to_string())
-            ))?));
-        }
-        match found {
-            Some(found) => Ok(found),
-            None => Ok(gap(self.gap_reason(branch, hour)?)),
-        }
+        HourReader::new().seek(self, branch, hour, tables, check)
     }
 
     /// Why `hour` of `branch` has no frame, as a seek of it names the gap.

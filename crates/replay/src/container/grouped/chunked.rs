@@ -109,6 +109,16 @@ pub(super) fn replace_sections(
     original: &BlockIndex,
     overrides: &[(usize, Vec<u8>)],
 ) -> io::Result<(BlockIndex, Vec<u8>)> {
+    replace_chunks(replay, original, overrides, &[])
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(super) fn replace_chunks(
+    replay: &Replay,
+    original: &BlockIndex,
+    overrides: &[(usize, Vec<u8>)],
+    chunks: &[(usize, usize, Vec<u8>)],
+) -> io::Result<(BlockIndex, Vec<u8>)> {
     let block = replay.block_bytes(original)?;
     let directory = Directory::parse(&block, original)?;
     let mut sections = Vec::new();
@@ -125,8 +135,20 @@ pub(super) fn replace_sections(
         } else if directory.chunks[id].is_empty() {
             frames.push((raw, block[offset..offset + stored].to_vec()));
         } else {
-            for &(offset, stored, raw) in &directory.chunks[id] {
-                frames.push((raw, block[offset..offset + stored].to_vec()));
+            for (slot, &(offset, stored, raw)) in directory.chunks[id].iter().enumerate() {
+                if let Some((_, _, replacement)) = chunks
+                    .iter()
+                    .find(|(target, at, _)| *target == id && *at == slot)
+                {
+                    let compressed = if replacement.is_empty() {
+                        Vec::new()
+                    } else {
+                        compress(replacement)?
+                    };
+                    frames.push((replacement.len(), compressed));
+                } else {
+                    frames.push((raw, block[offset..offset + stored].to_vec()));
+                }
             }
         }
         sections.push((id, frames));

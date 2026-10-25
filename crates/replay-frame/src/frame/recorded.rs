@@ -101,6 +101,46 @@ impl RecordedTables {
     }
 }
 impl RecordedFrame {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn inline_identity(&self) -> Option<std::sync::Weak<Frame>> {
+        match &self.tables.0 {
+            Backing::Frame(frame) => Some(Arc::downgrade(frame)),
+            Backing::Tables { .. } => None,
+        }
+    }
+    pub fn from_updates(
+        branch: BranchId,
+        hour: Hour,
+        keyframe: bool,
+        metrics: Metrics,
+        slots: Arc<[Option<usize>; TABLE_COUNT]>,
+        updates: Vec<Arc<TableUpdate>>,
+        unselected: Arc<TableUpdate>,
+    ) -> io::Result<Self> {
+        let mut used = allocation::filled(updates.len(), false)?;
+        for slot in slots.iter().flatten() {
+            let present = used
+                .get_mut(*slot)
+                .ok_or_else(|| crate::codec::invalid("recorded table slot outside updates"))?;
+            if std::mem::replace(present, true) {
+                return Err(crate::codec::invalid("recorded table slot repeated"));
+            }
+        }
+        if used.iter().any(|used| !used) {
+            return Err(crate::codec::invalid("unmapped recorded table update"));
+        }
+        Ok(Self {
+            branch,
+            hour,
+            keyframe,
+            metrics,
+            tables: RecordedTables(Backing::Tables {
+                slots,
+                updates,
+                unselected,
+            }),
+        })
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn from_columns(
         branch: BranchId,

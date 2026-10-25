@@ -27,6 +27,25 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+pub(super) mod anchors;
+#[path = "chunks.rs"]
+pub(super) mod chunks;
+pub(super) mod cursor;
+#[cfg(test)]
+mod cursor_tests;
+#[cfg(test)]
+#[path = "hour_tests.rs"]
+mod hour_tests;
+#[cfg(test)]
+mod reader_chunk_tests;
+#[cfg(test)]
+#[path = "reader_reference.rs"]
+mod reader_reference;
+
+#[cfg(test)]
+#[path = "reader_tests.rs"]
+pub(super) mod reader_tests;
+
 #[cfg(test)]
 mod allocation_tests;
 #[cfg(test)]
@@ -119,7 +138,7 @@ pub(crate) const GROUPED_FORMAT: u16 = 124;
 const HEADER: usize = 0;
 const DIAGNOSTICS: usize = 1;
 const SECTIONS: usize = 2 + 2 * TABLE_COUNT;
-const fn keyframe_section(table: TableId) -> usize {
+pub(super) const fn keyframe_section(table: TableId) -> usize {
     2 + 2 * table.index()
 }
 const fn later_section(table: TableId) -> usize {
@@ -938,6 +957,33 @@ fn take_body(
     layout: Layout,
     coding: Option<RowCoding<'_>>,
 ) -> io::Result<()> {
+    take_body_checked(
+        table,
+        fields,
+        status,
+        input,
+        bases,
+        plain,
+        budget,
+        layout,
+        coding,
+        &mut Check::disabled(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn take_body_checked(
+    table: TableId,
+    fields: usize,
+    status: u8,
+    input: &mut ColumnReader<'_>,
+    bases: &Shadow,
+    plain: &mut Vec<u8>,
+    budget: &Budget,
+    layout: Layout,
+    coding: Option<RowCoding<'_>>,
+    check: &mut Check<'_>,
+) -> io::Result<()> {
     let start = plain.len();
     let width = fields.div_ceil(8);
     let count = |input: &mut ColumnReader<'_>, plain: &mut Vec<u8>| -> io::Result<u32> {
@@ -962,6 +1008,7 @@ fn take_body(
                 plain.extend_from_slice(&varint_u32(&mut input.0[CONTROL])?.to_le_bytes());
             }
             for _ in 0..count(input, plain)? {
+                check.run()?;
                 key(input, plain)?;
                 for field in 0..fields {
                     plain.extend_from_slice(table.field_span(field, &mut input.0[FIELDS + field])?);
@@ -992,6 +1039,7 @@ fn take_body(
                 None => None,
             };
             for _ in 0..changed {
+                check.run()?;
                 let mask = match (&mut coding, &mut run) {
                     (Some(coding), Some(run)) => {
                         let (key, mask) = coding.take_row(run, table, width, &mut input.0)?;
@@ -1034,6 +1082,7 @@ fn take_body(
             let mut deleted = coding.as_ref().map(|coding| KeyReader::new(coding.keys));
             let mut previous = 0_u128;
             for _ in 0..count(input, plain)? {
+                check.run()?;
                 match (&mut deleted, &mut coding) {
                     (Some(run), Some(coding)) => {
                         let (key, _) = run.take(table, &mut input.0[KEYS])?;
@@ -1218,6 +1267,7 @@ fn seed_table(
             state,
             root: (at, root, Some(snapshot)),
             charge,
+            ..
         }) => (
             Some((state.rows, charge)),
             state.shadow,
@@ -2319,6 +2369,28 @@ impl Compressing {
     }
 }
 
+pub(super) fn source_digest(
+    replay: &Replay,
+    index: &BlockIndex,
+    meter: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    check: &mut Check<'_>,
+) -> io::Result<blake3::Hash> {
+    use super::reader::source::Evidence;
+    let mut evidence = Evidence::new(SECTIONS + 1, std::sync::Arc::clone(meter))?;
+    let directory = Directory::read_admitted(
+        replay,
+        index,
+        Directory::prefix(replay, index)?,
+        &mut |offset, bytes| evidence.record(0, offset, bytes, check),
+    )?;
+    for (id, section) in directory.sections.iter().enumerate() {
+        if let Some((offset, length, _)) = *section {
+            evidence.read(id + 1, replay, index, offset, length, check)?;
+        }
+    }
+    Ok(evidence.digest())
+}
+
 /// One stored section of a grouped block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
@@ -2341,6 +2413,7 @@ pub(super) struct Directory {
     /// By section id: offset in the block, compressed length, raw length.
     sections: Vec<Option<(usize, usize, usize)>>,
     chunks: Vec<Vec<(usize, usize, usize)>>,
+    read_bytes: usize,
 }
 
 // The wire decoder admits unsigned u128 varints, at most 19 bytes each.
@@ -2369,32 +2442,54 @@ impl Directory {
     fn read_from_prefix<'a>(
         replay: &'a Replay,
         index: &BlockIndex,
-        mut bytes: Cow<'a, [u8]>,
+        bytes: Cow<'a, [u8]>,
     ) -> io::Result<Self> {
-        if !replay.is_file_backed() {
-            return Self::parse(&replay.block_bytes(index)?, index);
-        }
+        Self::read_admitted(replay, index, bytes, &mut |_, _| Ok(()))
+    }
+
+    fn read_admitted<'a>(
+        replay: &'a Replay,
+        index: &BlockIndex,
+        mut bytes: Cow<'a, [u8]>,
+        admit: &mut dyn FnMut(usize, &[u8]) -> io::Result<()>,
+    ) -> io::Result<Self> {
         let length = super::to_usize(index.length)?;
-        let mut input = Decoder::new(&bytes);
-        let (_, _, _, count) = Self::counts(&mut input, index)?;
-        let mut position = bytes.len() - input.remaining();
-        let slots = chunked::slots(index)?;
-        let bytes = bytes.to_mut();
-        for _ in 0..count {
-            let id = Self::read_varint(replay, index, bytes, &mut position)?;
-            Self::read_varint(replay, index, bytes, &mut position)?;
-            Self::read_varint(replay, index, bytes, &mut position)?;
-            if id >= 3 && id % 2 == 1 {
-                if slots > length.saturating_sub(position) / 2 {
-                    return Err(invalid_static("invalid grouped chunk index extent"));
-                }
-                for _ in 0..slots {
-                    Self::read_varint(replay, index, bytes, &mut position)?;
-                    Self::read_varint(replay, index, bytes, &mut position)?;
+        let read_bytes = if replay.is_file_backed() {
+            let mut input = Decoder::new(&bytes);
+            let (_, _, _, count) = Self::counts(&mut input, index)?;
+            let mut position = bytes.len() - input.remaining();
+            let slots = chunked::slots(index)?;
+            let bytes = bytes.to_mut();
+            for _ in 0..count {
+                let id = Self::read_varint(replay, index, bytes, &mut position)?;
+                Self::read_varint(replay, index, bytes, &mut position)?;
+                Self::read_varint(replay, index, bytes, &mut position)?;
+                if id >= 3 && id % 2 == 1 {
+                    if slots > length.saturating_sub(position) / 2 {
+                        return Err(invalid_static("invalid grouped chunk index extent"));
+                    }
+                    for _ in 0..slots {
+                        Self::read_varint(replay, index, bytes, &mut position)?;
+                        Self::read_varint(replay, index, bytes, &mut position)?;
+                    }
                 }
             }
-        }
-        Self::parse_extent(bytes, length, index)
+            bytes.len()
+        } else {
+            bytes = replay.block_bytes(index)?;
+            0
+        };
+        let mut directory = Self::parse_extent(&bytes, length, index)?;
+        directory.read_bytes = read_bytes;
+        let end = directory
+            .sections
+            .iter()
+            .flatten()
+            .map(|section| section.0)
+            .min()
+            .unwrap_or(length);
+        admit(0, &bytes[..end])?;
+        Ok(directory)
     }
 
     fn read_varint(
@@ -2540,6 +2635,7 @@ impl Directory {
             layout,
             sections,
             chunks,
+            read_bytes: 0,
         })
     }
 
@@ -2607,11 +2703,22 @@ impl Directory {
         raw: usize,
         bytes: &mut Vec<u8>,
     ) -> io::Result<()> {
+        Self::inflate_checked(compressed, raw, bytes, true, &mut Check::disabled())
+    }
+
+    pub(super) fn inflate_checked(
+        compressed: &[u8],
+        raw: usize,
+        bytes: &mut Vec<u8>,
+        keep: bool,
+        check: &mut Check<'_>,
+    ) -> io::Result<()> {
         bytes.clear();
         if raw > MAX_BLOCK_RAW_BYTES {
             return Err(invalid_static("chunk exceeds raw size limit"));
         }
         let _cpu = crate::cpu::scope("inflate", None);
+        check.run()?;
         if compressed.get(..4) != Some(&[0x28, 0xb5, 0x2f, 0xfd]) {
             return Err(invalid_static("grouped section is not a zstd frame"));
         }
@@ -2630,19 +2737,33 @@ impl Directory {
                 "grouped section contains trailing or concatenated zstd frames",
             ));
         }
-        let mut decompressor = zstd::stream::read::Decoder::with_buffer(compressed)
+        let mut decoder = zstd::stream::read::Decoder::with_buffer(compressed)
             .map_err(zstd_error)?
             .single_frame();
-        decompressor.window_log_max(26).map_err(zstd_error)?;
-        engine_allocation::reserve(bytes, raw)?;
-        decompressor
-            .take(raw as u64 + 1)
-            .read_to_end(bytes)
-            .map_err(zstd_error)?;
-        if bytes.len() != raw {
+        decoder.window_log_max(26).map_err(zstd_error)?;
+        if keep {
+            engine_allocation::reserve(bytes, raw)?;
+        }
+        let mut scratch = [0; 64 * 1024];
+        let mut total = 0usize;
+        loop {
+            check.run()?;
+            let count = decoder.read(&mut scratch).map_err(zstd_error)?;
+            if count == 0 {
+                break;
+            }
+            total = total
+                .checked_add(count)
+                .filter(|&n| n <= raw)
+                .ok_or_else(|| invalid_static("grouped section raw length mismatch"))?;
+            if keep {
+                bytes.extend_from_slice(&scratch[..count]);
+            }
+        }
+        if total != raw {
             return Err(invalid_static("grouped section raw length mismatch"));
         }
-        Ok(())
+        check.run()
     }
 }
 
@@ -4123,6 +4244,7 @@ struct Resolved {
     root: (usize, usize, Option<AnchorState>),
     /// 0 when the anchor is the snapshot itself.
     charge: usize,
+    depth: usize,
 }
 
 #[derive(Default)]
@@ -4263,6 +4385,73 @@ fn anchor_candidates_with(
     Ok((last.snapshot, last.latest))
 }
 
+// Eligibility reads only the demanded reference interval, never a historical candidate prepass.
+#[allow(clippy::too_many_arguments)]
+fn anchor_eligible_bounded(
+    replay: &Replay,
+    before: usize,
+    target: usize,
+    snapshot: bool,
+    table: TableId,
+    fields: usize,
+    version: u16,
+    check: &mut Check<'_>,
+    reads: &mut AnchorReads,
+) -> io::Result<bool> {
+    let mut next = replay.ordinals[before];
+    for at in (target + 1..before).rev() {
+        check.run()?;
+        if replay.ordinals[at].checked_add(1) != Some(next) {
+            return Ok(false);
+        }
+        next = replay.ordinals[at];
+        let index = &replay.index[at];
+        let head = (|| -> io::Result<Option<Head>> {
+            let directory = Directory::read_admitted(
+                replay,
+                index,
+                Directory::prefix(replay, index)?,
+                &mut |_, _| Ok(()),
+            )?;
+            reads.stored_bytes = engine_allocation::add(reads.stored_bytes, directory.read_bytes)?;
+            let Some(chunk) = replay
+                .section_chunks_from(index, Section::Keyframe(table), &directory)?
+                .next()
+            else {
+                if keyframe_refusal(&directory, replay.format, replay.capture_mode, None, table)?
+                    .is_none()
+                {
+                    return Err(invalid_static("keyframe anchor has no entry for its table"));
+                }
+                return Ok(None);
+            };
+            reads.sections += 1;
+            reads.stored_bytes =
+                engine_allocation::add(reads.stored_bytes, chunk.stored_length as usize)?;
+            reads.raw_bytes = engine_allocation::add(reads.raw_bytes, chunk.raw_length as usize)?;
+            let mut raw = Vec::new();
+            chunk.inflate_admitted(&mut raw, true, &mut |_, _, _| Ok(()), check)?;
+            let mut input = ColumnReader::stored(&raw, fields, table, version)?;
+            take_head(
+                &mut input,
+                None,
+                index.first_hour,
+                &mut Vec::new(),
+                directory.layout,
+            )
+            .map(Some)
+        })();
+        match head {
+            Ok(Some(head)) if head.anchor.is_none() && head.status == SNAPSHOT => return Ok(false),
+            Ok(Some(head)) if head.anchor.is_some() && !snapshot => return Ok(false),
+            Ok(_) => {}
+            Err(error) if check.failed() || !super::recording_damage(&error) => return Err(error),
+            Err(_) => return Ok(false),
+        }
+    }
+    Ok(replay.ordinals[target].checked_add(1) == Some(next))
+}
+
 /// The keyframe of `table` that `from`'s keyframe entry anchors to, an
 /// earlier block's, following its own anchors to their snapshot. An anchored
 /// block's chain may cross branches and, with `own`, stays within
@@ -4306,6 +4495,87 @@ fn anchored_keyframe_with(
     keep_root: bool,
     check: &mut Check<'_>,
 ) -> io::Result<Resolved> {
+    anchored_keyframe_read(
+        replay,
+        from,
+        table,
+        fields,
+        discarded,
+        anchor,
+        own,
+        format,
+        keep_root,
+        check,
+        &mut AnchorReads::default(),
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn anchored_keyframe_counted(
+    replay: &Replay,
+    from: &From<'_>,
+    table: TableId,
+    fields: usize,
+    discarded: bool,
+    anchor: AnchorRef,
+    own: usize,
+    format: FormatVersion,
+    keep_root: bool,
+    check: &mut Check<'_>,
+    reads: &mut AnchorReads,
+) -> io::Result<Resolved> {
+    let started = anchor_cpu_cycles();
+    let previous_reads = reads.sections;
+    let result = anchored_keyframe_read(
+        replay, from, table, fields, discarded, anchor, own, format, keep_root, check, reads, true,
+    );
+    reads.cycles = started.zip(anchor_cpu_cycles()).and_then(|(start, end)| {
+        if previous_reads == 0 {
+            Some(end.saturating_sub(start))
+        } else {
+            reads
+                .cycles
+                .map(|prior| prior.saturating_add(end.saturating_sub(start)))
+        }
+    });
+    result
+}
+
+#[derive(Default)]
+pub(crate) struct AnchorReads {
+    pub sections: usize,
+    pub stored_bytes: usize,
+    pub raw_bytes: usize,
+    pub cycles: Option<u64>,
+}
+
+fn anchor_cpu_cycles() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        crate::cpu::enabled().then(crate::cpu::thread_cycles)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn anchored_keyframe_read(
+    replay: &Replay,
+    from: &From<'_>,
+    table: TableId,
+    fields: usize,
+    discarded: bool,
+    anchor: AnchorRef,
+    own: usize,
+    format: FormatVersion,
+    keep_root: bool,
+    check: &mut Check<'_>,
+    reads: &mut AnchorReads,
+    bounded: bool,
+) -> io::Result<Resolved> {
     let _table = replay_data::measurement::table(table);
     let _cpu = crate::cpu::scope("anchors", None);
     let version = format.version();
@@ -4317,7 +4587,6 @@ fn anchored_keyframe_with(
         input.finish()?;
         Ok(update)
     };
-    let depth = usize::MAX;
     let bound = || invalid_static("keyframe anchor chain exceeds its size bound");
     // The chain's keyframe sections, newest first, ending at its snapshot,
     // and the raw bytes of its anchored entries with the naming entry's.
@@ -4326,9 +4595,6 @@ fn anchored_keyframe_with(
     let (mut position, mut anchor) = (from.position, anchor);
     loop {
         check.run()?;
-        if chain.len() == depth {
-            return Err(invalid_static("keyframe anchor is not a snapshot"));
-        }
         // Each link is an earlier block of the file than the one naming it.
         let (at, block_index) = match anchor {
             // Counted among the file's blocks, so a block whose index entry
@@ -4341,17 +4607,34 @@ fn anchored_keyframe_with(
         .ok_or_else(|| invalid_static("keyframe anchor names no earlier block of its file"))?;
         let before = position
             .ok_or_else(|| invalid_static("keyframe anchor has no indexed source block"))?;
-        let (snapshot, latest) =
-            anchor_candidates_with(replay, before, table, fields, version, check)?;
-        if Some(at) != snapshot && Some(at) != latest {
-            return Err(invalid_static(
-                "keyframe anchor is not the latest snapshot or latest keyframe",
-            ));
+        if !bounded {
+            let (snapshot, latest) =
+                anchor_candidates_with(replay, before, table, fields, version, check)?;
+            if Some(at) != snapshot && Some(at) != latest {
+                return Err(invalid_static(
+                    "keyframe anchor is not the latest snapshot or latest keyframe",
+                ));
+            }
         }
-        let directory = Directory::read(replay, block_index)?;
-        let raw = directory
-            .read_raw(replay, block_index, keyframe_section(table))?
+        let directory = Directory::read_admitted(
+            replay,
+            block_index,
+            Directory::prefix(replay, block_index)?,
+            &mut |_, _| Ok(()),
+        )?;
+        reads.stored_bytes = engine_allocation::add(reads.stored_bytes, directory.read_bytes)?;
+        let (offset, length, raw_length) = directory.sections[keyframe_section(table)]
             .ok_or_else(|| invalid_static("keyframe anchor has no entry for its table"))?;
+        reads.sections += 1;
+        reads.stored_bytes += length;
+        reads.raw_bytes += raw_length;
+        check.run()?;
+        let raw = chunks::inflate(
+            &replay.block_range(block_index, offset, length)?,
+            raw_length,
+            true,
+            check,
+        )?;
         let mut input = ColumnReader::stored(&raw, fields, table, version)?;
         let head = take_head(
             &mut input,
@@ -4360,6 +4643,23 @@ fn anchored_keyframe_with(
             &mut Vec::new(),
             directory.layout,
         )?;
+        if bounded
+            && !anchor_eligible_bounded(
+                replay,
+                before,
+                at,
+                head.anchor.is_none(),
+                table,
+                fields,
+                version,
+                check,
+                reads,
+            )?
+        {
+            return Err(invalid_static(
+                "keyframe anchor is not the latest snapshot or latest keyframe",
+            ));
+        }
         if head.anchor.is_none() && head.status != SNAPSHOT {
             return Err(invalid_static("keyframe anchor is not a snapshot"));
         }
@@ -4384,7 +4684,10 @@ fn anchored_keyframe_with(
     let root = (snapshot.position, snapshot.raw.len());
     // Every anchored entry, the naming one included, also counts its share
     // of rebuilt rows.
-    let rebuilds = chain.len() * (root.1 / REBUILD_SHARE);
+    let rebuilds = chain
+        .len()
+        .checked_mul(root.1 / REBUILD_SHARE)
+        .ok_or_else(bound)?;
     let charge = anchored.checked_add(rebuilds).ok_or_else(bound)?;
     if from.layout.anchors_back() && charge > root.1 {
         return Err(bound());
@@ -4403,7 +4706,7 @@ fn anchored_keyframe_with(
         let snapshot = base.is_none();
         let (rows, mut shadow) =
             base.map_or((None, Shadow::new()), |base| (base.rows, base.shadow));
-        take_body(
+        take_body_checked(
             table,
             fields,
             head.status,
@@ -4413,6 +4716,7 @@ fn anchored_keyframe_with(
             &budget,
             link.layout,
             None,
+            check,
         )?;
         input.finish()?;
         advance_shadow(table, version, &plain, &mut shadow)?;
@@ -4453,6 +4757,7 @@ fn anchored_keyframe_with(
         root: (root.0, root.1, root_state),
         // The anchor's own charge, without the naming entry's.
         charge: charge - own - root.1 / REBUILD_SHARE,
+        depth: chain.len() - 1,
     })
 }
 

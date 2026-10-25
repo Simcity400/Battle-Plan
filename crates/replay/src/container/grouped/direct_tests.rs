@@ -138,7 +138,7 @@ fn direct_delta_every_registered_field_matches_update_and_reencoded_bytes() {
     );
 }
 
-fn fixture(layout: Layout) -> (Replay, Vec<Frame>) {
+pub(super) fn fixture(layout: Layout) -> (Replay, Vec<Frame>) {
     fixture_with_residual(layout, true)
 }
 
@@ -731,7 +731,7 @@ pub(super) fn alias_fixture(layout: Layout) -> (Replay, Vec<Frame>) {
 }
 
 /// Expected frames are independently encoded native values; hours ending in 7 have no alias rows.
-fn alias_fixture_at(layout: Layout, hours: &[Hour]) -> (Replay, Vec<Frame>) {
+pub(super) fn alias_fixture_at(layout: Layout, hours: &[Hour]) -> (Replay, Vec<Frame>) {
     use crate::rows::*;
     let old_layout = WRITTEN_LAYOUT.replace(layout);
     let old_residual = FORCE_RESIDUAL.replace(true);

@@ -21,7 +21,7 @@ fn patch_literal(token: u32, hour: Hour) -> Vec<u8> {
         .collect()
 }
 
-fn fixture() -> (Replay, Vec<DecodedFrame>) {
+pub(super) fn fixture() -> (Replay, Vec<DecodedFrame>) {
     let hours: Vec<_> = (10..=220)
         .chain([600, 650, 729, 730, 731, 1070, 1400, 1449])
         .collect();

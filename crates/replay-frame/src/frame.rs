@@ -35,7 +35,7 @@ pub use self::decoder::{advance_public_table, advance_table, keyframe_update, no
 #[doc(hidden)]
 pub use self::wire::decode_update;
 pub use self::{
-    decoder::FrameDecoder,
+    decoder::{FrameAdvance, FrameDecoder},
     encoder::{FrameContext, FrameEncoder, PreparedFrame, Retired, TableSegment},
 };
 use engine_allocation as allocation;
@@ -104,10 +104,17 @@ impl Default for Metrics {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableView {
     Complete(TableRows),
-    Truncated { rows: TableRows, missing: u32 },
-    Unavailable { reason: String },
+    Truncated {
+        rows: TableRows,
+        missing: u32,
+    },
+    Unavailable {
+        reason: String,
+    },
     /// The recording's capture mode leaves the table out ([`crate::scope`]).
-    NotRecorded { mode: CaptureMode },
+    NotRecorded {
+        mode: CaptureMode,
+    },
 }
 
 /// One decoded table, shared between the hours it did not change in.
@@ -175,6 +182,16 @@ impl Eq for SharedView {}
 pub struct ViewIdentity(Weak<TableView>);
 
 impl ViewIdentity {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_alive(&self) -> bool {
+        self.0.strong_count() != 0
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn owner_count(&self) -> usize {
+        self.0.strong_count()
+    }
+
     /// Whether `view` is the named allocation.
     pub fn is(&self, view: &SharedView) -> bool {
         std::ptr::eq(self.0.as_ptr(), Arc::as_ptr(&view.0))

@@ -235,7 +235,12 @@ fn cancelled_read(stop: Stop, route: Route) {
             "an interrupted group must publish no member: {table:?}"
         );
     }
-    if !matches!(stop, Stop::Table) {
+    if matches!(route, Route::Seek) {
+        assert!(
+            replay.section_decodes().is_empty(),
+            "point reads never enter the section cache"
+        );
+    } else if !matches!(stop, Stop::Table) {
         assert!(
             replay
                 .section_decodes()

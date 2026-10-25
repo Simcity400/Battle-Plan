@@ -877,6 +877,35 @@ pub(super) fn take_residual(
     layout: Layout,
     coding: Option<RowCoding<'_>>,
 ) -> io::Result<()> {
+    take_residual_checked(
+        table,
+        fields,
+        previous,
+        input,
+        predictor,
+        bases,
+        plain,
+        budget,
+        layout,
+        coding,
+        &mut super::Check::disabled(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn take_residual_checked(
+    table: TableId,
+    fields: usize,
+    previous: Hour,
+    input: Option<&mut ColumnReader<'_>>,
+    predictor: &mut Predictor,
+    bases: &Shadow,
+    plain: &mut Vec<u8>,
+    budget: &Budget,
+    layout: Layout,
+    coding: Option<RowCoding<'_>>,
+    check: &mut super::Check<'_>,
+) -> io::Result<()> {
     let start = plain.len();
     plain.push(DELTA);
     plain.extend_from_slice(&previous.to_le_bytes());
@@ -900,6 +929,7 @@ pub(super) fn take_residual(
         budget,
         layout,
         coding,
+        check,
     )?;
     budget.spend(output.written())
 }
@@ -927,6 +957,7 @@ pub(super) fn take_residual_direct(
         budget,
         layout,
         coding,
+        &mut super::Check::disabled(),
     )?;
     budget.spend(output.len())?;
     Ok(output.finish())
@@ -944,6 +975,7 @@ fn take_residual_rows<R: Residuals>(
     budget: &Budget,
     layout: Layout,
     mut coding: Option<RowCoding<'_>>,
+    check: &mut super::Check<'_>,
 ) -> io::Result<()> {
     predictor.transitions.clear();
     // Every stored key has a key byte, so counts are bounded by the keys
@@ -962,6 +994,7 @@ fn take_residual_rows<R: Residuals>(
         let mut key = 0_u128;
         let mut run = coding.as_ref().map(|coding| KeyReader::new(coding.keys));
         for index in 0..count(input, 0)? {
+            check.run()?;
             if let (Some(run), Some(coding)) = (&mut run, &mut coding) {
                 let (key, _) = run.take(table, &mut input.0[KEYS])?;
                 coding.note_deleted(key)?;
@@ -998,6 +1031,7 @@ fn take_residual_rows<R: Residuals>(
     let mut values = Vec::new();
     let mut spans = Vec::new();
     loop {
+        check.run()?;
         if stored.is_none() && read < residuals {
             let input = input.as_deref_mut().expect("residual rows have an entry");
             let mask = match (&mut run, &mut coding) {

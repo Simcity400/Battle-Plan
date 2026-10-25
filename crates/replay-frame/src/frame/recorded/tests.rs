@@ -58,6 +58,64 @@ fn bytes(frame: &RecordedFrame) -> usize {
 }
 
 #[test]
+fn one_hour_cells_do_not_retain_the_previous_hour_and_transfer_without_copying() {
+    let original = frame();
+    let cells: Vec<_> = original.tables.iter().cloned().map(Arc::new).collect();
+    let weak = Arc::downgrade(&cells[TableId::Divisions.index()]);
+    let recorded = RecordedFrame::from_updates(
+        original.branch,
+        original.hour,
+        original.keyframe,
+        original.metrics.clone(),
+        Arc::new(std::array::from_fn(Some)),
+        cells,
+        Arc::new(TableUpdate::Unavailable {
+            reason: "unselected".into(),
+        }),
+    )
+    .unwrap();
+    assert_eq!(weak.strong_count(), 1);
+    assert_eq!(recorded.to_owned_frame().unwrap(), original);
+    let owned = recorded.into_owned_frame().unwrap();
+    assert!(weak.upgrade().is_none());
+    assert_eq!(owned, original);
+}
+
+#[test]
+fn one_hour_slots_reject_duplicate_and_unreachable_cells() {
+    let update = Arc::new(TableUpdate::Unavailable {
+        reason: "missing".into(),
+    });
+    let mut slots = [None; TABLE_COUNT];
+    slots[0] = Some(0);
+    slots[1] = Some(0);
+    assert!(
+        RecordedFrame::from_updates(
+            1,
+            1,
+            true,
+            Metrics::default(),
+            Arc::new(slots),
+            vec![Arc::clone(&update)],
+            Arc::clone(&update)
+        )
+        .is_err()
+    );
+    assert!(
+        RecordedFrame::from_updates(
+            1,
+            1,
+            true,
+            Metrics::default(),
+            Arc::new([None; TABLE_COUNT]),
+            vec![Arc::clone(&update)],
+            update
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn retention_releases_unkept_payloads_from_owned_and_shared_backings() {
     for columns in [false, true] {
         for shared in [false, true] {
