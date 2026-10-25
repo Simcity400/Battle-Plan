@@ -14,7 +14,7 @@ use replay::container::Replay;
 use crate::{
     ReplayMetadata,
     content::{ContentKey, content_key, name_localisation},
-    metadata::{self, warn},
+    metadata::{self, MetadataRefusals, ResidentMetadata, Warnings},
     presentation::{Admitted, Binding, Cancel, Presentation, Presented},
     products::ContentOptions,
 };
@@ -60,11 +60,11 @@ pub struct Source {
     path: PathBuf,
     replay: Arc<Replay>,
     block_windows: HashMap<u64, Vec<crate::products::country_groups::HourSpan>>,
-    metadata: ReplayMetadata,
+    metadata: ResidentMetadata,
     cached_named: Option<metadata_cache::CachedNames>,
     pub(crate) cached_inputs: Option<store::SourceKey>,
     /// The metadata with country names resolved for the last folders it was asked for.
-    named: Mutex<Option<(Option<ContentKey>, ReplayMetadata)>>,
+    named: Mutex<Option<(Option<ContentKey>, ResidentMetadata)>>,
     content: Mutex<ContentCache>,
     /// What work on this source is bound to now ([`Self::bind`]), swapped in whole, never
     /// changed in place; `None` until the service binds it.
@@ -115,7 +115,7 @@ impl Source {
         cancelled: &AtomicBool,
     ) -> io::Result<Self> {
         replay.cache_decoded_sections(true);
-        let metadata = metadata::read(&replay, &path, cancelled)?;
+        let metadata = metadata::read_resident(&replay, &path, cancelled)?;
         Ok(Self {
             key,
             path,
@@ -156,15 +156,25 @@ impl Source {
 
     /// The initial observed catalogue, not a census of every campaign hour, with
     /// country names once [`Self::name_countries`] has run and tags before.
-    pub fn metadata(&self) -> ReplayMetadata {
+    pub fn metadata(&self) -> Result<ReplayMetadata, metadata::MetadataError> {
         let mut metadata = self
             .named
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .as_ref()
-            .map_or_else(|| self.metadata.clone(), |(_, metadata)| metadata.clone());
+            .map_or_else(|| self.metadata.wire(), |(_, metadata)| metadata.wire())?;
         self.append_content_warnings(&mut metadata.warnings);
-        metadata
+        Ok(metadata)
+    }
+
+    /// Read resident catalogue fields without copying or formatting wire diagnostics.
+    pub fn with_metadata<T>(&self, read: impl FnOnce(&ReplayMetadata) -> T) -> T {
+        let named = self.named.lock().unwrap_or_else(|error| error.into_inner());
+        read(
+            named
+                .as_ref()
+                .map_or(&self.metadata.value, |(_, metadata)| &metadata.value),
+        )
     }
 
     /// Report the live read set even for cached metadata and product replies.
@@ -228,11 +238,11 @@ impl Source {
 
     /// Resolves the catalogue's names in the user's game language at each
     /// country's observed hour; without content they stay tags, with a warning.
-    pub fn name_countries(&self, content: Option<&ContentOptions>) {
+    pub fn name_countries(&self, content: Option<&ContentOptions>) -> io::Result<()> {
         let key = content_key(content);
         let mut named = self.named.lock().unwrap_or_else(|error| error.into_inner());
         if named.as_ref().is_some_and(|(cached, _)| *cached == key) {
-            return;
+            return Ok(());
         }
         if let Some((inputs, saved, metadata)) = &self.cached_named
             && saved == &key
@@ -252,48 +262,53 @@ impl Source {
                 } else {
                     name_localisation(self, content)
                 };
-                *named = Some((key, self.named_metadata_from(localisation, Some(metadata))));
-                return;
+                let metadata = self.named_metadata_from(localisation, Some(metadata))?;
+                *named = Some((key, metadata));
+                return Ok(());
             }
         }
-        let metadata = self.named_metadata(name_localisation(self, content));
+        let metadata = self.named_metadata(name_localisation(self, content))?;
         *named = Some((key, metadata));
+        Ok(())
     }
 
     /// The catalogue named against `localisation`, or tagged with its warning.
     pub(crate) fn named_metadata(
         &self,
         localisation: Result<Arc<Localisation>, String>,
-    ) -> ReplayMetadata {
+    ) -> io::Result<ResidentMetadata> {
         self.named_metadata_from(localisation, None)
     }
 
     fn named_metadata_from(
         &self,
         localisation: Result<Arc<Localisation>, String>,
-        previous: Option<&ReplayMetadata>,
-    ) -> ReplayMetadata {
-        let mut metadata = self.metadata.clone();
+        previous: Option<&ResidentMetadata>,
+    ) -> io::Result<ResidentMetadata> {
+        self.try_named_metadata_from(localisation, previous)
+            .map_err(|error| io::Error::other(format!("Country metadata naming failed: {error}")))
+    }
+
+    fn try_named_metadata_from(
+        &self,
+        localisation: Result<Arc<Localisation>, String>,
+        previous: Option<&ResidentMetadata>,
+    ) -> io::Result<ResidentMetadata> {
+        let mut metadata = self.metadata.copy_presentation()?;
         let saved_countries: HashMap<_, _> = previous
             .into_iter()
             .flat_map(|previous| &previous.countries)
             .map(|country| (country_observation(country), country))
             .collect();
-        match localisation {
+        let reuse_warnings = localisation.is_err();
+        let reason = match localisation {
             Err(reason) => {
-                if !reason.is_empty() {
-                    warn(&mut metadata.warnings, reason);
-                }
-                if let Some(previous) = previous {
-                    for country in &mut metadata.countries {
-                        if let Some(saved) = saved_countries.get(&country_observation(country)) {
-                            country.name.clone_from(&saved.name);
-                        }
-                    }
-                    for reason in &previous.warnings {
-                        warn(&mut metadata.warnings, reason.clone());
+                for country in &mut metadata.countries {
+                    if let Some(saved) = saved_countries.get(&country_observation(country)) {
+                        country.name.clone_from(&saved.name);
                     }
                 }
+                reason
             }
             Ok(localisation) => {
                 let mut unnamed = 0;
@@ -304,20 +319,33 @@ impl Source {
                         continue;
                     }
                     let at = (country.observed_branch_id.clone(), country.observed_hour);
-                    let frame = frames.entry(at).or_insert_with(|| {
-                        let branch = country.observed_branch_id.parse().ok()?;
-                        let tables = Some(&installed_content_country_names::country_names::TABLES[..]);
-                        match self
-                            .replay
-                            .seek_selected(branch, country.observed_hour, tables)
-                            .ok()?
-                        {
-                            SeekResult::Frame(frame) => {
-                                Some(CountryNames::read(&frame, &localisation))
-                            }
-                            SeekResult::Gap { .. } => None,
+                    let frame = match frames.entry(at) {
+                        std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            let frame = if let Ok(branch) = country.observed_branch_id.parse() {
+                                let tables =
+                                    Some(&installed_content_country_names::country_names::TABLES[..]);
+                                match self.replay.seek_selected(
+                                    branch,
+                                    country.observed_hour,
+                                    tables,
+                                ) {
+                                    Ok(SeekResult::Frame(frame)) => {
+                                        Some(CountryNames::read(&frame, &localisation))
+                                    }
+                                    Err(error)
+                                        if engine_allocation::is_allocation_error(&error) =>
+                                    {
+                                        return Err(error);
+                                    }
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            };
+                            entry.insert(frame)
                         }
-                    });
+                    };
                     let name = frame
                         .as_ref()
                         .zip(country.id.parse::<u32>().ok())
@@ -328,16 +356,39 @@ impl Source {
                     }
                 }
                 if unnamed > 0 {
-                    warn(
-                        &mut metadata.warnings,
-                        format!(
-                            "{unnamed} country names could not be resolved from the recorded content and show their tag."
-                        ),
-                    );
+                    replay_data::codec::try_format(format_args!(
+                        "{unnamed} country names could not be resolved from the recorded content and show their tag."
+                    ))?
+                } else {
+                    String::new()
                 }
             }
+        };
+        let mut warnings = Warnings::new()?;
+        warnings.import(&self.metadata.warnings, &self.metadata.refusals.warnings)?;
+        if !reason.is_empty() {
+            warnings.warn(&reason)?;
         }
-        metadata
+        if reuse_warnings && let Some(previous) = previous {
+            warnings.import(&previous.warnings, &previous.refusals.warnings)?;
+        }
+        let mut reasons = Warnings::new()?;
+        if let Some(damaged) = &self.metadata.damaged {
+            reasons.import(&damaged.reasons, &self.metadata.refusals.reasons)?;
+        }
+        let (values, warning_refusals) = warnings.finish();
+        metadata.warnings = values;
+        let (values, reason_refusals) = reasons.finish();
+        if let Some(damaged) = &mut metadata.damaged {
+            damaged.reasons = values;
+        }
+        Ok(ResidentMetadata {
+            value: metadata,
+            refusals: MetadataRefusals {
+                warnings: warning_refusals,
+                reasons: reason_refusals,
+            },
+        })
     }
 
     /// The recording's verified game content for the configured folders,

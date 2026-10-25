@@ -50,6 +50,9 @@ serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
 shader-pipeline = { path = "../shader-pipeline" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 mimalloc.workspace = true
 installed-content-abilities = { workspace = true, features = ["test-support"] }

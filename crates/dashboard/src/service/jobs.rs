@@ -1770,7 +1770,10 @@ impl Inner {
                 Some(&job.revision),
                 &job.request.cancelled,
             )
-            .inspect(|source| source.name_countries(self.content().as_ref()));
+            .and_then(|source| {
+                source.name_countries(self.content().as_ref()).map_err(|error| error.to_string())?;
+                Ok(source)
+            });
         if let Ok(source) = &result {
             // Read the store before the admission lock.
             let checked = self.check_store(source, true);
@@ -1829,8 +1832,14 @@ impl Inner {
             self.finish(&job.request, false);
             return;
         }
+        let result = result.and_then(|source| {
+            source
+                .metadata()
+                .map(|metadata| (source, metadata))
+                .map_err(|error| error.to_string())
+        });
         match result {
-            Ok(source) => {
+            Ok((source, metadata)) => {
                 if let Some(next) = pending.next_lease.checked_add(1) {
                     pending.next_lease = next;
                     let id = self.lease_id(next);
@@ -1838,7 +1847,7 @@ impl Inner {
                         id: id.clone(),
                         path: source.path().to_string_lossy().into_owned(),
                         revision: source.key().revision.clone(),
-                        metadata: source.metadata(),
+                        metadata,
                         presentation_generation: self.presentation_generation(),
                     };
                     let json = bounded_json(&reply, &job.request.cancelled);

@@ -64,11 +64,13 @@ pub fn progressive_query(
         result = query(source, product, value, store, key, context, cancelled)?;
     } else {
         let bounds = source
-            .metadata()
-            .branches
-            .iter()
-            .find(|item| item.id.parse::<u64>().ok() == Some(branch))
-            .map(|item| (item.first_hour, item.last_hour))
+            .with_metadata(|metadata| {
+                metadata
+                    .branches
+                    .iter()
+                    .find(|item| item.id.parse::<u64>().ok() == Some(branch))
+                    .map(|item| (item.first_hour, item.last_hour))
+            })
             .ok_or_else(|| dashboard_core::invalid("Unknown autonomy branch"))?;
         let (from, to, width) = if product == "series-summary" {
             series::viewport(requested.from, requested.to, requested.width)?
@@ -770,11 +772,13 @@ pub(crate) fn query(
         .collect();
     let mut summaries = BTreeMap::new();
     let bounds = source
-        .metadata()
-        .branches
-        .iter()
-        .find(|start| start.id.parse::<u64>().ok() == Some(branch))
-        .map(|start| (start.first_hour, start.last_hour))
+        .with_metadata(|metadata| {
+            metadata
+                .branches
+                .iter()
+                .find(|start| start.id.parse::<u64>().ok() == Some(branch))
+                .map(|start| (start.first_hour, start.last_hour))
+        })
         .ok_or_else(|| dashboard_core::invalid("Unknown autonomy branch"))?;
     if let Some((selected, origin, forward)) = &navigation {
         let mut candidates = Vec::new();

@@ -59,11 +59,13 @@ pub fn query(
     };
     let mut reader = Reader::new(store, key, format!("tension-series-{branch}"), cancelled)?;
     let bounds = source
-        .metadata()
-        .branches
-        .iter()
-        .find(|item| item.id.parse::<u64>().ok() == Some(branch))
-        .map(|item| (item.first_hour, item.last_hour))
+        .with_metadata(|metadata| {
+            metadata
+                .branches
+                .iter()
+                .find(|item| item.id.parse::<u64>().ok() == Some(branch))
+                .map(|item| (item.first_hour, item.last_hour))
+        })
         .ok_or_else(|| dashboard_core::invalid("Unknown tension branch"))?;
     let reached: BTreeSet<_> = reached_hours.iter().copied().collect();
     let mut hours = reached.clone();

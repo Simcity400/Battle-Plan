@@ -709,7 +709,7 @@ fn a_branch_without_a_complete_census_is_catalogued_from_a_later_block() {
     let flag = AtomicBool::new(false);
     let early =
         Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first])]).unwrap());
-    let previous = crate::metadata::read(&early, path, &flag).unwrap();
+    let previous = crate::metadata::read_resident(&early, path, &flag).unwrap();
     assert!(previous.countries.is_empty());
     assert_eq!(previous.branches[0].catalogue_hour, None);
     let later = Arc::new(
@@ -724,7 +724,10 @@ fn a_branch_without_a_complete_census_is_catalogued_from_a_later_block() {
     assert_eq!(later.index.len(), 2);
     for metadata in [
         crate::metadata::read(&later, path, &flag).unwrap(),
-        crate::metadata::read_append(&later, path, &flag, &previous, early.index.len()).unwrap(),
+        crate::metadata::read_append(&later, path, &flag, &previous, early.index.len())
+            .unwrap()
+            .into_wire()
+            .unwrap(),
     ] {
         assert_eq!(metadata.branches[0].catalogue_hour, Some(101));
         assert_eq!(metadata.countries.len(), 1);
@@ -1633,4 +1636,103 @@ fn country_key_changes_use_field_masks_and_snapshots_keep_full_comparison() {
         count as usize,
         "a snapshot rechecks every key"
     );
+}
+
+#[test]
+fn every_wire_vector_string_and_summary_copy_fails_by_name_under_real_denied_growth() {
+    let replay = Arc::new(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![source(1, 100, Some(1))])],
+        )
+        .unwrap(),
+    );
+    let mut resident = super::read_resident(
+        &replay,
+        Path::new("wire.battleplan"),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    resident.value.branches[0].parent_id = Some("parent".into());
+    resident.value.branches[0].gaps.push(crate::RecordingGap {
+        first_hour: 101,
+        last_hour: 101,
+        reason: "gap".into(),
+    });
+    resident.value.branches[0].event_losses = Some(vec![crate::RecordingEventLoss {
+        after_hour: 99,
+        hour: 100,
+        reason: "loss".into(),
+    }]);
+    resident.value.player_country_id = Some("7".into());
+    resident.value.partial = Some(crate::PartialRecording {
+        session_id: "1".into(),
+        reason: "partial".into(),
+        failed_hour: Some(101),
+    });
+    let mut warnings = super::Warnings::new().unwrap();
+    let mut reasons = super::Warnings::new().unwrap();
+    warnings.warn("stored warning").unwrap();
+    reasons.warn("stored reason").unwrap();
+    super::with_storage_failure_after(0, || {
+        warnings.warn("refused warning").unwrap();
+        reasons.warn("refused reason").unwrap();
+    });
+    let (values, refused) = warnings.finish();
+    resident.value.warnings = values;
+    resident.refusals.warnings = refused;
+    let (values, refused) = reasons.finish();
+    resident.value.damaged = Some(crate::DamagedRecording {
+        parts: 1,
+        first_hour: Some(101),
+        last_hour: Some(101),
+        reasons: values,
+    });
+    resident.refusals.reasons = refused;
+    let (healthy, allocations) = crate::test_allocator::deny_after(usize::MAX, || resident.wire());
+    let healthy = healthy.unwrap();
+    assert!(allocations > 0);
+    for allowed in 0..allocations {
+        let (failed, _) = crate::test_allocator::deny_after(allowed, || resident.wire());
+        let error = failed.unwrap_err();
+        assert!(
+            matches!(error, super::MetadataError::WireAllocationFailed),
+            "allocation {allowed}"
+        );
+        assert_eq!(error.to_string(), "Metadata wire allocation failed");
+    }
+    assert_eq!(resident.wire().unwrap(), healthy);
+    let (moved, attempts) = crate::test_allocator::deny_after(0, || resident.into_wire());
+    assert_eq!(attempts, 0);
+    assert_eq!(moved.unwrap(), healthy);
+}
+
+#[test]
+fn a_restored_wire_vector_without_a_spare_slot_returns_a_named_failure_without_allocating() {
+    let replay = Arc::new(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![source(1, 100, Some(1))])],
+        )
+        .unwrap(),
+    );
+    let mut resident = super::read_resident(
+        &replay,
+        Path::new("wire.battleplan"),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let mut warnings = super::Warnings::new().unwrap();
+    warnings.warn("retained").unwrap();
+    super::with_storage_failure_after(0, || warnings.warn("refused").unwrap());
+    let (mut values, refused) = warnings.finish();
+    values.shrink_to_fit();
+    resident.value.warnings = values;
+    resident.refusals.warnings = refused;
+    let (result, attempts) = crate::test_allocator::deny_after(0, || resident.into_wire());
+    assert!(attempts > 0);
+    assert!(matches!(
+        result,
+        Err(super::MetadataError::WireAllocationFailed)
+    ));
 }

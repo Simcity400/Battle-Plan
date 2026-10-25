@@ -115,7 +115,7 @@ fn answer(
     through: Option<i32>,
 ) -> Value {
     let source = source(frames);
-    let bounds = &source.metadata().branches[0];
+    let bounds = &source.metadata().unwrap().branches[0];
     let prefix = Prefix::new(
         &source,
         1,

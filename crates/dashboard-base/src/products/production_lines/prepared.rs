@@ -1512,9 +1512,15 @@ pub fn current(
     };
     let mut reader = ReadPages(&mut read);
     let mut facts = private::Store::new(&mut reader, branch);
-    for country in source.metadata().countries {
+    for tag in source.with_metadata(|metadata| {
+        metadata
+            .countries
+            .iter()
+            .map(|country| country.tag.clone())
+            .collect::<Vec<_>>()
+    }) {
         if facts
-            .get(directory.index, &format!("tagname-{}", country.tag))?
+            .get(directory.index, &format!("tagname-{tag}"))?
             .is_none()
         {
             return Ok(false);

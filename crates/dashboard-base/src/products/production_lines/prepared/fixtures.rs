@@ -35,7 +35,7 @@ pub fn prepare(source: &Source, context: &LoadContext) -> io::Result<()> {
     let icons = preparation_icons(source, context);
     let replay = source.replay_ref();
     let tags: Vec<_> = source
-        .metadata()
+        .metadata().unwrap()
         .countries
         .iter()
         .map(|country| country.tag.clone())

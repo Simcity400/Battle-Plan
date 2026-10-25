@@ -1977,13 +1977,13 @@ fn cached_raw_and_named_metadata_roundtrip_and_unknown_schema_falls_back() {
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("1");
     let flag = AtomicBool::new(false);
-    source.name_countries(None);
-    let expected = source.metadata();
+    source.name_countries(None).unwrap();
+    let expected = source.metadata().unwrap();
     run(&source, None, &flag, |_| {}).unwrap();
     let reopened = fixture.source("2");
     assert_eq!(run(&reopened, None, &flag, |_| {}).unwrap().new_blocks, 0);
-    reopened.name_countries(None);
-    assert_eq!(reopened.metadata(), expected);
+    reopened.name_countries(None).unwrap();
+    assert_eq!(reopened.metadata().unwrap(), expected);
     let (store, key) = super::super::files(&reopened, None).unwrap();
     let file = store.read(&key, "source-metadata-v1", 0).unwrap().unwrap();
     let mut value: serde_json::Value =
@@ -2000,7 +2000,7 @@ fn cached_raw_and_named_metadata_roundtrip_and_unknown_schema_falls_back() {
     writer.commit().unwrap();
     let fallback = fixture.source("3");
     assert_eq!(
-        fallback.metadata().countries.len(),
+        fallback.metadata().unwrap().countries.len(),
         expected.countries.len()
     );
 }
@@ -5136,7 +5136,7 @@ fn prepared_air_force_matches_native_replies_after_two_commits_resume_append_gap
                         measure,
                         ownership,
                     };
-                    let mut actual=crate::products::air_force::prepared::query(source,"series-summary",&serde_json::json!({"branchId":"1","tags":params.tags,"family":{"kind":"air-force-size","top":top,"measure":measure,"ownership":ownership},"from":100,"to":source.metadata().branches[0].last_hour,"width":100}),&context,&flag).unwrap();
+                    let mut actual=crate::products::air_force::prepared::query(source,"series-summary",&serde_json::json!({"branchId":"1","tags":params.tags,"family":{"kind":"air-force-size","top":top,"measure":measure,"ownership":ownership},"from":100,"to":source.metadata().unwrap().branches[0].last_hour,"width":100}),&context,&flag).unwrap();
                     actual.as_object_mut().unwrap().remove("summaries");
                     let expected = AirForceSize::load(source, &params, &context, &flag).unwrap();
                     assert_eq!(
@@ -5264,7 +5264,7 @@ fn prepared_navy_matches_native_after_two_commits_resume_append_gaps_and_aliases
                             ownership,
                             grouping,
                         };
-                        let mut actual=crate::products::navy::prepared::query(source,"series-summary",&serde_json::json!({"branchId":"1","tags":params.tags,"family":{"kind":"navy-size","measure":measure,"ownership":ownership,"grouping":grouping,"top":top},"from":100,"to":source.metadata().branches[0].last_hour,"width":100}),&context,&flag).unwrap();
+                        let mut actual=crate::products::navy::prepared::query(source,"series-summary",&serde_json::json!({"branchId":"1","tags":params.tags,"family":{"kind":"navy-size","measure":measure,"ownership":ownership,"grouping":grouping,"top":top},"from":100,"to":source.metadata().unwrap().branches[0].last_hour,"width":100}),&context,&flag).unwrap();
                         actual.as_object_mut().unwrap().remove("summaries");
                         let expected = NavySize::load(source, &params, &context, &flag).unwrap();
                         assert_eq!(
@@ -5341,7 +5341,7 @@ fn prepared_country_nukes_matches_native_after_two_commits_resume_append_gaps_an
                 top,
                 origin_hour: None,
             };
-            let mut actual=crate::products::country_nukes::prepared::query(source,"series-summary",&serde_json::json!({"branchId":"1","tags":params.tags,"family":{"kind":"country-nukes","top":top,"originHour":null},"from":100,"to":source.metadata().branches[0].last_hour,"width":100}),&context,&flag).unwrap();
+            let mut actual=crate::products::country_nukes::prepared::query(source,"series-summary",&serde_json::json!({"branchId":"1","tags":params.tags,"family":{"kind":"country-nukes","top":top,"originHour":null},"from":100,"to":source.metadata().unwrap().branches[0].last_hour,"width":100}),&context,&flag).unwrap();
             assert_eq!(
                 actual["coverage"]["complete"].as_bool(),
                 Some(true),
@@ -5461,7 +5461,7 @@ fn prepared_country_factories_matches_native_after_two_commits_resume_append_gap
                         tags: if ranked { vec![] } else { vec![tag.clone()] },
                         top: top.clone(),
                     };
-                    let mut actual=crate::products::country_factories::prepared::query(source,"series-summary",&serde_json::json!({"branchId":"1","tags":params.tags,"family":{"kind":"country-factories","top":top,"mode":mode,"groups":groups},"from":100,"to":source.metadata().branches[0].last_hour,"width":100}),&context,&flag).unwrap();
+                    let mut actual=crate::products::country_factories::prepared::query(source,"series-summary",&serde_json::json!({"branchId":"1","tags":params.tags,"family":{"kind":"country-factories","top":top,"mode":mode,"groups":groups},"from":100,"to":source.metadata().unwrap().branches[0].last_hour,"width":100}),&context,&flag).unwrap();
                     assert_eq!(
                         actual["coverage"]["complete"].as_bool(),
                         Some(true),

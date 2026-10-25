@@ -678,27 +678,31 @@ fn requests(source: &Source, path: Option<&Path>) -> io::Result<Requests> {
         .map(|path| -> io::Result<_> { Ok(serde_json::from_reader(File::open(path)?)?) })
         .transpose()?
         .unwrap_or_default();
-    let metadata = source.metadata();
+    let (branches, countries, player_country_id) = source.with_metadata(|metadata| {
+        (
+            metadata.branches.clone(),
+            metadata.countries.clone(),
+            metadata.player_country_id.clone(),
+        )
+    });
     let branch = requests
         .branch_id
         .clone()
-        .or_else(|| metadata.branches.first().map(|b| b.id.clone()))
+        .or_else(|| branches.first().map(|b| b.id.clone()))
         .ok_or_else(|| invalid("The recording has no branch"))?;
     let branch_number: u64 = branch
         .parse()
         .map_err(|_| invalid("Invalid requested branch"))?;
-    let bounds = metadata
-        .branches
+    let bounds = branches
         .iter()
         .find(|b| b.id.parse::<u64>().ok() == Some(branch_number))
         .ok_or_else(|| invalid("Requested branch is not in recording"))?;
     requests.branch_id = Some(branch);
     if requests.tags.is_empty() {
-        let player = metadata
-            .countries
+        let player = countries
             .iter()
-            .find(|c| Some(&c.id) == metadata.player_country_id.as_ref())
-            .or_else(|| metadata.countries.first())
+            .find(|c| Some(&c.id) == player_country_id.as_ref())
+            .or_else(|| countries.first())
             .ok_or_else(|| invalid("Supply tags for this recording"))?;
         requests.tags.push(player.tag.clone());
     }
@@ -1319,10 +1323,13 @@ fn measure(
 ) -> io::Result<()> {
     let branch = requests.branch_id.as_ref().unwrap();
     let bounds = source
-        .metadata()
-        .branches
-        .into_iter()
-        .find(|b| b.id.parse::<u64>().ok() == branch.parse().ok())
+        .with_metadata(|metadata| {
+            metadata
+                .branches
+                .iter()
+                .find(|b| b.id.parse::<u64>().ok() == branch.parse().ok())
+                .cloned()
+        })
         .unwrap();
     for measure in [Measure::PoliticalPower, Measure::CommandPower] {
         let reference = CountryMeasure::load(

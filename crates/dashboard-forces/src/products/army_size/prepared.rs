@@ -1592,7 +1592,7 @@ mod window_profile {
         let block = window[0];
         let range = (block.first_hour, block.last_hour);
         let tags: Vec<_> = source
-            .metadata()
+            .metadata().unwrap()
             .countries
             .iter()
             .map(|country| country.tag.clone())

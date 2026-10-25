@@ -11,7 +11,9 @@
 /// Tests run on the allocator the viewer ships with.
 #[cfg(test)]
 #[global_allocator]
-static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static TEST_ALLOCATOR: test_allocator::Allocator = test_allocator::Allocator;
+#[cfg(test)]
+mod test_allocator;
 
 pub mod air_wing_names;
 pub mod catalogue;

@@ -53,11 +53,13 @@ fn summary_tail(
             .and_then(|width| u32::try_from(width).ok()),
     )?;
     let bounds = source
-        .metadata()
-        .branches
-        .iter()
-        .find(|item| item.id.parse::<u64>().ok() == Some(branch))
-        .map(|item| (item.first_hour, item.last_hour))
+        .with_metadata(|metadata| {
+            metadata
+                .branches
+                .iter()
+                .find(|item| item.id.parse::<u64>().ok() == Some(branch))
+                .map(|item| (item.first_hour, item.last_hour))
+        })
         .ok_or_else(|| dashboard_core::invalid("Unknown tension branch"))?;
     let mut selections = BTreeMap::new();
     let mut tails = BTreeMap::from([

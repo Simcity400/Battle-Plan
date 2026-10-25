@@ -901,17 +901,17 @@ pub fn query(
         .chain([view.0.floor() as i32, view.1.floor() as i32])
         .collect();
     if manual && coverage.is_none() {
-        hours.extend(
-            source
-                .metadata()
+        hours.extend(source.with_metadata(|metadata| {
+            metadata
                 .countries
                 .iter()
                 .filter(|country| {
                     country.observed_branch_id == input.branch_id
                         && selected_tags.contains(&country.tag)
                 })
-                .map(|country| country.observed_hour),
-        );
+                .map(|country| country.observed_hour)
+                .collect::<Vec<_>>()
+        }));
     }
     let early_states = manual
         .then(|| {

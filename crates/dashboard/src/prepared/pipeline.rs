@@ -2753,18 +2753,24 @@ fn run_planned(
     if let Err(reason) = &land_names {
         land_owners.warning(reason.clone());
     }
-    let metadata = time_family!(family_timings, "setup.metadata", observe, source.metadata());
     let country_started = start_timing(&family_timings);
-    let preferred = metadata
-        .player_country_id
-        .as_ref()
-        .and_then(|player| {
+    let preferred = time_family!(
+        family_timings,
+        "setup.metadata",
+        observe,
+        source.with_metadata(|metadata| {
             metadata
-                .countries
-                .iter()
-                .find(|country| &country.id == player)
+                .player_country_id
+                .as_ref()
+                .and_then(|player| {
+                    metadata
+                        .countries
+                        .iter()
+                        .find(|country| &country.id == player)
+                })
+                .map(|country| country.tag.clone())
         })
-        .map(|country| country.tag.clone());
+    );
     finish_timing(&mut family_timings, country_started, "setup.country", false);
     let context = time_family!(
         family_timings,

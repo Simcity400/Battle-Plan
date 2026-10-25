@@ -93,7 +93,7 @@ pub(super) fn answer(
     through: Option<i32>,
     content: Option<&dashboard_core::config::ContentOptions>,
 ) -> io::Result<Value> {
-    let branch = &source.metadata().branches[0];
+    let branch = &source.metadata().unwrap().branches[0];
     let prefix = Prefix {
         coverage: Coverage {
             schema: SCHEMA,

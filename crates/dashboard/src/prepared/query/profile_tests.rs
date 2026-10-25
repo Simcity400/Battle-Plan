@@ -61,7 +61,7 @@ fn readiness_prepared_queries_time_and_store_work() {
         }
         panic!("LOCALAPPDATA must hold this recording's prepared store");
     }
-    let metadata = source.metadata();
+    let metadata = source.metadata().unwrap();
     let branch = &metadata.branches[0];
     let tag = metadata
         .countries

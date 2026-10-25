@@ -13,12 +13,13 @@ pub(super) fn missing(
     context: &LoadContext,
 ) -> io::Result<Vec<u64>> {
     let mut branches = Vec::new();
-    for branch in source
-        .metadata()
-        .branches
-        .iter()
-        .filter_map(|branch| branch.id.parse::<u64>().ok())
-    {
+    for branch in source.with_metadata(|metadata| {
+        metadata
+            .branches
+            .iter()
+            .filter_map(|branch| branch.id.parse::<u64>().ok())
+            .collect::<Vec<_>>()
+    }) {
         if !production_lines::prepared::current(store, key, source, context, branch)? {
             branches.push(branch);
         }
@@ -33,13 +34,13 @@ pub(super) fn jobs<'a>(
     let branches = if retained {
         missing(phase.source, phase.store, phase.key, phase.context)?
     } else {
-        phase
-            .source
-            .metadata()
-            .branches
-            .iter()
-            .filter_map(|branch| branch.id.parse::<u64>().ok())
-            .collect()
+        phase.source.with_metadata(|metadata| {
+            metadata
+                .branches
+                .iter()
+                .filter_map(|branch| branch.id.parse::<u64>().ok())
+                .collect()
+        })
     };
     if branches.is_empty() {
         return Ok(Vec::new());
@@ -55,7 +56,9 @@ pub(super) fn jobs<'a>(
                     stall();
                 }
                 let icons = production_lines::preparation_icons(phase.source, phase.context);
-                let countries = phase.source.metadata().countries;
+                let countries = phase
+                    .source
+                    .with_metadata(|metadata| metadata.countries.clone());
                 for branch in branches {
                     check_cancel(phase.cancelled)?;
                     let resumed = if retained {

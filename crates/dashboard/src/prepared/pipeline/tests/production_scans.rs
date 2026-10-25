@@ -279,7 +279,7 @@ fn new_branch_seed_tags_reschedule_completed_and_resumed_production_branches() {
         assert!(reopened.is_append_of(&first));
         assert!(
             reopened
-                .metadata()
+                .metadata().unwrap()
                 .countries
                 .iter()
                 .any(|country| country.tag == "NEW")

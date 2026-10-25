@@ -86,7 +86,7 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
     let catalogue = crate::catalogue::catalogue(&source, &options).unwrap();
     assert!(
         source
-            .metadata()
+            .metadata().unwrap()
             .warnings
             .iter()
             .all(|note| !note.starts_with("Content: "))
@@ -101,7 +101,7 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
         expected.contains("coverage policy 2; these bytes are not hash-verified: events/a.txt")
     );
     assert!(catalogue.refusal_lines().contains(&expected));
-    assert!(source.metadata().warnings.contains(&expected));
+    assert!(source.metadata().unwrap().warnings.contains(&expected));
     let context = LoadContext {
         content: Some(options),
     };
@@ -126,7 +126,7 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
     let updated = layers.read_warnings().warning().unwrap();
     assert!(updated.contains("Content: 2 file(s)"));
     assert!(catalogue.refusal_lines().contains(&updated));
-    assert!(source.metadata().warnings.contains(&updated));
+    assert!(source.metadata().unwrap().warnings.contains(&updated));
     let cached = reply();
     let notes: Vec<_> = cached["data"]["warnings"]
         .as_array()

@@ -164,10 +164,11 @@ fn changed_recorded_mod_is_verified_before_serving_a_cached_reply() {
     )
     .unwrap();
     let changed = reopen(&first, "changed");
-    changed.name_countries(context.content.as_ref());
+    changed.name_countries(context.content.as_ref()).unwrap();
     assert!(
         changed
             .metadata()
+            .unwrap()
             .warnings
             .iter()
             .any(|warning| warning.contains("hash mismatch"))

@@ -557,7 +557,7 @@ fn sinkings_cache_retains_the_last_two_branches_and_rebuilds_an_evicted_branch()
     )
     .unwrap();
     let flag = AtomicBool::new(false);
-    let metadata = source.metadata();
+    let metadata = source.metadata().unwrap();
     assert_eq!(metadata.branches.len(), 3);
     assert!(
         metadata

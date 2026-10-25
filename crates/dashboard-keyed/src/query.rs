@@ -186,11 +186,13 @@ impl Query<'_> {
     pub fn bounds(&self) -> io::Result<(i32, i32)> {
         let branch = self.branch;
         self.source
-            .metadata()
-            .branches
-            .iter()
-            .find(|item| item.id.parse::<u64>().ok() == Some(branch))
-            .map(|item| (item.first_hour, item.last_hour))
+            .with_metadata(|metadata| {
+                metadata
+                    .branches
+                    .iter()
+                    .find(|item| item.id.parse::<u64>().ok() == Some(branch))
+                    .map(|item| (item.first_hour, item.last_hour))
+            })
             .ok_or_else(|| dashboard_core::invalid("Unknown branch"))
     }
 

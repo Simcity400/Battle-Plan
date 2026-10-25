@@ -26,12 +26,201 @@ use crate::{
     RecordingGap, ReplayMetadata, invalid,
 };
 
+mod warnings;
+pub use warnings::{Refusals, Warnings};
+#[cfg(any(test, feature = "test-support"))]
+pub use warnings::{with_storage_failure_after, with_warning_initialization_failure};
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub struct MetadataRefusals {
+    pub warnings: Refusals,
+    pub reasons: Refusals,
+}
+
+impl MetadataRefusals {
+    pub fn is_empty(&self) -> bool {
+        self.warnings.count() == 0 && self.reasons.count() == 0
+    }
+}
+
+pub struct ResidentMetadata {
+    pub value: ReplayMetadata,
+    pub refusals: MetadataRefusals,
+}
+
+impl std::ops::Deref for ResidentMetadata {
+    type Target = ReplayMetadata;
+    fn deref(&self) -> &ReplayMetadata {
+        &self.value
+    }
+}
+
+#[derive(Debug)]
+pub enum MetadataError {
+    Read(io::Error),
+    WireAllocationFailed,
+}
+
+impl MetadataError {
+    pub fn kind(&self) -> io::ErrorKind {
+        match self {
+            Self::Read(error) => error.kind(),
+            Self::WireAllocationFailed => io::ErrorKind::OutOfMemory,
+        }
+    }
+}
+
+impl std::fmt::Display for MetadataError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Read(error) => error.fmt(f),
+            Self::WireAllocationFailed => f.write_str("Metadata wire allocation failed"),
+        }
+    }
+}
+
+impl std::error::Error for MetadataError {}
+impl From<io::Error> for MetadataError {
+    fn from(error: io::Error) -> Self {
+        Self::Read(error)
+    }
+}
+
+impl ResidentMetadata {
+    pub fn wire(&self) -> Result<ReplayMetadata, MetadataError> {
+        (|| {
+            let mut value = self.copy_presentation()?;
+            value.warnings = copy_warnings(&self.warnings, &self.refusals.warnings)?;
+            if let Some(damaged) = &mut value.damaged {
+                damaged.reasons = copy_warnings(
+                    &self.damaged.as_ref().unwrap().reasons,
+                    &self.refusals.reasons,
+                )?;
+            }
+            Ok::<_, io::Error>(value)
+        })()
+        .map_err(|_| MetadataError::WireAllocationFailed)
+    }
+
+    pub fn into_wire(mut self) -> Result<ReplayMetadata, MetadataError> {
+        self.refusals
+            .warnings
+            .append_wire(&mut self.value.warnings)
+            .map_err(|_| MetadataError::WireAllocationFailed)?;
+        if let Some(damaged) = &mut self.value.damaged {
+            self.refusals
+                .reasons
+                .append_wire(&mut damaged.reasons)
+                .map_err(|_| MetadataError::WireAllocationFailed)?;
+        }
+        Ok(self.value)
+    }
+
+    pub fn copy_presentation(&self) -> io::Result<ReplayMetadata> {
+        let text = engine_allocation::string;
+        Ok(ReplayMetadata {
+            path: text(&self.path)?,
+            name: text(&self.name)?,
+            format: self.format,
+            capture_mode: self.capture_mode,
+            campaign_key: text(&self.campaign_key)?,
+            branches: copy_vec(&self.branches, |branch| {
+                Ok(BranchMetadata {
+                    id: text(&branch.id)?,
+                    session_id: text(&branch.session_id)?,
+                    first_hour: branch.first_hour,
+                    last_hour: branch.last_hour,
+                    parent_id: branch.parent_id.as_deref().map(text).transpose()?,
+                    parent_hour: branch.parent_hour,
+                    sample_boundary: text(&branch.sample_boundary)?,
+                    gaps: copy_vec(&branch.gaps, |gap| {
+                        Ok(RecordingGap {
+                            first_hour: gap.first_hour,
+                            last_hour: gap.last_hour,
+                            reason: text(&gap.reason)?,
+                        })
+                    })?,
+                    event_losses: branch
+                        .event_losses
+                        .as_deref()
+                        .map(|losses| {
+                            copy_vec(losses, |loss| {
+                                Ok(RecordingEventLoss {
+                                    after_hour: loss.after_hour,
+                                    hour: loss.hour,
+                                    reason: text(&loss.reason)?,
+                                })
+                            })
+                        })
+                        .transpose()?,
+                    catalogue_hour: branch.catalogue_hour,
+                })
+            })?,
+            countries: copy_vec(&self.countries, |country| {
+                Ok(CountryMetadata {
+                    id: text(&country.id)?,
+                    tag: text(&country.tag)?,
+                    name: text(&country.name)?,
+                    observed_branch_id: text(&country.observed_branch_id)?,
+                    observed_hour: country.observed_hour,
+                })
+            })?,
+            player_country_id: self.player_country_id.as_deref().map(text).transpose()?,
+            content_verified: self.content_verified,
+            partial: self
+                .partial
+                .as_ref()
+                .map(|partial| {
+                    Ok::<_, io::Error>(PartialRecording {
+                        session_id: text(&partial.session_id)?,
+                        reason: text(&partial.reason)?,
+                        failed_hour: partial.failed_hour,
+                    })
+                })
+                .transpose()?,
+            damaged: self.damaged.as_ref().map(|damaged| DamagedRecording {
+                parts: damaged.parts,
+                first_hour: damaged.first_hour,
+                last_hour: damaged.last_hour,
+                reasons: Vec::new(),
+            }),
+            warnings: Vec::new(),
+        })
+    }
+}
+
+fn copy_warnings(values: &[String], refusals: &Refusals) -> io::Result<Vec<String>> {
+    let capacity = engine_allocation::add(values.len(), usize::from(refusals.count() != 0))?;
+    let mut result = engine_allocation::vec(capacity)?;
+    for value in values {
+        result.push(engine_allocation::string(value)?);
+    }
+    refusals.copy_wire(&mut result)?;
+    Ok(result)
+}
+
+fn copy_vec<T, U>(values: &[T], mut copy: impl FnMut(&T) -> io::Result<U>) -> io::Result<Vec<U>> {
+    let mut result = engine_allocation::vec(values.len())?;
+    for value in values {
+        result.push(copy(value)?);
+    }
+    Ok(result)
+}
+
 /// Branch ranges, gaps and each branch's first readable country catalogue.
 pub fn read(
     replay: &Arc<Replay>,
     path: &Path,
     cancelled: &AtomicBool,
-) -> io::Result<ReplayMetadata> {
+) -> Result<ReplayMetadata, MetadataError> {
+    read_resident(replay, path, cancelled)?.into_wire()
+}
+
+pub fn read_resident(
+    replay: &Arc<Replay>,
+    path: &Path,
+    cancelled: &AtomicBool,
+) -> io::Result<ResidentMetadata> {
     read_from(replay, path, cancelled, None, 0)
 }
 
@@ -41,9 +230,9 @@ pub fn read_append(
     replay: &Arc<Replay>,
     path: &Path,
     cancelled: &AtomicBool,
-    previous: &ReplayMetadata,
+    previous: &ResidentMetadata,
     first_new_block: usize,
-) -> io::Result<ReplayMetadata> {
+) -> io::Result<ResidentMetadata> {
     read_from(replay, path, cancelled, Some(previous), first_new_block)
 }
 
@@ -51,11 +240,16 @@ fn read_from(
     replay: &Arc<Replay>,
     path: &Path,
     cancelled: &AtomicBool,
-    previous: Option<&ReplayMetadata>,
+    previous: Option<&ResidentMetadata>,
     first_new_block: usize,
-) -> io::Result<ReplayMetadata> {
+) -> io::Result<ResidentMetadata> {
     check_cancel(cancelled)?;
     let branches = read_branches(replay, cancelled)?;
+    let mut warnings = Warnings::new()?;
+    let mut reasons = Warnings::new()?;
+    if let Some(previous) = previous {
+        reasons.import_refusals(&previous.refusals.reasons)?;
+    }
     let mut metadata = ReplayMetadata {
         path: path.to_string_lossy().into_owned(),
         name: path
@@ -81,16 +275,17 @@ fn read_from(
             last_hour: replay.damaged_range.map(|range| range.1),
             reasons: Vec::new(),
         }),
-        warnings: replay.compatibility_gaps(),
+        warnings: Vec::new(),
     };
+    for warning in replay.compatibility_gaps() {
+        warnings.warn(&warning)?;
+    }
     if !metadata.content_verified {
-        warn(&mut metadata.warnings, "The recorder did not verify the content identity. The dashboard reads recorded values only and does not verify local game assets.".into());
+        warnings.warn("The recorder did not verify the content identity. The dashboard reads recorded values only and does not verify local game assets.")?;
     }
     for warning in &replay.warnings {
-        if let Some(damaged) = &mut metadata.damaged {
-            warn(&mut damaged.reasons, warning.clone());
-        }
-        warn(&mut metadata.warnings, warning.clone());
+        reasons.warn(warning)?;
+        warnings.warn(warning)?;
     }
     let mut known = HashSet::new();
     if let Some(previous) = previous {
@@ -100,9 +295,7 @@ fn read_from(
             previous.countries.clone(),
         )?;
         metadata.player_country_id = previous.player_country_id.clone();
-        for warning in &previous.warnings {
-            warn(&mut metadata.warnings, warning.clone());
-        }
+        warnings.import(&previous.warnings, &previous.refusals.warnings)?;
         let mut retained_damage = Vec::new();
         for old in &previous.branches {
             if let Some(current) = metadata
@@ -126,10 +319,12 @@ fn read_from(
         for gap in retained_damage {
             damage(
                 &mut metadata,
+                &mut warnings,
+                &mut reasons,
                 1,
                 Some((gap.first_hour, gap.last_hour)),
                 gap.reason,
-            );
+            )?;
         }
     }
     for branch in &replay.branches {
@@ -195,10 +390,12 @@ fn read_from(
                 });
                 damage(
                     &mut metadata,
+                    &mut warnings,
+                    &mut reasons,
                     1,
                     Some((block.first_hour, block.last_hour)),
                     reason,
-                );
+                )?;
                 continue;
             }
             let Some(hour) = observed else {
@@ -207,7 +404,7 @@ fn read_from(
             if metadata.player_country_id.is_none() {
                 metadata.player_country_id = player_country_id;
             }
-            let countries = catalogue.finish(&mut metadata.warnings)?;
+            let countries = catalogue.finish(&mut warnings)?;
             merge_countries(&mut metadata.countries, &mut known, countries)?;
             if let Some(entry) = metadata
                 .branches
@@ -220,10 +417,29 @@ fn read_from(
         }
     }
     check_cancel(cancelled)?;
-    Ok(metadata)
+    let (values, warning_refusals) = warnings.finish();
+    metadata.warnings = values;
+    let (values, reason_refusals) = reasons.finish();
+    if let Some(damaged) = &mut metadata.damaged {
+        damaged.reasons = values;
+    }
+    Ok(ResidentMetadata {
+        value: metadata,
+        refusals: MetadataRefusals {
+            warnings: warning_refusals,
+            reasons: reason_refusals,
+        },
+    })
 }
 
-fn damage(metadata: &mut ReplayMetadata, parts: usize, range: Option<(i32, i32)>, reason: String) {
+fn damage(
+    metadata: &mut ReplayMetadata,
+    warnings: &mut Warnings,
+    reasons: &mut Warnings,
+    parts: usize,
+    range: Option<(i32, i32)>,
+    reason: String,
+) -> io::Result<()> {
     let damaged = metadata
         .damaged
         .get_or_insert_with(DamagedRecording::default);
@@ -232,8 +448,8 @@ fn damage(metadata: &mut ReplayMetadata, parts: usize, range: Option<(i32, i32)>
         damaged.first_hour = Some(damaged.first_hour.map_or(first, |hour| hour.min(first)));
         damaged.last_hour = Some(damaged.last_hour.map_or(last, |hour| hour.max(last)));
     }
-    warn(&mut damaged.reasons, reason.clone());
-    warn(&mut metadata.warnings, reason);
+    reasons.warn(&reason)?;
+    warnings.warn(&reason)
 }
 
 /// The terminal marker is separate from gaps: an unknown failed hour has none.
@@ -1005,9 +1221,9 @@ impl Catalogue {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self, warnings: &mut Vec<String>) -> io::Result<Vec<CountryMetadata>> {
+    pub(crate) fn finish(mut self, warnings: &mut Warnings) -> io::Result<Vec<CountryMetadata>> {
         if self.bad_mapping {
-            warn(warnings, "Some country rows have missing or conflicting CountryLinks mappings and are excluded from the catalogue.".into());
+            warnings.warn("Some country rows have missing or conflicting CountryLinks mappings and are excluded from the catalogue.")?;
         }
         // Canonical slot IDs are decimal without leading zeroes.
         self.rows
@@ -1029,13 +1245,6 @@ fn merge_countries(
         }
     }
     Ok(())
-}
-
-pub fn warn(warnings: &mut Vec<String>, message: String) {
-    let message = short_text(&message, 1024);
-    if !warnings.contains(&message) {
-        warnings.push(message);
-    }
 }
 
 /// Bounded text for wire fields, cut at a character boundary.

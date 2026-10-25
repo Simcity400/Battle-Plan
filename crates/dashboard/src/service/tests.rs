@@ -688,7 +688,7 @@ fn failed_delivery_stops_admission_and_shutdown_still_joins() {
         id: "lease-1".into(),
         path: "memory.battleplan".into(),
         revision: source.key().revision.clone(),
-        metadata: source.metadata(),
+        metadata: source.metadata().unwrap(),
         presentation_generation: 0,
     };
     {
@@ -860,7 +860,7 @@ fn damaged_opens_use_sidebar_sentences_and_valid_opens_keep_their_metadata() {
     )
     .unwrap();
     assert_eq!(
-        serde_json::to_value(source.metadata()).unwrap(),
+        serde_json::to_value(source.metadata().unwrap()).unwrap(),
         serde_json::to_value(expected).unwrap()
     );
     let mut bytes = std::fs::read(&path).unwrap();
@@ -869,7 +869,7 @@ fn damaged_opens_use_sidebar_sentences_and_valid_opens_keep_their_metadata() {
     std::fs::write(&path, bytes).unwrap();
     let modified = service.open_map(&path, None).unwrap();
     assert!(modified.replay_ref().is_file_backed());
-    let metadata = modified.metadata();
+    let metadata = modified.metadata().unwrap();
     assert!(metadata.damaged.is_some());
     assert!(
         metadata
@@ -877,8 +877,8 @@ fn damaged_opens_use_sidebar_sentences_and_valid_opens_keep_their_metadata() {
             .iter()
             .any(|reason| reason.contains("trailer CRC mismatch"))
     );
-    assert_eq!(metadata.countries, source.metadata().countries);
-    assert_eq!(metadata.branches, source.metadata().branches);
+    assert_eq!(metadata.countries, source.metadata().unwrap().countries);
+    assert_eq!(metadata.branches, source.metadata().unwrap().branches);
     service.shutdown();
 }
 
