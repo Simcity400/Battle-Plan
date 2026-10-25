@@ -75,6 +75,7 @@ pub struct Storage {
     dirty: Vec<AtomicU64>,
     invalid: AtomicBool,
     missing_projection_sources: AtomicBool,
+    missing_share_inputs: AtomicBool,
 }
 impl Storage {
     pub fn new(data: usize, stride: usize, rows: &[Account]) -> Result<Box<Self>, &'static str> {
@@ -138,6 +139,7 @@ impl Storage {
             dirty,
             invalid: AtomicBool::new(false),
             missing_projection_sources: AtomicBool::new(false),
+            missing_share_inputs: AtomicBool::new(false),
         })
         .map_err(|_| "faction operand storage allocation failed")
     }
@@ -229,7 +231,8 @@ impl Storage {
         slot.shares[offset + 1].store(denominator, Ordering::Relaxed);
         let boundary = slot.shares[offset + 2].load(Ordering::Relaxed) as u32;
         let boundary = boundary.wrapping_add(1).max(1);
-        if !projection && let Some((faction, phase, _)) = crate::faction_pools::phase(0) {
+        if !projection {
+            let (faction, phase, _) = crate::faction_pools::phase(0).unwrap_or_default();
             slot.influence_faction.store(faction, Ordering::Relaxed);
             slot.total_inputs[0].store(phase as i64, Ordering::Relaxed);
             slot.total_inputs[1].store(numerator, Ordering::Relaxed);
@@ -250,10 +253,8 @@ impl Storage {
         let Some(index) = self.index(address) else {
             return;
         };
-        let Some((faction, phase, count)) = crate::faction_pools::phase(1) else {
-            self.invalid.store(true, Ordering::SeqCst);
-            return;
-        };
+        // A newly created faction is ranked before its first pool census.
+        let (faction, phase, count) = crate::faction_pools::phase(1).unwrap_or_default();
         for (target, value) in self.slots[index].rank_pending.iter().zip([
             numerator.max(0),
             order as i64,
@@ -364,6 +365,9 @@ impl Storage {
         if self.missing_projection_sources.load(Ordering::SeqCst) {
             return Err("faction projection setter lacks its supplying getter operands");
         }
+        if self.missing_share_inputs.load(Ordering::SeqCst) {
+            return Err("faction share refresh supplying denominator unreadable");
+        }
         if self.invalid.load(Ordering::SeqCst) {
             return Err("faction operand writer selected an invalid statistic");
         }
@@ -448,6 +452,14 @@ impl Holder {
         CLOSED.store(false, Ordering::SeqCst);
         drop(old);
         Ok(())
+    }
+    pub fn needs_baseline(&self) -> bool {
+        MISSED.load(Ordering::SeqCst)
+            || self.storage.as_ref().is_none_or(|storage| {
+                storage.invalid.load(Ordering::SeqCst)
+                    || storage.missing_projection_sources.load(Ordering::SeqCst)
+                    || storage.missing_share_inputs.load(Ordering::SeqCst)
+            })
     }
     pub fn allocated_bytes(&self) -> usize {
         self.storage
@@ -611,7 +623,7 @@ pub fn refuse(receiver: usize) {
     if !pointer.is_null() && !CLOSED.load(Ordering::SeqCst) {
         let storage = unsafe { &*pointer };
         if storage.index(receiver).is_some() {
-            storage.invalid.store(true, Ordering::SeqCst);
+            storage.missing_share_inputs.store(true, Ordering::SeqCst);
         }
     }
 }
@@ -633,6 +645,9 @@ mod tests {
     use super::*;
     #[test]
     fn checked_account_slots_reject_invalid_addresses_and_replaced_geometry() {
+        let _lock = crate::faction_companion_changes::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let rows = vec![Account::default(); 3];
         let mut storage = Storage::new(0x1000, 0xd0, &rows).unwrap();
         for address in [0, 0xfff, 0x1000, 0x1001, 0x10d0, 0x11a0, 0x1270, usize::MAX] {
@@ -665,6 +680,9 @@ mod tests {
 
     #[test]
     fn projection_reuses_one_slot_and_keeps_source_consumption_and_literal_writes() {
+        let _lock = crate::faction_companion_changes::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut rows = vec![Account {
             projection: vec![0; 4],
             ..Default::default()
@@ -704,6 +722,140 @@ mod tests {
             storage.drain(&mut rows),
             Err("faction projection setter lacks its supplying getter operands")
         );
+    }
+
+    #[test]
+    fn ranks_without_a_registered_faction_keep_native_results_and_revoke_old_derivations() {
+        let _lock = crate::faction_companion_changes::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut rows = vec![Account::default()];
+        let storage = Storage::new(0x1000, 0xd0, &rows).unwrap();
+        for (target, value) in storage.slots[0].rank_pending.iter().zip([300, 0, 77, 8, 1]) {
+            target.store(value, Ordering::Relaxed);
+        }
+        storage.rank_commit(0x1000, 1);
+        storage.drain(&mut rows).unwrap();
+        assert_eq!(rows[0].rank_refresh, 8);
+        for rank in [4, 2, 1] {
+            crate::test_support::with_allocations_denied(|| {
+                crate::faction_pools::phase_call(0xdead0000, 1, || {
+                    assert_eq!(crate::faction_pools::phase(1), None);
+                    storage.rank_input(0x1000, 900, 0);
+                    storage.rank_commit(0x1000, rank);
+                    0
+                });
+                storage.drain(&mut rows).unwrap();
+            });
+            assert_eq!(rows[0].projection_rank, rank);
+            assert_eq!(rows[0].rank_input_raw, 900);
+            assert_eq!(rows[0].rank_input_order, 0);
+            assert_eq!(rows[0].rank_refresh, 0);
+            assert_eq!(rows[0].rank_faction, 0);
+            assert!(!storage.invalid.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn uncertified_shares_revoke_old_total_derivations_but_keep_supplied_operands() {
+        let _lock = crate::faction_companion_changes::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut rows = vec![Account::default()];
+        let storage = Storage::new(0x1000, 0xd0, &rows).unwrap();
+        storage.slots[0]
+            .influence_faction
+            .store(77, Ordering::Relaxed);
+        storage.slots[0].total_inputs[0].store(8, Ordering::Relaxed);
+        storage.slots[0].total_inputs[1].store(300, Ordering::Relaxed);
+        crate::test_support::with_allocations_denied(|| {
+            crate::faction_pools::phase_call(0xdead0000, 0, || {
+                assert_eq!(crate::faction_pools::phase(0), None);
+                storage.refresh(0x1000, false, 200, 1000);
+                0
+            });
+            storage.drain(&mut rows).unwrap();
+        });
+        assert_eq!(rows[0].influence_share_raw, 20_000);
+        assert_eq!(rows[0].influence_numerator_raw, 200);
+        assert_eq!(rows[0].influence_denominator_raw, 1000);
+        assert_eq!(rows[0].influence_refresh, 1);
+        assert_eq!(rows[0].influence_faction, 0);
+        assert_eq!(rows[0].influence_total_phase, 0);
+        assert_eq!(rows[0].influence_total_raw, 200);
+    }
+
+    #[test]
+    fn all_native_statistic_slots_follow_their_arrays_without_enum_caps() {
+        let mut rows = vec![
+            Account {
+                influence: vec![11; 7],
+                projection: vec![17; 6],
+                ..Default::default()
+            };
+            1500
+        ];
+        let storage = Storage::new(0x1000, 0xd0, &rows).unwrap();
+        crate::test_support::with_allocations_denied(|| {
+            for account in 0..rows.len() {
+                let address = 0x1000 + account * 0xd0;
+                for statistic in 0..7 {
+                    storage.write(address, true, statistic, i64::MAX, Operation::Set);
+                    storage.write(address, true, statistic, 1, Operation::Add);
+                }
+                for statistic in 0..6 {
+                    storage.write(
+                        address,
+                        false,
+                        PROJECTION_START + statistic,
+                        -29,
+                        Operation::Set,
+                    );
+                }
+            }
+            assert!(storage.drain(&mut rows).unwrap());
+            assert!(!storage.drain(&mut rows).unwrap());
+        });
+        for row in &rows {
+            assert_eq!(row.influence, [i64::MIN; 7]);
+            assert_eq!(row.projection, [-29; 6]);
+        }
+        storage.write(0x1000, true, 7, 99, Operation::Set);
+        assert_eq!(
+            storage.drain(&mut rows),
+            Err("faction operand writer selected an invalid statistic")
+        );
+    }
+
+    #[test]
+    fn missed_callbacks_require_a_fresh_baseline_instead_of_clearing_the_refusal() {
+        let _lock = crate::faction_companion_changes::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut holder = Holder::default();
+        let rows = vec![Account::default()];
+        holder
+            .install(Storage::new(0x1000, 0xd0, &rows).unwrap())
+            .unwrap();
+        assert!(!holder.needs_baseline());
+        CLOSED.store(true, Ordering::SeqCst);
+        {
+            let _flight = Flight::new();
+            observe(0x1000, false, CONTRIBUTION, 17, Operation::Add);
+        }
+        CLOSED.store(false, Ordering::SeqCst);
+        assert_eq!(quiet(), None);
+        assert!(holder.needs_baseline());
+        let mut fresh = vec![Account {
+            contribution_raw: 29,
+            ..Default::default()
+        }];
+        holder
+            .install(Storage::new(0x1000, 0xd0, &fresh).unwrap())
+            .unwrap();
+        assert!(!holder.needs_baseline());
+        assert!(!holder.storage().unwrap().drain(&mut fresh).unwrap());
+        assert_eq!(fresh[0].contribution_raw, 29);
     }
 
     #[test]

@@ -338,7 +338,13 @@ pub(crate) fn phase_call(receiver: usize, kind: usize, original: impl FnOnce() -
             .map(|at| (storage, storage.owners[at].1))
     };
     let flight = std::mem::ManuallyDrop::new(selected.map(|_| Flight::new()));
-    let previous = PHASES.with(|phases| phases.get());
+    let previous = PHASES.with(|phases| {
+        let previous = phases.get();
+        let mut current = previous;
+        current[kind] = None;
+        phases.set(current);
+        previous
+    });
     let mut completed = None;
     if let Some((storage, index)) = selected {
         let cell = &storage.cells[index];
@@ -1033,6 +1039,37 @@ mod tests {
             17
         );
     }
+    #[test]
+    fn unregistered_faction_phases_shadow_outer_cohorts_and_restore_them_afterward() {
+        let _lock = crate::faction_companion_changes::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = PHASES.with(|phases| phases.replace([Some((11, 12, 2)), Some((21, 22, 3))]));
+        crate::test_support::with_allocations_denied(|| {
+            assert_eq!(
+                phase_call(0xdead0000, 1, || {
+                    assert_eq!(phase(0), Some((11, 12, 2)));
+                    assert_eq!(phase(1), None);
+                    assert_eq!(
+                        phase_call(0xdead1000, 0, || {
+                            assert_eq!(phase(0), None);
+                            assert_eq!(phase(1), None);
+                            17
+                        }),
+                        17
+                    );
+                    assert_eq!(phase(0), Some((11, 12, 2)));
+                    assert_eq!(phase(1), None);
+                    29
+                }),
+                29
+            );
+        });
+        assert_eq!(phase(0), Some((11, 12, 2)));
+        assert_eq!(phase(1), Some((21, 22, 3)));
+        PHASES.with(|phases| phases.set(previous));
+    }
+
     #[test]
     fn foreign_pool_traffic_never_enters_the_owned_epoch_or_requests_baselines() {
         let _lock = crate::faction_companion_changes::TEST_LOCK

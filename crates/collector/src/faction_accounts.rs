@@ -95,7 +95,7 @@ impl Store {
         changes: &impl Changes,
         members: &[engine_native::cfaction_system::MemberRow],
     ) {
-        self.failure = None;
+        let retry = self.failure.take().is_some();
         let before = changes.quiet(FAMILY);
         let Some(before) = before else {
             self.failure = Some("faction member accounting writer observation unavailable");
@@ -118,7 +118,11 @@ impl Store {
         }
         self.marks.sort_unstable();
         self.marks.dedup();
-        let baseline = force || self.epoch != Some(before.0) || self.marks.contains(&self.header);
+        let baseline = force
+            || retry
+            || self.mirror.needs_baseline()
+            || self.epoch != Some(before.0)
+            || self.marks.contains(&self.header);
         let scalar_before = if baseline {
             mirror::baseline_stamp()
         } else {
@@ -650,6 +654,159 @@ mod tests {
         watches.set_enabled(true);
         Observed(watches)
     }
+    fn statistics(bytes: &mut Vec<u8>, account: usize, offset: usize, values: &[i64]) {
+        let data = bytes.len();
+        bytes.resize(data + values.len() * 8, 0);
+        let header = ACCOUNTS + account * native::STRIDE + offset;
+        put(bytes, header, data as u64);
+        put(
+            bytes,
+            header + 8,
+            (values.len() as u64) << 32 | values.len() as u64,
+        );
+        for (ordinal, &value) in values.iter().enumerate() {
+            put(bytes, data + ordinal * 8, value as u64);
+        }
+    }
+
+    #[test]
+    fn new_faction_ranks_publish_every_account_from_the_first_hour_without_a_pool_certificate() {
+        let _lock = crate::faction_companion_changes::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bytes = fixture(1500);
+        let memory = Counted {
+            bytes: &bytes,
+            reads: Cell::new(0),
+        };
+        let changes = observed(1500);
+        let mut store = Store::default();
+        store.acquire(&memory, 0, STATE, false, &changes);
+        let reads = memory.reads.get();
+        for hour in 0..3 {
+            crate::test_support::with_allocations_denied(|| {
+                crate::faction_pools::phase_call(0xdead0000, 1, || {
+                    assert_eq!(crate::faction_pools::phase(1), None);
+                    let _flight = mirror::Flight::new();
+                    for account in 0..1500 {
+                        let address = ACCOUNTS + account * native::STRIDE;
+                        mirror::rank_receiver(address);
+                        mirror::rank_input(900, account as u32);
+                        mirror::rank_commit(address, (account + 1 + hour) as i32);
+                    }
+                    0
+                });
+            });
+            store.acquire(&memory, 0, STATE, false, &changes);
+            let (rows, failure) = store.output();
+            assert_eq!(failure, None);
+            let rows = rows.unwrap();
+            let rows = rows.rows::<tables::FactionAccounts>().unwrap();
+            assert_eq!(rows.len(), 1500);
+            for (account, row) in rows.iter().enumerate() {
+                assert_eq!(row.projection_rank, (account + 1 + hour) as i32);
+                assert_eq!(row.rank_derived, 0);
+                assert_eq!(row.rank(rows).unwrap(), row.projection_rank);
+            }
+        }
+        assert_eq!(memory.reads.get(), reads);
+    }
+
+    #[test]
+    fn scalar_refusals_rebaseline_exactly_and_retry_unreadable_hours_without_forcing_a_keyframe() {
+        let _lock = crate::faction_companion_changes::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for fault in 0..3 {
+            for unreadable_hours in [0, 2] {
+                let mut bytes = fixture(2);
+                statistics(&mut bytes, 1, native::INFLUENCE, &[1, 2, 3, 4, 5]);
+                statistics(&mut bytes, 1, native::POWER_PROJECTION, &[6, 7, 8, 9]);
+                let changes = observed(2);
+                let mut store = Store::default();
+                let acquire = |store: &mut Store, bytes: &[u8]| {
+                    store.acquire(
+                        &engine_native::memory::SliceMemory { base: 0, bytes },
+                        0,
+                        STATE,
+                        false,
+                        &changes,
+                    )
+                };
+                acquire(&mut store, &bytes);
+                let address = ACCOUNTS + native::STRIDE;
+                crate::test_support::with_allocations_denied(|| {
+                    let _flight = mirror::Flight::new();
+                    match fault {
+                        0 => mirror::observe(address, true, 5, 99, mirror::Operation::Set),
+                        1 => {
+                            mirror::projection_operand(5, 123);
+                            mirror::projection_sources(address, 3, 999);
+                        }
+                        _ => mirror::refuse(address),
+                    }
+                });
+                let expected = match fault {
+                    0 => "faction operand writer selected an invalid statistic",
+                    1 => "faction projection setter lacks its supplying getter operands",
+                    _ => "faction share refresh supplying denominator unreadable",
+                };
+                assert_eq!(
+                    store.mirror.storage().unwrap().drain(&mut store.values),
+                    Err(expected)
+                );
+                assert!(store.mirror.needs_baseline());
+                statistics(&mut bytes, 1, native::INFLUENCE, &[11, 12, 13, 14, 15, 16]);
+                statistics(&mut bytes, 1, native::POWER_PROJECTION, &[21, 22, 23, 24]);
+                put(&mut bytes, address + native::CONTRIBUTION, 777);
+                put(&mut bytes, address + native::INITIATIVE, 888);
+                put(&mut bytes, address + native::INFLUENCE_SHARE, 54321);
+                put(&mut bytes, address + native::POWER_PROJECTION_SHARE, 12345);
+                bytes[address + native::POWER_PROJECTION_RANK
+                    ..address + native::POWER_PROJECTION_RANK + 4]
+                    .copy_from_slice(&2i32.to_le_bytes());
+                for _ in 0..unreadable_hours {
+                    bytes[SYSTEM] ^= 1;
+                    acquire(&mut store, &bytes);
+                    assert_eq!(
+                        store.output().1,
+                        Some("faction member accounting system vtable mismatch")
+                    );
+                    assert!(store.output().0.is_none());
+                    bytes[SYSTEM] ^= 1;
+                }
+                acquire(&mut store, &bytes);
+                assert_eq!(store.output().1, None);
+                let rows = store.output().0.unwrap();
+                let rows = rows.rows::<tables::FactionAccounts>().unwrap();
+                assert_eq!(
+                    FactionAccountRow::statistics(rows, 1, 1).collect::<Vec<_>>(),
+                    [11, 12, 13, 14, 15, 16]
+                );
+                let row = rows
+                    .iter()
+                    .find(|row| row.account == 1 && row.kind == 0)
+                    .unwrap();
+                assert_eq!(row.projection(rows).unwrap(), [21, 22, 23, 24]);
+                assert_eq!(row.contribution_raw, 777);
+                assert_eq!(row.initiative(), 888);
+                assert_eq!(row.influence_share(), 54321);
+                assert_eq!(row.projection_share(), 12345);
+                assert_eq!(row.rank(rows).unwrap(), 2);
+                assert!(!store.mirror.needs_baseline());
+                let memory = Counted {
+                    bytes: &bytes,
+                    reads: Cell::new(0),
+                };
+                let held = Arc::clone(store.rows.as_ref().unwrap());
+                store.acquire(&memory, 0, STATE, false, &changes);
+                assert_eq!(store.output().1, None);
+                assert_eq!(memory.reads.get(), 0);
+                assert!(Arc::ptr_eq(&held, store.rows.as_ref().unwrap()));
+            }
+        }
+    }
+
     #[test]
     fn accounting_carries_accounts_without_native_reads_or_allocations_and_selects_one_writer() {
         let _lock = crate::faction_companion_changes::TEST_LOCK
