@@ -1385,7 +1385,7 @@ fn compare_extended(
             report,
         )
     });
-    report.attempt("projects RaidPathDistances", |report| {
+    report.attempt_table(TableId::RaidPathDistances, |report| {
         projects::compare_raid_paths(
             frame,
             required_context("verified province graph", &raid_graph)?,

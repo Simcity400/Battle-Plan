@@ -613,6 +613,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
                     let to = target.scope.building_location;
                     let columns = i64::from(member.abs_diff((to - 1) / COLUMN));
                     memo.push(RaidPathDistanceRow {
+                        dispatcher: replay_data::rows::RaidPathDispatcher::Naval,
                         source,
                         target: to,
                         distance: (columns + 1) * 400_000,
@@ -622,7 +623,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             }
         }
     }
-    memo.sort_by_key(|row| (row.source, row.target));
+    memo.sort_by_key(RaidPathDistanceRow::key);
     put::<tables::RaidPathDistances>(&mut frame, memo);
     put::<tables::RaidTargetStatuses>(&mut frame, targets);
     (assets, frame)
@@ -656,17 +657,16 @@ impl launch::RaidPaths for Timed<'_> {
         world: &World<'_>,
         source: &launch::PathSource,
         target: &RaidScope,
-        asked: launch::Asked,
     ) -> Result<Option<i64>, String> {
         let start = Instant::now();
-        let result = self.paths.distance(world, source, target, asked);
+        let result = self.paths.distance(world, source, target);
         self.distance.add(start.elapsed());
         result
     }
 
-    fn note(&self, source: &launch::PathSource, target: &RaidScope, asked: launch::Asked) {
+    fn note(&self, source: &launch::PathSource, target: &RaidScope) {
         let start = Instant::now();
-        self.paths.note(source, target, asked);
+        self.paths.note(source, target);
         self.distance.add(start.elapsed());
     }
 

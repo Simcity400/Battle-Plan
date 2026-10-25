@@ -885,4 +885,61 @@ mod tests {
             TableInput::ComparedEqual(_)
         ));
     }
+    #[test]
+    fn raid_dispatcher_comparison_changes_only_the_matching_memo_row() {
+        use replay_data::rows::{RaidPathDispatcher, RaidPathDistanceRow};
+        let mut compared = FrameEncoder::new();
+        let mut ordinary = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        let counters = Counters::default();
+        for hour in 0..4 {
+            let rows: Vec<_> = [RaidPathDispatcher::Land, RaidPathDispatcher::Naval]
+                .into_iter()
+                .map(|dispatcher| RaidPathDistanceRow {
+                    dispatcher,
+                    source: 7,
+                    target: 9,
+                    distance: if dispatcher == RaidPathDispatcher::Land {
+                        900_000
+                    } else {
+                        500_000 + i64::from(hour / 2)
+                    },
+                    ok: 1,
+                })
+                .collect();
+            let mut input = frame(hour, Vec::new());
+            input.tables[TableId::RaidPathDistances.index()] =
+                TableView::Complete(TableRows::RaidPathDistances(rows.clone())).into();
+            let expected = ordinary.encode_input(input.clone(), false).unwrap();
+            compare_frame(
+                &compared,
+                Target {
+                    branch: 1,
+                    hour,
+                    restarting: false,
+                },
+                &mut input,
+                None,
+                &counters,
+            );
+            if hour == 2 {
+                let TableInput::ComparedChanges { indices, .. } =
+                    &input.tables[TableId::RaidPathDistances.index()]
+                else {
+                    panic!("naval-only delta");
+                };
+                assert_eq!(indices, &[1]);
+            }
+            let encoded = compared.encode_input(input, false).unwrap();
+            assert_eq!(encoded, expected);
+            assert_eq!(
+                decoder
+                    .apply(&encoded)
+                    .unwrap()
+                    .complete::<tables::RaidPathDistances>()
+                    .unwrap(),
+                rows
+            );
+        }
+    }
 }

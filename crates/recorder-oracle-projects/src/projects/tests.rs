@@ -1222,33 +1222,61 @@ fn raid_target_statuses_join_on_their_native_ordinal() {
     assert_eq!(report.compared_tables["RaidTargetStatuses"], 0);
 }
 
-/// One decided search reproducing the entry is a match; a difference
-/// needs both searches decided; an undecidable search with no match
-/// certifies nothing either way.
 #[test]
-fn raid_path_verdicts_need_both_searches_to_differ() {
-    use installed_content_core::{province_graph::RaidPath::Land, province_graph::RaidPath::Naval};
-    let failed = || Err("undecidable".to_owned());
+fn raid_path_verdict_uses_only_its_dispatchers_search() {
+    assert_eq!(path_verdict(Some(5), &Ok(Some(5))), PathVerdict::Match);
+    assert_eq!(path_verdict(None, &Ok(None)), PathVerdict::Match);
+    assert_eq!(path_verdict(Some(5), &Ok(Some(4))), PathVerdict::Difference);
+    assert_eq!(path_verdict(Some(5), &Ok(None)), PathVerdict::Difference);
+    assert_eq!(path_verdict(None, &Ok(Some(0))), PathVerdict::Difference);
     assert_eq!(
-        path_verdict(Some(5), &[(Naval, failed()), (Land, Ok(Some(5)))]),
-        PathVerdict::Match
-    );
-    assert_eq!(
-        path_verdict(None, &[(Naval, Ok(Some(4))), (Land, Ok(None))]),
-        PathVerdict::Match
-    );
-    assert_eq!(
-        path_verdict(Some(5), &[(Naval, Ok(Some(4))), (Land, Ok(None))]),
-        PathVerdict::Difference
-    );
-    assert_eq!(
-        path_verdict(Some(5), &[(Naval, failed()), (Land, Ok(Some(4)))]),
+        path_verdict(Some(5), &Err("undecidable".into())),
         PathVerdict::Undecided
     );
-    assert_eq!(
-        path_verdict(Some(5), &[(Naval, failed()), (Land, failed())]),
-        PathVerdict::Undecided
-    );
+}
+
+#[test]
+fn raid_memo_oracle_checks_each_dispatcher_instead_of_either_path() {
+    use replay_data::rows::{RaidPathDispatcher, RaidPathDistanceRow};
+    let graph = installed_content_core::province_graph::ProvinceGraph {
+        edges: BTreeMap::from([(1, vec![(2, Some(50_000))]), (2, vec![(3, Some(50_000))])]),
+        ..Default::default()
+    };
+    let mut geometry = installed_content_core::province_geometry::ProvinceGeometry::default();
+    geometry.width = 10;
+    geometry.height = 1;
+    geometry.centroids = BTreeMap::from([(1, [0, 0]), (2, [1, 0]), (3, [2, 0])]);
+    geometry.land = BTreeSet::from([1, 3]);
+    let mut frame = scientist_frame();
+    let mut rows = vec![
+        RaidPathDistanceRow {
+            dispatcher: RaidPathDispatcher::Land,
+            source: 1,
+            target: 3,
+            distance: 0,
+            ok: 0,
+        },
+        RaidPathDistanceRow {
+            dispatcher: RaidPathDispatcher::Naval,
+            source: 1,
+            target: 3,
+            distance: 100_000,
+            ok: 1,
+        },
+    ];
+    frame.tables[TableId::RaidPathDistances.index()] =
+        TableView::Complete(TableRows::RaidPathDistances(rows.clone())).into();
+    let mut report = Report::default();
+    compare_raid_paths(&frame, &(graph.clone(), geometry.clone()), &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert_eq!(report.compared_tables["RaidPathDistances"], 2);
+    rows[0].distance = 100_000;
+    rows[0].ok = 1;
+    frame.tables[TableId::RaidPathDistances.index()] =
+        TableView::Complete(TableRows::RaidPathDistances(rows)).into();
+    let mut report = Report::default();
+    compare_raid_paths(&frame, &(graph, geometry), &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
 }
 
 #[test]

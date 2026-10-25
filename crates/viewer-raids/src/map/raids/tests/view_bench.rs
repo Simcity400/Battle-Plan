@@ -411,6 +411,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         for &target in &targets {
             let (tx, ty) = xy(target);
             memo.push(RaidPathDistanceRow {
+                dispatcher: replay_data::rows::RaidPathDispatcher::Naval,
                 source,
                 target,
                 distance: i64::from(sx.abs_diff(tx) + sy.abs_diff(ty)) * 50_000,
@@ -418,7 +419,11 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
             });
         }
     }
-    memo.sort_by_key(|row| (row.source, row.target));
+    memo.extend(memo.clone().into_iter().map(|mut row| {
+        row.dispatcher = replay_data::rows::RaidPathDispatcher::Land;
+        row
+    }));
+    memo.sort_by_key(RaidPathDistanceRow::key);
     put::<tables::RaidPathDistances>(&mut frame, memo);
     (assets, frame)
 }
@@ -452,12 +457,13 @@ fn bench_hours(base: &DecodedFrame, countries: u32, typical: bool) -> Vec<Decode
                 .to_vec();
             // A sea province's pair: new to the memo, asked by no source.
             memo.push(RaidPathDistanceRow {
+                dispatcher: replay_data::rows::RaidPathDispatcher::Naval,
                 source: u32::MAX - hour as u32,
                 target: 1,
                 distance: 50_000,
                 ok: 1,
             });
-            memo.sort_by_key(|row| (row.source, row.target));
+            memo.sort_by_key(RaidPathDistanceRow::key);
             put::<tables::RaidPathDistances>(&mut frame, memo);
         }
         if typical && hour > 0 {
@@ -528,14 +534,15 @@ fn bench_hours(base: &DecodedFrame, countries: u32, typical: bool) -> Vec<Decode
                             memo.extend(targets.into_iter().map(|target| {
                                 let (tx, ty) = xy(target);
                                 RaidPathDistanceRow {
+                                    dispatcher: replay_data::rows::RaidPathDispatcher::Land,
                                     source,
                                     target,
                                     distance: i64::from(sx.abs_diff(tx) + sy.abs_diff(ty)) * 50_000,
                                     ok: 1,
                                 }
                             }));
-                            memo.sort_by_key(|row| (row.source, row.target));
-                            memo.dedup_by_key(|row| (row.source, row.target));
+                            memo.sort_by_key(RaidPathDistanceRow::key);
+                            memo.dedup_by_key(|row| row.key());
                             put::<tables::RaidPathDistances>(&mut frame, memo);
                         }
                     }
@@ -951,13 +958,14 @@ fn churn(frame: &mut DecodedFrame, rng: &mut Rng, hour: i32) -> usize {
                 rows.remove(rng.below(rows.len()));
             } else {
                 rows.push(RaidPathDistanceRow {
+                    dispatcher: replay_data::rows::RaidPathDispatcher::Naval,
                     source: base_provinces()[rng.below(10)],
                     target: location,
                     distance: rng.below(40) as i64 * 50_000,
                     ok: rng.chance(80) as u8,
                 });
-                rows.sort_by_key(|row| (row.source, row.target));
-                rows.dedup_by_key(|row| (row.source, row.target));
+                rows.sort_by_key(RaidPathDistanceRow::key);
+                rows.dedup_by_key(|row| row.key());
             }
             put::<tables::RaidPathDistances>(frame, rows);
         }

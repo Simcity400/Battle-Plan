@@ -359,22 +359,26 @@ typed_codec!(RaidCooldownRow, 64, |row| (row.owner_slot as u128) << 32 | row.ord
  |key| Self { owner_slot: (key >> 32) as u32, ordinal: key as u32, ..Default::default() },
  { 0 => (raid_type): U32, 1 => (scope.province): U32, 2 => (scope.state): U32, 3 => (scope.leader_reference): U64, 4 => (scope.leader_province): U32, 5 => (scope.building_type): U32, 6 => (scope.building_location): U32, 7 => (scope.building_flags): U32, 8 => (scope.building_country): I32, 9 => (scope.leader_country): OptionalI32, 10 => (days): I32 }, |_row| Ok(()));
 
-/// RaidPathDistances: key source:target province (64 bits).
-///
-/// The raid system's session path-distance memo, shared by naval and land
-/// searches and keyed only by province pair. The first kind computed for a
-/// pair wins, failures included. `distance` is fixed5 map units and
-/// meaningful only when `ok`. Entries are never removed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum RaidPathDispatcher {
+    #[default]
+    Land,
+    Naval,
+}
+
+/// The dispatcher is part of the key; failed searches stay in their own memo.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RaidPathDistanceRow {
+    pub dispatcher: RaidPathDispatcher,
     pub source: u32,
     pub target: u32,
     pub distance: i64,
     pub ok: u8,
 }
-typed_codec!(RaidPathDistanceRow, 64, |row| (row.source as u128) << 32 | row.target as u128,
- |key| Self { source: (key >> 32) as u32, target: key as u32, ..Default::default() },
- { 0 => (distance): I64, 1 => (ok): U8 }, |_row| Ok(()));
+typed_codec!(RaidPathDistanceRow, 65, |row| (row.dispatcher as u128) << 64 | (row.source as u128) << 32 | row.target as u128,
+ |key| Self { dispatcher: if key >> 64 == 0 { RaidPathDispatcher::Land } else { RaidPathDispatcher::Naval }, source: (key >> 32) as u32, target: key as u32, ..Default::default() },
+ { 0 => (distance): I64, 1 => (ok): U8 }, |row| if row.ok <= 1 { Ok(()) } else { Err(invalid("raid path memo ok byte invalid")) });
 /// RaidSpeedInputs: key id:reference_type (64 bits), as Raids. Hourly.
 ///
 /// Stored raid unit speed operands, added to `RaidRow::travelled` every

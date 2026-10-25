@@ -43,7 +43,7 @@ use replay_data::{rows::RaidScope, rows::RaidTargetStatusRow, rows::tables};
 use super::{
     RaidAssets,
     launch::{Local, RaidPaths},
-    paths::{Asked, AskedPairs, HourPaths, PartPaths},
+    paths::{AskedPairs, HourPaths, PartPaths},
     script::{Eval, Scope, Scopes, World},
     target_country,
 };
@@ -713,17 +713,16 @@ fn launch<'f>(
         // An undecided `allowed` draws the offer grey and counts it:
         // whether the game lists the type at all is undecided, so even a
         // proved grey is not the game's icon for certain.
+        let enabled = launcher.launchable_in(local, kind, scope, scopes);
         let enabled = match &allowed.types[&index] {
             Eval::Unknown(reasons) => {
                 let mut reasons = reasons.clone();
-                if let Eval::Unknown(more) =
-                    launcher.launchable_in(local, kind, scope, scopes, Asked::Maybe)
-                {
+                if let Eval::Unknown(more) = enabled {
                     reasons.extend(more);
                 }
                 Eval::Unknown(reasons)
             }
-            _ => launcher.launchable_in(local, kind, scope, scopes, Asked::Certain),
+            _ => enabled,
         };
         launchable = launchable.or(|| enabled);
     }

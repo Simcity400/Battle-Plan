@@ -1156,41 +1156,42 @@ pub type RaidGraph = (
     installed_content_core::province_geometry::ProvinceGeometry,
 );
 
-/// `RaidPathDistances` has no save counterpart: the memo is session state.
-/// Each entry must be the result of the content's naval or land raid search
-/// for its pair, since only those searches fill it.
+/// Session memo entries are checked against their dispatcher's content search, not the save.
 pub fn compare_raid_paths(
     frame: &DecodedFrame,
     (graph, geometry): &RaidGraph,
     report: &mut Report,
 ) -> io::Result<()> {
     use installed_content_core::{province_graph::RaidPath, province_graph::raid_distance};
+    use replay_data::rows::RaidPathDispatcher;
     let rows = complete::<tables::RaidPathDistances>(frame)?;
     let mut compared = 0;
     for row in rows {
         let recorded = (row.ok != 0).then_some(row.distance);
-        let label = format!("RaidPathDistance {}->{}", row.source, row.target);
-        let searches = [RaidPath::Naval, RaidPath::Land].map(|path| {
-            (
-                path,
-                raid_distance(graph, geometry, row.source, row.target, path),
-            )
-        });
-        match path_verdict(recorded, &searches) {
+        let label = format!(
+            "RaidPathDistance {:?} {}->{}",
+            row.dispatcher, row.source, row.target
+        );
+        let path = match row.dispatcher {
+            RaidPathDispatcher::Land => RaidPath::Land,
+            RaidPathDispatcher::Naval => RaidPath::Naval,
+        };
+        let search = raid_distance(graph, geometry, row.source, row.target, path);
+        match path_verdict(recorded, &search) {
             PathVerdict::Match => compared += 1,
             PathVerdict::Difference => {
                 compared += 1;
-                report.difference(label, recorded, searches);
+                report.difference(label, recorded, search);
             }
             PathVerdict::Undecided => report.limitation(
-                "the content raid search cannot decide this pair, and no decided search reproduces the entry",
-                format!("{label}: {searches:?}"),
+                "the content raid search cannot decide this dispatcher's pair",
+                format!("{label}: {search:?}"),
             ),
         }
     }
     report.compared("RaidPathDistances", compared);
     report.limitation(
-        "the raid path memo is not saved; entries are checked against the content's naval and land searches, not the save",
+        "the raid path memos are not saved; entries are checked against each dispatcher's content search, not the save",
         "RaidPathDistances",
     );
     Ok(())
@@ -1203,25 +1204,13 @@ pub(super) enum PathVerdict {
     Undecided,
 }
 
-/// A memo entry matches when one decided search reproduces it, whatever the
-/// other search decides. It differs only when both searches decided and
-/// neither reproduces it: an entry can be the result of the search the
-/// content cannot decide, so an undecidable search certifies nothing.
 pub(super) fn path_verdict(
     recorded: Option<i64>,
-    searches: &[(
-        installed_content_core::province_graph::RaidPath,
-        Result<Option<i64>, String>,
-    )],
+    search: &Result<Option<i64>, String>,
 ) -> PathVerdict {
-    if searches
-        .iter()
-        .any(|(_, result)| result.as_ref() == Ok(&recorded))
-    {
-        PathVerdict::Match
-    } else if searches.iter().all(|(_, result)| result.is_ok()) {
-        PathVerdict::Difference
-    } else {
-        PathVerdict::Undecided
+    match search {
+        Ok(result) if *result == recorded => PathVerdict::Match,
+        Ok(_) => PathVerdict::Difference,
+        Err(_) => PathVerdict::Undecided,
     }
 }

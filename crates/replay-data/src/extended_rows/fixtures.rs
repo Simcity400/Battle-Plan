@@ -2664,7 +2664,21 @@ fixture!(CountryWarRow, |key| {country: key as u32}, {can_occupy_non_war: u8, en
 fixture!(NavalRegionAccessRow, |key| {country: (key >> 32) as u32, region: key as u32}, {mode: u8});
 fixture!(BorderConflictRow, |key| {province: key as u32}, {groups: Vec<u64>});
 fixture!(RaidTargetStatusRow, |key| {ordinal: key as u32}, {valid: u8, scope: RaidScope, detected: Vec<u8>});
-fixture!(RaidPathDistanceRow, |key| {source: (key >> 32) as u32, target: key as u32}, {distance: i64, ok: u8});
+impl Fixture for RaidPathDistanceRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            dispatcher: if key >> 64 == 0 {
+                RaidPathDispatcher::Land
+            } else {
+                RaidPathDispatcher::Naval
+            },
+            source: (key >> 32) as u32,
+            target: key as u32,
+            distance: i64::sample(tick),
+            ok: (tick % 2) as u8,
+        }
+    }
+}
 fixture!(RaidCooldownRow, |key| {owner_slot: (key >> 32) as u32, ordinal: key as u32}, {raid_type: u32, scope: RaidScope, days: i32});
 fixture!(StateResourceInputRow, |key| {state: key as u32}, {gate: u8, global_factor: i64, origin: u8, infrastructure_level: Option<i32>, infrastructure_modifier: i64, supply_route: u8, local_manpower: Recorded<Option<i64>>, local_noncore_manpower: Recorded<Option<i64>>, recruitment_add: Recorded<Option<i64>>, recruitment_factor: Recorded<Option<i64>>});
 fixture!(StateResourceRow, |key| {state: (key >> 32) as u32, resource: key as u32}, {pool: i64, additive: i64, factor: i64, cost: i64});
@@ -8062,4 +8076,43 @@ fn combat_log_observer_numeric_columns_round_trip_rows_deltas_and_prepared_check
             );
         }
     }
+}
+
+#[test]
+fn raid_dispatcher_keys_round_trip_independently_at_province_boundaries() {
+    let mut rows = Vec::new();
+    for dispatcher in [RaidPathDispatcher::Land, RaidPathDispatcher::Naval] {
+        for (source, target) in [(0, 0), (7, 9), (u32::MAX, u32::MAX)] {
+            rows.push(RaidPathDistanceRow {
+                dispatcher,
+                source,
+                target,
+                distance: if dispatcher == RaidPathDispatcher::Land {
+                    900_000
+                } else {
+                    500_000
+                },
+                ok: 1,
+            });
+        }
+    }
+    let table = TableRows::RaidPathDistances(rows.clone());
+    let mut bytes = Vec::new();
+    table.encode_rows(&mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    assert_eq!(
+        TableId::RaidPathDistances
+            .decode_rows(rows.len(), &mut input)
+            .unwrap(),
+        table
+    );
+    input.finish().unwrap();
+    let mut changed = rows[4].clone();
+    changed.ok = 0;
+    changed.distance = i64::MIN;
+    let delta = changed.delta(Some(&rows[4])).unwrap().unwrap();
+    assert_eq!(delta.apply(Some(rows[4].clone())).unwrap(), changed);
+    assert_eq!(rows[1].dispatcher, RaidPathDispatcher::Land);
+    changed.ok = 2;
+    assert!(changed.check_key_fields().is_err());
 }

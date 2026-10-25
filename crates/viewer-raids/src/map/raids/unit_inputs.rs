@@ -369,12 +369,7 @@ pub fn target_distance(
     let kind = raid.source.kind.unwrap_or(u32::MAX);
     let from = raid.source.province;
     let found = if kind == SOURCE_NAVAL_BASE || kind == SOURCE_BUILDING {
-        super::paths::Distances::new(assets, frame).distance(
-            kind as u8,
-            from,
-            &target.scope,
-            super::paths::Asked::Certain,
-        )?
+        super::paths::Distances::new(assets, frame).distance(kind as u8, from, &target.scope)?
     } else {
         assets.province(&target.scope).and_then(|to| {
             assets

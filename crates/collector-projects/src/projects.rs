@@ -6,7 +6,7 @@ use crate::{
     read_accounting,
     slicing::{SliceFingerprints, SliceSelection},
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
-    table_conversion::{table, unavailable},
+    table_conversion::{table, table_iter, unavailable},
 };
 use engine_allocation::{copy_vec, default_vec, map_slice, owned_vec};
 use engine_characters::scientist_roster;
@@ -206,7 +206,7 @@ pub struct Captured {
     scientist_skills: CaptureRows<scientist_roster::SkillRow>,
     scientist_names: Vec<u8>,
     raid_cooldowns: CaptureRows<craid_system::CooldownRow>,
-    raid_paths: CaptureRows<raid_path_memo::Row>,
+    raid_paths: [CaptureRows<raid_path_memo::Row>; 2],
     /// The player raid cache; its tokens follow the parents' in the arena.
     raid_player: CaptureRows<cplayer_status_cache::Row>,
     raid_speeds: CaptureRows<raid_speed_inputs::Row>,
@@ -271,7 +271,9 @@ impl Captured {
         self.scientist_injury_read =
             replay_data::cadence::should_walk(TableId::ScientistDaily, hour, force_full);
         self.raid_cooldowns.fail(outcomes[11]);
-        self.raid_paths.fail(outcomes[12]);
+        for memo in &mut self.raid_paths {
+            memo.fail(outcomes[12]);
+        }
         self.raid_player.fail(outcomes[13]);
         self.raid_speeds.fail(outcomes[14]);
         self.raid_equipment.fail(outcomes[15]);
@@ -314,7 +316,7 @@ impl Captured {
             scientist_skills: CaptureRows::new(capacity.rows[9]),
             scientist_names: Vec::new(),
             raid_cooldowns: CaptureRows::new(capacity.rows[11]),
-            raid_paths: CaptureRows::new(capacity.rows[12]),
+            raid_paths: std::array::from_fn(|_| CaptureRows::new(capacity.rows[12])),
             raid_player: CaptureRows::new(capacity.rows[13]),
             raid_speeds: CaptureRows::new(capacity.rows[14]),
             raid_transports: Arena::new(capacity.raid_transports),
@@ -368,7 +370,9 @@ impl Captured {
         self.scientists.reset();
         self.scientist_skills.reset();
         self.raid_cooldowns.reset();
-        self.raid_paths.reset();
+        for memo in &mut self.raid_paths {
+            memo.reset();
+        }
         self.raid_player.reset();
         self.raid_speeds.reset();
         self.raid_transports.reset();
@@ -402,7 +406,11 @@ impl Captured {
             + self.scientist_skills.allocated_bytes()
             + self.scientist_names.capacity()
             + self.raid_cooldowns.allocated_bytes()
-            + self.raid_paths.allocated_bytes()
+            + self
+                .raid_paths
+                .iter()
+                .map(CaptureRows::allocated_bytes)
+                .sum::<usize>()
             + self.raid_player.allocated_bytes()
             + self.raid_speeds.allocated_bytes()
             + self.raid_transports.allocated_bytes()
@@ -438,7 +446,12 @@ impl Captured {
         self.scientists.grow(&mut capacity.rows[8]);
         self.scientist_skills.grow(&mut capacity.rows[9]);
         self.raid_cooldowns.grow(&mut capacity.rows[11]);
-        self.raid_paths.grow(&mut capacity.rows[12]);
+        for memo in &mut self.raid_paths {
+            memo.grow(&mut capacity.rows[12]);
+        }
+        for memo in &mut self.raid_paths {
+            grow_vec(&mut memo.rows, capacity.rows[12]);
+        }
         self.raid_player.grow(&mut capacity.rows[13]);
         self.raid_speeds.grow(&mut capacity.rows[14]);
         self.raid_transports.grow(&mut capacity.raid_transports);
@@ -723,14 +736,28 @@ impl Captured {
         if active[12] {
             let _reads = read_accounting::table(TABLES[12]);
             let begin = qpc();
-            self.raid_paths.outcome = Outcome::Unavailable {
-                reason: "RaidPathDistances unavailable: separate land/naval memos require dispatcher-aware recorded keys",
-            };
+            for (memo, dispatcher) in self.raid_paths.iter_mut().zip([
+                raid_path_memo::Dispatcher::Land,
+                raid_path_memo::Dispatcher::Naval,
+            ]) {
+                capture_rows(memo, |rows| {
+                    raid_path_memo::walk_growing(
+                        memory,
+                        base,
+                        game_state,
+                        dispatcher,
+                        rows,
+                        &mut self.raid_reads.torn_memo_reads,
+                    )
+                });
+            }
             ticks[12] = elapsed(begin);
         } else {
-            self.raid_paths.outcome = Outcome::Unavailable {
-                reason: replay_data::cadence::SKIPPED_REASON,
-            };
+            for memo in &mut self.raid_paths {
+                memo.outcome = Outcome::Unavailable {
+                    reason: replay_data::cadence::SKIPPED_REASON,
+                };
+            }
         }
         self.scientist_injury_read = false;
         if active[8] {
@@ -812,6 +839,33 @@ impl Captured {
         self.required_candidates = result.required_candidates;
     }
 
+    fn raid_path_outcome(&self) -> Outcome {
+        let (mut len, mut unread_rows) = (0usize, 0u32);
+        for memo in &self.raid_paths {
+            match memo.outcome {
+                Outcome::Unavailable { reason } => return Outcome::Unavailable { reason },
+                Outcome::Rows { len: count } => len += count,
+                Outcome::Truncated {
+                    len: count,
+                    unread_rows: missing,
+                } => {
+                    len += count;
+                    let Some(total) = unread_rows.checked_add(missing) else {
+                        return Outcome::Unavailable {
+                            reason: "raid path memo missing row count overflow",
+                        };
+                    };
+                    unread_rows = total;
+                }
+            }
+        }
+        if unread_rows == 0 {
+            Outcome::Rows { len }
+        } else {
+            Outcome::Truncated { len, unread_rows }
+        }
+    }
+
     pub fn outcomes(&self) -> [Outcome; N] {
         [
             self.programs.outcome,
@@ -826,7 +880,7 @@ impl Captured {
             self.scientist_skills.outcome,
             self.raids.outcome,
             self.raid_cooldowns.outcome,
-            self.raid_paths.outcome,
+            self.raid_path_outcome(),
             self.raid_player.outcome,
             self.raid_speeds.outcome,
             self.raid_equipment.outcome,
@@ -947,14 +1001,28 @@ impl Captured {
                     days: r.days,
                 }
             }),
-            table::<tables::RaidPathDistances, _>(outcomes[12], &self.raid_paths.rows, |r| {
-                rows::RaidPathDistanceRow {
+            table_iter::<tables::RaidPathDistances, _>(
+                outcomes[12],
+                self.raid_paths
+                    .iter()
+                    .zip([
+                        rows::RaidPathDispatcher::Land,
+                        rows::RaidPathDispatcher::Naval,
+                    ])
+                    .flat_map(|(memo, dispatcher)| {
+                        memo.rows
+                            .iter()
+                            .take(memo.outcome.len())
+                            .map(move |row| (dispatcher, row))
+                    }),
+                |(dispatcher, r)| rows::RaidPathDistanceRow {
+                    dispatcher,
                     source: r.source,
                     target: r.target,
                     distance: r.distance,
                     ok: r.ok,
-                }
-            }),
+                },
+            ),
             self.raid_player_table(outcomes[13]),
             self.raid_speed_table(outcomes[14]),
             self.raid_equipment_table(outcomes[15]),

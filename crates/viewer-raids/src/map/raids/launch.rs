@@ -40,7 +40,6 @@ use replay_data::{
     rows::TaskForceRow, rows::VariantDefinitionRow, rows::tables,
 };
 
-pub use super::paths::Asked;
 use super::{
     RaidAssets,
     script::{Eval, Scopes, World},
@@ -59,19 +58,16 @@ pub struct PathSource {
 /// them is its own ([`Local`]).
 pub trait RaidPaths {
     /// Distance for a naval-base or building source: `Some(fixed5)`, or `None`
-    /// when no distance is found. `asked` says whether it was certainly queried here.
+    /// when no distance is found.
     fn distance(
         &self,
         world: &World<'_>,
         source: &PathSource,
         target: &RaidScope,
-        asked: Asked,
     ) -> Result<Option<i64>, String>;
-    /// The game asked, or may have asked, a distance whose answer is not
-    /// needed: the session memo keeps its first kind all the same.
-    fn note(&self, source: &PathSource, target: &RaidScope, asked: Asked);
-    /// The recorded session memo in (source, target) order; `None` when it
-    /// is not recorded.
+    /// Note an unneeded query in its dispatcher's memo.
+    fn note(&self, source: &PathSource, target: &RaidScope);
+    /// Recorded memos in (dispatcher, source, target) order.
     fn recorded_rows(&self) -> Option<&[RaidPathDistanceRow]>;
     /// The province a path source of `kind` measures `target` to.
     fn path_target(&self, kind: u8, target: &RaidScope) -> Result<Option<u32>, String>;
@@ -96,11 +92,10 @@ impl RaidPaths for Unreconstructed {
         _: &World<'_>,
         _: &PathSource,
         _: &RaidScope,
-        _: Asked,
     ) -> Result<Option<i64>, String> {
         Err("path search not reconstructed".into())
     }
-    fn note(&self, _: &PathSource, _: &RaidScope, _: Asked) {}
+    fn note(&self, _: &PathSource, _: &RaidScope) {}
     fn recorded_rows(&self) -> Option<&[RaidPathDistanceRow]> {
         None
     }
@@ -718,38 +713,24 @@ impl<'w, 'a> Launcher<'w, 'a> {
         kind: &RaidType,
         scope: &RaidScope,
     ) -> Eval {
-        self.feasible(
-            local,
-            kind,
-            &self.prepare(local, kind),
-            scope,
-            Asked::Certain,
-        )
+        self.feasible(local, kind, &self.prepare(local, kind), scope)
     }
 
     /// [`Self::launchable_in`] with memos of its own.
     #[cfg(test)]
-    pub fn launchable(
-        &self,
-        kind: &RaidType,
-        scope: &RaidScope,
-        scopes: Scopes,
-        asked: Asked,
-    ) -> Eval {
-        self.launchable_in(&self.local(), kind, scope, scopes, asked)
+    pub fn launchable(&self, kind: &RaidType, scope: &RaidScope, scopes: Scopes) -> Eval {
+        self.launchable_in(&self.local(), kind, scope, scopes)
     }
 
     /// Launchable bit 15 for this type and target. Run path searches only after
-    /// all earlier gates pass. `asked` says whether this row is certainly evaluated;
-    /// an undecided shown bit leaves its searches maybe asked. `local` holds the
-    /// evaluating part's memos and path searches.
+    /// all earlier gates pass. `local` holds the evaluating part's memos and
+    /// path searches.
     pub fn launchable_in(
         &self,
         local: &Local<'_, 'a>,
         kind: &RaidType,
         scope: &RaidScope,
         scopes: Scopes,
-        asked: Asked,
     ) -> Eval {
         let prepared = self.prepare(local, kind);
         let gates = prepared
@@ -760,11 +741,8 @@ impl<'w, 'a> Launcher<'w, 'a> {
             .and(|| prepared.units.clone());
         match gates {
             Eval::False => Eval::False,
-            Eval::True => self.feasible(local, kind, &prepared, scope, asked),
-            // Whether the game searched is unknown, and so is the answer:
-            // the searches are skipped, and the pairs the game may have
-            // asked are noted so that a later query of another kind is
-            // decided only when both kinds agree.
+            Eval::True => self.feasible(local, kind, &prepared, scope),
+            // Keep possible queries local to their own dispatcher.
             Eval::Unknown(reasons) => {
                 self.note_all(local, kind, &prepared, scope);
                 Eval::Unknown(reasons)
@@ -894,12 +872,11 @@ impl<'w, 'a> Launcher<'w, 'a> {
         kind: &RaidType,
         prepared: &Prepared<'a>,
         scope: &RaidScope,
-        asked: Asked,
     ) -> Eval {
         let sources = match &*prepared.sources {
             Sources::Cached(Ok(sources)) => sources,
             Sources::Cached(Err(reason)) => return Eval::unknown(reason.clone()),
-            Sources::Walk => return self.search_walk(local, kind, prepared, scope, asked),
+            Sources::Walk => return self.search_walk(local, kind, prepared, scope),
         };
         let target = self.assets.province(scope);
         let shared = &prepared.shared;
@@ -907,15 +884,14 @@ impl<'w, 'a> Launcher<'w, 'a> {
             if let Some(known) = local.memo(shared, |memo| memo.answers.get(&target).cloned()) {
                 return known;
             }
-            let result = self.search(local, kind, prepared, sources, scope, target, asked);
+            let result = self.search(local, kind, prepared, sources, scope, target);
             local.memo(shared, |memo| memo.answers.insert(target, result.clone()));
             return result;
         }
-        self.search(local, kind, prepared, sources, scope, target, asked)
+        self.search(local, kind, prepared, sources, scope, target)
     }
 
     /// [`Self::feasible`]'s search over the sources.
-    #[allow(clippy::too_many_arguments)]
     fn search(
         &self,
         local: &Local<'_, 'a>,
@@ -924,7 +900,6 @@ impl<'w, 'a> Launcher<'w, 'a> {
         sources: &[Source<'a>],
         scope: &RaidScope,
         target: Option<u32>,
-        asked: Asked,
     ) -> Eval {
         let bypass = &prepared.bypass;
         let pathless = prepared.shared.pathless;
@@ -958,12 +933,10 @@ impl<'w, 'a> Launcher<'w, 'a> {
                 None => Box::new(0..sources.len()),
             },
         };
-        let mut asked = asked;
         let mut result = Eval::False;
         for at in visited {
             let source = &sources[at];
-            let usable =
-                self.search_one(local, kind, prepared, at, source, scope, target, &mut asked);
+            let usable = self.search_one(local, kind, prepared, at, source, scope, target);
             result = result.or(|| usable);
             if result == Eval::True {
                 break;
@@ -978,7 +951,6 @@ impl<'w, 'a> Launcher<'w, 'a> {
         kind: &RaidType,
         prepared: &Prepared<'a>,
         scope: &RaidScope,
-        mut asked: Asked,
     ) -> Eval {
         let context = match self.context.get() {
             Some(Ok(context)) => context,
@@ -991,9 +963,7 @@ impl<'w, 'a> Launcher<'w, 'a> {
         context.visit_sources(kind, &mut |source| {
             // This is a deterministic memo position, including refused family
             // boundaries; it is never exported as a native source ordinal.
-            let usable = self.search_one(
-                local, kind, prepared, at, &source, scope, target, &mut asked,
-            );
+            let usable = self.search_one(local, kind, prepared, at, &source, scope, target);
             at += 1;
             result = std::mem::replace(&mut result, Eval::False).or(|| usable);
             result != Eval::True
@@ -1011,31 +981,20 @@ impl<'w, 'a> Launcher<'w, 'a> {
         source: &Source<'a>,
         scope: &RaidScope,
         target: Option<u32>,
-        asked: &mut Asked,
     ) -> Eval {
         // Do not visit a busy carrier.
         if source.valid == Eval::False {
             return Eval::False;
         }
         let bypass = &prepared.bypass;
-        let usable = match &source.unknown {
+        match &source.unknown {
             Some(reason) => Eval::unknown(reason.clone()),
             None => {
-                let this = if source.valid == Eval::True && !matches!(bypass, Eval::Unknown(_)) {
-                    *asked
-                } else {
-                    Asked::Maybe
-                };
-                let distance = (*bypass != Eval::True)
-                    .then(|| self.distance(local, source, scope, target, this));
+                let distance =
+                    (*bypass != Eval::True).then(|| self.distance(local, source, scope, target));
                 self.usable(local, kind, prepared, at, source, distance)
             }
-        };
-        if matches!(usable, Eval::Unknown(_)) {
-            // The game may have stopped here.
-            *asked = Asked::Maybe;
         }
-        usable
     }
 
     /// The sources [`Self::feasible`] must visit for `scope` when the
@@ -1194,8 +1153,12 @@ impl<'w, 'a> Launcher<'w, 'a> {
             provinces: by_province
                 .into_iter()
                 .map(|((kind, province), indices)| {
-                    let start = memo.partition_point(|row| row.source < province);
-                    let end = start + memo[start..].partition_point(|row| row.source == province);
+                    let dispatcher =
+                        super::paths::dispatcher(kind).expect("path source dispatcher");
+                    let key = (dispatcher, province);
+                    let start = memo.partition_point(|row| (row.dispatcher, row.source) < key);
+                    let end = start
+                        + memo[start..].partition_point(|row| (row.dispatcher, row.source) == key);
                     (kind, province, indices, start..end)
                 })
                 .collect(),
@@ -1307,7 +1270,7 @@ impl<'w, 'a> Launcher<'w, 'a> {
             if source.valid != Eval::False
                 && let Some(path) = &source.path
             {
-                local.paths.note(path, scope, Asked::Maybe);
+                local.paths.note(path, scope);
             }
         };
         match &*prepared.sources {
@@ -1333,10 +1296,9 @@ impl<'w, 'a> Launcher<'w, 'a> {
         source: &Source<'a>,
         scope: &RaidScope,
         target: Option<u32>,
-        asked: Asked,
     ) -> Result<Option<i64>, String> {
         if let Some(path) = &source.path {
-            return local.paths.distance(self.world, path, scope, asked);
+            return local.paths.distance(self.world, path, scope);
         }
         let from = source.province.clone()?;
         // A missing source province is distance zero; a missing target none.
@@ -3069,5 +3031,47 @@ fn path_source<'a>(kind: u8, province: u32) -> Source<'a> {
         site: None,
         valid: Eval::True,
         unknown: None,
+    }
+}
+
+#[cfg(test)]
+mod dispatcher_tests {
+    use super::super::test_support::{frame, put, unnamed_assets};
+    use super::*;
+    use replay_data::rows::RaidPathDispatcher;
+
+    #[test]
+    fn recorded_source_groups_select_only_their_dispatchers_rows() {
+        let assets = unnamed_assets();
+        let mut frame = frame();
+        let rows = [RaidPathDispatcher::Land, RaidPathDispatcher::Naval]
+            .into_iter()
+            .flat_map(|dispatcher| {
+                [7, 8].map(move |source| RaidPathDistanceRow {
+                    dispatcher,
+                    source,
+                    target: 9,
+                    distance: if dispatcher == RaidPathDispatcher::Land {
+                        900_000
+                    } else {
+                        500_000
+                    },
+                    ok: 1,
+                })
+            })
+            .collect();
+        put::<tables::RaidPathDistances>(&mut frame, rows);
+        let paths = super::super::paths::HourPaths::new(&assets, &frame);
+        let local = Local::new(&paths);
+        let sources = [
+            path_source(super::super::paths::NAVAL_BASE, 7),
+            path_source(super::super::paths::BUILDING, 7),
+        ];
+        let groups = Launcher::group(&local, &sources, None).unwrap();
+        assert_eq!(groups.provinces.len(), 2);
+        assert_eq!(groups.provinces[0].2, [0]);
+        assert_eq!(groups.provinces[0].3, 2..3);
+        assert_eq!(groups.provinces[1].2, [1]);
+        assert_eq!(groups.provinces[1].3, 0..1);
     }
 }

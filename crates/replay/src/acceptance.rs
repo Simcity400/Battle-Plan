@@ -2523,3 +2523,43 @@ fn table_encoded_sizes_match_all_tables_and_update_forms() {
         check(&truncated, "truncated", tick);
     }
 }
+
+#[test]
+fn raid_dispatcher_memos_survive_hourly_changes_gaps_and_restarts() {
+    use crate::rows::{RaidPathDispatcher, RaidPathDistanceRow};
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    for hour in 1..=8 {
+        let mut frame = source_with_faults(0, 1, hour, 1_000, false);
+        let rows: Vec<_> = [RaidPathDispatcher::Land, RaidPathDispatcher::Naval]
+            .into_iter()
+            .filter(|dispatcher| hour != 4 || *dispatcher == RaidPathDispatcher::Land)
+            .map(|dispatcher| RaidPathDistanceRow {
+                dispatcher,
+                source: 7,
+                target: 9,
+                distance: if dispatcher == RaidPathDispatcher::Land {
+                    900_000
+                } else {
+                    500_000 + i64::from(hour)
+                },
+                ok: u8::from(hour != 3 || dispatcher == RaidPathDispatcher::Land),
+            })
+            .collect();
+        frame.tables[TableId::RaidPathDistances.index()] = if hour == 5 {
+            TableView::Unavailable {
+                reason: "naval memo read overlapped".into(),
+            }
+        } else {
+            TableView::Complete(TableRows::RaidPathDistances(rows.clone()))
+        }
+        .into();
+        let expected = frame.tables[TableId::RaidPathDistances.index()].clone();
+        let encoded = encoder.encode(frame, hour == 7).unwrap();
+        let decoded = decoder.apply(&encoded).unwrap();
+        assert_eq!(
+            &*decoded.tables[TableId::RaidPathDistances.index()],
+            &*expected
+        );
+    }
+}

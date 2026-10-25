@@ -70,6 +70,8 @@ pub const DIVISION_MODEL_INPUTS_FORMAT: u16 = 122;
 pub const CHECKPOINT_FORMAT: u16 = 123;
 /// Grouped replay blocks store later sections in dense 168-hour chunks.
 pub const CHUNKED_FORMAT: u16 = 124;
+/// Owner-approved separate land and naval raid memo keys.
+pub const RAID_DISPATCHERS_FORMAT: u16 = 125;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -4071,6 +4073,14 @@ const fn apply_catalog_passes(
             "cadence/raid",
         ),
     );
+    declare_change(
+        &mut history[TableId::RaidPathDistances.index()],
+        table(
+            TableId::RaidPathDistances,
+            RAID_DISPATCHERS_FORMAT,
+            "raid-dispatchers",
+        ),
+    );
     // Arrival-time, attrition-breakdown, selected-attack and selected
     // transport inputs retire. Tables keep their ids and framing so older
     // recordings discard them by name.
@@ -4705,12 +4715,21 @@ mod tests {
                 DIVISION_MODEL_INPUTS_FORMAT,
                 CHECKPOINT_FORMAT,
                 CHUNKED_FORMAT,
+                RAID_DISPATCHERS_FORMAT,
             ],
             [
-                111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124
+                111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125
             ],
         );
-        assert_eq!(FORMAT_VERSION, CHUNKED_FORMAT);
+        assert_eq!(FORMAT_VERSION, RAID_DISPATCHERS_FORMAT);
+        let change = TableId::RaidPathDistances.last_change();
+        assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
+        assert_eq!(change.kind, ChangeKind::Layout);
+        assert!(
+            change
+                .table_gap(TableId::RaidPathDistances, CHUNKED_FORMAT)
+                .is_some()
+        );
     }
 
     #[test]

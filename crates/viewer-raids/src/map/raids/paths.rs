@@ -1,24 +1,4 @@
-//! Raid source distances from the content graph and recorded session memo.
-//!
-//! Air, rocket, carrier and submarine sources measure the wrapped centroid
-//! distance; naval bases and buildings run the raid path search
-//! (`province_graph::raid_distance`). The game memoises those searches for
-//! the session in one table keyed by the province pair only, so a pair's
-//! first computed kind answers every later query (`RaidPathDistances`). An
-//! hour's evaluation reads that memo and adds its own results in the order
-//! it asks, as the game's rebuild does.
-//!
-//! Ask distance only after every earlier target gate passes and no earlier
-//! source is usable. If an earlier input is undecided, whether the pair was
-//! asked is unknown. Keep it as maybe asked; decide a later query only when
-//! every kind that might have been asked first gives the same answer.
-//!
-//! Those asked pairs are the only state a target's evaluation leaves for the
-//! next. A batch split across threads ([`PartPaths`]) gives each part the
-//! pairs asked before the batch and keeps what the part asks in its own
-//! [`Ledger`]; the parts' ledgers are then taken in batch order, and a part
-//! that asked a pair an earlier part asked is evaluated again after it
-//! ([`super::offers::Sweep`]).
+//! Raid source distances use separate land and naval dispatcher memos.
 
 use std::{
     cell::RefCell,
@@ -37,7 +17,9 @@ use installed_content_core::{
     province_geometry::ProvinceGeometry, province_graph::ProvinceGraph, province_graph::RaidPath,
     province_graph::raid_distance,
 };
-use replay_data::{rows::RaidPathDistanceRow, rows::RaidScope, rows::tables};
+use replay_data::{
+    rows::RaidPathDispatcher, rows::RaidPathDistanceRow, rows::RaidScope, rows::tables,
+};
 use replay_frame::frame::DecodedSource;
 
 use super::{
@@ -49,33 +31,24 @@ type Search = Result<Option<i64>, String>;
 /// A resolved target province, `None` when there is none.
 type Target = Result<Option<u32>, String>;
 
-/// Whether the game certainly asked a distance, so that the session memo
-/// holds the pair's first kind from then on, or only may have.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Asked {
-    Certain,
-    Maybe,
-}
+type MemoKey = (RaidPathDispatcher, u32, u32);
+type Entry = Option<Search>;
 
-/// A pair this evaluation asked, beyond the recorded memo.
-#[derive(Clone, Debug)]
-enum Entry {
-    /// The game asked it first by this kind; the answer once searched.
-    Certain(RaidPath, Option<Search>),
-    /// The game may have asked it by these kinds (a bit per kind).
-    Maybe(u8),
-    /// The game asked it, by a kind that is not known and that matters.
-    Ambiguous,
-}
-
-fn bit(path: RaidPath) -> u8 {
-    match path {
-        RaidPath::Naval => 1,
-        RaidPath::Land => 2,
+pub(super) fn dispatcher(kind: u8) -> Result<RaidPathDispatcher, String> {
+    match kind {
+        NAVAL_BASE => Ok(RaidPathDispatcher::Naval),
+        BUILDING => Ok(RaidPathDispatcher::Land),
+        other => Err(format!("raid source kind {other} has no path dispatcher")),
     }
 }
 
-const KINDS: [RaidPath; 2] = [RaidPath::Naval, RaidPath::Land];
+fn path_dispatcher(path: RaidPath) -> RaidPathDispatcher {
+    match path {
+        RaidPath::Land => RaidPathDispatcher::Land,
+        RaidPath::Naval => RaidPathDispatcher::Naval,
+    }
+}
+
 type Key = (u32, u32, RaidPath);
 /// Each province's recorded state, and each state's province count.
 type StateMembers = (BTreeMap<u32, u32>, BTreeMap<u32, usize>);
@@ -178,7 +151,7 @@ impl PathSearch {
 /// Pairs an evaluation asked beyond the recorded memo, with what each
 /// holds.
 #[derive(Clone, Debug, Default)]
-pub struct AskedPairs(BTreeMap<(u32, u32), Entry>);
+pub struct AskedPairs(BTreeMap<MemoKey, Entry>);
 
 impl AskedPairs {
     /// Whether both hold some pair.
@@ -216,7 +189,7 @@ impl<'b> Ledger<'b> {
         }
     }
 
-    fn get(&self, pair: &(u32, u32)) -> Option<Entry> {
+    fn get(&self, pair: &MemoKey) -> Option<Entry> {
         self.own
             .borrow()
             .0
@@ -232,8 +205,7 @@ impl<'b> Ledger<'b> {
 pub struct Distances<'a> {
     assets: &'a RaidAssets,
     frame: &'a dyn DecodedSource,
-    /// The recorded memo, in its key order (source, target): a decoded table
-    /// holds unique ascending keys (`replay_frame::frame::validate_rows`).
+    /// Decoded rows ascend by (dispatcher, source, target).
     recorded: Result<&'a [RaidPathDistanceRow], String>,
     naval_bases: OnceLock<Result<BTreeSet<u32>, String>>,
     /// Each province's recorded state, and each state's province count.
@@ -264,10 +236,10 @@ impl<'a> Distances<'a> {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn recorded(&self, pair: (u32, u32)) -> Result<Option<Option<i64>>, String> {
+    fn recorded(&self, pair: MemoKey) -> Result<Option<Option<i64>>, String> {
         let rows = self.recorded.as_ref().map_err(Clone::clone)?;
         Ok(rows
-            .binary_search_by(|row| (row.source, row.target).cmp(&pair))
+            .binary_search_by(|row| (row.dispatcher, row.source, row.target).cmp(&pair))
             .ok()
             .map(|at| (rows[at].ok != 0).then_some(rows[at].distance)))
     }
@@ -305,42 +277,35 @@ impl<'a> Distances<'a> {
     /// Distance for a naval-base (kind 2) or building (kind 5) source:
     /// `Ok(None)` is an unsuccessful search. A null source province measures
     /// zero and passes.
-    pub fn distance(&self, kind: u8, from: u32, scope: &RaidScope, asked: Asked) -> Search {
-        self.distance_in(&self.asked(), kind, from, scope, asked)
+    pub fn distance(&self, kind: u8, from: u32, scope: &RaidScope) -> Search {
+        self.distance_in(&self.asked(), kind, from, scope)
     }
 
     /// Notes that the game asked, or may have asked, a distance whose
     /// answer this evaluation does not need.
-    pub fn note(&self, kind: u8, from: u32, scope: &RaidScope, asked: Asked) {
-        self.note_in(&self.asked(), kind, from, scope, asked);
+    pub fn note(&self, kind: u8, from: u32, scope: &RaidScope) {
+        self.note_in(&self.asked(), kind, from, scope);
     }
 
     /// [`Self::distance`] with the pairs `ledger` holds.
-    fn distance_in(
-        &self,
-        ledger: &Ledger<'_>,
-        kind: u8,
-        from: u32,
-        scope: &RaidScope,
-        asked: Asked,
-    ) -> Search {
+    fn distance_in(&self, ledger: &Ledger<'_>, kind: u8, from: u32, scope: &RaidScope) -> Search {
         if from == 0 {
             return Ok(Some(0));
         }
         match self.target(ledger, kind, scope)? {
             Some((to, path)) => self
-                .path(ledger, from, to, path, asked, true)
+                .path(ledger, from, to, path, true)
                 .expect("a needed answer"),
             None => Ok(None),
         }
     }
 
     /// [`Self::note`] into `ledger`.
-    fn note_in(&self, ledger: &Ledger<'_>, kind: u8, from: u32, scope: &RaidScope, asked: Asked) {
+    fn note_in(&self, ledger: &Ledger<'_>, kind: u8, from: u32, scope: &RaidScope) {
         if from != 0
             && let Ok(Some((to, path))) = self.target(ledger, kind, scope)
         {
-            self.path(ledger, from, to, path, asked, false);
+            self.path(ledger, from, to, path, false);
         }
     }
 
@@ -416,89 +381,24 @@ impl<'a> Distances<'a> {
         from: u32,
         to: u32,
         path: RaidPath,
-        asked: Asked,
         needed: bool,
     ) -> Option<Search> {
-        let pair = (from, to);
-        let search = |kind: RaidPath| -> Search {
+        let pair = (path_dispatcher(path), from, to);
+        let search = || -> Search {
             let paths = self.assets.paths.as_ref().map_err(Clone::clone)?;
-            paths.search(&self.assets.geometry, from, to, kind)
+            paths.search(&self.assets.geometry, from, to, path)
         };
-        // One answer whichever of `kinds` the game searched first.
-        let agreed = |kinds: u8, reason: &dyn Fn() -> String| -> Search {
-            let mut answer = None;
-            for kind in KINDS.into_iter().filter(|&kind| kinds & bit(kind) != 0) {
-                let result = search(kind)?;
-                if answer.is_some_and(|known| known != result) {
-                    return Err(reason());
-                }
-                answer = Some(result);
-            }
-            Ok(answer.flatten())
-        };
-        match &self.recorded {
-            Ok(_) => {
-                if let Ok(Some(result)) = self.recorded(pair) {
-                    return needed.then_some(Ok(result));
-                }
-            }
-            // Any pair may already hold either kind.
-            Err(reason) => {
-                return needed.then(|| {
-                    agreed(bit(RaidPath::Naval) | bit(RaidPath::Land), &|| {
-                        format!(
-                            "raid path {from}->{to} differs by kind and the memo is unknown: {reason}"
-                        )
-                    })
-                });
-            }
+        if let Ok(Some(result)) = self.recorded(pair) {
+            return needed.then_some(Ok(result));
         }
-        // Every pair read here is written back below, so a ledger's own
-        // pairs are all it read of the pairs asked before it.
-        let (answer, next) = match (ledger.get(&pair), asked) {
-            (None, Asked::Certain) => {
-                let answer = needed.then(|| search(path));
-                (answer.clone(), Entry::Certain(path, answer))
-            }
-            (None, Asked::Maybe) => (needed.then(|| search(path)), Entry::Maybe(bit(path))),
-            (Some(Entry::Certain(kind, known)), _) => {
-                let known = match known {
-                    Some(known) => Some(known),
-                    None if needed => Some(search(kind)),
-                    None => None,
-                };
-                (
-                    known.clone().filter(|_| needed),
-                    Entry::Certain(kind, known),
-                )
-            }
-            (Some(Entry::Maybe(kinds)), asked) => {
-                // Unasked, the game searches this query's own kind.
-                let kinds = kinds | bit(path);
-                let why = || {
-                    format!(
-                        "raid path {from}->{to} differs by kind, and an undecided earlier offer may have asked it first"
-                    )
-                };
-                let answer = needed.then(|| agreed(kinds, &why));
-                let next = match (&answer, asked) {
-                    (Some(Ok(result)), Asked::Certain) => Entry::Certain(path, Some(Ok(*result))),
-                    (Some(Err(_)), Asked::Certain) => Entry::Ambiguous,
-                    _ => Entry::Maybe(kinds),
-                };
-                (answer, next)
-            }
-            (Some(Entry::Ambiguous), _) => (
-                needed.then(|| {
-                    Err(format!(
-                        "raid path {from}->{to} was first asked by a kind an undecided earlier offer leaves unknown"
-                    ))
-                }),
-                Entry::Ambiguous,
-            ),
+        let known = ledger.get(&pair).flatten();
+        let answer = if needed {
+            Some(known.unwrap_or_else(search))
+        } else {
+            known
         };
-        ledger.own.borrow_mut().0.insert(pair, next);
-        answer
+        ledger.own.borrow_mut().0.insert(pair, answer.clone());
+        answer.filter(|_| needed)
     }
 }
 
@@ -527,15 +427,13 @@ impl super::launch::RaidPaths for HourPaths<'_> {
         _: &World<'_>,
         source: &super::launch::PathSource,
         target: &RaidScope,
-        asked: Asked,
     ) -> Result<Option<i64>, String> {
         self.distances
-            .distance(source.kind, source.province, target, asked)
+            .distance(source.kind, source.province, target)
     }
 
-    fn note(&self, source: &super::launch::PathSource, target: &RaidScope, asked: Asked) {
-        self.distances
-            .note(source.kind, source.province, target, asked);
+    fn note(&self, source: &super::launch::PathSource, target: &RaidScope) {
+        self.distances.note(source.kind, source.province, target);
     }
 
     fn recorded_rows(&self) -> Option<&[RaidPathDistanceRow]> {
@@ -625,17 +523,16 @@ impl super::launch::RaidPaths for PartPaths<'_, '_> {
         _: &World<'_>,
         source: &super::launch::PathSource,
         target: &RaidScope,
-        asked: Asked,
     ) -> Result<Option<i64>, String> {
         self.hour
             .distances
-            .distance_in(&self.ledger, source.kind, source.province, target, asked)
+            .distance_in(&self.ledger, source.kind, source.province, target)
     }
 
-    fn note(&self, source: &super::launch::PathSource, target: &RaidScope, asked: Asked) {
+    fn note(&self, source: &super::launch::PathSource, target: &RaidScope) {
         self.hour
             .distances
-            .note_in(&self.ledger, source.kind, source.province, target, asked);
+            .note_in(&self.ledger, source.kind, source.province, target);
     }
 
     fn recorded_rows(&self) -> Option<&[RaidPathDistanceRow]> {
@@ -679,5 +576,99 @@ mod tests {
         cache.insert(key(5), Err("x".repeat(ENTRY_BYTES)), budget);
         assert!(cache.bytes <= budget);
         assert_eq!(cache.entries.len(), cache.recency.len());
+    }
+
+    #[test]
+    fn recorded_dispatchers_keep_distances_and_failures_apart_without_a_graph() {
+        use super::super::test_support::{frame, put, unnamed_assets};
+        let assets = unnamed_assets();
+        let scope = RaidScope {
+            province: 3,
+            ..Default::default()
+        };
+        for (land_ok, naval_ok) in [(1, 1), (0, 1), (1, 0)] {
+            let mut frame = frame();
+            put::<tables::NavalBases>(
+                &mut frame,
+                vec![replay_data::rows::NavalBaseRow {
+                    province: 3,
+                    ..Default::default()
+                }],
+            );
+            put::<tables::RaidPathDistances>(
+                &mut frame,
+                vec![
+                    RaidPathDistanceRow {
+                        dispatcher: RaidPathDispatcher::Land,
+                        source: 1,
+                        target: 3,
+                        distance: 900_000,
+                        ok: land_ok,
+                    },
+                    RaidPathDistanceRow {
+                        dispatcher: RaidPathDispatcher::Naval,
+                        source: 1,
+                        target: 3,
+                        distance: 500_000,
+                        ok: naval_ok,
+                    },
+                ],
+            );
+            let distances = Distances::new(&assets, &frame);
+            assert_eq!(
+                distances.distance(BUILDING, 1, &scope),
+                Ok((land_ok != 0).then_some(900_000))
+            );
+            assert_eq!(
+                distances.distance(NAVAL_BASE, 1, &scope),
+                Ok((naval_ok != 0).then_some(500_000))
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrecorded_dispatcher_never_borrows_the_other_memos_pair() {
+        use super::super::test_support::{frame, put, unnamed_assets};
+        let assets = unnamed_assets();
+        let mut frame = frame();
+        put::<tables::NavalBases>(
+            &mut frame,
+            vec![replay_data::rows::NavalBaseRow {
+                province: 3,
+                ..Default::default()
+            }],
+        );
+        put::<tables::RaidPathDistances>(
+            &mut frame,
+            vec![RaidPathDistanceRow {
+                dispatcher: RaidPathDispatcher::Land,
+                source: 1,
+                target: 3,
+                distance: 900_000,
+                ok: 1,
+            }],
+        );
+        let distances = Distances::new(&assets, &frame);
+        let scope = RaidScope {
+            province: 3,
+            ..Default::default()
+        };
+        assert_eq!(distances.distance(BUILDING, 1, &scope), Ok(Some(900_000)));
+        assert!(distances.distance(NAVAL_BASE, 1, &scope).is_err());
+    }
+
+    #[test]
+    fn batches_share_pairs_only_within_the_same_dispatcher() {
+        let mut land = AskedPairs::default();
+        let mut naval = AskedPairs::default();
+        land.0
+            .insert((RaidPathDispatcher::Land, 7, 9), Some(Ok(Some(900_000))));
+        naval
+            .0
+            .insert((RaidPathDispatcher::Naval, 7, 9), Some(Ok(Some(500_000))));
+        assert!(!land.share_a_pair(&naval));
+        assert!(land.share_a_pair(&land.clone()));
+        land.absorb(naval);
+        assert_eq!(land.0.len(), 2);
     }
 }

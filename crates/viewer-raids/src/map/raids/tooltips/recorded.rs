@@ -581,9 +581,10 @@ impl Context<'_, '_> {
                     };
                 };
                 let scopes = self.scopes(scope);
-                let allowed = scopes.as_ref().map_err(Clone::clone).and_then(|s| {
-                    known(launcher.launchable_in(&local, kind, scope, *s, paths::Asked::Certain))
-                });
+                let allowed = scopes
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|s| known(launcher.launchable_in(&local, kind, scope, *s)));
                 any = any.or(|| match &allowed {
                     Ok(b) => Eval::from_bool(*b),
                     Err(r) => Eval::unknown(r.clone()),

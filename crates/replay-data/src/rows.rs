@@ -5222,6 +5222,22 @@ mod political_runtime_tests;
 #[path = "rows/intel_inputs/tests.rs"]
 pub(crate) mod intel_inputs_tests;
 
+#[test]
+fn raid_memo_table_metadata_uses_the_dispatcher_key() {
+    assert_eq!(TableId::RaidPathDistances.key_bits(), 65);
+    let land = RaidPathDistanceRow {
+        source: u32::MAX,
+        target: u32::MAX,
+        ..Default::default()
+    };
+    let naval = RaidPathDistanceRow {
+        dispatcher: RaidPathDispatcher::Naval,
+        ..land.clone()
+    };
+    assert_eq!(land.key(), u64::MAX as u128);
+    assert_eq!(naval.key(), (1u128 << 65) - 1);
+}
+
 #[cfg(test)]
 #[path = "rows/ship_names_tests.rs"]
 mod ship_names_tests;

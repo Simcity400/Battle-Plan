@@ -457,7 +457,7 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     );
     out.note::<tables::RaidPathDistances>(
         frame,
-        "naval and land raid ranges come from the content search alone, which differs only where the session memo holds the other path kind's result",
+        "naval and land raid ranges use their own content searches while the dispatcher memos are unavailable",
     );
     let resources = "raid offers whose target type compares a state resource are withheld while the state resource inputs are incomplete";
     out.note::<tables::StateResourceInputs>(frame, resources);

@@ -1123,3 +1123,45 @@ mod selection;
 
 mod endpoint_alias_tests;
 mod pages;
+
+#[test]
+fn prepared_map_checkpoints_keep_both_dispatchers_of_the_same_pair() {
+    use replay_data::rows::{RaidPathDispatcher, RaidPathDistanceRow, tables};
+    assert!(selected_tables().contains(&TableId::RaidPathDistances));
+    let mut source = frame();
+    let rows: Vec<_> = [RaidPathDispatcher::Land, RaidPathDispatcher::Naval]
+        .into_iter()
+        .zip([900_000, 500_000])
+        .map(|(dispatcher, distance)| RaidPathDistanceRow {
+            dispatcher,
+            source: 7,
+            target: 9,
+            distance,
+            ok: 1,
+        })
+        .collect();
+    source.tables[TableId::RaidPathDistances.index()] =
+        TableView::Complete(TableRows::RaidPathDistances(rows.clone())).into();
+    let selected = [
+        TableId::Campaign,
+        TableId::Clock,
+        TableId::RaidPathDistances,
+    ];
+    let bytes = encode_checkpoint(
+        &source,
+        Position {
+            block: 0,
+            next_frame: 1,
+        },
+        &selected,
+    )
+    .unwrap();
+    let decoded = decode_checkpoint(bytes.as_slice(), &selected).unwrap();
+    assert_eq!(
+        decoded
+            .frame
+            .complete::<tables::RaidPathDistances>()
+            .unwrap(),
+        rows
+    );
+}

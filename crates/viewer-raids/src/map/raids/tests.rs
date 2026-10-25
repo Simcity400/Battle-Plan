@@ -1732,6 +1732,7 @@ fn a_daily_fact_decides_from_its_latest_recorded_rows() {
 fn a_memo_row_found_from_a_hint_is_the_binary_searchs() {
     let rows: Vec<replay_data::rows::RaidPathDistanceRow> = (1..=20)
         .map(|at| replay_data::rows::RaidPathDistanceRow {
+            dispatcher: replay_data::rows::RaidPathDispatcher::Naval,
             source: 7,
             target: at * 2,
             distance: 1,
@@ -2163,12 +2164,7 @@ mod launch_gate {
             province,
             ..Default::default()
         };
-        launcher.launchable(
-            kind,
-            &scope,
-            Scopes::of(script::Scope::Country(0)),
-            launch::Asked::Certain,
-        )
+        launcher.launchable(kind, &scope, Scopes::of(script::Scope::Country(0)))
     }
 
     /// Answers every army reach true and no path search.
@@ -2180,11 +2176,10 @@ mod launch_gate {
             _: &World<'_>,
             _: &launch::PathSource,
             _: &RaidScope,
-            _: launch::Asked,
         ) -> Result<Option<i64>, String> {
             Err("no path search".into())
         }
-        fn note(&self, _: &launch::PathSource, _: &RaidScope, _: launch::Asked) {}
+        fn note(&self, _: &launch::PathSource, _: &RaidScope) {}
         fn recorded_rows(&self) -> Option<&[replay_data::rows::RaidPathDistanceRow]> {
             None
         }
@@ -2304,12 +2299,7 @@ mod launch_gate {
             province: 3,
             ..Default::default()
         };
-        launcher.launchable(
-            &kind,
-            &scope,
-            Scopes::of(script::Scope::Country(0)),
-            launch::Asked::Certain,
-        )
+        launcher.launchable(&kind, &scope, Scopes::of(script::Scope::Country(0)))
     }
 
     /// Read the first stat: 100 km of range reaches province 3. The second
@@ -2651,9 +2641,7 @@ mod launch_gate {
         bases: Option<Vec<replay_data::rows::LaunchNavalBase>>,
         states: Option<Vec<u32>>,
     ) {
-        use replay_data::{
-            rows::Recorded, rows::ReservedCountryNamingRow, rows::ReservedLaunchSources,
-        };
+        use replay_data::{rows::Recorded, rows::ReservedCountryNamingRow, rows::ReservedLaunchSources};
         let hour = frame.hour;
         put::<tables::ReservedCountryNaming>(
             frame,
@@ -2690,7 +2678,7 @@ mod launch_gate {
 
     #[derive(Default)]
     struct SourceVisits {
-        distances: Mutex<Vec<(u8, u32, launch::Asked)>>,
+        distances: Mutex<Vec<(u8, u32)>>,
         reaches: Mutex<Vec<u32>>,
         notes: Mutex<Vec<u32>>,
         usable: Option<u32>,
@@ -2702,15 +2690,14 @@ mod launch_gate {
             _: &World<'_>,
             source: &launch::PathSource,
             _: &RaidScope,
-            asked: launch::Asked,
         ) -> Result<Option<i64>, String> {
             self.distances
                 .lock()
                 .unwrap()
-                .push((source.kind, source.province, asked));
+                .push((source.kind, source.province));
             Ok(Some(0))
         }
-        fn note(&self, source: &launch::PathSource, _: &RaidScope, _: launch::Asked) {
+        fn note(&self, source: &launch::PathSource, _: &RaidScope) {
             self.notes.lock().unwrap().push(source.province);
         }
         fn recorded_rows(&self) -> Option<&[replay_data::rows::RaidPathDistanceRow]> {
@@ -2742,7 +2729,6 @@ mod launch_gate {
                 ..Default::default()
             },
             Scopes::of(script::Scope::Country(0)),
-            launch::Asked::Certain,
         )
     }
 
@@ -2777,7 +2763,6 @@ mod launch_gate {
                         ..Default::default()
                     },
                     Scopes::of(script::Scope::Country(0)),
-                    launch::Asked::Certain
                 ),
                 Eval::True
             );
@@ -2805,7 +2790,7 @@ mod launch_gate {
     }
 
     #[test]
-    fn mixed_earlier_unknown_later_success_uses_maybe_asked() {
+    fn mixed_earlier_unknown_still_queries_the_later_source() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use replay_data::rows::NavalBaseRow;
@@ -2837,19 +2822,13 @@ mod launch_gate {
             ..Default::default()
         };
         assert_eq!(sources_gate(&assets, &frame, &kind, &paths), Eval::True);
-        assert_eq!(
-            *paths.distances.lock().unwrap(),
-            vec![(2, 2, launch::Asked::Maybe)]
-        );
+        assert_eq!(*paths.distances.lock().unwrap(), vec![(2, 2)]);
         let paths = SourceVisits::default();
         assert!(matches!(
             sources_gate(&assets, &frame, &kind, &paths),
             Eval::Unknown(_)
         ));
-        assert_eq!(
-            *paths.distances.lock().unwrap(),
-            vec![(2, 2, launch::Asked::Maybe)]
-        );
+        assert_eq!(*paths.distances.lock().unwrap(), vec![(2, 2)]);
     }
 
     #[test]
@@ -2888,10 +2867,7 @@ mod launch_gate {
             ..Default::default()
         };
         assert_eq!(sources_gate(&assets, &frame, &kind, &paths), Eval::True);
-        assert_eq!(
-            *paths.distances.lock().unwrap(),
-            vec![(2, 2, launch::Asked::Certain)]
-        );
+        assert_eq!(*paths.distances.lock().unwrap(), vec![(2, 2)]);
     }
 
     #[test]
@@ -2919,10 +2895,7 @@ mod launch_gate {
             ..Default::default()
         };
         assert_eq!(sources_gate(&assets, &frame, &kind, &paths), Eval::True);
-        assert_eq!(
-            *paths.distances.lock().unwrap(),
-            vec![(5, 1, launch::Asked::Maybe)]
-        );
+        assert_eq!(*paths.distances.lock().unwrap(), vec![(5, 1)]);
         kind.starting_point.allow_faction_buildings = true;
         let paths = SourceVisits {
             usable: Some(1),
@@ -2982,19 +2955,13 @@ mod launch_gate {
                         ..Default::default()
                     },
                     Scopes::of(script::Scope::Country(0)),
-                    launch::Asked::Certain
                 ),
                 Eval::True
             );
         }
         assert_eq!(
             *paths.distances.lock().unwrap(),
-            vec![
-                (2, 1, launch::Asked::Certain),
-                (2, 2, launch::Asked::Certain),
-                (2, 1, launch::Asked::Certain),
-                (2, 2, launch::Asked::Certain),
-            ]
+            vec![(2, 1), (2, 2), (2, 1), (2, 2)]
         );
         assert_eq!(*paths.reaches.lock().unwrap(), vec![1, 2]);
         // With every source known unusable, both occurrences of province1
@@ -3003,11 +2970,7 @@ mod launch_gate {
         assert_eq!(sources_gate(&assets, &frame, &kind, &paths), Eval::False);
         assert_eq!(
             *paths.distances.lock().unwrap(),
-            vec![
-                (2, 1, launch::Asked::Certain),
-                (2, 2, launch::Asked::Certain),
-                (2, 1, launch::Asked::Certain),
-            ]
+            vec![(2, 1), (2, 2), (2, 1)]
         );
     }
 
@@ -3079,7 +3042,7 @@ mod launch_gate {
                     11 => vec![3],
                     _ => unreachable!(),
                 })
-                .map(|province| (2, province, launch::Asked::Certain))
+                .map(|province| (2, province))
                 .collect();
             assert_eq!(*paths.distances.lock().unwrap(), expected);
         }
@@ -3197,18 +3160,7 @@ mod launch_gate {
             } else {
                 assert_eq!(result, Eval::False);
             }
-            assert_eq!(
-                *paths.distances.lock().unwrap(),
-                vec![(
-                    2,
-                    1,
-                    if is_null {
-                        launch::Asked::Maybe
-                    } else {
-                        launch::Asked::Certain
-                    }
-                )]
-            );
+            assert_eq!(*paths.distances.lock().unwrap(), vec![(2, 1)]);
             assert_eq!(*paths.reaches.lock().unwrap(), vec![1]);
         }
     }
@@ -3295,10 +3247,7 @@ mod launch_gate {
                 matches!(sources_gate(&assets, &frame, &kind, &paths), Eval::Unknown(reasons)
                 if reasons.iter().any(|reason| reason.contains(expected)))
             );
-            assert_eq!(
-                *paths.distances.lock().unwrap(),
-                vec![(2, 1, launch::Asked::Maybe)]
-            );
+            assert_eq!(*paths.distances.lock().unwrap(), vec![(2, 1)]);
         }
         let mut members = base.complete::<tables::FactionMembers>().unwrap().to_vec();
         members.insert(
@@ -3316,10 +3265,7 @@ mod launch_gate {
             matches!(sources_gate(&assets, &base, &kind, &paths), Eval::Unknown(reasons)
             if reasons.iter().any(|reason| reason.contains("country 999")))
         );
-        assert_eq!(
-            *paths.distances.lock().unwrap(),
-            vec![(2, 2, launch::Asked::Certain), (2, 1, launch::Asked::Maybe)]
-        );
+        assert_eq!(*paths.distances.lock().unwrap(), vec![(2, 2), (2, 1)]);
     }
 
     #[test]
@@ -3372,11 +3318,7 @@ mod launch_gate {
         assert_eq!(sources_gate(&assets, &frame, &kind, &paths), Eval::False);
         assert_eq!(
             *paths.distances.lock().unwrap(),
-            vec![
-                (5, 3, launch::Asked::Certain),
-                (5, 1, launch::Asked::Certain),
-                (5, 3, launch::Asked::Certain),
-            ]
+            vec![(5, 3), (5, 1), (5, 3)]
         );
         for mode in 0..6 {
             let mut refused = frame.clone();
@@ -3519,10 +3461,7 @@ mod launch_gate {
         );
         let a = SourceVisits::default();
         assert_eq!(sources_gate(&assets, &first, &kind, &a), Eval::False);
-        assert_eq!(
-            *a.distances.lock().unwrap(),
-            vec![(2, 2, launch::Asked::Certain)]
-        );
+        assert_eq!(*a.distances.lock().unwrap(), vec![(2, 2)]);
         let mut hole = first.clone();
         hole.branch += 1;
         let provinces = hole
@@ -3555,13 +3494,7 @@ mod launch_gate {
         );
         let c = SourceVisits::default();
         assert_eq!(sources_gate(&assets, &next, &kind, &c), Eval::False);
-        assert_eq!(
-            *c.distances.lock().unwrap(),
-            vec![
-                (2, 4, launch::Asked::Certain),
-                (2, 1, launch::Asked::Certain),
-            ]
-        );
+        assert_eq!(*c.distances.lock().unwrap(), vec![(2, 4), (2, 1)]);
     }
 
     #[test]
@@ -3580,7 +3513,6 @@ mod launch_gate {
                     ..Default::default()
                 },
                 Scopes::of(script::Scope::Country(0)),
-                launch::Asked::Certain,
             )
         };
         // The base in province 1 is 0.33 from province 2 and 0.67 from 3.
@@ -3910,44 +3842,51 @@ fn raid_path_distances_prefer_the_recorded_memo_and_resolve_naval_targets() {
     let paths = paths::HourPaths::new(&assets, &frame);
     // Naval: sea 1 -> sea 2 -> the target itself, resolved from 3 to 4.
     assert_eq!(
-        paths.distance(&world, &source(2, 1), &target(3), launch::Asked::Certain),
+        paths.distance(&world, &source(2, 1), &target(3)),
         Ok(None),
         "land 3 is not the target, so it blocks the way to 4"
     );
     assert_eq!(
-        paths.distance(&world, &source(2, 3), &target(4), launch::Asked::Certain),
+        paths.distance(&world, &source(2, 3), &target(4)),
         Ok(Some(50_000))
     );
     // Land: only land provinces are admitted.
     assert_eq!(
-        paths.distance(&world, &source(5, 3), &target(4), launch::Asked::Certain),
+        paths.distance(&world, &source(5, 3), &target(4)),
         Ok(Some(50_000))
     );
-    assert_eq!(
-        paths.distance(&world, &source(5, 1), &target(4), launch::Asked::Certain),
-        Ok(None)
-    );
-    // The session memo answers a pair whatever kind asks.
+    assert_eq!(paths.distance(&world, &source(5, 1), &target(4)), Ok(None));
+    // Each dispatcher answers only its own path kind.
     put::<tables::RaidPathDistances>(
         &mut frame,
-        vec![replay_data::rows::RaidPathDistanceRow {
-            source: 1,
-            target: 4,
-            distance: 7,
-            ok: 1,
-        }],
+        vec![
+            replay_data::rows::RaidPathDistanceRow {
+                dispatcher: replay_data::rows::RaidPathDispatcher::Land,
+                source: 1,
+                target: 4,
+                distance: 7,
+                ok: 1,
+            },
+            replay_data::rows::RaidPathDistanceRow {
+                dispatcher: replay_data::rows::RaidPathDispatcher::Naval,
+                source: 1,
+                target: 4,
+                distance: 19,
+                ok: 1,
+            },
+        ],
     );
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     let paths = paths::HourPaths::new(&assets, &frame);
     assert_eq!(
-        paths.distance(&world, &source(5, 1), &target(4), launch::Asked::Certain),
+        paths.distance(&world, &source(5, 1), &target(4)),
         Ok(Some(7))
     );
-    assert!(
-        paths
-            .distance(&world, &source(0, 1), &target(4), launch::Asked::Certain)
-            .is_err()
+    assert_eq!(
+        paths.distance(&world, &source(2, 1), &target(4)),
+        Ok(Some(19))
     );
+    assert!(paths.distance(&world, &source(0, 1), &target(4)).is_err());
 }
 
 #[test]
@@ -4105,14 +4044,12 @@ fn strait_assets() -> RaidAssets {
     assets
 }
 
-/// The session memo keeps a pair's first asked kind (`RaidPathDistances`).
-/// A pair an undecided offer may have asked is decided later only when both
-/// kinds agree; a certain ask fixes the kind, answered or not.
 #[test]
-fn a_pair_an_undecided_offer_may_have_asked_needs_both_kinds_to_agree() {
-    use paths::{Asked, Distances};
+fn earlier_queries_never_mix_dispatchers_for_the_same_pair() {
+    use paths::Distances;
     let assets = strait_assets();
     let mut frame = frame();
+    put::<tables::RaidPathDistances>(&mut frame, Vec::new());
     put::<tables::NavalBases>(
         &mut frame,
         vec![replay_data::rows::NavalBaseRow {
@@ -4125,43 +4062,14 @@ fn a_pair_an_undecided_offer_may_have_asked_needs_both_kinds_to_agree() {
         province: 3,
         ..Default::default()
     };
-    let (naval, land) = (2, 5);
-    let fresh = || Distances::new(&assets, &frame);
-    let distances = fresh();
-    assert!(matches!(
-        distances.distance(naval, 1, &scope, Asked::Maybe),
-        Ok(Some(_))
-    ));
-    assert!(distances.distance(land, 1, &scope, Asked::Certain).is_err());
-    assert!(
-        distances
-            .distance(naval, 1, &scope, Asked::Certain)
-            .is_err()
-    );
-    // Asked for certain, the first kind answers the other.
-    let distances = fresh();
-    assert_eq!(
-        distances.distance(land, 1, &scope, Asked::Certain),
-        Ok(None)
-    );
-    assert_eq!(
-        distances.distance(naval, 1, &scope, Asked::Certain),
-        Ok(None)
-    );
-    // A measured source no unit could use still fixes the kind.
-    let distances = fresh();
-    distances.note(naval, 1, &scope, Asked::Certain);
-    assert!(matches!(
-        distances.distance(land, 1, &scope, Asked::Certain),
-        Ok(Some(_))
-    ));
-    // A maybe-asked pair whose kinds agree stays decided.
-    let distances = fresh();
-    distances.note(naval, 2, &scope, Asked::Maybe);
-    assert_eq!(
-        distances.distance(naval, 2, &scope, Asked::Certain),
-        distances.distance(naval, 2, &scope, Asked::Maybe)
-    );
+    let distances = Distances::new(&assets, &frame);
+    assert_eq!(distances.distance(2, 1, &scope), Ok(Some(100_000)));
+    assert_eq!(distances.distance(5, 1, &scope), Ok(None));
+    assert_eq!(distances.distance(2, 1, &scope), Ok(Some(100_000)));
+    let distances = Distances::new(&assets, &frame);
+    distances.note(5, 1, &scope);
+    assert_eq!(distances.distance(2, 1, &scope), Ok(Some(100_000)));
+    assert_eq!(distances.distance(5, 1, &scope), Ok(None));
 }
 
 mod recorded_paths {
@@ -4170,7 +4078,7 @@ mod recorded_paths {
         raids::BattalionRequirement, raids::SourceKind, raids::StartingPoint,
         raids::UnitRequirement,
     };
-    use launch::{Asked, PathSource, RaidPaths};
+    use launch::{PathSource, RaidPaths};
     use replay_data::{
         rows::DivisionRow, rows::DivisionTemplateIconRow, rows::NukeRow, rows::RaidPathDistanceRow,
         rows::TemplateSubunit,
@@ -4185,12 +4093,11 @@ mod recorded_paths {
             world: &World<'_>,
             source: &PathSource,
             target: &RaidScope,
-            asked: Asked,
         ) -> Result<Option<i64>, String> {
-            self.0.distance(world, source, target, asked)
+            self.0.distance(world, source, target)
         }
-        fn note(&self, source: &PathSource, target: &RaidScope, asked: Asked) {
-            self.0.note(source, target, asked);
+        fn note(&self, source: &PathSource, target: &RaidScope) {
+            self.0.note(source, target);
         }
         fn recorded_rows(&self) -> Option<&[RaidPathDistanceRow]> {
             self.0.recorded_rows()
@@ -4316,9 +4223,7 @@ mod recorded_paths {
             ..Default::default()
         };
         let mut answers: Vec<Eval> = (0..times)
-            .map(|_| {
-                launcher.launchable(&kind, &scope, Scopes::of(Scope::Country(0)), Asked::Certain)
-            })
+            .map(|_| launcher.launchable(&kind, &scope, Scopes::of(Scope::Country(0))))
             .collect();
         answers.dedup();
         assert_eq!(answers.len(), 1, "every lookup answers alike");
@@ -4342,8 +4247,38 @@ mod recorded_paths {
         assert_eq!(gate_in(&assets, &near, 70), Eval::True);
     }
 
+    #[test]
+    fn indexed_launch_uses_only_the_sources_dispatcher() {
+        use replay_data::rows::RaidPathDispatcher;
+        let assets = assets();
+        for (land, naval, expected) in [(7, 100_001, Eval::False), (100_001, 7, Eval::True)] {
+            let rows = [RaidPathDispatcher::Land, RaidPathDispatcher::Naval]
+                .into_iter()
+                .zip([land, naval])
+                .map(|(dispatcher, distance)| RaidPathDistanceRow {
+                    dispatcher,
+                    source: 1,
+                    target: 3,
+                    distance,
+                    ok: 1,
+                })
+                .collect();
+            let frame = hour_with(rows);
+            assert_eq!(gate_in(&assets, &frame, 70), expected);
+        }
+        let frame = hour_with(vec![RaidPathDistanceRow {
+            dispatcher: RaidPathDispatcher::Land,
+            source: 1,
+            target: 3,
+            distance: 7,
+            ok: 1,
+        }]);
+        assert!(matches!(gate_in(&assets, &frame, 70), Eval::Unknown(_)));
+    }
+
     fn memo(distance: i64, ok: u8) -> Vec<RaidPathDistanceRow> {
         vec![RaidPathDistanceRow {
+            dispatcher: replay_data::rows::RaidPathDispatcher::Naval,
             source: 1,
             target: 3,
             distance,

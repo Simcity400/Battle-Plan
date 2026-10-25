@@ -1470,29 +1470,151 @@ fn failed_scientist_daily_acquisition_keeps_its_own_read_boundary() {
     }
 }
 
-#[test]
-fn split_path_memos_refuse_the_untagged_recording_without_reusing_old_rows() {
-    struct Unreadable;
-    impl Memory for Unreadable {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            false
+mod raid_memos {
+    use super::*;
+    use engine_native::memory::SliceMemory;
+    use replay_data::rows::RaidPathDispatcher;
+
+    const GAME: usize = 0x100;
+    const SYSTEM: usize = 0x800;
+    const BUCKETS: usize = 0x08;
+    const COUNT: usize = 0x10;
+    const MASK: usize = 0x14;
+    const MAX_PROBE: usize = 0x18;
+    const LOCK: usize = 0x20;
+    const BUCKET: usize = 0x20;
+    const PROBE: usize = 0x04;
+    const SOURCE: usize = 0x08;
+    const TARGET: usize = 0x0c;
+    const DISTANCE: usize = 0x10;
+    const OK: usize = 0x18;
+    const TABLES: [usize; 2] = [0x1000, 0x1400];
+    const MEMOS: [usize; 2] = [raid_path_memo::LAND_MEMO, raid_path_memo::NAVAL_MEMO];
+
+    fn fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 0x2000];
+        let mut put = |at: usize, value: &[u8]| bytes[at..at + value.len()].copy_from_slice(value);
+        put(
+            GAME + cgame_state::RAID_SYSTEM,
+            &(SYSTEM as u64).to_le_bytes(),
+        );
+        put(SYSTEM, &(craid_system::VTABLE_RVA as u64).to_le_bytes());
+        for ((memo, table), distance) in MEMOS.into_iter().zip(TABLES).zip([900_000i64, 500_000]) {
+            put(SYSTEM + memo + BUCKETS, &(table as u64).to_le_bytes());
+            put(SYSTEM + memo + COUNT, &1u32.to_le_bytes());
+            put(SYSTEM + memo + MASK, &3u32.to_le_bytes());
+            put(SYSTEM + memo + MAX_PROBE, &[1]);
+            put(table + PROBE, &[1]);
+            put(table + SOURCE, &7u32.to_le_bytes());
+            put(table + TARGET, &9u32.to_le_bytes());
+            put(table + DISTANCE, &distance.to_le_bytes());
+            put(table + OK, &[1]);
+            put(table + 5 * BUCKET + PROBE, &[u8::MAX]);
+        }
+        bytes
+    }
+
+    fn capture(captured: &mut Captured, bytes: &[u8]) {
+        captured.capture(&SliceMemory { base: 0, bytes }, 0, GAME, 80, true);
+    }
+
+    #[test]
+    fn both_memos_keep_the_same_pair_distinct_through_capture_and_codec() {
+        let mut captured = Captured::vacant();
+        capture(&mut captured, &fixture());
+        assert_eq!(captured.outcomes()[12], Outcome::Rows { len: 2 });
+        assert_eq!(captured.raid_reads().torn_memo_reads, 0);
+        let TableView::Complete(rows::TableRows::RaidPathDistances(rows)) = &captured.tables()[12]
+        else {
+            panic!("both memos must be complete");
+        };
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.dispatcher, row.source, row.target, row.distance))
+                .collect::<Vec<_>>(),
+            [
+                (RaidPathDispatcher::Land, 7, 9, 900_000),
+                (RaidPathDispatcher::Naval, 7, 9, 500_000),
+            ]
+        );
+        assert!(rows[0].key() < rows[1].key());
+        let table = rows::TableRows::RaidPathDistances(rows.clone());
+        let mut bytes = Vec::new();
+        table.encode_rows(&mut bytes).unwrap();
+        let mut decoder = replay_data::codec::Decoder::new(&bytes);
+        assert_eq!(
+            TableId::RaidPathDistances
+                .decode_rows(2, &mut decoder)
+                .unwrap(),
+            table
+        );
+        decoder.finish().unwrap();
+        let mut capacities = small().0;
+        captured.grow(&mut capacities);
+        assert!(
+            captured
+                .raid_paths
+                .iter()
+                .all(|memo| memo.rows.len() >= capacities.rows[12])
+        );
+    }
+
+    #[test]
+    fn either_locked_or_unreadable_memo_refuses_the_table_without_hiding_the_other_read() {
+        for bad in 0..2 {
+            for locked in [true, false] {
+                let mut captured = Captured::vacant();
+                let mut bytes = fixture();
+                capture(&mut captured, &bytes);
+                if locked {
+                    bytes[SYSTEM + MEMOS[bad] + LOCK] = 1;
+                } else {
+                    bytes[SYSTEM + MEMOS[bad] + BUCKETS..][..8].fill(0);
+                }
+                captured.reset();
+                capture(&mut captured, &bytes);
+                assert!(matches!(
+                    captured.outcomes()[12],
+                    Outcome::Unavailable { .. }
+                ));
+                assert!(matches!(
+                    &captured.tables()[12],
+                    TableView::Unavailable { .. }
+                ));
+                assert!(matches!(
+                    captured.raid_paths[bad].outcome,
+                    Outcome::Unavailable { .. }
+                ));
+                assert_eq!(
+                    captured.raid_paths[1 - bad].outcome,
+                    Outcome::Rows { len: 1 }
+                );
+                assert_eq!(captured.raid_reads().torn_memo_reads, u32::from(locked));
+            }
         }
     }
-    let (_, mut captured) = small();
-    captured.raid_paths.rows[0] = raid_path_memo::Row {
-        source: 7,
-        target: 9,
-        distance: 500_000,
-        ok: 1,
-    };
-    captured.raid_paths.outcome = Outcome::Rows { len: 1 };
-    captured.capture(&Unreadable, 0, 0x1000, 80, true);
-    let reason = "RaidPathDistances unavailable: separate land/naval memos require dispatcher-aware recorded keys";
-    assert_eq!(captured.outcomes()[12], Outcome::Unavailable { reason });
-    assert_eq!(
-        captured.tables()[12],
-        TableView::Unavailable {
-            reason: reason.into()
-        }
-    );
+
+    #[test]
+    fn memo_outcomes_keep_truncation_and_failure_separate() {
+        let (_, mut captured) = small();
+        captured.raid_paths[0].outcome = Outcome::Truncated {
+            len: 1,
+            unread_rows: 2,
+        };
+        captured.raid_paths[1].outcome = Outcome::Truncated {
+            len: 2,
+            unread_rows: 3,
+        };
+        assert_eq!(
+            captured.outcomes()[12],
+            Outcome::Truncated {
+                len: 3,
+                unread_rows: 5
+            }
+        );
+        captured.raid_paths[1].outcome = Outcome::Unavailable {
+            reason: "naval memo unreadable",
+        };
+        assert_eq!(captured.outcomes()[12], captured.raid_paths[1].outcome);
+    }
 }
