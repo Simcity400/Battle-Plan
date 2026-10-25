@@ -4,27 +4,25 @@ use super::*;
 pub struct FixturePages {
     pub pages: BTreeMap<(String, u64), Vec<u8>>,
 }
+impl FixturePages {
+    // Ranges are written consecutively, so the section's last range + 1 is its page count.
+    fn next(&self, section: &str) -> u64 {
+        self.pages
+            .range((section.to_owned(), 0)..=(section.to_owned(), u64::MAX))
+            .next_back()
+            .map_or(0, |((_, range), _)| range + 1)
+    }
+}
 impl Pages for FixturePages {
     fn write_at(&mut self, section: &str, range: u64, bytes: &[u8]) -> io::Result<()> {
-        let count = self
-            .pages
-            .keys()
-            .filter(|(name, _)| name == section)
-            .count() as u64;
-        if range > count {
+        if range > self.next(section) {
             return Err(crate::invalid("Non-consecutive fixture page range"));
         }
         self.pages.insert((section.into(), range), bytes.to_vec());
         Ok(())
     }
     fn write(&mut self, section: &str, bytes: &[u8]) -> io::Result<u64> {
-        let range = self
-            .pages
-            .keys()
-            .filter(|(name, _)| name == section)
-            .map(|(_, range)| *range + 1)
-            .max()
-            .unwrap_or(0);
+        let range = self.next(section);
         self.write_at(section, range, bytes)?;
         Ok(range)
     }
