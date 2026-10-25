@@ -616,8 +616,10 @@ impl Prepared {
     }
 
     fn drain_quiet<W: Pages + ?Sized>(&mut self, writer: &mut W) -> io::Result<()> {
-        if let (Some((first, last)), Some(mut input)) = (self.quiet.take(), self.last_input.take())
-        {
+        let Some((first, last)) = self.quiet.take() else {
+            return Ok(());
+        };
+        if let Some(mut input) = self.last_input.take() {
             input.hour = first;
             input.last_hour = last;
             input.lines_read = false;

@@ -1692,6 +1692,124 @@ fn closed_handles_and_retired_lifetimes_are_only_private_pages_not_checkpoint_ro
 }
 
 #[test]
+fn a_boundary_without_quiet_hours_keeps_unchanged_identities_and_census_operands() {
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::{FrameEncoder, TableView};
+    struct Budget(usize);
+    impl Drop for Budget {
+        fn drop(&mut self) {
+            crate::prepared::pages::TEST_BATCH_BYTES.set(self.0);
+        }
+    }
+    for boundary in ["flush", "save", "pressure"] {
+        let replay = recording();
+        let flag = AtomicBool::new(false);
+        let mut prepared = Prepared::new(&replay, 1, ["GER".into(), "ITA".into()], None);
+        let mut pages = fixtures::FixturePages::default();
+        let mut frame = production_frame(
+            FIRST,
+            true,
+            true,
+            9001,
+            &[(5, 70, 8, 0), (6, 71, 3, 0)],
+            Some(&[]),
+        );
+        let mut encoder = FrameEncoder::new();
+        let updates = encoder.encode(frame.clone(), true).unwrap().into();
+        let changes = prepared.world.recorded_changes(&replay, &frame, updates);
+        let _budget = Budget(crate::prepared::pages::TEST_BATCH_BYTES.replace(
+            if boundary == "pressure" { 1 } else { usize::MAX },
+        ));
+        prepared
+            .observe_changed_into(&mut pages, &replay, &frame, None, &flag, &changes)
+            .unwrap();
+        assert!(prepared.quiet.is_none());
+        match boundary {
+            "flush" => prepared.flush(&mut pages, &flag).unwrap(),
+            "save" => prepared.save(&mut pages, &flag).unwrap(),
+            "pressure" => assert!(prepared.directory.pages > 0),
+            _ => unreachable!(),
+        }
+        let input = prepared.last_input.as_ref().expect(boundary);
+        assert_eq!(
+            input.countries,
+            Some(BTreeMap::from([
+                ("GER".into(), Country::Found(7, 9001)),
+                ("ITA".into(), Country::Found(0, 21)),
+            ])),
+            "{boundary}"
+        );
+        frame.hour += 1;
+        frame.metrics.table_ns.fill(0);
+        let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].tag = b"SPA".to_vec();
+        let updates = encoder.encode(frame.clone(), false).unwrap().into();
+        let changes = prepared.world.recorded_changes(&replay, &frame, updates);
+        assert_eq!(changes.rows(TableId::Countries).unwrap().0.len(), 1);
+        assert!(changes.rows(TableId::ProductionLines).unwrap().0.is_empty());
+        prepared
+            .observe_changed_into(&mut pages, &replay, &frame, None, &flag, &changes)
+            .unwrap();
+        let input = prepared.last_input.as_ref().expect(boundary);
+        assert_eq!(
+            input.countries,
+            Some(BTreeMap::from([
+                ("GER".into(), Country::Found(7, 9001)),
+                ("SPA".into(), Country::Found(0, 21)),
+            ])),
+            "{boundary}"
+        );
+        assert_eq!(
+            input.lines[&7]
+                .iter()
+                .map(|row| (row.handle, row.variant, row.active_factories))
+                .collect::<Vec<_>>(),
+            vec![(5, 70, 8), (6, 71, 3)],
+            "{boundary}"
+        );
+        assert_eq!(
+            prepared.active.keys().copied().collect::<Vec<_>>(),
+            vec![(0, 21), (7, 9001)],
+            "{boundary}"
+        );
+        prepared.flush(&mut pages, &flag).unwrap();
+        let scan = assemble(
+            &prepared.directory,
+            &tag_key("GER"),
+            None,
+            recorded_language(&replay),
+            &flag,
+            |section, range| pages.read_at(section, range),
+        )
+        .unwrap();
+        assert_eq!(
+            scan.lines
+                .iter()
+                .map(|line| (
+                    line.handle,
+                    line.ended_by,
+                    line.runs
+                        .iter()
+                        .map(|run| (run.first_hour, run.last_hour, run.active_factories))
+                        .collect::<Vec<_>>(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (5, None, vec![(FIRST, FIRST + 1, 8)]),
+                (6, None, vec![(FIRST, FIRST + 1, 3)]),
+            ],
+            "{boundary}"
+        );
+        assert_eq!(scan.reads, vec![FIRST], "{boundary}");
+        assert_eq!(scan.unreadable_stretches, 0, "{boundary}");
+    }
+}
+
+#[test]
 fn quiet_hours_and_read_evidence_do_not_rebuild_world_values_or_visit_active_lines() {
     let replay = recording();
     let flag = AtomicBool::new(false);
