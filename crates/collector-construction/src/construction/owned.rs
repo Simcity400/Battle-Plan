@@ -430,15 +430,14 @@ pub(super) fn copy_construction_string(
     let _ = cspan(log, memory, source.checked_add(len), 1, mask);
 }
 
-/// Shared states-array header plus country census. Returns the states array
-/// on success; the caller traverses states once for resources
-/// and building targets (no duplicated censuses).
+/// Shared states-array header plus country census and its link-array bounds.
 fn copy_construction_roots(
     log: &mut RawLog<10>,
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     census: &mut Vec<ConstructionRestCountry>,
+    country_links: &mut Option<Array>,
 ) -> Option<Array> {
     let states_start = cspan(
         log,
@@ -468,6 +467,7 @@ fn copy_construction_roots(
     let countries = Array::from_header(raw, 8)?;
     raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
     let links = Array::from_header(raw, 4)?;
+    *country_links = Some(links);
     if countries.count < 2 || links.count == 0 {
         return None;
     }
@@ -476,6 +476,7 @@ fn copy_construction_roots(
             .ok()?;
     }
     let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
+    let mut reserved = None;
     for slot in 1..countries.count {
         let pointer_addr = (slot as usize)
             .checked_mul(8)
@@ -488,12 +489,32 @@ fn copy_construction_roots(
             Some(p) => p,
             None => continue,
         };
+        if reserved == Some(pointer) {
+            continue;
+        }
         let vtable_start = cspan(log, memory, Some(pointer), 8, M_C_ALL)?;
         let id_start = cspan(log, memory, pointer.checked_add(ccountry::ID), 4, M_C_ALL)?;
         if c_pool_u64(log, vtable_start) != vtable {
             return None;
         }
         let id = c_pool_u32(log, id_start);
+        if id == 0 {
+            // Physical aliases of the authenticated reserved object are not countries to walk.
+            let root_start = cspan(log, memory, countries.element(0, 8), 8, M_C_ALL)?;
+            let root = usize::try_from(c_pool_u64(log, root_start))
+                .ok()
+                .filter(|&p| p != 0)?;
+            let identity = cspan(log, memory, Some(root), 8, M_C_ALL)?;
+            if c_pool_u64(log, identity) != vtable {
+                return None;
+            }
+            let identity = cspan(log, memory, root.checked_add(ccountry::ID), 4, M_C_ALL)?;
+            if c_pool_u32(log, identity) != 0 || root != pointer {
+                return None;
+            }
+            reserved = Some(root);
+            continue;
+        }
         // Full canonical validation mirrors `ccountry::Reader`: id, slot and
         // canonical link reads plus the canonical pointer round-trip.
         let canonical = match copy_construction_link(log, memory, &links, countries.count, id) {
@@ -1461,6 +1482,18 @@ fn copy_garrison_equipment(
     }
 }
 
+fn copy_collaboration_link(
+    log: &mut RawLog<10>,
+    memory: &impl Memory,
+    links: Option<Array>,
+    raw: u32,
+) {
+    if raw != 0 {
+        let address = links.and_then(|links| links.element(raw, 4));
+        let _ = cspan(log, memory, address, 4, M_C_COLLAB);
+    }
+}
+
 /// Mirror of `ccountry_collaboration_status::walk`'s read set: per-country
 /// status with owner, outgoing/incoming arrays, per-relation objects plus
 /// reciprocal validation reads.
@@ -1469,6 +1502,7 @@ fn copy_collaboration_walk(
     memory: &impl Memory,
     base: usize,
     census: &[ConstructionRestCountry],
+    links: Option<Array>,
 ) {
     for country in census {
         let Some(ptr_start) = cspan(
@@ -1530,16 +1564,22 @@ fn copy_collaboration_walk(
                                 rel.checked_add(ccountry_collaboration_data::PROGRESS),
                             ) {
                                 // Owned replay needs the decoder's exact field spans, not an object-sized take.
-                                let _ = log.take_scattered(
+                                if let Some(([identity, target, _], 3)) = log.take_scattered(
                                     memory,
                                     [rel, target, progress],
                                     [8, 4, 8],
                                     [mask; 3],
-                                );
+                                ) && base.checked_add(ccountry_collaboration_data::VTABLE_RVA)
+                                    == usize::try_from(c_pool_u64(log, identity)).ok()
+                                {
+                                    let raw = c_pool_u32(log, target);
+                                    copy_collaboration_link(log, memory, links, raw);
+                                }
                             }
                         }
-                    } else {
-                        let _ = cspan(log, memory, addr, 4, mask);
+                    } else if let Some(start) = cspan(log, memory, addr, 4, mask) {
+                        let raw = c_pool_u32(log, start);
+                        copy_collaboration_link(log, memory, links, raw);
                     }
                 }
             }
@@ -1548,7 +1588,6 @@ fn copy_collaboration_walk(
             return;
         }
     }
-    let _ = base;
 }
 
 /// Acquire one owned payload and report its per-table costs.
@@ -1622,7 +1661,15 @@ fn copy_construction_rest_pass(
     job: &mut ConstructionRestJob,
 ) {
     let _reads = read_accounting::table(TABLES[2]);
-    let states = copy_construction_roots(&mut job.log, memory, base, game_state, &mut job.census);
+    let mut links = None;
+    let states = copy_construction_roots(
+        &mut job.log,
+        memory,
+        base,
+        game_state,
+        &mut job.census,
+        &mut links,
+    );
     // Vec length is already representable and bounded by the owned census.
     // Retain its prefix even if a later country authentication fails.
     job.settings_required = job.census.len();
@@ -1652,5 +1699,5 @@ fn copy_construction_rest_pass(
     if job.log.overflowed {
         return;
     }
-    copy_collaboration_walk(&mut job.log, memory, base, &job.census);
+    copy_collaboration_walk(&mut job.log, memory, base, &job.census, links);
 }
