@@ -15,6 +15,8 @@
 - Needs Rust 1.96+ with the x64 MSVC toolchain, Visual Studio C++ Build Tools with a Windows SDK, and Node.js 22.12+.
 - Desktop app: `npm.cmd ci`, then `npm.cmd run dev` (add `-- -- -- "<replay>"` to open one). Release build: `npm.cmd run build:desktop`.
 - Command-line recorder: `cargo build -p recorder -p collector --release`.
+- Use Boat for compilation and static checks, including release builds: `boat exec <vm> -- <command>`. Upload only this worktree's current source, use the Windows target, reuse an idle project VM when available, and keep concurrent jobs isolated. After completion, set `boat extend <vm> --ttl 120`. Target affected crates while iterating; avoid redundant checks.
+- If Boat cannot be used for any reason, run the required work locally instead.
 
 ## Where things are
 
