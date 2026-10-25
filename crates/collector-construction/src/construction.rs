@@ -948,3 +948,6 @@ mod tests;
 
 #[cfg(test)]
 mod buildings_tests;
+
+#[cfg(test)]
+mod collaboration_tests;

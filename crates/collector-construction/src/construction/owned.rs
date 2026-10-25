@@ -1525,7 +1525,18 @@ fn copy_collaboration_walk(
                                 .ok()
                                 .filter(|&p| p != 0)
                         {
-                            let _ = cspan(log, memory, Some(rel), 24, mask);
+                            if let (Some(target), Some(progress)) = (
+                                rel.checked_add(ccountry_collaboration_data::TARGET_COUNTRY),
+                                rel.checked_add(ccountry_collaboration_data::PROGRESS),
+                            ) {
+                                // Owned replay needs the decoder's exact field spans, not an object-sized take.
+                                let _ = log.take_scattered(
+                                    memory,
+                                    [rel, target, progress],
+                                    [8, 4, 8],
+                                    [mask; 3],
+                                );
+                            }
                         }
                     } else {
                         let _ = cspan(log, memory, addr, 4, mask);
