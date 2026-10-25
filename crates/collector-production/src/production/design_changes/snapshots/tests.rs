@@ -733,3 +733,99 @@ fn unavailable_witness_storage_does_not_refuse_a_successful_observation() {
     );
     assert_eq!(output, [1, 2]);
 }
+
+#[test]
+fn optional_cache_failures_never_reach_the_terminal_hook_but_required_ones_still_do() {
+    thread_local! {
+        static TERMINAL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+    // Counted per thread: oom() calls the hook on the failing thread, so parallel tests can't interfere.
+    fn terminal() {
+        TERMINAL.with(|calls| calls.set(calls.get() + 1));
+    }
+    struct Hooks;
+    impl Drop for Hooks {
+        fn drop(&mut self) {
+            engine_allocation::set_hooks(None, None);
+        }
+    }
+    let batch = burst(2);
+    let event = &batch.events[0];
+    let range = event.start..event.end;
+    let value = Cache::default()
+        .decode(&batch, event, 0, 7, &mut Shared::default())
+        .unwrap();
+    let mut log = RawLog::<1>::new(1, 4);
+    let bytes = engine_native::memory::SliceMemory {
+        base: 0x1000,
+        bytes: &[1, 2, 3, 4],
+    };
+    log.take_bulk(&bytes, 0x1000, 4, 1).unwrap();
+    let memory = crate::raw::Recorded::build_range(&log, 0..1).unwrap();
+    let read = witness::Observed::new(&memory, 1);
+    let mut output = [0; 2];
+    assert!(read.copy(0x1000, &mut output));
+    let witnessed = witness::Observed::new(&bytes, 1);
+    assert!(witnessed.copy(0x1000, &mut output));
+    let read_witness = witnessed.finish(&log, 0..1, &[0]);
+    assert!(read_witness.is_some());
+    let denials = || collector_test_support::DENIALS.load(std::sync::atomic::Ordering::Relaxed);
+    let mut cache = Cache::default();
+    let hooks = Hooks;
+    engine_allocation::set_hooks(None, Some(terminal));
+    assert_eq!(
+        collector_test_support::with_allocations_denied(
+            || cache.consistent(&batch.log, range.clone())
+        ),
+        Ok(false)
+    );
+    assert!(!collector_test_support::with_allocations_denied(|| {
+        cache.insert(&batch.log, range.clone(), event.pointer, 0, &value, None)
+    }));
+    collector_test_support::with_allocations_denied(|| cache.remember(event.pointer, 0));
+    let unobserved =
+        collector_test_support::with_allocations_denied(|| witness::Observed::new(&memory, 1));
+    assert!(unobserved.finish(&log, 0..1, &[0]).is_none());
+    assert!(
+        collector_test_support::with_allocations_denied(|| read.finish(&log, 0..1, &[0])).is_none()
+    );
+    // Reserving heads succeeds, entries fails: the partial reservation leaves no entry behind.
+    let partial = {
+        let _guard = collector_test_support::NullGuard::new(2);
+        cache.insert(&batch.log, range.clone(), event.pointer, 0, &value, None)
+    };
+    assert!(!partial);
+    assert!(cache.entries.is_empty() && cache.heads.is_empty() && cache.recent.is_empty());
+    // Read-list growth past its initial room: the first denied growth stops recording reads.
+    let growing = witness::Observed::new(&bytes, 1);
+    let grown = collector_test_support::with_allocations_denied(|| {
+        for _ in 0..16 {
+            assert!(growing.copy(0x1000, &mut output));
+        }
+        denials()
+    });
+    assert_eq!(grown, 1);
+    assert!(growing.finish(&log, 0..1, &[0]).is_none());
+    // Heads and entries succeed, the witness index and the recent map are denied.
+    let mut indexed = Cache::default();
+    let (inserted, indexed_denials) = {
+        let _guard = collector_test_support::NullGuard::new(3);
+        let inserted = indexed.insert(&log, 0..1, event.pointer, 0, &value, read_witness);
+        (inserted, denials())
+    };
+    assert!(inserted);
+    assert_eq!(indexed_denials, 2);
+    assert_eq!(indexed.entries.len(), 1);
+    assert!(indexed.entries[0].witness.is_none());
+    assert!(indexed.witness_heads.is_empty() && indexed.recent.is_empty());
+    assert_eq!(TERMINAL.with(std::cell::Cell::get), 0);
+    let mut shared = Shared::default();
+    assert!(collector_test_support::with_allocations_denied(|| shared.reserve(1)).is_err());
+    assert_eq!(TERMINAL.with(std::cell::Cell::get), 1);
+    drop(hooks);
+    let fresh = cache
+        .decode(&batch, event, 0, 7, &mut Shared::default())
+        .unwrap();
+    assert_eq!(fresh.value, value.value);
+    assert!(!Arc::ptr_eq(&fresh, &value));
+}

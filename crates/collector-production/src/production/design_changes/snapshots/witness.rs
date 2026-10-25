@@ -12,7 +12,11 @@ pub(super) struct Observed<'a, M> {
 impl<'a, M: Memory> Observed<'a, M> {
     pub fn new(source: &'a M, spans: usize) -> Self {
         let mut reads = Vec::new();
-        let complete = engine_allocation::reserve(&mut reads, spans.saturating_mul(4)).is_ok();
+        // Witnesses are optional: an allocation failure falls back to full-byte reuse.
+        let complete = engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut reads, spans.saturating_mul(4))
+        })
+        .is_ok();
         Self {
             source,
             reads: RefCell::new(reads),
@@ -20,6 +24,9 @@ impl<'a, M: Memory> Observed<'a, M> {
         }
     }
     pub fn finish(self, log: &RawLog<1>, range: Range<usize>, order: &[usize]) -> Option<Witness> {
+        engine_allocation::advisory(move || self.build(log, range, order))
+    }
+    fn build(self, log: &RawLog<1>, range: Range<usize>, order: &[usize]) -> Option<Witness> {
         if !self.complete.get() {
             return None;
         }
@@ -84,7 +91,7 @@ impl<M: Memory> Memory for Observed<'_, M> {
         } else if !output.is_empty() && self.complete.get() {
             let mut reads = self.reads.borrow_mut();
             if let Some(end) = address.checked_add(output.len())
-                && engine_allocation::reserve(&mut reads, 1).is_ok()
+                && engine_allocation::advisory(|| engine_allocation::reserve(&mut reads, 1)).is_ok()
             {
                 reads.push(address..end);
             } else {

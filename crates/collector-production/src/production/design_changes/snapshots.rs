@@ -227,8 +227,12 @@ impl Cache {
         range: std::ops::Range<usize>,
     ) -> Result<bool, &'static str> {
         self.order.clear();
-        engine_allocation::reserve(&mut self.order, range.len())
-            .map_err(|_| "variant snapshot witness allocation failed")?;
+        // The cache is optional: an allocation failure only skips caching, never the hour.
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.order, range.len()))
+            .is_err()
+        {
+            return Ok(false);
+        }
         self.order.extend(range);
         self.order
             .sort_unstable_by_key(|index| log.spans[*index].addr);
@@ -271,18 +275,19 @@ impl Cache {
             .apply();
         Ok(Arc::clone(value))
     }
-    fn remember(&mut self, pointer: usize, index: usize) -> Result<(), &'static str> {
+    fn remember(&mut self, pointer: usize, index: usize) {
         if let Some((latest, previous)) = self.recent.get_mut(&pointer) {
             if *latest != index {
                 *previous = Some(*latest);
                 *latest = index;
             }
-            return Ok(());
+            return;
         }
-        engine_allocation::reserve_map(&mut self.recent, 1)
-            .map_err(|_| "variant snapshot cache allocation failed")?;
-        self.recent.insert(pointer, (index, None));
-        Ok(())
+        if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut self.recent, 1))
+            .is_ok()
+        {
+            self.recent.insert(pointer, (index, None));
+        }
     }
     pub fn decode(
         &mut self,
@@ -297,7 +302,7 @@ impl Cache {
             for index in std::iter::once(latest).chain(previous) {
                 if equal(&batch.log, self.entries[index].range.clone(), range.clone()) {
                     let value = self.reuse(index)?;
-                    self.remember(event.pointer, index)?;
+                    self.remember(event.pointer, index);
                     return Ok(value);
                 }
             }
@@ -309,7 +314,7 @@ impl Cache {
                     witness.equal(&batch.log, entry.range.clone(), range.clone())
                 }) {
                     let value = self.reuse(index)?;
-                    self.remember(event.pointer, index)?;
+                    self.remember(event.pointer, index);
                     return Ok(value);
                 }
             }
@@ -337,7 +342,7 @@ impl Cache {
                         })
                     {
                         let value = self.reuse(index)?;
-                        self.remember(event.pointer, index)?;
+                        self.remember(event.pointer, index);
                         return Ok(value);
                     }
                     next = self.entries[index].witness_next;
@@ -365,7 +370,7 @@ impl Cache {
                 && equal(&batch.log, entry.range.clone(), range.clone())
             {
                 let value = self.reuse(index)?;
-                self.remember(event.pointer, index)?;
+                self.remember(event.pointer, index);
                 return Ok(value);
             }
             next = entry.next;
@@ -394,29 +399,48 @@ impl Cache {
         {
             return Ok(value);
         }
-        let mut witness = memory.finish(&batch.log, range.clone(), &self.order);
-        engine_allocation::reserve_map(&mut self.heads, 1)
-            .map_err(|_| "variant snapshot cache allocation failed")?;
-        engine_allocation::reserve(&mut self.entries, 1)
-            .map_err(|_| "variant snapshot cache allocation failed")?;
-        if witness.is_some() && engine_allocation::reserve_map(&mut self.witness_heads, 1).is_err()
+        let witness = memory.finish(&batch.log, range.clone(), &self.order);
+        self.insert(&batch.log, range, event.pointer, key, &value, witness);
+        Ok(value)
+    }
+    fn insert(
+        &mut self,
+        log: &RawLog<1>,
+        range: std::ops::Range<usize>,
+        pointer: usize,
+        key: u64,
+        value: &Arc<Decoded>,
+        mut witness: Option<witness::Witness>,
+    ) -> bool {
+        let reserved = engine_allocation::advisory(|| {
+            engine_allocation::reserve_map(&mut self.heads, 1)?;
+            engine_allocation::reserve(&mut self.entries, 1)
+        });
+        if reserved.is_err() {
+            return false;
+        }
+        if witness.is_some()
+            && engine_allocation::advisory(|| {
+                engine_allocation::reserve_map(&mut self.witness_heads, 1)
+            })
+            .is_err()
         {
             witness = None;
         }
-        let witness_key = witness.as_ref().and_then(|witness| {
-            witness.key(&batch.log, range.clone(), range.clone(), event.pointer)
-        });
+        let witness_key = witness
+            .as_ref()
+            .and_then(|witness| witness.key(log, range.clone(), range.clone(), pointer));
         let index = self.entries.len();
         self.entries.push(Entry {
             range,
-            pointer: event.pointer,
+            pointer,
             next: self.heads.insert(key, index),
-            value: Arc::clone(&value),
+            value: Arc::clone(value),
             witness,
             witness_next: witness_key.and_then(|key| self.witness_heads.insert(key, index)),
         });
-        self.remember(event.pointer, index)?;
-        Ok(value)
+        self.remember(pointer, index);
+        true
     }
 }
 
