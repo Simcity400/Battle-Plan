@@ -1,4 +1,5 @@
 use super::*;
+mod witness;
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     sync::Arc,
@@ -177,10 +178,13 @@ struct Entry {
     pointer: usize,
     next: Option<usize>,
     value: Arc<Decoded>,
+    witness: Option<witness::Witness>,
+    witness_next: Option<usize>,
 }
 #[derive(Default)]
 pub(super) struct Cache {
     heads: HashMap<u64, usize>,
+    witness_heads: HashMap<u64, usize>,
     entries: Vec<Entry>,
     recent: HashMap<usize, (usize, Option<usize>)>,
     order: Vec<usize>,
@@ -298,6 +302,48 @@ impl Cache {
                 }
             }
         }
+        if let Some((latest, previous)) = self.recent.get(&event.pointer).copied() {
+            for index in std::iter::once(latest).chain(previous) {
+                let entry = &self.entries[index];
+                if entry.witness.as_ref().is_some_and(|witness| {
+                    witness.equal(&batch.log, entry.range.clone(), range.clone())
+                }) {
+                    let value = self.reuse(index)?;
+                    self.remember(event.pointer, index)?;
+                    return Ok(value);
+                }
+            }
+        }
+        if let Some((latest, previous)) = self.recent.get(&event.pointer).copied() {
+            for index in std::iter::once(latest).chain(previous) {
+                let entry = &self.entries[index];
+                let Some(witness) = entry.witness.as_ref() else {
+                    continue;
+                };
+                let Some(key) = witness.key(
+                    &batch.log,
+                    entry.range.clone(),
+                    range.clone(),
+                    event.pointer,
+                ) else {
+                    continue;
+                };
+                let mut next = self.witness_heads.get(&key).copied();
+                while let Some(index) = next {
+                    let entry = &self.entries[index];
+                    if entry.pointer == event.pointer
+                        && entry.witness.as_ref().is_some_and(|witness| {
+                            witness.equal(&batch.log, entry.range.clone(), range.clone())
+                        })
+                    {
+                        let value = self.reuse(index)?;
+                        self.remember(event.pointer, index)?;
+                        return Ok(value);
+                    }
+                    next = self.entries[index].witness_next;
+                }
+            }
+        }
         let key = fingerprint(&batch.log, range.clone(), event.pointer);
         self.decode_key(batch, event, base, hour, shared, key)
     }
@@ -325,6 +371,7 @@ impl Cache {
             next = entry.next;
         }
         let memory = crate::raw::Recorded::build_range(&batch.log, range.clone())?;
+        let memory = witness::Observed::new(&memory, range.len());
         let value = Arc::new(decode_snapshot(&memory, base, hour, event.pointer, false)?);
         shared.heap_bytes += size_of::<Decoded>()
             + 2 * size_of::<usize>()
@@ -347,16 +394,26 @@ impl Cache {
         {
             return Ok(value);
         }
+        let mut witness = memory.finish(&batch.log, range.clone(), &self.order);
         engine_allocation::reserve_map(&mut self.heads, 1)
             .map_err(|_| "variant snapshot cache allocation failed")?;
         engine_allocation::reserve(&mut self.entries, 1)
             .map_err(|_| "variant snapshot cache allocation failed")?;
+        if witness.is_some() && engine_allocation::reserve_map(&mut self.witness_heads, 1).is_err()
+        {
+            witness = None;
+        }
+        let witness_key = witness.as_ref().and_then(|witness| {
+            witness.key(&batch.log, range.clone(), range.clone(), event.pointer)
+        });
         let index = self.entries.len();
         self.entries.push(Entry {
             range,
             pointer: event.pointer,
             next: self.heads.insert(key, index),
             value: Arc::clone(&value),
+            witness,
+            witness_next: witness_key.and_then(|key| self.witness_heads.insert(key, index)),
         });
         self.remember(event.pointer, index)?;
         Ok(value)

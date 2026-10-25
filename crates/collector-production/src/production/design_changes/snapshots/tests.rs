@@ -561,3 +561,175 @@ fn mixed_occurrences_keep_scalar_sources_flags_liveness_removal_and_owned_snapsh
         [1, 3, 4, 5, 6, 7, 8, 9, 10, 12]
     );
 }
+
+#[test]
+fn unread_copied_bytes_do_not_redecode_repeated_designs_or_change_their_rows() {
+    let count = 4_096;
+    let mut batch = Batch::empty();
+    batch.prepare(count, count * 128, count * ROOT_BYTES * 4);
+    let mut bytes = fixture();
+    for index in 0..count {
+        edit(&mut bytes, b'A' + (index % 8) as u8, index as i64 % 8);
+        let start = kit::VARIANT - kit::BASE + native::UPGRADES + 24;
+        bytes[start..start + 8].copy_from_slice(&(index as u64).to_le_bytes());
+        append(&mut batch, &bytes, index as u64 + 1, false);
+    }
+    let mut cache = Cache::default();
+    let mut shared = Shared::default();
+    let mut expected = Vec::new();
+    for (index, event) in batch.events.iter().enumerate() {
+        let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+        let original = snapshot(&memory, 0, 7, event.pointer, false).unwrap();
+        let decoded = cache.decode(&batch, event, 0, 7, &mut shared).unwrap();
+        assert_eq!(decoded.value, original);
+        expected.push(original);
+        shared
+            .push(index, event.sequence, event.hour, event.variant, decoded)
+            .unwrap();
+    }
+    assert_eq!(cache.entries.len(), 8);
+    assert!(Arc::ptr_eq(
+        &shared.entries[0].value,
+        &shared.entries[count - 8].value
+    ));
+    let mut captured = Captured::vacant();
+    captured.outcome = Outcome::Rows { len: count };
+    captured.snapshots = shared;
+    let mut owned = Captured::vacant();
+    owned.outcome = captured.outcome;
+    owned.rows = captured
+        .history()
+        .iter()
+        .zip(&expected)
+        .map(|(change, snapshot)| rows::VariantChangeRow {
+            snapshot: Some(snapshot.clone()),
+            ..change.unwrap().try_clone().unwrap()
+        })
+        .collect();
+    for keyframe in [false, true] {
+        for existing in [false, true] {
+            assert_eq!(
+                converted_bytes(&captured, keyframe, existing),
+                converted_bytes(&owned, keyframe, existing)
+            );
+        }
+    }
+    let mut output = Vec::new();
+    captured.snapshots.materialize(&mut output).unwrap();
+    for (row, expected) in output.iter().zip(expected) {
+        let expected = rows::VariantChangeRow {
+            snapshot: Some(expected),
+            ..row.clone()
+        };
+        let mut actual_bytes = Vec::new();
+        let mut expected_bytes = Vec::new();
+        rows::encode_row(row, 0, &mut actual_bytes).unwrap();
+        rows::encode_row(&expected, 0, &mut expected_bytes).unwrap();
+        assert_eq!(actual_bytes, expected_bytes);
+    }
+}
+
+#[test]
+fn a_requested_witness_preserves_failures_bulk_admission_and_read_bytes() {
+    let mut log = RawLog::<1>::new(16, 256);
+    let memory = engine_native::memory::SliceMemory {
+        base: 0x1000,
+        bytes: &[1, 2, 3, 4],
+    };
+    let changed = engine_native::memory::SliceMemory {
+        base: 0x1000,
+        bytes: &[1, 2, 3, 9],
+    };
+    let meaningful = engine_native::memory::SliceMemory {
+        base: 0x1000,
+        bytes: &[1, 9, 3, 4],
+    };
+    log.take_bulk(&memory, 0x1000, 4, 1).unwrap();
+    log.take_bulk(&changed, 0x1000, 4, 1).unwrap();
+    log.take_bulk(&meaningful, 0x1000, 4, 1).unwrap();
+    let recorded = crate::raw::Recorded::build_range(&log, 0..1).unwrap();
+    let observed = witness::Observed::new(&recorded, 2);
+    let mut bytes = [0; 2];
+    assert!(observed.copy(0x1000, &mut bytes));
+    let witness = observed.finish(&log, 0..1, &[0]).unwrap();
+    assert!(witness.equal(&log, 0..1, 1..2));
+    assert!(!witness.equal(&log, 0..1, 2..3));
+    drop(recorded);
+    log.spans[1].bulk = false;
+    assert!(!witness.equal(&log, 0..1, 1..2));
+    log.spans[1].bulk = true;
+    log.spans[1].ok = false;
+    assert!(!witness.equal(&log, 0..1, 1..2));
+    let recorded = crate::raw::Recorded::build_range(&log, 0..1).unwrap();
+    let observed = witness::Observed::new(&recorded, 2);
+    assert!(!observed.copy(0x2000, &mut bytes));
+    assert!(observed.finish(&log, 0..1, &[0]).is_none());
+}
+
+#[test]
+fn a_requested_witness_still_rejects_contradictory_overlapping_copies() {
+    let mut log = RawLog::<1>::new(8, 64);
+    let root = engine_native::memory::SliceMemory {
+        base: 0x1000,
+        bytes: &[1, 2, 3, 4],
+    };
+    let nested = engine_native::memory::SliceMemory {
+        base: 0x1001,
+        bytes: &[2, 3],
+    };
+    let changed = engine_native::memory::SliceMemory {
+        base: 0x1001,
+        bytes: &[2, 9],
+    };
+    log.take_bulk(&root, 0x1000, 4, 1).unwrap();
+    log.take_bulk(&nested, 0x1001, 2, 1).unwrap();
+    log.take_bulk(&root, 0x1000, 4, 1).unwrap();
+    log.take_bulk(&changed, 0x1001, 2, 1).unwrap();
+    let mut cache = Cache::default();
+    assert!(cache.consistent(&log, 0..2).unwrap());
+    let recorded = crate::raw::Recorded::build_range(&log, 0..2).unwrap();
+    let observed = witness::Observed::new(&recorded, 2);
+    assert!(observed.copy(0x1000, &mut [0; 1]));
+    let witness = observed.finish(&log, 0..2, &cache.order).unwrap();
+    assert!(!witness.equal(&log, 0..2, 2..4));
+    assert!(!cache.consistent(&log, 2..4).unwrap());
+}
+
+#[test]
+fn unavailable_observation_storage_disables_reuse_without_losing_the_read() {
+    let memory = engine_native::memory::SliceMemory {
+        base: 0x1000,
+        bytes: &[1, 2, 3, 4],
+    };
+    let observed =
+        collector_test_support::with_allocations_denied(|| witness::Observed::new(&memory, 1));
+    let mut output = [0; 4];
+    assert!(collector_test_support::with_allocations_denied(
+        || observed.copy(0x1000, &mut output)
+    ));
+    assert_eq!(output, [1, 2, 3, 4]);
+    assert!(
+        observed
+            .finish(&RawLog::<1>::new(0, 0), 0..0, &[])
+            .is_none()
+    );
+}
+
+#[test]
+fn unavailable_witness_storage_does_not_refuse_a_successful_observation() {
+    let mut log = RawLog::<1>::new(1, 4);
+    let memory = engine_native::memory::SliceMemory {
+        base: 0x1000,
+        bytes: &[1, 2, 3, 4],
+    };
+    log.take_bulk(&memory, 0x1000, 4, 1).unwrap();
+    let recorded = crate::raw::Recorded::build_range(&log, 0..1).unwrap();
+    let observed = witness::Observed::new(&recorded, 1);
+    let mut output = [0; 2];
+    assert!(observed.copy(0x1000, &mut output));
+    assert!(
+        collector_test_support::with_allocations_denied(|| { observed.finish(&log, 0..1, &[0]) })
+            .is_none()
+    );
+    assert_eq!(output, [1, 2]);
+}

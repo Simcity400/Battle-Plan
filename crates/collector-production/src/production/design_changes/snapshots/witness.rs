@@ -1,0 +1,160 @@
+use super::*;
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+};
+
+pub(super) struct Observed<'a, M> {
+    source: &'a M,
+    reads: RefCell<Vec<Range<usize>>>,
+    complete: Cell<bool>,
+}
+impl<'a, M: Memory> Observed<'a, M> {
+    pub fn new(source: &'a M, spans: usize) -> Self {
+        let mut reads = Vec::new();
+        let complete = engine_allocation::reserve(&mut reads, spans.saturating_mul(4)).is_ok();
+        Self {
+            source,
+            reads: RefCell::new(reads),
+            complete: Cell::new(complete),
+        }
+    }
+    pub fn finish(self, log: &RawLog<1>, range: Range<usize>, order: &[usize]) -> Option<Witness> {
+        if !self.complete.get() {
+            return None;
+        }
+        let mut reads = self.reads.into_inner();
+        reads.sort_unstable_by_key(|range| range.start);
+        let mut count = 0;
+        for index in 0..reads.len() {
+            if count != 0 && reads[index].start <= reads[count - 1].end {
+                reads[count - 1].end = reads[count - 1].end.max(reads[index].end);
+            } else {
+                reads.swap(count, index);
+                count += 1;
+            }
+        }
+        reads.truncate(count);
+        let mut pieces = engine_allocation::vec(range.len().saturating_add(reads.len())).ok()?;
+        for (index, span) in log.spans[range.clone()].iter().enumerate() {
+            let end = span.addr.checked_add(span.len as usize)?;
+            for read in reads
+                .iter()
+                .skip_while(|read| read.end <= span.addr)
+                .take_while(|read| read.start < end)
+            {
+                let start = span.addr.max(read.start) - span.addr;
+                let end = end.min(read.end) - span.addr;
+                engine_allocation::reserve(&mut pieces, 1).ok()?;
+                pieces.push(Piece {
+                    span: index,
+                    bytes: start..end,
+                });
+            }
+        }
+        let mut overlaps = engine_allocation::vec(order.len()).ok()?;
+        let mut covering: Option<usize> = None;
+        for &index in order {
+            let span = &log.spans[index];
+            let end = span.addr + span.len as usize;
+            if let Some(previous) = covering {
+                let previous_span = &log.spans[previous];
+                let previous_end = previous_span.addr + previous_span.len as usize;
+                if previous_end > span.addr {
+                    engine_allocation::reserve(&mut overlaps, 1).ok()?;
+                    overlaps.push(Overlap {
+                        left: previous - range.start,
+                        right: index - range.start,
+                        offset: span.addr - previous_span.addr,
+                        len: (previous_end - span.addr).min(span.len as usize),
+                    });
+                }
+                if previous_end >= end {
+                    continue;
+                }
+            }
+            covering = Some(index);
+        }
+        Some(Witness { pieces, overlaps })
+    }
+}
+impl<M: Memory> Memory for Observed<'_, M> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        let ok = self.source.copy(address, output);
+        if !ok {
+            self.complete.set(false);
+        } else if !output.is_empty() && self.complete.get() {
+            let mut reads = self.reads.borrow_mut();
+            if let Some(end) = address.checked_add(output.len())
+                && engine_allocation::reserve(&mut reads, 1).is_ok()
+            {
+                reads.push(address..end);
+            } else {
+                self.complete.set(false);
+            }
+        }
+        ok
+    }
+}
+#[derive(PartialEq, Eq)]
+struct Piece {
+    span: usize,
+    bytes: Range<usize>,
+}
+struct Overlap {
+    left: usize,
+    right: usize,
+    offset: usize,
+    len: usize,
+}
+pub(super) struct Witness {
+    pieces: Vec<Piece>,
+    overlaps: Vec<Overlap>,
+}
+impl Witness {
+    pub fn key(
+        &self,
+        log: &RawLog<1>,
+        model: Range<usize>,
+        current: Range<usize>,
+        pointer: usize,
+    ) -> Option<u64> {
+        let (model, current) = (&log.spans[model], &log.spans[current]);
+        if !same_shape(model, current) {
+            return None;
+        }
+        let mut hash = DefaultHasher::new();
+        pointer.hash(&mut hash);
+        for span in current {
+            (span.addr, span.len, span.ok, span.bulk).hash(&mut hash);
+        }
+        for piece in &self.pieces {
+            (piece.span, piece.bytes.start, piece.bytes.end).hash(&mut hash);
+            hash.write(&payload(log, &current[piece.span])[piece.bytes.clone()]);
+        }
+        Some(hash.finish())
+    }
+    pub fn equal(&self, log: &RawLog<1>, left: Range<usize>, right: Range<usize>) -> bool {
+        let (left, right) = (&log.spans[left], &log.spans[right]);
+        // Unchanged read shapes and single-valued copies preserve every reader's admission checks.
+        same_shape(left, right)
+            && self.overlaps.iter().all(|overlap| {
+                payload(log, &right[overlap.left])[overlap.offset..overlap.offset + overlap.len]
+                    == payload(log, &right[overlap.right])[..overlap.len]
+            })
+            && self.pieces.iter().all(|piece| {
+                payload(log, &left[piece.span])[piece.bytes.clone()]
+                    == payload(log, &right[piece.span])[piece.bytes.clone()]
+            })
+    }
+}
+
+fn same_shape(left: &[collector_raw::raw::Span], right: &[collector_raw::raw::Span]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.addr == right.addr
+                && left.len == right.len
+                && left.ok == right.ok
+                && left.bulk == right.bulk
+        })
+}
