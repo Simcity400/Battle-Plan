@@ -1568,6 +1568,14 @@ fn assert_goal_parity(source: &Source, context: &LoadContext, files: &Fixture, r
     assert_eq!(
         goals_at(&nine, 103),
         goals_at(&nine, 105).map(|mut value| {
+            // The unavailable viewer's refusal names the reached hour, not the goal's sample.
+            if context.content.is_some() {
+                let reason = |hour| serde_json::json!(format!(
+                    "Faction goal artwork: group is not authored; hour {hour} LocalPlayer is unavailable: outside country fixture"
+                ));
+                assert_eq!(value["goals"][0][1][6], reason(105), "{run}");
+                value["goals"][0][1][6] = reason(103);
+            }
             value["goals"][0][3] = serde_json::json!("103000");
             value["goals"][0][4] = serde_json::json!(103.0);
             value

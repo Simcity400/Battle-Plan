@@ -2117,6 +2117,7 @@ fn a_saved_scan_restores_the_scan_it_saved() {
                 Arc::from("english"),
             )
             .unwrap();
+        rows.continuation = true;
     }
     assert_eq!(
         bytes,

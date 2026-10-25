@@ -8,7 +8,16 @@ pub fn frame(hour: i32) -> DecodedFrame {
         branch: 1,
         hour,
         tables: std::array::from_fn(|index| {
-            TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+            let table = TableId::ALL[index];
+            let mut rows = if table.key_bits() == 0 {
+                TableRows::one_default(table)
+            } else {
+                TableRows::empty(table)
+            };
+            if let TableRows::Clock(rows) = &mut rows {
+                rows[0].hour = hour;
+            }
+            TableView::Complete(rows).into()
         }),
         metrics: Metrics::default(),
     }

@@ -3,7 +3,8 @@ use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
     ptr,
-    sync::{Mutex, Weak, atomic::AtomicUsize},
+    sync::{Mutex, Weak, atomic::AtomicUsize, mpsc},
+    time::Duration,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -103,6 +104,12 @@ impl Audit {
     pub(crate) fn new() -> Arc<Self> {
         drop(crate::frame::not_selected());
         drop(super::unselected_update());
+        // An empty rendezvous receive warms std's cached thread-local context before metering.
+        let (_sender, receiver) = mpsc::sync_channel::<()>(0);
+        assert_eq!(
+            receiver.recv_timeout(Duration::ZERO),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
         Arc::new(Self::default())
     }
     pub(crate) fn enter(self: &Arc<Self>) -> Scope {

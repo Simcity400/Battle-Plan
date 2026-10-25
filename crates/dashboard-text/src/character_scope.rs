@@ -202,10 +202,8 @@ impl<'a> Tables<'a> {
             failure.reached();
             failure.clone()
         })?;
-        let mut found = leaders
-            .leader_rows()
-            .iter()
-            .filter(|row| row.character_id == character);
+        let rows = crate::triggers::inputs::unrecorded(|| leaders.leader_rows());
+        let mut found = rows.iter().filter(|row| row.character_id == character);
         if let Some(leader) = found.next() {
             if found.next().is_some() {
                 return Err(format!(

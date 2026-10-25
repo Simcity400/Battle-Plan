@@ -425,6 +425,11 @@ fn catalogue_refusal_is_bound_before_casualty_observation() {
         ..Default::default()
     };
     assert_eq!(count().content_loads, 1);
+    assert_eq!(
+        prepared_content(&source, &context).unwrap().err(),
+        content.as_ref().err().cloned(),
+    );
+    assert_eq!(count().content_loads, 1);
     let flag = AtomicBool::new(false);
     let replay = source.replay_ref();
     let mut prepared = Prepared::new(replay, 1);

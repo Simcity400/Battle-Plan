@@ -97,14 +97,23 @@ pub(super) fn build_branches_mode(
                     ..Default::default()
                 }]));
             let metrics = fill(branch, hour, &mut tables);
-            let mut frame = crate::frame::retire_absent(DecodedFrame {
+            let mut frame = DecodedFrame {
                 branch,
                 hour,
                 tables: tables.map(Into::into),
                 metrics,
-            });
-            for table in crate::scope::omitted(mode) {
-                frame.tables[table.index()] = TableView::NotRecorded { mode }.into();
+            };
+            for table in TableId::ALL {
+                let absence = if !scope::records(mode, table) {
+                    Some(TableView::NotRecorded { mode })
+                } else {
+                    crate::frame::current_absence(table)
+                        .filter(|view| !matches!(view, TableView::NotRecorded { .. }))
+                };
+                if let Some(view) = absence {
+                    frame.tables[table.index()] = view.into();
+                    frame.metrics.table_ns[table.index()] = 0;
+                }
             }
             let keyframe = keyframes.contains(&hour);
             records.push(Record::Frame(encoder.encode(frame, keyframe).unwrap()));

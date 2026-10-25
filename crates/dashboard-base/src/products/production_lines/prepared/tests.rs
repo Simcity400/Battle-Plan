@@ -280,15 +280,13 @@ fn an_interleaved_branch_start_and_appended_resume_read_every_block() {
         .publish(&mut pages, &first, &first.index[1], None, &flag)
         .unwrap();
     assert!(prepared.directory.coverage.complete);
-    let mut grown = first;
-    for hour in FIRST + 1..=FIRST + 2 {
-        grown = grown
-            .append(&[continuation_records(&grown, 1, vec![frame(1, hour)])])
-            .unwrap();
-        grown = grown
-            .append(&[continuation_records(&grown, 2, vec![frame(2, hour)])])
-            .unwrap();
-    }
+    let segments: Vec<_> = (FIRST + 1..=FIRST + 2)
+        .flat_map(|hour| {
+            [1, 2].map(|branch| continuation_records(&first, branch, vec![frame(branch, hour)]))
+        })
+        .collect();
+    // Interleaving is readable recovery input, not a recording we can append again.
+    let grown = first.append(&segments).unwrap();
     prepared = restore_branch(&mut pages, &grown, 2);
     assert!(!prepared.directory.coverage.complete);
     let next = prepared.next_block(&grown).unwrap();
@@ -737,8 +735,20 @@ fn a_published_country_link_keeps_its_lifetime_when_it_returns() {
         .iter()
         .find(|(country, _)| country.id == 9001)
         .unwrap()
-        .1;
-    assert_eq!(country.state.result.reads, vec![FIRST, FIRST + 2]);
+        .0
+        .clone();
+    let flag = AtomicBool::new(false);
+    prepared.flush(&mut pages, &flag).unwrap();
+    let scan = assemble(
+        &prepared.directory,
+        &native_key(&country),
+        None,
+        recorded_language(&replay),
+        &flag,
+        |section, range| pages.read_at(section, range),
+    )
+    .unwrap();
+    assert_eq!(scan.reads, vec![FIRST, FIRST + 2]);
 }
 
 #[test]
@@ -1751,7 +1761,11 @@ fn a_boundary_without_quiet_hours_keeps_unchanged_identities_and_census_operands
         let updates = encoder.encode(frame.clone(), true).unwrap().into();
         let changes = prepared.world.recorded_changes(&replay, &frame, updates);
         let _budget = Budget(crate::prepared::pages::TEST_BATCH_BYTES.replace(
-            if boundary == "pressure" { 1 } else { usize::MAX },
+            if boundary == "pressure" {
+                1
+            } else {
+                usize::MAX
+            },
         ));
         prepared
             .observe_changed_into(&mut pages, &replay, &frame, None, &flag, &changes)
@@ -1910,6 +1924,112 @@ fn quiet_hours_and_read_evidence_do_not_rebuild_world_values_or_visit_active_lin
     );
     prepared.flush(&mut pages, &flag).unwrap();
     assert_eq!(prepared.native.len(), 1501);
+}
+
+#[test]
+fn unchanged_censuses_and_independent_read_dates_stitch_exactly_across_spill_and_resume() {
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
+    let mut base = authored(FIRST, &[(5, 70, 8, 0), (6, 71, 3, 0)], &[]);
+    *base.tables[TableId::ProductionLineOutput.index()] =
+        TableView::Complete(TableRows::ProductionLineOutput(vec![]));
+    *base.tables[TableId::CountryProductionModifiers.index()] =
+        TableView::Complete(TableRows::CountryProductionModifiers(vec![]));
+    *base.tables[TableId::ProductionLineModifiers.index()] =
+        TableView::Complete(TableRows::ProductionLineModifiers(vec![]));
+    let mut frames = Vec::new();
+    for offset in 0..80 {
+        let mut frame = base.clone();
+        frame.hour = FIRST + offset;
+        if offset > 0 {
+            frame.metrics.table_ns.fill(0);
+        }
+        frame.tables[TableId::VariantStats.index()] = frame.tables[TableId::VariantStats.index()]
+            .clone()
+            .with_sampled_at(Some(FIRST + offset / 7 * 7));
+        frame.tables[TableId::IndustrialOrganisationDetails.index()] = frame.tables
+            [TableId::IndustrialOrganisationDetails.index()]
+        .clone()
+        .with_sampled_at(Some(FIRST + offset / 11 * 11));
+        if offset == 79 {
+            frame.metrics.table_ns[TableId::ProductionLines.index()] = 1;
+            let TableView::Complete(TableRows::ProductionLines(rows)) =
+                &mut *frame.tables[TableId::ProductionLines.index()]
+            else {
+                unreachable!()
+            };
+            rows.iter_mut()
+                .find(|row| row.handle == 5)
+                .unwrap()
+                .active_factories = 12;
+        }
+        frames.push(frame);
+    }
+    let later = frames.split_off(39);
+    let replay = replay_segments(frames, later);
+    assert_reference_publication_modes(&replay, |scan| {
+        assert_eq!(
+            scan.reads,
+            vec![FIRST, FIRST + 24, FIRST + 48, FIRST + 72, FIRST + 79]
+        );
+        assert!(
+            scan.designs[&70]
+                .iter()
+                .any(|read| read.read_hour == Some(FIRST + 77))
+        );
+        assert_eq!(
+            scan.lines
+                .iter()
+                .find(|line| line.handle == 5)
+                .unwrap()
+                .runs
+                .last()
+                .unwrap()
+                .active_factories,
+            12
+        );
+    });
+    struct Budget(usize);
+    impl Drop for Budget {
+        fn drop(&mut self) {
+            crate::prepared::pages::TEST_BATCH_BYTES.set(self.0);
+        }
+    }
+    let flag = AtomicBool::new(false);
+    let expected = super::super::reference::scan(
+        &replay,
+        &branch_blocks(&replay, 1),
+        "GER",
+        None,
+        None,
+        &flag,
+    )
+    .unwrap();
+    let _budget = Budget(crate::prepared::pages::TEST_BATCH_BYTES.replace(1));
+    let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
+    let mut pages = fixtures::FixturePages::default();
+    for (position, block) in replay.index.iter().enumerate() {
+        prepared
+            .advance_block(&mut pages, &replay, position, None, &flag)
+            .unwrap();
+        prepared
+            .publish(&mut pages, &replay, block, None, &flag)
+            .unwrap();
+        prepared = restore(&mut pages, &replay);
+    }
+    let actual = assemble(
+        &prepared.directory,
+        &tag_key("GER"),
+        None,
+        recorded_language(&replay),
+        &flag,
+        |section, range| pages.read_at(section, range),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_vec(&SavedLines::save(&actual, &flag).unwrap()).unwrap(),
+        serde_json::to_vec(&SavedLines::save(&expected, &flag).unwrap()).unwrap()
+    );
 }
 
 #[test]

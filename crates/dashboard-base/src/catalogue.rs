@@ -96,8 +96,8 @@ fn kept_in<S: Slot>(
     if let Some(loaded) = result.get() {
         return loaded;
     }
-    let presented = presented()?;
-    result.get_or_init(|| load(source, options, presented))
+    let presented = presented();
+    result.get_or_init(|| load(source, options, presented?))
 }
 
 /// The recording's own catalogue for these folders.

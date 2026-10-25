@@ -1069,9 +1069,17 @@ fn recording_witness_uses_one_held_pass_for_full_and_both_prefixes() {
         Ok(())
     })
     .unwrap();
-    assert_eq!(full, codec::digest(replay.bytes()));
-    assert_eq!(current, codec::digest(&replay.bytes()[..prefix as usize]));
-    assert_eq!(old, Some(codec::digest(&replay.bytes()[..prior as usize])));
+    let mut identity = replay.bytes().to_vec();
+    let campaign_len = u32::from_le_bytes(identity[10..14].try_into().unwrap()) as usize;
+    let identity_at = 14 + campaign_len;
+    let identity_len =
+        u32::from_le_bytes(identity[identity_at..identity_at + 4].try_into().unwrap()) as usize;
+    let slot = identity_at + 4 + identity_len;
+    identity[slot..slot + 32].fill(0);
+    assert_ne!(codec::digest(&identity), codec::digest(replay.bytes()));
+    assert_eq!(full, codec::digest(&identity));
+    assert_eq!(current, codec::digest(&identity[..prefix as usize]));
+    assert_eq!(old, Some(codec::digest(&identity[..prior as usize])));
     assert_eq!(calls, replay.bytes().len().div_ceil(64 * 1024) + 2);
     let error = binding::witness(&held, prefix, None, || {
         Err(io::Error::from(io::ErrorKind::Interrupted))

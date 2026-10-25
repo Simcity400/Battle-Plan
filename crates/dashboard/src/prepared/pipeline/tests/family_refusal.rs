@@ -201,6 +201,8 @@ fn air_ledger_refusal_stops_only_its_branch_family_and_its_queries_answer_the_or
                 "military-air-losses-1",
                 "military-bombing-1",
                 "map.",
+                // Export bindings and endpoint checksums authenticate different recording bytes.
+                "map-export-v2/",
                 "source-metadata",
                 "preparation-checkpoint",
                 "preparation-coverage-1",
@@ -212,6 +214,41 @@ fn air_ledger_refusal_stops_only_its_branch_family_and_its_queries_answer_the_or
             payloads(source, None)
                 .into_iter()
                 .filter(|((name, _), _)| !differs(name))
+                .map(|((name, range), bytes)| {
+                    let bytes = if name.starts_with("production-lines-directory-")
+                        || name.starts_with("production-lines-scan-")
+                        || name.starts_with("production-lines-scan-meta-")
+                    {
+                        let mut value: serde_json::Value = serde_json::from_slice(
+                            &super::super::super::series::decompress(&bytes).unwrap(),
+                        )
+                        .unwrap();
+                        let branch = value["branch"]
+                            .as_u64()
+                            .or_else(|| {
+                                name.rsplit('-')
+                                    .nth(1)
+                                    .and_then(|part| part.parse::<u64>().ok())
+                            })
+                            .unwrap();
+                        let block = source
+                            .replay_ref()
+                            .index
+                            .iter()
+                            .rev()
+                            .find(|block| block.branch == branch)
+                            .unwrap();
+                        assert_eq!(
+                            value["last_block"],
+                            serde_json::json!([block.first_hour, block.last_hour, block.offset])
+                        );
+                        value["last_block"][2] = serde_json::json!(0);
+                        serde_json::to_vec(&value).unwrap()
+                    } else {
+                        bytes
+                    };
+                    ((name, range), bytes)
+                })
                 .collect::<BTreeMap<_, _>>()
         };
         assert_payloads_equal(
@@ -219,6 +256,43 @@ fn air_ledger_refusal_stops_only_its_branch_family_and_its_queries_answer_the_or
             &families(&control_source),
             "families other than the refused ledger branch",
         );
+        for branch in [1, 2] {
+            let reader = |source: &Source| {
+                let (store, _) = super::super::super::files(source, None).unwrap();
+                let session = super::super::snow_session(source, None, &flag).unwrap();
+                dashboard_base::map_export::Reader::new(
+                    store,
+                    session.key,
+                    dashboard_base::map_export::Limits {
+                        dimensions: [1, 1],
+                        provinces: 0,
+                        factors: 0,
+                    },
+                )
+            };
+            let actual = reader(&source);
+            let expected = reader(&control_source);
+            assert_eq!(
+                actual.coverage(branch).unwrap(),
+                expected.coverage(branch).unwrap()
+            );
+            for block in source
+                .replay_ref()
+                .index
+                .iter()
+                .filter(|block| block.branch == branch)
+            {
+                for hour in block.first_hour..=block.last_hour {
+                    match (actual.restore(branch, hour), expected.restore(branch, hour)) {
+                        (
+                            dashboard_base::map_export::Restore::Miss(actual),
+                            dashboard_base::map_export::Restore::Miss(expected),
+                        ) => assert_eq!(actual, expected),
+                        _ => panic!("unconfigured exports must preserve their named refusal"),
+                    }
+                }
+            }
+        }
         assert_prepared_identities(&source, 1);
 
         // The ledger never published a branch-1 page, and the accepted preparation

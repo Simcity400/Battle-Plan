@@ -3108,7 +3108,7 @@ fn run_planned(
         walk_pace: &walk_pace,
     };
     let mut side = side::load(&store, &key, saved.as_ref())?.unwrap_or_default();
-    let beside = production_scans::jobs(&phase)?;
+    let beside = production_scans::jobs(&phase, saved.is_some())?;
     side.pending = beside.iter().map(|job| job.name.to_owned()).collect();
     side::write(&mut writer, &side)?;
     if state.forward_complete(replay.index.len()) {

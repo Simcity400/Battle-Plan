@@ -2,7 +2,7 @@
 pub mod fixtures;
 #[cfg(test)]
 mod tests;
-use super::input::{HourInput, World, observe_design};
+use super::input::{HourInput, ReadEvidence, World, observe_design};
 use super::private::Facts;
 use super::*;
 use crate::prepared::pages::Pages;
@@ -303,6 +303,13 @@ pub struct Prepared {
     initial_tags: BTreeSet<String>,
     quiet: Option<(i32, i32)>,
     last_input: Option<HourInput>,
+    evidence_ready: bool,
+    evidence: Vec<ReadEvidence>,
+    evidence_bytes: usize,
+    evidence_base_bytes: usize,
+    evidence_design_bytes: usize,
+    evidence_organisation_bytes: usize,
+    evidence_organisation_hour: Option<i32>,
     directory: Directory,
     alias_last: BTreeMap<String, usize>,
     processed: Option<BlockIndex>,
@@ -396,6 +403,13 @@ impl Prepared {
             initial_tags: tags.clone(),
             quiet: None,
             last_input: None,
+            evidence_ready: false,
+            evidence: Vec::new(),
+            evidence_bytes: 0,
+            evidence_base_bytes: 0,
+            evidence_design_bytes: 0,
+            evidence_organisation_bytes: 0,
+            evidence_organisation_hour: None,
             directory: Directory {
                 branch,
                 coverage: crate::prepared::coverage::Coverage {
@@ -461,11 +475,64 @@ impl Prepared {
         icons: Option<&IconContent>,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<bool> {
-        if self.world.quiet(replay, frame, changes) {
+        if self
+            .world
+            .quiet(replay, frame, changes, self.evidence_ready)
+        {
+            if self.evidence_ready {
+                let mut evidence = self.world.evidence(replay, frame);
+                let input = self.last_input.as_ref().expect("unchanged census operands");
+                let previous = self.evidence.last();
+                if evidence.lines_read
+                    || evidence.output_read
+                    || evidence.design_revision
+                        != previous.map_or(input.design_revision, |read| read.design_revision)
+                    || evidence.organisation_read_hour
+                        != previous.map_or(input.organisation_read_hour, |read| {
+                            read.organisation_read_hour
+                        })
+                {
+                    let design_changed = evidence.design_revision
+                        != previous.map_or(input.design_revision, |read| read.design_revision);
+                    evidence.organisation_changed = evidence.lines_read
+                        && input.organisations_named
+                        && evidence.organisation_read_hour != self.evidence_organisation_hour;
+                    let bytes = std::mem::size_of::<ReadEvidence>()
+                        + usize::from(evidence.lines_read)
+                            * (self.native.len() + self.aliases.len() + 1)
+                            * (std::mem::size_of::<i32>()
+                                + std::mem::size_of::<crate::products::country_groups::HourSpan>())
+                        + usize::from(design_changed) * self.evidence_design_bytes
+                        + usize::from(evidence.organisation_changed)
+                            * self.evidence_organisation_bytes;
+                    if crate::prepared::pages::publication_due(true, false, false, || {
+                        (
+                            self.evidence_base_bytes
+                                .saturating_add(self.evidence_bytes)
+                                .saturating_add(bytes),
+                            0,
+                        )
+                    }) {
+                        self.flush(writer, &AtomicBool::new(false))?;
+                    }
+                    self.evidence
+                        .try_reserve_exact(1)
+                        .map_err(io::Error::other)?;
+                    self.evidence_bytes = self.evidence_bytes.saturating_add(bytes);
+                    if evidence.lines_read {
+                        self.evidence_organisation_hour = evidence.organisation_read_hour;
+                    }
+                    self.evidence.push(evidence);
+                }
+            }
             let first = self.quiet.map_or(frame.hour, |span| span.0);
             self.quiet = Some((first, frame.hour));
             return Ok(false);
         }
+        if !self.evidence.is_empty() {
+            self.drain_quiet(writer)?;
+        }
+        self.evidence_ready = false;
         let previous = self.last_input.as_ref().map(|input| {
             (
                 input.lines_complete,
@@ -547,6 +614,87 @@ impl Prepared {
             input.design_revision = availability.4;
         }
         self.observe_input(writer, &input)?;
+        // These censuses add dates and names, but no per-line output or modifier samples.
+        self.evidence_ready = input.lines_read
+            && input.lines_complete
+            && input.rows_complete
+            && input.countries.is_some()
+            && input.unlinked_lines.is_empty()
+            && input.output.is_empty()
+            && input.unlinked_output.is_empty()
+            && input.modifier_lines.is_empty()
+            && (input.modifiers_read || !input.modifiers_complete)
+            && input
+                .lines
+                .values()
+                .flatten()
+                .all(|row| LineKind::of(row.kind).is_some());
+        if self.evidence_ready {
+            self.evidence_base_bytes = self.world.pending_bytes
+                + self.absent.state.pending_bytes
+                + self
+                    .native
+                    .values()
+                    .map(|country| country.state.pending_bytes)
+                    .sum::<usize>()
+                + self
+                    .aliases
+                    .values()
+                    .filter_map(TagCountry::projection)
+                    .map(|country| country.state.pending_bytes)
+                    .sum::<usize>()
+                + self
+                    .directory
+                    .aliases
+                    .iter()
+                    .map(|alias| std::mem::size_of::<Alias>() + alias.tag.capacity())
+                    .sum::<usize>();
+            self.evidence_design_bytes = self
+                .native
+                .values()
+                .chain(self.aliases.values().filter_map(TagCountry::projection))
+                .flat_map(|country| &country.state.active_variants)
+                .map(|id| input.design_bytes(*id))
+                .sum();
+            self.evidence_organisation_bytes = self
+                .native
+                .keys()
+                .map(|key| key.slot)
+                .chain(
+                    self.aliases
+                        .iter()
+                        .filter(|(_, alias)| alias.projection().is_some())
+                        .filter_map(|(tag, _)| {
+                            input
+                                .countries
+                                .as_ref()?
+                                .get(tag)?
+                                .found()
+                                .map(|(slot, _)| slot)
+                        }),
+                )
+                .map(|slot| {
+                    let rows = input
+                        .lines
+                        .get(&slot)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    let named: BTreeSet<_> = rows
+                        .iter()
+                        .flat_map(|row| {
+                            std::iter::once(row.mio)
+                                .chain(input.designs.get(&row.variant).and_then(|read| read.author))
+                        })
+                        .collect();
+                    named
+                        .iter()
+                        .filter_map(|id| input.organisations.get(id))
+                        .map(pages::record_bytes)
+                        .sum::<usize>()
+                })
+                .sum();
+            self.evidence_organisation_hour = input.organisation_read_hour;
+        }
         self.last_input = Some(input);
         Ok(true)
     }
@@ -573,7 +721,7 @@ impl Prepared {
     ) -> io::Result<()> {
         if !self.observe_changed(writer, replay, frame, icons, changes)? {
             if crate::prepared::pages::publication_due(true, false, false, || {
-                (self.world.pending_bytes, 0)
+                (self.world.pending_bytes + self.evidence_bytes, 0)
             }) {
                 self.flush(writer, cancelled)?;
             }
@@ -614,7 +762,48 @@ impl Prepared {
             input.lines_read = false;
             input.output_read = false;
             input.modifiers_read = false;
+            input.identities_changed = false;
             self.observe_input(writer, &input)?;
+            let evidence = std::mem::take(&mut self.evidence);
+            self.evidence_base_bytes = self.evidence_base_bytes.saturating_add(self.evidence_bytes);
+            self.evidence_bytes = 0;
+            if !evidence.is_empty() {
+                let mut facts = private::Store::new(writer, self.directory.branch);
+                for (key, country) in &mut self.native {
+                    let selected = if input.linked.contains(&(key.slot, key.id)) {
+                        Country::Found(key.slot, key.id)
+                    } else {
+                        Country::Unresolved
+                    };
+                    country
+                        .state
+                        .observe_evidence(&mut facts, &mut input, selected, &evidence)?;
+                }
+                for (tag, alias) in &mut self.aliases {
+                    if let Some(country) = alias.projection_mut() {
+                        let selected = input
+                            .countries
+                            .as_ref()
+                            .and_then(|countries| countries.get(tag))
+                            .copied()
+                            .unwrap_or(Country::Absent);
+                        country
+                            .state
+                            .observe_evidence(&mut facts, &mut input, selected, &evidence)?;
+                    }
+                }
+                self.absent.state.observe_evidence(
+                    &mut facts,
+                    &mut input,
+                    Country::Absent,
+                    &evidence,
+                )?;
+            }
+            input.hour = last;
+            input.last_hour = last;
+            input.lines_read = false;
+            input.output_read = false;
+            input.modifiers_read = false;
             self.last_input = Some(input);
         }
         Ok(())
@@ -1052,6 +1241,7 @@ impl Prepared {
             .map(|(index, alias)| (alias.tag.clone(), index))
             .collect();
         self.world.pending_bytes = 0;
+        self.evidence_base_bytes = 0;
         self.directory.pages += 1;
         Ok(())
     }
@@ -1160,7 +1350,7 @@ fn assemble(
             directory.index,
             selected,
         )?;
-        if matches!(tag, None | Some(TagSnapshot::Absent)) {
+        if matches!(tag, Some(TagSnapshot::Absent)) || (tag.is_none() && head.len == 0) {
             head = private::get(
                 &mut private::Store::new(&mut ReadPages(&mut read), directory.branch),
                 directory.index,
@@ -1420,6 +1610,112 @@ impl CountryState {
             ..Self::default()
         }
     }
+    fn observe_evidence(
+        &mut self,
+        facts: &mut dyn private::Facts,
+        input: &mut HourInput,
+        country: Country,
+        evidence: &[ReadEvidence],
+    ) -> io::Result<()> {
+        let named: BTreeSet<_> = country
+            .found()
+            .filter(|_| evidence.iter().any(|read| read.organisation_changed))
+            .into_iter()
+            .flat_map(|(slot, _)| {
+                input
+                    .lines
+                    .get(&slot)
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|row| {
+                        std::iter::once(row.mio)
+                            .chain(input.designs.get(&row.variant).and_then(|read| read.author))
+                    })
+            })
+            .filter(|id| *id != 0)
+            .collect();
+        for read in evidence {
+            input.hour = read.hour;
+            input.lines_read = read.lines_read;
+            input.output_read = read.output_read;
+            input.modifiers_read = read.modifiers_read;
+            input.design_revision = read.design_revision;
+            input.design_read_hour = read.design_read_hour;
+            input.organisation_read_hour = read.organisation_read_hour;
+            input.author_names_due = read.author_names_due;
+            if let Some(available) = input.output_due(Some(country)) {
+                if !available {
+                    self.result.unread_output_reads += 1;
+                    let first = self
+                        .last_output_due
+                        .and_then(|hour| hour.checked_add(1))
+                        .unwrap_or(read.hour);
+                    mark_span(
+                        &mut self.result.unread_output,
+                        first.min(read.hour),
+                        read.hour,
+                    );
+                }
+                self.last_output_due = Some(read.hour);
+            }
+            let changed = self.last_design_revision != Some(read.design_revision);
+            self.last_design_revision = Some(read.design_revision);
+            if !self.carried {
+                continue;
+            }
+            if changed {
+                for &variant in &self.active_variants {
+                    self.pending_bytes += input.design_bytes(variant);
+                    record_design(&mut self.result, facts, self.history, input, variant)?;
+                }
+            }
+            if !read.lines_read {
+                continue;
+            }
+            self.pending_bytes += std::mem::size_of::<i32>();
+            self.result.reads.push(read.hour);
+            self.last_census = Some(read.hour);
+            if read.modifiers_read
+                && let Some(reason) = &input.modifier_refusal
+            {
+                *self
+                    .result
+                    .modifier_layout_refusals
+                    .entry(reason.clone())
+                    .or_default() += 1;
+            }
+            if read.organisation_changed {
+                for id in &named {
+                    if let Some(raw) = input.organisations.get(id) {
+                        load_organisation(&mut self.result, facts, self.history, *id)?;
+                        let mut raw = RawOrganisation {
+                            first_hour: read.hour,
+                            ..raw.clone()
+                        };
+                        if let Some(state) = &mut raw.state {
+                            state.read_hour = read.organisation_read_hour;
+                        }
+                        self.pending_bytes += pages::record_bytes(&raw);
+                        version(
+                            self.result.organisations.entry(*id).or_default(),
+                            raw,
+                            |a, b| {
+                                RawOrganisation {
+                                    first_hour: 0,
+                                    ..a.clone()
+                                } == RawOrganisation {
+                                    first_hour: 0,
+                                    ..b.clone()
+                                }
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn observe_input(
         &mut self,
         facts: &mut dyn private::Facts,
@@ -2177,6 +2473,13 @@ impl Prepared {
             initial_tags: BTreeSet::new(),
             quiet: None,
             last_input: None,
+            evidence_ready: false,
+            evidence: Vec::new(),
+            evidence_bytes: 0,
+            evidence_base_bytes: 0,
+            evidence_design_bytes: 0,
+            evidence_organisation_bytes: 0,
+            evidence_organisation_hour: None,
             alias_last: directory
                 .aliases
                 .iter()

@@ -26,8 +26,6 @@ use crate::{
     RecordingGap, ReplayMetadata, invalid,
 };
 
-const MAX_WARNINGS: usize = 32;
-
 /// Branch ranges, gaps and each branch's first readable country catalogue.
 pub fn read(
     replay: &Arc<Replay>,
@@ -1035,7 +1033,7 @@ fn merge_countries(
 
 pub fn warn(warnings: &mut Vec<String>, message: String) {
     let message = short_text(&message, 1024);
-    if !warnings.contains(&message) && warnings.len() < MAX_WARNINGS {
+    if !warnings.contains(&message) {
         warnings.push(message);
     }
 }

@@ -544,7 +544,7 @@ fn a_withheld_index_does_not_renumber_physical_anchor_references() {
             .err()
             .unwrap()
             .to_string(),
-        "keyframe anchor is not the latest snapshot or latest keyframe"
+        "keyframe anchor names no earlier block of its file"
     );
 }
 

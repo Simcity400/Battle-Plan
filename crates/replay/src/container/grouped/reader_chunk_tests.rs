@@ -394,13 +394,13 @@ fn dormant_chunk_integrity_failure_preserves_the_oracle_reason_and_boundary() {
             let hours: Vec<_> = (10..=last).collect();
             let mut replay =
                 test_recording::build(b"dormant-chunk-integrity", &hours, |hour, tables| {
+                    // The second later chunk needs a residual to have bytes to corrupt.
+                    let panel = 1_000_000 + i64::from(hour) + i64::from(hour == 200);
                     tables[source.index()] =
                         TableView::Complete(TableRows::DivisionPanelStats(vec![
                             crate::rows::DivisionPanelStatsRow {
                                 division: 7,
-                                panel_stats: std::array::from_fn(|_| {
-                                    Some(1_000_000 + i64::from(hour))
-                                }),
+                                panel_stats: std::array::from_fn(|_| Some(panel)),
                                 ..Default::default()
                             },
                         ]));

@@ -2,6 +2,19 @@ use super::*;
 use crate::prepared::frame_changes::{FrameChanges, field_mask};
 use replay_data::rows::{CountryProductionModifiersRow, ProductionLineModifiersRow, RowCodec};
 
+#[derive(Clone, Copy)]
+pub(super) struct ReadEvidence {
+    pub hour: i32,
+    pub lines_read: bool,
+    pub output_read: bool,
+    pub modifiers_read: bool,
+    pub design_revision: u64,
+    pub design_read_hour: Option<i32>,
+    pub organisation_read_hour: Option<i32>,
+    pub organisation_changed: bool,
+    pub author_names_due: bool,
+}
+
 pub(super) struct HourInput {
     pub rows_complete: bool,
     pub linked: BTreeSet<(u32, u32)>,
@@ -172,20 +185,33 @@ impl World {
                         .is_none_or(|old| !old.is(&frame.tables[table.index()]))
             })
     }
-    pub fn quiet(&mut self, replay: &Replay, frame: &DecodedFrame, changes: &FrameChanges) -> bool {
+    pub fn quiet(
+        &mut self,
+        replay: &Replay,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        evidence: bool,
+    ) -> bool {
         self.track_definitions(changes);
         if self.last_hour.and_then(|hour| hour.checked_add(1)) != Some(frame.hour) {
             return false;
         }
         let reads = slot_reads(replay.format, &frame.metrics, frame.hour);
-        if reads[TableId::ProductionLines.index()]
-            || reads[TableId::ProductionLineOutput.index()]
-            || reads[TableId::VariantDefinitions.index()]
+        let empty_catalogue = self.variants.versions.is_empty()
+            && self.definitions.is_empty()
+            && match frame.complete::<tables::VariantDefinitions>() {
+                Ok(rows) => rows.is_empty(),
+                Err(_) => true,
+            };
+        if (!evidence
+            && (reads[TableId::ProductionLines.index()]
+                || reads[TableId::ProductionLineOutput.index()]
+                || self.design_hour
+                    != frame.tables[TableId::VariantStats.index()]
+                        .sampled_at()
+                        .or_else(|| frame.tables[TableId::VariantModules.index()].sampled_at())))
+            || (reads[TableId::VariantDefinitions.index()] && !(evidence && empty_catalogue))
             || equipment::design_changed(frame)
-            || self.design_hour
-                != frame.tables[TableId::VariantStats.index()]
-                    .sampled_at()
-                    .or_else(|| frame.tables[TableId::VariantModules.index()].sampled_at())
         {
             return false;
         }
@@ -219,6 +245,38 @@ impl World {
         self.last_hour = Some(frame.hour);
         crate::prepared::prepass::note("production-lines.quiet_hour");
         true
+    }
+
+    pub fn evidence(&mut self, replay: &Replay, frame: &DecodedFrame) -> ReadEvidence {
+        let reads = slot_reads(replay.format, &frame.metrics, frame.hour);
+        let design_hour = frame.complete::<tables::VariantStats>().ok().and_then(|_| {
+            frame.tables[TableId::VariantStats.index()]
+                .sampled_at()
+                .or_else(|| frame.tables[TableId::VariantModules.index()].sampled_at())
+        });
+        if self.design_hour != design_hour {
+            self.revision += 1;
+            self.design_hour = design_hour;
+        }
+        ReadEvidence {
+            hour: frame.hour,
+            lines_read: reads[TableId::ProductionLines.index()],
+            output_read: reads[TableId::ProductionLineOutput.index()],
+            modifiers_read: reads[TableId::CountryProductionModifiers.index()]
+                && reads[TableId::ProductionLineModifiers.index()],
+            design_revision: self.revision,
+            design_read_hour: design_hour,
+            organisation_read_hour: frame.tables[TableId::IndustrialOrganisationDetails.index()]
+                .sampled_at(),
+            organisation_changed: false,
+            author_names_due: VariantCatalogue::hour_read(
+                frame,
+                reads[TableId::VariantDefinitions.index()],
+            ) == equipment::VariantHour::Read
+                || reads[TableId::ProductionLines.index()]
+                || reads[TableId::VariantStats.index()]
+                || reads[TableId::VariantModules.index()],
+        }
     }
 
     #[cfg(test)]

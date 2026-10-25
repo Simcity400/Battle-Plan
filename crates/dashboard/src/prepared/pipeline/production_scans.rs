@@ -28,8 +28,19 @@ pub(super) fn missing(
 
 pub(super) fn jobs<'a>(
     phase: &'a independent::Phase<'a>,
+    retained: bool,
 ) -> io::Result<Vec<independent::Beside<'a>>> {
-    let branches = missing(phase.source, phase.store, phase.key, phase.context)?;
+    let branches = if retained {
+        missing(phase.source, phase.store, phase.key, phase.context)?
+    } else {
+        phase
+            .source
+            .metadata()
+            .branches
+            .iter()
+            .filter_map(|branch| branch.id.parse::<u64>().ok())
+            .collect()
+    };
     if branches.is_empty() {
         return Ok(Vec::new());
     }
@@ -47,14 +58,18 @@ pub(super) fn jobs<'a>(
                 let countries = phase.source.metadata().countries;
                 for branch in branches {
                     check_cancel(phase.cancelled)?;
-                    let mut prepared = production_lines::prepared::Prepared::resume(
-                        phase.store,
-                        phase.key,
-                        phase.replay,
-                        branch,
-                        icons.as_deref(),
-                    )?
-                    .unwrap_or_else(|| {
+                    let resumed = if retained {
+                        production_lines::prepared::Prepared::resume(
+                            phase.store,
+                            phase.key,
+                            phase.replay,
+                            branch,
+                            icons.as_deref(),
+                        )?
+                    } else {
+                        None
+                    };
+                    let mut prepared = resumed.unwrap_or_else(|| {
                         production_lines::prepared::Prepared::new(
                             phase.replay,
                             branch,

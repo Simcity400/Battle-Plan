@@ -38,6 +38,11 @@ fn fixture(name: &str) -> Stack {
     );
     stack.write(
         &base,
+        "common/buildings/synthetic.txt",
+        "buildings = { synthetic = { } }",
+    );
+    stack.write(
+        &base,
         "common/combat_tactics.txt",
         "phases = { } tactics = { }",
     );
@@ -718,9 +723,13 @@ fn audio_fallback_matches_the_old_policy_and_sample_playback_is_unobserved() {
         b"sample bytes"
     );
     assert_eq!(before, loader.reads.witness().unwrap());
+    use std::os::windows::fs::OpenOptionsExt;
     let path = stack.base().join("sound/synthetic.asset");
-    std::fs::rename(&path, path.with_extension("saved")).unwrap();
-    std::fs::create_dir(&path).unwrap();
+    let unreadable = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&path)
+        .unwrap();
     let loader = Loader::new(&layers);
     let (mut warnings, mut old_warnings) = (Vec::new(), Vec::new());
     assert!(
@@ -739,4 +748,5 @@ fn audio_fallback_matches_the_old_policy_and_sample_playback_is_unobserved() {
             |entry| matches!(entry, Entry::Result { purpose, status: 0, message, .. } if purpose == "session-note" && message == &warnings[0])
         )
     );
+    drop(unreadable);
 }

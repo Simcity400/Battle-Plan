@@ -97,7 +97,6 @@ fn all_recorded_countries_are_prepared_before_requests_and_answer_the_next_open(
 #[test]
 fn cancelled_side_scans_resume_after_every_forward_publisher_finished() {
     use std::sync::{Condvar, Mutex};
-    use std::time::Duration;
     let replay = recording();
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("production-outstanding");
@@ -130,8 +129,8 @@ fn cancelled_side_scans_resume_after_every_forward_publisher_finished() {
     let result = super::super::production_scans::with_test_stall(
         move || {
             let (done, changed) = &*signal;
-            let (guard, _) = changed
-                .wait_timeout_while(done.lock().unwrap(), Duration::from_secs(10), |done| !*done)
+            let guard = changed
+                .wait_while(done.lock().unwrap(), |done| !*done)
                 .unwrap();
             observed.store(*guard, Ordering::Release);
         },

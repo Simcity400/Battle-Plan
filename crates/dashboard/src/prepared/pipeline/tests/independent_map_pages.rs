@@ -197,15 +197,22 @@ fn a_grown_recording_continues_from_saved_chain_states_without_reading_accepted_
     assert_eq!(committed[0].1.chains[0].last, Some(20));
     drop(source);
     fixture.replace(&whole);
-    fixture.corrupt_diagnostics_preserving_stamp(&whole, &whole.index[0]);
     let source = fixture.source("map-pages-grown");
-    assert!(
-        source
-            .replay_ref()
-            .read_block(&source.replay_ref().index[0])
-            .is_err()
+    source.replay_ref().log_section_decodes();
+    independent::with_test_families(&[&independent::map_pages::MAP_PAGES], || {
+        let accepted = run(&source, None, &flag, |_| {}).unwrap();
+        assert_eq!(accepted.new_blocks, whole.index.len() - first.index.len());
+    });
+    let read_blocks: std::collections::BTreeSet<_> = source
+        .replay_ref()
+        .wire_decodes()
+        .iter()
+        .map(|read| read.block)
+        .collect();
+    assert_eq!(
+        read_blocks,
+        (first.index.len()..whole.index.len()).collect()
     );
-    prepare(&source, &flag);
     assert_native_pages(&source, &whole);
     assert_eq!(
         published(&source),

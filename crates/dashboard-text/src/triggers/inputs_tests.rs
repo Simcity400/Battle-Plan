@@ -2138,6 +2138,11 @@ fn an_hour_changing_only_unread_leader_fields_confirms_its_character_reads() {
             .keys()
             .any(|key| matches!(key, Key::Fields(TableId::UnitLeaders, _)))
     );
+    assert!(
+        !inputs
+            .keys()
+            .any(|key| matches!(key, Key::Table(TableId::UnitLeaders)))
+    );
     let (wire, second) = recording.record(character_frame(101, 11, 3));
     assert!(matches!(
         wire.tables[TableId::UnitLeaders.index()],

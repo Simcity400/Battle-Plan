@@ -1609,7 +1609,7 @@ fn an_hour_rebuilds_and_scans_only_what_its_changes_reach_among_fifteen_hundred(
     // At 6 only the template shared by the first two divisions changes.
     let frames: Vec<_> = (2..=8)
         .map(|offset| {
-            let mut f = scale_frame(count, offset);
+            let mut f = unsupplied_frame(count, offset);
             let (mut first, mut second) = (division(1, 100), division(2, 101));
             if offset >= 4 {
                 first.hit_points = 500_000;
@@ -1902,7 +1902,7 @@ fn numeric_churn_frames() -> Vec<DecodedFrame> {
             {
                 rows.push(CountryRow {
                     id: 104,
-                    canonical_slot: 1_000,
+                    canonical_slot: 1_004,
                     tag: if offset < 65 {
                         b"C0004".to_vec()
                     } else {
@@ -1914,10 +1914,16 @@ fn numeric_churn_frames() -> Vec<DecodedFrame> {
             if let TableView::Complete(TableRows::CountryLinks(rows)) =
                 &mut *f.tables[TableId::CountryLinks.index()]
             {
-                rows.push(CountryLinkRow {
-                    id: 104,
-                    canonical_slot: 1_000,
-                });
+                rows.extend([
+                    CountryLinkRow {
+                        id: 104,
+                        canonical_slot: 1_004,
+                    },
+                    CountryLinkRow {
+                        id: 105,
+                        canonical_slot: 1_000,
+                    },
+                ]);
             }
             let mut divisions = Vec::new();
             let mut statuses = Vec::new();
@@ -1927,7 +1933,12 @@ fn numeric_churn_frames() -> Vec<DecodedFrame> {
                 if (id == 5 && offset >= 35) || (id == 97 && offset < 37) {
                     continue;
                 }
-                let mut row = division(id, 100 + (id % 4) as u32);
+                let owner = match id % 7 {
+                    0 => 104,
+                    1 => 105,
+                    _ => 100 + (id % 4) as u32,
+                };
+                let mut row = division(id, owner);
                 row.template = 5 + id % 2;
                 row.expeditionary_owner = if id % 5 == 0 {
                     100 + ((id + 1) % 4) as u32
@@ -2106,55 +2117,59 @@ fn numeric_wartime_churn_is_byte_identical_after_every_restored_block() {
 fn cancelling_numeric_changes_publish_no_observations_and_update_every_alias() {
     let frames = (2..=7)
         .map(|offset| {
-            let mut f = unsupplied_frame(3, offset);
-            if let TableView::Complete(TableRows::Countries(rows)) =
-                &mut *f.tables[TableId::Countries.index()]
-            {
-                rows.push(CountryRow {
-                    id: 103,
-                    canonical_slot: 1_000,
-                    tag: b"C0003".to_vec(),
-                    ..Default::default()
-                });
-            }
+            let mut f = unsupplied_frame(4, offset);
             if let TableView::Complete(TableRows::CountryLinks(rows)) =
                 &mut *f.tables[TableId::CountryLinks.index()]
             {
-                rows.push(CountryLinkRow {
-                    id: 103,
-                    canonical_slot: 1_000,
-                });
+                rows.extend([
+                    CountryLinkRow {
+                        id: 104,
+                        canonical_slot: 1_000,
+                    },
+                    CountryLinkRow {
+                        id: 105,
+                        canonical_slot: 1_003,
+                    },
+                ]);
             }
             let delta = i64::from(offset) * 100_000;
-            let mut divisions = vec![division(1, 100), division(2, 100)];
-            divisions[0].hit_points += delta;
-            divisions[1].hit_points -= delta;
-            let mut statuses = vec![status(1), status(2)];
-            statuses[0].maximum_hit_points += delta;
-            statuses[1].maximum_hit_points -= delta;
-            *f.tables[TableId::Divisions.index()] =
-                TableView::Complete(TableRows::Divisions(divisions));
-            *f.tables[TableId::DivisionStatus.index()] =
-                TableView::Complete(TableRows::DivisionStatus(statuses));
-            *f.tables[TableId::DivisionLandInputs.index()] =
-                TableView::Complete(TableRows::DivisionLandInputs(vec![
+            let mut divisions = Vec::new();
+            let mut statuses = Vec::new();
+            let mut land = Vec::new();
+            for (first, country, alias) in [(1, 100, 104), (3, 103, 105)] {
+                let mut pair = [division(first, country), division(first + 1, alias)];
+                pair[0].hit_points += delta;
+                pair[1].hit_points -= delta;
+                divisions.extend(pair);
+                let mut pair = [status(first), status(first + 1)];
+                pair[0].maximum_hit_points += delta;
+                pair[1].maximum_hit_points -= delta;
+                statuses.extend(pair);
+                land.extend([
                     DivisionLandInputsRow {
-                        division: 1,
+                        division: first,
                         manpower: vec![DivisionManpowerContributor {
-                            country: 100,
+                            country,
                             amount: offset * 900,
                         }],
                         ..Default::default()
                     },
                     DivisionLandInputsRow {
-                        division: 2,
+                        division: first + 1,
                         manpower: vec![DivisionManpowerContributor {
-                            country: 100,
+                            country: alias,
                             amount: 100 - offset * 900,
                         }],
                         ..Default::default()
                     },
-                ]));
+                ]);
+            }
+            *f.tables[TableId::Divisions.index()] =
+                TableView::Complete(TableRows::Divisions(divisions));
+            *f.tables[TableId::DivisionStatus.index()] =
+                TableView::Complete(TableRows::DivisionStatus(statuses));
+            *f.tables[TableId::DivisionLandInputs.index()] =
+                TableView::Complete(TableRows::DivisionLandInputs(land));
             f
         })
         .collect();

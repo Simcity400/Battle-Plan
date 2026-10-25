@@ -640,8 +640,8 @@ fn append_identity_bytes_ignore_only_the_commit_slot_and_keep_the_held_revision(
                 Ok(())
             })
             .unwrap();
-        let mut expected = replay.bytes().to_vec();
         if !replay.is_file_backed() {
+            let mut expected = replay.bytes().to_vec();
             let slot = replay.slot.unwrap();
             expected[slot..slot + super::commit::SLOT_SIZE].fill(0);
             assert_eq!(bytes, expected);

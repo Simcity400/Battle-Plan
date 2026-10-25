@@ -36,6 +36,13 @@ fn diagnostics_validates_the_whole_section_but_retains_one_metrics_value() {
 fn cursor_keeps_predictor_keys_masks_and_range_model_across_every_hour() {
     for layout in direct_tests::LAYOUTS {
         let (replay, _) = direct_tests::fixture(layout);
+        let tables = [
+            TableId::Countries,
+            TableId::ArmyOrders,
+            TableId::LexicalTokens,
+            TableId::Clock,
+        ];
+        let mut anchors = tables.map(|_| anchors::TableAnchors::default());
         for position in 0..replay.index.len() {
             let selected = [true; TABLE_COUNT];
             let credits = Arc::new(chunks::Credits::default());
@@ -49,17 +56,13 @@ fn cursor_keeps_predictor_keys_masks_and_range_model_across_every_hour() {
             )
             .unwrap();
             let reference = replay.read_block(&replay.index[position]).unwrap();
-            for table in [
-                TableId::Countries,
-                TableId::ArmyOrders,
-                TableId::LexicalTokens,
-                TableId::Clock,
-            ] {
+            for (table, anchors) in tables.into_iter().zip(&mut anchors) {
+                anchors.admit_ordinal(replay.ordinals[position]);
                 let (mut cursor, update, _) = cursor::TableCursor::begin(
                     &replay,
                     &mut block,
                     table,
-                    &mut anchors::TableAnchors::default(),
+                    anchors,
                     &mut Check::disabled(),
                 )
                 .unwrap();
@@ -82,6 +85,7 @@ fn cursor_keeps_predictor_keys_masks_and_range_model_across_every_hour() {
                     );
                 }
                 cursor.finish().unwrap();
+                assert_eq!(anchors.bootstrap_reads.sections, 0);
             }
         }
     }
