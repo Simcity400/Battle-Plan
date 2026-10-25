@@ -936,7 +936,7 @@ mod tests {
         // must contribute before the first hourly boundary, not after capture.
         presize_watches(&watches.registry, 0, 3_000, 0);
         presize_watches(&watches.registry, 5_000, 3_000, 1_500);
-        assert!(watches.registry.boundary(false));
+        assert!(watches.registry.boundary(false).installed());
         watches.registry.set_enabled(true);
         let status = serde_json::to_value(watches.registry.status()).unwrap();
         assert_eq!(status["capacity"], 65_536);
@@ -952,7 +952,7 @@ mod tests {
         let quiet = watches.embedded_quiet().unwrap();
         // The next ordinary boundary keeps every certificate and performs no
         // epoch reset or dirty-stream read to make room for embedded owners.
-        assert!(!watches.registry.boundary(false));
+        assert!(!watches.registry.boundary(false).installed());
         assert_eq!(watches.embedded_quiet(), Some(quiet));
         for (&store, &certificate) in stores.iter().zip(&certificates) {
             assert_eq!(watches.embedded_sequence(store), Some(certificate));

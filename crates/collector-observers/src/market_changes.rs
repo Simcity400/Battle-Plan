@@ -117,6 +117,7 @@ static DELIVERY_AMOUNT_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static AMENDMENT_TIMES: std::sync::Mutex<
     Option<collector_extended_support::distribution::Distribution>,
 > = std::sync::Mutex::new(None);
+static COUNTRY_WATCH_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static REPLACEMENT_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static SCHEDULE_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static CONTRACT_DEMAND: AtomicUsize = AtomicUsize::new(0);
@@ -196,6 +197,7 @@ pub fn presize(demand: usize, countries: usize) {
         watch.offer(countries);
         watch.collect();
     }
+    COUNTRY_WATCH_DEMAND.fetch_max(countries, Ordering::Release);
 }
 fn prepare_events() {
     match SCHEDULE_DEMAND
@@ -229,16 +231,34 @@ pub fn boundary(clock: Option<engine_native::cgame_state::Clock<u64>>, invalidat
     // Recover current state before the existing economy census runs. The
     // occurrence interval keeps its own loss verdict through the later drain.
     let invalidate = invalidate || LEDGER.interval_incomplete() || held::recovery_requested();
-    let recover_countries = !invalidate && held::begin_hour();
-    for watch in &WATCHES {
-        watch.boundary(invalidate || recover_countries);
+    let renew = if invalidate {
+        [None; 4]
+    } else {
+        held::begin_hour()
+    };
+    let mut renewed = [None; 4];
+    for (domain, watch) in WATCHES.iter().enumerate() {
+        if watch
+            .boundary(invalidate || renew[domain].is_some())
+            .renewed()
+        {
+            renewed[domain] = renew[domain];
+        }
     }
     VARIABLES_WATCH.boundary(invalidate);
-    RESET_WATCH.boundary(invalidate);
+    if RESET_WATCH
+        .boundary(invalidate || renew[3].is_some())
+        .renewed()
+    {
+        renewed[3] = renew[3];
+    }
     if invalidate {
         held::invalidate();
-    } else if RESET_WATCH.take(|_| {}).is_none() {
-        held::refuse("market reset certificate unavailable");
+    } else {
+        held::finish_renewals(renewed);
+        if RESET_WATCH.take(|_| {}).is_none() {
+            held::refuse("market reset certificate unavailable");
+        }
     }
 }
 fn refresh_coverage() {
@@ -1240,6 +1260,26 @@ pub mod test_support {
         }
         pub fn country_domain(&self, owner: u32, domain: usize) {
             drop(WATCHES[domain].notify(country_receiver(owner)));
+        }
+        pub fn country_domain_running(
+            &self,
+            domain: usize,
+        ) -> crate::watch_registry::Running<'static> {
+            WATCHES[domain].running()
+        }
+        pub fn fill_country_domain(&self, domain: usize) -> u32 {
+            (10_000..=u32::MAX)
+                .find(|&owner| WATCHES[domain].register(country_receiver(owner)).is_none())
+                .unwrap()
+        }
+        pub fn offer_country_domain_growth(&self, domain: usize, countries: usize) {
+            WATCHES.get(domain).unwrap_or(&RESET_WATCH).offer(countries);
+        }
+        pub fn defer_country_domain_retirement(&self, domain: usize) {
+            WATCHES[domain].defer_retirement();
+        }
+        pub fn collect_country_domain(&self, domain: usize) {
+            WATCHES.get(domain).unwrap_or(&RESET_WATCH).collect();
         }
         pub fn inventory(&self, memory: &impl Memory, owner: u32) {
             let event = root(

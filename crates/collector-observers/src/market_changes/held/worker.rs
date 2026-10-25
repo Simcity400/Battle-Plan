@@ -442,7 +442,7 @@ pub(super) fn acquire_marked(
     output: &mut Vec<MarketEventRow>,
 ) {
     for owner in std::mem::take(&mut state.dirty_inventory) {
-        if state.refusals[0].is_some() {
+        if state.pending_countries.contains_key(&owner) {
             continue;
         }
         let result = (|| {
@@ -475,7 +475,7 @@ pub(super) fn acquire_marked(
             Ok(())
         })();
         if let Err(reason) = result {
-            state.refusals[0] = Some(reason);
+            refuse_country(state, owner, reason);
         }
     }
     for (key, (event, pointer, demand)) in std::mem::take(&mut state.dirty_agreements) {

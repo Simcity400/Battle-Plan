@@ -108,7 +108,7 @@ pub fn active() -> usize {
 /// after a load, gap or recovery: nothing observed before it certifies
 /// anything. Counts the hour when it will copy every held history afresh.
 pub fn boundary(invalidate: bool) {
-    let installed = WATCHES.registry.boundary(invalidate);
+    let installed = WATCHES.registry.boundary(invalidate).installed();
     let cause = if invalidate {
         Some(0)
     } else if installed {

@@ -40,7 +40,10 @@ struct State {
     epoch: u64,
     complete: bool,
     publish_full: bool,
-    recover_countries: bool,
+    publish_countries_full: bool,
+    country_manager: Option<usize>,
+    uncertified_watches: [bool; 3],
+    renewed_watches: [Option<usize>; 4],
     contracts_complete: bool,
     contracts_attempted: bool,
     discovered_contracts: BTreeSet<(u32, u64, u8)>,
@@ -57,6 +60,7 @@ struct State {
     changed: [BTreeSet<u32>; 2],
     changed_contracts: BTreeSet<(u32, u64, u8)>,
     pending_countries: BTreeMap<u32, (ccountry::Country, usize)>,
+    unseeded_countries: BTreeSet<u32>,
     unavailable_agreements: BTreeSet<(u32, u64)>,
     unavailable_contracts: BTreeSet<(u32, u64, u8)>,
     changed_agreements: BTreeSet<(u32, u64)>,
@@ -70,7 +74,10 @@ impl State {
             epoch,
             complete: false,
             publish_full: true,
-            recover_countries: false,
+            publish_countries_full: false,
+            country_manager: None,
+            uncertified_watches: [false; 3],
+            renewed_watches: [None; 4],
             contracts_complete: false,
             contracts_attempted: false,
             discovered_contracts: BTreeSet::new(),
@@ -87,6 +94,7 @@ impl State {
             changed: [const { BTreeSet::new() }; 2],
             changed_contracts: BTreeSet::new(),
             pending_countries: BTreeMap::new(),
+            unseeded_countries: BTreeSet::new(),
             unavailable_agreements: BTreeSet::new(),
             unavailable_contracts: BTreeSet::new(),
             changed_agreements: BTreeSet::new(),
@@ -95,19 +103,74 @@ impl State {
             refusals: [None; 3],
         }
     }
+    fn recertify_countries(&mut self) {
+        for (&owner, held) in &self.countries {
+            self.pending_countries
+                .entry(owner)
+                .or_insert((held.identity, held.manager));
+        }
+    }
+    fn bind_country_manager(&mut self, manager: usize) {
+        if self
+            .country_manager
+            .replace(manager)
+            .is_some_and(|old| old != manager)
+        {
+            // A changed manager revokes every held backlink, not just the failed owner's.
+            self.recertify_countries();
+            for (_, pending_manager) in self.pending_countries.values_mut() {
+                *pending_manager = manager;
+            }
+        }
+    }
 }
 pub fn invalidate() {
     EPOCH.fetch_add(1, Ordering::SeqCst);
     RECOVERY.store(false, Ordering::SeqCst);
 }
-pub(super) fn begin_hour() -> bool {
+pub(super) fn begin_hour() -> [Option<usize>; 4] {
     let mut state = STATE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if state.refusals[0].take().is_some() {
-        state.recover_countries = true;
+    if state.epoch != EPOCH.load(Ordering::Acquire) {
+        return [None; 4];
     }
-    state.recover_countries
+    if state.refusals[0].take().is_some() {
+        state.publish_countries_full = true;
+    }
+    let demand = COUNTRY_WATCH_DEMAND.load(Ordering::Acquire);
+    let mut renew = [None; 4];
+    for (domain, watch) in WATCHES.iter().chain([&RESET_WATCH]).enumerate() {
+        let missing = state.pending_countries.keys().any(|&owner| {
+            let receiver = country_receiver(owner);
+            watch.observed_sequence(receiver).is_none() && watch.register(receiver).is_none()
+        });
+        if !missing {
+            state.renewed_watches[domain] = None;
+        } else if watch.growth_pending()
+            || state.renewed_watches[domain].is_none_or(|previous| demand > previous)
+        {
+            renew[domain] = Some(demand);
+        }
+    }
+    renew
+}
+pub(super) fn finish_renewals(renewed: [Option<usize>; 4]) {
+    if renewed.iter().all(Option::is_none) {
+        return;
+    }
+    let mut state = STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (domain, demand) in renewed.into_iter().enumerate() {
+        if demand.is_some() {
+            let watch = WATCHES.get(domain).unwrap_or(&RESET_WATCH);
+            // A clear can succeed while a predecessor still blocks offered growth.
+            state.renewed_watches[domain] = demand.filter(|_| !watch.growth_pending());
+        }
+    }
+    // A completed renewal loses its marks, so its held owners need one fresh read.
+    state.recertify_countries();
 }
 pub(super) fn recovery_requested() -> bool {
     RECOVERY.load(Ordering::SeqCst)
@@ -421,6 +484,7 @@ pub fn seed_country(memory: &impl Memory, base: usize, country: ccountry::Countr
     if state.epoch != epoch {
         *state = State::new(epoch);
     }
+    state.bind_country_manager(manager);
     if state
         .countries
         .get(&country.id)
@@ -441,6 +505,7 @@ pub fn seed_country(memory: &impl Memory, base: usize, country: ccountry::Countr
     match read_country(memory, base, country, manager) {
         Ok(held) => {
             state.countries.insert(country.id, held);
+            state.unseeded_countries.remove(&country.id);
             state.changed[0].insert(country.id);
         }
         Err(reason) => {
@@ -547,7 +612,6 @@ pub fn discover_country(
             .countries
             .get(&country.id)
             .is_some_and(|held| held.identity == country)
-            && !state.recover_countries
             && !state.pending_countries.contains_key(&country.id)
         {
             return;
@@ -629,7 +693,7 @@ pub fn recover_contracts(memory: &impl Memory, base: usize, game: usize) {
         return;
     }
     {
-        let mut state = STATE
+        let state = STATE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.complete
@@ -639,7 +703,6 @@ pub fn recover_contracts(memory: &impl Memory, base: usize, game: usize) {
         {
             return;
         }
-        state.contracts_attempted = true;
     }
     let result = (|| {
         let manager_address = game
@@ -714,6 +777,17 @@ pub fn refuse(reason: &'static str) {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .failure = Some(reason);
 }
+fn refuse_country(state: &mut State, owner: u32, reason: &'static str) {
+    state.refusals[0] = Some(reason);
+    if let Some(held) = state.countries.get(&owner) {
+        state
+            .pending_countries
+            .entry(owner)
+            .or_insert((held.identity, held.manager));
+    } else if !state.pending_countries.contains_key(&owner) {
+        state.unseeded_countries.insert(owner);
+    }
+}
 fn reset_country(state: &mut State, owner: u32) {
     if let Some(held) = state.countries.remove(&owner) {
         state
@@ -729,20 +803,13 @@ fn reset_country(state: &mut State, owner: u32) {
 }
 // Rebind holdings only after consuming the interval's ordered delivery records.
 fn reseed_countries(state: &mut State, memory: &impl Memory, base: usize) -> BTreeSet<u32> {
-    if state.recover_countries {
-        for (&owner, held) in &state.countries {
-            state
-                .pending_countries
-                .entry(owner)
-                .or_insert((held.identity, held.manager));
-        }
-    }
     let pending = std::mem::take(&mut state.pending_countries);
     let mut acquired = BTreeSet::new();
     for (owner, (identity, manager)) in pending {
         match read_country(memory, base, identity, manager) {
             Ok(country) => {
                 state.countries.insert(owner, country);
+                state.unseeded_countries.remove(&owner);
                 state.changed[0].insert(owner);
                 state.dirty_inventory.remove(&owner);
                 acquired.insert(owner);
@@ -1129,7 +1196,7 @@ fn observe_interval(
         }
     }
 }
-/// Read marked domains, or recertify country holdings after a refused hour.
+/// Read marked domains and retry only uncertified country holders.
 pub fn acquire(
     memory: &impl Memory,
     base: usize,
@@ -1203,15 +1270,15 @@ pub fn acquire(
         if watch
             .take(|owner| {
                 let owner = ((owner >> 3) - 1) as u32;
-                if reset_holdings.contains(&owner) {
+                if reset_holdings.contains(&owner) || state.pending_countries.contains_key(&owner) {
                     return;
                 }
                 let Some(held) = state.countries.get_mut(&owner) else {
-                    failure = Some("market marked country has no bootstrap");
+                    refuse_country(&mut state, owner, "market marked country has no bootstrap");
                     return;
                 };
                 if let Err(reason) = authenticate_country(memory, base, held.identity) {
-                    failure = Some(reason);
+                    refuse_country(&mut state, owner, reason);
                     return;
                 }
                 let demand = market::Demand {
@@ -1246,16 +1313,25 @@ pub fn acquire(
                         }
                         state.changed[0].insert(owner);
                     }
-                    Err(reason) => failure = Some(reason),
+                    Err(reason) => refuse_country(&mut state, owner, reason),
                 }
             })
             .is_none()
         {
+            if !state.uncertified_watches[domain] {
+                state.recertify_countries();
+            }
+            state.uncertified_watches[domain] = true;
             failure = Some("market writer certificate unavailable");
+        } else {
+            state.uncertified_watches[domain] = false;
         }
         if let Some(reason) = failure {
             state.refusals[0] = Some(reason);
         }
+    }
+    if !state.unseeded_countries.is_empty() {
+        state.refusals[0].get_or_insert("market marked country has no bootstrap");
     }
     if full {
         let owners: Vec<_> = state.countries.keys().copied().collect();
@@ -1273,12 +1349,12 @@ pub fn acquire(
 }
 fn publish_changes(state: &mut State, full: bool) -> Changes {
     state.publish_full = false;
-    let countries_full = full || state.recover_countries;
-    if countries_full {
+    let countries_full = full || state.publish_countries_full;
+    if countries_full && state.refusals[0].is_none() {
         state.changed[0].extend(state.countries.keys().copied());
     }
     if state.refusals[0].is_none() {
-        state.recover_countries = false;
+        state.publish_countries_full = false;
     }
     let owners = state
         .changed

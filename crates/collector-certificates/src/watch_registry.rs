@@ -264,6 +264,22 @@ pub struct WatchRegistry {
     refused_takes: AtomicU64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Boundary {
+    Unchanged,
+    Deferred,
+    Cleared,
+    Installed,
+}
+impl Boundary {
+    pub fn installed(self) -> bool {
+        self == Self::Installed
+    }
+    pub fn renewed(self) -> bool {
+        matches!(self, Self::Cleared | Self::Installed)
+    }
+}
+
 impl Default for WatchRegistry {
     fn default() -> Self {
         Self::new()
@@ -613,9 +629,9 @@ impl WatchRegistry {
     /// epoch when `invalidate`, then install an offered table or clear the
     /// installed one while no notification is running. Outside an
     /// invalidation both wait, counted as held, unless no table is installed
-    /// yet; so does one a running notification blocks. Returns whether it
-    /// installed a table.
-    pub fn boundary(&self, invalidate: bool) -> bool {
+    /// yet; so does one a running notification blocks.
+    /// Reports installation, clearing, deferred renewal, or no change.
+    pub fn boundary(&self, invalidate: bool) -> Boundary {
         if invalidate {
             self.new_epoch();
         }
@@ -629,7 +645,7 @@ impl WatchRegistry {
             if self.quiet_now() {
                 self.retire_drained();
             }
-            return false;
+            return Boundary::Unchanged;
         }
         if !self.quiet_now() {
             if full
@@ -641,7 +657,7 @@ impl WatchRegistry {
             }
             // Only a missing first table retries at the next hour; the rest
             // waits for the next invalidating hour.
-            return false;
+            return Boundary::Deferred;
         }
         // No notification is running, so none holds a replaced table.
         self.retire_drained();
@@ -660,7 +676,7 @@ impl WatchRegistry {
                 if self.quiet_now() {
                     self.retire_drained();
                 }
-                return true;
+                return Boundary::Installed;
             }
         }
         if full || invalidate {
@@ -673,9 +689,10 @@ impl WatchRegistry {
                 self.new_epoch();
                 self.registered.store(0, Relaxed);
                 self.clears.fetch_add(1, Relaxed);
+                return Boundary::Cleared;
             }
         }
-        false
+        Boundary::Unchanged
     }
 
     /// Install prepared growth on a worker while preserving every registered
@@ -772,6 +789,20 @@ impl WatchRegistry {
             return;
         };
         self.offer_slots(len);
+    }
+
+    /// Prepared growth is not complete until its table is installed.
+    pub fn growth_pending(&self) -> bool {
+        self.requested.load(SeqCst) > self.capacity.load(Relaxed)
+    }
+
+    /// Model a notification crossing the last install, for tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn defer_retirement(&self) {
+        assert!(self.draining.load(SeqCst).is_null());
+        let previous = self.retired.swap(ptr::null_mut(), SeqCst);
+        assert!(!previous.is_null());
+        self.draining.store(previous, SeqCst);
     }
 
     /// An enabled registry with a `len`-slot table installed (`len` a power
@@ -1175,9 +1206,9 @@ mod tests {
         assert_eq!(cleared.0.1, 0);
         assert_eq!(registry.sequence(8), Some(cleared.0));
         registry.offer(1_000);
-        assert!(!registry.boundary(false));
+        assert!(!registry.boundary(false).installed());
         assert_eq!(registry.sequence_at(8, cleared.1), Some(cleared));
-        assert!(registry.boundary(true));
+        assert!(registry.boundary(true).installed());
         registry.collect();
         let installed = registry.sequence_at(8, cleared.1).unwrap();
         assert_ne!(installed.0.0, cleared.0.0);
@@ -1299,7 +1330,7 @@ mod tests {
     fn a_clear_starts_an_epoch_so_no_certificate_survives_it() {
         let registry = registry(64);
         let certified = registry.sequence(8).unwrap();
-        registry.boundary(true);
+        assert_eq!(registry.boundary(true), Boundary::Cleared);
         assert_eq!(registry.clears.load(Relaxed), 1);
         assert_eq!(registry.registered.load(Relaxed), 0);
         // Unregistered now: this writer's notification is not recorded,
@@ -1315,7 +1346,7 @@ mod tests {
         let registry = registry(64);
         let certified = registry.sequence(8).unwrap();
         let running = registry.notify(8);
-        registry.boundary(true);
+        assert_eq!(registry.boundary(true), Boundary::Deferred);
         assert_eq!(registry.deferred.load(Relaxed), 1);
         assert_eq!(registry.clears.load(Relaxed), 0);
         assert!(registry.sequence(8).is_none());
@@ -1416,7 +1447,7 @@ mod tests {
         assert!(registry.offered.load(SeqCst).is_null());
         registry.offer(1_000);
         // An ordinary hour holds it and keeps every certificate.
-        assert!(!registry.boundary(false));
+        assert!(!registry.boundary(false).installed());
         assert_eq!(registry.capacity.load(Relaxed), 4);
         assert_eq!(registry.held.load(Relaxed), 1);
         assert_eq!(registry.sequence(8), Some(certified));
@@ -1425,9 +1456,9 @@ mod tests {
         assert_eq!(registry.capacity.load(Relaxed), 4);
         drop(running);
         // Blocked by the running writer, it waits for the next full hour.
-        assert!(!registry.boundary(false));
+        assert!(!registry.boundary(false).installed());
         assert_eq!(registry.capacity.load(Relaxed), 4);
-        assert!(registry.boundary(true));
+        assert!(registry.boundary(true).installed());
         assert_eq!(registry.capacity.load(Relaxed), 4096);
         assert_eq!(registry.installs.load(Relaxed), 2);
         assert_ne!(registry.sequence(8), Some(certified));
@@ -1436,6 +1467,62 @@ mod tests {
         assert!(!registry.retired.load(SeqCst).is_null());
         registry.collect();
         assert!(registry.retired.load(SeqCst).is_null());
+    }
+
+    #[test]
+    fn pending_growth_survives_deferred_boundaries_and_blocked_fallback_clears() {
+        for marking in [false, true] {
+            let registry = if marking {
+                WatchRegistry::marking()
+            } else {
+                WatchRegistry::new()
+            };
+            assert!(!registry.growth_pending());
+            assert_eq!(registry.boundary(true), Boundary::Unchanged);
+            registry.offer(1);
+            assert!(registry.growth_pending());
+            let running = registry.running();
+            assert_eq!(registry.boundary(false), Boundary::Deferred);
+            assert!(registry.growth_pending());
+            drop(running);
+            assert_eq!(registry.boundary(false), Boundary::Installed);
+            assert!(!registry.growth_pending());
+            registry.set_enabled(true);
+
+            registry.offer(MIN_SLOTS);
+            assert_eq!(registry.boundary(false), Boundary::Unchanged);
+            assert!(registry.growth_pending());
+            assert_eq!(registry.boundary(true), Boundary::Installed);
+            assert!(!registry.growth_pending());
+            registry.defer_retirement();
+            assert!(!registry.draining.load(SeqCst).is_null());
+            assert!(registry.retired.load(SeqCst).is_null());
+            assert!(!registry.growth_pending());
+
+            registry.offer(MIN_SLOTS * 2);
+            assert!(registry.growth_pending());
+            let running = registry.running();
+            assert_eq!(registry.boundary(true), Boundary::Deferred);
+            assert!(registry.growth_pending());
+            assert!(!registry.draining.load(SeqCst).is_null());
+            drop(running);
+            for _ in 0..2 {
+                assert_eq!(registry.boundary(true), Boundary::Cleared);
+                assert!(registry.draining.load(SeqCst).is_null());
+                assert!(!registry.retired.load(SeqCst).is_null());
+                assert!(registry.growth_pending());
+            }
+            registry.collect();
+            assert!(registry.retired.load(SeqCst).is_null());
+            assert!(registry.growth_pending());
+            assert_eq!(registry.boundary(false), Boundary::Unchanged);
+            assert!(registry.growth_pending());
+            assert_eq!(registry.boundary(true), Boundary::Installed);
+            assert!(!registry.growth_pending());
+            assert!(!registry.retired.load(SeqCst).is_null());
+            registry.collect();
+            assert!(!registry.growth_pending());
+        }
     }
 
     #[test]
@@ -1548,7 +1635,7 @@ mod tests {
             let installed = registry.table.load(SeqCst);
             registry.offer(1_000);
             for invalidate in [false, true] {
-                assert!(!registry.boundary(invalidate));
+                assert!(!registry.boundary(invalidate).installed());
             }
             assert_eq!(registry.table.load(SeqCst), installed, "no install");
             assert_eq!(registry.draining.load(SeqCst), draining, "not retired");
