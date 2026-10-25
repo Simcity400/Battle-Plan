@@ -1420,6 +1420,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map_text(&*document.vision(&options.perspective)?);
         // A free camera draws the map's interface, country names included, only when asked to.
         let interface = camera.free().is_none() || options.free_overlays.unwrap_or(false);
+        if interface {
+            match app::picker::dump(&document, &options) {
+                Ok(picker) => {
+                    for (reason, count) in &picker.drawn.refused {
+                        eprintln!("Warning: map-mode picker ({count}): {reason}");
+                    }
+                    dump_overlay.extra.quads.extend(picker.drawn.batch.quads);
+                }
+                Err(error) => eprintln!("Warning: map-mode picker: {error}"),
+            }
+        }
         let report = render::dump_png(
             &document.assets,
             // political fill + borders

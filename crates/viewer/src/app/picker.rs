@@ -63,6 +63,95 @@ pub struct PickerState {
     labels: Option<PickerLabels>,
 }
 
+impl PickerState {
+    #[allow(clippy::too_many_arguments)]
+    fn draw(
+        &mut self,
+        document: &Document,
+        mode: &MapMode,
+        toggles: Toggles,
+        extent: [f32; 2],
+        hovers: bool,
+        time: f32,
+        advance: bool,
+    ) -> Result<picker::PickerDrawn, String> {
+        let four = four_buttons(document);
+        if !self
+            .labels
+            .as_ref()
+            .is_some_and(|labels| labels.matches(document, &self.slots, four))
+        {
+            self.labels = Some(PickerLabels::new(document, &self.slots, four));
+        }
+        let selected = mode.token();
+        let labels = self.labels.as_ref().unwrap();
+        let state = picker::State {
+            four_buttons: four,
+            slots: &labels.slots,
+            configurable_from: *configurable(document).start(),
+            modes: &labels.modes,
+            selected: &selected,
+            toggles,
+            open: self.open,
+            click_info: &labels.click_info,
+            click_info_assign: &labels.click_info_assign,
+            all_tooltip: &labels.all_tooltip,
+            default_tooltip: &labels.default_tooltip,
+        };
+        let fingerprint = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            four.hash(&mut hasher);
+            selected.hash(&mut hasher);
+            self.slots.hash(&mut hasher);
+            self.open.hash(&mut hasher);
+            toggles.hash(&mut hasher);
+            hasher.finish()
+        };
+        self.picker
+            .draw(
+                &document.combat,
+                &state,
+                fingerprint,
+                extent,
+                hovers,
+                time,
+                advance,
+            )
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn dump_toggles(document: &Document, options: &crate::Options) -> Toggles {
+    let settings = options.counter_settings(document.game_counters);
+    Toggles {
+        day_night: None,
+        player_counters: Some(false),
+        counter_colors: Some(
+            settings.color_mode == viewer_counters::map::counters::CounterColorMode::Country,
+        ),
+        allied_plans: None,
+        fog: viewer_foundation::map::perspective::fog_recorded(document.capture_mode())
+            .then_some(options.perspective.fog),
+        radar: Some(false),
+    }
+}
+
+pub(crate) fn dump(
+    document: &Document,
+    options: &crate::Options,
+) -> Result<picker::PickerDrawn, String> {
+    PickerState::default().draw(
+        document,
+        &options.map_mode,
+        dump_toggles(document, options),
+        viewer_foundation::map::ui_scale::extent(options.size, options.ui_scale.unwrap_or(1.0)),
+        false,
+        options.presentation_time,
+        true,
+    )
+}
+
 /// Localised button and list text depends on content and slot choices, not the frame.
 struct PickerLabels {
     // Keep the identity alive without retaining a previous load's content.
@@ -485,7 +574,7 @@ impl Viewer {
         ))
     }
 
-    /// Lays out the picker; `None` while hidden or without content.
+    /// Lays out the picker; `None` while hidden.
     pub(crate) fn draw_picker(
         &mut self,
         document: &Document,
@@ -497,55 +586,20 @@ impl Viewer {
         if self.picker.hidden {
             return None;
         }
-        let four = four_buttons(document);
-        if !self
-            .picker
-            .labels
-            .as_ref()
-            .is_some_and(|labels| labels.matches(document, &self.picker.slots, four))
-        {
-            self.picker.labels = Some(PickerLabels::new(document, &self.picker.slots, four));
-        }
-        let selected = self.map_mode.token();
-        let toggles = self.picker_toggles();
-        let labels = self.picker.labels.as_ref().unwrap();
-        let state = picker::State {
-            four_buttons: four,
-            slots: &labels.slots,
-            configurable_from: *configurable(document).start(),
-            modes: &labels.modes,
-            selected: &selected,
+        let toggles = if self.options.window_dump {
+            dump_toggles(document, &self.options)
+        } else {
+            self.picker_toggles()
+        };
+        Some(self.picker.draw(
+            document,
+            &self.map_mode,
             toggles,
-            open: self.picker.open,
-            click_info: &labels.click_info,
-            click_info_assign: &labels.click_info_assign,
-            all_tooltip: &labels.all_tooltip,
-            default_tooltip: &labels.default_tooltip,
-        };
-        let fingerprint = {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            four.hash(&mut hasher);
-            selected.hash(&mut hasher);
-            self.picker.slots.hash(&mut hasher);
-            self.picker.open.hash(&mut hasher);
-            toggles.hash(&mut hasher);
-            hasher.finish()
-        };
-        Some(
-            self.picker
-                .picker
-                .draw(
-                    &document.combat,
-                    &state,
-                    fingerprint,
-                    extent,
-                    hovers,
-                    time,
-                    advance,
-                )
-                .map_err(|error| error.to_string()),
-        )
+            extent,
+            hovers,
+            time,
+            advance,
+        ))
     }
 
     /// A click on a picker control; `secondary` is the right button.

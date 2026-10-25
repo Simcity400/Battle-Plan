@@ -5420,6 +5420,17 @@ fn present_audio(
 }
 
 impl eframe::App for Viewer {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+        if self.options.window_dump {
+            // Dumps keep window geometry, but never consume live input.
+            input.events.clear();
+            input.events.push(egui::Event::PointerGone);
+            input.hovered_files.clear();
+            input.dropped_files.clear();
+            input.focused = false;
+        }
+    }
+
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.embedded_logic(ctx, frame);
     }
@@ -5853,6 +5864,77 @@ fn builds_warnings(diagnostics: bool, capture: Option<&Capture>) -> bool {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn window_dumps_discard_live_input_before_egui_sees_it() {
+        use eframe::App;
+        for window_dump in [false, true] {
+            let mut viewer = super::Viewer::create(
+                super::Config::default(),
+                super::Options {
+                    window_dump,
+                    ..Default::default()
+                },
+                None,
+                std::sync::Arc::new(std::sync::Mutex::new(None)),
+                None,
+                None,
+            );
+            let ctx = egui::Context::default();
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 480.0));
+            for time in [0.0, 1.0] {
+                let mut input = egui::RawInput {
+                    screen_rect: Some(rect),
+                    time: Some(time),
+                    focused: true,
+                    events: vec![
+                        egui::Event::PointerMoved(egui::pos2(639.0, 479.0)),
+                        egui::Event::PointerButton {
+                            pos: egui::pos2(639.0, 479.0),
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: egui::Modifiers::CTRL,
+                        },
+                        egui::Event::Key {
+                            key: egui::Key::F3,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::CTRL,
+                        },
+                        egui::Event::Text("live input".into()),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, 120.0),
+                            phase: egui::TouchPhase::Move,
+                            modifiers: egui::Modifiers::CTRL,
+                        },
+                    ],
+                    hovered_files: vec![egui::HoveredFile::default()],
+                    ..Default::default()
+                };
+                let events = input.events.clone();
+                viewer.raw_input_hook(&ctx, &mut input);
+                assert_eq!(input.screen_rect, Some(rect));
+                assert_eq!(input.time, Some(time));
+                assert_eq!(input.focused, !window_dump);
+                assert_eq!(input.hovered_files.is_empty(), window_dump);
+                if window_dump {
+                    assert_eq!(input.events, vec![egui::Event::PointerGone]);
+                } else {
+                    assert_eq!(input.events, events);
+                }
+                let mut output = ctx.run_ui(input, |ui| {
+                    ui.input(|input| {
+                        assert_eq!(input.pointer.hover_pos().is_none(), window_dump);
+                        assert_eq!(input.pointer.any_down(), !window_dump);
+                        assert_eq!(input.key_down(egui::Key::F3), !window_dump);
+                    });
+                });
+                output.textures_delta.clear();
+            }
+        }
+    }
+
     #[test]
     fn profile_pointer_overrides_hover_only_for_profile_captures() {
         use super::profile_hover_point;
