@@ -20,6 +20,10 @@ struct Hour {
 impl Hour {
     fn status(&self, frequency: u64) -> impl serde::Serialize + '_ {
         let cost = &self.cost;
+        #[cfg(feature = "callback_profile")]
+        let timeline = cost.join_timeline.map(|span| span.status(frequency));
+        #[cfg(not(feature = "callback_profile"))]
+        let timeline = None::<u64>;
         status!({
             "hour": self.hour,
             "qpc": self.qpc,
@@ -40,6 +44,8 @@ impl Hour {
             "collect_stalls_over_1ms": cost.collect_stalls_over_1ms,
             "growths": cost.growths,
             "diagnostics": cost.diagnostics.status(frequency),
+            "variants": cost.variants,
+            "join_timeline": timeline,
             "dominant_segment": dominant_segment(cost),
             "first_since_attach": cost.first_since_attach,
             "continuous": cost.continuous,
@@ -128,7 +134,8 @@ impl Recorder {
             "retained_dominant_segment_counts": sequence(retained.into_iter()),
             "retained_no_dominant_segment": retained_without_segment,
             "segments_scope": crate::sampling::SEGMENTS_SCOPE,
-            "diagnostics_scope": "Readiness spans count waits whose first poll was not ready, including spin, park and scheduling delay. Outstanding tickets are a lock-free scan at wait entry, not a simultaneous snapshot; slots whose generation or phase changes during inspection are omitted and counted by outstanding_changed_slots. ending_completion is the most recently published ticket inspected within the successful readiness condition, first inspected on equal publication stamps, not an inferred OS wake cause. Probing is capped at 64 predicate polls and 512 completion metadata inspections per wait; ending_probe_exhausted means attribution was truncated, and ending_completion is null rather than partial. Otherwise null means none was inspected. Jobs count all collected executor requests, including worker-joined children, rejected requests and continuations; top_by_body keeps eight by inclusive body wall, ties by admission. Nested parent body spans overlap children and must not be added. Null lifecycle durations mean the job did not reach that stage. callback_thread growths are the callback TLS delta; workers includes job bodies and detached publication continuations. Longest EarlyStep is inclusive callback wall, unlike cumulative early_steps_ns which subtracts waits; census merges are nested within handler wall. Dominant segment counts cover all recorded hours since attach; retained_dominant_segment_counts covers only the retained slowest hours. The first segment wins ties; all-zero segments have no cause.",
+            "join_timeline_scope": "With collector/callback_profile, the exact job collected by the slowest ordinary join, even when absent from top_by_body, including Research. Raw QPC stamps share qpc_frequency. join_begin_qpc and join_end_qpc enclose finish_into; claimed_qpc separates queue residence from pre-body delay. Body end precedes publication and collection. Null means the feature is disabled or the slowest wait was readiness, not an individual join.",
+            "diagnostics_scope": "Readiness spans count waits whose first poll was not ready, including spin, park and scheduling delay. Outstanding tickets are a lock-free scan at wait entry, not a simultaneous snapshot; slots whose generation or phase changes during inspection are omitted and counted by outstanding_changed_slots. ending_completion is the most recently published ticket inspected within the successful readiness condition, first inspected on equal publication stamps, not an inferred OS wake cause. Probing is capped at 64 predicate polls and 512 completion metadata inspections per wait; ending_probe_exhausted means attribution was truncated, and ending_completion is null rather than partial. Otherwise null means none was inspected. Jobs count all collected executor requests, including worker-joined children, rejected requests and continuations; top_by_body keeps eight by inclusive body wall, ties by admission. jobs.research retains this hour's Research request independently of the body ranking. Nested parent body spans overlap children and must not be added. Null lifecycle durations mean the job did not reach that stage. callback_thread growths are the callback TLS delta; workers includes job bodies and detached publication continuations. Longest EarlyStep is inclusive callback wall, unlike cumulative early_steps_ns which subtracts waits; census merges are nested within handler wall. Dominant segment counts cover all recorded hours since attach; retained_dominant_segment_counts covers only the retained slowest hours. The first segment wins ties; all-zero segments have no cause.",
             "scope": "Same recorded-hour cohort as callback_work since attach. callback_ns is callback_work's sample and the ordering key; ties keep recording order. qpc is the body-entry raw session QPC; divide by qpc_frequency to align frame timestamps. entry_ns is game-thread wall before the body, outside callback_work. setup+parallel+residual partition callback_ns (nanosecond rounding applies). segments split parallel; see acquisition_work.block_phases.segments_scope. daily_slot names the staggered slot due that hour; see daily_slots. growths count checked heap growths on the game thread and this hour's workers, including detached publication continuations.",
         })
     }
@@ -192,6 +199,8 @@ mod tests {
             .next()
             .unwrap();
         assert!(series.contains("callback_tail = $status.callback_tail"));
+        assert!(series.contains("variants_profile = $status.variant_changes.variants_profile"));
+        assert!(series.contains("callback_profile = $status.callback_profile"));
         assert!(series.contains("ConvertTo-Json -Compress -Depth 16"));
     }
 }

@@ -14,6 +14,8 @@ pub struct VariantPart {
 }
 impl VariantPart {
     pub fn capture(&mut self, memory: &impl Memory, base: usize) {
+        let _phase =
+            design_changes::profile::Timer::new(design_changes::profile::Phase::VariantParts);
         let source = &self.sources;
         let begin = qpc();
         let mut reads = read_accounting::table(TABLES[3]);

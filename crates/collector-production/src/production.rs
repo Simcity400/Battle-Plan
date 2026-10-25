@@ -427,6 +427,8 @@ impl Variants {
         } else {
             self.capture_state_carried(memory, base, variants, hour, full, !forced)
         };
+        let bonus_phase =
+            design_changes::profile::Timer::new(design_changes::profile::Phase::Bonuses);
         match bonus_snapshots::snapshot() {
             Ok(snapshot) => self.dictionary = snapshot,
             Err(reason) => {
@@ -434,6 +436,7 @@ impl Variants {
                 self.fail(reason, hour, true);
             }
         }
+        drop(bonus_phase);
         self.nested_bytes = self
             .definitions
             .rows
@@ -455,9 +458,12 @@ impl Variants {
             .iter()
             .all(|o| matches!(o, Outcome::Rows { .. }))
         {
+            let context_phase =
+                design_changes::profile::Timer::new(design_changes::profile::Phase::Context);
             (self.context, self.templates) =
                 design_context::seed_partitioned(memory, base, self, full, lanes, &mut context)
                     .unwrap_or_default();
+            drop(context_phase);
             if design_changes::enabled() {
                 design_changes::prepare(&registry[..len], self);
                 self.baseline_admitted = full && design_changes::baseline_admitted();

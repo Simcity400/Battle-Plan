@@ -1402,7 +1402,7 @@ impl Job {
             job => job.role().worker_only(),
         }
     }
-    fn diagnostic_identity(&self) -> crate::acquisition_diagnostics::Identity {
+    pub(crate) fn diagnostic_identity(&self) -> crate::acquisition_diagnostics::Identity {
         let mut identity = crate::acquisition_diagnostics::Identity {
             role: self.role() as usize,
             ..Default::default()
@@ -1991,7 +1991,9 @@ fn run_with_memory(
             })
         }
         Job::Variants(request) => {
+            use production::design_changes::profile::{Job as ProfileJob, Phase, Timer};
             let context = request.context;
+            let _profile = ProfileJob::begin(context.hour);
             // Repair before deciding recovery: the drain may withdraw the census.
             let begin = sampling::qpc();
             crate::read_accounting::with_table(replay_data::rows::TableId::VariantChanges, || {
@@ -2007,6 +2009,7 @@ fn run_with_memory(
             // The campaign registry includes variants absent from units,
             // production and stockpiles. Keep all entries and duplicates.
             let begin = sampling::qpc();
+            let registry_phase = Timer::new(Phase::Registry);
             let (acquire_roster, fresh) = variant_read_plan(
                 context.hour,
                 context.force_full,
@@ -2020,6 +2023,8 @@ fn run_with_memory(
                 request.registry.mark_skipped();
             }
             let registry_ticks = sampling::qpc().saturating_sub(begin).max(0) as u64;
+            drop(registry_phase);
+            let _variants_phase = Timer::new(Phase::Variants);
             let workers = &request.workers;
             let mut variants = request.variants.capture_deferred_partitioned(
                 memory,

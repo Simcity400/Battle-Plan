@@ -588,6 +588,12 @@ fn unread_copied_bytes_do_not_redecode_repeated_designs_or_change_their_rows() {
             .unwrap();
     }
     assert_eq!(cache.entries.len(), 8);
+    assert_eq!(cache.counts[CacheOutcome::FullDecode as usize], 8);
+    assert_eq!(
+        cache.counts[CacheOutcome::ReadWitnessHit as usize],
+        count as u64 - 8
+    );
+    assert_eq!(cache.counts[CacheOutcome::FullCopyHit as usize], 0);
     assert!(Arc::ptr_eq(
         &shared.entries[0].value,
         &shared.entries[count - 8].value
@@ -692,7 +698,12 @@ fn a_requested_witness_still_rejects_contradictory_overlapping_copies() {
     assert!(observed.copy(0x1000, &mut [0; 1]));
     let witness = observed.finish(&log, 0..2, &cache.order).unwrap();
     assert!(!witness.equal(&log, 0..2, 2..4));
+    assert_eq!(
+        witness.mismatch(&log, 0..2, 2..4),
+        Some(CacheOutcome::Overlap)
+    );
     assert!(!cache.consistent(&log, 2..4).unwrap());
+    assert_eq!(cache.counts[CacheOutcome::InsertOverlap as usize], 1);
 }
 
 #[test]
@@ -819,6 +830,28 @@ fn optional_cache_failures_never_reach_the_terminal_hook_but_required_ones_still
     assert!(indexed.entries[0].witness.is_none());
     assert!(indexed.witness_heads.is_empty() && indexed.recent.is_empty());
     assert_eq!(TERMINAL.with(std::cell::Cell::get), 0);
+    assert_eq!(cache.counts[CacheOutcome::AllocationSkipped as usize], 4);
+    assert_eq!(indexed.counts[CacheOutcome::AllocationSkipped as usize], 2);
+    // The read index reserves, but the shape index fails: neither optional index publishes.
+    let observed = witness::Observed::new(&memory, 1);
+    assert!(observed.copy(0x1000, &mut output));
+    let witness = observed.finish(&log, 0..1, &[0]);
+    assert!(witness.is_some());
+    let mut shaped = Cache::default();
+    let (inserted, denied) = {
+        let _guard = collector_test_support::NullGuard::new(4);
+        let inserted = shaped.insert(&log, 0..1, event.pointer, 0, &value, witness);
+        (inserted, denials())
+    };
+    assert!(inserted);
+    assert_eq!(denied, 2);
+    assert!(shaped.entries[0].witness.is_none());
+    assert!(
+        shaped.witness_heads.is_empty()
+            && shaped.shape_heads.is_empty()
+            && shaped.recent.is_empty()
+    );
+    assert_eq!(TERMINAL.with(std::cell::Cell::get), 0);
     let mut shared = Shared::default();
     assert!(collector_test_support::with_allocations_denied(|| shared.reserve(1)).is_err());
     assert_eq!(TERMINAL.with(std::cell::Cell::get), 1);
@@ -828,4 +861,216 @@ fn optional_cache_failures_never_reach_the_terminal_hook_but_required_ones_still
         .unwrap();
     assert_eq!(fresh.value, value.value);
     assert!(!Arc::ptr_eq(&fresh, &value));
+}
+
+#[test]
+fn cache_diagnostics_partition_full_decodes_and_do_not_change_reused_payloads() {
+    let mut batch = burst(3);
+    let mut cache = Cache::default();
+    let mut shared = Shared::default();
+    let first = cache
+        .decode(&batch, &batch.events[0], 0, 7, &mut shared)
+        .unwrap();
+    let repeated = cache
+        .decode(&batch, &batch.events[0], 0, 7, &mut shared)
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &repeated));
+    assert_eq!(cache.counts[CacheOutcome::FullCopyHit as usize], 1);
+    assert_eq!(cache.counts[CacheOutcome::FullDecode as usize], 1);
+    assert_eq!(cache.counts[CacheOutcome::NoRecentEntry as usize], 1);
+    let changed = cache
+        .decode(&batch, &batch.events[1], 0, 7, &mut shared)
+        .unwrap();
+    assert!(!Arc::ptr_eq(&first, &changed));
+    assert_eq!(cache.counts[CacheOutcome::ReadBytes as usize], 1);
+    let shape = batch.events[2].start;
+    batch.log.spans[shape].addr += 1;
+    let left = &batch.log.spans[batch.events[0].start..batch.events[0].end];
+    let right = &batch.log.spans[batch.events[2].start..batch.events[2].end];
+    assert_eq!(
+        witness::shape_miss(left, right),
+        Some(CacheOutcome::SpanAddress)
+    );
+    assert_eq!(
+        witness::shape_miss(left, &right[..right.len() - 1]),
+        Some(CacheOutcome::SpanCount)
+    );
+    batch.log.spans[shape].addr -= 1;
+    batch.log.spans[shape].bulk = !batch.log.spans[shape].bulk;
+    let left = &batch.log.spans[batch.events[0].start..batch.events[0].end];
+    let right = &batch.log.spans[batch.events[2].start..batch.events[2].end];
+    assert_eq!(
+        witness::shape_miss(left, right),
+        Some(CacheOutcome::SpanMetadata)
+    );
+    assert_eq!(cache.counts[CacheOutcome::FullDecode as usize], 2);
+}
+
+fn changing_source_shapes(count: usize) -> Batch {
+    fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
+        let start = address - kit::BASE;
+        bytes[start..start + value.len()].copy_from_slice(value);
+    }
+    let mut bytes = fixture();
+    let mut pointers = Vec::new();
+    for value in 0..3_i64 {
+        let pointer = kit::BASE + bytes.len();
+        pointers.push(pointer as u64);
+        bytes.resize(bytes.len() + native::BONUS_IDEA, 0);
+        put(
+            &mut bytes,
+            pointer,
+            &(native::SPECIFIC_BONUS_VTABLE_RVA as u64).to_le_bytes(),
+        );
+        let stats = kit::BASE + bytes.len();
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+        put(
+            &mut bytes,
+            pointer + native::BONUS_STATS,
+            &(stats as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            pointer + native::BONUS_STATS + 8,
+            &1_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            pointer + native::BONUS_STATS + 12,
+            &1_u32.to_le_bytes(),
+        );
+    }
+    let sources = kit::BASE + bytes.len();
+    for pointer in pointers {
+        bytes.extend_from_slice(&pointer.to_le_bytes());
+    }
+    put(
+        &mut bytes,
+        kit::VARIANT + native::BONUS_SOURCES,
+        &(sources as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        kit::VARIANT + native::BONUS_SOURCES + 8,
+        &3_u32.to_le_bytes(),
+    );
+    let mut batch = Batch::empty();
+    batch.prepare(count, count * 128, count * ROOT_BYTES * 4);
+    for index in 0..count {
+        put(
+            &mut bytes,
+            kit::VARIANT + native::BONUS_SOURCES + 12,
+            &((index % 4) as u32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            kit::VARIANT + native::UPGRADES + 24,
+            &(index as u64).to_le_bytes(),
+        );
+        append(&mut batch, &bytes, index as u64 + 1, false);
+    }
+    batch
+}
+
+#[test]
+fn older_source_list_shapes_reuse_only_their_exact_reads_and_keep_every_row() {
+    let batch = changing_source_shapes(4_096);
+    let mut cache = Cache::default();
+    let mut shared = Shared::default();
+    let mut owned = Captured::vacant();
+    for (index, event) in batch.events.iter().enumerate() {
+        let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+        let original = snapshot(&memory, 0, 7, event.pointer, false).unwrap();
+        let decoded = cache.decode(&batch, event, 0, 7, &mut shared).unwrap();
+        assert_eq!(decoded.value, original);
+        assert_eq!(decoded.definition.design.bonus_sources.len(), index % 4);
+        owned.rows.push(rows::VariantChangeRow {
+            sequence: event.sequence,
+            hour: event.hour,
+            variant: event.variant,
+            snapshot: Some(original),
+            ..Default::default()
+        });
+        shared
+            .push(index, event.sequence, event.hour, event.variant, decoded)
+            .unwrap();
+    }
+    assert_eq!(cache.entries.len(), 4);
+    assert_eq!(cache.shape_heads.len(), 4);
+    assert_eq!(cache.counts[CacheOutcome::FullDecode as usize], 4);
+    assert_eq!(cache.counts[CacheOutcome::ReadWitnessHit as usize], 4_092);
+    assert_eq!(cache.counts[CacheOutcome::FullCopyHit as usize], 0);
+    for index in 4..shared.len() {
+        assert!(Arc::ptr_eq(
+            &shared.entries[index].value,
+            &shared.entries[index % 4].value
+        ));
+    }
+    let mut captured = Captured::vacant();
+    captured.outcome = Outcome::Rows {
+        len: batch.events.len(),
+    };
+    captured.snapshots = shared;
+    owned.outcome = captured.outcome;
+    for keyframe in [false, true] {
+        for existing in [false, true] {
+            assert_eq!(
+                converted_bytes(&captured, keyframe, existing),
+                converted_bytes(&owned, keyframe, existing)
+            );
+        }
+    }
+}
+
+#[test]
+fn a_colliding_shape_candidate_cannot_substitute_another_shape_or_changed_read_bytes() {
+    let mut batch = changing_source_shapes(8);
+    let mut cache = Cache::default();
+    let mut shared = Shared::default();
+    for event in &batch.events[..4] {
+        cache.decode(&batch, event, 0, 7, &mut shared).unwrap();
+    }
+    let event = batch.events[4];
+    let key = shape_key(&batch.log, event.start..event.end, event.pointer);
+    cache.shape_heads.insert(key, 3);
+    let value = cache.decode(&batch, &event, 0, 7, &mut shared).unwrap();
+    assert!(value.definition.design.bonus_sources.is_empty());
+    assert!(!Arc::ptr_eq(&value, &cache.entries[3].value));
+    let event = batch.events[5];
+    let root = &batch.log.spans[event.start];
+    let at = root.start as usize + native::DISPLAY_NAME;
+    batch.log.bytes[at] = b'X';
+    batch.log.bytes[at + 16..at + 24].copy_from_slice(&1_u64.to_le_bytes());
+    let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+    let original = snapshot(&memory, 0, 7, event.pointer, false).unwrap();
+    let value = cache.decode(&batch, &event, 0, 7, &mut shared).unwrap();
+    assert_eq!(value.value, original);
+    assert_eq!(cache.counts[CacheOutcome::FullDecode as usize], 6);
+}
+
+#[test]
+fn equal_rows_with_different_read_capacities_keep_distinct_witnesses_for_each_shape() {
+    let mut batch = changing_source_shapes(60);
+    for (index, event) in batch.events.iter().enumerate() {
+        let at = batch.log.spans[event.start].start as usize + native::BONUS_SOURCES + 8;
+        batch.log.bytes[at..at + 4].copy_from_slice(&(3 + (index / 4 % 3) as u32).to_le_bytes());
+    }
+    let mut cache = Cache::default();
+    let mut shared = Shared::default();
+    let mut values = Vec::new();
+    for event in &batch.events {
+        let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+        let original = snapshot(&memory, 0, 7, event.pointer, false).unwrap();
+        let value = cache.decode(&batch, event, 0, 7, &mut shared).unwrap();
+        assert_eq!(value.value, original);
+        values.push(value);
+    }
+    assert_eq!(cache.shape_heads.len(), 4);
+    assert_eq!(cache.entries.len(), 12);
+    assert_eq!(cache.counts[CacheOutcome::FullDecode as usize], 12);
+    assert_eq!(cache.counts[CacheOutcome::ReadWitnessHit as usize], 48);
+    assert_eq!(values[0].value, values[4].value);
+    assert!(!Arc::ptr_eq(&values[0], &values[4]));
+    assert!(Arc::ptr_eq(&values[0], &values[12]));
 }

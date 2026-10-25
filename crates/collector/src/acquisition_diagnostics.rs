@@ -56,18 +56,49 @@ impl Job {
             .saturating_sub(self.timeline.body_begin_qpc)
             .max(0) as u64
     }
-    fn status(self, frequency: u64) -> impl serde::Serialize {
+    pub(crate) fn status(self, frequency: u64) -> impl serde::Serialize {
         let duration = |begin: i64, end: i64| {
             (begin != 0 && end >= begin).then(|| ns((end - begin) as u64, frequency))
         };
         crate::status::status!({
             "identity": self.identity.status(),
             "ticket": self.ticket,
+            "queued_qpc": (self.timeline.queued_qpc != 0).then_some(self.timeline.queued_qpc),
+            "body_begin_qpc": (self.timeline.body_begin_qpc != 0).then_some(self.timeline.body_begin_qpc),
+            "body_end_qpc": (self.timeline.body_end_qpc != 0).then_some(self.timeline.body_end_qpc),
+            "published_qpc": (self.timeline.published_qpc != 0).then_some(self.timeline.published_qpc),
+            "collected_qpc": (self.timeline.collected_qpc != 0).then_some(self.timeline.collected_qpc),
             "queue_delay_ns": duration(self.timeline.queued_qpc, self.timeline.body_begin_qpc),
             "body_ns": duration(self.timeline.body_begin_qpc, self.timeline.body_end_qpc),
             "publication_delay_ns": duration(self.timeline.body_end_qpc, self.timeline.published_qpc),
             "growths": self.timeline.growths,
             "callback_thread": self.timeline.caller,
+        })
+    }
+}
+
+#[cfg(any(test, feature = "callback_profile"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct JoinSpan {
+    pub job: Job,
+    pub profile: crate::acquisition::Profile,
+    pub begin_qpc: i64,
+    pub end_qpc: i64,
+}
+#[cfg(any(test, feature = "callback_profile"))]
+impl JoinSpan {
+    pub(crate) fn status(self, frequency: u64) -> impl serde::Serialize {
+        let profile = self.profile;
+        let ticks = |at| (at != 0).then_some(at);
+        crate::status::status!({
+            "job": self.job.status(frequency),
+            "join_begin_qpc": ticks(self.begin_qpc),
+            "join_end_qpc": ticks(self.end_qpc),
+            "claimed_qpc": ticks(profile.claimed_qpc),
+            "runner_thread_id": (profile.runner_thread_id != 0).then_some(profile.runner_thread_id),
+            "runner_thread_cycles": profile.runner_thread_cycles,
+            "submit_lock_wait_ns": ns(profile.submit_lock_wait_ticks, frequency),
+            "finish_lock_wait_ns": ns(profile.finish_lock_wait_ticks, frequency),
         })
     }
 }
@@ -82,12 +113,16 @@ pub(crate) struct Jobs {
     pub worker_growths: u64,
     pub top: [Job; TOP_JOBS],
     pub len: usize,
+    pub research: Option<Job>,
 }
 impl Jobs {
     pub(crate) fn record(&mut self, job: Job) {
         self.count = self.count.saturating_add(1);
         if !job.timeline.caller {
             self.worker_growths = self.worker_growths.saturating_add(job.timeline.growths);
+        }
+        if job.identity.role == crate::acquisition_jobs::Role::Research as usize {
+            self.research = Some(job);
         }
         self.insert(job);
     }
@@ -105,6 +140,9 @@ impl Jobs {
     pub(crate) fn merge(&mut self, other: &Self) {
         self.count = self.count.saturating_add(other.count);
         self.worker_growths = self.worker_growths.saturating_add(other.worker_growths);
+        if let Some(job) = other.research {
+            self.research = Some(job);
+        }
         for job in &other.top[..other.len] {
             self.insert(*job);
         }
@@ -160,6 +198,7 @@ impl Slot {
         jobs.count = 0;
         jobs.worker_growths = 0;
         jobs.len = 0;
+        jobs.research = None;
     }
 }
 
@@ -267,7 +306,7 @@ impl Hour {
                     "ending_probe_exhausted": self.ending_probe_exhausted,
                 })),
             },
-            "jobs": {"count": self.jobs.count, "top_by_body": crate::status::sequence(self.jobs.top[..self.jobs.len].iter().map(move |job| job.status(frequency)))},
+            "jobs": {"count": self.jobs.count, "research": self.jobs.research.map(move |job| job.status(frequency)), "top_by_body": crate::status::sequence(self.jobs.top[..self.jobs.len].iter().map(move |job| job.status(frequency)))},
             "growths": {"callback_thread": self.callback_growths, "workers": self.jobs.worker_growths},
             "longest_early_step": self.longest_step.map(|step| crate::status::status!({
                 "step": crate::status::DebugValue(EarlyStep::ALL[step.step]), "wall_ns": step.wall_ns,
@@ -376,7 +415,7 @@ impl serde::Serialize for Status {
 }
 
 #[cfg(any(test, feature = "callback_profile"))]
-pub(crate) const FIELDS: usize = 22 + 2 * MAX_JOBS + 14 * TOP_JOBS;
+pub(crate) const FIELDS: usize = 22 + 2 * MAX_JOBS + 14 * (TOP_JOBS + 1) + 1;
 #[cfg(any(test, feature = "callback_profile"))]
 impl Hour {
     pub(crate) fn fields(self) -> [u64; FIELDS] {
@@ -416,7 +455,8 @@ impl Hour {
             .jobs
             .top
             .into_iter()
-            .zip(fields[22 + 2 * MAX_JOBS..].chunks_exact_mut(14))
+            .chain(std::iter::once(self.jobs.research.unwrap_or_default()))
+            .zip(fields[22 + 2 * MAX_JOBS..FIELDS - 1].chunks_exact_mut(14))
         {
             let partition = job.identity.partition.unwrap_or_default();
             fields.copy_from_slice(&[
@@ -436,6 +476,7 @@ impl Hour {
                 u64::from(job.timeline.caller),
             ]);
         }
+        fields[FIELDS - 1] = u64::from(self.jobs.research.is_some());
         fields
     }
     pub(crate) fn from_fields(fields: [u64; FIELDS]) -> Self {
@@ -472,11 +513,13 @@ impl Hour {
         hour.jobs.count = fields[10];
         hour.jobs.worker_growths = fields[11];
         hour.jobs.len = fields[12] as usize;
+        let mut research = Job::default();
         for (job, fields) in hour
             .jobs
             .top
             .iter_mut()
-            .zip(fields[22 + 2 * MAX_JOBS..].chunks_exact(14))
+            .chain(std::iter::once(&mut research))
+            .zip(fields[22 + 2 * MAX_JOBS..FIELDS - 1].chunks_exact(14))
         {
             job.identity = Identity::unpack(fields[0]);
             job.identity.partition =
@@ -493,6 +536,7 @@ impl Hour {
                 caller: fields[13] != 0,
             };
         }
+        hour.jobs.research = (fields[FIELDS - 1] != 0).then_some(research);
         hour
     }
 }
@@ -521,6 +565,51 @@ mod tests {
                 ..Default::default()
             },
         }
+    }
+
+    #[test]
+    fn a_short_research_join_retains_its_identity_and_all_timestamps() {
+        let mut research = job(4, 5, 2, false);
+        research.identity.role = Role::Research as usize;
+        research.timeline.collected_qpc = 1000;
+        let mut hour = Hour::default();
+        hour.jobs.record(research);
+        for index in 10..30 {
+            hour.jobs.record(job(index, index as i64, 0, false));
+        }
+        assert!(
+            !hour
+                .jobs
+                .top
+                .iter()
+                .any(|job| job.identity.role == Role::Research as usize)
+        );
+        assert_eq!(Hour::from_fields(hour.fields()), hour);
+        assert_eq!(hour.jobs.research, Some(research));
+        let span = JoinSpan {
+            job: research,
+            profile: crate::acquisition::Profile {
+                claimed_qpc: 150,
+                runner_thread_id: 7,
+                ..Default::default()
+            },
+            begin_qpc: 110,
+            end_qpc: 1010,
+        };
+        let json = serde_json::to_value(span.status(10_000_000)).unwrap();
+        assert_eq!(json["job"]["identity"]["role"], "Research");
+        assert_eq!(json["job"]["identity"]["part"], 4);
+        assert_eq!(json["job"]["queued_qpc"], 104);
+        assert_eq!(json["job"]["body_begin_qpc"], 200);
+        assert_eq!(json["job"]["body_end_qpc"], 205);
+        assert_eq!(json["job"]["published_qpc"], 215);
+        assert_eq!(json["job"]["collected_qpc"], 1000);
+        assert_eq!(json["join_begin_qpc"], 110);
+        assert_eq!(json["join_end_qpc"], 1010);
+        assert_eq!(json["claimed_qpc"], 150);
+        let missing = serde_json::to_value(JoinSpan::default().status(1)).unwrap();
+        assert!(missing["job"]["body_begin_qpc"].is_null());
+        assert!(missing["join_begin_qpc"].is_null());
     }
 
     #[test]

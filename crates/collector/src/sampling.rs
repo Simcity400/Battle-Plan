@@ -338,6 +338,9 @@ pub(crate) struct HourCost {
     pub collect_stalls_over_1ms: u64,
     pub growths: u64,
     pub diagnostics: crate::acquisition_diagnostics::Hour,
+    pub variants: Option<crate::design_changes::profile::Hour>,
+    #[cfg(feature = "callback_profile")]
+    pub join_timeline: Option<crate::acquisition_diagnostics::JoinSpan>,
     pub first_since_attach: bool,
     pub continuous: bool,
     pub force_full: bool,
@@ -365,6 +368,8 @@ struct JoinTally {
     // The opt-in sample is consumed after acquire takes the hour's diagnostics.
     #[cfg(feature = "callback_profile")]
     profile: crate::callback_profile::JoinSample,
+    #[cfg(feature = "callback_profile")]
+    profile_span: Option<crate::acquisition_diagnostics::JoinSpan>,
 }
 
 thread_local! {
@@ -381,6 +386,7 @@ pub(crate) fn record_hour_join(
     wait_ns: u64,
     collect_stall_ns: u64,
     #[cfg(feature = "callback_profile")] profile: crate::acquisition::Profile,
+    #[cfg(feature = "callback_profile")] span: Option<crate::acquisition_diagnostics::JoinSpan>,
 ) {
     let mut tally = HOUR_JOINS.get().unwrap_or_default();
     if tally.hour.slowest.is_none_or(|join| wait_ns > join.wait_ns) {
@@ -398,6 +404,7 @@ pub(crate) fn record_hour_join(
                 readiness: false,
                 profile,
             };
+            tally.profile_span = span;
         }
     }
     tally.hour.collect_stalls_over_1ms += u64::from(collect_stall_ns >= JoinCosts::STALL_NS[1]);
@@ -430,6 +437,7 @@ pub(crate) fn record_readiness_wait(
                 readiness: true,
                 ..Default::default()
             };
+            tally.profile_span = None;
         }
     }
     HOUR_JOINS.set(Some(tally));
@@ -6757,6 +6765,11 @@ unsafe fn acquire_with_memory(
                     .callback_growths
                     .saturating_add(diagnostics.jobs.worker_growths),
                 diagnostics,
+                variants: frame.clock.as_ref().and_then(|clock| {
+                    crate::design_changes::profile::latest(clock.hour, dispatched)
+                }),
+                #[cfg(feature = "callback_profile")]
+                join_timeline: HOUR_JOINS.get().and_then(|tally| tally.profile_span),
                 first_since_attach,
                 continuous,
                 force_full,
@@ -7024,6 +7037,17 @@ unsafe fn finish_acquisition_into(
                 stall_ns,
                 #[cfg(feature = "callback_profile")]
                 result.profile,
+                #[cfg(feature = "callback_profile")]
+                Some(crate::acquisition_diagnostics::JoinSpan {
+                    job: crate::acquisition_diagnostics::Job {
+                        identity: result.request.diagnostic_identity(),
+                        ticket,
+                        timeline: result.timeline,
+                    },
+                    profile: result.profile,
+                    begin_qpc: begin,
+                    end_qpc: end,
+                }),
             );
             shared
                 .acquisition_wait_ns
@@ -8107,6 +8131,8 @@ mod role_timeline_tests {
             4,
             #[cfg(feature = "callback_profile")]
             Default::default(),
+            #[cfg(feature = "callback_profile")]
+            None,
         );
         let completion = crate::acquisition_diagnostics::Completion {
             identity: crate::acquisition_diagnostics::Identity {
@@ -8122,6 +8148,8 @@ mod role_timeline_tests {
             8,
             #[cfg(feature = "callback_profile")]
             Default::default(),
+            #[cfg(feature = "callback_profile")]
+            None,
         );
         let join = take_hour_joins().slowest.unwrap();
         assert_eq!(join.role, Some(2));

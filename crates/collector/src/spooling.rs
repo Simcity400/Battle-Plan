@@ -5177,6 +5177,9 @@ mod tests {
                 collect_stalls_over_1ms: index as u64,
                 growths: index as u64 + 1,
                 diagnostics: Default::default(),
+                variants: None,
+                #[cfg(feature = "callback_profile")]
+                join_timeline: None,
                 first_since_attach: index == 17,
                 continuous: index != 17,
                 force_full: index == 17,
@@ -5223,6 +5226,7 @@ mod tests {
                     "kind": "join", "wait_ns": 300, "collect_stall_ns": 250,
                 },
                 "collect_stalls_over_1ms": 17, "growths": 18,
+                "variants": null, "join_timeline": null,
                 "dominant_segment": 0,
                 "diagnostics": serde_json::to_value(crate::acquisition_diagnostics::Hour::default().status(processor.session.qpc_frequency)).unwrap(),
                 "first_since_attach": true, "continuous": false,

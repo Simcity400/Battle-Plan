@@ -6,6 +6,7 @@ mod diagnostics;
 mod forward;
 pub(super) mod held;
 pub(super) mod liveness;
+pub mod profile;
 mod repair;
 mod scalar;
 mod snapshots;
@@ -2163,6 +2164,7 @@ fn drain_shared(
     output: &mut Vec<rows::VariantChangeRow>,
     snapshots: &mut snapshots::Shared,
 ) -> Result<usize, &'static str> {
+    let _phase = profile::Timer::new(profile::Phase::Drain);
     output.clear();
     snapshots.clear();
     let revision = REVISION.load(Ordering::Acquire);
@@ -2208,7 +2210,10 @@ fn drain_shared(
         // before a terminal read can follow dead storage or replace that proof.
         held::check_lifetimes(&batch.events)?;
         decode_batch_shared(&batch, base, hour, output, snapshots)?;
-        liveness::refresh_context(memory, base, &batch.events)?;
+        {
+            let _phase = profile::Timer::new(profile::Phase::Liveness);
+            liveness::refresh_context(memory, base, &batch.events)?;
+        }
         for watch in &repairs.watches {
             let value = repair::snapshot(memory, base, hour, watch.pointer, &batch.events)?;
             if value.definition.id != watch.id {
@@ -2238,9 +2243,15 @@ fn drain_shared(
                 ..Default::default()
             });
         }
-        held::apply_shared(&batch.events, output, snapshots)?;
+        {
+            let _phase = profile::Timer::new(profile::Phase::Held);
+            held::apply_shared(&batch.events, output, snapshots)?;
+        }
         held::check_lifetimes(&batch.events)?;
-        sources::prune_interests()?;
+        {
+            let _phase = profile::Timer::new(profile::Phase::Prune);
+            sources::prune_interests()?;
+        }
         if active() != 0
             || revision != REVISION.load(Ordering::Acquire)
             || epoch != EPOCH.load(Ordering::Acquire)
@@ -2692,10 +2703,14 @@ impl Captured {
             .and_then(|repaired| {
                 self.repaired = repaired;
                 self.liveness = liveness::observation()?;
+                let _phase = profile::Timer::new(profile::Phase::Bonuses);
                 self.dictionary = super::bonus_snapshots::snapshot()?;
                 Ok(())
             });
-        (self.context, self.templates) = context(&memory).unwrap_or_default();
+        {
+            let _phase = profile::Timer::new(profile::Phase::Context);
+            (self.context, self.templates) = context(&memory).unwrap_or_default();
+        }
         self.context_acquired = true;
         self.outcome = match result {
             Ok(()) => Outcome::Rows {
@@ -2908,6 +2923,7 @@ pub struct Status {
     bonus_snapshots: super::bonus_snapshots::Status,
     country_context: super::design_context::Status,
     templates: super::design_template_changes::Status,
+    variants_profile: profile::Status,
 }
 pub fn status() -> Status {
     Status {
@@ -2944,6 +2960,7 @@ pub fn status() -> Status {
         bonus_snapshots: super::bonus_snapshots::status(),
         country_context: super::design_context::status(),
         templates: super::design_template_changes::status(),
+        variants_profile: profile::Status,
     }
 }
 
@@ -2965,6 +2982,7 @@ fn decode_batch_shared(
     output: &mut Vec<rows::VariantChangeRow>,
     snapshots: &mut snapshots::Shared,
 ) -> Result<(), &'static str> {
+    let _phase = profile::Timer::new(profile::Phase::DecodeBatch);
     snapshots.reserve(batch.events.len())?;
     let mut cache = snapshots::Cache::default();
     let mut preceding_sequence = 0;

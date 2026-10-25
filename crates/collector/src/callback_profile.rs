@@ -29,7 +29,7 @@ pub(crate) fn reset_join() {
 /// Keep the first largest join on this thread; ties retain the earlier join.
 #[cfg(test)]
 pub(crate) fn record_join(role: usize, wall_ns: u64, profile: acquisition::Profile) {
-    sampling::record_hour_join(role, wall_ns, 0, profile);
+    sampling::record_hour_join(role, wall_ns, 0, profile, None);
 }
 
 /// Returns this callback's slowest join and clears the thread-local slot.

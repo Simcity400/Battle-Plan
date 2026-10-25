@@ -1,5 +1,6 @@
 use super::*;
 mod witness;
+use profile::Outcome as CacheOutcome;
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     sync::Arc,
@@ -185,9 +186,19 @@ struct Entry {
 pub(super) struct Cache {
     heads: HashMap<u64, usize>,
     witness_heads: HashMap<u64, usize>,
+    shape_heads: HashMap<u64, usize>,
     entries: Vec<Entry>,
     recent: HashMap<usize, (usize, Option<usize>)>,
     order: Vec<usize>,
+    counts: [u64; profile::CACHE_FIELDS],
+    full_decode: profile::Cost,
+    miss: Option<CacheOutcome>,
+}
+impl Drop for Cache {
+    fn drop(&mut self) {
+        profile::add_cache(self.counts);
+        profile::add_cost(profile::Phase::FullDecode, self.full_decode);
+    }
 }
 fn payload<'a>(log: &'a RawLog<1>, span: &collector_raw::raw::Span) -> &'a [u8] {
     if span.ok {
@@ -206,6 +217,15 @@ fn fingerprint(log: &RawLog<1>, range: std::ops::Range<usize>, pointer: usize) -
         span.ok.hash(&mut hash);
         span.bulk.hash(&mut hash);
         hash.write(payload(log, span));
+    }
+    hash.finish()
+}
+fn shape_key(log: &RawLog<1>, range: std::ops::Range<usize>, pointer: usize) -> u64 {
+    let mut hash = DefaultHasher::new();
+    pointer.hash(&mut hash);
+    range.len().hash(&mut hash);
+    for span in &log.spans[range] {
+        (span.addr, span.len, span.ok, span.bulk).hash(&mut hash);
     }
     hash.finish()
 }
@@ -231,6 +251,7 @@ impl Cache {
         if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.order, range.len()))
             .is_err()
         {
+            self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
             return Ok(false);
         }
         self.order.extend(range);
@@ -241,6 +262,7 @@ impl Cache {
         for index in &self.order {
             let span = &log.spans[*index];
             if !span.ok {
+                self.counts[CacheOutcome::UnreadableCopy as usize] += 1;
                 return Ok(false);
             }
             let end = span
@@ -253,6 +275,7 @@ impl Cache {
                     let offset = span.addr - previous.addr;
                     let len = (previous_end - span.addr).min(span.len as usize);
                     if payload(log, previous)[offset..offset + len] != payload(log, span)[..len] {
+                        self.counts[CacheOutcome::InsertOverlap as usize] += 1;
                         return Ok(false);
                     }
                 }
@@ -287,6 +310,8 @@ impl Cache {
             .is_ok()
         {
             self.recent.insert(pointer, (index, None));
+        } else {
+            self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
         }
     }
     pub fn decode(
@@ -298,10 +323,12 @@ impl Cache {
         shared: &mut Shared,
     ) -> Result<Arc<Decoded>, &'static str> {
         let range = event.start..event.end;
+        self.miss = None;
         if let Some((latest, previous)) = self.recent.get(&event.pointer).copied() {
             for index in std::iter::once(latest).chain(previous) {
                 if equal(&batch.log, self.entries[index].range.clone(), range.clone()) {
                     let value = self.reuse(index)?;
+                    self.counts[CacheOutcome::FullCopyHit as usize] += 1;
                     self.remember(event.pointer, index);
                     return Ok(value);
                 }
@@ -310,43 +337,75 @@ impl Cache {
         if let Some((latest, previous)) = self.recent.get(&event.pointer).copied() {
             for index in std::iter::once(latest).chain(previous) {
                 let entry = &self.entries[index];
-                if entry.witness.as_ref().is_some_and(|witness| {
-                    witness.equal(&batch.log, entry.range.clone(), range.clone())
-                }) {
+                let mismatch = entry.witness.as_ref().map(|witness| {
+                    witness.mismatch(&batch.log, entry.range.clone(), range.clone())
+                });
+                if mismatch == Some(None) {
                     let value = self.reuse(index)?;
+                    self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
                     self.remember(event.pointer, index);
                     return Ok(value);
                 }
+                if index == latest {
+                    self.miss = Some(mismatch.flatten().unwrap_or_else(|| {
+                        witness::shape_miss(
+                            &batch.log.spans[entry.range.clone()],
+                            &batch.log.spans[range.clone()],
+                        )
+                        .unwrap_or(CacheOutcome::WitnessUnavailable)
+                    }));
+                }
             }
         }
-        if let Some((latest, previous)) = self.recent.get(&event.pointer).copied() {
-            for index in std::iter::once(latest).chain(previous) {
+        // A modifier refresh can revisit an older source-list shape, beyond the last two decodes.
+        let shaped = self
+            .shape_heads
+            .get(&shape_key(&batch.log, range.clone(), event.pointer))
+            .copied();
+        let recent = self.recent.get(&event.pointer).copied();
+        for index in shaped
+            .into_iter()
+            .chain(recent.into_iter().flat_map(|(latest, previous)| {
+                std::iter::once(latest)
+                    .chain(previous)
+                    .filter(move |index| Some(*index) != shaped)
+            }))
+        {
+            let entry = &self.entries[index];
+            let Some(witness) = entry.witness.as_ref() else {
+                continue;
+            };
+            if Some(index) == shaped
+                && entry.pointer == event.pointer
+                && witness.equal(&batch.log, entry.range.clone(), range.clone())
+            {
+                let value = self.reuse(index)?;
+                self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                self.remember(event.pointer, index);
+                return Ok(value);
+            }
+            let Some(key) = witness.key(
+                &batch.log,
+                entry.range.clone(),
+                range.clone(),
+                event.pointer,
+            ) else {
+                continue;
+            };
+            let mut next = self.witness_heads.get(&key).copied();
+            while let Some(index) = next {
                 let entry = &self.entries[index];
-                let Some(witness) = entry.witness.as_ref() else {
-                    continue;
-                };
-                let Some(key) = witness.key(
-                    &batch.log,
-                    entry.range.clone(),
-                    range.clone(),
-                    event.pointer,
-                ) else {
-                    continue;
-                };
-                let mut next = self.witness_heads.get(&key).copied();
-                while let Some(index) = next {
-                    let entry = &self.entries[index];
-                    if entry.pointer == event.pointer
-                        && entry.witness.as_ref().is_some_and(|witness| {
-                            witness.equal(&batch.log, entry.range.clone(), range.clone())
-                        })
-                    {
-                        let value = self.reuse(index)?;
-                        self.remember(event.pointer, index);
-                        return Ok(value);
-                    }
-                    next = self.entries[index].witness_next;
+                if entry.pointer == event.pointer
+                    && entry.witness.as_ref().is_some_and(|witness| {
+                        witness.equal(&batch.log, entry.range.clone(), range.clone())
+                    })
+                {
+                    let value = self.reuse(index)?;
+                    self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                    self.remember(event.pointer, index);
+                    return Ok(value);
                 }
+                next = self.entries[index].witness_next;
             }
         }
         let key = fingerprint(&batch.log, range.clone(), event.pointer);
@@ -370,38 +429,77 @@ impl Cache {
                 && equal(&batch.log, entry.range.clone(), range.clone())
             {
                 let value = self.reuse(index)?;
+                self.counts[CacheOutcome::FullCopyHit as usize] += 1;
                 self.remember(event.pointer, index);
                 return Ok(value);
             }
             next = entry.next;
         }
-        let memory = crate::raw::Recorded::build_range(&batch.log, range.clone())?;
-        let memory = witness::Observed::new(&memory, range.len());
-        let value = Arc::new(decode_snapshot(&memory, base, hour, event.pointer, false)?);
-        shared.heap_bytes += size_of::<Decoded>()
-            + 2 * size_of::<usize>()
-            + replay_data::value::Value::heap_bytes(&value.value)
-            + rows::NativeValue::heap_bytes(value.definition.design.as_ref())
-            + value
-                .definition
-                .source_links
-                .as_ref()
-                .map_or(0, |links| links.direct.capacity() * size_of::<usize>())
-            + value
+        let miss = self.miss.take().unwrap_or_else(|| {
+            self.recent
+                .get(&event.pointer)
+                .map_or(CacheOutcome::NoRecentEntry, |&(latest, _)| {
+                    let entry = &self.entries[latest];
+                    entry.witness.as_ref().map_or_else(
+                        || {
+                            witness::shape_miss(
+                                &batch.log.spans[entry.range.clone()],
+                                &batch.log.spans[range.clone()],
+                            )
+                            .unwrap_or(CacheOutcome::WitnessUnavailable)
+                        },
+                        |witness| {
+                            witness
+                                .mismatch(&batch.log, entry.range.clone(), range.clone())
+                                .unwrap_or(CacheOutcome::WitnessUnavailable)
+                        },
+                    )
+                })
+        });
+        self.counts[CacheOutcome::FullDecode as usize] += 1;
+        self.counts[miss as usize] += 1;
+        let stamp = profile::Stamp::new();
+        let result = (|| {
+            let memory = crate::raw::Recorded::build_range(&batch.log, range.clone())?;
+            let memory = witness::Observed::new(&memory, range.len());
+            let value = Arc::new(decode_snapshot(&memory, base, hour, event.pointer, false)?);
+            shared.heap_bytes += size_of::<Decoded>()
+                + 2 * size_of::<usize>()
+                + replay_data::value::Value::heap_bytes(&value.value)
+                + rows::NativeValue::heap_bytes(value.definition.design.as_ref())
+                + value
+                    .definition
+                    .source_links
+                    .as_ref()
+                    .map_or(0, |links| links.direct.capacity() * size_of::<usize>())
+                + value
+                    .context
+                    .as_ref()
+                    .map_or(0, super::super::design_context::Event::allocated_bytes);
+            if !value
                 .context
                 .as_ref()
-                .map_or(0, super::super::design_context::Event::allocated_bytes);
-        if !value
-            .context
-            .as_ref()
-            .is_some_and(|context| context.reusable())
-            || !self.consistent(&batch.log, range.clone())?
-        {
-            return Ok(value);
-        }
-        let witness = memory.finish(&batch.log, range.clone(), &self.order);
-        self.insert(&batch.log, range, event.pointer, key, &value, witness);
-        Ok(value)
+                .is_some_and(|context| context.reusable())
+            {
+                self.counts[CacheOutcome::ContextNotReusable as usize] += 1;
+                return Ok(value);
+            }
+            if !self.consistent(&batch.log, range.clone())? {
+                return Ok(value);
+            }
+            let (complete, allocation_failed, read_failed) = memory.diagnostics();
+            let witness = memory.finish(&batch.log, range.clone(), &self.order);
+            if allocation_failed || (complete && witness.is_none()) {
+                self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
+            }
+            if read_failed {
+                self.counts[CacheOutcome::WitnessReadFailed as usize] += 1;
+            }
+            self.insert(&batch.log, range, event.pointer, key, &value, witness);
+            Ok(value)
+        })();
+        self.full_decode.add(stamp.finish());
+        result
     }
     fn insert(
         &mut self,
@@ -417,20 +515,27 @@ impl Cache {
             engine_allocation::reserve(&mut self.entries, 1)
         });
         if reserved.is_err() {
+            self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
             return false;
         }
         if witness.is_some()
             && engine_allocation::advisory(|| {
-                engine_allocation::reserve_map(&mut self.witness_heads, 1)
+                engine_allocation::reserve_map(&mut self.witness_heads, 1)?;
+                engine_allocation::reserve_map(&mut self.shape_heads, 1)
             })
             .is_err()
         {
+            self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
             witness = None;
         }
         let witness_key = witness
             .as_ref()
             .and_then(|witness| witness.key(log, range.clone(), range.clone(), pointer));
         let index = self.entries.len();
+        if witness_key.is_some() {
+            self.shape_heads
+                .insert(shape_key(log, range.clone(), pointer), index);
+        }
         self.entries.push(Entry {
             range,
             pointer,

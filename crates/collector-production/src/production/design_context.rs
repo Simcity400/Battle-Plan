@@ -1708,6 +1708,8 @@ pub struct CountryPart {
 }
 impl CountryPart {
     pub fn capture(&mut self, memory: &impl Memory, base: usize) {
+        let _phase =
+            design_changes::profile::Timer::new(design_changes::profile::Phase::ContextParts);
         self.owners.clear();
         self.modifiers.clear();
         self.templates.clear();

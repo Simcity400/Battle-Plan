@@ -155,8 +155,8 @@ pub(crate) struct Timeline {
 
 /// Diagnostic stages in raw QPC ticks. The publisher cannot stamp a wake's
 /// end in the cell: the collector owns it immediately after publication.
-#[cfg(feature = "callback_profile")]
-#[derive(Clone, Copy, Debug, Default)]
+#[cfg(any(test, feature = "callback_profile"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Profile {
     pub queued_qpc: i64,
     pub claimed_qpc: i64,

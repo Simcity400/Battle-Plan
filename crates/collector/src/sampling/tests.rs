@@ -1526,6 +1526,8 @@ fn hourly_join_tally_keeps_first_slowest_counts_stalls_and_resets() {
             stall,
             #[cfg(feature = "callback_profile")]
             crate::acquisition::Profile::default(),
+            #[cfg(feature = "callback_profile")]
+            None,
         )
     };
     reset_hour_joins();

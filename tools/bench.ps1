@@ -1085,6 +1085,8 @@ function Invoke-Screen($attached, [string]$runDir) {
                         elapsed_s = $entry.elapsed_s; hour = $entry.hour
                         callback_work = $status.callback_work; native_tick_work = $status.native_tick_work
                         callback_tail = $status.callback_tail
+                        variants_profile = $status.variant_changes.variants_profile
+                        callback_profile = $status.callback_profile
                         callback_histogram = $status.callback_tail.histogram; slowest = $status.callback_tail.slowest
                         spool_bytes = $status.spool_bytes; pool_bytes = $status.pool_bytes
                         dropped_frames = $status.dropped_frames; write_errors = $status.write_errors

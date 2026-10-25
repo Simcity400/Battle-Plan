@@ -8,6 +8,8 @@ pub(super) struct Observed<'a, M> {
     source: &'a M,
     reads: RefCell<Vec<Range<usize>>>,
     complete: Cell<bool>,
+    allocation_failed: Cell<bool>,
+    read_failed: Cell<bool>,
 }
 impl<'a, M: Memory> Observed<'a, M> {
     pub fn new(source: &'a M, spans: usize) -> Self {
@@ -21,7 +23,16 @@ impl<'a, M: Memory> Observed<'a, M> {
             source,
             reads: RefCell::new(reads),
             complete: Cell::new(complete),
+            allocation_failed: Cell::new(!complete),
+            read_failed: Cell::new(false),
         }
+    }
+    pub fn diagnostics(&self) -> (bool, bool, bool) {
+        (
+            self.complete.get(),
+            self.allocation_failed.get(),
+            self.read_failed.get(),
+        )
     }
     pub fn finish(self, log: &RawLog<1>, range: Range<usize>, order: &[usize]) -> Option<Witness> {
         engine_allocation::advisory(move || self.build(log, range, order))
@@ -87,13 +98,18 @@ impl<M: Memory> Memory for Observed<'_, M> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         let ok = self.source.copy(address, output);
         if !ok {
+            self.read_failed.set(true);
             self.complete.set(false);
         } else if !output.is_empty() && self.complete.get() {
             let mut reads = self.reads.borrow_mut();
-            if let Some(end) = address.checked_add(output.len())
-                && engine_allocation::advisory(|| engine_allocation::reserve(&mut reads, 1)).is_ok()
-            {
-                reads.push(address..end);
+            if let Some(end) = address.checked_add(output.len()) {
+                if engine_allocation::advisory(|| engine_allocation::reserve(&mut reads, 1)).is_ok()
+                {
+                    reads.push(address..end);
+                } else {
+                    self.allocation_failed.set(true);
+                    self.complete.set(false);
+                }
             } else {
                 self.complete.set(false);
             }
@@ -140,28 +156,52 @@ impl Witness {
         Some(hash.finish())
     }
     pub fn equal(&self, log: &RawLog<1>, left: Range<usize>, right: Range<usize>) -> bool {
+        self.mismatch(log, left, right).is_none()
+    }
+    pub fn mismatch(
+        &self,
+        log: &RawLog<1>,
+        left: Range<usize>,
+        right: Range<usize>,
+    ) -> Option<CacheOutcome> {
         let (left, right) = (&log.spans[left], &log.spans[right]);
-        // Unchanged read shapes and single-valued copies preserve every reader's admission checks.
-        same_shape(left, right)
-            && self.overlaps.iter().all(|overlap| {
-                payload(log, &right[overlap.left])[overlap.offset..overlap.offset + overlap.len]
-                    == payload(log, &right[overlap.right])[..overlap.len]
-            })
-            && self.pieces.iter().all(|piece| {
-                payload(log, &left[piece.span])[piece.bytes.clone()]
-                    == payload(log, &right[piece.span])[piece.bytes.clone()]
-            })
+        if let Some(reason) = shape_miss(left, right) {
+            return Some(reason);
+        }
+        if !self.overlaps.iter().all(|overlap| {
+            payload(log, &right[overlap.left])[overlap.offset..overlap.offset + overlap.len]
+                == payload(log, &right[overlap.right])[..overlap.len]
+        }) {
+            return Some(CacheOutcome::Overlap);
+        }
+        if !self.pieces.iter().all(|piece| {
+            payload(log, &left[piece.span])[piece.bytes.clone()]
+                == payload(log, &right[piece.span])[piece.bytes.clone()]
+        }) {
+            return Some(CacheOutcome::ReadBytes);
+        }
+        None
     }
 }
-
 fn same_shape(left: &[collector_raw::raw::Span], right: &[collector_raw::raw::Span]) -> bool {
-    left.len() == right.len()
-        && left.iter().zip(right).all(|(left, right)| {
-            left.addr == right.addr
-                && left.len == right.len
-                && left.ok == right.ok
-                && left.bulk == right.bulk
-        })
+    shape_miss(left, right).is_none()
+}
+pub(super) fn shape_miss(
+    left: &[collector_raw::raw::Span],
+    right: &[collector_raw::raw::Span],
+) -> Option<CacheOutcome> {
+    if left.len() != right.len() {
+        return Some(CacheOutcome::SpanCount);
+    }
+    for (left, right) in left.iter().zip(right) {
+        if left.addr != right.addr {
+            return Some(CacheOutcome::SpanAddress);
+        }
+        if left.len != right.len || left.ok != right.ok || left.bulk != right.bulk {
+            return Some(CacheOutcome::SpanMetadata);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
