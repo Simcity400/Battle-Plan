@@ -32,6 +32,7 @@ pub const COUNTRY: u64 = 14;
 pub const SLOT: u64 = 15;
 pub const COUNT: u64 = 16;
 pub const RESET: u64 = 17;
+pub const RELEASE: u64 = 18;
 pub const OBSERVER_STATE: u64 = 20;
 pub const OBSERVER_MODIFIERS: u64 = 21;
 pub const OBSERVER_LEADER: u64 = 22;
@@ -72,6 +73,53 @@ pub const ARRAYS: [usize; 9] = [
     layout::TEMPLATES,
     layout::REFERENCES,
 ];
+
+/// Off-thread demand includes attrition/training variants before any log exists.
+pub fn noncombat_writer_demand(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+) -> Result<usize, &'static str> {
+    use crate::{carmy, ccountry, cequipment_variant_pool as pool};
+    let countries = ccountry::Reader::new(memory, base, state)?;
+    let mut demand = 0usize;
+    for slot in 1..countries.count() {
+        let Some(country) = countries.at(slot)? else {
+            continue;
+        };
+        let at = country
+            .pointer
+            .checked_add(ccountry::DIVISIONS)
+            .ok_or("combat log division sizing address overflow")?;
+        let divisions =
+            Array::read(memory, at, 8).ok_or("combat log division sizing roster invalid")?;
+        crate::cpdx_array::pointers(
+            memory,
+            divisions,
+            "combat log sizing division unreadable",
+            |_, pointer| {
+                header::<8>(memory, base, pointer, carmy::VTABLE_RVA)?;
+                let pool_at = pointer
+                    .checked_add(carmy::EQUIPMENT_POOL)
+                    .ok_or("combat log pool sizing address overflow")?;
+                let equipment = pool::entries(memory, base, pool_at)?;
+                demand = demand
+                    .checked_add(noncombat_division_demand(equipment.count as usize)?)
+                    .ok_or("combat log writer sizing overflow")?;
+                Ok(())
+            },
+        )?;
+        if Array::read(memory, at, 8) != Some(divisions) {
+            return Err("combat log sizing division roster changed");
+        }
+    }
+    Ok(demand)
+}
+fn noncombat_division_demand(variants: usize) -> Result<usize, &'static str> {
+    variants
+        .checked_add(3)
+        .ok_or("combat log writer sizing overflow")
+}
 
 fn field<T: crate::memory::Raw>(
     memory: &impl Memory,
@@ -329,8 +377,7 @@ fn reference(
     Ok(())
 }
 
-/// Initial history only, called with the existing walk's copied group header.
-/// This is not a dirty-group refresh operation.
+/// Copies complete retained history from an authenticated group header.
 pub fn seed_group(
     memory: &impl Memory,
     base: usize,
@@ -795,4 +842,15 @@ pub fn settled_counts(
         visit(id, count);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod writer_demand_tests {
+    use super::*;
+    #[test]
+    fn noncombat_demand_includes_every_variant_and_creation_pool_manpower_writers() {
+        assert_eq!(noncombat_division_demand(0), Ok(3));
+        assert_eq!(noncombat_division_demand(11_133), Ok(11_136));
+        assert!(noncombat_division_demand(usize::MAX).is_err());
+    }
 }

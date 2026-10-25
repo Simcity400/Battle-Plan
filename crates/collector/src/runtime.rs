@@ -2199,7 +2199,7 @@ impl RestoreFamily {
             ),
             Self::CombatLogPrune => (
                 crate::combat_log_prune::ACTIVE.load(Ordering::SeqCst) != 0
-                    || collector_combat_log::history_events::ACTIVE.load(Ordering::SeqCst) != 0
+                    || collector_combat_log::history_events::active() != 0
                     || collector_combat_log::history_events::retention_required(),
                 "combat log prune callbacks did not quiesce; collector retained",
             ),
@@ -5260,6 +5260,7 @@ fn sizing_pass(
         sizing.error(reason);
     }
     crate::land_events::prepare();
+    collector_combat_log::history_events::prepare(0);
     let air_loss_capacity = crate::air_losses::capacity();
     let bombing_capacity = crate::building_bombing::capacity();
     let nuclear_capacity = crate::nuclear_strikes::capacity();

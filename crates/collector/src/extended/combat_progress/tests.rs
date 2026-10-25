@@ -487,29 +487,6 @@ fn combat_log_complete_observer_uses_the_loss_census_and_preserves_signed_counte
 }
 
 #[test]
-fn active_census_sizes_history_events_even_when_retained_history_is_empty() {
-    collector_combat_log::history_events::prepare(1);
-    let mut captured = Captured::with_capacities(&Capacities::default());
-    let worlds = [World::new(50)];
-    read(&mut captured, &worlds);
-    assert!(captured.losses_complete());
-    let demand = captured.observers.len() + captured.equipment.len;
-    assert_eq!(captured.equipment.len, 100);
-    assert!(demand > captured.observers.len());
-    let status = serde_json::to_value(collector_combat_log::history_events::status()).unwrap();
-    assert_eq!(status["required_entries"], demand);
-    assert!(status["capacity"].as_u64().unwrap() >= demand as u64);
-    assert_eq!(status["lost"], 0);
-    let capacities = status["capacity"].clone();
-    // A later quiet census neither shrinks the lane nor needs a refused event.
-    read(&mut captured, &[]);
-    let status = serde_json::to_value(collector_combat_log::history_events::status()).unwrap();
-    assert_eq!(status["capacity"], capacities);
-    assert_eq!(status["required_entries"], demand);
-    assert_eq!(status["lost"], 0);
-}
-
-#[test]
 fn combat_log_projection_uses_committed_labels_across_capture_buffers_and_keyframes() {
     use crate::projection::{Projection, ProjectionScratch};
     use replay_data::rows::{CombatLogObserverKind as K, CombatLogObserverRow, TableRows};

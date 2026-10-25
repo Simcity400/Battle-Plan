@@ -1,5 +1,4 @@
-//! Demand-only native acquisition. Owned batches are reduced/projected only
-//! by conversion, after the acquisition worker has returned to the game.
+//! Incremental writer acquisition, with exact retained-state recovery after loss.
 use crate::{history_events, history_projection::Held, history_reducer::Store};
 use engine_land_inputs::{combat_log_events as event, combat_log_history as native};
 use engine_native::{Memory, walk::Outcome};
@@ -7,7 +6,10 @@ use replay_data::rows::*;
 use replay_frame::frame::{TableInput, TableView};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 pub const N: usize = 11;
 pub const TABLES: [TableId; N] = [
@@ -110,23 +112,76 @@ fn seed_battle(batch: &mut Batch, id: u32, b: &native::Battle) -> Result<(), &'s
     push(&mut batch.counts, (id, b.ref_count))
 }
 
+#[derive(Clone, Copy, Default, serde::Serialize)]
+struct RecoveryCall {
+    sequence: u64,
+    reason: &'static str,
+    elapsed_ns: u64,
+    groups_visited: u64,
+    battles_read: u64,
+    facts: u64,
+    complete: bool,
+}
+#[derive(Default, serde::Serialize)]
+struct RecoveryStatus {
+    calls: u64,
+    total_ns: u64,
+    last: RecoveryCall,
+}
+static RECOVERY: Mutex<RecoveryStatus> = Mutex::new(RecoveryStatus {
+    calls: 0,
+    total_ns: 0,
+    last: RecoveryCall {
+        sequence: 0,
+        reason: "not called",
+        elapsed_ns: 0,
+        groups_visited: 0,
+        battles_read: 0,
+        facts: 0,
+        complete: false,
+    },
+});
+fn record_recovery(call: RecoveryCall) {
+    let mut status = RECOVERY.lock().unwrap_or_else(|e| e.into_inner());
+    status.calls = status.calls.saturating_add(1);
+    status.total_ns = status.total_ns.saturating_add(call.elapsed_ns);
+    status.last = call;
+}
+pub fn recovery_status() -> impl serde::Serialize {
+    let status = RECOVERY.lock().unwrap_or_else(|e| e.into_inner());
+    RecoveryStatus {
+        calls: status.calls,
+        total_ns: status.total_ns,
+        last: status.last,
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct SlotWitness {
+    count: Option<i32>,
+    counted_at: u64,
+    allocated_at: u64,
+}
+
 pub struct State {
     signal: Option<i64>,
-    lost: u64,
     available: bool,
     full: bool,
     sequence: u64,
     batch: Batch,
-    drained: Vec<history_events::Logged>,
     requested: Vec<u32>,
-    witness: Option<u64>,
+    witness: Option<history_events::Witness>,
+    certificate: Option<history_events::Witness>,
+    drained: Vec<history_events::Logged>,
+    slots: Vec<SlotWitness>,
+    recovery_reason: &'static str,
     failure: Option<&'static str>,
 }
+static REBASE_REQUIRED: AtomicBool = AtomicBool::new(false);
 impl State {
     pub const fn new() -> Self {
         Self {
             signal: None,
-            lost: 0,
             available: false,
             full: false,
             sequence: 0,
@@ -134,13 +189,38 @@ impl State {
                 facts: Vec::new(),
                 counts: Vec::new(),
             },
-            drained: Vec::new(),
             requested: Vec::new(),
             witness: None,
+            certificate: None,
+            drained: Vec::new(),
+            slots: Vec::new(),
+            recovery_reason: UNREAD,
             failure: Some(UNREAD),
         }
     }
     pub fn begin(&mut self, signal: i64, full: bool) {
+        let retry = REBASE_REQUIRED.swap(false, Ordering::AcqRel);
+        let drained = history_events::drain(&mut self.drained);
+        self.begin_observed(signal, full || retry, drained.as_ref().ok().copied());
+        if let Err(reason) = drained {
+            self.recover(reason);
+        } else if !self.full {
+            let mut entries = std::mem::take(&mut self.drained);
+            let result = self.incremental(signal, &entries);
+            entries.clear();
+            self.drained = entries;
+            if let Err(reason) = result {
+                self.recover(reason);
+            }
+        }
+        history_events::prepare(0);
+    }
+    fn begin_observed(
+        &mut self,
+        signal: i64,
+        full: bool,
+        witness: Option<history_events::Witness>,
+    ) {
         let Some(next) = self.sequence.checked_add(1) else {
             self.refuse("combat log batch sequence exhausted");
             return;
@@ -148,124 +228,223 @@ impl State {
         self.sequence = next;
         self.batch.clear();
         self.requested.clear();
-        self.full = full;
-        let drained = history_events::drain(&mut self.drained);
-        history_events::prepare(0);
-        self.witness = if full {
-            history_events::quiet()
+        self.full = full
+            || !self.available
+            || self.signal != Some(signal)
+            || self.certificate.map(|w| w.lost) != witness.map(|w| w.lost);
+        self.recovery_reason = if full {
+            "combat log hour or conversion continuity lost"
+        } else if !self.available || self.signal != Some(signal) {
+            UNREAD
         } else {
-            drained.as_ref().ok().map(|&(_, revision)| revision)
+            "combat log writer occurrence loss"
         };
-        if full {
-            self.signal = Some(signal);
-            self.lost = history_events::losses();
-            self.available = false;
-            self.failure = None;
-            return;
-        }
-        let result = (|| {
-            if self.signal != Some(signal) || !self.available {
-                return Err(UNREAD);
-            }
-            if drained?.0 != self.lost {
-                return Err("combat log event loss revoked retained history");
-            }
-            for logged in &self.drained {
+        self.signal = Some(signal);
+        self.witness = witness;
+        self.available = false;
+        self.failure = None;
+    }
+    fn recover(&mut self, reason: &'static str) {
+        self.full = true;
+        self.recovery_reason = reason;
+        self.batch.clear();
+        self.requested.clear();
+    }
+    fn incremental(
+        &mut self,
+        signal: i64,
+        entries: &[history_events::Logged],
+    ) -> Result<(), &'static str> {
+        engine_allocation::advisory(|| {
+            for logged in entries {
                 if logged.signal != signal {
-                    continue;
+                    return Err("combat log occurrence belongs to another session");
                 }
                 let fact = logged.fact;
-                if fact.kind == event::RESET {
-                    self.requested.clear();
-                }
-                if fact.kind == event::COUNT {
-                    push(&mut self.requested, fact.root as u32)?;
-                }
-                if fact.kind == event::SLOT {
-                    push(&mut self.requested, fact.item as u32)?;
+                match fact.kind {
+                    event::RESET => {
+                        return Err("combat log reset requires retained-state recovery");
+                    }
+                    event::SLOT => {
+                        let sequence = self.sequence;
+                        let slot = self.slot(fact.item as u32)?;
+                        if (slot.count.is_some_and(|n| n > 0) || slot.allocated_at == sequence)
+                            && slot.counted_at != sequence
+                        {
+                            return Err("combat log slot reuse lacks a release witness");
+                        }
+                        slot.allocated_at = sequence;
+                        slot.counted_at = 0;
+                        push(&mut self.requested, fact.item as u32)?;
+                    }
+                    event::RELEASE => {
+                        let sequence = self.sequence;
+                        self.slot(fact.root as u32)?.counted_at = sequence;
+                        push(&mut self.requested, fact.root as u32)?;
+                    }
+                    event::COUNT => push(&mut self.requested, fact.root as u32)?,
+                    _ => (),
                 }
                 push(&mut self.batch.facts, fact)?;
             }
             Ok(())
-        })();
-        if let Err(reason) = result {
+        })
+    }
+    fn slot(&mut self, id: u32) -> Result<&mut SlotWitness, &'static str> {
+        let slots = id as usize + 1;
+        if slots > self.slots.len() {
+            let additional = slots - self.slots.len();
+            engine_allocation::advisory(|| engine_allocation::reserve(&mut self.slots, additional))
+                .map_err(|_| "combat log slot lifetime allocation failed")?;
+            self.slots.resize(slots, SlotWitness::default());
+        }
+        Ok(&mut self.slots[id as usize])
+    }
+    pub fn acquire(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
+        if let Err(reason) = self.acquire_observed(memory, base, game_state, history_events::quiet)
+        {
             self.refuse(reason);
+        } else if self.full {
+            history_events::prepare_seed(self.batch.facts.len());
+            // A recovery replaces even entries left by a failed drain.
+            if history_events::drain(&mut self.drained).is_err() {
+                REBASE_REQUIRED.store(true, Ordering::Release);
+            }
+            if let Some(witness) = history_events::quiet().filter(|w| {
+                self.witness
+                    .is_some_and(|previous| previous.revision == w.revision)
+            }) {
+                if self.certificate.is_some() {
+                    self.certificate = Some(witness);
+                }
+                self.witness = Some(witness);
+            } else {
+                self.refuse("combat log writer changed after retained-state recovery");
+            }
+            history_events::prepare(0);
         }
     }
-    pub fn seed_group(
+    fn acquire_observed(
         &mut self,
         memory: &impl Memory,
         base: usize,
-        country: u32,
-        pointer: usize,
-        ordinal: u32,
-        bytes: &[u8],
+        game_state: usize,
+        observe: impl Fn() -> Option<history_events::Witness>,
     ) -> Result<(), &'static str> {
-        if !self.full || self.failure.is_some() {
-            return Ok(());
-        }
-        let mut result = Ok(());
-        event::seed_group(
+        engine_allocation::advisory(|| {
+            if let Some(reason) = self.failure {
+                return Err(reason);
+            }
+            let witness = observe().ok_or("combat log writers not quiescent or unavailable")?;
+            if self.witness != Some(witness) {
+                self.recover("combat log writer changed after occurrence drain");
+                self.witness = Some(witness);
+            }
+            if !self.full {
+                self.requested.sort_unstable();
+                self.requested.dedup();
+                let mut result = Ok(());
+                let counts =
+                    event::settled_counts(memory, base, &self.requested, &mut |id, count| {
+                        if result.is_ok() {
+                            result = push(&mut self.batch.counts, (id, i32::from(count)));
+                        }
+                    })
+                    .and(result);
+                if let Err(reason) = counts {
+                    self.recover(reason);
+                }
+            }
+            if self.full {
+                self.batch.clear();
+                self.requested.clear();
+                let started = std::time::Instant::now();
+                let mut call = RecoveryCall {
+                    sequence: self.sequence,
+                    reason: self.recovery_reason,
+                    ..Default::default()
+                };
+                let result = self.rebuild(memory, base, game_state, &mut call);
+                call.elapsed_ns = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+                call.complete = result.is_ok() && observe() == self.witness;
+                call.facts = self.batch.facts.len() as u64;
+                record_recovery(call);
+                result?;
+            }
+            if observe() != self.witness {
+                return Err("combat log writer changed during history acquisition");
+            }
+            if self.full {
+                self.slots.fill(SlotWitness::default());
+            }
+            let mut tracked = true;
+            let full = self.full;
+            for index in 0..self.batch.counts.len() {
+                let (id, count) = self.batch.counts[index];
+                match self.slot(id) {
+                    Ok(slot) => slot.count = Some(count),
+                    Err(reason) if !full => return Err(reason),
+                    Err(_) => {
+                        // The complete owned baseline is exact even if its incremental cache cannot grow.
+                        tracked = false;
+                        break;
+                    }
+                }
+            }
+            self.available = true;
+            self.certificate = if tracked { self.witness } else { None };
+            Ok(())
+        })
+    }
+    fn rebuild(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        call: &mut RecoveryCall,
+    ) -> Result<(), &'static str> {
+        engine_land_inputs::ncombat_log_cmanager::visit_retained_groups(
             memory,
             base,
-            pointer,
-            country,
-            ordinal,
-            bytes,
-            &mut |fact| {
-                if result.is_ok() {
-                    if fact.kind == event::REFERENCE {
-                        result = push(&mut self.requested, fact.values[0] as u32);
-                    }
-                    if result.is_ok() {
-                        result = push(&mut self.batch.facts, fact);
-                    }
-                }
+            game_state,
+            |country, pointer, ordinal, bytes| {
+                call.groups_visited += 1;
+                event::seed_group(
+                    memory,
+                    base,
+                    pointer,
+                    country,
+                    ordinal,
+                    bytes,
+                    &mut |fact| {
+                        if self.failure.is_none() {
+                            let result = (|| {
+                                if fact.kind == event::REFERENCE {
+                                    push(&mut self.requested, fact.values[0] as u32)?;
+                                }
+                                push(&mut self.batch.facts, fact)
+                            })();
+                            if let Err(reason) = result {
+                                self.failure = Some(reason);
+                            }
+                        }
+                    },
+                )?;
+                self.failure.map_or(Ok(()), Err)
             },
         )?;
-        result
-    }
-    pub fn finish(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        complete: bool,
-    ) -> Result<(), &'static str> {
-        if let Some(reason) = self.failure {
-            return Err(reason);
-        }
-        if self.witness.is_none() || history_events::quiet() != self.witness {
-            return Err("combat log writer changed during history acquisition");
-        }
         self.requested.sort_unstable();
         self.requested.dedup();
-        if self.full {
-            if !complete {
-                return Err("combat log initial group walk incomplete");
+        if !self.requested.is_empty() {
+            let pool = native::BattlePool::read(memory, base)?;
+            for &id in &self.requested {
+                let record = pool
+                    .read_record(memory, base, id as i32)?
+                    .ok_or("combat log seeded reference has no record")?;
+                call.battles_read += 1;
+                seed_battle(&mut self.batch, id, &record)?;
             }
-            if !self.requested.is_empty() {
-                let pool = native::BattlePool::read(memory, base)?;
-                for &id in &self.requested {
-                    let record = pool
-                        .read_record(memory, base, id as i32)?
-                        .ok_or("combat log seeded reference has no record")?;
-                    seed_battle(&mut self.batch, id, &record)?;
-                }
-            }
-            history_events::prepare(self.batch.facts.len().max(1));
-        } else {
-            let mut result = Ok(());
-            event::settled_counts(memory, base, &self.requested, &mut |id, count| {
-                if result.is_ok() {
-                    result = push(&mut self.batch.counts, (id, i32::from(count)));
-                }
-            })?;
-            result?;
         }
-        if history_events::quiet() != self.witness {
-            return Err("combat log writer changed during count settlement");
-        }
-        self.available = true;
         Ok(())
     }
     pub fn refuse(&mut self, reason: &'static str) {
@@ -309,6 +488,10 @@ impl Captured {
         }
     }
     pub fn fail(&mut self, reason: &'static str) {
+        REBASE_REQUIRED.store(true, Ordering::Release);
+        self.reset(reason);
+    }
+    pub fn reset(&mut self, reason: &'static str) {
         self.failure = Some(reason);
         self.batch.clear();
         self.converted = OnceLock::new();
@@ -329,19 +512,33 @@ impl Captured {
             return std::array::from_fn(|_| Err(reason));
         }
         let mut conversion = CONVERSION.lock().unwrap_or_else(|e| e.into_inner());
-        if ((self.full && self.converted.get().is_none())
-            || conversion.sequence != self.sequence
-            || conversion.signal != self.signal)
-            && let Err(reason) = conversion.apply(self)
-        {
-            conversion.signal = None;
-            return std::array::from_fn(|_| Err(reason));
-        }
-        let views = conversion.held.snapshot();
-        let _ = self.converted.set(std::array::from_fn(|i| {
-            views[i].as_ref().map_or(0, |r| r.len())
-        }));
-        views
+        self.convert(&mut conversion, &REBASE_REQUIRED)
+    }
+    fn convert(&self, conversion: &mut Conversion, retry: &AtomicBool) -> Views {
+        engine_allocation::advisory(|| {
+            if let Some(reason) = self.failure {
+                return std::array::from_fn(|_| Err(reason));
+            }
+            if ((self.full && self.converted.get().is_none())
+                || conversion.sequence != self.sequence
+                || conversion.signal != self.signal)
+                && let Err(reason) = conversion.apply(self)
+            {
+                conversion.signal = None;
+                retry.store(true, Ordering::Release);
+                return std::array::from_fn(|_| Err(reason));
+            }
+            let views = conversion.held.snapshot();
+            if views.iter().any(Result::is_err) {
+                conversion.signal = None;
+                retry.store(true, Ordering::Release);
+                return views;
+            }
+            let _ = self.converted.set(std::array::from_fn(|i| {
+                views[i].as_ref().map_or(0, |r| r.len())
+            }));
+            views
+        })
     }
     pub fn inputs(&self) -> [TableInput; N] {
         self.views().map(|view| match view {
@@ -553,3 +750,7 @@ mod tests {
         assert!(c.apply(&batch).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "history_capture_tests.rs"]
+mod native_tests;

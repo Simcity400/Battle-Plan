@@ -298,10 +298,7 @@ impl Captured {
     }
     pub fn finish(&mut self, parent: Outcome) {
         crate::land_events::observe_observer_rows(self.observers.len());
-        // This worker already counted the live side/activity operands. Retained
-        // history may be empty, but those combats can publish before next hour.
-        // Include the aggregate loss entries omitted from the observer packet.
-        collector_combat_log::history_events::prepare(
+        collector_combat_log::history_events::prepare_active(
             self.observers.len().saturating_add(self.equipment.len),
         );
         let missing = match parent {

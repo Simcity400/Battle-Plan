@@ -322,7 +322,7 @@ impl Store {
                     .map_err(|_| "combat log count demand allocation failed")?;
                 self.changed_counts.push(item as u32);
             }
-            event::COUNT => {
+            event::COUNT | event::RELEASE => {
                 if !self.battles.contains_key(&(root as u32)) {
                     return Err("combat log reference changed unstaged battle");
                 }

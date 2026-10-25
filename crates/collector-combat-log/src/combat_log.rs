@@ -248,6 +248,11 @@ impl Capacities {
         state: usize,
     ) -> Result<(), &'static str> {
         // Keep each successful hint when the independent sibling is unreadable.
+        let writers =
+            engine_land_inputs::combat_log_events::noncombat_writer_demand(memory, base, state);
+        if let Ok(demand) = writers {
+            crate::history_events::prepare_noncombat(demand);
+        }
         let logs = native::row_demand(memory, base, state);
         let lend = lend_lease::row_demand(memory, base, state);
         if let Ok(rows) = logs {
@@ -256,7 +261,7 @@ impl Capacities {
         if let Ok(rows) = lend {
             crate::country_scale::raise(&mut self.lend_lease, rows);
         }
-        logs.and(lend).map(|_| ())
+        logs.and(lend).and(writers).map(|_| ())
     }
 }
 
@@ -322,7 +327,8 @@ impl Captured {
         }
     }
     pub fn reset(&mut self) {
-        self.retained.fail("combat log history acquisition pending");
+        self.retained
+            .reset("combat log history acquisition pending");
         self.rows.reset();
         self.lend_lease.reset();
         self.viewing = Err(VIEWING_UNREAD);
@@ -377,6 +383,8 @@ impl Captured {
             let log_cost = {
                 let _reads = crate::read_accounting::table(TABLES[0]);
                 let started = qpc();
+                store.retained.acquire(memory, base, game_state);
+                store.retained.snapshot(&mut self.retained);
                 self.rows.outcome =
                     self.read_log(store, memory, base, game_state, hour, force_full);
                 qpc().saturating_sub(started).max(0) as u64
@@ -408,14 +416,18 @@ impl Captured {
     fn begin(&mut self, store: &mut Store, hour: i32, force_full: bool) -> bool {
         // A load (a new signal; an earlier hour could only be one too):
         // nothing kept describes the new branch.
-        if store.signal != Some(self.signal) || store.hour.is_some_and(|last| hour < last) {
+        let new_session =
+            store.signal != Some(self.signal) || store.hour.is_some_and(|last| hour < last);
+        if new_session {
             store.signal = Some(self.signal);
             store.finals.clear();
             store.read_hour.clear();
         }
         store.hour = Some(hour);
-        store.retained.begin(self.signal, force_full);
         let forget = take_forget();
+        store
+            .retained
+            .begin(self.signal, force_full || forget || new_session);
         if forget {
             for (_, last) in &mut store.read_hour {
                 *last = NEVER;
@@ -474,7 +486,6 @@ impl Captured {
         }
         let selection = &self.selection;
         let read_hour = &store.read_hour;
-        let retained = &mut store.retained;
         let visited = &mut self.visited;
         visited.clear();
         let outcome = native::walk_prepared_growing_observed(
@@ -505,20 +516,8 @@ impl Captured {
             },
             &mut self.rows.rows,
             &mut self.memo,
-            &mut |country, pointer, ordinal, bytes| {
-                if let Err(reason) =
-                    retained.seed_group(memory, base, country, pointer, ordinal, bytes)
-                {
-                    retained.refuse(reason);
-                }
-                Ok(())
-            },
+            &mut |_, _, _, _| Ok(()),
         );
-        if let Err(reason) = retained.finish(memory, base, matches!(outcome, Outcome::Rows { .. }))
-        {
-            retained.refuse(reason);
-        }
-        retained.snapshot(&mut self.retained);
         let Outcome::Rows { len } = outcome else {
             return outcome;
         };

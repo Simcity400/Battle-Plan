@@ -480,6 +480,27 @@ fn walk_prepared_buffer<T>(
     }
 }
 
+/// Visits the complete retained group state independently of equipment sampling.
+pub fn visit_retained_groups(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut visit: impl FnMut(u32, usize, u32, &[u8]) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    for_each_manager(
+        memory,
+        base,
+        game_state,
+        &mut (),
+        |_, _| Ok(()),
+        |_, memory, vtables, country, groups| {
+            for_each_group(memory, vtables, groups, |pointer, ordinal, bytes, _| {
+                visit(country, pointer, ordinal, bytes)
+            })
+        },
+    )
+}
+
 /// Authenticates every manager in slot order and passes each one holding a
 /// group log to `visit` with its country and group array.
 fn for_each_manager<M: Memory, T>(

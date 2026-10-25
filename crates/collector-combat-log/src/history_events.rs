@@ -26,38 +26,163 @@ static STORAGE: Mutex<Option<Box<Lane>>> = Mutex::new(None);
 static DRAIN_SCRATCH: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
 static CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static HANDOFF: AtomicBool = AtomicBool::new(false);
-static ENABLED: AtomicBool = AtomicBool::new(false);
 static BASE: AtomicUsize = AtomicUsize::new(0);
-pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
-static REVISION: AtomicU64 = AtomicU64::new(0);
-static ORDER: AtomicU64 = AtomicU64::new(1);
-static LOST: AtomicU64 = AtomicU64::new(0);
-static REQUIRED: AtomicUsize = AtomicUsize::new(0);
-static ESCAPED: AtomicBool = AtomicBool::new(false);
-static EXHAUSTED: AtomicBool = AtomicBool::new(false);
-static FIRST_LOSS: OnceLock<&'static str> = OnceLock::new();
-static ORIGINAL: [AtomicUsize; 13] = [const { AtomicUsize::new(0) }; 13];
-static UNHOOKED: OnceLock<String> = OnceLock::new();
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Witness {
+    pub revision: u64,
+    pub lost: u64,
+}
+#[derive(Clone, Copy)]
+#[repr(usize)]
+enum Loss {
+    WriterLifetime = 1,
+    Unwind = 2,
+    EventLifetime = 3,
+    Handoff = 4,
+    Storage = 5,
+    Session = 6,
+    Capacity = 7,
+    Operand = 8,
+    EquipmentFeature = 9,
+    Growth = 10,
+    DrainOverlap = 11,
+    Reset = 12,
+    Load = 13,
+}
+const LOSS_REASONS: [&str; 13] = [
+    "combat log writer lifetime counter exhausted",
+    "combat log native writer escaped unwind",
+    "combat log event lifetime counter exhausted",
+    "combat log event storage handoff overlapped writer",
+    "combat log event storage not prepared",
+    "combat log event session unreadable",
+    "combat log event capacity exceeded",
+    "combat log native writer observation failed",
+    "combat log equipment feature unreadable",
+    "combat log event growth allocation failed",
+    "combat log writer overlapped drain",
+    "combat log pool reset invalidated history baseline",
+    "combat log load invalidated history baseline",
+];
+struct Writers {
+    active: AtomicUsize,
+    revision: AtomicU64,
+    enabled: AtomicBool,
+    escaped: AtomicBool,
+    exhausted: AtomicBool,
+    lost: AtomicU64,
+    first_loss: AtomicUsize,
+    unhooked: OnceLock<String>,
+}
+impl Writers {
+    const fn new() -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            revision: AtomicU64::new(0),
+            enabled: AtomicBool::new(false),
+            escaped: AtomicBool::new(false),
+            exhausted: AtomicBool::new(false),
+            lost: AtomicU64::new(0),
+            first_loss: AtomicUsize::new(0),
+            unhooked: OnceLock::new(),
+        }
+    }
+    fn fail(&self, reason: Loss) {
+        let _ = self
+            .lost
+            .fetch_update(SeqCst, SeqCst, |n| Some(n.saturating_add(1)));
+        let _ = self
+            .first_loss
+            .compare_exchange(0, reason as usize, SeqCst, SeqCst);
+    }
+    fn first_loss(&self) -> Option<&'static str> {
+        LOSS_REASONS
+            .get(self.first_loss.load(SeqCst).checked_sub(1)?)
+            .copied()
+    }
+    fn changed(&self) {
+        if self
+            .revision
+            .fetch_update(SeqCst, SeqCst, |n| n.checked_add(1))
+            .is_err()
+        {
+            self.exhausted.store(true, SeqCst);
+            self.fail(Loss::WriterLifetime);
+        }
+    }
+    fn enter(&self) -> WriterCall<'_> {
+        self.active.fetch_add(1, SeqCst);
+        self.changed();
+        WriterCall {
+            writers: self,
+            finished: false,
+        }
+    }
+    fn witness(&self) -> Witness {
+        Witness {
+            revision: self.revision.load(SeqCst),
+            lost: self.lost.load(SeqCst),
+        }
+    }
+    fn quiet(&self) -> Option<Witness> {
+        self.quiet_since(self.witness())
+    }
+    fn quiet_since(&self, witness: Witness) -> Option<Witness> {
+        (self.enabled.load(SeqCst)
+            && !self.exhausted.load(SeqCst)
+            && self.unhooked.get().is_none()
+            && self.active.load(SeqCst) == 0
+            && self.witness() == witness)
+            .then_some(witness)
+    }
+}
+struct WriterCall<'a> {
+    writers: &'a Writers,
+    finished: bool,
+}
+impl WriterCall<'_> {
+    #[cfg(test)]
+    fn finish(mut self) {
+        self.finished = true;
+    }
+}
+impl Drop for WriterCall<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            // Keep hook code alive for unwind, but let an exact quiet read recover the rows.
+            self.writers.escaped.store(true, SeqCst);
+            self.writers.fail(Loss::Unwind);
+        }
+        self.writers.active.fetch_sub(1, SeqCst);
+    }
+}
 
-pub fn fail(reason: &'static str) {
-    let _ = LOST.fetch_update(SeqCst, SeqCst, |n| Some(n.saturating_add(1)));
-    let _ = FIRST_LOSS.set(reason);
+static WRITERS: Writers = Writers::new();
+static ORDER: AtomicU64 = AtomicU64::new(1);
+static REQUIRED: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_DEMAND: AtomicUsize = AtomicUsize::new(0);
+static NONCOMBAT_DEMAND: AtomicUsize = AtomicUsize::new(0);
+static SEED_DEMAND: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL: [AtomicUsize; 13] = [const { AtomicUsize::new(0) }; 13];
+
+fn fail(reason: Loss) {
+    WRITERS.fail(reason);
 }
-pub fn losses() -> u64 {
-    LOST.load(SeqCst)
+pub fn active() -> usize {
+    WRITERS.active.load(SeqCst)
 }
-pub fn quiet() -> Option<u64> {
-    let revision = REVISION.load(SeqCst);
-    (observing() && ACTIVE.load(SeqCst) == 0).then_some(revision)
+pub(crate) fn quiet() -> Option<Witness> {
+    WRITERS.quiet()
 }
 pub fn stop() {
-    ENABLED.store(false, SeqCst);
+    WRITERS.enabled.store(false, SeqCst);
+    WRITERS.changed();
 }
 pub fn retention_required() -> bool {
-    ESCAPED.load(SeqCst)
+    WRITERS.escaped.load(SeqCst)
 }
 pub fn release_storage() -> Result<(), &'static str> {
-    if ENABLED.load(SeqCst) || ACTIVE.load(SeqCst) != 0 || retention_required() {
+    if WRITERS.enabled.load(SeqCst) || WRITERS.active.load(SeqCst) != 0 || retention_required() {
         return Err("combat log event storage release before quiescence");
     }
     let mut storage = STORAGE.lock().unwrap_or_else(|e| e.into_inner());
@@ -69,7 +194,7 @@ pub fn release_storage() -> Result<(), &'static str> {
     Ok(())
 }
 fn observing() -> bool {
-    ENABLED.load(SeqCst) && !ESCAPED.load(SeqCst) && !EXHAUSTED.load(SeqCst)
+    WRITERS.enabled.load(SeqCst) && !WRITERS.exhausted.load(SeqCst)
 }
 fn advance(counter: &AtomicU64) -> u64 {
     // Stay below the publication lane's mark bits as well as integer wrap.
@@ -78,8 +203,8 @@ fn advance(counter: &AtomicU64) -> u64 {
     }) {
         Ok(n) => n,
         Err(_) => {
-            EXHAUSTED.store(true, SeqCst);
-            fail("combat log event lifetime counter exhausted");
+            WRITERS.exhausted.store(true, SeqCst);
+            fail(Loss::EventLifetime);
             u64::MAX
         }
     }
@@ -87,13 +212,12 @@ fn advance(counter: &AtomicU64) -> u64 {
 
 thread_local! { static SIGNAL: Cell<Option<i64>> = const { Cell::new(None) }; }
 struct Call {
-    finished: bool,
+    writer: WriterCall<'static>,
     previous_signal: Option<i64>,
 }
 impl Call {
     fn enter() -> Self {
-        ACTIVE.fetch_add(1, SeqCst);
-        advance(&REVISION);
+        let writer = WRITERS.enter();
         let previous_signal = SIGNAL.get();
         SIGNAL.set(if observing() {
             previous_signal.or_else(signal)
@@ -101,22 +225,17 @@ impl Call {
             None
         });
         Self {
-            finished: false,
+            writer,
             previous_signal,
         }
     }
     fn finish(mut self) {
-        self.finished = true;
+        self.writer.finished = true;
     }
 }
 impl Drop for Call {
     fn drop(&mut self) {
-        if !self.finished {
-            ESCAPED.store(true, SeqCst);
-            fail("combat log native writer escaped unwind");
-        }
         SIGNAL.set(self.previous_signal);
-        ACTIVE.fetch_sub(1, SeqCst);
     }
 }
 fn memory() -> engine_native::memory::LiveMemory {
@@ -131,21 +250,21 @@ fn signal() -> Option<i64> {
 }
 fn emit(fact: native::Fact) {
     if HANDOFF.load(SeqCst) {
-        fail("combat log event storage handoff overlapped writer");
+        fail(Loss::Handoff);
         return;
     }
-    // ACTIVE excludes reclamation; HANDOFF is tested after entering the call.
+    // WRITERS.active excludes reclamation; HANDOFF is tested after entering the call.
     let Some(lane) = (unsafe { LANE.load(SeqCst).as_ref() }) else {
         REQUIRED.fetch_add(1, SeqCst);
-        fail("combat log event storage not prepared");
+        fail(Loss::Storage);
         return;
     };
     let Some(signal) = SIGNAL.get() else {
-        fail("combat log event session unreadable");
+        fail(Loss::Session);
         return;
     };
     let order = advance(&ORDER);
-    if EXHAUSTED.load(SeqCst) {
+    if WRITERS.exhausted.load(SeqCst) {
         return;
     }
     if !publish(
@@ -157,10 +276,10 @@ fn emit(fact: native::Fact) {
         },
     ) {
         REQUIRED.fetch_max(lane.required_entries(), SeqCst);
-        fail("combat log event capacity exceeded");
+        fail(Loss::Capacity);
     }
 }
-fn publish(lane: &Lane, entry: Logged) -> bool {
+pub(crate) fn publish(lane: &Lane, entry: Logged) -> bool {
     let Some(reservation) = lane.reserve() else {
         return false;
     };
@@ -168,8 +287,8 @@ fn publish(lane: &Lane, entry: Logged) -> bool {
     true
 }
 fn observe(result: Result<(), &'static str>) {
-    if let Err(reason) = result {
-        fail(reason);
+    if result.is_err() {
+        fail(Loss::Operand);
     }
 }
 fn equipment_enabled() -> bool {
@@ -180,17 +299,40 @@ fn equipment_enabled() -> bool {
     {
         Some(mask) => mask & engine_dlc::dlc_feature_state::EQUIPMENT_LOSSES_MASK != 0,
         None => {
-            fail("combat log equipment feature unreadable");
+            fail(Loss::EquipmentFeature);
             false
         }
     }
 }
 
-/// Worker only. Demand comes from the initial retained-history seed, the active
-/// combat operand census and attempted events, including every refused element.
-/// No game census is performed here.
-pub fn prepare(demand: usize) {
-    REQUIRED.fetch_max(demand, SeqCst);
+pub fn prepare_active(demand: usize) {
+    ACTIVE_DEMAND.fetch_max(demand, SeqCst);
+    prepare(0);
+}
+pub fn prepare_noncombat(demand: usize) {
+    NONCOMBAT_DEMAND.fetch_max(demand, SeqCst);
+    prepare(0);
+}
+pub(crate) fn prepare_seed(demand: usize) {
+    SEED_DEMAND.fetch_max(demand.max(1), SeqCst);
+    prepare(0);
+}
+fn demand(seed: usize, active: usize, noncombat: usize, attempted: usize) -> usize {
+    seed.saturating_add(active)
+        .saturating_add(noncombat)
+        .max(attempted)
+}
+/// Worker/sizing thread only; install only at a drained, quiescent boundary.
+pub fn prepare(attempted: usize) {
+    REQUIRED.fetch_max(
+        demand(
+            SEED_DEMAND.load(SeqCst),
+            ACTIVE_DEMAND.load(SeqCst),
+            NONCOMBAT_DEMAND.load(SeqCst),
+            attempted,
+        ),
+        SeqCst,
+    );
     if REQUIRED.load(SeqCst) <= CAPACITY.load(SeqCst) {
         return;
     }
@@ -201,11 +343,17 @@ pub fn prepare(demand: usize) {
     if required == 0 || storage.as_ref().is_some_and(|s| s.len() >= required) {
         return;
     }
-    let Ok(next) = Lane::new(required, 0).and_then(engine_allocation::boxed) else {
+    if WRITERS.active.load(SeqCst) != 0 || storage.as_ref().is_some_and(|s| !s.is_drained()) {
+        return;
+    }
+    let Ok(next) =
+        engine_allocation::advisory(|| Lane::new(required, 0).and_then(engine_allocation::boxed))
+    else {
+        fail(Loss::Growth);
         return;
     };
     HANDOFF.store(true, SeqCst);
-    if ACTIVE.load(SeqCst) == 0 && storage.as_ref().is_none_or(|s| s.is_drained()) {
+    if WRITERS.active.load(SeqCst) == 0 && storage.as_ref().is_none_or(|s| s.is_drained()) {
         let mut next = next;
         LANE.store(&mut *next, SeqCst);
         CAPACITY.store(next.len(), SeqCst);
@@ -214,38 +362,58 @@ pub fn prepare(demand: usize) {
     HANDOFF.store(false, SeqCst);
 }
 
-/// A copy never follows a game pointer. Refused intervals remain unavailable
-/// until an explicit full baseline; callers must not turn loss into polling.
-pub fn drain(output: &mut Vec<Logged>) -> Result<(u64, u64), &'static str> {
+/// Copies owned occurrences only; a failed drain requests retained-state recovery.
+pub(crate) fn drain(output: &mut Vec<Logged>) -> Result<Witness, &'static str> {
     output.clear();
     let storage = STORAGE.lock().unwrap_or_else(|e| e.into_inner());
-    let before = REVISION.load(SeqCst);
-    if ACTIVE.load(SeqCst) != 0 {
+    let before = quiet().ok_or("combat log writer active at drain")?;
+    if WRITERS.active.load(SeqCst) != 0 {
         return Err("combat log writer active at drain");
     }
     let Some(lane) = storage.as_ref() else {
         return Err("combat log event storage not prepared");
     };
-    let rejected = lane.rejected();
     let mut entries = DRAIN_SCRATCH.lock().unwrap_or_else(|e| e.into_inner());
-    lane.published_into(&mut entries, |r| r.order)?;
-    engine_allocation::reserve(output, entries.len())
-        .map_err(|_| "combat log event drain allocation failed")?;
-    for &(_, index) in entries.iter() {
-        output.push(lane.record(index).0);
-        lane.release(index);
+    copy_published(lane, output, &mut entries)?;
+    if quiet() != Some(before) {
+        fail(Loss::DrainOverlap);
     }
-    lane.advance(rejected);
-    if ACTIVE.load(SeqCst) != 0 || before != REVISION.load(SeqCst) {
-        fail("combat log writer overlapped drain");
-    }
-    if !observing() || UNHOOKED.get().is_some() {
+    if !observing() || WRITERS.unhooked.get().is_some() {
         return Err("combat log writers not observed throughout");
     }
-    Ok((LOST.load(SeqCst), before))
+    quiet()
+        .filter(|w| *w == before)
+        .ok_or("combat log writer overlapped drain")
+}
+pub(crate) fn copy_published(
+    lane: &Lane,
+    output: &mut Vec<Logged>,
+    entries: &mut Vec<(u64, u64)>,
+) -> Result<(), &'static str> {
+    engine_allocation::advisory(|| {
+        output.clear();
+        let rejected = lane.rejected();
+        lane.published_into(entries, |r| r.order)?;
+        engine_allocation::reserve(output, entries.len())
+            .map_err(|_| "combat log event drain allocation failed")?;
+        for &(_, index) in entries.iter() {
+            output.push(lane.record(index).0);
+            lane.release(index);
+        }
+        lane.advance(rejected);
+        Ok(())
+    })
 }
 pub fn status() -> impl serde::Serialize {
-    crate::status::status!({"lost": LOST.load(SeqCst), "first_loss": FIRST_LOSS.get(), "unhooked": UNHOOKED.get(), "required_entries": REQUIRED.load(SeqCst), "capacity": CAPACITY.load(SeqCst), "escaped_unwind": ESCAPED.load(SeqCst), "scope": "retained combat log writer occurrences since attach; any loss revokes the retained-history certificate"})
+    crate::status::status!({
+        "lost": WRITERS.lost.load(SeqCst), "first_loss": WRITERS.first_loss(),
+        "unhooked": WRITERS.unhooked.get(), "revision": WRITERS.revision.load(SeqCst),
+        "required_entries": REQUIRED.load(SeqCst), "capacity": CAPACITY.load(SeqCst),
+        "active_demand": ACTIVE_DEMAND.load(SeqCst), "noncombat_demand": NONCOMBAT_DEMAND.load(SeqCst),
+        "seed_demand": SEED_DEMAND.load(SeqCst), "escaped_unwind": WRITERS.escaped.load(SeqCst),
+        "recovery": crate::history_capture::recovery_status(),
+        "scope": "incremental native writer occurrences; loss requires exact retained-state recovery at the first quiet acquisition"
+    })
 }
 
 // Only the group's creation append reaches this call site. Existing lookup
@@ -444,7 +612,7 @@ unsafe extern "system-unwind" fn release(id: u32) {
     unsafe { original(id) };
     if observing() {
         emit(native::Fact {
-            kind: native::COUNT,
+            kind: native::RELEASE,
             root: id as u64,
             ..Default::default()
         });
@@ -454,7 +622,7 @@ unsafe extern "system-unwind" fn release(id: u32) {
 unsafe extern "system-unwind" fn reset() {
     let call = Call::enter();
     if observing() {
-        fail("combat log pool reset invalidated history baseline");
+        fail(Loss::Reset);
     }
     let original: unsafe extern "system-unwind" fn() =
         unsafe { std::mem::transmute(ORIGINAL[11].load(SeqCst)) };
@@ -464,7 +632,7 @@ unsafe extern "system-unwind" fn reset() {
 unsafe extern "system-unwind" fn load(reader: usize) {
     let call = Call::enter();
     if observing() {
-        fail("combat log load invalidated history baseline");
+        fail(Loss::Load);
     }
     let original: unsafe extern "system-unwind" fn(usize) =
         unsafe { std::mem::transmute(ORIGINAL[12].load(SeqCst)) };
@@ -484,7 +652,7 @@ impl Hooks {
         match unsafe { Self::install(memory, base) } {
             Ok(hooks) => hooks,
             Err(reason) => {
-                let _ = UNHOOKED.set(reason);
+                let _ = WRITERS.unhooked.set(reason);
                 Self {
                     hooks: Vec::new(),
                     tap: None,
@@ -599,8 +767,8 @@ impl Hooks {
         })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
-        ENABLED.store(false, SeqCst);
-        if enabled && (UNHOOKED.get().is_some() || retention_required()) {
+        WRITERS.enabled.store(false, SeqCst);
+        if enabled && (WRITERS.unhooked.get().is_some() || retention_required()) {
             return Err("combat log writer family unavailable".into());
         }
         // Publish as one family so a partial enable cannot certify history.
@@ -610,7 +778,7 @@ impl Hooks {
         }
         let complete = Hook::set_enabled_batch(&mut refs, enabled)?;
         if complete {
-            ENABLED.store(enabled, SeqCst);
+            WRITERS.enabled.store(enabled, SeqCst);
         }
         Ok(complete)
     }
@@ -624,105 +792,218 @@ impl Hooks {
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    pub struct Producer;
+    impl Producer {
+        pub fn new() -> Self {
+            assert!(LANE.load(SeqCst).is_null());
+            assert_eq!(active(), 0);
+            assert!(WRITERS.unhooked.get().is_none());
+            WRITERS.revision.store(0, SeqCst);
+            WRITERS.lost.store(0, SeqCst);
+            WRITERS.first_loss.store(0, SeqCst);
+            WRITERS.escaped.store(false, SeqCst);
+            WRITERS.exhausted.store(false, SeqCst);
+            ORDER.store(1, SeqCst);
+            REQUIRED.store(0, SeqCst);
+            ACTIVE_DEMAND.store(0, SeqCst);
+            NONCOMBAT_DEMAND.store(0, SeqCst);
+            SEED_DEMAND.store(0, SeqCst);
+            WRITERS.enabled.store(true, SeqCst);
+            Self
+        }
+        pub fn write(&self, signal: i64, read: impl FnOnce(&mut fn(native::Fact))) {
+            let call = Call {
+                writer: WRITERS.enter(),
+                previous_signal: SIGNAL.replace(Some(signal)),
+            };
+            read(&mut (emit as fn(native::Fact)));
+            call.finish();
+        }
+        pub fn capacity(&self) -> usize {
+            CAPACITY.load(SeqCst)
+        }
+        pub fn required(&self) -> usize {
+            REQUIRED.load(SeqCst)
+        }
+        pub fn losses(&self) -> u64 {
+            WRITERS.lost.load(SeqCst)
+        }
+        pub fn rejected(&self) -> u64 {
+            STORAGE
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map_or(0, |lane| lane.rejected())
+        }
+    }
+    impl Drop for Producer {
+        fn drop(&mut self) {
+            stop();
+            release_storage().unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    fn row(ordinal: usize) -> native::Fact {
-        native::Fact {
-            kind: native::MANPOWER,
-            root: ordinal as u64 + 1,
-            item: ordinal as u64 + 100,
-            values: [0, 60_000_000, i32::MIN as u32 as u64, 0, i32::MAX as u64],
-        }
-    }
 
     #[test]
-    fn active_operand_demand_grows_empty_history_storage_before_writers() {
-        // An empty retained seed supplies one slot, not the live event demand.
-        prepare(1);
-        assert_eq!(CAPACITY.load(SeqCst), 1);
-        let demand = 5_000;
-        prepare(demand);
-        assert!(CAPACITY.load(SeqCst) >= demand);
-        ENABLED.store(true, SeqCst);
-        SIGNAL.set(Some(123));
+    fn attach_population_and_seed_size_the_burst_without_loss() {
+        let required = demand(1, 0, 11_136, 0);
+        let lane = Lane::new(required, 0).unwrap();
         collector_test_support::with_allocations_denied(|| {
-            for ordinal in 0..demand {
-                emit(row(ordinal));
+            for order in 1..=11_136 {
+                assert!(publish(
+                    &lane,
+                    Logged {
+                        order,
+                        signal: 123,
+                        ..Default::default()
+                    }
+                ));
             }
         });
-        let mut output = Vec::new();
-        assert_eq!(drain(&mut output).unwrap().0, 0);
-        assert_eq!(output.len(), demand);
-        for (ordinal, actual) in output.iter().enumerate() {
-            assert_eq!(actual.order, ordinal as u64 + 1);
-            assert_eq!(actual.signal, 123);
-            assert_eq!(actual.fact, row(ordinal));
-        }
-        assert_eq!(losses(), 0);
+        assert_eq!(lane.rejected(), 0);
+        assert_eq!(lane.published(|r| r.order).unwrap().len(), 11_136);
+        assert_eq!(demand(13, 21, 34, 0), 68);
+        assert_eq!(demand(13, 21, 34, 1000), 1000);
     }
 
     #[test]
-    fn pending_history_events_survive_deferred_worker_growth() {
-        prepare(1);
-        ENABLED.store(true, SeqCst);
-        SIGNAL.set(Some(123));
-        emit(row(0));
-        // Growth must not replace an undrained lane or discard its last event.
-        let demand = 65;
-        prepare(demand);
-        assert_eq!(CAPACITY.load(SeqCst), 1);
-        let mut output = Vec::new();
-        assert_eq!(drain(&mut output).unwrap().0, 0);
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0].fact, row(0));
-        // The existing boundary worker applies remembered demand after drain,
-        // before native writers resume; no rejected event is needed to grow.
-        prepare(0);
-        assert!(CAPACITY.load(SeqCst) >= demand);
+    fn overflow_counts_all_attempted_occurrences_for_quiescent_growth() {
+        let lane = Lane::new(1, 0).unwrap();
         collector_test_support::with_allocations_denied(|| {
-            for ordinal in 1..=demand {
-                emit(row(ordinal));
+            for order in 1..=11_136 {
+                publish(
+                    &lane,
+                    Logged {
+                        order,
+                        ..Default::default()
+                    },
+                );
             }
         });
-        assert_eq!(drain(&mut output).unwrap().0, 0);
-        assert_eq!(output.len(), demand);
-        for (ordinal, actual) in output.iter().enumerate() {
-            assert_eq!(actual.order, ordinal as u64 + 2);
-            assert_eq!(actual.fact, row(ordinal + 1));
-        }
-        assert_eq!(losses(), 0);
+        assert_eq!(lane.rejected(), 11_135);
+        assert_eq!(lane.required_entries(), 11_136);
     }
 
     #[test]
-    fn combat_log_history_producer_allocates_nothing_and_counts_complete_refused_demand() {
-        let lane = Lane::new(2, 0).unwrap();
-        let row = |order| Logged {
-            order,
-            signal: 123,
-            fact: native::Fact {
-                kind: native::MANPOWER,
-                root: 99,
-                item: 100,
-                values: [0, 60_000_000, i32::MIN as u32 as u64, 0, i32::MAX as u64],
-            },
-        };
+    fn writer_witness_survives_empty_attach_and_load_bursts_without_allocating() {
+        let writers = Writers::new();
+        writers.enabled.store(true, SeqCst);
+        let initial = writers.quiet().unwrap();
         collector_test_support::with_allocations_denied(|| {
-            assert!(publish(&lane, row(1)));
-            assert!(publish(&lane, row(2)));
-            assert!(!publish(&lane, row(3)));
-            assert!(!publish(&lane, row(4)));
+            for _ in 0..11_136 {
+                writers.enter().finish();
+            }
         });
-        assert!(lane.required_entries() >= 4);
-        assert_eq!(lane.rejected(), 2);
-        let published = lane.published(|r| r.order).unwrap();
-        assert_eq!(published.len(), 2);
-        for (order, index) in published {
-            let (actual, _) = lane.record(index);
-            assert_eq!(actual.order, order);
-            assert_eq!(actual.fact, row(order).fact);
-            lane.release(index);
-        }
-        lane.advance(lane.rejected());
-        assert!(lane.is_drained());
+        let settled = writers.quiet().unwrap();
+        assert_eq!(settled.revision - initial.revision, 11_136);
+        assert_eq!(settled.lost, 0);
+        assert_ne!(initial, settled);
+        collector_test_support::with_allocations_denied(|| {
+            for _ in 0..11_136 {
+                writers.enter().finish();
+            }
+        });
+        assert_eq!(writers.quiet().unwrap().revision, 22_272);
+        assert_eq!(writers.quiet().unwrap().lost, 0);
+    }
+
+    #[test]
+    fn overlapping_writers_never_supply_a_quiet_witness() {
+        let writers = Writers::new();
+        writers.enabled.store(true, SeqCst);
+        let first = writers.enter();
+        let second = writers.enter();
+        assert_eq!(writers.quiet(), None);
+        second.finish();
+        assert_eq!(writers.quiet(), None);
+        first.finish();
+        assert_eq!(writers.quiet().unwrap().revision, 2);
+    }
+
+    #[test]
+    fn a_writer_finishing_during_the_quiet_sample_invalidates_the_old_witness() {
+        let writers = Writers::new();
+        writers.enabled.store(true, SeqCst);
+        let before = writers.quiet().unwrap();
+        writers.enter().finish();
+        assert_eq!(writers.quiet_since(before), None);
+        assert_ne!(writers.quiet().unwrap(), before);
+    }
+
+    #[test]
+    fn unwound_writer_retains_hook_code_but_can_establish_a_new_baseline() {
+        let writers = Writers::new();
+        writers.enabled.store(true, SeqCst);
+        let before = writers.quiet().unwrap();
+        drop(writers.enter());
+        assert!(writers.escaped.load(SeqCst));
+        let after = writers.quiet().unwrap();
+        assert_ne!(before, after);
+        assert_eq!(after.lost, 1);
+        writers.enter().finish();
+        assert_ne!(writers.quiet(), Some(after));
+    }
+
+    #[test]
+    fn simultaneous_first_losses_publish_one_fixed_diagnostic_without_allocation() {
+        let first = Writers::new();
+        assert_eq!(first.first_loss(), None);
+        collector_test_support::with_allocations_denied(|| first.fail(Loss::Capacity));
+        assert_eq!(
+            first.first_loss(),
+            Some("combat log event capacity exceeded")
+        );
+        let writers = Writers::new();
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|threads| {
+            for index in 0..8 {
+                let writers = &writers;
+                let start = &start;
+                threads.spawn(move || {
+                    start.wait();
+                    for _ in 0..1_500 {
+                        writers.fail(if index % 2 == 0 {
+                            Loss::Capacity
+                        } else {
+                            Loss::Unwind
+                        });
+                    }
+                });
+            }
+        });
+        assert_eq!(writers.lost.load(SeqCst), 12_000);
+        let first = writers.first_loss().unwrap();
+        assert!(matches!(
+            first,
+            "combat log event capacity exceeded" | "combat log native writer escaped unwind"
+        ));
+        collector_test_support::with_allocations_denied(|| writers.fail(Loss::Load));
+        assert_eq!(writers.first_loss(), Some(first));
+        assert_eq!(writers.lost.load(SeqCst), 12_001);
+    }
+
+    #[test]
+    fn unavailable_hooks_and_exhausted_witnesses_never_certify_reuse() {
+        let writers = Writers::new();
+        assert_eq!(writers.quiet(), None);
+        writers.enabled.store(true, SeqCst);
+        writers.revision.store(u64::MAX, SeqCst);
+        writers.enter().finish();
+        assert_eq!(writers.quiet(), None);
+        assert_eq!(writers.lost.load(SeqCst), 1);
+        let writers = Writers::new();
+        writers.enabled.store(true, SeqCst);
+        writers
+            .unhooked
+            .set("synthetic missing hook".into())
+            .unwrap();
+        assert_eq!(writers.quiet(), None);
     }
 }
