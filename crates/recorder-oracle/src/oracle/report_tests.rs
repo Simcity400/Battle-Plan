@@ -571,3 +571,30 @@ fn a_report_without_limitations_keeps_the_existing_header() {
         ["Limitations:"]
     );
 }
+
+#[test]
+fn tables_the_capture_mode_leaves_out_are_not_availability_issues() {
+    let mut report = Report {
+        recorded_tables: BTreeMap::from([
+            (
+                TableId::DivisionModelInputs,
+                Err("hour 1 DivisionModelInputs is not recorded in a full recording".to_owned()),
+            ),
+            (
+                TableId::CountryFuel,
+                Err("hour 1 CountryFuel is unavailable: synthetic refusal".to_owned()),
+            ),
+        ]),
+        not_recorded: std::collections::BTreeSet::from([TableId::DivisionModelInputs]),
+        ..Report::default()
+    };
+    assert_eq!(report.unavailable_tables(), 1);
+    assert!(report.outcome().is_err());
+    report.recorded_tables.remove(&TableId::CountryFuel);
+    assert_eq!(report.unavailable_tables(), 0);
+    let line = report.coverage_line();
+    assert!(
+        line.contains(": complete; 0 table availability issues"),
+        "{line}"
+    );
+}

@@ -196,6 +196,8 @@ pub struct Report {
     pub membership_skips: BTreeMap<String, usize>,
     pub compared_tables: BTreeMap<String, usize>,
     pub recorded_tables: BTreeMap<TableId, Result<usize, String>>,
+    /// Tables the recording's capture mode leaves out by design.
+    pub not_recorded: BTreeSet<TableId>,
     /// A validated pending publication, never an assumed empty table.
     pub deferred_tables: BTreeMap<TableId, String>,
     pub failed_comparisons: BTreeMap<String, String>,
@@ -376,6 +378,7 @@ impl Report {
             .filter(|(table, rows)| {
                 rows.is_err()
                     && !retired_table(**table)
+                    && !self.not_recorded.contains(*table)
                     && (!self.deferred_tables.contains_key(*table)
                         || rows
                             .as_ref()
@@ -415,6 +418,10 @@ impl Report {
     pub fn record_tables(&mut self, frame: &DecodedFrame) {
         self.hour = frame.hour;
         self.recorded_tables = recorded_table_counts(frame);
+        self.not_recorded = TableId::ALL
+            .into_iter()
+            .filter(|table| !frame.recorded(*table))
+            .collect();
         self.observed_refresh.clear();
         // Every daily table is walked off its slot only on a forced full hour,
         // except CountryIntel, whose walk moves to the next hour when its
