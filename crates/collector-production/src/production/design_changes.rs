@@ -8,6 +8,7 @@ pub(super) mod held;
 pub(super) mod liveness;
 mod repair;
 mod scalar;
+mod snapshots;
 mod storage;
 pub use storage::{ScratchPoolAccounting, account_scratch, presize};
 mod source_hooks;
@@ -1923,7 +1924,7 @@ fn edit<R>(edits: &mut Vec<(usize, R)>, index: usize, row: R) -> Result<(), &'st
 }
 
 fn sparse<S: rows::TableSchema>(
-    history: &[rows::VariantChangeRow],
+    history: snapshots::History<'_>,
     projection: Option<&Projection<'_>>,
     owner: impl Fn(&S::Row) -> u64,
     make: impl Fn(&rows::VariantSnapshot) -> std::io::Result<Vec<S::Row>>,
@@ -1938,7 +1939,8 @@ fn sparse<S: rows::TableSchema>(
         return Ok(None);
     }
     let mut edits = Vec::new();
-    for event in history {
+    for change in history.iter() {
+        let event = change?.view();
         if event.organisation.is_some()
             || event.flags.is_some()
             || event.scalar.is_some()
@@ -1972,18 +1974,25 @@ fn sparse<S: rows::TableSchema>(
 }
 
 fn apply<S: rows::TableSchema>(
-    history: &[rows::VariantChangeRow],
+    history: snapshots::History<'_>,
     projection: Option<&Projection<'_>>,
     owner: impl Fn(&S::Row) -> u64,
     make: impl Fn(&rows::VariantSnapshot) -> std::io::Result<Vec<S::Row>>,
 ) -> TableInput {
     let result = (|| {
-        if history.iter().all(|event| {
-            event.organisation.is_some()
-                || event.flags.is_some()
-                || event.scalar.is_some()
-                || event.sources.is_some()
-        }) {
+        let mut only_partial = true;
+        for change in history.iter() {
+            let event = change?.view();
+            if event.organisation.is_none()
+                && event.flags.is_none()
+                && event.scalar.is_none()
+                && event.sources.is_none()
+            {
+                only_partial = false;
+                break;
+            }
+        }
+        if only_partial {
             return Ok(unavailable(replay_data::cadence::SKIPPED_REASON).into());
         }
         if let Some(input) = sparse::<S>(history, projection, &owner, &make)? {
@@ -1993,7 +2002,8 @@ fn apply<S: rows::TableSchema>(
             .and_then(Projection::observed_baseline::<S>)
             .ok_or("variant changes have no complete preceding design state")?;
         let mut changed: Vec<(u64, Vec<S::Row>)> = Vec::new();
-        for event in history {
+        for change in history.iter() {
+            let event = change?.view();
             if event.organisation.is_some()
                 || event.flags.is_some()
                 || event.scalar.is_some()
@@ -2045,14 +2055,22 @@ fn apply<S: rows::TableSchema>(
     result.unwrap_or_else(|reason| unavailable(reason).into())
 }
 
+#[cfg(test)]
 pub(super) fn project(variants: &Captured, projection: Option<&Projection<'_>>) -> [TableInput; 4] {
+    let history = variants.history();
+    project_history(variants, history, projection)
+}
+pub(super) fn project_history(
+    variants: &Captured,
+    history: snapshots::History<'_>,
+    projection: Option<&Projection<'_>>,
+) -> [TableInput; 4] {
     if let Outcome::Unavailable { reason } = variants.outcome {
         return std::array::from_fn(|_| unavailable(reason).into());
     }
-    if variants.rows.is_empty() {
+    if history.is_empty() {
         return std::array::from_fn(|_| unavailable(replay_data::cadence::SKIPPED_REASON).into());
     }
-    let history = &variants.rows;
     [
         project_definitions(history, projection),
         apply::<tables::VariantModules>(
@@ -2125,6 +2143,7 @@ pub(super) fn project(variants: &Captured, projection: Option<&Projection<'_>>) 
     ]
 }
 
+#[cfg(test)]
 pub(super) fn drain(
     base: usize,
     hour: i32,
@@ -2133,13 +2152,27 @@ pub(super) fn drain(
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     drain_with(&memory, base, hour, output)
 }
+#[cfg(test)]
 fn drain_with(
     memory: &impl Memory,
     base: usize,
     hour: i32,
     output: &mut Vec<rows::VariantChangeRow>,
 ) -> Result<usize, &'static str> {
+    let mut snapshots = snapshots::Shared::default();
+    let result = drain_shared(memory, base, hour, output, &mut snapshots);
+    snapshots.materialize(output)?;
+    result
+}
+fn drain_shared(
+    memory: &impl Memory,
+    base: usize,
+    hour: i32,
+    output: &mut Vec<rows::VariantChangeRow>,
+    snapshots: &mut snapshots::Shared,
+) -> Result<usize, &'static str> {
     output.clear();
+    snapshots.clear();
     let revision = REVISION.load(Ordering::Acquire);
     let epoch = EPOCH.load(Ordering::Acquire);
     let dependencies = CENSUS_REVISION.load(Ordering::Acquire);
@@ -2182,7 +2215,7 @@ fn drain_with(
         // Reject consumed parent identities against the preceding held state,
         // before a terminal read can follow dead storage or replace that proof.
         held::check_lifetimes(&batch.events)?;
-        decode_batch(&batch, base, hour, output)?;
+        decode_batch_shared(&batch, base, hour, output, snapshots)?;
         liveness::refresh_context(memory, base, &batch.events)?;
         for watch in &repairs.watches {
             let value = repair::snapshot(memory, base, hour, watch.pointer, &batch.events)?;
@@ -2213,7 +2246,7 @@ fn drain_with(
                 ..Default::default()
             });
         }
-        held::apply(&batch.events, output)?;
+        held::apply_shared(&batch.events, output, snapshots)?;
         held::check_lifetimes(&batch.events)?;
         sources::prune_interests()?;
         if active() != 0
@@ -2267,7 +2300,7 @@ fn replace_sources(
 }
 
 fn project_definitions(
-    history: &[rows::VariantChangeRow],
+    history: snapshots::History<'_>,
     projection: Option<&Projection<'_>>,
 ) -> TableInput {
     let result = (|| {
@@ -2280,7 +2313,8 @@ fn project_definitions(
         {
             let mut edits: Vec<(usize, rows::VariantDefinitionRow)> = Vec::new();
             let mut same_members = true;
-            for event in history {
+            for change in history.iter() {
+                let event = change?.view();
                 if event.organisation.is_some() {
                     continue;
                 }
@@ -2388,7 +2422,8 @@ fn project_definitions(
         }
         let mut result = copy_rows::<tables::VariantDefinitions>(baseline)
             .map_err(|_| "variant change allocation failed")?;
-        for event in history {
+        for change in history.iter() {
+            let event = change?.view();
             if event.organisation.is_some() {
                 continue;
             }
@@ -2508,6 +2543,7 @@ unsafe extern "system-unwind" fn entry<const SITE: usize>(
 pub struct Captured {
     repaired: usize,
     rows: Vec<rows::VariantChangeRow>,
+    snapshots: snapshots::Shared,
     pub(super) outcome: Outcome,
     heap_bytes: usize,
     dictionary: super::bonus_snapshots::Snapshot,
@@ -2522,6 +2558,7 @@ impl Captured {
         Self {
             repaired: 0,
             rows: Vec::new(),
+            snapshots: snapshots::Shared::default(),
             outcome: Outcome::Unavailable {
                 reason: "variant changes not acquired",
             },
@@ -2568,7 +2605,9 @@ impl Captured {
         }
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.capacity() * std::mem::size_of::<rows::VariantChangeRow>() + self.heap_bytes
+        self.rows.capacity() * std::mem::size_of::<rows::VariantChangeRow>()
+            + self.snapshots.allocated_bytes()
+            + self.heap_bytes
     }
     /// Runs only while the hourly original is parked. Pending repair evidence
     /// keeps held-design reuse closed until the drain's final proof succeeds;
@@ -2613,20 +2652,22 @@ impl Captured {
         self.fog = super::design_fog::capture(&memory, base);
         self.liveness = liveness::Observation::refused();
         self.repaired = 0;
-        let result = drain(base, hour, &mut self.rows).and_then(|repaired| {
-            self.repaired = repaired;
-            self.liveness = liveness::observation()?;
-            self.dictionary = super::bonus_snapshots::snapshot()?;
-            Ok(())
-        });
+        let result = drain_shared(&memory, base, hour, &mut self.rows, &mut self.snapshots)
+            .and_then(|repaired| {
+                self.repaired = repaired;
+                self.liveness = liveness::observation()?;
+                self.dictionary = super::bonus_snapshots::snapshot()?;
+                Ok(())
+            });
         (self.context, self.templates) = context(&memory).unwrap_or_default();
         self.context_acquired = true;
         self.outcome = match result {
             Ok(()) => Outcome::Rows {
-                len: self.rows.len(),
+                len: self.rows.len() + self.snapshots.len(),
             },
             Err(reason) => {
                 self.rows.clear();
+                self.snapshots.clear();
                 Outcome::Unavailable { reason }
             }
         };
@@ -2641,7 +2682,19 @@ impl Captured {
         self.context_acquired = false;
         boundary(true);
     }
+    pub(super) fn history(&self) -> snapshots::History<'_> {
+        snapshots::History::new(&self.rows, &self.snapshots)
+    }
+    #[cfg(test)]
     pub(super) fn table_input(&self, projection: Option<&Projection<'_>>) -> TableInput {
+        let history = self.history();
+        self.table_input_history(history, projection)
+    }
+    pub(super) fn table_input_history(
+        &self,
+        history: snapshots::History<'_>,
+        projection: Option<&Projection<'_>>,
+    ) -> TableInput {
         if let Outcome::Unavailable { reason } = self.outcome {
             return unavailable(reason).into();
         }
@@ -2649,22 +2702,14 @@ impl Captured {
             return unavailable("variant terminal repairs cannot reconstruct lost occurrences")
                 .into();
         }
-        if self.rows.is_empty() {
+        if history.is_empty() {
             return TableView::Complete(rows::TableRows::VariantChanges(Vec::new())).into();
         }
         let result = (|| {
-            let mut output = engine_allocation::vec(self.rows.len())?;
+            let mut output = engine_allocation::vec(history.len())?;
             let mut previous = std::collections::HashMap::new();
-            engine_allocation::reserve_map(&mut previous, self.rows.len())?;
-            for (index, row) in self.rows.iter().enumerate() {
-                let preceding = previous
-                    .get(&row.variant)
-                    .map_or(&[][..], |&last| &self.rows[last..last + 1]);
-                if !unchanged(row, preceding, projection) {
-                    output.push(rows::RowCodec::try_clone(row)?);
-                }
-                previous.insert(row.variant, index);
-            }
+            engine_allocation::reserve_map(&mut previous, history.len())?;
+            append_history(history.iter(), &mut output, &mut previous, projection)?;
             Ok::<_, std::io::Error>(output)
         })();
         match result {
@@ -2674,24 +2719,47 @@ impl Captured {
     }
 }
 
+fn append_history<'a>(
+    history: impl Iterator<Item = Result<snapshots::Change<'a>, &'static str>>,
+    output: &mut Vec<rows::VariantChangeRow>,
+    previous: &mut HashMap<u64, snapshots::Change<'a>>,
+    projection: Option<&Projection<'_>>,
+) -> std::io::Result<()> {
+    for change in history {
+        let change = change.map_err(std::io::Error::other)?;
+        let variant = change.view().variant;
+        if !unchanged(change, previous.get(&variant).copied(), projection) {
+            engine_allocation::reserve(output, 1)?;
+            output.push(change.try_clone()?);
+        }
+        previous.insert(variant, change);
+    }
+    Ok(())
+}
+
 fn unchanged(
-    event: &rows::VariantChangeRow,
-    preceding: &[rows::VariantChangeRow],
+    event: snapshots::Change<'_>,
+    preceding: Option<snapshots::Change<'_>>,
     projection: Option<&Projection<'_>>,
 ) -> bool {
-    if event.removed {
+    let view = event.view();
+    if view.removed {
         return false;
     }
-    let Some(snapshot) = &event.snapshot else {
+    let Some(snapshot) = view.snapshot else {
         return false;
     };
-    if let Some(previous) = preceding
-        .iter()
-        .rev()
-        .find(|row| row.variant == event.variant)
-    {
-        return !previous.removed && previous.snapshot.as_ref() == Some(snapshot);
+    if let Some(previous) = preceding {
+        if let (snapshots::Change::Snapshot(current), snapshots::Change::Snapshot(previous)) =
+            (event, previous)
+            && std::sync::Arc::ptr_eq(&current.value, &previous.value)
+        {
+            return true;
+        }
+        let previous = previous.view();
+        return !previous.removed && previous.snapshot == Some(snapshot);
     }
+    let event = view;
     let Some(projection) = projection else {
         return false;
     };
@@ -2843,12 +2911,26 @@ pub fn status() -> Status {
     }
 }
 
+#[cfg(test)]
 fn decode_batch(
     batch: &Batch,
     base: usize,
     hour: i32,
     output: &mut Vec<rows::VariantChangeRow>,
 ) -> Result<(), &'static str> {
+    let mut snapshots = snapshots::Shared::default();
+    decode_batch_shared(batch, base, hour, output, &mut snapshots)?;
+    snapshots.materialize(output)
+}
+fn decode_batch_shared(
+    batch: &Batch,
+    base: usize,
+    hour: i32,
+    output: &mut Vec<rows::VariantChangeRow>,
+    snapshots: &mut snapshots::Shared,
+) -> Result<(), &'static str> {
+    snapshots.reserve(batch.events.len())?;
+    let mut cache = snapshots::Cache::default();
     let mut preceding_sequence = 0;
     for event in &batch.events {
         if event.sequence == 0 || event.sequence <= preceding_sequence {
@@ -2927,21 +3009,14 @@ fn decode_batch(
             });
             continue;
         }
-        let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end)?;
-        let snapshot = snapshot(&memory, base, hour, event.pointer, false)?;
-        engine_allocation::reserve(output, 1).map_err(|_| "variant change allocation failed")?;
-        output.push(rows::VariantChangeRow {
-            sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
-            hour: event.hour,
-            variant: event.variant,
-            flags: None,
-            scalar: None,
-            sources: None,
-            organisation: None,
-            removed: event.removed,
-            snapshot: Some(snapshot),
-            failure: Vec::new(),
-        });
+        let snapshot = cache.decode(batch, event, base, hour, snapshots)?;
+        snapshots.push(
+            output.len() + snapshots.len(),
+            OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            event.hour,
+            event.variant,
+            snapshot,
+        )?;
     }
     Ok(())
 }
@@ -2955,6 +3030,16 @@ fn snapshot(
     pointer: usize,
     fresh: bool,
 ) -> Result<rows::VariantSnapshot, &'static str> {
+    let decoded = decode_snapshot(memory, base, hour, pointer, fresh)?;
+    Ok(decoded.value)
+}
+fn decode_snapshot(
+    memory: &impl Memory,
+    base: usize,
+    hour: i32,
+    pointer: usize,
+    fresh: bool,
+) -> Result<snapshots::Decoded, &'static str> {
     let source = [native::RegistryRow::read(memory, base, pointer)?];
     let mut captured = Variants::vacant();
     captured.capture_state(
@@ -2980,19 +3065,7 @@ fn snapshot(
     {
         return Err("variant change children decode failed");
     }
-    if fresh {
-        let mut store = STORE
-            .get()
-            .ok_or("variant change observer not prepared")?
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        sources::repair(&captured.definitions.rows[0], &mut store.interests)?;
-        liveness::seed(&captured, &mut store.interests)?;
-    } else {
-        sources::track(&captured.definitions.rows[0])?;
-    }
-    liveness::sample(&captured.definitions.rows[0])?;
-    super::design_context::event(memory, base, &captured, false)?;
+    let context = observe_snapshot(&captured, memory, base, fresh)?;
     let snapshot = rows::VariantSnapshot {
         definition: definition.into(),
         modules: captured.modules.rows[..captured.modules.outcome.len()]
@@ -3015,7 +3088,31 @@ fn snapshot(
             })
             .collect(),
     };
-    Ok(snapshot)
+    Ok(snapshots::Decoded {
+        value: snapshot,
+        definition: captured.definitions.rows.remove(0),
+        context: Some(context),
+    })
+}
+fn observe_snapshot(
+    captured: &Variants,
+    memory: &impl Memory,
+    base: usize,
+    fresh: bool,
+) -> Result<super::design_context::Event, &'static str> {
+    if fresh {
+        let mut store = STORE
+            .get()
+            .ok_or("variant change observer not prepared")?
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sources::repair(&captured.definitions.rows[0], &mut store.interests)?;
+        liveness::seed(captured, &mut store.interests)?;
+    } else {
+        sources::track(&captured.definitions.rows[0])?;
+    }
+    liveness::sample(&captured.definitions.rows[0])?;
+    super::design_context::event(memory, base, captured)
 }
 
 #[cfg(test)]

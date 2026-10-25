@@ -93,7 +93,7 @@ impl Interests {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct Binding {
     author: u64,
     direct: Vec<usize>,
@@ -187,6 +187,18 @@ fn track_in(
     if let Some((owner, provider)) = links.provider {
         interests.insert(Key::Provider(provider), owner)?;
     }
+    bind(held, row)
+}
+fn bind(
+    held: &mut HashMap<u64, Binding>,
+    row: &native::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>,
+) -> Result<(), &'static str> {
+    let Some(links) = &row.source_links else {
+        return held
+            .contains_key(&row.identity.id)
+            .then_some(())
+            .ok_or("carried design lacks its source binding");
+    };
     let state = row.design.as_ref();
     if held.get(&row.identity.id).is_some_and(|binding| {
         binding.author == state.design_team
@@ -198,23 +210,35 @@ fn track_in(
     }) {
         return Ok(());
     }
-    held.insert(
-        row.identity.id,
-        Binding {
-            author: state.design_team,
-            direct: engine_allocation::copy_vec(&links.direct)
-                .map_err(|_| "design source binding allocation failed")?,
-            provider: links.provider,
-            handles: engine_allocation::copy_vec(&state.named_bonuses)
-                .map_err(|_| "design source binding allocation failed")?,
-            references: rows::VariantSourceReferences {
-                direct: engine_allocation::copy_vec(&state.bonus_sources)
-                    .map_err(|_| "design source binding allocation failed")?,
-                named: engine_allocation::copy_vec(&state.named_sources)
-                    .map_err(|_| "design source binding allocation failed")?,
-            },
-        },
-    );
+    let mut vacant = Binding::default();
+    let binding = held.get_mut(&row.identity.id).unwrap_or(&mut vacant);
+    fn prepare<T>(target: &mut Vec<T>, source: &[T]) -> Result<(), &'static str> {
+        engine_allocation::reserve(target, source.len().saturating_sub(target.len()))
+            .map_err(|_| "design source binding allocation failed")
+    }
+    prepare(&mut binding.direct, &links.direct)?;
+    prepare(&mut binding.handles, &state.named_bonuses)?;
+    prepare(&mut binding.references.direct, &state.bonus_sources)?;
+    prepare(&mut binding.references.named, &state.named_sources)?;
+    binding.author = state.design_team;
+    binding.provider = links.provider;
+    binding.direct.clear();
+    binding.direct.extend_from_slice(&links.direct);
+    binding.handles.clear();
+    binding.handles.extend_from_slice(&state.named_bonuses);
+    binding.references.direct.clear();
+    binding
+        .references
+        .direct
+        .extend_from_slice(&state.bonus_sources);
+    binding.references.named.clear();
+    binding
+        .references
+        .named
+        .extend_from_slice(&state.named_sources);
+    if !held.contains_key(&row.identity.id) {
+        held.insert(row.identity.id, vacant);
+    }
     Ok(())
 }
 pub(super) fn track(
@@ -223,14 +247,8 @@ pub(super) fn track(
     let mut held = bindings();
     engine_allocation::reserve_map(&mut held, 1)
         .map_err(|_| "design source binding allocation failed")?;
-    // Interests were already registered while staging the native occurrence.
-    let mut ignored = Interests::default();
-    ignored.prepare(
-        row.source_links
-            .as_ref()
-            .map_or(0, |links| links.direct.len() + 1),
-    )?;
-    track_in(&mut held, &mut ignored, row)?;
+    // Native staging already registered these interests.
+    bind(&mut held, row)?;
     TRIM.store(true, Ordering::Release);
     Ok(())
 }
@@ -480,6 +498,30 @@ mod tests {
                 named: vec![2, 2],
             },
         }
+    }
+    #[test]
+    fn staged_bindings_reuse_storage_for_unchanged_and_replaced_values() {
+        let binding = binding();
+        let mut row = native::DefinitionRow::default();
+        row.identity.id = 1;
+        row.source_links = Some(native::DesignSourceLinks {
+            direct: binding.direct.clone(),
+            provider: binding.provider,
+        });
+        row.design = std::sync::Arc::new(rows::VariantDesignState {
+            named_bonuses: binding.handles.clone(),
+            bonus_sources: binding.references.direct.clone(),
+            named_sources: binding.references.named.clone(),
+            ..Default::default()
+        });
+        *bindings() = HashMap::from([(1, binding)]);
+        collector_test_support::with_allocations_denied(|| track(&row)).unwrap();
+        let state = std::sync::Arc::make_mut(&mut row.design);
+        for value in &mut state.bonus_sources {
+            *value += 1;
+        }
+        collector_test_support::with_allocations_denied(|| track(&row)).unwrap();
+        assert_eq!(bindings()[&1].references.direct, row.design.bonus_sources);
     }
     #[test]
     fn source_occurrences_select_all_raw_owner_aliases() {

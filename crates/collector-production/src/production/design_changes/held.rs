@@ -148,7 +148,11 @@ pub(super) fn seed(
     }
     Ok(())
 }
-pub(super) fn apply(events: &[Event], rows: &[rows::VariantChangeRow]) -> Result<(), &'static str> {
+pub(super) fn apply_shared(
+    events: &[Event],
+    rows: &[rows::VariantChangeRow],
+    snapshots: &snapshots::Shared,
+) -> Result<(), &'static str> {
     if events.is_empty() {
         return Ok(());
     }
@@ -160,21 +164,46 @@ pub(super) fn apply(events: &[Event], rows: &[rows::VariantChangeRow]) -> Result
             .iter()
             .filter(|row| row.sources.is_none() && row.organisation.is_none())
             .count()
+            + snapshots.len()
     {
         return Err("variant held state event count mismatch");
     }
     let mut held = cache();
-    apply_to(&mut held, events, rows)
+    apply_to_shared(&mut held, events, rows, snapshots)
 }
+#[cfg(test)]
 fn apply_to(
     held: &mut HashMap<u64, Entry>,
     events: &[Event],
     rows: &[rows::VariantChangeRow],
 ) -> Result<(), &'static str> {
+    apply_to_shared(held, events, rows, &snapshots::Shared::default())
+}
+fn apply_to_shared(
+    held: &mut HashMap<u64, Entry>,
+    events: &[Event],
+    rows: &[rows::VariantChangeRow],
+    snapshots: &snapshots::Shared,
+) -> Result<(), &'static str> {
     let mut events = events
         .iter()
         .filter(|event| matches!(event.kind, Kind::Design | Kind::Scalar(_)));
-    for row in rows {
+    for change in snapshots.iter(rows) {
+        let row = match change? {
+            snapshots::Change::Snapshot(snapshot) => {
+                let event = events
+                    .next()
+                    .ok_or("variant held state event count mismatch")?;
+                engine_allocation::reserve_map(held, 1)
+                    .map_err(|_| "variant held state allocation failed")?;
+                held.insert(
+                    snapshot.variant,
+                    (event.pointer, Arc::clone(&snapshot.value.definition.design)),
+                );
+                continue;
+            }
+            snapshots::Change::Row(row) => row,
+        };
         if row.organisation.is_some() {
             continue;
         }
@@ -279,6 +308,69 @@ pub(super) fn release() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeated_shared_snapshots_keep_history_immutable_without_deep_held_clones() {
+        let state = Arc::new(rows::VariantDesignState {
+            manpower: 99,
+            niches: vec![1, 7, 11],
+            ..Default::default()
+        });
+        let mut definition = native::DefinitionRow::default();
+        definition.identity.id = 1;
+        definition.design = Arc::clone(&state);
+        let decoded = Arc::new(snapshots::Decoded {
+            value: rows::VariantSnapshot::default(),
+            definition,
+            context: None,
+        });
+        let event = Event {
+            kind: Kind::Design,
+            sequence: 1,
+            hour: 7,
+            pointer: 100,
+            variant: 1,
+            flags: None,
+            removed: false,
+            start: 0,
+            end: 0,
+        };
+        let events = vec![event; 5_000];
+        let rows = Vec::new();
+        let mut shared = snapshots::Shared::default();
+        for index in 0..events.len() {
+            shared.push(index, 1, 7, 1, Arc::clone(&decoded)).unwrap();
+        }
+        let untouched = Arc::new(rows::VariantDesignState::default());
+        let mut held = HashMap::with_capacity(2);
+        held.insert(2, (200, Arc::clone(&untouched)));
+        collector_test_support::with_allocations_denied(|| {
+            apply_to_shared(&mut held, &events, &rows, &shared)
+        })
+        .unwrap();
+        assert!(Arc::ptr_eq(&held[&1].1, &state));
+        assert!(Arc::ptr_eq(&held[&2].1, &untouched));
+        let flags = rows::VariantChangeRow {
+            sequence: 2,
+            hour: 7,
+            variant: 1,
+            flags: Some([1, 2, 3]),
+            ..Default::default()
+        };
+        apply_to(
+            &mut held,
+            &[Event {
+                flags: Some([1, 2, 3]),
+                ..event
+            }],
+            &[flags],
+        )
+        .unwrap();
+        assert_eq!(held[&1].1.can_upgrade_modules, 3);
+        assert_eq!(state.can_upgrade_modules, 0);
+        assert_eq!(state.niches, [1, 7, 11]);
+        assert!(Arc::ptr_eq(&held[&2].1, &untouched));
+    }
+
     #[test]
     fn scalar_events_keep_untouched_designs_and_name_only_edits_share_deep_storage() {
         let previous = Arc::new(rows::VariantDesignState {

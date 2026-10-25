@@ -55,7 +55,7 @@ fn shared_design_writers_keep_their_original_receivers_without_owning_patches() 
     assert_eq!(MUTATIONS.len() - FORWARDED_SITES.len(), 20);
 }
 
-fn fixture() -> Vec<u8> {
+pub(super) fn fixture() -> Vec<u8> {
     let mut bytes = kit::fixture();
     for offset in [
         native::DISPLAY_NAME,
@@ -73,7 +73,7 @@ fn fixture() -> Vec<u8> {
     );
     bytes
 }
-fn edit(bytes: &mut [u8], text: u8, range: i64) {
+pub(super) fn edit(bytes: &mut [u8], text: u8, range: i64) {
     let at = kit::VARIANT - kit::BASE;
     bytes[at + native::DISPLAY_NAME] = text;
     bytes[at + native::DISPLAY_NAME + 16..at + native::DISPLAY_NAME + 24]
@@ -81,7 +81,7 @@ fn edit(bytes: &mut [u8], text: u8, range: i64) {
     bytes[at + native::MAP_RANGE_STAT..at + native::MAP_RANGE_STAT + 8]
         .copy_from_slice(&range.to_le_bytes());
 }
-fn append(batch: &mut Batch, bytes: &[u8], sequence: u64, removed: bool) {
+pub(super) fn append(batch: &mut Batch, bytes: &[u8], sequence: u64, removed: bool) {
     let memory = engine_native::memory::SliceMemory {
         base: kit::BASE,
         bytes,
@@ -142,11 +142,19 @@ fn variant_events_keep_multiple_same_hour_edits_and_final_removal_without_callba
     );
     assert!(!rows[0].removed && !rows[1].removed && rows[2].removed);
     assert!(rows[2].snapshot.is_none());
-    assert!(!unchanged(&rows[2], &rows[..2], None));
+    assert!(!unchanged(
+        snapshots::Change::Row(&rows[2]),
+        Some(snapshots::Change::Row(&rows[1])),
+        None
+    ));
     let mut duplicate = rows[1].clone();
     duplicate.sequence = 4;
     duplicate.removed = false;
-    assert!(unchanged(&duplicate, &rows[..2], None));
+    assert!(unchanged(
+        snapshots::Change::Row(&duplicate),
+        Some(snapshots::Change::Row(&rows[1])),
+        None
+    ));
     for row in rows {
         rows::RowCodec::check_key_fields(&row).unwrap();
     }
@@ -640,7 +648,7 @@ fn variant_observed_edits_replace_only_the_changed_design_and_keep_last_edit() {
     let projection = Projection::new(&encoder, 1, 1, false, &scratch);
     assert!(matches!(
         collector_test_support::with_allocations_denied(|| {
-            project_definitions(&equal, Some(&projection))
+            project_definitions(snapshots::History::from_rows(&equal), Some(&projection))
         }),
         TableInput::ComparedEqual(_)
     ));
@@ -666,7 +674,7 @@ fn variant_observed_edits_replace_only_the_changed_design_and_keep_last_edit() {
         },
     ];
     let projection = Projection::new(&encoder, 1, 1, false, &scratch);
-    let projected = project_definitions(&history, Some(&projection));
+    let projected = project_definitions(snapshots::History::from_rows(&history), Some(&projection));
     let TableInput::ComparedChanges { indices, rows, .. } = &projected else {
         panic!("expected sparse design replacement");
     };
@@ -685,6 +693,7 @@ fn variant_observed_edits_replace_only_the_changed_design_and_keep_last_edit() {
     let flags = Captured {
         repaired: 0,
         rows: vec![history[2].clone()],
+        snapshots: snapshots::Shared::default(),
         outcome: Outcome::Rows { len: 1 },
         heap_bytes: 0,
         dictionary: None,
@@ -716,6 +725,7 @@ fn variant_frame_reset_withdraws_old_observations_and_keeps_reusable_storage() {
             ..Default::default()
         }],
         outcome: Outcome::Rows { len: 1 },
+        snapshots: snapshots::Shared::default(),
         heap_bytes: 0,
         dictionary: Some(std::sync::Arc::new(rows::TableRows::VariantBonusSnapshots(
             Vec::new(),
@@ -1055,8 +1065,12 @@ fn variant_membership_projection_keeps_terminal_rows_and_checks_every_occurrence
     let scratch = crate::projection::ProjectionScratch::default();
     for force in [false, true] {
         let projection = Projection::new(&encoder, 1, 1, force, &scratch);
-        let result =
-            apply::<tables::VariantUpgrades>(&history, Some(&projection), |row| row.variant, make);
+        let result = apply::<tables::VariantUpgrades>(
+            snapshots::History::from_rows(&history),
+            Some(&projection),
+            |row| row.variant,
+            make,
+        );
         assert!(
             matches!(result, TableInput::Sampled(TableView::Complete(ref rows))
             if rows.rows::<tables::VariantUpgrades>() == Some(expected.as_slice()))
@@ -1075,7 +1089,7 @@ fn variant_membership_projection_keeps_terminal_rows_and_checks_every_occurrence
         },
     ];
     assert!(
-        matches!(apply::<tables::VariantUpgrades>(&bad, Some(&projection), |row| row.variant, make),
+        matches!(apply::<tables::VariantUpgrades>(snapshots::History::from_rows(&bad), Some(&projection), |row| row.variant, make),
         TableInput::Sampled(TableView::Unavailable { reason })
         if reason == "variant changes have an incomplete observation")
     );
@@ -1114,8 +1128,10 @@ fn reused_definition_edits_keep_intermediate_validation_refusals() {
         source(vec![1]),
     ] {
         let scalar = next.scalar.is_some();
-        let result =
-            project_definitions(&[source(vec![0]), next, source(vec![1])], Some(&projection));
+        let result = project_definitions(
+            snapshots::History::from_rows(&[source(vec![0]), next, source(vec![1])]),
+            Some(&projection),
+        );
         let expected = if scalar {
             "variant scalar projection allocation failed"
         } else {
@@ -1231,7 +1247,7 @@ fn shared_variant_projection_reuses_quiet_groups_and_keeps_identical_frame_bytes
             if !force && hour == 1 {
                 assert!(matches!(
                     collector_test_support::with_allocations_denied(|| {
-                        project_definitions(&captured.rows, Some(&projection))
+                        project_definitions(captured.history(), Some(&projection))
                     }),
                     TableInput::SharedComplete(_)
                 ));

@@ -1322,19 +1322,21 @@ impl Captured {
     /// complete baseline before allocating replay rows. Other production tables
     /// retain their existing arena validation and conversion paths.
     pub fn table_inputs(&self, mut projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
+        let history = self.changes.history();
         let observed = matches!(
             self.variants.definitions.outcome,
             Outcome::Unavailable {
                 reason: replay_data::cadence::SKIPPED_REASON
             }
         )
-        .then(|| design_changes::project(&self.changes, projection.as_deref()));
+        .then(|| design_changes::project_history(&self.changes, history, projection.as_deref()));
         let history_input = if self.variants.baseline_admitted
             && matches!(self.changes.outcome, Outcome::Unavailable { .. })
         {
             TableView::Complete(rows::TableRows::VariantChanges(Vec::new())).into()
         } else {
-            self.changes.table_input(projection.as_deref())
+            self.changes
+                .table_input_history(history, projection.as_deref())
         };
         let dictionary =
             bonus_snapshots::latest(self.variants.dictionary(), self.changes.dictionary());
