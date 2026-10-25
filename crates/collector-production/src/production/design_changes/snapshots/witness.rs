@@ -38,11 +38,9 @@ impl<'a, M: Memory> Observed<'a, M> {
         let mut pieces = engine_allocation::vec(range.len().saturating_add(reads.len())).ok()?;
         for (index, span) in log.spans[range.clone()].iter().enumerate() {
             let end = span.addr.checked_add(span.len as usize)?;
-            for read in reads
-                .iter()
-                .skip_while(|read| read.end <= span.addr)
-                .take_while(|read| read.start < end)
-            {
+            // Merged reads are disjoint and sorted, so their ends are sorted too.
+            let first = reads.partition_point(|read| read.end <= span.addr);
+            for read in reads[first..].iter().take_while(|read| read.start < end) {
                 let start = span.addr.max(read.start) - span.addr;
                 let end = end.min(read.end) - span.addr;
                 engine_allocation::reserve(&mut pieces, 1).ok()?;
@@ -157,4 +155,55 @@ fn same_shape(left: &[collector_raw::raw::Span], right: &[collector_raw::raw::Sp
                 && left.ok == right.ok
                 && left.bulk == right.bulk
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pieces_are_each_spans_read_runs_across_many_spans_and_reads() {
+        const SPANS: usize = 2_048;
+        const LEN: usize = 64;
+        let base = 0x10_0000;
+        let bytes: Vec<u8> = (0..SPANS * LEN).map(|at| at as u8).collect();
+        let memory = engine_native::memory::SliceMemory {
+            base,
+            bytes: &bytes,
+        };
+        let mut log = RawLog::<1>::new(SPANS, SPANS * LEN);
+        for span in 0..SPANS {
+            log.take(&memory, base + span * LEN, LEN, 1).unwrap();
+        }
+        let observed = Observed::new(&memory, SPANS);
+        let mut covered = vec![false; SPANS * LEN];
+        let mut buffer = [0; 5];
+        for at in (0..SPANS * LEN - buffer.len()).step_by(11) {
+            let len = 1 + at % buffer.len();
+            assert!(observed.copy(base + at, &mut buffer[..len]));
+            covered[at..at + len].fill(true);
+        }
+        let order: Vec<usize> = (0..SPANS).collect();
+        let witness = observed.finish(&log, 0..SPANS, &order).unwrap();
+        let mut expected = Vec::new();
+        for span in 0..SPANS {
+            let covered = &covered[span * LEN..][..LEN];
+            let mut offset = 0;
+            while offset < LEN {
+                let start = offset;
+                while offset < LEN && covered[offset] {
+                    offset += 1;
+                }
+                if start < offset {
+                    expected.push(Piece {
+                        span,
+                        bytes: start..offset,
+                    });
+                } else {
+                    offset += 1;
+                }
+            }
+        }
+        assert!(witness.pieces == expected);
+    }
 }
