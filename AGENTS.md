@@ -50,10 +50,12 @@
 
 ## Sharing this machine
 
-- Don't start builds while a `BENCH_RUNNING` file exists under `captures`.
-- Don't start benchmarks while `captures\ci\TESTS_RUNNING` exists: the daily tests hold it, and wait for running benchmarks to end first. One older than 20 hours is stale.
+- Only recorder benchmarks need a quiet machine. Each one holds a `BENCH_RUNNING` file under `captures` while it runs. Don't start builds, tests or other benchmarks while one exists.
+- Viewer, dashboard and playback measurements don't need a quiet machine: run them in parallel, without a `BENCH_RUNNING` file, and pause them while one exists.
+- Don't start a recorder benchmark while `captures\ci\TESTS_RUNNING` exists: the daily tests hold it, and wait for running recorder benchmarks to end first. One older than 20 hours is stale.
+- If a single test holds up the daily run for more than an hour, stop the run.
 - A fresh checkout can start from the shared build: `python tools/warm_target.py warm --root warm-start\seed`.
-- Only stop processes you started. Never touch other sessions' work.
+- Otherwise, only stop processes you started. Never touch other sessions' work.
 - Put captures and scratch files in `captures\<name>\`, never in Git.
 - Never use plain `git stash`; the stash is shared.
 
