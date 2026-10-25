@@ -205,10 +205,6 @@ fn award_day(row: &CountryFuelRow, hour: i32) -> Result<&FuelAwardDay, String> {
     if !day.reason.is_empty() {
         return Err(String::from_utf8_lossy(&day.reason).into_owned());
     }
-    if !matches!(row.country_instance,replay_data::rows::Recorded::Value(Some(value)) if value == day.country_instance)
-    {
-        return Err("Applied fuel window belongs to another or unrecorded country identity".into());
-    }
     if !day.continuity_start_hour.is_some_and(|start| {
         hour.checked_sub(DAY_HOURS - 1)
             .is_some_and(|first| start <= first)
@@ -394,7 +390,7 @@ pub enum DayLeftOut {
 pub struct FuelRead {
     pub country: String,
     pub country_instance: Option<u32>,
-    /// Capture continuity boundary; unlike native instance zero, resets differ.
+    /// Capture continuity boundary, independent of the raw surrender target.
     pub continuity_start_hour: Option<i32>,
     /// The hour it was read, where its values start.
     pub first_hour: i32,
@@ -811,7 +807,6 @@ struct CountryScan {
     track: IdentityTrack,
     open: bool,
     demand_open: bool,
-    instance: Option<u32>,
     continuity: Option<i32>,
     recent: VecDeque<(i32, Holding)>,
     #[serde(skip)]
@@ -821,9 +816,9 @@ struct CountryScan {
 #[derive(Default)]
 struct ScannedBranch {
     countries: BTreeMap<String, Arc<ScannedFuel>>,
-    actor_aliases: BTreeMap<(String, u32), BTreeSet<String>>,
+    actor_aliases: BTreeMap<String, BTreeSet<String>>,
     unnamed: BTreeSet<u32>,
-    actor_conflicts: BTreeSet<(String, u32)>,
+    actor_conflicts: BTreeSet<String>,
     #[cfg(test)]
     decoded_frames: usize,
     #[cfg(test)]
@@ -831,11 +826,8 @@ struct ScannedBranch {
 }
 
 impl ScannedBranch {
-    fn actor_tags(&self, country: &str, instance: u32) -> impl Iterator<Item = &String> {
-        self.actor_aliases
-            .get(&(country.to_owned(), instance))
-            .into_iter()
-            .flatten()
+    fn actor_tags(&self, country: &str) -> impl Iterator<Item = &String> {
+        self.actor_aliases.get(country).into_iter().flatten()
     }
 }
 
@@ -1156,21 +1148,13 @@ impl Scan {
                 }
                 continue;
             };
-            let instance = match row.country_instance {
-                replay_data::rows::Recorded::Value(value) => value,
-                _ => None,
-            };
             let continuity = match &row.award_day {
                 replay_data::rows::Recorded::Value(day) => day.continuity_start_hour,
                 _ => None,
             };
-            if country.instance != instance {
-                country.demand_open = false;
-            }
-            if country.instance != instance || country.continuity != continuity {
+            if country.continuity != continuity {
                 country.open = false;
             }
-            country.instance = instance;
             country.continuity = continuity;
             let left_out = day_left_out(&country.recent, hour, identity);
             country.result.reads.push(read_of(

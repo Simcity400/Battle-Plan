@@ -92,8 +92,8 @@ fn sample_rows<'a>(
     Ok(result)
 }
 
-fn actor_binding(country: &str, instance: u32) -> String {
-    serde_json::to_string(&(country, instance)).expect("actor bindings serialize")
+fn actor_binding(country: &str) -> String {
+    serde_json::to_string(country).expect("actor bindings serialize")
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -431,12 +431,10 @@ impl Prepared {
                     .filter(|read| read.last_hour == frame.hour)
                 {
                     let read = demand::FuelConsumptionRead::from(read);
-                    if let Some(instance) = read.country_instance {
-                        actors
-                            .entry(actor_binding(&read.country, instance))
-                            .or_default()
-                            .push((tag.clone(), read));
-                    }
+                    actors
+                        .entry(actor_binding(&read.country))
+                        .or_default()
+                        .push((tag.clone(), read));
                 }
             }
             let mut active_actors = BTreeSet::new();
@@ -1057,10 +1055,7 @@ impl<'a> Reads<'a> {
         read: &demand::FuelConsumptionRead,
         hour: i32,
     ) -> io::Result<Option<dashboard_base::products::country_groups::HourSpan>> {
-        let Some(instance) = read.country_instance else {
-            return Ok(None);
-        };
-        let actor = actor_binding(&read.country, instance);
+        let actor = actor_binding(&read.country);
         if self
             .metadata
             .actors
@@ -1783,7 +1778,7 @@ pub(super) fn window_summary(
         ..Default::default()
     };
     for (actor, metadata) in &reads.metadata.actors {
-        let actor: (String, u32) = serde_json::from_str(actor)?;
+        let actor: String = serde_json::from_str(actor)?;
         summary
             .actor_aliases
             .insert(actor.clone(), metadata.tags.clone());
@@ -1826,7 +1821,7 @@ pub(super) fn actor_consumption(
     let (store, source_key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
     let mut reads = Reads::open(&store, &source_key, branch, cancelled)?
         .ok_or_else(|| dashboard_core::invalid("Fuel summary preparation is not available"))?;
-    let actor = actor_binding(&basis.country, basis.country_instance);
+    let actor = actor_binding(&basis.country);
     let Some(metadata) = reads.metadata.actors.get(&actor).cloned() else {
         return Ok(Vec::new());
     };
@@ -1846,7 +1841,6 @@ pub(super) fn actor_consumption(
         for read in reads.consumption_window(&tag, first, last, cancelled)? {
             dashboard_text::metadata::check_cancel(cancelled)?;
             if read.country == basis.country
-                && read.country_instance == Some(basis.country_instance)
                 && reads
                     .current
                     .value_at(segment_key, read.first_hour)?

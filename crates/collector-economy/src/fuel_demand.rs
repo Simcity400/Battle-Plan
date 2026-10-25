@@ -611,17 +611,10 @@ pub fn attach(
         ),
     };
     for row in rows {
-        let mut pack = owned
+        let pack = owned
             .binary_search_by_key(&row.country, |(country, _)| *country)
             .ok()
             .map(|index| std::mem::take(&mut owned[index].1));
-        if let Some(pack) = &mut pack
-            && !matches!(&row.country_instance, Recorded::Value(instance) if *instance == pack.country_instance)
-        {
-            pack.reason = reason(Some(
-                "fuel current demand country instance differs from supplying row",
-            ))?;
-        }
         let pack = pack.unwrap_or(rows::FuelDemandRead {
             hour: pack_hour(captured.hour),
             country_instance: match &row.country_instance {

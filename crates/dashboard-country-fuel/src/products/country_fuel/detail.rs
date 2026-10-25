@@ -186,7 +186,7 @@ pub(super) fn authenticated<'a>(
         .map_err(|_| dashboard_core::invalid("Fuel country reference invalid"))?;
     reads.get(&params.hour).and_then(|rows| rows.get(&params.tag))
         .filter(|row| row.country==reference
-            && matches!(row.country_instance,replay_data::rows::Recorded::Value(Some(instance)) if instance==params.country_instance))
+            && matches!(row.country_instance,replay_data::rows::Recorded::Value(Some(value)) if value==params.country_instance))
         .ok_or_else(|| dashboard_core::invalid("Fuel actor identity changed or supplying read is not recorded (carried display hours are not reads)"))
 }
 
@@ -286,9 +286,7 @@ fn history_runs(
             });
             previous_known = false;
         }
-        let value = if read.country.to_string() != params.country
-            || read.country_instance != Some(params.country_instance)
-        {
+        let value = if read.country.to_string() != params.country {
             Err("Fuel read belongs to another or unrecorded native country identity".into())
         } else if read.continuity_start_hour != Some(continuity) {
             Err(
@@ -301,8 +299,10 @@ fn history_runs(
                 str::to_owned,
             ))
         } else if let Some(row) = reads.get(&read.first_hour).and_then(|rows| {
-            let mut matching = aliases.iter().filter_map(|tag| rows.get(*tag)).filter(|row| row.country.to_string() == params.country
-                && matches!(row.country_instance, replay_data::rows::Recorded::Value(Some(instance)) if instance == params.country_instance));
+            let mut matching = aliases
+                .iter()
+                .filter_map(|tag| rows.get(*tag))
+                .filter(|row| row.country.to_string() == params.country);
             let first = matching.next()?;
             matching.next().is_none().then_some(first)
         }) {
@@ -397,25 +397,18 @@ impl Product for CountryFuelAwardHistory {
             ));
         }
         let summary = prepared::window_summary(source, branch, params.window, context, cancelled)?;
-        let aliases: Vec<_> = summary
-            .actor_tags(&params.country, params.country_instance)
-            .collect();
+        let aliases: Vec<_> = summary.actor_tags(&params.country).collect();
         let mut country = ScannedFuel {
             reads: aliases
                 .iter()
                 .flat_map(|tag| summary.countries[*tag].reads.iter())
-                .filter(|read| {
-                    read.country.to_string() == params.country
-                        && read.country_instance == Some(params.country_instance)
-                })
+                .filter(|read| read.country.to_string() == params.country)
                 .cloned()
                 .collect(),
             ..Default::default()
         };
         country.reads.sort_by_key(|read| read.first_hour);
-        if summary
-            .actor_conflicts
-            .contains(&(params.country.clone(), params.country_instance))
+        if summary.actor_conflicts.contains(&params.country)
             || country
                 .reads
                 .windows(2)

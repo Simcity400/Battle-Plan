@@ -531,7 +531,7 @@ fn daily_gain_is_positive_awards_even_when_banked_change_is_negative_or_capped()
 }
 
 #[test]
-fn gross_gain_needs_all_hourly_intervals_and_one_native_instance() {
+fn gross_gain_needs_all_intervals_but_ignores_mutable_surrender_targets() {
     use crate::products::country_experience::scan;
     use replay_data::rows::CountryExperienceGainRow;
     for failure in 0..4 {
@@ -563,12 +563,13 @@ fn gross_gain_needs_all_hourly_intervals_and_one_native_instance() {
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
         let scanned = scan(&replay, 1, &["opaque!tag"], &AtomicBool::new(false)).unwrap();
         let reads = &scanned["opaque!tag"].reads;
-        assert!(reads[1].gain.is_none());
-        assert!(reads[1].gain_unknown.is_some());
         if failure == 2 {
-            assert!(reads[1].starts_segment);
-            assert!(reads[1].change.is_none());
-            assert_eq!(reads[0].last_hour, slot_base() + 11);
+            assert_eq!(reads[1].gain.as_ref().unwrap().army_raw, "24");
+            assert!(!reads[1].starts_segment);
+            assert!(reads[1].change.is_some());
+        } else {
+            assert!(reads[1].gain.is_none());
+            assert!(reads[1].gain_unknown.is_some());
         }
         assert_eq!(reads[2].gain.as_ref().unwrap().army_raw, "24");
         assert_eq!(reads[3].gain.as_ref().unwrap().army_raw, "24");
@@ -866,7 +867,7 @@ fn gain_runs_visit_only_changed_countries_and_banked_reads() {
             &TableId::ALL,
             |raw, frame| {
                 // Independent hourly queues authenticate every interval, including the
-                // partial interval and the change of native instance.
+                // partial interval and the mutable surrender target.
                 for (index, row) in frame
                     .complete::<replay_data::rows::tables::CountryExperienceGains>()
                     .unwrap()
@@ -874,11 +875,7 @@ fn gain_runs_visit_only_changed_countries_and_banked_reads() {
                     .enumerate()
                 {
                     let queue = &mut reference[index];
-                    if row.complete != 1
-                        || queue
-                            .back()
-                            .is_some_and(|(_, instance, _)| *instance != row.instance)
-                    {
+                    if row.complete != 1 {
                         queue.clear();
                     }
                     if row.complete == 1 {

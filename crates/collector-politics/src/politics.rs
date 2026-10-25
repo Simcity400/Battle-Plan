@@ -316,8 +316,8 @@ impl Ledger {
         }
         let mut changes = Vec::new();
         let mut governments = Vec::new();
-        let mut deltas: HashMap<(u32, u32, u8), i128> = HashMap::new();
-        let mut party_ends: HashMap<(u32, u32), Option<u32>> = HashMap::new();
+        let mut deltas: HashMap<(u32, u8), i128> = HashMap::new();
+        let mut party_ends: HashMap<u32, Option<u32>> = HashMap::new();
         let mut updated_daily = HashSet::new();
         if let Some(drain) = drain {
             for event in &captured.events[..drain.copied] {
@@ -329,7 +329,7 @@ impl Ledger {
                     Kind::Power => {
                         let delta = i128::from(event.after) - i128::from(event.before);
                         if event.sequence > self.cursor {
-                            let key = (event.country, event.instance, event.currency as u8);
+                            let key = (event.country, event.currency as u8);
                             let additional = usize::from(!deltas.contains_key(&key));
                             allocation::reserve_map(&mut deltas, additional)?;
                             *deltas.entry(key).or_default() += delta;
@@ -407,7 +407,7 @@ impl Ledger {
                     }
                     Kind::Government => {
                         if event.sequence > self.cursor {
-                            let key = (event.country, event.instance);
+                            let key = event.country;
                             let additional = usize::from(!party_ends.contains_key(&key));
                             allocation::reserve_map(&mut party_ends, additional)?;
                             party_ends.insert(key, event.parties[1]);
@@ -446,10 +446,7 @@ impl Ledger {
         if let Outcome::Rows { len } = captured.census {
             let mut current = HashMap::new();
             for now in &captured.balances[..len] {
-                let previous = self
-                    .balances
-                    .get(&now.country)
-                    .filter(|old| old.instance == now.instance);
+                let previous = self.balances.get(&now.country);
                 let mut streams = 0;
                 if continuous && let Some(old) = previous {
                     streams = PoliticsCaptureCoverageRow::PP
@@ -471,7 +468,7 @@ impl Ledger {
                     ] {
                         if let (Some(before), Some(after)) = (before, after) {
                             let observed = deltas
-                                .get(&(now.country, now.instance, currency as u8))
+                                .get(&(now.country, currency as u8))
                                 .copied()
                                 .unwrap_or(0);
                             let missing = i128::from(after) - i128::from(before) - observed;
@@ -483,12 +480,7 @@ impl Ledger {
                             streams &= !bit;
                         }
                     }
-                    if party_ends
-                        .get(&(now.country, now.instance))
-                        .copied()
-                        .unwrap_or(old.party)
-                        != now.party
-                    {
+                    if party_ends.get(&now.country).copied().unwrap_or(old.party) != now.party {
                         streams &= !PoliticsCaptureCoverageRow::GOVERNMENT;
                         hooks::government_mismatch();
                     }
@@ -496,17 +488,6 @@ impl Ledger {
                         && !self.invalid_daily.contains(&now.country)
                     {
                         streams |= PoliticsCaptureCoverageRow::PP_DAILY_COSTS;
-                    }
-                } else {
-                    if self
-                        .daily
-                        .get(&now.country)
-                        .is_some_and(|day| day.instance != now.instance)
-                    {
-                        self.daily.remove(&now.country);
-                        self.costs.remove(&now.country);
-                        self.pending_daily.remove(&now.country);
-                        self.invalid_daily.remove(&now.country);
                     }
                 }
                 allocation::reserve_push_batch(&mut coverage, 1)?;
@@ -525,18 +506,12 @@ impl Ledger {
                 allocation::reserve_map(&mut current, additional)?;
                 current.insert(now.country, *now);
             }
-            self.daily.retain(|country, day| {
-                current
-                    .get(country)
-                    .is_some_and(|now| now.instance == day.instance)
-            });
+            self.daily
+                .retain(|country, _| current.contains_key(country));
             self.costs
                 .retain(|country, _| self.daily.contains_key(country));
-            self.pending_daily.retain(|country, batch| {
-                current
-                    .get(country)
-                    .is_some_and(|now| now.instance == batch.instance)
-            });
+            self.pending_daily
+                .retain(|country, _| current.contains_key(country));
             self.invalid_daily
                 .retain(|country| current.contains_key(country));
             self.balances = current;
@@ -605,8 +580,15 @@ impl Ledger {
         let identity = self.identity(event, bytes)?;
         let additional = usize::from(!self.pending_daily.contains_key(&event.country));
         allocation::reserve_map(&mut self.pending_daily, additional)?;
-        let batch = self.pending_daily.entry(event.country).or_default();
-        if batch.instance != event.instance || batch.hour != event.hour {
+        let batch = self
+            .pending_daily
+            .entry(event.country)
+            .or_insert_with(|| DailyEvents {
+                instance: event.instance,
+                hour: event.hour,
+                ..Default::default()
+            });
+        if batch.hour != event.hour {
             *batch = DailyEvents {
                 instance: event.instance,
                 hour: event.hour,
@@ -1096,7 +1078,7 @@ mod tests {
                 &[],
                 &[BalanceSnapshot {
                     instance: 2,
-                    ..balance(5001)
+                    ..balance(5002)
                 }],
             ),
             &mut tables,
@@ -1310,9 +1292,95 @@ mod tests {
             panic!()
         };
         assert_eq!(daily.len(), 2);
+        assert_eq!((daily[0].country, daily[0].instance), (5001, 1));
+        assert_eq!((daily[1].country, daily[1].instance), (5002, 1));
         assert_eq!(daily[0].pp_net_gain_raw, Some(7));
         assert_eq!(daily[1].pp_net_gain_raw, None);
         assert_eq!(daily[1].cp_gain_raw, Some(1));
+    }
+    #[test]
+    fn daily_batches_keep_components_through_recipient_changes_and_reset_on_the_next_day() {
+        let mut ledger = Ledger::default();
+        for (index, event) in [
+            Event {
+                kind: Kind::Cost,
+                cost: 3,
+                ..Default::default()
+            },
+            Event {
+                kind: Kind::Daily,
+                gross: 10,
+                cost: 3,
+                net: 7,
+                ..Default::default()
+            },
+            Event {
+                kind: Kind::Power,
+                currency: PowerCurrency::Political,
+                requested: Some(7),
+                before: 100,
+                after: 107,
+                ..Default::default()
+            },
+            Event {
+                kind: Kind::Power,
+                currency: PowerCurrency::Command,
+                requested: Some(2),
+                before: 200,
+                after: 202,
+                ..Default::default()
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let event = Event {
+                country: 5001,
+                instance: index as u32 + 1,
+                hour: 0,
+                sequence: index as u64 + 1,
+                ..event
+            };
+            assert!(ledger.stage_daily(&event, &[]).unwrap());
+        }
+        ledger.publish_daily(5001, 1).unwrap();
+        let daily = &ledger.daily[&5001];
+        assert_eq!((daily.day_hour, daily.instance), (0, 1));
+        assert_eq!(daily.pp_net_gain_raw, Some(7));
+        assert_eq!(daily.pp_realized_delta_raw, Some(7));
+        assert_eq!(daily.cp_gain_raw, Some(2));
+        assert_eq!(daily.cp_realized_delta_raw, Some(2));
+        assert_eq!(ledger.costs[&5001].len(), 1);
+        assert_eq!(ledger.costs[&5001][0].instance, 1);
+        assert!(!ledger.invalid_daily.contains(&5001));
+        assert!(
+            ledger
+                .stage_daily(
+                    &Event {
+                        kind: Kind::Power,
+                        country: 5001,
+                        instance: 7,
+                        hour: 24,
+                        sequence: 5,
+                        currency: PowerCurrency::Command,
+                        requested: Some(9),
+                        before: 202,
+                        after: 211,
+                        ..Default::default()
+                    },
+                    &[],
+                )
+                .unwrap()
+        );
+        ledger.publish_daily(5001, 1).unwrap();
+        let daily = &ledger.daily[&5001];
+        assert_eq!((daily.day_hour, daily.instance), (24, 7));
+        assert_eq!(daily.pp_net_gain_raw, None);
+        assert_eq!(daily.pp_sequence, None);
+        assert_eq!(daily.cp_gain_raw, Some(9));
+        assert_eq!(daily.cp_realized_delta_raw, Some(9));
+        assert!(!ledger.costs.contains_key(&5001));
+        assert!(!ledger.invalid_daily.contains(&5001));
     }
     #[test]
     fn replacement_log_restarts_sequences_without_dropping_new_epoch_events() {
@@ -1474,6 +1542,41 @@ mod tests {
             panic!()
         };
         assert_ne!(coverage[0].streams & PoliticsCaptureCoverageRow::PP, 0);
+    }
+    #[test]
+    fn mutable_surrender_targets_do_not_hide_power_or_government_writer_coverage() {
+        let mut ledger = Ledger::default();
+        let mut tables = tables();
+        ledger.assemble(1, 10, &captured(1, 0, &[], &[balance(5001)]), &mut tables);
+        let event = Event {
+            country: 5001,
+            instance: 1,
+            epoch: 1,
+            sequence: 1,
+            hour: 10,
+            currency: PowerCurrency::Command,
+            before: 200,
+            after: 207,
+            ..Default::default()
+        };
+        let mut now = balance(5001);
+        now.instance = 2;
+        now.cp = 207;
+        ledger.assemble(1, 11, &captured(1, 0, &[event], &[now]), &mut tables);
+        let Some(TableRows::PoliticsCaptureCoverage(coverage)) =
+            rows(&tables[TableId::PoliticsCaptureCoverage.index()])
+        else {
+            panic!()
+        };
+        assert_eq!(coverage[0].instance, 2);
+        assert_eq!(coverage[0].since_hour, 10);
+        assert_eq!(
+            coverage[0].streams
+                & (PoliticsCaptureCoverageRow::PP
+                    | PoliticsCaptureCoverageRow::CP
+                    | PoliticsCaptureCoverageRow::GOVERNMENT),
+            7
+        );
     }
 }
 

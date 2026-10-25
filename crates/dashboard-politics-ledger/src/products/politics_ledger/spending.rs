@@ -117,11 +117,11 @@ pub(super) struct Scanned {
     dirty: BTreeSet<String>,
     inputs: Arc<inputs::Inputs>,
     countries: BTreeMap<String, Country>,
-    identities: BTreeMap<(u32, u32, u64), BTreeMap<i32, String>>,
-    events: BTreeSet<(u32, u32, u64, u64)>,
-    published_events: [BTreeSet<(u32, u32, u64, u64)>; 2],
-    daily: BTreeMap<(u32, u32, u64, i32), usize>,
-    costs: BTreeSet<(u32, u32, u64, i32, u32)>,
+    identities: BTreeMap<(u32, u64), BTreeMap<i32, String>>,
+    events: BTreeSet<(u32, u64, u64)>,
+    published_events: [BTreeSet<(u32, u64, u64)>; 2],
+    daily: BTreeMap<(u32, u64, i32), usize>,
+    costs: BTreeSet<(u32, u64, i32, u32)>,
     /// A country's equal names share one allocation across its event hours.
     naming: BTreeMap<(u32, i32), Arc<NamedCountry>>,
     shared: facts::Shared,
@@ -221,7 +221,10 @@ pub enum LedgerArt {
         tag: String,
         naming: NamingCountry,
         /// The recorded holder and its dated portrait.
-        holder: Option<(u32, dashboard_base::products::character_portraits::RecordedPortrait)>,
+        holder: Option<(
+            u32,
+            dashboard_base::products::character_portraits::RecordedPortrait,
+        )>,
     },
     /// A character's dated portrait.
     Portrait {
@@ -292,9 +295,9 @@ fn draw_art(content: &PoliticsContent, art: &LedgerArt) -> Result<Shown, String>
                 content.idea_artwork(token, character.as_deref(), naming.for_tag(tag));
             match (artwork.icon, problem) {
                 (Some(icon), _) => Ok((Some(icon), note)),
-                (None, Some(problem)) => Err(note.map_or(problem.clone(), |note| {
-                    format!("{note}; {problem}")
-                })),
+                (None, Some(problem)) => {
+                    Err(note.map_or(problem.clone(), |note| format!("{note}; {problem}")))
+                }
                 (None, None) => Ok((None, note)),
             }
         }
@@ -336,7 +339,9 @@ fn draw_art(content: &PoliticsContent, art: &LedgerArt) -> Result<Shown, String>
             if let Some(reason) = refused.into_inner() {
                 return Err(reason);
             }
-            match chosen.map_err(|reason| format!("organisation {}: {reason}", organisation.token))? {
+            match chosen
+                .map_err(|reason| format!("organisation {}: {reason}", organisation.token))?
+            {
                 Some(name) => sprite(&name).map(|icon| (Some(icon), None)),
                 None => Ok((None, None)),
             }
@@ -365,7 +370,9 @@ pub fn present_icons(
         return Ok(());
     }
     let Some(options) = content else {
-        return draw_icons(data, |_| Ok(Err("recorded content has not been resolved".into())));
+        return draw_icons(data, |_| {
+            Ok(Err("recorded content has not been resolved".into()))
+        });
     };
     let contents = dashboard_base::products::politics_content::politics_content(source, options)
         .and_then(|admitted| Ok((admitted, recorded_politics_content(source, options)?)));
@@ -386,14 +393,18 @@ pub fn present_icons(
     );
     draw_icons(data, |art| {
         Ok(drawn
-            .get(serde_json::to_string(art)?, || "politics ledger icon".into(), |cat| {
-                let content = if std::ptr::eq(cat, &*admitted.catalogue) {
-                    &admitted
-                } else {
-                    &recorded
-                };
-                draw_art(content, art)
-            })
+            .get(
+                serde_json::to_string(art)?,
+                || "politics ledger icon".into(),
+                |cat| {
+                    let content = if std::ptr::eq(cat, &*admitted.catalogue) {
+                        &admitted
+                    } else {
+                        &recorded
+                    };
+                    draw_art(content, art)
+                },
+            )
             .clone())
     })
 }
@@ -406,7 +417,10 @@ fn draw_icons(
     data: &mut serde_json::Value,
     mut draw: impl FnMut(&LedgerArt) -> io::Result<Result<Shown, String>>,
 ) -> io::Result<()> {
-    let Some(items) = data.get_mut("spendItems").and_then(serde_json::Value::as_array_mut) else {
+    let Some(items) = data
+        .get_mut("spendItems")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
         return Ok(());
     };
     let mut tooltips = BTreeMap::new();
@@ -502,6 +516,7 @@ struct Daily {
     cp_read_hour: Option<i32>,
 }
 struct DailyCost {
+    accounted: bool,
     row: CountryPowerDailyCostRow,
     read_hour: i32,
     covered: bool,
@@ -658,64 +673,28 @@ impl Scanned {
                 continue;
             };
             for day in &country.daily {
-                self.daily.remove(&(
-                    day.row.country,
-                    day.row.instance,
-                    day.row.epoch,
-                    day.row.day_hour,
-                ));
+                self.daily
+                    .remove(&(day.row.country, day.row.epoch, day.row.day_hour));
             }
             country.mutations.clear();
             country.governments.clear();
             if let Some(current) = &current {
                 let before = country.daily.len();
                 country.daily.retain(|day| {
-                    current.contains(&(
-                        day.row.country,
-                        day.row.instance,
-                        day.row.epoch,
-                        day.row.day_hour,
-                    ))
+                    current.contains(&(day.row.country, day.row.epoch, day.row.day_hour))
                 });
                 country.daily_changed |= country.daily.len() != before;
             }
-            let applications: BTreeSet<_> = country
-                .daily
-                .iter()
-                .filter_map(|day| {
-                    day.row.pp_sequence.map(|sequence| {
-                        (
-                            day.row.country,
-                            day.row.instance,
-                            day.row.epoch,
-                            day.row.day_hour,
-                            sequence,
-                        )
-                    })
-                })
-                .collect();
             country.daily_costs.retain(|cost| {
                 let row = &cost.row;
-                !applications.contains(&(
-                    row.country,
-                    row.instance,
-                    row.epoch,
-                    row.day_hour,
-                    row.pp_sequence,
-                )) && current_costs.as_ref().is_none_or(|current| {
-                    current.contains(&(
-                        row.country,
-                        row.instance,
-                        row.epoch,
-                        row.day_hour,
-                        row.ordinal,
-                    ))
+                current_costs.as_ref().is_none_or(|current| {
+                    current.contains(&(row.country, row.epoch, row.day_hour, row.ordinal))
                 })
             });
             for (index, day) in country.daily.iter().enumerate() {
                 let row = &day.row;
                 self.daily
-                    .insert((row.country, row.instance, row.epoch, row.day_hour), index);
+                    .insert((row.country, row.epoch, row.day_hour), index);
             }
             let closed = country.coverage.len().saturating_sub(1);
             country.coverage.drain(..closed);
@@ -732,14 +711,14 @@ impl Scanned {
             for day in &country.daily {
                 let row = &day.row;
                 earliest
-                    .entry((row.country, row.instance, row.epoch))
+                    .entry((row.country, row.epoch))
                     .and_modify(|hour: &mut i32| *hour = (*hour).min(row.day_hour))
                     .or_insert(row.day_hour);
             }
             for cost in &country.daily_costs {
                 let row = &cost.row;
                 earliest
-                    .entry((row.country, row.instance, row.epoch))
+                    .entry((row.country, row.epoch))
                     .and_modify(|hour: &mut i32| *hour = (*hour).min(row.day_hour))
                     .or_insert(row.day_hour);
             }
@@ -784,14 +763,14 @@ impl Scanned {
                 |country| {
                     inputs
                         .power_of(country)
-                        .map(|row| (row.country, row.instance, row.epoch, row.sequence))
+                        .map(|row| (row.country, row.epoch, row.sequence))
                         .collect()
                 },
                 || {
                     inputs
                         .power()
                         .iter()
-                        .map(|row| (row.country, row.instance, row.epoch, row.sequence))
+                        .map(|row| (row.country, row.epoch, row.sequence))
                         .collect()
                 },
             );
@@ -809,14 +788,14 @@ impl Scanned {
                 |country| {
                     inputs
                         .governments_of(country)
-                        .map(|row| (row.country, row.instance, row.epoch, row.sequence))
+                        .map(|row| (row.country, row.epoch, row.sequence))
                         .collect()
                 },
                 || {
                     inputs
                         .governments()
                         .iter()
-                        .map(|row| (row.country, row.instance, row.epoch, row.sequence))
+                        .map(|row| (row.country, row.epoch, row.sequence))
                         .collect()
                 },
             );
@@ -841,10 +820,7 @@ impl Scanned {
                 for &country in owners {
                     let old: Vec<_> = self
                         .costs
-                        .range(
-                            (country, 0, 0, i32::MIN, 0)
-                                ..=(country, u32::MAX, u64::MAX, i32::MAX, u32::MAX),
-                        )
+                        .range((country, 0, i32::MIN, 0)..=(country, u64::MAX, i32::MAX, u32::MAX))
                         .copied()
                         .collect();
                     #[cfg(test)]
@@ -898,8 +874,8 @@ impl Scanned {
     fn name_at(&self, raw: u32, hour: i32) -> Option<&NamedCountry> {
         self.naming.get(&(raw, hour)).map(Arc::as_ref)
     }
-    fn tag_at(&self, country: u32, instance: u32, epoch: u64, hour: i32) -> Option<&str> {
-        let tags = self.identities.get(&(country, instance, epoch))?;
+    fn tag_at(&self, country: u32, epoch: u64, hour: i32) -> Option<&str> {
+        let tags = self.identities.get(&(country, epoch))?;
         tags.range(..=hour)
             .next_back()
             .or_else(|| tags.first_key_value())
@@ -1052,7 +1028,7 @@ fn naming_frame(frame: &DecodedFrame) -> DecodedFrame {
     }
 }
 
-type EventKey = (u32, u32, u64, u64);
+type EventKey = (u32, u64, u64);
 
 /// Replace a table's published event keys with this read's, collecting those
 /// it no longer publishes: those of the `changed` countries only, when only
@@ -1075,7 +1051,7 @@ fn publish_events(
     for &country in changed {
         let current = current_of(country);
         let old: Vec<_> = published
-            .range((country, 0, 0, 0)..=(country, u32::MAX, u64::MAX, u64::MAX))
+            .range((country, 0, 0)..=(country, u64::MAX, u64::MAX))
             .copied()
             .collect();
         visits += current.len() + old.len();
@@ -1098,26 +1074,18 @@ fn dated_at(scan: &Scanned, native: &inputs::Inputs, hour: i32) -> bool {
             row.hour == hour
                 && !scan
                     .events
-                    .contains(&(row.country, row.instance, row.epoch, row.sequence))
-                && scan
-                    .tag_at(row.country, row.instance, row.epoch, row.hour)
-                    .is_some()
+                    .contains(&(row.country, row.epoch, row.sequence))
+                && scan.tag_at(row.country, row.epoch, row.hour).is_some()
         });
     let costs = native.costs_changed || native.identity_changed;
     power
         || costs
             && native.accounting_cost().any(|row| {
                 row.day_hour == hour
-                    && !scan.costs.contains(&(
-                        row.country,
-                        row.instance,
-                        row.epoch,
-                        row.day_hour,
-                        row.ordinal,
-                    ))
-                    && scan
-                        .tag_at(row.country, row.instance, row.epoch, row.day_hour)
-                        .is_some()
+                    && !scan
+                        .costs
+                        .contains(&(row.country, row.epoch, row.day_hour, row.ordinal))
+                    && scan.tag_at(row.country, row.epoch, row.day_hour).is_some()
             })
 }
 
@@ -1321,20 +1289,17 @@ fn observe_accounting(
     for row in native.accounting_power() {
         if !scan
             .events
-            .contains(&(row.country, row.instance, row.epoch, row.sequence))
+            .contains(&(row.country, row.epoch, row.sequence))
         {
             event_countries.insert(row.country);
             event_countries.extend(row.identity.target_country);
         }
     }
     for row in native.accounting_cost() {
-        if !scan.costs.contains(&(
-            row.country,
-            row.instance,
-            row.epoch,
-            row.day_hour,
-            row.ordinal,
-        )) {
+        if !scan
+            .costs
+            .contains(&(row.country, row.epoch, row.day_hour, row.ordinal))
+        {
             event_countries.insert(row.country);
             event_countries.extend(row.identity.target_country);
         }
@@ -1381,7 +1346,7 @@ fn observe_accounting(
                 .expect("recorded country tags validated at scan entry");
             let tags = scan
                 .identities
-                .entry((witness.country, witness.instance, witness.epoch))
+                .entry((witness.country, witness.epoch))
                 .or_default();
             if tags.last_key_value().is_none_or(|(_, old)| old != tag) {
                 tags.insert(hour, tag.to_owned());
@@ -1394,19 +1359,10 @@ fn observe_accounting(
         for event in native.accounting_power() {
             if event.cause == PowerCause::DailyGain
                 && event.currency == PowerCurrency::Political
-                && !scan.events.contains(&(
-                    event.country,
-                    event.instance,
-                    event.epoch,
-                    event.sequence,
-                ))
-                && !applications.contains(&(
-                    event.country,
-                    event.instance,
-                    event.epoch,
-                    event.hour,
-                    event.sequence,
-                ))
+                && !scan
+                    .events
+                    .contains(&(event.country, event.epoch, event.sequence))
+                && !applications.contains(&(event.country, event.epoch, event.hour, event.sequence))
             {
                 unmatched.insert(event.country);
             }
@@ -1488,7 +1444,7 @@ fn observe_accounting(
         let unknown_addition = witness.map_or(0, |witness| {
             unknown_additions
                 .get(&witness.country)
-                .and_then(|values| values.get(&(witness.instance, witness.epoch)))
+                .and_then(|values| values.get(&(witness.country, witness.epoch)))
                 .copied()
                 .unwrap_or(0)
         });
@@ -1588,10 +1544,9 @@ fn observe_accounting(
             }
         }
     }
-    let covered = |country, instance, epoch, event_hour, bit| {
+    let covered = |country, epoch, event_hour, bit| {
         witnesses.get(&country).is_some_and(|row| {
-            row.instance == instance
-                && row.epoch == epoch
+            row.epoch == epoch
                 && row.through_hour == hour
                 && row.streams & bit == bit
                 && event_hour >= row.since_hour
@@ -1626,12 +1581,12 @@ fn observe_accounting(
     if native.power_changed || native.identity_changed {
         for row in native.accounting_power() {
             // A row a later read publishes again is skipped before its tag.
-            let key = (row.country, row.instance, row.epoch, row.sequence);
+            let key = (row.country, row.epoch, row.sequence);
             if scan.events.contains(&key) {
                 continue;
             }
             let Some(tag) = scan
-                .tag_at(row.country, row.instance, row.epoch, row.hour)
+                .tag_at(row.country, row.epoch, row.hour)
                 .map(str::to_owned)
             else {
                 continue;
@@ -1644,7 +1599,7 @@ fn observe_accounting(
             let mut mutation = Mutation {
                 row: row.clone(),
                 read_hour: hour,
-                covered: covered(row.country, row.instance, row.epoch, row.hour, bit),
+                covered: covered(row.country, row.epoch, row.hour, bit),
                 facts: EventFacts::default(),
             };
             {
@@ -1674,12 +1629,12 @@ fn observe_accounting(
     }
     if native.governments_changed || native.identity_changed {
         for row in native.accounting_government() {
-            let key = (row.country, row.instance, row.epoch, row.sequence);
+            let key = (row.country, row.epoch, row.sequence);
             if scan.events.contains(&key) {
                 continue;
             }
             let Some(tag) = scan
-                .tag_at(row.country, row.instance, row.epoch, row.hour)
+                .tag_at(row.country, row.epoch, row.hour)
                 .map(str::to_owned)
             else {
                 continue;
@@ -1710,7 +1665,6 @@ fn observe_accounting(
                 origin_key: row.origin_key.clone(),
                 covered: covered(
                     row.country,
-                    row.instance,
                     row.epoch,
                     row.hour,
                     PoliticsCaptureCoverageRow::GOVERNMENT,
@@ -1721,12 +1675,12 @@ fn observe_accounting(
     if native.daily_changed || native.identity_changed {
         for row in native.accounting_daily() {
             let Some(tag) = scan
-                .tag_at(row.country, row.instance, row.epoch, row.day_hour)
+                .tag_at(row.country, row.epoch, row.day_hour)
                 .map(str::to_owned)
             else {
                 continue;
             };
-            let key = (row.country, row.instance, row.epoch, row.day_hour);
+            let key = (row.country, row.epoch, row.day_hour);
             if let Some(&index) = scan.daily.get(&key)
                 && scan.countries[&tag].daily[index].row == *row
             {
@@ -1797,29 +1751,34 @@ fn observe_accounting(
     }
     if native.costs_changed || native.identity_changed {
         for row in native.accounting_cost() {
-            let key = (
-                row.country,
-                row.instance,
-                row.epoch,
-                row.day_hour,
-                row.ordinal,
-            );
-            if scan.costs.contains(&key) {
-                continue;
-            }
+            let key = (row.country, row.epoch, row.day_hour, row.ordinal);
             let Some(tag) = scan
-                .tag_at(row.country, row.instance, row.epoch, row.day_hour)
+                .tag_at(row.country, row.epoch, row.day_hour)
                 .map(str::to_owned)
             else {
                 continue;
             };
+            if scan.costs.contains(&key) {
+                let old = scan.country(&tag).daily_costs.iter_mut().find(|cost| {
+                    let row = &cost.row;
+                    (row.country, row.epoch, row.day_hour, row.ordinal) == key
+                });
+                if let Some(old) = old {
+                    if old.row != *row {
+                        old.row = row.clone();
+                        old.read_hour = hour;
+                        scan.dirty.insert(tag.clone());
+                    }
+                    continue;
+                }
+            }
             scan.costs.insert(key);
             let mut cost = DailyCost {
+                accounted: false,
                 row: row.clone(),
                 read_hour: hour,
                 covered: covered(
                     row.country,
-                    row.instance,
                     row.epoch,
                     row.day_hour,
                     PoliticsCaptureCoverageRow::PP | PoliticsCaptureCoverageRow::PP_DAILY_COSTS,
@@ -1949,10 +1908,7 @@ fn recorded_token<'a>(facts: &'a EventFacts, row: &'a LedgerMutation) -> Option<
     })
 }
 fn mutation_id(row: &LedgerMutation) -> String {
-    format!(
-        "{}:{}:{}:{}",
-        row.country, row.instance, row.epoch, row.sequence
-    )
+    format!("{}:{}:{}", row.country, row.epoch, row.sequence)
 }
 fn daily_mutation(cost: &LedgerDailyCost) -> LedgerMutation {
     LedgerMutation {
@@ -3074,18 +3030,9 @@ fn present_fields(
         let Some(charge) = charge(row) else {
             continue;
         };
-        let id = format!(
-            "{}:{}:{}:{}",
-            row.country, row.instance, row.epoch, row.sequence
-        );
-        let (mut item, mut info, category) = resolve_item(
-            scan,
-            row,
-            &stored.facts,
-            content,
-            id.clone(),
-            None,
-        );
+        let id = format!("{}:{}:{}", row.country, row.epoch, row.sequence);
+        let (mut item, mut info, category) =
+            resolve_item(scan, row, &stored.facts, content, id.clone(), None);
         if balance {
             *balance_items.last_mut().unwrap() = Some((item.action.clone(), item.unknown.clone()));
         }
@@ -3129,12 +3076,7 @@ fn present_fields(
             covered: row.covered,
         };
         if row.currency == "Command" && row.cause == "AbilityUpkeep" {
-            let key = (
-                row.country,
-                row.instance,
-                row.epoch.clone(),
-                row.hour.div_euclid(24),
-            );
+            let key = (row.country, row.epoch.clone(), row.hour.div_euclid(24));
             if let Some(&index) = upkeep.get(&key) {
                 budget.add(&change)?;
                 let spend: &mut LedgerSpend = &mut reply.spending[index];
@@ -3202,7 +3144,7 @@ fn present_fields(
         .filter_map(|day| {
             let day = &day.row;
             day.pp_sequence
-                .map(|sequence| (day.country, day.instance, day.epoch, day.day_hour, sequence))
+                .map(|sequence| (day.country, day.epoch, day.day_hour, sequence))
         })
         .collect();
     for stored in &raw.daily_costs {
@@ -3214,12 +3156,8 @@ fn present_fields(
         }
         let recorded = &stored.row;
         let id = format!(
-            "daily:{}:{}:{}:{}:{}",
-            recorded.country,
-            recorded.instance,
-            recorded.epoch,
-            recorded.day_hour,
-            recorded.ordinal
+            "daily:{}:{}:{}:{}",
+            recorded.country, recorded.epoch, recorded.day_hour, recorded.ordinal
         );
         if let Some(notes) = notes.as_deref_mut() {
             notes.facts.entry(id.clone()).or_default();
@@ -3230,7 +3168,6 @@ fn present_fields(
         }
         if !daily_applications.contains(&(
             recorded.country,
-            recorded.instance,
             recorded.epoch,
             recorded.day_hour,
             recorded.pp_sequence,
@@ -3250,8 +3187,8 @@ fn present_fields(
         }
         let cost = &stored.ledger();
         let id = format!(
-            "daily:{}:{}:{}:{}:{}",
-            cost.country, cost.instance, cost.epoch, cost.day_hour, cost.ordinal
+            "daily:{}:{}:{}:{}",
+            cost.country, cost.epoch, cost.day_hour, cost.ordinal
         );
         let row = daily_mutation(cost);
         let (mut item, mut info, mut category) = resolve_item(
@@ -3485,14 +3422,8 @@ fn present_fields(
                 _ => match resolved {
                     Some(resolved) => resolved,
                     None => {
-                        let (item, _, _) = resolve_item(
-                            scan,
-                            row,
-                            &stored.facts,
-                            content,
-                            mutation_id(row),
-                            None,
-                        );
+                        let (item, _, _) =
+                            resolve_item(scan, row, &stored.facts, content, mutation_id(row), None);
                         (item.action, item.unknown)
                     }
                 },

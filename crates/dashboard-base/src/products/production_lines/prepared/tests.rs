@@ -430,13 +430,13 @@ fn a_prefix_stays_readable_and_missing_pages_are_refused() {
 }
 
 #[test]
-fn native_instance_reuse_is_not_joined_and_aliases_point_to_the_observed_epoch() {
+fn surrender_target_changes_keep_one_production_lifetime_and_alias() {
     use replay_data::rows::{CountryExperienceGainRow, TableRows};
     use replay_frame::frame::TableView;
     let replay = recording();
     let mut pages = fixtures::FixturePages::default();
     let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
-    for (offset, instance) in [(0, 7), (1, 8)] {
+    for (offset, instance) in [(0, 7), (1, 8), (2, 7)] {
         let mut frame = production_frame(
             FIRST + offset,
             true,
@@ -459,8 +459,7 @@ fn native_instance_reuse_is_not_joined_and_aliases_point_to_the_observed_epoch()
         .into_iter()
         .filter(|key| key.starts_with("native-7-9001-"))
         .collect();
-    assert_eq!(countries.len(), 2);
-    assert_ne!(countries[0], countries[1]);
+    assert_eq!(countries.len(), 1);
     assert_eq!(
         prepared
             .directory
@@ -468,8 +467,42 @@ fn native_instance_reuse_is_not_joined_and_aliases_point_to_the_observed_epoch()
             .iter()
             .filter(|alias| alias.tag == "GER")
             .count(),
-        2
+        1
     );
+}
+
+#[test]
+fn a_new_published_country_link_cannot_reuse_the_previous_production_lifetime() {
+    let replay = recording();
+    let mut pages = fixtures::FixturePages::default();
+    let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
+    for (offset, id) in [(0, 9001), (1, 9002)] {
+        let frame = production_frame(FIRST + offset, true, true, id, &[(5, 70, 8, 0)], Some(&[]));
+        prepared.observe(&mut pages, &replay, &frame, None).unwrap();
+    }
+    let countries: Vec<_> = known(&prepared, &mut pages)
+        .into_iter()
+        .filter(|country| country.starts_with("native-7-"))
+        .collect();
+    assert_eq!(countries.len(), 2);
+    assert!(
+        countries
+            .iter()
+            .any(|country| country.starts_with("native-7-9001-"))
+    );
+    assert!(
+        countries
+            .iter()
+            .any(|country| country.starts_with("native-7-9002-"))
+    );
+    let aliases: Vec<_> = prepared
+        .directory
+        .aliases
+        .iter()
+        .filter(|alias| alias.tag == "GER")
+        .collect();
+    assert_eq!(aliases.len(), 2);
+    assert_ne!(aliases[0].country, aliases[1].country);
 }
 
 #[test]
@@ -652,13 +685,13 @@ fn late_or_missing_instance_evidence_does_not_create_a_country_lifetime() {
                 .iter()
                 .filter(|key| key.starts_with("native-7-9001-"))
                 .count(),
-            if offset == 4 { 2 } else { 1 }
+            1
         );
     }
 }
 
 #[test]
-fn a_recorded_native_instance_keeps_its_lifetime_when_it_returns() {
+fn a_published_country_link_keeps_its_lifetime_when_it_returns() {
     use replay_data::rows::{CountryExperienceGainRow, TableRows};
     use replay_frame::frame::TableView;
     let replay = recording();
@@ -1564,7 +1597,7 @@ fn an_unresolved_link_is_unknown_and_recovers_the_same_origin_lifetime_after_rea
     .unwrap();
     assert_eq!(before, after);
     assert_eq!(before.epoch, 1);
-    assert_eq!(before.instance, None);
+    assert_eq!((before.slot, before.id), (7, 9001));
     assert_eq!(
         known(&prepared, &mut pages)
             .iter()

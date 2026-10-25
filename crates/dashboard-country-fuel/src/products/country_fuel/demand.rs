@@ -186,10 +186,7 @@ fn pack_of(row: &CountryFuelRow, hour: i32) -> Result<&FuelDemandRead, String> {
         return Err("Individual current fuel consumption was not recorded".into());
     };
     // A pack read with its row was read at the row's read hour, `hour`.
-    if pack.hour.at(hour) != hour
-        || pack.country_instance.is_none()
-        || !matches!(row.country_instance, replay_data::rows::Recorded::Value(instance) if instance == pack.country_instance)
-    {
+    if pack.hour.at(hour) != hour {
         return Err(
             "Current fuel consumption supplying read or native country identity does not match"
                 .into(),
@@ -725,15 +722,12 @@ pub(super) fn actor_consumption<'a>(
     basis: &FuelAwardsParams,
 ) -> Vec<(&'a str, &'a RawConsumption)> {
     let mut reads: Vec<_> = summary
-        .actor_tags(&basis.country, basis.country_instance)
+        .actor_tags(&basis.country)
         .flat_map(|tag| {
             summary.countries[tag]
                 .consumption
                 .iter()
-                .filter(|read| {
-                    read.country.to_string() == basis.country
-                        && read.country_instance == Some(basis.country_instance)
-                })
+                .filter(|read| read.country.to_string() == basis.country)
                 .map(move |read| (tag.as_str(), read))
         })
         .collect();

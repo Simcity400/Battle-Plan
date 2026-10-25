@@ -523,8 +523,8 @@ pub fn query(
         for event in primary.events(&[key], from, last, 0, u32::MAX)?.rows {
             if let Event::Government { row } = serde_json::from_value(event.row)?
                 && !reply.governments.iter().any(|old| {
-                    (old.country, old.instance, &old.epoch, &old.sequence)
-                        == (row.country, row.instance, &row.epoch, &row.sequence)
+                    (old.country, &old.epoch, &old.sequence)
+                        == (row.country, &row.epoch, &row.sequence)
                 })
             {
                 reply.governments.push(row);
@@ -1140,20 +1140,26 @@ fn build_reply(
         .collect();
     let fields = match view {
         LedgerView::Governments => vec!["late-governments"],
-        LedgerView::Spending if totals_only => vec!["late-recurring", "late-daily"],
+        LedgerView::Spending if totals_only => {
+            vec!["late-recurring", "late-daily", "daily-revisions"]
+        }
         LedgerView::Spending => vec![
             "Political:payments",
             "Command:payments",
             "late-recurring",
             "late-daily",
+            "daily-revisions",
             "late-costs",
+            "cost-revisions",
         ],
         LedgerView::Raw => vec![
             "Political:events",
             "Command:events",
             "late-recurring",
             "late-daily",
+            "daily-revisions",
             "late-costs",
+            "cost-revisions",
             "late-governments",
         ],
         _ => vec![
@@ -1161,7 +1167,9 @@ fn build_reply(
             "Command:events",
             "late-recurring",
             "late-daily",
+            "daily-revisions",
             "late-costs",
+            "cost-revisions",
         ],
     };
     let boundary_days: BTreeSet<_> = spans
@@ -1766,14 +1774,7 @@ fn build_reply(
             }
         }
         for row in open.daily.values() {
-            if selected(spans, row.day_hour)
-                && row
-                    .pp_read_hour
-                    .into_iter()
-                    .chain(row.cp_read_hour)
-                    .chain([row.read_hour])
-                    .any(|read| read <= to)
-            {
+            if selected(spans, row.day_hour) && row.read_hour <= to {
                 reply.daily.push(row.clone());
             }
         }
@@ -1891,10 +1892,13 @@ fn build_reply(
 
     let mut latest_daily = BTreeMap::new();
     for row in std::mem::take(&mut reply.daily) {
-        latest_daily.insert(
-            (row.country, row.instance, row.epoch.clone(), row.day_hour),
-            row,
-        );
+        let key = (row.country, row.epoch.clone(), row.day_hour);
+        if latest_daily
+            .get(&key)
+            .is_none_or(|old: &LedgerDaily| old.read_hour <= row.read_hour)
+        {
+            latest_daily.insert(key, row);
+        }
     }
     reply.daily = latest_daily.into_values().collect();
 
@@ -2039,9 +2043,11 @@ fn build_reply(
                 &format!("{prefix}:{currency}:days"),
                 &visible,
             )? != 0;
-            for row in reply.daily.iter().filter(|row| {
-                (row.country, row.instance, &row.epoch) == (actor.0, actor.1, &actor.2)
-            }) {
+            for row in reply
+                .daily
+                .iter()
+                .filter(|row| (row.country, &row.epoch) == (actor.0, &actor.1))
+            {
                 // A sparse late tuple replaces this actor's earlier native cell.
                 if selected(&visible, row.day_hour) {
                     incomplete = incomplete
@@ -2153,7 +2159,6 @@ fn build_reply(
                         read_daily(native, keys, tag, &daily_prefix(actor)?, day as i32)?
                         && !reply.daily.iter().any(|old| {
                             old.country == row.country
-                                && old.instance == row.instance
                                 && old.epoch == row.epoch
                                 && old.day_hour == row.day_hour
                         })
@@ -2208,12 +2213,13 @@ fn build_reply(
     } else {
         reply.daily.clear();
     }
-    reply
-        .daily_costs
-        .sort_by_key(|row| (row.day_hour, row.country, row.instance, row.ordinal));
+    reply.daily_costs.sort_by(|a, b| {
+        (a.day_hour, a.country, &a.epoch, a.ordinal)
+            .cmp(&(b.day_hour, b.country, &b.epoch, b.ordinal))
+            .then_with(|| b.read_hour.cmp(&a.read_hour))
+    });
     reply.daily_costs.dedup_by(|a, b| {
         a.country == b.country
-            && a.instance == b.instance
             && a.epoch == b.epoch
             && a.day_hour == b.day_hour
             && a.ordinal == b.ordinal

@@ -138,7 +138,7 @@ impl World {
             world.u64(SLOTS + slot * 8, world.at(country) as u64);
             world.vtable(country, ccountry::VTABLE_RVA);
             world.u32(country + ccountry::ID, slot as u32);
-            world.u32(country + ccountry::ID_INSTANCE, 0x100 + slot as u32);
+            world.u32(country + ccountry::SURRENDER_TARGET, 0x100 + slot as u32);
             world.u32(LINKS + slot * 4, slot as u32);
         }
         world.vtable(PROVINCE, cprovince::VTABLE_RVA);

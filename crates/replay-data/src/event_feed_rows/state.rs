@@ -44,7 +44,9 @@ impl ScriptEventState {
         country: EventFeedCountry,
     ) -> Result<&super::decisions::DecisionState, &'static str> {
         self.decisions
-            .get(&(country.id, country.instance))
+            .range((country.id, 0)..=(country.id, u32::MAX))
+            .next()
+            .map(|(_, owner)| owner)
             .filter(|state| state.complete())
             .ok_or("decision owner baseline/writer certificate unavailable")
     }
@@ -54,7 +56,9 @@ impl ScriptEventState {
 
     pub fn delayed(&self, country: EventFeedCountry) -> Result<&[DelayedEvent], &'static str> {
         self.delayed
-            .get(&(country.id, country.instance))
+            .range((country.id, 0)..=(country.id, u32::MAX))
+            .next()
+            .map(|(_, owner)| owner)
             .ok_or("country delayed-event baseline was not observed")?
             .rows()
     }
@@ -132,10 +136,8 @@ impl ScriptEventState {
             use EventFeedScriptChange::*;
             match change {
                 Decision(change) => {
-                    let owner = self
-                        .decisions
-                        .entry((event.actor.id, event.actor.instance))
-                        .or_default();
+                    let key = owner_key(&self.decisions, event.actor);
+                    let owner = self.decisions.entry(key).or_default();
                     owner.observe(row, event, script, change)?;
                     visit(owner, event)?;
                 }
@@ -232,8 +234,9 @@ impl ScriptEventState {
                 | DelayedAdvance { .. }
                 | DelayedRemoved { .. }
                 | DelayedRefused => {
+                    let key = owner_key(&self.delayed, event.target);
                     self.delayed
-                        .entry((event.target.id, event.target.instance))
+                        .entry(key)
                         .or_default()
                         .observe(row, event, script, change)?;
                 }
@@ -268,6 +271,13 @@ impl ScriptEventState {
         Ok(())
     }
 }
+// Continuations retain the first raw witness; only the published link identifies its owner.
+fn owner_key<T>(owners: &BTreeMap<(u32, u32), T>, country: EventFeedCountry) -> (u32, u32) {
+    owners
+        .range((country.id, 0)..=(country.id, u32::MAX))
+        .next()
+        .map_or((country.id, country.instance), |(key, _)| *key)
+}
 fn identity(row: &EventFeedHistoryRow, script: EventFeedScript) -> io::Result<ScriptIdentity> {
     let start = script.token_start as usize;
     let end = start + script.token_len as usize;
@@ -281,8 +291,8 @@ fn identity(row: &EventFeedHistoryRow, script: EventFeedScript) -> io::Result<Sc
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::decisions::{DecisionChange, Operation};
+    use super::*;
     use EventFeedScriptChange::*;
     /// Owner refusals carry this reason after the shared definition token.
     const REASON: &[u8] = b"synthetic owner refusal";
@@ -370,6 +380,94 @@ mod tests {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn surrender_recipient_changes_keep_one_delayed_owner_and_recover_after_a_gap() {
+        let mut state = ScriptEventState::default();
+        state
+            .observe(&row(
+                10,
+                0,
+                &[
+                    (DelayedBaseline, None, None),
+                    (DelayedStored { remaining: 9 }, Some(1), Some(91)),
+                    (DelayedReady, None, None),
+                ],
+            ))
+            .unwrap();
+        let mut next = row(
+            11,
+            3,
+            &[(DelayedStored { remaining: 8 }, Some(2), Some(92))],
+        );
+        next.events[0].target.instance = 1;
+        let owner = next.events[0].target;
+        state.observe(&next).unwrap();
+        assert_eq!(state.delayed(owner).unwrap().len(), 2);
+        assert_eq!(state.delayed_owners().count(), 1);
+        let reused = EventFeedCountry {
+            id: 1501,
+            reference: 1501,
+            ..owner
+        };
+        assert!(state.delayed(reused).is_err());
+        state.observe(&row(13, 4, &[])).unwrap();
+        assert!(state.delayed(owner).is_err());
+        let mut recovered = row(14, 4, &[(DelayedEmpty, None, None)]);
+        recovered.events[0].target = owner;
+        state.observe(&recovered).unwrap();
+        assert!(state.delayed(owner).unwrap().is_empty());
+        assert_eq!(state.delayed_owners().count(), 1);
+    }
+    #[test]
+    fn surrender_recipient_changes_keep_one_decision_owner() {
+        let mut state = ScriptEventState::default();
+        let change = |operation| {
+            (
+                Decision(DecisionChange {
+                    operation,
+                    container: 0,
+                    flags: 0,
+                    ordinal: 0,
+                    political_power: None,
+                }),
+                None,
+                None,
+            )
+        };
+        let mut baseline = row(
+            10,
+            0,
+            &[change(Operation::Baseline), change(Operation::Ready)],
+        );
+        let owner = EventFeedCountry {
+            reference: 24,
+            id: 24,
+            instance: 0,
+        };
+        for event in &mut baseline.events {
+            event.actor = owner;
+        }
+        state.observe(&baseline).unwrap();
+        assert!(
+            state
+                .decisions(EventFeedCountry {
+                    instance: 1,
+                    ..owner
+                })
+                .is_ok()
+        );
+        assert_eq!(state.decision_owners().count(), 1);
+        assert!(
+            state
+                .decisions(EventFeedCountry {
+                    reference: 1501,
+                    id: 1501,
+                    ..owner
+                })
+                .is_err()
+        );
     }
     #[test]
     fn refused_decision_families_do_not_poison_independent_registry_certificates() {
@@ -884,10 +982,7 @@ mod tests {
         fn timers(&self) -> Result<Vec<(u32, u32, i32)>, &'static str> {
             self.timers_of(DELAYED_OWNER)
         }
-        fn timers_of(
-            &self,
-            owner: EventFeedCountry,
-        ) -> Result<Vec<(u32, u32, i32)>, &'static str> {
+        fn timers_of(&self, owner: EventFeedCountry) -> Result<Vec<(u32, u32, i32)>, &'static str> {
             self.0[0].delayed(owner).map(|timers| {
                 timers
                     .iter()

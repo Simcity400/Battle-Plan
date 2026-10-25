@@ -83,11 +83,11 @@ pub const SITES: [Site; 6] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Owner {
     pub pointer: usize,
-    pub instance: u32,
+    pub country: u32,
 }
 
 /// Authenticate the native status's owner/backlink, with no country selector. The CCountry ID and
-/// its following word are the raw country reference and native instance identity.
+/// current published link distinguish dynamic reuse of the same country pointer.
 pub fn owner(
     memory: &impl Memory,
     base: usize,
@@ -125,7 +125,7 @@ pub fn owner(
     Ok((
         Owner {
             pointer: country,
-            instance: u32::from_le_bytes(identity[12..].try_into().unwrap()),
+            country: id,
         },
         id,
     ))
@@ -149,7 +149,7 @@ mod tests {
         bytes
     }
     #[test]
-    fn native_owner_preserves_alias_and_instance_and_requires_its_backlink() {
+    fn native_owner_preserves_current_link_and_requires_its_backlink() {
         let mut bytes = fixture();
         assert_eq!(
             owner(
@@ -164,7 +164,7 @@ mod tests {
             (
                 Owner {
                     pointer: COUNTRY,
-                    instance: u32::MAX
+                    country: 5001
                 },
                 5001
             )

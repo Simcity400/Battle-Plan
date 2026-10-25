@@ -153,7 +153,9 @@ impl EventFeedKind {
     };
     /// The kind a prepared fact stream key holds.
     pub(crate) fn from_key(key: u64) -> Option<Self> {
-        Self::ALL.get(usize::try_from(key & !(1 << 63)).ok()?).copied()
+        Self::ALL
+            .get(usize::try_from(key & !(1 << 63)).ok()?)
+            .copied()
     }
     pub(crate) fn category(self) -> EventFeedCategory {
         use EventFeedKind::*;
@@ -311,7 +313,7 @@ pub(crate) struct Occurrence {
     pub option: Option<i32>,
     pub lifecycle: Option<i32>,
     pub days: Option<i32>,
-    /// Actor and target native id and instance words.
+    /// Actor and target published links and raw surrender targets.
     pub actor: (u32, u32),
     pub target: (u32, u32),
     pub country_target: Option<u32>,

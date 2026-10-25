@@ -58,7 +58,7 @@ pub(crate) enum OwnerRegistry {
     Decisions,
 }
 /// Since load: refusals of an owner already refused in the same loss epoch.
-/// They emit no marker and request no census.
+/// They emit no marker; uncertified owners still request recovery.
 pub(crate) static REPEATED_OWNER_REFUSALS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 pub(crate) fn repeated_owner_refusal(registry: OwnerRegistry) {
     REPEATED_OWNER_REFUSALS[registry as usize].fetch_add(1, Ordering::Relaxed);
@@ -124,8 +124,7 @@ pub(crate) struct OwnerRefusal {
     pub reason: &'static str,
     /// A rejection was already counted inside the baseline.
     pub counted: bool,
-    /// Crossed by a writer, or short of prepared storage: retried at the
-    /// next visit, not a failed attempt.
+    /// Retry acquisition at the next census boundary.
     pub retry: bool,
 }
 
@@ -694,7 +693,7 @@ impl Store {
     /// Every exit that does not certify checks the sample's writer cut
     /// first: a sample a writer crossed is retried whatever error or
     /// rejection it ended in, since a concurrent writer can make any read
-    /// fail or differ. Only an unbroken cut makes a stable failure.
+    /// fail or differ. An unbroken failure keeps its native reason.
     pub(crate) fn owner_scope<T>(
         &mut self,
         registry: OwnerRegistry,
@@ -730,7 +729,7 @@ impl Store {
                 reason
             },
             counted: scoped.is_some(),
-            retry: short || crossed,
+            retry: true,
         })
     }
     /// Only the private off-lease transaction or a non-owner worker baseline
@@ -775,7 +774,6 @@ impl Store {
     }
 
     fn revoke_retained_baselines(&mut self) {
-        // A failed census remains an attempted census, never a polling retry.
         // A previously complete census must be acquired again after a lost
         // writer interval: the reducer cannot carry it through that gap.
         if self.registry_complete {
@@ -805,7 +803,7 @@ impl Store {
     }
 
     /// One live country's visit: certified owners read nothing more than
-    /// their scalar political balance; others are attempted once per epoch.
+    /// their scalar political balance; uncertified owners retry exact baselines.
     #[cfg(test)]
     pub(crate) fn recover_owner(
         &mut self,

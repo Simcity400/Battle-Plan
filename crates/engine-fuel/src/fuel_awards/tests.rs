@@ -72,7 +72,7 @@ fn fixture(count: u32) -> MemoryMap {
     memory.put(cgame_state::SINGLETON_RVA, &(STATE as u64).to_le_bytes());
     memory.span(STATE, 0x800);
     memory.span(COUNTRIES, (count as usize + 1) * 8);
-    memory.span(LINKS, (count as usize + 1) * 4);
+    memory.span(LINKS, (count as usize + 2) * 4);
     memory.array(STATE + cgame_state::COUNTRIES, COUNTRIES, count + 1);
     memory.array(STATE + cgame_state::COUNTRY_LINKS, LINKS, count + 1);
     for slot in 1..=count {
@@ -90,7 +90,7 @@ fn fixture(count: u32) -> MemoryMap {
         memory.put(country, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
         memory.put(country + ccountry::ID, &slot.to_le_bytes());
         memory.put(
-            country + ccountry::ID_INSTANCE,
+            country + ccountry::SURRENDER_TARGET,
             &(slot + 9000).to_le_bytes(),
         );
         memory.put(
@@ -223,16 +223,24 @@ fn country_replacement_and_changed_applied_fields_refuse_only_the_root() {
     let mut memory = fixture(2);
     let status = STATUS + 0x1000;
     let begun = start(&memory, 0, status).unwrap();
-    memory.put(
-        COUNTRY + 0x2000 + ccountry::ID_INSTANCE,
-        &9002_u32.to_le_bytes(),
+    memory.array(STATE + cgame_state::COUNTRY_LINKS, LINKS, 4);
+    memory.put(LINKS + 3 * 4, &1_u32.to_le_bytes());
+    memory.put(COUNTRY + 0x2000 + ccountry::ID, &3_u32.to_le_bytes());
+    assert_eq!(
+        settle(&memory, 0, begun, status),
+        Err("fuel award root or applied operands changed")
     );
-    assert!(settle(&memory, 0, begun, status).is_err());
     let other = start(&memory, 0, STATUS + 0x2000).unwrap();
     assert!(settle(&memory, 0, other, STATUS + 0x2000).is_ok());
     let changed = start(&memory, 0, status).unwrap();
+    assert_eq!((changed.country, changed.status), (3, begun.status));
+    assert!(settle(&memory, 0, changed, status).is_ok());
     memory.put(status + fuel::GAIN, &100_i64.to_le_bytes());
-    assert!(settle(&memory, 0, changed, status).is_err());
+    assert_eq!(
+        settle(&memory, 0, changed, status),
+        Err("fuel award root or applied operands changed")
+    );
+    assert!(settle(&memory, 0, other, STATUS + 0x2000).is_ok());
 }
 #[test]
 fn native_retained_name_supports_heap_length_without_a_chosen_limit() {
@@ -374,13 +382,12 @@ fn a_held_settle_reads_only_the_payload_and_settles_as_a_fresh_read() {
     );
     assert!(settle(&memory, 0, begun, status).is_err());
     memory.put(status + fuel::GAIN, &(-17_i64).to_le_bytes());
-    // The identity is BEGIN's: an instance that changed after it (which no
-    // writer between BEGIN and END does) is not read again.
+    // A surrender target is not part of the fuel-update identity.
     memory.put(
-        COUNTRY + 0x2000 + ccountry::ID_INSTANCE,
+        COUNTRY + 0x2000 + ccountry::SURRENDER_TARGET,
         &9002_u32.to_le_bytes(),
     );
-    assert!(settle(&memory, 0, begun, status).is_err());
+    assert!(settle(&memory, 0, begun, status).is_ok());
     assert_eq!(settle_held(&memory, 0, begun, status, Some(&located)), held);
 }
 

@@ -204,7 +204,7 @@ pub fn start_held(
     if value::<u64>(memory, owner, ccountry::FUEL_STATUS)? != status as u64 {
         return Err("fuel award owner backlink mismatch");
     }
-    let country_instance = value(memory, owner, ccountry::ID_INSTANCE)?;
+    let country_instance = value(memory, owner, ccountry::SURRENDER_TARGET)?;
     let started = payload(memory, status, country.id, country_instance)?;
     Ok((started, Located { owner, country }, taken))
 }
@@ -298,7 +298,6 @@ pub fn settle_held(
     };
     if now.status != begun.status
         || now.country != begun.country
-        || now.country_instance != begun.country_instance
         || now.history_index != begun.history_index
         || now.remaining_hours != begun.remaining_hours
         || [now.base, now.states, now.cost, now.lend_lease_in]

@@ -60,7 +60,8 @@ fn owned_country_index_preserves_signed_cache_name_refusal_and_alias_topology() 
 }
 
 #[test]
-fn independent_demand_decode_failure_preserves_fuel_prefix_and_rejects_identity_substitution() {
+fn independent_demand_decode_failure_preserves_prefix_and_surrender_targets_do_not_change_identity()
+{
     let mut capacity = Capacities::default();
     capacity.rows[0] = 1;
     let mut captured = Captured::with_capacities(&capacity);
@@ -101,11 +102,9 @@ fn independent_demand_decode_failure_preserves_fuel_prefix_and_rejects_identity_
     let Recorded::Value(pack) = &rows[0].demand else {
         panic!()
     };
-    assert_eq!(
-        pack.reason,
-        b"fuel current demand country instance differs from supplying row"
-    );
-    assert!(pack.native_rates().iter().all(Result::is_err));
+    assert!(pack.reason.is_empty());
+    assert_eq!(pack.country_instance, Some(7));
+    assert_eq!(pack.native_rates(), [Ok(0); 3]);
 }
 
 #[test]
@@ -304,7 +303,11 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
         MANAGER,
         &(cstrategic_air_manager::VTABLE_RVA as u64).to_le_bytes(),
     );
-    memory.array(MANAGER + cstrategic_air_manager::COUNTRY_AIR, AIRS, COUNT as u32 + 1);
+    memory.array(
+        MANAGER + cstrategic_air_manager::COUNTRY_AIR,
+        AIRS,
+        COUNT as u32 + 1,
+    );
     for id in 1..=COUNT as u32 {
         let country = 0x100000 + id as usize * 0x800;
         let air = 0x1000000 + id as usize * 0x100;
@@ -314,7 +317,10 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
         memory.put(LINKS + id as usize * 4, &id.to_le_bytes());
         memory.put(country, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
         memory.put(country + ccountry::ID, &id.to_le_bytes());
-        memory.put(country + ccountry::ID_INSTANCE, &(id + 7000).to_le_bytes());
+        memory.put(
+            country + ccountry::SURRENDER_TARGET,
+            &(id + 7000).to_le_bytes(),
+        );
         memory.put(AIRS + id as usize * 8, &(air as u64).to_le_bytes());
         memory.put(air, &(cstrategic_air::VTABLE_RVA as u64).to_le_bytes());
         memory.put(air + cstrategic_air::COUNTRY, &id.to_le_bytes());
@@ -328,7 +334,11 @@ fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
     memory.registry(wing_ref, WING + cair_wing::SECONDARY, 0x2710000);
     memory.put(BASE, &(cair_base::VTABLE_RVA as u64).to_le_bytes());
     memory.put(BASE + cair_base::HANDLE, &base_ref.to_le_bytes());
-    memory.array(BASE + cair_base::COUNTRY_CONTAINERS, CONTAINERS, COUNT as u32 + 1);
+    memory.array(
+        BASE + cair_base::COUNTRY_CONTAINERS,
+        CONTAINERS,
+        COUNT as u32 + 1,
+    );
     for ordinal in 0..4 {
         memory.put(LIST + ordinal * 8, &(BASE as u64).to_le_bytes());
     }

@@ -1878,3 +1878,71 @@ fn occurrence_pages_follow_dates_across_pages_with_late_facts_bound_to_the_live_
     assert_eq!(early.reply.occurrences.len(), 1);
     assert_eq!(early.reply.occurrences[0].edges[0].row.hour, 101);
 }
+
+#[test]
+fn mutable_surrender_targets_keep_event_and_decision_edges_and_their_exact_charges() {
+    let mut links = Links::default();
+    let mut opening = Occurrence {
+        generation: 1,
+        event: Some((1, 9)),
+        instance: Some(7),
+        target: (24, 0),
+        ..Default::default()
+    };
+    links.link(EventFeedKind::ScriptEventFired, &mut opening, (10, 0));
+    let mut choice = Occurrence {
+        actor: (24, 1),
+        option: Some(0),
+        ..opening.clone()
+    };
+    links.link(EventFeedKind::EventOptionSelected, &mut choice, (10, 1));
+    assert_eq!(choice.opener, Some((10, 0)));
+    let mut selection = Occurrence {
+        actor: (24, 0),
+        token: Some("synthetic".into()),
+        ..Default::default()
+    };
+    links.observe_read(20, true);
+    links.link(EventFeedKind::DecisionSelected, &mut selection, (11, 0));
+    links.observe_read(21, true);
+    let mut reused = Occurrence {
+        actor: (1501, 0),
+        ..selection.clone()
+    };
+    links.link(EventFeedKind::DecisionCompleted, &mut reused, (11, 1));
+    assert_eq!(reused.opener, None);
+    let mut completion = Occurrence {
+        actor: (24, 1),
+        ..selection.clone()
+    };
+    links.link(EventFeedKind::DecisionCompleted, &mut completion, (11, 2));
+    assert_eq!(completion.opener, Some((11, 0)));
+    let mut current = script_frame(
+        21,
+        Vec::new(),
+        b"",
+        vec![CountryPowerChangeRow {
+            country: actor(0).id,
+            instance: 99,
+            hour: 21,
+            currency: PowerCurrency::Political,
+            balance_before_raw: 100,
+            balance_after_raw: 93,
+            cause: PowerCause::Decision,
+            identity: PowerIdentity {
+                action: PowerAction::Execute,
+                item_key: b"synthetic".to_vec(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }],
+    );
+    let key = (21, actor(0).id, "synthetic".to_owned(), false);
+    assert_eq!(charges(&current)[&key][0].amount, "-7");
+    if let TableView::Complete(TableRows::PoliticsCaptureCoverage(rows)) =
+        &mut *current.tables[TableId::PoliticsCaptureCoverage.index()]
+    {
+        rows[0].country = 1501;
+    }
+    assert!(!charges(&current).contains_key(&key));
+}

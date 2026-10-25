@@ -84,7 +84,7 @@ impl Native {
         let resources = pointer + 0x1a00;
         self.u64(pointer, ccountry::VTABLE_RVA as u64);
         self.u32(pointer + ccountry::ID, id);
-        self.u32(pointer + ccountry::ID_INSTANCE, surrender_target);
+        self.u32(pointer + ccountry::SURRENDER_TARGET, surrender_target);
         self.u64(pointer + ccountry::EQUIPMENT_MARKET_STATUS, status as u64);
         self.u64(pointer + ccountry::RESOURCES, resources as u64);
         self.u64(
@@ -847,7 +847,7 @@ fn country_market_writer_rebinding_has_no_country_count_or_id_cap() {
     record(&memory, 100, &mut encoder, &mut decoder);
     memory.clock(101);
     for country in &holders {
-        memory.u32(country.pointer + ccountry::ID_INSTANCE, 5000);
+        memory.u32(country.pointer + ccountry::SURRENDER_TARGET, 5000);
         session.inventory(&memory, country.id);
         session.automation(country.id);
     }

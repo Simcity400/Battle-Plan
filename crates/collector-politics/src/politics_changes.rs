@@ -90,7 +90,8 @@ const FAILURE_NAMES: [&str; 41] = [
 ];
 static FAILURES: [AtomicU64; FAILURE_NAMES.len()] =
     [const { AtomicU64::new(0) }; FAILURE_NAMES.len()];
-static UNLISTED_FAILURE: OnceLock<&'static str> = OnceLock::new();
+static UNLISTED_FAILURE: collector_primitives::first_reason::FirstReason =
+    collector_primitives::first_reason::FirstReason::new();
 static UNLISTED_FAILURES: AtomicU64 = AtomicU64::new(0);
 static REQUIRED_KEYS: AtomicUsize = AtomicUsize::new(0);
 
@@ -537,7 +538,7 @@ fn failed(reason: &'static str) {
     if let Some(index) = FAILURE_NAMES.iter().position(|name| *name == reason) {
         FAILURES[index].fetch_add(1, Ordering::Relaxed);
     } else {
-        let _ = UNLISTED_FAILURE.set(reason);
+        UNLISTED_FAILURE.record(reason);
         UNLISTED_FAILURES.fetch_add(1, Ordering::Relaxed);
     }
     COUNTERS[3].fetch_add(1, Ordering::Relaxed);
@@ -1453,7 +1454,7 @@ fn flush(force: bool) {
 }
 fn resume_pending(owner: native::Owner, currency: PowerCurrency, after: i64) {
     if let Some(mut pending) = PENDING.get()
-        && pending.owner == owner
+        && pending.owner.same_owner(owner)
         && pending.currency == currency
     {
         pending.before = after;
@@ -2524,7 +2525,8 @@ unsafe fn writer(
     // The nested ability allocator and release refund
     // belong to their observed parent, not an outer command.
     if matches!(caller, 0x6d38b5 | 0x6d3e59 | 0x6ea897 | 0x6eb07f)
-        && let Some(parent) = previous.filter(|parent| Some(parent.owner) == owner)
+        && let Some(parent) =
+            previous.filter(|parent| owner.is_some_and(|owner| parent.owner.same_owner(owner)))
     {
         identity = parent.identity;
     }
@@ -2856,7 +2858,7 @@ pub fn status() -> impl serde::Serialize {
         "epoch": EPOCH.load(Ordering::SeqCst), "events": log().map(Log::frontier),
         "overflows": counters[1], "sentinel_failures": counters[2],
         "native_read_reasons": crate::status::map(FAILURE_NAMES.into_iter().zip(FAILURES.iter().map(|count| count.load(Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
-        "first_unlisted_native_read_reason": UNLISTED_FAILURE.get().copied(),
+        "first_unlisted_native_read_reason": UNLISTED_FAILURE.get(),
         "unlisted_native_read_reasons": UNLISTED_FAILURES.load(Ordering::Relaxed),
         "failed_native_reads": counters[3], "missing_item_identities": counters[4],
         "required_entries_per_lane": log().map(|log| crate::status::sequence(log.lanes.iter().map(|lane| lane.required_entries.load(Ordering::Relaxed)))),
@@ -3804,8 +3806,10 @@ mod tests {
         source.fill(0);
         let mut output = vec![Event::default(); HALF as usize];
         let mut bytes = vec![0; HALF as usize * 9];
-        for (start, sealed, cursors) in [(1, first, first_cursors), (HALF + 1, second, second_cursors)]
-        {
+        for (start, sealed, cursors) in [
+            (1, first, first_cursors),
+            (HALF + 1, second, second_cursors),
+        ] {
             let drained = sealed.drain(&cursors, &mut output, &mut bytes).unwrap();
             assert_eq!(
                 (
@@ -3814,7 +3818,12 @@ mod tests {
                     drained.copied,
                     drained.pending
                 ),
-                ((start - 1) as u64, (start + HALF - 1) as u64, HALF as usize, HALF as usize)
+                (
+                    (start - 1) as u64,
+                    (start + HALF - 1) as u64,
+                    HALF as usize,
+                    HALF as usize
+                )
             );
             for (index, event) in output.iter().enumerate() {
                 assert_eq!(event.country, start + index as u32);
@@ -3836,7 +3845,10 @@ mod tests {
             ),
             (2 * HALF as u64, 2 * HALF as u64 + 1, 1, 1)
         );
-        assert_eq!((output[0].country, output[0].sequence), (2 * HALF + 1, 2 * HALF as u64 + 1));
+        assert_eq!(
+            (output[0].country, output[0].sequence),
+            (2 * HALF + 1, 2 * HALF as u64 + 1)
+        );
         assert_eq!(retained_log, old as *const Log as usize);
         assert_ne!(fresh as *const Log, old as *const Log);
         assert_eq!(retained_epoch, epoch);

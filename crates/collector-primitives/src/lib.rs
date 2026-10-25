@@ -5,6 +5,7 @@ use collector_status::status;
 pub mod capacity;
 pub mod clock;
 pub mod country_slots;
+pub mod first_reason;
 pub mod raw_memory;
 pub mod shared_lane;
 pub mod table_capture;

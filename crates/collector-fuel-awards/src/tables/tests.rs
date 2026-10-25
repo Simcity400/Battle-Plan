@@ -395,28 +395,67 @@ fn missing_interval_writer_epoch_and_country_replacement_do_not_fabricate_zero()
         cursor += 4;
         windows.assemble(1, hour, &captured, &mut tables).unwrap();
     }
-    let mut changed = entries(25, 2);
-    changed[1].started.country_instance = 2;
-    let captured = capture(cursor, changed);
-    cursor += 4;
-    windows.assemble(1, 25, &captured, &mut tables).unwrap();
-    let Recorded::Value(first) = &rows(&tables)[0].award_day else {
+    let TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(fuel))) =
+        &mut tables[TableId::CountryFuel.index()]
+    else {
         panic!()
     };
-    let Recorded::Value(second) = &rows(&tables)[1].award_day else {
-        panic!()
-    };
-    assert!(!first.reason.is_empty());
-    assert!(second.reason.is_empty());
-    let captured = capture(cursor, entries(27, 2));
+    fuel[0].country = 3;
+    fuel[0].current_raw = 3;
+    for hour in 25..=48 {
+        let mut changed = entries(hour, 2);
+        for entry in &mut changed[..2] {
+            entry.country = 3;
+            entry.started.country = 3;
+            if let Some(recipient) = &mut entry.recipient {
+                recipient.reference = (3_u64 << 32) | 29;
+                recipient.owner = 103;
+            }
+        }
+        let captured = capture(cursor, changed);
+        cursor += 4;
+        windows.assemble(1, hour, &captured, &mut tables).unwrap();
+        assert!(!windows.countries.contains_key(&1));
+        assert!(!windows.identities.contains_key(&1));
+        assert_eq!(windows.status_owners.get(&0x1000), Some(&3));
+        assert_eq!(windows.countries[&3].1.len(), (hour - 24) as usize);
+        let Recorded::Value(first) = &rows(&tables)[0].award_day else {
+            panic!()
+        };
+        let Recorded::Value(second) = &rows(&tables)[1].award_day else {
+            panic!()
+        };
+        assert_eq!(first.continuity_start_hour, Some(25));
+        assert!(second.reason.is_empty());
+        assert_eq!(second.continuity_start_hour, Some(1));
+        if hour < 48 {
+            assert!(!first.reason.is_empty());
+            assert!(first.recipients.is_empty());
+        } else {
+            assert!(first.reason.is_empty());
+            assert_eq!(first.last_hour, 48);
+            assert_eq!(first.own_gain_raw, 72);
+            assert_eq!(first.gains_raw, [48, -72, 96, 0]);
+            assert_eq!(first.recipients.len(), 1);
+            assert_eq!(first.recipients[0].owner, 103);
+            assert_eq!(
+                (
+                    first.recipients[0].first_hour,
+                    first.recipients[0].last_hour
+                ),
+                (25, 48)
+            );
+        }
+    }
+    let captured = capture(cursor, entries(50, 2));
     cursor += 4;
-    windows.assemble(1, 27, &captured, &mut tables).unwrap();
+    windows.assemble(1, 50, &captured, &mut tables).unwrap();
     assert!(
         rows(&tables)
             .iter()
             .all(|r| matches!(&r.award_day,Recorded::Value(w) if !w.reason.is_empty()))
     );
-    let mut restarted = capture(cursor, entries(28, 2));
+    let mut restarted = capture(cursor, entries(51, 2));
     restarted
         .drained
         .as_mut()
@@ -425,10 +464,36 @@ fn missing_interval_writer_epoch_and_country_replacement_do_not_fabricate_zero()
         .unwrap()
         .0
         .epoch = 2;
-    windows.assemble(1, 28, &restarted, &mut tables).unwrap();
+    windows.assemble(1, 51, &restarted, &mut tables).unwrap();
     assert!(
         rows(&tables)
             .iter()
             .all(|r| matches!(&r.award_day,Recorded::Value(w) if w.recipients.is_empty() && !w.reason.is_empty()))
     );
+}
+
+#[test]
+fn surrender_target_changes_keep_the_exact_day_and_record_the_latest_raw_target() {
+    let mut windows = Windows::default();
+    let mut tables = input(1);
+    let mut cursor = 0;
+    windows
+        .assemble(1, 0, &capture(0, Vec::new()), &mut tables)
+        .unwrap();
+    for hour in 1..=25 {
+        let mut events = entries(hour, 1);
+        events[1].started.country_instance = if hour < 24 { 0 } else { 7 };
+        let captured = capture(cursor, events);
+        cursor += 2;
+        windows.assemble(1, hour, &captured, &mut tables).unwrap();
+        if hour >= 24 {
+            let Recorded::Value(day) = &rows(&tables)[0].award_day else {
+                panic!()
+            };
+            assert!(day.reason.is_empty());
+            assert_eq!(day.country_instance, 7);
+            assert_eq!(day.continuity_start_hour, Some(1));
+            assert_eq!(day.own_gain_raw, 72);
+        }
+    }
 }

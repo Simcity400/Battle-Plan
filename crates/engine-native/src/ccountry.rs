@@ -63,8 +63,8 @@ pub const STABILITY: usize = 0x10d0;
 /// CCountry signed i64 war support /100000.
 pub const WAR_SUPPORT: usize = 0x10d8;
 
-/// Second identity word, u32, independent of canonical country slot.
-pub const ID_INSTANCE: usize = 0xc;
+/// Mutable surrender/collaboration recipient as a raw country link.
+pub const SURRENDER_TARGET: usize = 0xc;
 /// CCountry land-theatre pointer vector.
 pub const THEATRES: usize = 0x168;
 /// CCountry air-theatre pointer vector.
@@ -309,7 +309,7 @@ const GATHERED: [(usize, usize); 8] = [
     (WAR_SUPPORT, 8),
     (PEACE_CONFERENCE_PARTICIPANT, 1),
     (CONVOY_STATE + cconvoys::CACHE_VALID, 1),
-    (ID_INSTANCE, 4),
+    (SURRENDER_TARGET, 4),
 ];
 const GATHERED_STATUS: usize = 0;
 const GATHERED_MANPOWER: usize = 1;
@@ -318,7 +318,7 @@ const GATHERED_STABILITY: usize = 3;
 const GATHERED_WAR_SUPPORT: usize = 4;
 const GATHERED_PEACE: usize = 5;
 const GATHERED_CONVOY_VALID: usize = 6;
-const GATHERED_INSTANCE: usize = 7;
+const GATHERED_SURRENDER_TARGET: usize = 7;
 
 /// One country's [`GATHERED`] copy: the fields it completed, the one it
 /// faulted on, if any, and the ones after it, which it never reached.
@@ -3135,7 +3135,7 @@ fn walk_observed_inner<M: Memory>(
             political_power_raw,
             politics_witness: (|| {
                 let instance = fields
-                    .get::<u32>(memory, pointer, GATHERED_INSTANCE)
+                    .get::<u32>(memory, pointer, GATHERED_SURRENDER_TARGET)
                     .ok()??;
                 let party = if status == 0 {
                     None
@@ -6866,7 +6866,7 @@ mod tests {
         let mut bytes = countries_with_aliases();
         put(
             &mut bytes,
-            0x1000 + ID_INSTANCE,
+            0x1000 + SURRENDER_TARGET,
             &0xf001_0001_u32.to_le_bytes(),
         );
         let memory = SliceMemory {
@@ -6880,10 +6880,10 @@ mod tests {
         );
         assert_eq!(rows[0].politics_witness, Some((0xf001_0001, None)));
         let expected = rows[0];
-        struct UnreadInstance<'a>(SliceMemory<'a>);
-        impl Memory for UnreadInstance<'_> {
+        struct UnreadSurrenderTarget<'a>(SliceMemory<'a>);
+        impl Memory for UnreadSurrenderTarget<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == 0x2000 + ID_INSTANCE && output.len() == 4 {
+                if address == 0x2000 + SURRENDER_TARGET && output.len() == 4 {
                     false
                 } else {
                     self.0.copy(address, output)
@@ -6891,7 +6891,7 @@ mod tests {
             }
         }
         assert_eq!(
-            walk(&UnreadInstance(memory), 0, 0x1000, &mut rows),
+            walk(&UnreadSurrenderTarget(memory), 0, 0x1000, &mut rows),
             Outcome::Rows { len: 1 }
         );
         assert_eq!(rows[0].politics_witness, None);
@@ -6992,7 +6992,7 @@ mod tests {
         world.array(world.game_state() + cgame_state::COUNTRY_TAGS, tags, 66);
         for id in 1..=65 {
             let object = world.object(id);
-            world.u32(object + ID_INSTANCE, 0xf001_0000 + id);
+            world.u32(object + SURRENDER_TARGET, 0xf001_0000 + id);
             let tag = tags + id as usize * STRIDE;
             world.put(tag, b"SYN");
             world.u64(tag + 16, 3);

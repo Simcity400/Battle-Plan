@@ -161,7 +161,7 @@ pub(super) fn project(
                 "nuclearStrikeCountry",
                 "Nuclear strike country",
                 format!(
-                    "The {role} of strike {} at {} has no exact country-reference, ID and instance witness.",
+                    "The {role} of strike {} at {} has no exact country-reference and published-link witness.",
                     strike.id, strike.hour
                 ),
                 1,

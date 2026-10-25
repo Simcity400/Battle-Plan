@@ -19,7 +19,8 @@ static LOG: Log = Log::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ROOT: AtomicU64 = AtomicU64::new(1);
 static UNHOOKED: OnceLock<&'static str> = OnceLock::new();
-static REFUSAL: OnceLock<&'static str> = OnceLock::new();
+static REFUSAL: collector_primitives::first_reason::FirstReason =
+    collector_primitives::first_reason::FirstReason::new();
 static CENSUS_LAST_REFUSAL: Mutex<Option<&'static str>> = Mutex::new(None);
 static COUNTERS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
 // The live buffer and its sealed predecessor belong to the hourly drain and
@@ -303,7 +304,7 @@ fn presize_storage(memory: &impl Memory, base: usize) {
 }
 
 fn refuse_census(reason: &'static str) {
-    let _ = REFUSAL.set(reason);
+    REFUSAL.record(reason);
     *CENSUS_LAST_REFUSAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
@@ -651,7 +652,7 @@ fn append_buffer(
         }
     }
     if let Some(reason) = entry.name_reason {
-        let _ = REFUSAL.set(reason);
+        REFUSAL.record(reason);
         COUNTERS[8].fetch_add(1, Ordering::Relaxed);
     }
     unsafe {
@@ -757,7 +758,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
             )
         {
             LOG.invalidate();
-            let _ = REFUSAL.set(if status == 0 {
+            REFUSAL.record(if status == 0 {
                 "fuel reset status is null"
             } else {
                 "fuel reset receipt storage unavailable or exhausted"
@@ -792,7 +793,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
                 }
             }
             Err(reason) => {
-                let _ = REFUSAL.set(reason);
+                REFUSAL.record(reason);
                 PENDING.set(None);
                 COUNTERS[0].fetch_add(1, Ordering::Relaxed);
             }
@@ -825,7 +826,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         });
         if let Err(reason) = &settled {
             pending.cause.get_or_insert(6);
-            let _ = REFUSAL.set(reason);
+            REFUSAL.record(reason);
         }
         if !settled
             .as_ref()
@@ -835,7 +836,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
             pending.cause.get_or_insert(4);
         }
         if pending.refused {
-            let _ = REFUSAL.set(SETTLED_NAMES[pending.cause.unwrap_or(4)]);
+            REFUSAL.record(SETTLED_NAMES[pending.cause.unwrap_or(4)]);
         }
         append_root(&call, pending, settled.unwrap_or_default(), &memory);
         return;
@@ -900,7 +901,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
             }
         }
         Err(reason) => {
-            let _ = REFUSAL.set(reason);
+            REFUSAL.record(reason);
             pending.refused = true;
             pending.cause.get_or_insert(2);
             COUNTERS[3].fetch_add(1, Ordering::Relaxed);
@@ -1142,7 +1143,7 @@ pub fn capacities() -> (usize, usize) {
 pub fn status() -> crate::status::Object<impl crate::status::Fields> {
     let append_refusal = append_reason(FIRST_APPEND_REFUSAL.load(Ordering::Acquire));
     crate::status::status!({ "unhooked": UNHOOKED.get(), "enabled": LOG.enabled.load(Ordering::SeqCst),
-        "first_refusal": REFUSAL.get().copied().or(append_refusal),
+        "first_refusal": REFUSAL.get().or(append_refusal),
         "first_append_refusal": append_refusal,
         "append_reasons": crate::status::map(APPEND_NAMES.into_iter().zip(APPEND_CAUSES.iter().map(|value| value.load(Ordering::Relaxed)))),
         "settled_reasons": crate::status::map(SETTLED_NAMES.into_iter().zip(SETTLED_CAUSES.iter().map(|value| value.load(Ordering::Relaxed)))),
@@ -1161,7 +1162,7 @@ pub fn status() -> crate::status::Object<impl crate::status::Fields> {
         "overflow_intervals": COUNTERS[10].load(Ordering::Relaxed),
         "lost_worker_drains": LOST_DRAINS.load(Ordering::Relaxed),
         "drain_refusals": DRAIN_REFUSALS.load(Ordering::Relaxed),
-        "first_drain_refusal": FIRST_DRAIN_REFUSAL.get().copied(),
+        "first_drain_refusal": FIRST_DRAIN_REFUSAL.get(),
         "day_sum_refusals": crate::tables::day_sum_refusals(),
         "busy_refusals": COUNTERS[6].load(Ordering::Relaxed),
         "held_settles": HELD.total(0),

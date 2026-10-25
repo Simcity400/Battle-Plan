@@ -380,3 +380,57 @@ fn actual_products_use_supplying_names_topology_and_windows_without_receipt_cont
         .is_err()
     );
 }
+
+#[test]
+fn current_demand_history_keeps_the_same_country_across_surrender_target_changes() {
+    let frames = (100..=124)
+        .map(|hour| {
+            let mut frame = fuel_frame(hour, true, 9001, (1, 2, 3, 4));
+            let mut demand = pack(hour);
+            demand.country_instance = Some(if hour < 112 { 9 } else { 10 });
+            let mut own = row(demand);
+            own.country_instance = Recorded::Value(Some(if hour < 112 { 9 } else { 10 }));
+            *frame.tables[TableId::CountryFuel.index()] =
+                TableView::Complete(TableRows::CountryFuel(vec![own]));
+            frame
+        })
+        .collect();
+    let source = replay_source(frames, "fuel-surrender-target-change");
+    let cancelled = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let basis = FuelAwardsParams {
+        branch_id: "1".into(),
+        tag: "GER".into(),
+        hour: 100,
+        country: "11".into(),
+        country_instance: 9,
+    };
+    let inventory = CountryFuelDemand::load(&source, &basis, &context, &cancelled).unwrap();
+    let history = CountryFuelDemandHistory::load(
+        &source,
+        &FuelDemandHistoryParams {
+            branch_id: basis.branch_id,
+            tag: basis.tag,
+            hour: basis.hour,
+            country: basis.country,
+            country_instance: basis.country_instance,
+            window: 0,
+            key: inventory.parts[0].key.clone(),
+        },
+        &context,
+        &cancelled,
+    )
+    .unwrap();
+    for hour in [111, 112, 124] {
+        let run = history
+            .runs
+            .iter()
+            .find(|run| run.first_hour <= hour && hour <= run.last_hour)
+            .unwrap();
+        assert_eq!(run.amount_raw.as_deref(), Some("240000"));
+        assert!(run.reason.is_none());
+        if run.first_hour >= 112 {
+            assert!(!run.starts_segment);
+        }
+    }
+}

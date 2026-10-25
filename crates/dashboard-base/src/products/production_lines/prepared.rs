@@ -192,7 +192,6 @@ struct ClosedLine {
 pub struct NativeCountry {
     pub slot: u32,
     pub id: u32,
-    pub instance: Option<u32>,
     pub epoch: u64,
 }
 
@@ -239,15 +238,7 @@ fn tag_key(tag: &str) -> String {
     )
 }
 fn native_key(country: &NativeCountry) -> String {
-    format!(
-        "native-{}-{}-{}-{}",
-        country.slot,
-        country.id,
-        country
-            .instance
-            .map_or_else(|| "unknown".into(), |id| id.to_string()),
-        country.epoch
-    )
+    format!("native-{}-{}-{}", country.slot, country.id, country.epoch)
 }
 
 #[derive(Clone)]
@@ -301,7 +292,6 @@ impl TagCountry {
 #[derive(Clone, Serialize, Deserialize)]
 struct ActiveCountry {
     native: NativeCountry,
-    instance: Option<u32>,
 }
 
 pub struct Prepared {
@@ -438,7 +428,6 @@ impl Prepared {
             TableId::CountryProductionModifiers,
             TableId::ProductionLineModifiers,
             TableId::ModifierDefinitions,
-            TableId::CountryExperienceGains,
         ];
         tables.extend(VariantCatalogue::TABLES);
         if pictured {
@@ -706,22 +695,16 @@ impl Prepared {
         let mut born = BTreeSet::new();
         if input.rows_complete && (input.identities_changed || self.active.is_empty()) {
             let mut active = BTreeMap::new();
-            for (&(slot, id), (instance, tag)) in &input.holders {
-                let instance_key =
-                    instance.map(|instance| format!("instance-{slot}-{id}-{instance}"));
+            for (&(slot, id), tag) in &input.holders {
+                let link_key = format!("country-{slot}-{id}");
                 let existing = self
                     .active
                     .get(&(slot, id))
-                    .filter(|country| {
-                        country
-                            .instance
-                            .zip(*instance)
-                            .is_none_or(|(before, now)| before == now)
-                    })
                     .map(|country| country.native.clone());
-                let previous = match (&existing, &instance_key) {
-                    (None, Some(name)) => private::get(&mut facts, self.directory.index, name)?,
-                    _ => None,
+                let previous = if existing.is_none() {
+                    private::get(&mut facts, self.directory.index, &link_key)?
+                } else {
+                    None
                 };
                 let key = if let Some(key) = existing.or(previous) {
                     key
@@ -731,12 +714,7 @@ impl Prepared {
                         .unwrap_or(0)
                         + 1;
                     private::put(&mut facts, &mut self.directory.index, &name, &epoch)?;
-                    NativeCountry {
-                        slot,
-                        id,
-                        instance: *instance,
-                        epoch,
-                    }
+                    NativeCountry { slot, id, epoch }
                 };
                 if !self.native.contains_key(&key) {
                     let saved: Option<CountrySnapshot> =
@@ -756,20 +734,8 @@ impl Prepared {
                     country.wake(&mut facts, &self.absent)?;
                     self.native.insert(key.clone(), country);
                 }
-                if let Some(name) = instance_key {
-                    private::put(&mut facts, &mut self.directory.index, &name, &key)?;
-                }
-                active.insert(
-                    (slot, id),
-                    ActiveCountry {
-                        native: key,
-                        instance: instance.or_else(|| {
-                            self.active
-                                .get(&(slot, id))
-                                .and_then(|country| country.instance)
-                        }),
-                    },
-                );
+                private::put(&mut facts, &mut self.directory.index, &link_key, &key)?;
+                active.insert((slot, id), ActiveCountry { native: key });
                 let Some(tag) = tag else {
                     continue;
                 };

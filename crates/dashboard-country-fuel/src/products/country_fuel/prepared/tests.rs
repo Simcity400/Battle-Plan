@@ -590,7 +590,7 @@ fn phase_b_shared_views_keep_fresh_reads_gaps_and_dormant_ownership_after_resume
     let mut reads = Reads::open(&fixture.store, &fixture.key, 1, &flag)
         .unwrap()
         .unwrap();
-    let actor = actor_binding("11", 9);
+    let actor = actor_binding("11");
     let actor_key = reads.keys[&series::field_key(&actor, "actorSegment")];
     assert!(
         reads

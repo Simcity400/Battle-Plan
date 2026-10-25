@@ -664,7 +664,7 @@ fn attribution_requires_the_supplying_hour_and_native_country_identity() {
     let mut row = award_row(1000);
     assert!(super::awards_of(&row, 1001).is_err());
     row.country_instance = Recorded::Value(Some(10));
-    assert!(super::awards_of(&row, 1000).is_err());
+    assert!(super::awards_of(&row, 1000).is_ok());
     row.country_instance = Recorded::Value(Some(9));
     assert!(super::awards_of(&row, 1000).is_ok());
     let Recorded::Value(day) = &mut row.award_day else {

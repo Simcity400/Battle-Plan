@@ -112,7 +112,7 @@ impl Projection {
             {
                 if tag.is_none() && !(event.script.is_some() && country.reference as i32 <= 0) {
                     builder.sampled_unavailable("nativeEventCountry", "Native event country",
-                        format!("The {role} of event {} at {} has no exact country-reference, ID and instance witness.",
+                        format!("The {role} of event {} at {} has no exact country-reference and published-link witness.",
                             event.sequence, event.hour), 1);
                 }
             }
@@ -151,7 +151,7 @@ impl Projection {
                     let ally = cause.ally.map(|ally| tag_at(event.hour, ally));
                     if ally == Some(None) {
                         builder.sampled_unavailable("nativeEventCountry", "Native event country",
-                            format!("The ally of event {} at {} has no exact country-reference, ID and instance witness.",
+                            format!("The ally of event {} at {} has no exact country-reference and published-link witness.",
                                 event.sequence, event.hour), 1);
                     }
                     Some(cause_words(cause, ally.flatten()))

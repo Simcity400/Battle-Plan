@@ -273,11 +273,11 @@ impl History {
     }
     pub fn tag(&self, hour: i32, country: EventFeedCountry) -> Option<String> {
         let run = self.witness_at(hour, country.reference)?;
-        (run.id == country.id && run.instance == country.instance).then(|| run.tag.clone())
+        (run.id == country.id).then(|| run.tag.clone())
     }
     pub fn scope_slot(&self, hour: i32, country: EventFeedCountry) -> Option<u32> {
         let run = self.witness_at(hour, country.reference)?;
-        (run.id == country.id && run.instance == country.instance).then_some(run.slot)
+        (run.id == country.id).then_some(run.slot)
     }
 }
 
@@ -369,8 +369,8 @@ impl Names {
             return None;
         }
         let slot = self.slots.get(&country.reference)?;
-        let (id, instance, tag) = self.tags.get(slot)?;
-        (*id == country.id && *instance == country.instance).then(|| tag.clone())
+        let (id, _surrender_target, tag) = self.tags.get(slot)?;
+        (*id == country.id).then(|| tag.clone())
     }
 }
 
@@ -450,13 +450,7 @@ mod tests {
             None
         );
         assert_eq!(
-            history.scope_slot(
-                10,
-                EventFeedCountry {
-                    instance: 9,
-                    ..captured
-                }
-            ),
+            history.scope_slot(10, EventFeedCountry { id: 71, ..captured }),
             None
         );
         assert_eq!(
@@ -468,7 +462,7 @@ mod tests {
                     instance: 9
                 }
             ),
-            None
+            Some("synthetic".into())
         );
     }
     #[test]

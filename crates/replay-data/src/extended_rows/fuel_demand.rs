@@ -493,7 +493,7 @@ impl FuelDemandRead {
     /// leaves other families and known contributor rows available. Do not use
     /// this wrapping aggregate as an exact widened reporting sum.
     pub fn native_rates(&self) -> [Result<i64, &'static str>; 3] {
-        if !self.reason.is_empty() || self.country_instance.is_none() {
+        if !self.reason.is_empty() {
             return [Err("fuel current demand read identity unavailable"); 3];
         }
         let units = |rows: &[FuelDemandUnit], reason: &[u8]| {
@@ -563,6 +563,27 @@ pub fn assemble_demand_parts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn missing_surrender_metadata_keeps_exact_rates_and_family_refusals_independent() {
+        let mut pack = FuelDemandRead {
+            country_instance: None,
+            divisions: vec![FuelDemandUnit {
+                rate_raw: Some(17),
+                ..Default::default()
+            }],
+            task_forces: vec![FuelDemandUnit {
+                rate_raw: Some(23),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(pack.native_rates(), [Ok(17), Ok(23), Ok(0)]);
+        pack.army_reason = b"synthetic army acquisition failure".to_vec();
+        assert!(pack.native_rates()[0].is_err());
+        assert_eq!(&pack.native_rates()[1..], &[Ok(23), Ok(0)]);
+        pack.reason = b"synthetic country acquisition failure".to_vec();
+        assert!(pack.native_rates().iter().all(Result::is_err));
+    }
     #[test]
     fn supplying_read_roundtrip_retains_repeated_wing_occurrences_one_context_and_signed_known_values()
      {

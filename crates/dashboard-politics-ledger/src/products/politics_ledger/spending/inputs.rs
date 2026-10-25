@@ -23,8 +23,8 @@ pub(super) struct Inputs {
     pub witnesses: BTreeMap<u32, PoliticsCaptureCoverageRow>,
     pub deadlines: BTreeMap<i32, BTreeSet<u32>>,
     pub by_slot: BTreeMap<u32, PoliticsCaptureCoverageRow>,
-    pub sums: BTreeMap<(u32, u32, u64, i32, u64), i64>,
-    pub applications: BTreeSet<(u32, u32, u64, i32, u64)>,
+    pub sums: BTreeMap<(u32, u64, i32, u64), i64>,
+    pub applications: BTreeSet<(u32, u64, i32, u64)>,
     pub unreconciled: BTreeSet<u32>,
     pub unreconciled_counts: BTreeMap<u32, u64>,
     pub daily_mutations: BTreeMap<u32, BTreeSet<i32>>,
@@ -34,8 +34,8 @@ pub(super) struct Inputs {
     governments: Option<SharedView>,
     daily: Option<SharedView>,
     costs: Option<SharedView>,
-    pub daily_keys: BTreeSet<(u32, u32, u64, i32)>,
-    pub cost_keys: BTreeSet<(u32, u32, u64, i32, u32)>,
+    pub daily_keys: BTreeSet<(u32, u64, i32)>,
+    pub cost_keys: BTreeSet<(u32, u64, i32, u32)>,
     pub countries_changed: bool,
     pub power_changed: bool,
     pub governments_changed: bool,
@@ -71,7 +71,7 @@ pub(super) struct Inputs {
     power_hours: BTreeMap<u32, BTreeMap<i32, usize>>,
     gain_counts: BTreeMap<u32, BTreeMap<i32, usize>>,
     addition_counts: BTreeMap<u32, BTreeMap<(u32, u64), [usize; 2]>>,
-    sum_counts: BTreeMap<(u32, u32, u64, i32, u64), usize>,
+    sum_counts: BTreeMap<(u32, u64, i32, u64), usize>,
     #[cfg(test)]
     pub aggregate_visits: usize,
     #[cfg(test)]
@@ -189,12 +189,21 @@ fn count_days<'a, T: 'a>(
     }
 }
 
-/// Whether a changed capture only extends its interval from the previous
-/// hour to this one, with the same identity, start and streams.
+/// Fast carry requires every raw capture operand except the end hour unchanged.
 fn advances(old: &PoliticsCaptureCoverageRow, row: &PoliticsCaptureCoverageRow, hour: i32) -> bool {
-    (old.instance, old.epoch, old.since_hour, old.streams)
-        == (row.instance, row.epoch, row.since_hour, row.streams)
-        && old.through_hour.checked_add(1) == Some(row.through_hour)
+    (
+        old.country,
+        old.instance,
+        old.epoch,
+        old.since_hour,
+        old.streams,
+    ) == (
+        row.country,
+        row.instance,
+        row.epoch,
+        row.since_hour,
+        row.streams,
+    ) && old.through_hour.checked_add(1) == Some(row.through_hour)
         && row.through_hour == hour
 }
 
@@ -854,14 +863,13 @@ impl Inputs {
             count_days(&mut self.days[2], daily, daily_day, true);
             self.daily_keys = daily
                 .iter()
-                .map(|row| (row.country, row.instance, row.epoch, row.day_hour))
+                .map(|row| (row.country, row.epoch, row.day_hour))
                 .collect();
             self.applications = daily
                 .iter()
                 .filter_map(|row| {
-                    row.pp_sequence.map(|sequence| {
-                        (row.country, row.instance, row.epoch, row.day_hour, sequence)
-                    })
+                    row.pp_sequence
+                        .map(|sequence| (row.country, row.epoch, row.day_hour, sequence))
                 })
                 .collect();
             self.slots.extend(
@@ -887,38 +895,18 @@ impl Inputs {
             let costs = held::<tables::CountryPowerDailyCosts>(&self.costs);
             self.cost_keys = costs
                 .iter()
-                .map(|row| {
-                    (
-                        row.country,
-                        row.instance,
-                        row.epoch,
-                        row.day_hour,
-                        row.ordinal,
-                    )
-                })
+                .map(|row| (row.country, row.epoch, row.day_hour, row.ordinal))
                 .collect();
             self.sums.clear();
             self.sum_counts.clear();
             for row in costs {
                 *self
                     .sum_counts
-                    .entry((
-                        row.country,
-                        row.instance,
-                        row.epoch,
-                        row.day_hour,
-                        row.pp_sequence,
-                    ))
+                    .entry((row.country, row.epoch, row.day_hour, row.pp_sequence))
                     .or_default() += 1;
                 let sum = self
                     .sums
-                    .entry((
-                        row.country,
-                        row.instance,
-                        row.epoch,
-                        row.day_hour,
-                        row.pp_sequence,
-                    ))
+                    .entry((row.country, row.epoch, row.day_hour, row.pp_sequence))
                     .or_default();
                 *sum = sum.wrapping_add(row.cost_raw);
             }
@@ -1208,8 +1196,8 @@ impl Inputs {
                 // daily gain there can change spending completeness. All
                 // other operands and every old coverage run keep their value.
                 if unique
-                    && (old.instance, old.epoch, old.streams)
-                        == (row.instance, row.epoch, row.streams)
+                    && (old.country, old.instance, old.epoch, old.streams)
+                        == (row.country, row.instance, row.epoch, row.streams)
                     && old.since_hour.checked_add(1) == Some(row.since_hour)
                     && old.through_hour.checked_add(1) == Some(row.through_hour)
                     && row.through_hour == frame.hour
@@ -1386,15 +1374,10 @@ impl Inputs {
             ) {
                 count_days(&mut self.days[2], [row], daily_day, false);
                 self.daily_keys
-                    .remove(&(row.country, row.instance, row.epoch, row.day_hour));
+                    .remove(&(row.country, row.epoch, row.day_hour));
                 if let Some(sequence) = row.pp_sequence {
-                    self.applications.remove(&(
-                        row.country,
-                        row.instance,
-                        row.epoch,
-                        row.day_hour,
-                        sequence,
-                    ));
+                    self.applications
+                        .remove(&(row.country, row.epoch, row.day_hour, sequence));
                 }
             }
             self.daily = Some(frame.tables[TableId::CountryPowerDaily.index()].clone());
@@ -1408,15 +1391,10 @@ impl Inputs {
                 ) {
                     count_days(&mut self.days[2], [row], daily_day, true);
                     self.daily_keys
-                        .insert((row.country, row.instance, row.epoch, row.day_hour));
+                        .insert((row.country, row.epoch, row.day_hour));
                     if let Some(sequence) = row.pp_sequence {
-                        self.applications.insert((
-                            row.country,
-                            row.instance,
-                            row.epoch,
-                            row.day_hour,
-                            sequence,
-                        ));
+                        self.applications
+                            .insert((row.country, row.epoch, row.day_hour, sequence));
                     }
                 }
             }
@@ -1939,20 +1917,8 @@ impl Inputs {
         {
             self.aggregate_visits += 1;
         }
-        let key = (
-            row.country,
-            row.instance,
-            row.epoch,
-            row.day_hour,
-            row.ordinal,
-        );
-        let sum_key = (
-            row.country,
-            row.instance,
-            row.epoch,
-            row.day_hour,
-            row.pp_sequence,
-        );
+        let key = (row.country, row.epoch, row.day_hour, row.ordinal);
+        let sum_key = (row.country, row.epoch, row.day_hour, row.pp_sequence);
         if add {
             self.cost_keys.insert(key);
             *self.sum_counts.entry(sum_key).or_default() += 1;
@@ -1981,7 +1947,7 @@ impl Inputs {
                 |row| row.country,
             ) {
                 if let Some(sequence) = row.pp_sequence {
-                    let key = (row.country, row.instance, row.epoch, row.day_hour, sequence);
+                    let key = (row.country, row.epoch, row.day_hour, sequence);
                     if row
                         .pp_cost_raw
                         .is_none_or(|cost| self.sums.get(&key).copied().unwrap_or(0) != cost)
@@ -2034,8 +2000,7 @@ impl Inputs {
             || row.requested_delta_raw.is_some()
             || row.cause == PowerCause::DailyGain && row.currency == PowerCurrency::Political
             || !self.witnesses.get(&row.country).is_some_and(|witness| {
-                witness.instance == row.instance
-                    && witness.epoch == row.epoch
+                witness.epoch == row.epoch
                     && row.hour >= witness.since_hour
                     && row.hour <= witness.through_hour
             })
@@ -2043,7 +2008,7 @@ impl Inputs {
             return;
         }
         let counts = self.addition_counts.entry(row.country).or_default();
-        let key = (row.instance, row.epoch);
+        let key = (row.country, row.epoch);
         let count = counts.entry(key).or_default();
         let index = usize::from(row.currency == PowerCurrency::Command);
         if add {

@@ -37,7 +37,7 @@ fn populated_cohort(countries: usize) -> (WarImage, Vec<ccountry::Country>) {
         image.d(links + id as usize * 4, id);
         image.q(pointer, BASE + ccountry::VTABLE_RVA);
         image.d(pointer + ccountry::ID, id);
-        image.d(pointer + ccountry::ID_INSTANCE, id + 1000);
+        image.d(pointer + ccountry::SURRENDER_TARGET, id + 1000);
         image.decisions(pointer, status);
         image.array(pointer + ccountry::DELAYED_EVENTS, 0, 0);
         image.array(
@@ -609,7 +609,7 @@ fn ordinary_occurrences_cannot_spend_reserved_control_entries_or_token_bytes() {
 }
 
 #[test]
-fn prepared_stable_failure_is_attempted_once_and_keeps_the_other_family() {
+fn prepared_read_failure_retries_and_recovers_while_keeping_the_other_family() {
     let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
     let memory = FlightReads::stable(member_image(1), MEMBER_DEFINITION);
     let mut store = census_store(64);
@@ -627,7 +627,7 @@ fn prepared_stable_failure_is_attempted_once_and_keeps_the_other_family() {
             .unwrap();
         assert_eq!(
             store.owner_work(&NoReads, BASE, 7, GAME, 1, country),
-            [false; 2]
+            [false, true]
         );
     });
     assert_eq!(memory.reads.get(), 1);
@@ -640,6 +640,24 @@ fn prepared_stable_failure_is_attempted_once_and_keeps_the_other_family() {
     state.observe(row.row()).unwrap();
     assert!(state.delayed(TARGET_OWNER).unwrap().is_empty());
     assert!(state.decisions(TARGET_OWNER).is_err());
+    store.acknowledged(row.publication());
+    let mut image = memory.image;
+    image.d(GAME + cgame_state::CURRENT_HOUR, 2);
+    store
+        .prepare_boundary(boundary(7, 2), Some((&image, BASE)))
+        .unwrap();
+    let work = store.owner_work(&image, BASE, 7, GAME, 2, country);
+    assert_eq!(work, [false, true]);
+    let mut plan = PreparedOwner::read(&image, BASE, 7, GAME, 2, country, work).unwrap();
+    crate::event_feed_observer::presize_owner_for_test(&mut store, &plan);
+    store
+        .publish_owner(&NoReads, BASE, 7, 2, &mut plan)
+        .unwrap();
+    let recovered = sealed_row(&mut store, 2);
+    assert_eq!(certifying_markers(recovered.row()), (0, 1));
+    state.observe(recovered.row()).unwrap();
+    assert!(state.decisions(TARGET_OWNER).is_ok());
+    assert!(state.delayed(TARGET_OWNER).unwrap().is_empty());
 }
 
 #[test]

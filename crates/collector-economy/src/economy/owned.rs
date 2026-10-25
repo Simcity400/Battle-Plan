@@ -838,7 +838,7 @@ fn copy_economy_rest_pass(
         let _ = espan(
             log,
             memory,
-            pointer.checked_add(ccountry::ID_INSTANCE),
+            pointer.checked_add(ccountry::SURRENDER_TARGET),
             4,
             M_E_FUEL_STATUS,
         );

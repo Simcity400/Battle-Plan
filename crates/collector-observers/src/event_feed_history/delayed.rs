@@ -8,7 +8,7 @@ use replay_data::event_feed_rows::EventFeedScriptChange as Change;
 pub(super) struct Slot {
     pub pointer: usize,
     pub id: u32,
-    pub owner: CountryIdentity,
+    pub country: u32,
 }
 /// One census owner, keyed by its canonical census slot.
 #[derive(Clone, Copy, Default)]
@@ -17,8 +17,6 @@ pub(super) struct Country {
     pub id: u32,
     /// Its baseline completed.
     pub ready: bool,
-    /// Its baseline was tried; it is not tried again in this loss epoch.
-    pub attempted: bool,
     /// Its refusal marker is published for this loss epoch: a later refusal
     /// emits nothing. A completed baseline, a native reset or a loss
     /// re-arms it.
@@ -53,8 +51,7 @@ impl Index {
         self.invalidated = true;
     }
     pub fn revoke_retained(&mut self) {
-        // Callback-side revocation is constant work. The boundary worker
-        // retires ready certificates without erasing failed owner attempts.
+        // Revocation retires certificates off-thread and keeps duplicate refusals suppressed.
         self.revoked = true;
     }
     pub fn reset(&mut self, generation: u64) {
@@ -142,13 +139,13 @@ impl Index {
         spare.demand = self.demand;
         std::mem::swap(self, spare);
     }
-    fn insert(&mut self, pointer: usize, owner: CountryIdentity) -> Result<u32, &'static str> {
+    fn insert(&mut self, pointer: usize, country: u32) -> Result<u32, &'static str> {
         if pointer == 0 {
             return Err("delayed-event certificate has a null object");
         }
         let (found, vacant) = self.search(pointer);
         if let Some(index) = found {
-            if self.slots[index].owner != owner {
+            if self.slots[index].country != country {
                 return Err("delayed-event native owner certificate differs");
             }
             return Ok(self.slots[index].id);
@@ -162,7 +159,11 @@ impl Index {
         let vacant = vacant.ok_or("delayed-event pointer index needs prepared storage")?;
         let id =
             u32::try_from(self.next).map_err(|_| "delayed-event compact identity exhausted")?;
-        self.slots[vacant] = Slot { pointer, id, owner };
+        self.slots[vacant] = Slot {
+            pointer,
+            id,
+            country,
+        };
         self.next += 1;
         self.live += 1;
         Ok(id)
@@ -247,7 +248,7 @@ impl Store {
             )
             .map_err(|_| "delayed-event baseline identity allocation failed")?;
         }
-        let id = self.delayed.insert(row.pointer, owner)?;
+        let id = self.delayed.insert(row.pointer, owner.id)?;
         let (native_event, token) =
             crate::script_event_observer::definition(memory, base, row.definition)?;
         let fact = ScriptFact {
@@ -341,12 +342,15 @@ impl Store {
             },
             Some(slot.id),
         )?;
-        fact.target = slot.owner;
+        fact.target = world.country(slot.country)?;
+        if fact.target.id != slot.country {
+            return Err("delayed-event native owner certificate differs");
+        }
         self.script_known(memory, base, generation, world.hour()?, fact)
     }
     /// Refuse one owner's retained delayed queue: its marker carries the
     /// reason, and every other owner, registry and the interval keep their
-    /// certificates. A failed attempt stays attempted. Once per owner and
+    /// certificates. Once per owner and
     /// loss epoch: a repeat is only counted. `slot`'s entry, when it is this
     /// owner's, records the refusal.
     #[allow(
@@ -368,7 +372,8 @@ impl Store {
         let entry = slot
             .and_then(|slot| self.delayed.countries.get_mut(slot))
             .filter(|entry| entry.id == owner.id && entry.pointer != 0);
-        let attempted = match entry {
+        super::recovery_needed();
+        match entry {
             Some(entry) => {
                 entry.ready = false;
                 if entry.refused {
@@ -376,14 +381,8 @@ impl Store {
                     return Ok(());
                 }
                 entry.refused = true;
-                entry.attempted
             }
-            None => false,
-        };
-        // A failed attempt is not retried in this loss epoch, so only an
-        // owner the next census would baseline requests one.
-        if !attempted {
-            super::recovery_needed();
+            None => {}
         }
         if count {
             let _ = self.advance();
@@ -393,8 +392,7 @@ impl Store {
         marker.target = owner;
         self.script_text(memory, base, generation, hour, marker, reason, growing)
     }
-    /// The census visit's delayed half. A first-seen or retired owner is
-    /// attempted once; a refusal stays with that owner.
+    /// Retry uncertified owners at each census boundary.
     pub(crate) fn recover_delayed(
         &mut self,
         memory: &impl Memory,
@@ -414,31 +412,29 @@ impl Store {
             .get(slot)
             .filter(|seen| seen.pointer == country.pointer && seen.id == country.id)
             .copied();
-        if seen.is_some_and(|seen| seen.attempted) {
+        if seen.is_some_and(|seen| seen.ready) {
             return;
         }
         // Recovery allocates nothing under the lease, its refusal markers
         // included: only presize grows the census table.
         let recorded = slot < self.delayed.countries.len();
         if recorded {
-            // One attempt per owner certificate, not periodic retries of
-            // queues. A refusal before this first attempt stays published.
+            // Keep a repeated refusal suppressed until a baseline succeeds.
             self.delayed.countries[slot] = Country {
                 pointer: country.pointer,
                 id: country.id,
                 ready: false,
-                attempted: true,
                 refused: seen.is_some_and(|seen| seen.refused),
             };
         }
         // Country's pointer/id/vtable came from this existing census. Read
-        // only its additional identity word; no second traversal.
+        // only its surrender target; no second traversal.
         let identity = || {
             let instance = country
                 .pointer
-                .checked_add(engine_native::ccountry::ID_INSTANCE)
+                .checked_add(engine_native::ccountry::SURRENDER_TARGET)
                 .and_then(|at| engine_native::read::<u32>(memory, at))
-                .ok_or("delayed-event country identity word unreadable")?;
+                .ok_or("delayed-event country surrender target unreadable")?;
             Ok::<_, &'static str>(CountryIdentity {
                 reference: country.id,
                 id: country.id,
@@ -447,7 +443,7 @@ impl Store {
         };
         let mut named = None;
         let result = self.owner_scope(super::OwnerRegistry::Delayed, |store| {
-            // The sample's cut precedes even the identity word.
+            // The sample's cut precedes even the surrender target.
             let cut = store.sample()?;
             let owner = identity()?;
             named = Some(owner);
@@ -469,14 +465,10 @@ impl Store {
             Err(refusal) => refusal,
         };
         self.owner_refusals[super::OwnerRegistry::Delayed as usize] = Some(refusal);
-        // A crossed or storage-short sample is retried, not failed.
-        if recorded && refusal.retry {
-            self.delayed.countries[slot].attempted = false;
-        }
         if self.preparing_owner {
             return;
         }
-        // A sample crossed before it read the identity word still refuses
+        // A sample crossed before it read the surrender target still refuses
         // its owner by name, as the decision half does: the word is read
         // after the sample and certifies nothing.
         if named.is_none() && refusal.retry {
@@ -496,7 +488,7 @@ impl Store {
                     false,
                 );
             }
-            // Crossed, and its identity word unreadable: retried, unnamed.
+            // Crossed, and its surrender target unreadable: retried, unnamed.
             None if refusal.retry => {}
             // A refusal must name its owner.
             None => {
@@ -588,7 +580,7 @@ impl Store {
         labels: &mut [u32],
     ) -> Result<(), &'static str> {
         for slot in source.delayed.slots.iter().filter(|slot| slot.pointer != 0) {
-            labels[slot.id as usize] = self.delayed.insert(slot.pointer, slot.owner)?;
+            labels[slot.id as usize] = self.delayed.insert(slot.pointer, slot.country)?;
         }
         self.delayed.countries[country.canonical_slot as usize] = source.delayed.countries[0];
         Ok(())
@@ -596,7 +588,6 @@ impl Store {
     pub(super) fn prepared_delayed_failure(
         &mut self,
         country: engine_native::ccountry::Country,
-        retry: bool,
     ) -> bool {
         if let Some(entry) = self
             .delayed
@@ -608,7 +599,6 @@ impl Store {
             *entry = Country {
                 pointer: country.pointer,
                 id: country.id,
-                attempted: !retry,
                 refused,
                 ..Default::default()
             };
@@ -646,18 +636,18 @@ mod tests {
         };
         crate::test_support::with_allocations_denied(|| {
             for (n, pointer) in pointers[..4].iter().copied().enumerate() {
-                assert_eq!(index.insert(pointer, owner).unwrap(), n as u32 + 1);
+                assert_eq!(index.insert(pointer, owner.id).unwrap(), n as u32 + 1);
             }
             assert_eq!(
-                index.insert(pointers[4], owner),
+                index.insert(pointers[4], owner.id),
                 Err("delayed-event pointer index needs prepared storage")
             );
             assert_eq!(index.demand, 5);
             assert_eq!(index.remove(pointers[1]).unwrap().id, 2);
             assert_eq!(index.remove(pointers[0]).unwrap().id, 1);
-            assert_eq!(index.insert(pointers[2], owner).unwrap(), 3);
-            assert_eq!(index.insert(pointers[3], owner).unwrap(), 4);
-            assert_eq!(index.insert(pointers[4], owner).unwrap(), 5);
+            assert_eq!(index.insert(pointers[2], owner.id).unwrap(), 3);
+            assert_eq!(index.insert(pointers[3], owner.id).unwrap(), 4);
+            assert_eq!(index.insert(pointers[4], owner.id).unwrap(), 5);
             for (n, pointer) in pointers[2..].iter().copied().enumerate() {
                 assert_eq!(index.remove(pointer).unwrap().id, n as u32 + 3);
                 assert!(index.search(pointer).0.is_none());
@@ -678,13 +668,13 @@ mod tests {
         crate::test_support::with_allocations_denied(|| {
             for n in 0..20 {
                 assert_eq!(
-                    index.insert(0x10000 + n * 0xc8, owner).unwrap(),
+                    index.insert(0x10000 + n * 0xc8, owner.id).unwrap(),
                     n as u32 + 1
                 );
             }
             for n in 0..20 {
                 assert_eq!(
-                    index.insert(0x10000 + n * 0xc8, owner).unwrap(),
+                    index.insert(0x10000 + n * 0xc8, owner.id).unwrap(),
                     n as u32 + 1
                 );
             }
@@ -692,14 +682,14 @@ mod tests {
                 assert_eq!(index.remove(0x10000 + n * 0xc8).unwrap().id, n as u32 + 1);
             }
             assert_eq!(index.live, 0);
-            assert_eq!(index.insert(0x10000, owner).unwrap(), 21);
+            assert_eq!(index.insert(0x10000, owner.id).unwrap(), 21);
         });
         let mut spare = Index::default();
         spare.prepare(40).unwrap();
         crate::test_support::with_allocations_denied(|| index.install(&mut spare));
         assert_eq!(index.remove(0x10000).unwrap().id, 21);
         index.reset(8);
-        assert_eq!(index.insert(0x10000, owner).unwrap(), 1);
+        assert_eq!(index.insert(0x10000, owner.id).unwrap(), 1);
     }
     #[test]
     fn delayed_labels_outlive_a_same_world_loss_and_restart_only_for_a_new_world() {
@@ -717,18 +707,16 @@ mod tests {
             pointer: 0x10,
             id: 1,
             ready: true,
-            attempted: true,
             refused: false,
         };
         let attempted = Country {
             pointer: 0x20,
             id: 2,
             ready: false,
-            attempted: true,
             refused: true,
         };
         crate::test_support::with_allocations_denied(|| {
-            assert_eq!(index.insert(0x1000, owner).unwrap(), 1);
+            assert_eq!(index.insert(0x1000, owner.id).unwrap(), 1);
             index.countries[..2].copy_from_slice(&[certified, attempted]);
             // An observation overlap retires every certificate. The prepared
             // handoff before the next boundary must keep that distinction.
@@ -740,25 +728,24 @@ mod tests {
             assert!(index.countries.iter().all(|country| country.pointer == 0));
             // The game may free the first timer unobserved and reuse its
             // address for another one: that timer must get a new label.
-            assert_eq!(index.insert(0x1000, owner).unwrap(), 2);
-            assert_eq!(index.insert(0x2000, owner).unwrap(), 3);
+            assert_eq!(index.insert(0x1000, owner.id).unwrap(), 2);
+            assert_eq!(index.insert(0x2000, owner.id).unwrap(), 3);
             // A boundary without a loss carries the certificates.
             index.reset(1);
-            assert_eq!(index.insert(0x1000, owner).unwrap(), 2);
-            // A revocation retires timers and certified owners, keeps failed
-            // owner attempts, and keeps the labels too.
+            assert_eq!(index.insert(0x1000, owner.id).unwrap(), 2);
+            // Revocation keeps the existing refusal marker and compact label sequence.
             index.countries[..2].copy_from_slice(&[certified, attempted]);
             index.revoke_retained();
             index.reset(1);
             assert_eq!(index.countries[0].pointer, 0);
             assert_eq!(index.countries[1].pointer, attempted.pointer);
             // A revocation is no new loss epoch for the refused attempt.
-            assert!(index.countries[1].attempted && index.countries[1].refused);
-            assert_eq!(index.insert(0x2000, owner).unwrap(), 4);
+            assert!(!index.countries[1].ready && index.countries[1].refused);
+            assert_eq!(index.insert(0x2000, owner.id).unwrap(), 4);
             index.reset(2);
             assert_eq!(index.live, 0);
             assert!(index.countries.iter().all(|country| country.pointer == 0));
-            assert_eq!(index.insert(0x2000, owner).unwrap(), 1);
+            assert_eq!(index.insert(0x2000, owner.id).unwrap(), 1);
         });
     }
     #[test]
@@ -773,14 +760,43 @@ mod tests {
         index.reset(7);
         index.next = u64::from(u32::MAX);
         crate::test_support::with_allocations_denied(|| {
-            assert_eq!(index.insert(0x1000, owner).unwrap(), u32::MAX);
+            assert_eq!(index.insert(0x1000, owner.id).unwrap(), u32::MAX);
             let exhausted = Err("delayed-event compact identity exhausted");
-            assert_eq!(index.insert(0x2000, owner), exhausted);
+            assert_eq!(index.insert(0x2000, owner.id), exhausted);
             index.invalidate();
             index.reset(7);
-            assert_eq!(index.insert(0x2000, owner), exhausted);
+            assert_eq!(index.insert(0x2000, owner.id), exhausted);
             index.reset(8);
-            assert_eq!(index.insert(0x2000, owner).unwrap(), 1);
+            assert_eq!(index.insert(0x2000, owner.id).unwrap(), 1);
         });
+    }
+    #[test]
+    fn surrender_target_changes_keep_timer_labels_but_country_reuse_does_not() {
+        let mut index = Index::default();
+        index.prepare(1500).unwrap();
+        index.reset(1);
+        let owner = CountryIdentity {
+            reference: 24,
+            id: 24,
+            instance: 0,
+        };
+        let label = index.insert(100, owner.id).unwrap();
+        let changed = CountryIdentity {
+            reference: 500,
+            instance: 1,
+            ..owner
+        };
+        assert_eq!(index.insert(100, changed.id).unwrap(), label);
+        let reused = CountryIdentity {
+            reference: 1501,
+            id: 1501,
+            ..changed
+        };
+        assert_eq!(
+            index.insert(100, reused.id),
+            Err("delayed-event native owner certificate differs")
+        );
+        index.remove(100).unwrap();
+        assert_ne!(index.insert(100, reused.id).unwrap(), label);
     }
 }

@@ -216,7 +216,10 @@ fn script_delayed_baseline_reads_only_first_seen_census_owners_and_carries_empty
         country.pointer + engine_native::ccountry::DELAYED_EVENTS,
         &[0; 16],
     );
-    image.d(country.pointer + engine_native::ccountry::ID_INSTANCE, 88);
+    image.d(
+        country.pointer + engine_native::ccountry::SURRENDER_TARGET,
+        88,
+    );
     store.recover_delayed(&image, BASE, 7, GAME, 1, country);
     // A carried owner never rereads its identity, header or timer payload.
     store.recover_delayed(&NoReads, BASE, 7, GAME, 1, country);
@@ -576,140 +579,31 @@ fn older_publication_receipt_cannot_unlock_a_later_boundary_refusal() {
 }
 
 #[test]
-fn unsupported_delayed_owner_is_attempted_once_through_refusal_and_registry_recovery() {
-    struct Reads {
-        image: WarImage,
-        failed_owner: std::cell::Cell<usize>,
-        healthy_owner: std::cell::Cell<usize>,
-    }
-    impl Memory for Reads {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == TARGET + ccountry::DELAYED_EVENTS {
-                self.failed_owner.set(self.failed_owner.get() + 1);
-            } else if address == ACTOR + ccountry::DELAYED_EVENTS {
-                self.healthy_owner.set(self.healthy_owner.get() + 1);
-            }
-            self.image.copy(address, output)
-        }
-    }
-    let mut image = retained_registry_image(1);
-    image.bytes(ACTOR + ccountry::DELAYED_EVENTS, &[0; 16]);
+fn a_failed_delayed_baseline_recovers_an_empty_queue_after_native_removal() {
+    let mut image = owners_image(1);
     image.array(TARGET + ccountry::DELAYED_EVENTS, 0xc0000, 1);
-    image.q(0xc0000, 0xc1000);
-    image.q(0xc1000, 0); // Populated, unsupported delayed object.
-    let mut memory = Reads {
-        image,
-        failed_owner: Default::default(),
-        healthy_owner: Default::default(),
-    };
-    let healthy = ccountry::Country {
-        pointer: ACTOR,
-        canonical_slot: 1,
-        id: 1,
-    };
-    let unsupported = ccountry::Country {
-        pointer: TARGET,
-        canonical_slot: 2,
-        id: 2,
-    };
-    let owner = EventFeedCountry {
-        reference: 1,
-        id: 1,
-        instance: 44,
-    };
-    let unsupported_owner = EventFeedCountry {
-        reference: 2,
-        id: 2,
-        instance: 55,
-    };
-    let mut store = ready(8);
-    // Recovery never grows storage under the lease.
-    store.prepare_scripts(1024, 16, 4).unwrap();
-    store.prepare_delayed(8).unwrap();
-    let mut snapshot = Snapshot::new(0);
+    image.q(0xc0000, 0);
+    let mut store = census_store(64);
     let mut state = replay_data::event_feed_rows::ScriptEventState::default();
-    store
-        .snapshot_with_registry(&mut snapshot, boundary(7, 1), &memory, BASE)
-        .unwrap();
-    state
-        .observe(snapshot.prepare_pack().unwrap().row())
-        .unwrap();
-    store.acknowledged(snapshot.publication());
-    // In production order the census visits follow the next boundary's
-    // first half, which retires the acknowledged hour's entries.
-    store
-        .prepare_boundary(boundary(7, 2), Some((&NoReads, BASE)))
-        .unwrap();
-    store.recover_delayed(&memory, BASE, 7, GAME, 2, healthy);
-    store.recover_delayed(&memory, BASE, 7, GAME, 2, unsupported);
-    assert_eq!(memory.failed_owner.get(), 1);
-    assert_eq!(memory.healthy_owner.get(), 1);
-    store.seal(&mut snapshot, boundary(7, 2), true).unwrap();
-    let refused = snapshot.prepare_pack().unwrap();
-    // Only that owner is refused, by name; the interval and every other
-    // certificate stay complete.
-    assert_eq!(refused.row().coverage, EventFeedCoverage::Complete);
-    assert!(refused.row().failure.is_none());
-    assert_eq!(refused.row().counts.unwrap().rejected, 1);
-    assert_eq!(
-        owner_refusals(refused.row()),
-        [(unsupported_owner, b"delayed-event vtable differs".to_vec())]
-    );
+    let refused = census_hour(&mut store, &image, 1, &CENSUS);
+    assert_eq!(refusal_markers(refused.row()), (1, 0));
     state.observe(refused.row()).unwrap();
-    assert!(state.delayed(owner).unwrap().is_empty());
-    assert!(state.delayed(unsupported_owner).is_err());
-    assert!(state.pending().is_ok());
+    assert!(state.delayed(TARGET_OWNER).is_err());
     store.acknowledged(refused.publication());
-    // A failed attempt is never polled.
-    for hour in 3..5 {
-        store.recover_delayed(&NoReads, BASE, 7, GAME, hour, unsupported);
-        store.recover_delayed(&NoReads, BASE, 7, GAME, hour, healthy);
-        store
-            .snapshot_with_registry(&mut snapshot, boundary(7, hour), &NoReads, BASE)
-            .unwrap();
-        let quiet = snapshot.prepare_pack().unwrap();
-        assert!(quiet.row().events.is_empty());
-        state.observe(quiet.row()).unwrap();
-        store.acknowledged(quiet.publication());
-    }
-
-    // Another writer's refusal revokes the certified owners; the failed
-    // attempt stays failed through the registry recovery after its receipt.
-    store.reject("synthetic writer refusal");
+    assert!(crate::event_feed_observer::recovery_pending());
+    let world = native::provenance::World::new(&image, BASE).unwrap();
     store
-        .snapshot_with_registry(&mut snapshot, boundary(7, 5), &NoReads, BASE)
+        .delayed_removed(&world, &image, BASE, 7, 0xc1000, Some((TARGET, 7)), false)
         .unwrap();
-    let lost = snapshot.prepare_pack().unwrap();
-    assert_eq!(lost.row().coverage, EventFeedCoverage::Unavailable);
-    state.observe(lost.row()).unwrap();
-    store.acknowledged(lost.publication());
-    memory.image.d(GAME + cgame_state::CURRENT_HOUR, 6);
-    store
-        .prepare_boundary(boundary(7, 6), Some((&memory, BASE)))
-        .unwrap();
-    store.recover_delayed(&memory, BASE, 7, GAME, 6, unsupported);
-    store.recover_delayed(&memory, BASE, 7, GAME, 6, healthy);
-    store.seal(&mut snapshot, boundary(7, 6), true).unwrap();
-    let recovered = snapshot.prepare_pack().unwrap();
-    assert_eq!(recovered.row().coverage, EventFeedCoverage::Partial);
+    image.array(TARGET + ccountry::DELAYED_EVENTS, 0, 0);
+    image.d(GAME + cgame_state::CURRENT_HOUR, 2);
+    let recovered = census_hour(&mut store, &image, 2, &CENSUS);
+    assert_eq!(certifying_markers(recovered.row()), (1, 0));
+    assert_eq!(refusal_markers(recovered.row()), (0, 0));
     state.observe(recovered.row()).unwrap();
-    assert!(state.pending().is_ok());
-    assert!(state.fired().is_ok());
-    assert!(state.delayed(owner).unwrap().is_empty());
-    assert!(state.delayed(unsupported_owner).is_err());
-    assert_eq!(memory.failed_owner.get(), 1);
-    assert_eq!(memory.healthy_owner.get(), 2);
-    store.acknowledged(recovered.publication());
-
-    // A native country reset gives the owner a new queue: one new attempt.
-    store.invalidate_delayed_country(TARGET);
-    store
-        .prepare_boundary(boundary(7, 7), Some((&NoReads, BASE)))
-        .unwrap();
-    store.recover_delayed(&memory, BASE, 7, GAME, 7, unsupported);
-    store.recover_delayed(&memory, BASE, 7, GAME, 7, unsupported);
-    assert_eq!(memory.failed_owner.get(), 2);
-    assert_eq!(store.counts.rejected, 3);
+    assert!(state.delayed(TARGET_OWNER).unwrap().is_empty());
+    assert!(state.decisions(TARGET_OWNER).is_ok());
+    assert!(!crate::event_feed_observer::recovery_pending());
 }
 
 fn delayed_timer(image: &mut WarImage, pointer: usize, remaining: i32) {
@@ -1632,7 +1526,7 @@ impl WarImage {
     fn country(&mut self, pointer: usize, id: u32, instance: u32, diplomacy: usize, matrix: usize) {
         self.q(pointer, BASE + ccountry::VTABLE_RVA);
         self.d(pointer + ccountry::ID, id);
-        self.d(pointer + ccountry::ID_INSTANCE, instance);
+        self.d(pointer + ccountry::SURRENDER_TARGET, instance);
         self.q(pointer + ccountry::DIPLOMACY_STATUS, diplomacy);
         self.q(diplomacy, BASE + cdiplomacy_status::VTABLE_RVA);
         self.q(diplomacy + cdiplomacy_status::COUNTRY, pointer);
@@ -1743,7 +1637,7 @@ fn guarded_war_failed_postproof_consumes_once_without_recording_a_fact() {
             .unwrap();
         if invalidate_identity {
             image.attach();
-            image.d(TARGET + ccountry::ID_INSTANCE, 56);
+            image.d(TARGET + ccountry::ID, 3);
         }
         unsafe { store.normal_returned(ticket, 7, &image, BASE).unwrap() };
         assert_eq!(store.outstanding(), 0);
@@ -2202,74 +2096,35 @@ fn an_unindexed_pass_retirement_refuses_only_its_uncertified_owner() {
 }
 
 #[test]
-fn an_unsupported_decision_owner_is_attempted_once_per_observation_loss() {
-    let reason = b"decision baseline status identity differs".to_vec();
+fn an_unsupported_decision_owner_retries_until_an_exact_baseline_recovers() {
     let mut image = owners_image(1);
-    image.q(TARGET_STATUS, BASE + 1); // An unsupported status object.
+    image.q(TARGET_STATUS, BASE + 1);
     let mut memory = QueueReads::new(image);
     let status = TARGET + ccountry::DECISION_STATUS;
     let mut store = census_store(64);
     let mut state = replay_data::event_feed_rows::ScriptEventState::default();
-    let refused = census_hour(&mut store, &memory, 1, &CENSUS);
-    // Only that owner is refused, by name; the interval is complete.
-    assert_eq!(refused.row().coverage, EventFeedCoverage::Complete);
-    assert!(refused.row().failure.is_none());
-    assert_eq!(refused.row().counts.unwrap().rejected, 1);
-    assert_eq!(
-        owner_refusals(refused.row()),
-        [(TARGET_OWNER, reason.clone())]
-    );
-    state.observe(refused.row()).unwrap();
-    assert!(state.pending().is_ok());
-    assert!(state.decisions(ACTOR_OWNER).is_ok());
-    assert!(state.decisions(TARGET_OWNER).is_err());
-    assert!(state.delayed(TARGET_OWNER).unwrap().is_empty());
-    store.acknowledged(refused.publication());
-    assert_eq!(memory.count(status), 1);
-
-    // Later visits never poll it.
-    memory.hour(2);
-    let quiet = census_hour(&mut store, &memory, 2, &CENSUS);
-    assert!(quiet.row().events.is_empty());
-    state.observe(quiet.row()).unwrap();
-    store.acknowledged(quiet.publication());
-    assert_eq!(memory.count(status), 1);
-
-    // A revocation re-baselines the certified owner but keeps the attempt.
-    store.reject("synthetic writer refusal");
-    memory.hour(3);
-    let lost = census_hour(&mut store, &memory, 3, &CENSUS);
-    assert_eq!(lost.row().coverage, EventFeedCoverage::Unavailable);
-    state.observe(lost.row()).unwrap();
-    store.acknowledged(lost.publication());
-    memory.hour(4);
-    let revoked = census_hour(&mut store, &memory, 4, &CENSUS);
-    assert_eq!(revoked.row().coverage, EventFeedCoverage::Partial);
-    assert!(owner_refusals(revoked.row()).is_empty());
-    state.observe(revoked.row()).unwrap();
-    assert!(state.decisions(ACTOR_OWNER).is_ok());
-    assert!(state.decisions(TARGET_OWNER).is_err());
-    store.acknowledged(revoked.publication());
-    assert_eq!(memory.count(ACTOR + ccountry::DECISION_STATUS), 2);
-    assert_eq!(memory.count(status), 1);
-
-    // An observation loss: a missed writer may have changed it, so the
-    // next epoch attempts it exactly once more.
-    store.invalidate(crate::event_feed_observer::OBSERVATION_OVERLAP);
-    store.reject_many(crate::event_feed_observer::OBSERVATION_OVERLAP, 1);
-    memory.hour(5);
-    let lost = census_hour(&mut store, &memory, 5, &CENSUS);
-    state.observe(lost.row()).unwrap();
-    store.acknowledged(lost.publication());
-    for hour in [6, 7] {
+    for hour in [1, 2] {
         memory.hour(hour);
         let row = census_hour(&mut store, &memory, hour, &CENSUS);
+        assert_eq!(refusal_markers(row.row()), (0, usize::from(hour == 1)));
         state.observe(row.row()).unwrap();
-        assert!(state.decisions(ACTOR_OWNER).is_ok());
         assert!(state.decisions(TARGET_OWNER).is_err());
+        assert!(state.delayed(TARGET_OWNER).unwrap().is_empty());
         store.acknowledged(row.publication());
+        assert!(crate::event_feed_observer::recovery_pending());
     }
     assert_eq!(memory.count(status), 2);
+    memory.image.q(
+        TARGET_STATUS,
+        BASE + engine_decisions::cdecision_status::VTABLE_RVA,
+    );
+    memory.hour(3);
+    let recovered = census_hour(&mut store, &memory, 3, &CENSUS);
+    assert_eq!(certifying_markers(recovered.row()), (0, 1));
+    assert_eq!(refusal_markers(recovered.row()), (0, 0));
+    state.observe(recovered.row()).unwrap();
+    assert!(state.decisions(TARGET_OWNER).is_ok());
+    assert!(!crate::event_feed_observer::recovery_pending());
 }
 
 #[test]
@@ -2292,7 +2147,6 @@ fn certified_owners_recover_without_native_reads() {
             pointer: country.pointer,
             id: country.id,
             ready: true,
-            attempted: true,
             refused: false,
         };
         store.decisions.certify_quiet(
@@ -2407,7 +2261,7 @@ fn refusal_markers(row: &EventFeedHistoryRow) -> (usize, usize) {
 }
 
 #[test]
-fn an_owner_already_refused_in_its_loss_epoch_is_refused_once_and_requests_no_census() {
+fn repeated_owner_refusals_keep_recovery_pending_without_duplicate_markers() {
     use replay_data::event_feed_rows::decisions::{DecisionChange, Operation, REENABLE};
     const MEMBER: usize = 0xf0000;
     let repeated = |registry: OwnerRegistry| {
@@ -2433,9 +2287,7 @@ fn an_owner_already_refused_in_its_loss_epoch_is_refused_once_and_requests_no_ce
     assert!(state.decisions(TARGET_OWNER).is_err());
     assert!(state.delayed(TARGET_OWNER).is_err());
     store.acknowledged(failed.publication());
-    // A failed attempt is not retried in its loss epoch, so its refusal
-    // requests no census: this one was complete.
-    assert!(!crate::event_feed_observer::recovery_pending());
+    assert!(crate::event_feed_observer::recovery_pending());
     let recovery = RECOVERY.load(Ordering::Acquire);
     let delayed_repeats = repeated(OwnerRegistry::Delayed);
     let decision_repeats = repeated(OwnerRegistry::Decisions);
@@ -2480,8 +2332,8 @@ fn an_owner_already_refused_in_its_loss_epoch_is_refused_once_and_requests_no_ce
             );
         }
     });
-    assert_eq!(RECOVERY.load(Ordering::Acquire), recovery);
-    assert!(!crate::event_feed_observer::recovery_pending());
+    assert!(RECOVERY.load(Ordering::Acquire) > recovery);
+    assert!(crate::event_feed_observer::recovery_pending());
     assert_eq!(repeated(OwnerRegistry::Delayed), delayed_repeats + 3);
     assert_eq!(repeated(OwnerRegistry::Decisions), decision_repeats + 2);
     let quiet = census_hour(&mut store, &image, 2, &CENSUS);
@@ -2501,8 +2353,10 @@ fn an_owner_already_refused_in_its_loss_epoch_is_refused_once_and_requests_no_ce
     assert!(state.decisions(TARGET_OWNER).is_err());
     assert!(state.delayed(TARGET_OWNER).is_err());
     store.acknowledged(quiet.publication());
-    assert_eq!(RECOVERY.load(Ordering::Acquire), recovery);
-    assert!(!crate::event_feed_observer::recovery_pending());
+    assert!(RECOVERY.load(Ordering::Acquire) > recovery);
+    assert!(crate::event_feed_observer::recovery_pending());
+    assert_eq!(repeated(OwnerRegistry::Delayed), delayed_repeats + 4);
+    assert_eq!(repeated(OwnerRegistry::Decisions), decision_repeats + 3);
 
     // An observation loss starts a new loss epoch: TARGET is attempted and
     // refused once more, and a later miss repeats again.
@@ -2525,8 +2379,8 @@ fn an_owner_already_refused_in_its_loss_epoch_is_refused_once_and_requests_no_ce
         store.delayed_removed(&world, &image, BASE, 7, 0xe3000, Some((TARGET, 7)), true),
         Ok(())
     );
-    assert_eq!(repeated(OwnerRegistry::Delayed), delayed_repeats + 4);
-    assert!(!crate::event_feed_observer::recovery_pending());
+    assert_eq!(repeated(OwnerRegistry::Delayed), delayed_repeats + 5);
+    assert!(crate::event_feed_observer::recovery_pending());
 }
 
 fn crossed(sample: usize) -> u64 {
@@ -2938,7 +2792,7 @@ fn a_registry_read_failing_during_a_writer_flight_retries_at_the_next_boundary()
 }
 
 #[test]
-fn a_read_error_under_an_unbroken_cut_is_still_a_failed_attempt() {
+fn a_read_error_under_an_unbroken_cut_is_retried_with_its_original_reason() {
     let memory = FlightReads::stable(member_image(1), MEMBER_DEFINITION);
     let mut store = census_store(64);
     let mut state = replay_data::event_feed_rows::ScriptEventState::default();
@@ -2953,12 +2807,12 @@ fn a_read_error_under_an_unbroken_cut_is_still_a_failed_attempt() {
     state.observe(row.row()).unwrap();
     store.acknowledged(row.publication());
     assert_eq!(memory.reads.get(), 1);
-    // A failed attempt is not retried in its loss epoch.
+    // An unbroken read failure is still retried at the next boundary.
     let mut image = memory.image;
     image.d(GAME + cgame_state::CURRENT_HOUR, 2);
     let memory = FlightReads::stable(image, MEMBER_DEFINITION);
     let quiet = census_hour(&mut store, &memory, 2, &CENSUS[1..]);
-    assert_eq!(memory.reads.get(), 0);
+    assert_eq!(memory.reads.get(), 1);
     assert!(owner_refusals(quiet.row()).is_empty());
 }
 
@@ -3005,7 +2859,7 @@ fn an_early_world_read_failing_during_a_writer_flight_is_crossed_then_certified(
 }
 
 #[test]
-fn an_early_world_read_failing_under_an_unbroken_cut_is_a_failed_attempt() {
+fn an_early_world_read_failing_under_an_unbroken_cut_is_retryable() {
     let quiet = owners_image(1);
     let mut store = census_store(64);
     store
@@ -3015,8 +2869,7 @@ fn an_early_world_read_failing_under_an_unbroken_cut_is_a_failed_attempt() {
     let decisions = crossed(OwnerRegistry::Decisions as usize);
     visit(&mut store, &memory, &CENSUS[..1]);
     visit(&mut store, &memory, &CENSUS[..1]);
-    // Not retried in its loss epoch.
-    assert_eq!(memory.reads.get(), 1);
+    assert_eq!(memory.reads.get(), 2);
     assert_eq!(crossed(OwnerRegistry::Decisions as usize), decisions);
     let row = sealed_row(&mut store, 1);
     let refusals = owner_refusals(row.row());
@@ -3052,7 +2905,7 @@ fn a_political_balance_read_failing_during_a_writer_flight_is_crossed_then_certi
 }
 
 #[test]
-fn a_political_balance_read_failing_under_an_unbroken_cut_ends_in_a_failed_attempt() {
+fn a_political_balance_read_failing_under_an_unbroken_cut_remains_retryable() {
     let quiet = owners_image(1);
     let mut store = census_store(64);
     store
@@ -3062,17 +2915,18 @@ fn a_political_balance_read_failing_under_an_unbroken_cut_ends_in_a_failed_attem
     crate::event_feed_history::decisions::POWER_EPOCH.fetch_add(1, Ordering::AcqRel);
     let memory = FlightReads::stable(owners_image(1), ACTOR + ccountry::POLITICAL_STATUS);
     let decisions = crossed(OwnerRegistry::Decisions as usize);
-    // The certified owner is refused; its rebaseline fails the same read
-    // and is not retried in its loss epoch.
+    // Every failed exact read leaves the owner eligible for the next visit.
     for _ in 0..3 {
         visit(&mut store, &memory, &CENSUS[..1]);
     }
-    assert_eq!(memory.reads.get(), 2);
+    assert_eq!(memory.reads.get(), 3);
     assert_eq!(crossed(OwnerRegistry::Decisions as usize), decisions);
+    visit(&mut store, &quiet, &CENSUS[..1]);
     let row = sealed_row(&mut store, 1);
     let refusals = owner_refusals(row.row());
     assert_eq!(refusals.len(), 1);
     assert_ne!(refusals[0].1, OWNER_CROSSED.as_bytes());
+    assert_eq!(certifying_markers(row.row()), (1, 2));
 }
 
 #[test]
@@ -3235,4 +3089,57 @@ fn a_detour_open_across_a_boundary_reset_refuses_its_interval_by_name() {
         store.take_staged(fresh, Some(epoch)),
         Ok(Some(Witness::Selected { instance: 2 }))
     );
+}
+
+#[test]
+fn published_removals_and_refusals_read_the_current_recipient_not_the_baseline_metadata() {
+    let mut image = owners_image(1);
+    delayed_timer(&mut image, 0xd0000, 1);
+    delayed_queue(&mut image, &[0xd0000]);
+    let mut store = census_store(64);
+    let baseline = census_hour(&mut store, &image, 1, &CENSUS);
+    let timer = baseline
+        .row()
+        .events
+        .iter()
+        .find(|event| {
+            matches!(
+                event.script.and_then(|script| script.change),
+                Some(EventFeedScriptChange::DelayedStored { .. })
+            )
+        })
+        .unwrap();
+    assert_eq!(timer.target.instance, TARGET_OWNER.instance);
+    let label = timer.script.unwrap().instance;
+    store.acknowledged(baseline.publication());
+    image.d(GAME + cgame_state::CURRENT_HOUR, 2);
+    image.d(TARGET + ccountry::SURRENDER_TARGET, 99);
+    image.q(TARGET_STATUS, BASE + 1);
+    let world = native::provenance::World::new(&image, BASE).unwrap();
+    store
+        .delayed_removed(&world, &image, BASE, 7, 0xd0000, Some((TARGET, 7)), true)
+        .unwrap();
+    delayed_queue(&mut image, &[]);
+    store.decisions.revoke();
+    let published = census_hour(&mut store, &image, 2, &CENSUS);
+    let removal = published
+        .row()
+        .events
+        .iter()
+        .find(|event| {
+            matches!(
+                event.script.and_then(|script| script.change),
+                Some(EventFeedScriptChange::DelayedRemoved { .. })
+            )
+        })
+        .unwrap();
+    assert_eq!(removal.target.instance, 99);
+    assert_eq!(removal.script.unwrap().instance, label);
+    assert_eq!(owner_refusals(published.row())[0].0.instance, 99);
+    assert_eq!(timer.target.instance, TARGET_OWNER.instance);
+    let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+    state.observe(baseline.row()).unwrap();
+    state.observe(published.row()).unwrap();
+    assert!(state.delayed(TARGET_OWNER).unwrap().is_empty());
+    assert!(state.decisions(TARGET_OWNER).is_err());
 }

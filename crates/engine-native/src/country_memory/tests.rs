@@ -739,7 +739,7 @@ fn repeated_walkers_share_authentication_but_scalars_and_unseeded_links_stay_liv
         Some(scalar)
     );
     // A wider or overlapping read cannot be assembled from cached pieces.
-    source.put(0x2000 + ccountry::ID_INSTANCE, &u32::MAX.to_le_bytes());
+    source.put(0x2000 + ccountry::SURRENDER_TARGET, &u32::MAX.to_le_bytes());
     assert_eq!(read::<u64>(&memory, 0x2008), Some(0xffff_ffff_0000_0007));
 }
 

@@ -1058,6 +1058,7 @@ fn unmatched_daily_cost_invalidates_only_its_read_in_a_merged_interval() {
         .unwrap()
         .daily_costs
         .push(DailyCost {
+            accounted: false,
             row: CountryPowerDailyCostRow {
                 country: 1,
                 instance: 1,

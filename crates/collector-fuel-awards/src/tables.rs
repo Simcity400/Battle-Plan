@@ -115,8 +115,7 @@ impl Windows {
                 .identities
                 .get(&row.country)
                 .map(|&(instance, _)| instance);
-            let matches = matches!(row.country_instance,Recorded::Value(Some(value)) if Some(value) == instance);
-            let mut reason = if complete && matches {
+            let mut reason = if complete {
                 None
             } else {
                 self.reason.or(Some(
@@ -276,7 +275,7 @@ impl Windows {
             }
             let identity = (entry.started.country_instance, entry.started.status);
             let old = self.identities.insert(entry.country, identity);
-            if old != Some(identity) {
+            if old.map(|(_, status)| status) != Some(identity.1) {
                 if let Some((_, status)) = old {
                     self.status_owners.remove(&status);
                 }

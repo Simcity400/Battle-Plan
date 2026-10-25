@@ -5,7 +5,7 @@ use dashboard_base::prepared::frame_changes::FrameChanges;
 static COST_IDENTITY_FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
     dashboard_base::prepared::frame_changes::field_mask(
         TableId::CountryPowerDailyCosts,
-        &["instance", "epoch", "day_hour"],
+        &["epoch", "day_hour"],
     )
 });
 
@@ -677,7 +677,7 @@ impl Scanned {
         for row in power {
             if !self
                 .events
-                .contains(&(row.country, row.instance, row.epoch, row.sequence))
+                .contains(&(row.country, row.epoch, row.sequence))
             {
                 self.pending[0].insert(row.key());
             }
@@ -688,13 +688,10 @@ impl Scanned {
             Box::new(inputs.costs().iter())
         };
         for row in costs {
-            if !self.costs.contains(&(
-                row.country,
-                row.instance,
-                row.epoch,
-                row.day_hour,
-                row.ordinal,
-            )) {
+            if !self
+                .costs
+                .contains(&(row.country, row.epoch, row.day_hour, row.ordinal))
+            {
                 self.pending[1].insert(row.key());
             }
         }

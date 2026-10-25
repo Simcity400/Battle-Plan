@@ -26,8 +26,6 @@ struct Owner {
     epoch: u64,
     /// The revocation count its completed baseline belongs to.
     certified: Option<u64>,
-    /// The loss epoch of a failed baseline attempt: no retry within it.
-    failed: Option<u64>,
     /// Its refusal marker is published: a later refusal emits nothing until
     /// a certificate, a native status reset or a loss re-arms it.
     refused: bool,
@@ -40,7 +38,6 @@ struct Owner {
 pub(crate) enum Recovery {
     Certified,
     Baseline,
-    Failed,
 }
 #[derive(Default)]
 pub(crate) struct Index {
@@ -55,7 +52,6 @@ pub(crate) struct Index {
     /// Revocations: no writer was missed, so slots keep their attribution
     /// and only owner certificates retire, in constant time.
     revoked: u64,
-    losses: u64,
     next: u64,
     live: usize,
     owner_count: usize,
@@ -133,7 +129,6 @@ impl Index {
         spare.generation = self.generation;
         spare.invalidated = self.invalidated;
         spare.revoked = self.revoked;
-        spare.losses = self.losses;
         spare.next = self.next;
         spare.live = self.live;
         spare.owner_count = self.owner_count;
@@ -145,8 +140,7 @@ impl Index {
         self.invalidated = true;
         super::recovery_needed();
     }
-    /// Retire every owner certificate in constant work. Slots, labels and
-    /// failed attempts stay.
+    /// Retire every owner certificate in constant work; slots and labels stay.
     pub fn revoke(&mut self) {
         self.revoked = self.revoked.wrapping_add(1);
         super::recovery_needed();
@@ -167,8 +161,6 @@ impl Index {
             if world {
                 self.generation = Some(generation);
                 self.next = 1;
-            } else {
-                self.losses = self.losses.wrapping_add(1);
             }
             self.invalidated = false;
             super::recovery_needed();
@@ -181,10 +173,21 @@ impl Index {
         Self::locate(&self.owners, pointer, |s| s.pointer)
             .is_ok_and(|at| self.is_certified(&self.owners[at]))
     }
+    pub(super) fn census(&mut self, country: engine_native::ccountry::Country) {
+        let Ok(at) = Self::locate(&self.owners, country.pointer, |owner| owner.pointer) else {
+            return;
+        };
+        let owner = &mut self.owners[at];
+        if owner.identity.id != country.id {
+            owner.certified = None;
+            owner.refused = false;
+            owner.power = None;
+            owner.power_epoch = 0;
+        }
+    }
     pub fn recovery(&self, pointer: usize) -> Recovery {
         match Self::locate(&self.owners, pointer, |s| s.pointer) {
             Ok(at) if self.is_certified(&self.owners[at]) => Recovery::Certified,
-            Ok(at) if self.owners[at].failed == Some(self.losses) => Recovery::Failed,
             _ => Recovery::Baseline,
         }
     }
@@ -196,14 +199,12 @@ impl Index {
         let revoked = self.revoked;
         let owner = self.owner(pointer, identity)?;
         owner.certified = Some(revoked);
-        owner.failed = None;
         owner.refused = false;
         Ok(())
     }
     /// Withdraw the owner and record its refusal. `None`: it is already
     /// refused, a repeat. Otherwise whether the next census baselines it.
     fn refuse(&mut self, pointer: usize) -> Option<bool> {
-        let losses = self.losses;
         let Ok(at) = Self::locate(&self.owners, pointer, |s| s.pointer) else {
             return Some(true);
         };
@@ -212,19 +213,7 @@ impl Index {
         if std::mem::replace(&mut owner.refused, true) {
             return None;
         }
-        Some(owner.failed != Some(losses))
-    }
-    /// Record a failed attempt, indexing an owner whose baseline failed
-    /// before it was indexed, so it is not retried in this loss epoch.
-    fn fail(&mut self, pointer: usize, identity: CountryIdentity) -> Result<(), &'static str> {
-        let losses = self.losses;
-        self.owner(pointer, identity)?.failed = Some(losses);
-        Ok(())
-    }
-    fn identity(&self, pointer: usize) -> Option<CountryIdentity> {
-        Self::locate(&self.owners, pointer, |s| s.pointer)
-            .ok()
-            .map(|at| self.owners[at].identity)
+        Some(true)
     }
     fn owner(
         &mut self,
@@ -239,7 +228,6 @@ impl Index {
                     identity,
                     epoch: 1,
                     certified: None,
-                    failed: None,
                     refused: false,
                     head: 0,
                     power: None,
@@ -253,19 +241,19 @@ impl Index {
                 return Err("decision owner certificates need prepared capacity");
             }
         };
-        if self.owners[at].identity != identity {
+        if !self.owners[at].identity.same_country(identity) {
             self.owners[at] = Owner {
                 pointer,
                 identity,
                 epoch: self.owners[at].epoch.wrapping_add(1),
                 certified: None,
-                failed: None,
                 refused: false,
                 head: self.owners[at].head,
                 power: None,
                 power_epoch: 0,
             };
         }
+        self.owners[at].identity = identity;
         Ok(&mut self.owners[at])
     }
     /// A member of a certified owner, in its owner's current epoch.
@@ -383,7 +371,6 @@ impl Index {
         owner.power = None;
         owner.power_epoch = 0;
         owner.refused = false;
-        owner.failed = None;
         owner.epoch = owner
             .epoch
             .checked_add(1)
@@ -414,7 +401,7 @@ impl Index {
         &mut self,
         pointer: usize,
         reference: u32,
-        instance: u32,
+        _surrender_target: u32,
         before: i64,
         after: i64,
         epoch: u64,
@@ -423,7 +410,7 @@ impl Index {
             return;
         };
         let owner = &mut self.owners[at];
-        if owner.identity.reference != reference || owner.identity.instance != instance {
+        if owner.identity.id != reference {
             return;
         }
         if owner.power_epoch == epoch && owner.power == Some(before) {
@@ -698,15 +685,11 @@ impl Store {
         count: bool,
         growing: bool,
     ) -> Result<(), &'static str> {
-        let Some(census) = self.decisions.refuse(pointer) else {
+        super::recovery_needed();
+        let Some(_) = self.decisions.refuse(pointer) else {
             super::repeated_owner_refusal(super::OwnerRegistry::Decisions);
             return Ok(());
         };
-        // A failed attempt is not retried in this loss epoch, so only an
-        // owner the next census would baseline requests one.
-        if census {
-            super::recovery_needed();
-        }
         if count {
             let _ = self.advance();
             self.count_rejected(1);
@@ -720,7 +703,7 @@ impl Store {
         self.script_text(memory, base, generation, hour, marker, reason, growing)
     }
     /// The census visit's decision half: a certified owner reads only its
-    /// scalar political balance; others are attempted once per loss epoch.
+    /// scalar political balance; uncertified owners retry their baseline.
     pub(crate) fn recover_decisions(
         &mut self,
         memory: &impl Memory,
@@ -734,10 +717,10 @@ impl Store {
             return;
         }
         self.decisions.reset(generation);
+        self.decisions.census(country);
         let pointer = country.pointer;
         let recovery = self.decisions.recovery(pointer);
         let result = match recovery {
-            Recovery::Failed => return,
             Recovery::Certified => self.owner_scope(super::OwnerRegistry::Decisions, |store| {
                 store.watch();
                 store.decisions.power_baseline(memory, base, pointer)
@@ -753,19 +736,17 @@ impl Store {
         if self.preparing_owner {
             return;
         }
-        let identity = match self.decisions.identity(pointer) {
-            Some(identity) => Ok(identity),
-            None => World::new(memory, base).and_then(|world| world.country_object(pointer)),
-        };
+        let identity = pointer
+            .checked_add(engine_native::ccountry::SURRENDER_TARGET)
+            .and_then(|at| engine_native::read::<u32>(memory, at))
+            .map(|instance| CountryIdentity {
+                reference: country.id,
+                id: country.id,
+                instance,
+            })
+            .ok_or("decision country surrender target unreadable");
         match identity {
             Ok(owner) => {
-                // A crossed or storage-short baseline is retried, not failed.
-                // A baseline can fail before it indexes its owner, so the
-                // named owner is indexed with its failure; without room for
-                // it the owner is attempted again at the next visit.
-                if recovery == Recovery::Baseline && !refusal.retry {
-                    let _ = self.decisions.fail(pointer, owner);
-                }
                 // Not growing: recovery allocates nothing under the lease.
                 let _ = self.refuse_decision_owner(
                     memory,
@@ -1095,17 +1076,12 @@ impl Store {
         &mut self,
         pointer: usize,
         identity: CountryIdentity,
-        retry: bool,
     ) -> bool {
         // Establish the same named attempt as the original worker reader.
         let Ok(owner) = self.decisions.owner(pointer, identity) else {
             return false;
         };
-        let refused = owner.refused;
-        if !retry {
-            let _ = self.decisions.fail(pointer, identity);
-        }
-        refused
+        owner.refused
     }
     pub(super) fn fresh_decision_label(&mut self) -> Result<u32, &'static str> {
         self.decisions.fresh_id()
@@ -1302,7 +1278,7 @@ mod tests {
         owner.power_epoch = 7;
         index.power_update(999, 9, 1, 0, 1, 7); // Unrequested owner creates nothing.
         assert_eq!(index.owner_count, 1);
-        index.power_update(100, 1, 2, 100 * 100_000, 0, 7); // Different country instance.
+        index.power_update(100, 2, 1, 100 * 100_000, 0, 7); // A reused country has a different link.
         assert_eq!(index.power(100, 7), Some(100 * 100_000));
         index.power_update(100, 1, 1, 100 * 100_000, 90 * 100_000, 7);
         assert_eq!(index.power(100, 7), Some(90 * 100_000));
@@ -1370,24 +1346,25 @@ mod tests {
         });
     }
     #[test]
-    fn revocation_keeps_exact_slots_and_failed_attempts_while_a_loss_clears_them() {
+    fn revocation_keeps_exact_slots_and_retryable_owners_while_a_loss_clears_them() {
         let mut index = Index::default();
         index.prepare(8).unwrap();
         index.reset(7);
         let (member, _) = index.put(0x100, 0x1000, identity(1), 3).unwrap();
         index.certify(0x1000, identity(1)).unwrap();
-        index.fail(0x2000, identity(2)).unwrap();
+        index.owner(0x2000, identity(2)).unwrap();
+        index.refuse(0x2000);
         assert_eq!(index.recovery(0x1000), Recovery::Certified);
-        assert_eq!(index.recovery(0x2000), Recovery::Failed);
+        assert_eq!(index.recovery(0x2000), Recovery::Baseline);
         crate::test_support::with_allocations_denied(|| index.revoke());
         // No writer was missed: the member's attribution stays exact while
-        // its owner waits for a baseline. The failed owner is not retried.
+        // its owner waits for a baseline. Every refused owner can retry.
         assert!(index.find(0x100).is_none());
         assert_eq!(index.uncertified(0x100).unwrap().id, member.id);
         assert_eq!(index.recovery(0x1000), Recovery::Baseline);
-        assert_eq!(index.recovery(0x2000), Recovery::Failed);
+        assert_eq!(index.recovery(0x2000), Recovery::Baseline);
         index.reset(7);
-        assert_eq!(index.recovery(0x2000), Recovery::Failed);
+        assert_eq!(index.recovery(0x2000), Recovery::Baseline);
         index.invalidate();
         index.reset(7);
         assert_eq!(index.recovery(0x2000), Recovery::Baseline);
@@ -1427,5 +1404,38 @@ mod tests {
         assert!(index.find(0x100).is_none());
         assert!(index.slot(0x100).is_some());
         assert!(index.uncertified(0x100).is_none());
+    }
+    #[test]
+    fn surrender_target_changes_preserve_decisions_and_reused_links_recover() {
+        let mut index = Index::default();
+        index.prepare(1500).unwrap();
+        index.reset(1);
+        let owner = identity(24);
+        let (member, _) = index.put(100, 200, owner, 3).unwrap();
+        index.certify(200, owner).unwrap();
+        let changed = CountryIdentity {
+            reference: 500,
+            instance: 1,
+            ..owner
+        };
+        assert_eq!(index.owner(200, changed).unwrap().identity, changed);
+        assert_eq!(index.find(100).unwrap().id, member.id);
+        let reused = CountryIdentity {
+            reference: 1501,
+            id: 1501,
+            ..changed
+        };
+        index.owner(200, changed).unwrap();
+        index.refuse(200);
+        assert_eq!(index.recovery(200), Recovery::Baseline);
+        index.census(engine_native::ccountry::Country {
+            pointer: 200,
+            canonical_slot: 24,
+            id: reused.id,
+        });
+        assert_eq!(index.recovery(200), Recovery::Baseline);
+        index.certify(200, reused).unwrap();
+        assert_eq!(index.recovery(200), Recovery::Certified);
+        assert!(index.find(100).is_none());
     }
 }

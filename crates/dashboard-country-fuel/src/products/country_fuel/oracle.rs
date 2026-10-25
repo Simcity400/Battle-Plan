@@ -23,13 +23,11 @@ impl Scan {
         };
         for (tag, mut country) in self.countries {
             for read in &country.result.reads {
-                if let Some(instance) = read.country_instance {
-                    result
-                        .actor_aliases
-                        .entry((read.country.to_string(), instance))
-                        .or_default()
-                        .insert(tag.clone());
-                }
+                result
+                    .actor_aliases
+                    .entry(read.country.to_string())
+                    .or_default()
+                    .insert(tag.clone());
             }
             keep_days(format, &mut country.result.reads);
             result.countries.insert(tag, Arc::new(country.result));

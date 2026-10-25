@@ -408,7 +408,7 @@ mod tests {
                 world.u64(SLOTS + slot * 8, country as u64);
                 world.u64(country, ccountry::VTABLE_RVA as u64);
                 world.u32(country + ccountry::ID, id);
-                world.u32(country + ccountry::ID_INSTANCE, instance);
+                world.u32(country + ccountry::SURRENDER_TARGET, instance);
             }
             for (raw, slot) in [0, 1, 2, 2].into_iter().enumerate() {
                 world.u32(LINKS + raw * 4, slot);

@@ -593,7 +593,7 @@ typed_codec!(PowerBalanceOverrideRow, 64, |row| (row.record as u128) << 32 | row
  { 0 => (side): Bytes, 1 => (gfx): Bytes }, |_row| Ok(()));
 
 /// Accepted positive native experience awards during the preceding hourly interval.
-/// Instance is the native country identity word, not a tag. The bank cap and spending
+/// The legacy instance field is the raw surrender target. The bank cap and spending
 /// never reduce these awards. `complete` also needs the same authenticated owner at both
 /// hourly boundaries. Every current country is present, even at zero or in its first
 /// incomplete interval.

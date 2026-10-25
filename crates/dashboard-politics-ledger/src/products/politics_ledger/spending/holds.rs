@@ -183,7 +183,7 @@ impl Holds {
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct CountryHolds {
     slot: Option<u32>,
-    identity: Option<(u32, u32, u64)>,
+    identity: Option<(u32, u64)>,
     sequence: Option<u64>,
     last_hour: Option<i32>,
     active: BTreeMap<String, Holder>,
@@ -552,7 +552,7 @@ pub(super) fn observe_holds(
         {
             if row.row.currency == PowerCurrency::Command {
                 mutations
-                    .entry((row.row.country, row.row.instance, row.row.epoch))
+                    .entry((row.row.country, row.row.epoch))
                     .or_default()
                     .push(row);
             }
@@ -563,7 +563,7 @@ pub(super) fn observe_holds(
     }
     let mut present = BTreeSet::new();
     let refused = &native.refused_reasons;
-    // Carry allocators by native instance before any reused tag is updated.
+    // Carry allocators by published country link before updating reused tags.
     let mut previous = BTreeMap::new();
     for tag in &affected {
         let Some(state) = holds.countries.get_mut(tag) else {
@@ -592,7 +592,7 @@ pub(super) fn observe_holds(
             continue;
         }
         let witness = by_country.get(&country.canonical_slot);
-        let identity = witness.map(|row| (row.country, row.instance, row.epoch));
+        let identity = witness.map(|row| (row.country, row.epoch));
         let carried = identity.and_then(|identity| previous.remove(&identity));
         let contiguous = carried.is_some();
         if state.identity != identity {

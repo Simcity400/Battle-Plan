@@ -1277,86 +1277,119 @@ fn prepared_closed_native_totals_stop_before_the_open_day_across_resume_and_appe
 }
 
 #[test]
-fn prepared_capture_identities_keep_raw_tuples_and_refuse_ambiguous_income() {
-    let fixture = Fixture::new();
-    let mut prepared = Prepared::default();
-    let mut oracle = Scanned::default();
-    for read in (24..=29).chain([48]) {
-        let instance = if read >= 29 { 2 } else { 1 };
-        let day = if read == 48 { 48 } else { 24 };
-        let mut current = daily(day, read, true);
-        let mut days = current
-            .complete::<tables::CountryPowerDaily>()
-            .unwrap()
-            .to_vec();
-        days[0].instance = instance;
-        let mut costs = current
-            .complete::<tables::CountryPowerDailyCosts>()
-            .unwrap()
-            .to_vec();
-        costs[0].instance = instance;
-        put(&mut current, TableRows::CountryPowerDaily(days));
-        put(&mut current, TableRows::CountryPowerDailyCosts(costs));
-        put(
-            &mut current,
-            TableRows::PoliticsCaptureCoverage(vec![PoliticsCaptureCoverageRow {
-                country: 1,
-                instance,
-                epoch: 1,
-                since_hour: day,
-                through_hour: read,
-                streams: PoliticsCaptureCoverageRow::ALL_STREAMS,
-            }]),
+fn surrender_target_changes_keep_raw_daily_witnesses_without_double_counting_income() {
+    for cause in [PowerCause::DailyGain, PowerCause::Decision] {
+        let fixture = Fixture::new();
+        let mut prepared = Prepared::default();
+        let mut oracle = Scanned::default();
+        for read in (24..=30).chain([48]) {
+            let instance = if read == 29 { 2 } else { 1 };
+            let day = if read == 48 { 48 } else { 24 };
+            let mut current = daily(day, read, true);
+            let mut days = current
+                .complete::<tables::CountryPowerDaily>()
+                .unwrap()
+                .to_vec();
+            days[0].instance = instance;
+            let mut costs = current
+                .complete::<tables::CountryPowerDailyCosts>()
+                .unwrap()
+                .to_vec();
+            costs[0].instance = instance;
+            costs[0].cause = cause;
+            costs[0].cost_raw = 4;
+            costs.push(CountryPowerDailyCostRow {
+                ordinal: 1,
+                cost_raw: 3,
+                ..costs[0].clone()
+            });
+            put(&mut current, TableRows::CountryPowerDaily(days));
+            put(&mut current, TableRows::CountryPowerDailyCosts(costs));
+            put(
+                &mut current,
+                TableRows::PoliticsCaptureCoverage(vec![PoliticsCaptureCoverageRow {
+                    country: 1,
+                    instance,
+                    epoch: 1,
+                    since_hour: day,
+                    through_hour: read,
+                    streams: PoliticsCaptureCoverageRow::ALL_STREAMS,
+                }]),
+            );
+            oracle.observe(&current, None).unwrap();
+            prepared
+                .observe_frame(&current, None, &AtomicBool::new(false))
+                .unwrap();
+            publish(&mut prepared, &fixture);
+            let raw = self::read(&fixture, "C1", 24, read, "raw");
+            let latest = raw.daily.iter().find(|row| row.day_hour == day).unwrap();
+            assert_eq!(latest.instance, instance);
+            assert!(
+                raw.daily_costs
+                    .iter()
+                    .filter(|cost| cost.day_hour == day)
+                    .all(|cost| cost.instance == instance)
+            );
+            assert_eq!(spend_total(&raw), if read == 48 { 14 } else { 7 });
+            prepared = Prepared::read(prepared.saved_bytes().unwrap().as_slice()).unwrap();
+            prepared.resume(&current);
+        }
+        let actual = read(&fixture, "C1", 24, 29, "balance");
+        assert_eq!(actual.daily.len(), 1);
+        assert_eq!(actual.daily[0].instance, 2);
+        assert_eq!(
+            actual
+                .gains
+                .iter()
+                .find(|row| row.currency == "Political")
+                .unwrap()
+                .gained_raw,
+            "100"
         );
-        oracle.observe(&current, None).unwrap();
-        prepared
-            .observe_frame(&current, None, &AtomicBool::new(false))
-            .unwrap();
-        publish(&mut prepared, &fixture);
+        assert_eq!(spend_total(&actual), 7);
+        let before = read(&fixture, "C1", 24, 28, "balance");
+        assert_eq!(before.daily.len(), 1);
+        assert_eq!(before.daily[0].instance, 1);
+        for (to, instance) in [(28, 1), (29, 2), (30, 1)] {
+            let raw = read(&fixture, "C1", 24, to, "raw");
+            assert_eq!(raw.daily_costs.len(), 2);
+            assert!(raw.daily_costs.iter().all(|cost| cost.instance == instance));
+            assert_eq!(
+                raw.daily_costs
+                    .iter()
+                    .map(|cost| cost.amount_raw.parse::<i64>().unwrap())
+                    .sum::<i64>(),
+                7
+            );
+        }
+        let summaries: PoliticsLedgerReply = serde_json::from_value(query::query(&json!({"branchId":"1", "tag":"C1", "summary":{"from":24,"to":30,"width":7,"currency":"Political","mode":"income"}}), &fixture.store, &fixture.key, &AtomicBool::new(false)).unwrap()).unwrap();
+        let total = &summaries
+            .part_summaries
+            .iter()
+            .find(|part| part.id == "income-total")
+            .unwrap()
+            .summary;
+        assert!(
+            total
+                .runs
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|run| { run.first_hour <= 29 && run.last_hour >= 29 })
+        );
+        let expected = present_view(
+            &oracle,
+            1,
+            "C1",
+            None,
+            &AtomicBool::new(false),
+            LedgerView::Spending,
+        )
+        .unwrap();
+        let actual = read(&fixture, "C1", 24, 48, "spending");
+        assert_eq!(actual.spend_items, expected.spend_items);
+        assert_eq!(spend_total(&actual), spend_total(&expected));
     }
-    let actual = read(&fixture, "C1", 24, 29, "balance");
-    assert_eq!(actual.daily.len(), 2);
-    assert_eq!(actual.daily[0].instance, 1);
-    assert_eq!(actual.daily[1].instance, 2);
-    assert_eq!(
-        actual
-            .gains
-            .iter()
-            .find(|row| row.currency == "Political")
-            .unwrap()
-            .gained_raw,
-        "200"
-    );
-    assert_eq!(spend_total(&actual), 14);
-    assert_eq!(read(&fixture, "C1", 24, 28, "balance").daily.len(), 1);
-    let summaries: PoliticsLedgerReply = serde_json::from_value(query::query(&json!({"branchId":"1", "tag":"C1", "summary":{"from":24,"to":30,"width":7,"currency":"Political","mode":"income"}}), &fixture.store, &fixture.key, &AtomicBool::new(false)).unwrap()).unwrap();
-    let total = &summaries
-        .part_summaries
-        .iter()
-        .find(|part| part.id == "income-total")
-        .unwrap()
-        .summary;
-    assert_eq!(total.runs.as_ref().unwrap()[0].last_hour, 28);
-    assert!(
-        total
-            .runs
-            .as_ref()
-            .unwrap()
-            .iter()
-            .all(|run| run.last_hour < 29)
-    );
-    let expected = present_view(
-        &oracle,
-        1,
-        "C1",
-        None,
-        &AtomicBool::new(false),
-        LedgerView::Spending,
-    )
-    .unwrap();
-    let actual = read(&fixture, "C1", 24, 48, "spending");
-    assert_eq!(actual.spend_items, expected.spend_items);
-    assert_eq!(spend_total(&actual), spend_total(&expected));
 }
 
 #[test]
@@ -2926,7 +2959,7 @@ fn prepared_payment_projection_indexes_each_source_row_once() {
     let indexed = payments.indexed;
     for spend in &reply.spending {
         let payment = payments.payment(spend).unwrap();
-        assert_eq!(payment.identity, (1, 1, "1".into()));
+        assert_eq!(payment.identity, (1, "1".into()));
         assert_eq!(payment.item.id, spend.item_id);
         assert_eq!(payment.category.id, spend.category);
         assert_eq!(payment.spend, *spend);

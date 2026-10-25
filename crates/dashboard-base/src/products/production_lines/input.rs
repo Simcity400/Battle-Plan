@@ -10,7 +10,7 @@ pub(super) struct HourInput {
     pub hour: i32,
     pub last_hour: i32,
     pub countries: Option<BTreeMap<String, Country>>,
-    pub holders: BTreeMap<(u32, u32), (Option<u32>, Option<String>)>,
+    pub holders: BTreeMap<(u32, u32), Option<String>>,
     pub lines_complete: bool,
     pub lines_read: bool,
     pub output_read: bool,
@@ -76,7 +76,6 @@ pub(super) struct World {
     country_keys: Vec<(u32, u32, Vec<u8>)>,
     // Countries rows use raw-ID order; owner names resolve through canonical slots.
     country_rows: BTreeMap<u32, usize>,
-    instance_keys: Vec<(u32, u32)>,
     last_hour: Option<i32>,
     mio_valid: bool,
     mio_rows: BTreeMap<u64, IndustrialOrganisationRow>,
@@ -163,19 +162,15 @@ impl World {
         }
     }
     pub fn identity_changed(&self, frame: &DecodedFrame, changes: &FrameChanges) -> bool {
-        [
-            TableId::Countries,
-            TableId::CountryLinks,
-            TableId::CountryExperienceGains,
-        ]
-        .into_iter()
-        .any(|table| {
-            relevant(changes, table)
-                && self
-                    .views
-                    .get(&table)
-                    .is_none_or(|old| !old.is(&frame.tables[table.index()]))
-        })
+        [TableId::Countries, TableId::CountryLinks]
+            .into_iter()
+            .any(|table| {
+                relevant(changes, table)
+                    && self
+                        .views
+                        .get(&table)
+                        .is_none_or(|old| !old.is(&frame.tables[table.index()]))
+            })
     }
     pub fn quiet(&mut self, replay: &Replay, frame: &DecodedFrame, changes: &FrameChanges) -> bool {
         self.track_definitions(changes);
@@ -211,15 +206,6 @@ impl World {
                                     == (old.0, old.1, old.2.as_slice())
                             })
                     }),
-                    TableId::CountryExperienceGains => frame
-                        .complete::<tables::CountryExperienceGains>()
-                        .is_ok_and(|rows| {
-                            rows.len() == self.instance_keys.len()
-                                && rows
-                                    .iter()
-                                    .zip(&self.instance_keys)
-                                    .all(|(row, old)| (row.country, row.instance) == *old)
-                        }),
                     _ => false,
                 };
             if unchanged {
@@ -276,13 +262,9 @@ impl World {
                     .is_none_or(|old| !old.is(&frame.tables[table.index()]))
         };
         let countries_changed = previous.is_none()
-            || [
-                TableId::Countries,
-                TableId::CountryLinks,
-                TableId::CountryExperienceGains,
-            ]
-            .into_iter()
-            .any(changed);
+            || [TableId::Countries, TableId::CountryLinks]
+                .into_iter()
+                .any(changed);
         let names_changed = previous.is_none()
             || !self.mio_valid
             || [
@@ -371,25 +353,10 @@ impl World {
                     );
                 }
             }
-            let mut instances = BTreeMap::new();
-            for gain in frame
-                .complete::<tables::CountryExperienceGains>()
-                .ok()
-                .into_iter()
-                .flatten()
-            {
-                instances
-                    .entry(gain.country)
-                    .and_modify(|instance| *instance = None)
-                    .or_insert(Some(gain.instance));
-            }
             for country in countries {
                 holders.insert(
                     (country.canonical_slot, country.id),
-                    (
-                        instances.get(&country.id).copied().flatten(),
-                        std::str::from_utf8(&country.tag).ok().map(str::to_owned),
-                    ),
+                    std::str::from_utf8(&country.tag).ok().map(str::to_owned),
                 );
             }
         }
@@ -838,13 +805,6 @@ impl World {
                 .flatten()
                 .map(|row| (row.canonical_slot, row.id, row.tag.clone()))
                 .collect();
-            self.instance_keys = frame
-                .complete::<tables::CountryExperienceGains>()
-                .ok()
-                .into_iter()
-                .flatten()
-                .map(|row| (row.country, row.instance))
-                .collect();
         }
         self.last_hour = Some(hour);
         Ok(input)
@@ -894,7 +854,6 @@ impl PreparedTables {
 fn relevant(changes: &FrameChanges, table: TableId) -> bool {
     let fields: &[&str] = match table {
         TableId::Countries => &["id", "canonical_slot", "tag"],
-        TableId::CountryExperienceGains => &["country", "instance"],
         _ => return changes.rows_changed[table.index()],
     };
     changes.rows(table).is_none_or(|(rows, deleted)| {

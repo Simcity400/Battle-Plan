@@ -38,7 +38,7 @@ pub struct Prepared {
     tail: BTreeMap<i32, OpenDay>,
     frontier: Option<i32>,
     last_cover: BTreeMap<String, (bool, bool, Option<String>)>,
-    identities: BTreeMap<String, (Option<u32>, Option<u32>, Option<String>)>,
+    identities: BTreeMap<String, (Option<u32>, Option<String>)>,
     parts: BTreeMap<String, DayParts>,
     totals: BTreeMap<String, Totals>,
     open_notes: BTreeMap<String, BTreeMap<String, BTreeMap<String, u64>>>,
@@ -58,7 +58,7 @@ pub struct Prepared {
     projected_daily: BTreeMap<String, i32>,
     /// Stable native daily field ordinals, in publication order.
     #[serde(skip)]
-    native_daily: BTreeMap<String, BTreeMap<(u32, u32, String), [u64; 26]>>,
+    native_daily: BTreeMap<String, BTreeMap<(u32, String), [u64; 26]>>,
     #[cfg(test)]
     #[serde(skip)]
     daily_projection_visits: usize,
@@ -116,7 +116,7 @@ struct Catalogue {
     costs: BTreeMap<String, LedgerDailyCost>,
     categories: BTreeMap<String, BTreeMap<String, String>>,
     category_first: BTreeMap<String, i32>,
-    actors: BTreeMap<String, BTreeSet<(u32, u32, String)>>,
+    actors: BTreeMap<String, BTreeSet<(u32, String)>>,
     daily_lags: BTreeMap<String, [i32; 2]>,
     command_lag: i32,
     government_lag: i32,
@@ -213,7 +213,7 @@ struct Payment {
     count: u32,
     known_raw: String,
     known_count: u32,
-    identity: (u32, u32, String),
+    identity: (u32, String),
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -294,7 +294,7 @@ struct Payments<'a> {
     reply: &'a PoliticsLedgerReply,
     items: BTreeMap<&'a str, &'a LedgerSpendItem>,
     categories: BTreeMap<&'a str, &'a LedgerSpendCategory>,
-    identities: BTreeMap<String, (u32, u32, String)>,
+    identities: BTreeMap<String, (u32, String)>,
     order: BTreeMap<String, usize>,
     ideas: BTreeMap<Option<&'a str>, Option<LedgerIdeaTooltips>>,
     #[cfg(test)]
@@ -339,7 +339,7 @@ impl<'a> Payments<'a> {
             result
                 .identities
                 .entry(id.clone())
-                .or_insert_with(|| (row.country, row.instance, row.epoch.clone()));
+                .or_insert_with(|| (row.country, row.epoch.clone()));
             result.order.entry(id).or_insert(order);
         }
         for (order, row) in reply.daily_costs.iter().enumerate() {
@@ -348,13 +348,13 @@ impl<'a> Payments<'a> {
                 result.indexed += 1;
             }
             let id = format!(
-                "daily:{}:{}:{}:{}:{}",
-                row.country, row.instance, row.epoch, row.day_hour, row.ordinal
+                "daily:{}:{}:{}:{}",
+                row.country, row.epoch, row.day_hour, row.ordinal
             );
             result
                 .identities
                 .entry(id.clone())
-                .or_insert_with(|| (row.country, row.instance, row.epoch.clone()));
+                .or_insert_with(|| (row.country, row.epoch.clone()));
             result.order.entry(id).or_insert(order);
         }
         result
@@ -441,13 +441,13 @@ fn raw_cost_field(cost: &LedgerDailyCost) -> io::Result<String> {
         ))?
     ))
 }
-fn daily_prefix(identity: &(u32, u32, String)) -> io::Result<String> {
+fn daily_prefix(identity: &(u32, String)) -> io::Result<String> {
     Ok(format!("daily:{}", serde_json::to_string(identity)?))
 }
 fn daily_id(tag: &str, row: &LedgerDaily) -> io::Result<String> {
     Ok(series::field_key(
         tag,
-        &serde_json::to_string(&(row.country, row.instance, &row.epoch))?,
+        &serde_json::to_string(&(row.country, &row.epoch, row.read_hour))?,
     ))
 }
 fn display_field(payment: &Payment) -> io::Result<String> {
@@ -879,11 +879,10 @@ impl Prepared {
             }
             if let Some(cost) = cost {
                 let field = raw_cost_field(&cost)?;
-                self.tail
-                    .entry(native_day)
-                    .or_default()
-                    .costs
-                    .insert(series::field_key(tag, &field), cost);
+                self.tail.entry(native_day).or_default().costs.insert(
+                    series::field_key(tag, &serde_json::to_string(&(&field, cost.read_hour))?),
+                    cost,
+                );
             }
         }
         Ok(())
@@ -964,12 +963,45 @@ impl Prepared {
                     Some(i128::from(read) - i128::from(day)),
                 )?;
             }
+            let mut daily = BTreeMap::<(String, u32, String), Vec<LedgerDaily>>::new();
             for (id, row) in open.daily {
                 let (tag, _): (String, String) = serde_json::from_str(&id)?;
-                self.publish_daily(&tag, &row)?;
+                daily
+                    .entry((tag, row.country, row.epoch.clone()))
+                    .or_default()
+                    .push(row);
             }
+            let mut daily_revisions = Vec::new();
+            for ((tag, _, _), mut revisions) in daily {
+                revisions.sort_by_key(|row| row.read_hour);
+                if revisions.len() > 1 {
+                    daily_revisions.extend(revisions.iter().cloned().map(|row| (tag.clone(), row)));
+                }
+                self.publish_daily(&tag, revisions.last().unwrap())?;
+            }
+            daily_revisions
+                .sort_by(|(a, left), (b, right)| (a, left.read_hour).cmp(&(b, right.read_hour)));
+            for (tag, row) in daily_revisions {
+                let key = self.key(&tag, "daily-revisions")?;
+                self.series
+                    .event(key, row.read_hour, &Event::LateDaily { row })?;
+            }
+            let mut costs = BTreeMap::<(String, u32, String, u32), Vec<LedgerDailyCost>>::new();
             for (id, row) in open.costs {
-                let (tag, field): (String, String) = serde_json::from_str(&id)?;
+                let (tag, _): (String, String) = serde_json::from_str(&id)?;
+                costs
+                    .entry((tag, row.country, row.epoch.clone(), row.ordinal))
+                    .or_default()
+                    .push(row);
+            }
+            let mut cost_revisions = Vec::new();
+            for ((tag, _, _, _), mut revisions) in costs {
+                revisions.sort_by_key(|row| row.read_hour);
+                if revisions.len() > 1 {
+                    cost_revisions.extend(revisions.iter().cloned().map(|row| (tag.clone(), row)));
+                }
+                let row = revisions.last().unwrap();
+                let field = raw_cost_field(row)?;
                 for (suffix, value) in [
                     ("amount", amount(Some(&row.amount_raw))?),
                     ("sequence", amount(Some(&row.pp_sequence))?),
@@ -978,6 +1010,13 @@ impl Prepared {
                 ] {
                     self.native(&tag, &format!("{field}:{suffix}"), day, value)?;
                 }
+            }
+            cost_revisions
+                .sort_by(|(a, left), (b, right)| (a, left.read_hour).cmp(&(b, right.read_hour)));
+            for (tag, row) in cost_revisions {
+                let key = self.key(&tag, "cost-revisions")?;
+                self.series
+                    .event(key, row.read_hour, &Event::RawCost { row })?;
             }
             let mut government_lags = BTreeMap::<(String, i32), i32>::new();
             open.governments.sort_by_key(|(tag, row)| {
@@ -1014,7 +1053,7 @@ impl Prepared {
         let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:native_daily_projection");
         let mut values = Vec::with_capacity(26);
         values.extend(daily_values(row)?.into_iter().map(|(_, value)| value));
-        let identity = (row.country, row.instance, row.epoch.clone());
+        let identity = (row.country, row.epoch.clone());
         let cached = self
             .native_daily
             .get(tag)
@@ -1122,18 +1161,15 @@ impl Prepared {
         let day = hour.div_euclid(24) * 24;
         let mut identities = BTreeMap::new();
         for row in &reply.mutations {
-            identities.insert(
-                mutation_id(row),
-                (row.country, row.instance, row.epoch.clone()),
-            );
+            identities.insert(mutation_id(row), (row.country, row.epoch.clone()));
         }
         for row in &reply.daily_costs {
             identities.insert(
                 format!(
-                    "daily:{}:{}:{}:{}:{}",
-                    row.country, row.instance, row.epoch, row.day_hour, row.ordinal
+                    "daily:{}:{}:{}:{}",
+                    row.country, row.epoch, row.day_hour, row.ordinal
                 ),
-                (row.country, row.instance, row.epoch.clone()),
+                (row.country, row.epoch.clone()),
             );
         }
         for spend in &reply.spending {
@@ -1178,7 +1214,7 @@ impl Prepared {
         &mut self,
         tag: &str,
         hour: i32,
-        identity: Option<(u32, u32, String)>,
+        identity: Option<(u32, String)>,
         starts: bool,
     ) -> io::Result<()> {
         let day = hour.div_euclid(24) * 24;
@@ -1528,7 +1564,7 @@ impl Prepared {
             let identity = self.scan.countries[tag]
                 .coverage
                 .last()
-                .map(|row| (row.country, row.instance, row.epoch.clone()))
+                .map(|row| (row.country, row.epoch.clone()))
                 .unwrap_or_default();
             let starts = self.identities.get(tag) != Some(&identity);
             let capture = reply
@@ -1594,7 +1630,7 @@ impl Prepared {
                     }
                 }
                 for day in current_days {
-                    let identity = (day.country, day.instance, day.epoch.clone());
+                    let identity = (day.country, day.epoch.clone());
                     self.metadata
                         .actors
                         .entry(tag.clone())
@@ -1676,11 +1712,7 @@ impl Prepared {
                         .event(key, frame.hour, &Event::Hold { row: row.clone() })?;
                 }
             }
-            for cost in reply
-                .daily_costs
-                .iter()
-                .filter(|cost| cost.cause == "DailyGain")
-            {
+            for cost in &reply.daily_costs {
                 let field = raw_cost_field(cost)?;
                 let mut template = cost.clone();
                 template.day_hour = 0;
@@ -1704,16 +1736,30 @@ impl Prepared {
                         )?;
                     }
                 } else {
-                    self.tail
-                        .entry(cost.day_hour)
-                        .or_default()
-                        .costs
-                        .insert(series::field_key(tag, &field), cost.clone());
+                    self.tail.entry(cost.day_hour).or_default().costs.insert(
+                        series::field_key(tag, &serde_json::to_string(&(&field, cost.read_hour))?),
+                        cost.clone(),
+                    );
                 }
             }
+            let mut accounted: BTreeSet<_> = self.scan.countries[tag]
+                .daily_costs
+                .iter()
+                .filter(|cost| cost.accounted)
+                .map(|cost| {
+                    let row = &cost.row;
+                    format!(
+                        "daily:{}:{}:{}:{}",
+                        row.country, row.epoch, row.day_hour, row.ordinal
+                    )
+                })
+                .collect();
             let mut payments = BTreeMap::new();
             for (spend, (order, projected)) in reply.spending.iter().zip(projected_payments) {
                 let mut projected = projected?;
+                if accounted.contains(&spend.id) {
+                    continue;
+                }
                 if projected.spend.category == "upkeep" {
                     let day = projected.spend.hour.div_euclid(24) * 24;
                     if let Some(first) = self.tail.get(&day).and_then(|open| {
@@ -1826,10 +1872,11 @@ impl Prepared {
                 }
             }
             for row in &reply.daily_costs {
-                if let Some(projected) = payments.remove(&format!(
-                    "daily:{}:{}:{}:{}:{}",
-                    row.country, row.instance, row.epoch, row.day_hour, row.ordinal
-                )) {
+                let id = format!(
+                    "daily:{}:{}:{}:{}",
+                    row.country, row.epoch, row.day_hour, row.ordinal
+                );
+                if let Some(projected) = payments.remove(&id) {
                     if is_recurring(&projected.spend.category) {
                         let cost = row.clone();
 
@@ -1861,7 +1908,15 @@ impl Prepared {
                             &Event::Payment { payment: projected },
                         )?;
                     }
+                    accounted.insert(id);
                 }
+            }
+            for cost in &mut self.scan.countries.get_mut(tag).unwrap().daily_costs {
+                let row = &cost.row;
+                cost.accounted = accounted.contains(&format!(
+                    "daily:{}:{}:{}:{}",
+                    row.country, row.epoch, row.day_hour, row.ordinal
+                ));
             }
             self.scan.countries.get_mut(tag).unwrap().mutations.clear();
             self.scan
@@ -1883,19 +1938,12 @@ impl Prepared {
                 .last()
                 .filter(|row| row.through_hour == Some(frame.hour))
                 .and_then(|row| {
-                    row.country.map(|country| {
-                        (
-                            country,
-                            row.instance.unwrap_or(0),
-                            row.epoch.clone().unwrap_or_else(|| "0".into()),
-                        )
-                    })
+                    row.country
+                        .map(|country| (country, row.epoch.clone().unwrap_or_else(|| "0".into())))
                 });
             let identity_state = identity
                 .as_ref()
-                .map(|(country, instance, epoch)| {
-                    (Some(*country), Some(*instance), Some(epoch.clone()))
-                })
+                .map(|(country, epoch)| (Some(*country), Some(epoch.clone())))
                 .unwrap_or_default();
             let starts = self.identities.get(tag).map(|old| old.0) != Some(identity_state.0)
                 || self
@@ -1932,8 +1980,8 @@ impl Prepared {
                 .map(|cost| {
                     let row = &cost.row;
                     format!(
-                        "daily:{}:{}:{}:{}:{}",
-                        row.country, row.instance, row.epoch, row.day_hour, row.ordinal
+                        "daily:{}:{}:{}:{}",
+                        row.country, row.epoch, row.day_hour, row.ordinal
                     )
                 })
                 .collect();
@@ -2121,7 +2169,7 @@ impl Prepared {
         for tags in self
             .scan
             .identities
-            .range((country, 0, 0)..=(country, u32::MAX, u64::MAX))
+            .range((country, 0)..=(country, u64::MAX))
             .map(|(_, tags)| tags)
         {
             for tag in tags.values() {
@@ -2779,7 +2827,7 @@ mod scan_state {
 #[derive(Serialize, Deserialize)]
 struct OpenCountry {
     daily: Vec<(u128, i32, Option<i32>, Option<i32>)>,
-    costs: Vec<(u128, i32, bool, EventFacts)>,
+    costs: Vec<(u128, i32, bool, EventFacts, bool)>,
     coverage: Vec<LedgerCoverage>,
     spending_coverage: Vec<LedgerSpendCoverage>,
 }
@@ -2792,10 +2840,10 @@ struct Continuation {
     clock: clock::Clock,
     rows: Vec<u8>,
     countries: BTreeMap<String, OpenCountry>,
-    identities: Vec<((u32, u32, u64), BTreeMap<i32, String>)>,
-    events: BTreeSet<(u32, u32, u64, u64)>,
-    published_events: [BTreeSet<(u32, u32, u64, u64)>; 2],
-    costs: BTreeSet<(u32, u32, u64, i32, u32)>,
+    identities: Vec<((u32, u64), BTreeMap<i32, String>)>,
+    events: BTreeSet<(u32, u64, u64)>,
+    published_events: [BTreeSet<(u32, u64, u64)>; 2],
+    costs: BTreeSet<(u32, u64, i32, u32)>,
     naming: Vec<((u32, i32), Arc<NamedCountry>)>,
     modifiers: Option<Vec<(String, u128)>>,
     warnings: Vec<(Option<String>, BTreeMap<String, u64>)>,
@@ -2866,6 +2914,7 @@ impl Continuation {
                                         cost.read_hour,
                                         cost.covered,
                                         cost.facts.clone(),
+                                        cost.accounted,
                                     )
                                 })
                                 .collect(),
@@ -2951,10 +3000,8 @@ impl Continuation {
                     .get(&key)
                     .ok_or_else(|| dashboard_core::invalid("Missing open politics day"))?)
                 .clone();
-                scan.daily.insert(
-                    (row.country, row.instance, row.epoch, row.day_hour),
-                    open.daily.len(),
-                );
+                scan.daily
+                    .insert((row.country, row.epoch, row.day_hour), open.daily.len());
                 open.daily.push(Daily {
                     row,
                     read_hour,
@@ -2962,12 +3009,13 @@ impl Continuation {
                     cp_read_hour,
                 });
             }
-            for (key, read_hour, covered, facts) in country.costs {
+            for (key, read_hour, covered, facts, accounted) in country.costs {
                 let row = (*costs
                     .get(&key)
                     .ok_or_else(|| dashboard_core::invalid("Missing unresolved politics cost"))?)
                 .clone();
                 open.daily_costs.push(DailyCost {
+                    accounted,
                     row,
                     read_hour,
                     covered,

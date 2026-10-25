@@ -56,12 +56,18 @@ pub enum Source {
 }
 
 /// Preserve the source reference independently of its resolved full native CCountry ID and its
-/// following word. The second word is not a generation counter.
+/// surrender target; the latter is data, not an incarnation counter.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CountryIdentity {
     pub reference: u32,
     pub id: u32,
+    /// Raw surrender target retained under the recording's legacy field name.
     pub instance: u32,
+}
+impl CountryIdentity {
+    pub fn same_country(self, other: Self) -> bool {
+        self.id == other.id
+    }
 }
 
 /// Only owned integer operands; no native address is publishable history.
@@ -90,6 +96,7 @@ pub struct WarPending {
     candidate: usize,
     state: usize,
     pair: [u32; 2],
+    countries: [usize; 2],
     operands: Operands,
 }
 
@@ -166,7 +173,7 @@ pub fn identity(
         CountryIdentity {
             reference,
             id: country.id,
-            instance: value(memory, country.pointer, ccountry::ID_INSTANCE)?,
+            instance: value(memory, country.pointer, ccountry::SURRENDER_TARGET)?,
         },
     ))
 }
@@ -326,6 +333,7 @@ pub fn war_before(
         candidate: frame.rdx,
         state,
         pair,
+        countries: [actor.pointer, target.pointer],
         operands: Operands {
             source,
             hour: value(memory, state, cgame_state::CURRENT_HOUR)?,
@@ -354,7 +362,10 @@ pub fn war_returned(
         identity(memory, base, &countries, pending.operands.actor.reference)?;
     let (target, target_identity) =
         identity(memory, base, &countries, pending.operands.target.reference)?;
-    if actor_identity != pending.operands.actor || target_identity != pending.operands.target {
+    if !actor_identity.same_country(pending.operands.actor)
+        || !target_identity.same_country(pending.operands.target)
+        || [actor.pointer, target.pointer] != pending.countries
+    {
         return Err("event feed country identity changed during native operation");
     }
     if candidate(memory, base, pending.candidate)? != pending.pair {

@@ -291,7 +291,7 @@ pub fn capture(
         let sites = out.sites.span(begin);
         out.countries.push(Country {
             country: country.id,
-            instance: read(memory, at(country.pointer, ccountry::ID_INSTANCE)?),
+            instance: read(memory, at(country.pointer, ccountry::SURRENDER_TARGET)?),
             divisions,
             army_reason,
             sites,

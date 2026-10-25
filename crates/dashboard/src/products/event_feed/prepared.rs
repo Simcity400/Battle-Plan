@@ -92,11 +92,11 @@ enum Opening {
         generation: u64,
         event: (u32, u32),
         instance: u32,
-        country: (u32, u32),
+        country: u32,
     },
     Decision {
         generation: u64,
-        country: (u32, u32),
+        country: u32,
         token: String,
         target: Option<u32>,
         numeric: Option<i32>,
@@ -156,11 +156,11 @@ impl Links {
                 generation: occurrence.generation,
                 event,
                 instance,
-                country: receiver,
+                country: receiver.0,
             });
         let decision = occurrence.token.clone().map(|token| Opening::Decision {
             generation: occurrence.generation,
-            country: occurrence.actor,
+            country: occurrence.actor.0,
             token,
             target: occurrence.country_target,
             numeric: occurrence.numeric_target,
@@ -208,7 +208,10 @@ impl Links {
                         self.edges.0.entry(opener).or_default().push(at);
                         if matches!(
                             kind,
-                            DecisionCompleted | DecisionCancelled | DecisionTimedOut | DecisionRemoved
+                            DecisionCompleted
+                                | DecisionCancelled
+                                | DecisionTimedOut
+                                | DecisionRemoved
                         ) {
                             self.open.remove(&opening);
                         }
@@ -226,10 +229,8 @@ impl Links {
     }
 }
 
-/// What attributes a power mutation to a decision execution: its native
-/// hour, the country's id and instance, the decision's token and whether it
-/// is the timeout's charge rather than the selection's.
-type ChargeKey = (i32, (u32, u32), String, bool);
+/// Charges join by hour, published country link, token and selection/timeout.
+type ChargeKey = (i32, u32, String, bool);
 
 fn charge_key(row: &EventFeedRow, occurrence: &Occurrence) -> Option<ChargeKey> {
     let timeout = match row.kind {
@@ -237,7 +238,12 @@ fn charge_key(row: &EventFeedRow, occurrence: &Occurrence) -> Option<ChargeKey> 
         EventFeedKind::DecisionTimeoutEffect => true,
         _ => return None,
     };
-    Some((row.hour, occurrence.actor, occurrence.token.clone()?, timeout))
+    Some((
+        row.hour,
+        occurrence.actor.0,
+        occurrence.token.clone()?,
+        timeout,
+    ))
 }
 
 /// The power charges the hour's recorded mutations prove for each decision
@@ -264,7 +270,6 @@ pub(crate) fn charges(frame: &DecodedFrame) -> BTreeMap<ChargeKey, Vec<ScriptCos
         };
         let covered = coverage.iter().any(|cover| {
             cover.country == row.country
-                && cover.instance == row.instance
                 && cover.since_hour <= row.hour
                 && row.hour <= cover.through_hour
                 && cover.streams & streams == streams
@@ -281,7 +286,7 @@ pub(crate) fn charges(frame: &DecodedFrame) -> BTreeMap<ChargeKey, Vec<ScriptCos
             PowerCurrency::Command => ScriptCurrency::CommandPower,
         };
         *sums
-            .entry((row.hour, (row.country, row.instance), token.to_owned(), timeout))
+            .entry((row.hour, row.country, token.to_owned(), timeout))
             .or_default()
             .entry(currency)
             .or_default() += row.realized_delta_raw();
@@ -633,7 +638,12 @@ impl Observer {
             "event-feed-facts",
             branch,
             &BTreeMap::new(),
-            &(&self.diagnostics, &self.observed, &self.late, &self.links.edges),
+            &(
+                &self.diagnostics,
+                &self.observed,
+                &self.late,
+                &self.links.edges,
+            ),
         )
     }
 }

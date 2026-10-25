@@ -308,7 +308,7 @@ fn native_projection_resume_preserves_late_dates_duplicates_and_sequence_guard()
 }
 
 #[test]
-fn full_instance_read_and_branch_guards_never_use_later_or_reused_aliases() {
+fn country_read_and_branch_guards_keep_mutable_surrender_targets_but_refuse_reuse() {
     for mode in 0..6 {
         let mut sample = frame(105, 2);
         match mode {
@@ -342,6 +342,17 @@ fn full_instance_read_and_branch_guards_never_use_later_or_reused_aliases() {
             &BTreeMap::from([(105, sample), (106, frame(106, 2))]),
         )
         .unwrap();
+        if mode == 0 {
+            assert!(builder.feed.rows[0].participants.as_ref().unwrap()[0].is_some());
+            assert!(
+                builder
+                    .feed
+                    .unavailable
+                    .iter()
+                    .all(|item| item.kind != "nativeEventCountry")
+            );
+            continue;
+        }
         assert_eq!(
             builder.feed.rows[0].participants.as_ref().unwrap()[0],
             None,
@@ -410,6 +421,14 @@ fn ambiguous_tag_census_alias_or_reserved_zero_preserves_unidentified_roles() {
         assert_eq!(
             builder.feed.rows[0].participants.as_ref().unwrap()[0],
             None,
+            "mode {mode}"
+        );
+        assert!(
+            builder
+                .feed
+                .unavailable
+                .iter()
+                .any(|item| item.kind == "nativeEventCountry"),
             "mode {mode}"
         );
         assert!(

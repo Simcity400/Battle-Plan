@@ -281,10 +281,16 @@ pub const PP_SIGNAL_NO_DEFICIT: HookSite = HookSite {
 pub struct Owner {
     pub pointer: usize,
     pub country: u32,
-    /// Country identity combines the raw link and resettable instance word.
-    /// Preserve both without assuming the instance is monotonic.
+    /// Raw surrender target retained under the recording's legacy field name.
     pub instance: u32,
     pub politics: Option<usize>,
+}
+
+impl Owner {
+    pub fn same_owner(self, other: Self) -> bool {
+        (self.pointer, self.country, self.politics)
+            == (other.pointer, other.country, other.politics)
+    }
 }
 
 /// Command-power mutation authenticates the original country without selecting political status.

@@ -877,7 +877,7 @@ mod tests {
             memory.d(0x2000 + 4, 1);
             memory.q(COUNTRY, ccountry::VTABLE_RVA);
             memory.d(COUNTRY + ccountry::ID, 1);
-            memory.d(COUNTRY + ccountry::ID_INSTANCE, 44);
+            memory.d(COUNTRY + ccountry::SURRENDER_TARGET, 44);
             memory.q(COUNTRY + ccountry::POLITICAL_STATUS, 0);
             memory.q(COUNTRY + ccountry::DECISION_STATUS, STATUS);
             memory.array(COUNTRY + runtime::IGNORED_TOKENS, 0, 0);
@@ -1094,7 +1094,7 @@ mod tests {
         memory.d(0x2000 + 8, 2);
         memory.q(COUNTRY2, ccountry::VTABLE_RVA);
         memory.d(COUNTRY2 + ccountry::ID, 2);
-        memory.d(COUNTRY2 + ccountry::ID_INSTANCE, 45);
+        memory.d(COUNTRY2 + ccountry::SURRENDER_TARGET, 45);
         memory.q(COUNTRY2 + ccountry::POLITICAL_STATUS, 0);
         memory.q(COUNTRY2 + ccountry::DECISION_STATUS, STATUS2);
         memory.array(COUNTRY2 + runtime::IGNORED_TOKENS, 0, 0);

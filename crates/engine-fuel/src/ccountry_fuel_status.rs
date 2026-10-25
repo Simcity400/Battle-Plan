@@ -67,7 +67,7 @@ pub const MODIFIER_SCALE: i64 = 100_000;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub country: u32,
-    /// Native second identity word, optional without withholding the prefix.
+    /// Raw surrender target, optional without withholding the prefix.
     pub country_instance: Option<u32>,
     pub current_raw: i64,
     pub maximum_raw: i64,
@@ -305,7 +305,7 @@ fn read_status(
             country: country.id,
             country_instance: country
                 .pointer
-                .checked_add(ccountry::ID_INSTANCE)
+                .checked_add(ccountry::SURRENDER_TARGET)
                 .and_then(|p| read(memory, p)),
             current_raw: i64_at(&head, CURRENT),
             maximum_raw: i64_at(&head, MAXIMUM),

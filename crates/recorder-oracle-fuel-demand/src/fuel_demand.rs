@@ -51,13 +51,8 @@ pub fn compare(
                 "fuel demand oracle requires its exact supplying hour",
             ));
         }
-        if !pack.reason.is_empty()
-            || pack.country_instance.is_none()
-            || !matches!(&row.country_instance, Recorded::Value(instance) if *instance == pack.country_instance)
-        {
-            return Err(invalid(
-                "fuel demand read has a named identity/acquisition refusal",
-            ));
+        if !pack.reason.is_empty() {
+            return Err(invalid("fuel demand read has a named acquisition refusal"));
         }
         if !pack.army_reason.is_empty()
             || !pack.navy_reason.is_empty()
@@ -225,7 +220,7 @@ pub fn compare(
             pack.divisions.len() + pack.task_forces.len(),
         );
         report.limitation("division retained name cache is unsaved; authored generator operands cannot certify these possibly stale language bytes", &label);
-        report.limitation("country instance and raw country-link alias bits are not serialized; cached unit and roster quantities do not prove fresh hover-getter equality", &label);
+        report.limitation("raw surrender-target and country-link alias bits are not serialized; cached unit and roster quantities do not prove fresh hover-getter equality", &label);
         report.limitation("command raw parent pointer and discriminator bits beyond saved boolean truthiness need a same-boundary native witness", &label);
         report.limitation("air-site lists/repeated pool occurrences, selected mission, active count, period, live fuel/modifier/ace/capacity/weather operands and daily wrapping projection are unsaved supplying-read state; recording arithmetic is checked, but exact native current-pool/tooltip agreement requires a same-boundary passive witness", label);
     }

@@ -60,8 +60,7 @@ pub enum ChangeUnknown {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum GainUnknown {
-    /// One or more preceding hourly intervals was not fully observed for this
-    /// native country instance; a partial day must never become zero income.
+    /// This country's preceding day lacks at least one complete hourly interval.
     NoCompleteDay,
 }
 
@@ -161,7 +160,6 @@ impl From<&RawRead> for ExperienceRead {
 #[derive(Default, Serialize, Deserialize)]
 struct Seen {
     track: IdentityTrack,
-    native_instance: Option<u32>,
     open: bool,
     recent: VecDeque<(i32, [i64; 3])>,
     /// Complete gain runs, dated by their first hour. The last run holds
@@ -664,21 +662,12 @@ impl Scan {
             {
                 state.track.advance(previous);
             }
-            let mut continues = state.track.step(Some(identity), hour);
-            if !continues {
-                state.native_instance = None;
-            }
+            let continues = state.track.step(Some(identity), hour);
             let observed = native
                 .gains
                 .as_ref()
                 .and_then(|rows| rows.get(&identity.0))
                 .and_then(Option::as_ref);
-            if let Some(row) = observed {
-                continues &= state
-                    .native_instance
-                    .is_none_or(|instance| instance == row.instance);
-                state.native_instance = Some(row.instance);
-            }
             if !continues {
                 state.gains.clear();
             }

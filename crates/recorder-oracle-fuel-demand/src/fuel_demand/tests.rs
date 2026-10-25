@@ -94,6 +94,18 @@ fn skipped_zero_wing_owner_witness_keeps_override_fallback_and_failure_independe
     let (result, report) = run(&mut frame, &saved, row.clone());
     result.unwrap();
     assert!(report.differences.is_empty());
+    for surrender_target in [Some(10), None] {
+        let mut changed = row.clone();
+        changed.country_instance = Recorded::Value(surrender_target);
+        let Recorded::Value(pack) = &mut changed.demand else {
+            panic!()
+        };
+        pack.country_instance = surrender_target;
+        let (result, report) = run(&mut frame, &saved, changed);
+        result.unwrap();
+        assert!(report.differences.is_empty());
+    }
+
     let mut mismatch = row.clone();
     let Recorded::Value(pack) = &mut mismatch.demand else {
         panic!()

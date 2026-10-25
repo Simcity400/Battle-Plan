@@ -40,7 +40,7 @@ impl Image {
     fn country(&mut self, country: usize, id: u32, instance: u32, diplomacy: usize, matrix: usize) {
         self.q(country, BASE + ccountry::VTABLE_RVA);
         self.d(country + ccountry::ID, id);
-        self.d(country + ccountry::ID_INSTANCE, instance);
+        self.d(country + ccountry::SURRENDER_TARGET, instance);
         self.q(country + ccountry::DIPLOMACY_STATUS, diplomacy);
         self.q(diplomacy, BASE + cdiplomacy_status::VTABLE_RVA);
         self.q(diplomacy + cdiplomacy_status::COUNTRY, country);
@@ -413,7 +413,7 @@ fn fresh_postproof_refuses_replaced_country_and_world_roots() {
     let mut image = Image::new();
     let pending = war_before(&image, BASE, frame()).unwrap();
     image.attach();
-    image.d(TARGET + ccountry::ID_INSTANCE, 0xdddd);
+    image.d(TARGET + ccountry::ID, 3);
     assert_eq!(
         war_returned(&image, BASE, pending),
         Err("event feed country identity changed during native operation")
@@ -562,4 +562,14 @@ mod provenance_sites {
         assert_eq!(state_owner(&image, BASE, PROVINCE_STATE), Ok((64, 2)));
         assert!(state_owner(&image, BASE, CONFERENCE).is_err());
     }
+}
+
+#[test]
+fn surrender_target_changes_do_not_invalidate_war_postproof_or_rewrite_pre_call_data() {
+    let mut image = Image::new();
+    let pending = war_before(&image, BASE, frame()).unwrap();
+    let before = pending.operands();
+    image.attach();
+    image.d(TARGET + ccountry::SURRENDER_TARGET, 0xdddd);
+    assert_eq!(war_returned(&image, BASE, pending).unwrap(), before);
 }

@@ -88,7 +88,7 @@ impl PreparedOwner {
                 .or_else(|| {
                     country
                         .pointer
-                        .checked_add(engine_native::ccountry::ID_INSTANCE)
+                        .checked_add(engine_native::ccountry::SURRENDER_TARGET)
                         .and_then(|at| engine_native::read::<u32>(memory, at))
                         .map(|instance| native::CountryIdentity {
                             reference: country.id,
@@ -149,7 +149,7 @@ impl PreparedOwner {
 
 impl Store {
     /// Select only work the existing census already owes. Certified queues
-    /// and failed attempts require no native queue read.
+    /// require no native queue read.
     pub(crate) fn owner_work(
         &mut self,
         memory: &impl Memory,
@@ -162,6 +162,7 @@ impl Store {
         if self.failure.is_some() || self.observation(generation).is_err() {
             return [false; 2];
         }
+        self.decisions.census(country);
         let decisions = self.decisions.recovery(country.pointer);
         if decisions == decisions::Recovery::Certified {
             self.recover_decisions(memory, base, generation, state, hour, country);
@@ -171,7 +172,7 @@ impl Store {
             .countries
             .get(country.canonical_slot as usize)
             .is_some_and(|seen| {
-                seen.pointer == country.pointer && seen.id == country.id && seen.attempted
+                seen.pointer == country.pointer && seen.id == country.id && seen.ready
             });
         [delayed, decisions == decisions::Recovery::Baseline]
     }
@@ -216,9 +217,9 @@ impl Store {
         self.token_demand = self.token_demand.max(tokens);
         let fits = entries <= self.capacity() && tokens <= self.script_tokens.len();
         let repeated = if registry == OwnerRegistry::Decisions {
-            self.prepared_decision_failure(country.pointer, identity, refusal.retry || !fits)
+            self.prepared_decision_failure(country.pointer, identity)
         } else {
-            self.prepared_delayed_failure(country, refusal.retry || !fits)
+            self.prepared_delayed_failure(country)
         };
         if !fits && !repeated {
             // No baseline prefix or Ready was published. Nothing here lost

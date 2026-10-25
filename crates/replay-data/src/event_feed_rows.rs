@@ -1,6 +1,6 @@
 //! Owned simulation-event history and interval coverage. Operation hours filter history; supplying
-//! hours govern its first visibility. The country instance word is the native word after the id,
-//! never a writer generation.
+//! hours govern its first visibility. The legacy country instance field retains the raw surrender
+//! target, not an incarnation counter.
 
 use crate::{
     codec::{Decoder, invalid_static as invalid},

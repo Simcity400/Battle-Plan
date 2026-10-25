@@ -82,12 +82,12 @@ fn changes(
     for row in rows {
         if coverage
             .iter()
-            .any(|c| c.country == row.country && c.instance == row.instance && c.epoch == row.epoch)
+            .any(|c| c.country == row.country && c.epoch == row.epoch)
         {
             last.insert((row.country, row.currency as u8), row);
         } else {
             report.limitation(
-                "historical mutation country instance has no current endpoint witness",
+                "historical mutation country link has no current endpoint witness",
                 format!("{}:{}", row.country, row.sequence),
             );
         }
@@ -127,7 +127,7 @@ fn governments(
     for row in rows {
         if coverage
             .iter()
-            .any(|c| c.country == row.country && c.instance == row.instance && c.epoch == row.epoch)
+            .any(|c| c.country == row.country && c.epoch == row.epoch)
         {
             last.insert(row.country, row);
         }
@@ -172,18 +172,7 @@ fn validate_costs(
 ) -> io::Result<()> {
     let days: BTreeMap<_, _> = daily
         .iter()
-        .map(|day| {
-            (
-                (
-                    day.country,
-                    day.instance,
-                    day.epoch,
-                    day.day_hour,
-                    day.pp_sequence,
-                ),
-                day,
-            )
-        })
+        .map(|day| ((day.country, day.epoch, day.day_hour, day.pp_sequence), day))
         .collect();
     let mut sums: BTreeMap<_, i64> = days
         .iter()
@@ -191,13 +180,7 @@ fn validate_costs(
         .map(|(key, _)| (*key, 0))
         .collect();
     for row in costs {
-        let key = (
-            row.country,
-            row.instance,
-            row.epoch,
-            row.day_hour,
-            Some(row.pp_sequence),
-        );
+        let key = (row.country, row.epoch, row.day_hour, Some(row.pp_sequence));
         if !days.contains_key(&key) {
             return Err(invalid("daily cost lacks its native application"));
         }
@@ -217,7 +200,7 @@ fn validate_costs(
 mod tests {
     use super::*;
     #[test]
-    fn costs_join_the_exact_instance_epoch_day_and_application() {
+    fn costs_join_the_exact_country_epoch_day_and_application() {
         let day = CountryPowerDailyRow {
             country: 5001,
             instance: 9,
@@ -237,10 +220,15 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_costs(std::slice::from_ref(&day), std::slice::from_ref(&cost)).is_ok());
+        let changed_target = CountryPowerDailyCostRow {
+            instance: 10,
+            ..cost.clone()
+        };
+        assert!(validate_costs(std::slice::from_ref(&day), &[changed_target]).is_ok());
         assert!(validate_costs(std::slice::from_ref(&day), &[]).is_err());
         for bad in [
             CountryPowerDailyCostRow {
-                instance: 10,
+                country: 5002,
                 ..cost.clone()
             },
             CountryPowerDailyCostRow {

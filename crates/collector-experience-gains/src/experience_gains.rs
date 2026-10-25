@@ -86,24 +86,24 @@ impl Lanes {
 }
 static LIVE: Lanes = Lanes::new();
 
-const VACANT_INSTANCE: u64 = u64::MAX;
+const VACANT_COUNTRY: u64 = u64::MAX;
 
 struct Slot {
     pointer: AtomicUsize,
-    instance: AtomicU64,
+    country: AtomicU64,
     gains: [AtomicI64; 3],
 }
 impl Slot {
     fn vacant() -> Self {
         Self {
             pointer: AtomicUsize::new(0),
-            instance: AtomicU64::new(VACANT_INSTANCE),
+            country: AtomicU64::new(VACANT_COUNTRY),
             gains: Default::default(),
         }
     }
 }
 
-/// Open-addressed per-owner sums. A slot's pointer and instance words each
+/// Open-addressed per-owner sums. A slot's pointer and current link words each
 /// leave vacancy at most once per interval and never change again until an
 /// exclusive reset, so writers racing for one owner settle on the same slot by
 /// compare-exchange alone, and additions commute. `claims` lists the slots
@@ -145,7 +145,7 @@ impl Table {
     /// one after another spread like random keys (`table_hash`), so probe
     /// chains stay short at any object size.
     fn start(&self, owner: native::Owner) -> usize {
-        let key = owner.pointer as u64 ^ u64::from(owner.instance).rotate_left(32);
+        let key = owner.pointer as u64 ^ u64::from(owner.country).rotate_left(32);
         crate::table_hash::slot(key, self.slots.len())
     }
     /// Lock-free; each probe is one or two compare-exchanges. `native::owner`
@@ -157,7 +157,7 @@ impl Table {
         if self.slots.is_empty() {
             return Err("experience gain country storage overflow");
         }
-        let instance = u64::from(owner.instance);
+        let country = u64::from(owner.country);
         let mut index = self.start(owner);
         for _ in 0..self.slots.len() {
             let slot = &self.slots[index];
@@ -178,16 +178,16 @@ impl Table {
                 Err(current) => current,
             };
             if pointer == owner.pointer {
-                let current = match slot.instance.compare_exchange(
-                    VACANT_INSTANCE,
-                    instance,
+                let current = match slot.country.compare_exchange(
+                    VACANT_COUNTRY,
+                    country,
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 ) {
-                    Ok(_) => instance,
+                    Ok(_) => country,
                     Err(current) => current,
                 };
-                if current == instance {
+                if current == country {
                     let previous = slot.gains[branch].fetch_add(amount, Ordering::Relaxed);
                     return if previous >= 0 && previous.checked_add(amount).is_some() {
                         Ok(())
@@ -212,7 +212,7 @@ impl Table {
                 0 => break,
                 pointer
                     if pointer == owner.pointer
-                        && slot.instance.load(Ordering::Relaxed) == u64::from(owner.instance) =>
+                        && slot.country.load(Ordering::Relaxed) == u64::from(owner.country) =>
                 {
                     return slot
                         .gains
@@ -234,7 +234,7 @@ impl Table {
         for claim in &self.claims[..claimed] {
             if let Some(slot) = self.slots.get(claim.load(Ordering::Relaxed)) {
                 slot.pointer.store(0, Ordering::Relaxed);
-                slot.instance.store(VACANT_INSTANCE, Ordering::Relaxed);
+                slot.country.store(VACANT_COUNTRY, Ordering::Relaxed);
                 for gain in &slot.gains {
                     gain.store(0, Ordering::Relaxed);
                 }
@@ -437,8 +437,8 @@ impl Store {
                 if let Some(country) = batch[index] {
                     addresses[index] = country
                         .pointer
-                        .checked_add(ccountry::ID_INSTANCE)
-                        .ok_or("experience gain country instance address overflow")?;
+                        .checked_add(ccountry::SURRENDER_TARGET)
+                        .ok_or("experience gain country surrender target address overflow")?;
                 }
             }
             let mut destinations = words.each_mut().map(|word| word.as_mut_slice());
@@ -448,7 +448,7 @@ impl Store {
                 }
             }
             if memory.copy_scattered(addresses, &mut destinations) != BATCH {
-                return Err("experience gain country instance unreadable");
+                return Err("experience gain country surrender target unreadable");
             }
             for index in 0..count {
                 let previous = &mut self.owners[(slot + index as u32) as usize];
@@ -462,7 +462,7 @@ impl Store {
                 let instance = u32::from_le_bytes(words[index]);
                 let key = native::Owner {
                     pointer: country.pointer,
-                    instance,
+                    country: country.id,
                 };
                 let complete = u8::from(!self.partial && *previous == Some(key));
                 *previous = Some(key);
@@ -551,7 +551,8 @@ static PREPARED: AtomicUsize = AtomicUsize::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static UNHOOKED: OnceLock<&'static str> = OnceLock::new();
-static FIRST_REFUSAL: OnceLock<&'static str> = OnceLock::new();
+static FIRST_REFUSAL: collector_primitives::first_reason::FirstReason =
+    collector_primitives::first_reason::FirstReason::new();
 static CALLS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 static REFUSALS: AtomicU64 = AtomicU64::new(0);
 
@@ -561,7 +562,7 @@ pub fn active() -> usize {
 }
 
 fn refuse(reason: &'static str) {
-    let _ = FIRST_REFUSAL.set(reason);
+    FIRST_REFUSAL.record(reason);
     if let Ok(mut guard) = STORE.try_lock()
         && let Some(store) = guard.as_mut()
     {
@@ -810,8 +811,8 @@ mod tests {
     use super::*;
     use engine_native::{country_memory::Cache, memory::SliceMemory};
 
-    fn owner(pointer: usize, instance: u32) -> native::Owner {
-        native::Owner { pointer, instance }
+    fn owner(pointer: usize, country: u32) -> native::Owner {
+        native::Owner { pointer, country }
     }
     fn clock(hour: i32) -> Clock {
         Clock {
@@ -990,7 +991,7 @@ mod tests {
 
     #[test]
     fn racing_claims_for_shared_and_replaced_owners_converge_on_one_slot_each() {
-        // One pointer with two instances is a replacement within the hour.
+        // Reuse publishes a different country link at the same pointer.
         let owners = [
             owner(0x1000, 1),
             owner(0x1000, 2),
@@ -1283,7 +1284,7 @@ mod tests {
         assert_eq!(table.claimed(), 0);
         assert!(table.slots.iter().all(|slot| {
             slot.pointer.load(Ordering::Relaxed) == 0
-                && slot.instance.load(Ordering::Relaxed) == VACANT_INSTANCE
+                && slot.country.load(Ordering::Relaxed) == VACANT_COUNTRY
                 && slot
                     .gains
                     .iter()
@@ -1380,7 +1381,7 @@ mod tests {
             .add(
                 native::Owner {
                     pointer: last,
-                    instance: u32::MAX,
+                    country: 10001,
                 },
                 0,
                 9,
@@ -1393,7 +1394,10 @@ mod tests {
             LAST
         );
         assert!(rows[..LAST].iter().all(|row| row.complete == 1));
-        assert_eq!((rows[LAST - 1].country, rows[LAST - 1].army_raw), (10001, 9));
+        assert_eq!(
+            (rows[LAST - 1].country, rows[LAST - 1].army_raw),
+            (10001, 9)
+        );
         assert!(rows[..LAST - 1].iter().all(|row| row.army_raw == 0));
         // Deletion does not poison the surviving countries' exact-zero proof.
         bytes[POINTERS + 7 * 8..POINTERS + 8 * 8].fill(0);
@@ -1408,11 +1412,11 @@ mod tests {
             LAST - 1
         );
         assert!(rows[..LAST - 1].iter().all(|row| row.complete == 1));
-        // A birth at a reused address and an instance wrapping to zero both
-        // require a new beginning, even with an unchanged country raw ID.
+        // Dynamic reuse publishes a new link even when its pointer and surrender target recur.
         bytes[POINTERS + 7 * 8..POINTERS + 8 * 8]
             .copy_from_slice(&((COUNTRIES + 7 * 32) as u64).to_le_bytes());
-        bytes[last + 12..last + 16].fill(0);
+        bytes[last + 8..last + 12].copy_from_slice(&10000_u32.to_le_bytes());
+        bytes[LINKS + 10000 * 4..LINKS + 10001 * 4].copy_from_slice(&(LAST as u32).to_le_bytes());
         let memory = SliceMemory {
             base: 0,
             bytes: &bytes,
@@ -1431,7 +1435,7 @@ mod tests {
         };
         assert_eq!(
             store.snapshot(&cache.prepare(&short, 0, 0), 0, 0, &mut rows),
-            Err("experience gain country instance unreadable")
+            Err("experience gain country surrender target unreadable")
         );
 
         // Exercise the actual interval core without touching global observers:
@@ -1459,7 +1463,7 @@ mod tests {
         store.boundary(clock);
         let owner = native::Owner {
             pointer: last,
-            instance: 0,
+            country: 10000,
         };
         store.add(owner, 0, 99).unwrap();
         store
@@ -1484,7 +1488,7 @@ mod tests {
         store.add(owner, 0, 8).unwrap();
         assert_eq!(
             store.snapshot_interval(&cache.prepare(&short, 0, 0), 0, 0, &mut rows, true,),
-            Err("experience gain country instance unreadable")
+            Err("experience gain country surrender target unreadable")
         );
         assert!(store.table_is_empty());
         clock.hour += 1;
@@ -1520,5 +1524,122 @@ mod tests {
         store.boundary(clock);
         assert!(store.partial && store.table_is_empty());
         assert!(store.owners.iter().all(Option::is_none));
+    }
+    #[test]
+    fn surrender_changes_keep_all_awards_and_dynamic_link_reuse_reseeds() {
+        static LANES: Lanes = Lanes::new();
+        let mut bytes = native_fixture(3, &[9, 7]);
+        let mut store = Store::on(&LANES);
+        store.prepare(3).unwrap();
+        let mut cache = Cache::try_with_capacity(Cache::cells_for_countries(3, 0)).unwrap();
+        let mut rows = vec![CountryExperienceGainRow::default(); 3];
+        let sample = |store: &mut Store,
+                      cache: &mut Cache,
+                      bytes: &[u8],
+                      rows: &mut [CountryExperienceGainRow]| {
+            let memory = SliceMemory { base: 0, bytes };
+            store
+                .snapshot_interval(&cache.prepare(&memory, 0, 0), 0, 0, rows, false)
+                .unwrap();
+        };
+        store.boundary(clock(10));
+        sample(&mut store, &mut cache, &bytes, &mut rows);
+        store.boundary(clock(11));
+        award(
+            &LANES,
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            1,
+            0,
+            0,
+        )
+        .unwrap();
+        let country = COUNTRIES + STRIDE;
+        bytes[country + ccountry::SURRENDER_TARGET..country + ccountry::SURRENDER_TARGET + 4]
+            .copy_from_slice(&99_u32.to_le_bytes());
+        award(
+            &LANES,
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            1,
+            1,
+            0,
+        )
+        .unwrap();
+        sample(&mut store, &mut cache, &bytes, &mut rows);
+        assert_eq!(
+            (
+                rows[0].country,
+                rows[0].instance,
+                rows[0].complete,
+                rows[0].army_raw
+            ),
+            (1, 99, 1, 16)
+        );
+        store.boundary(clock(12));
+        award(
+            &LANES,
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            1,
+            0,
+            0,
+        )
+        .unwrap();
+        bytes[country + ccountry::ID..country + ccountry::ID + 4]
+            .copy_from_slice(&3_u32.to_le_bytes());
+        bytes[engine_native::cgame_state::COUNTRY_LINKS + 8
+            ..engine_native::cgame_state::COUNTRY_LINKS + 16]
+            .copy_from_slice(&[4_u32.to_le_bytes(), 4_u32.to_le_bytes()].concat());
+        bytes[0x4000 + 12..0x4000 + 16].copy_from_slice(&1_u32.to_le_bytes());
+        award(
+            &LANES,
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            1,
+            1,
+            0,
+        )
+        .unwrap();
+        sample(&mut store, &mut cache, &bytes, &mut rows);
+        assert_eq!(
+            (
+                rows[0].country,
+                rows[0].instance,
+                rows[0].complete,
+                rows[0].army_raw
+            ),
+            (3, 99, 0, 7)
+        );
+        store.boundary(clock(13));
+        award(
+            &LANES,
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            1,
+            0,
+            0,
+        )
+        .unwrap();
+        sample(&mut store, &mut cache, &bytes, &mut rows);
+        assert_eq!(
+            (
+                rows[0].country,
+                rows[0].instance,
+                rows[0].complete,
+                rows[0].army_raw
+            ),
+            (3, 99, 1, 9)
+        );
     }
 }
