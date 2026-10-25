@@ -291,6 +291,7 @@ impl Playback {
     }
 
     pub fn select_branch(&mut self, branch: BranchId) -> io::Result<()> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("decode/hour-build"));
         let (first, _) = self.range(branch).ok_or_else(|| unknown_branch(branch))?;
         self.seek(branch, first)
     }
@@ -339,6 +340,7 @@ impl Playback {
     /// Only the target block may be decompressed; backward seeks reuse its frames.
     /// Intermediate hours advance the baseline without copying their decoded rows.
     pub fn seek(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("decode/hour-build"));
         self.seek_with(branch, hour, |_| {})
     }
 

@@ -531,6 +531,7 @@ fn carried(from: Option<Cycle>, branch: BranchId, ours: u32) -> Cycle {
 /// Builds `job`'s hour; paused, keeps stepping it one batch per rendered
 /// frame while it stays the shown, paused hour. The cycle after it.
 fn build(shared: &Shared, job: Job, icons: &mut IconCache) -> Cycle {
+    let _cost = replay_frame::cpu::scope("viewer", Some("raid responses"));
     let stamp = job.stamp();
     let publish = |hour, built| publish(shared, stamp.clone(), hour, built);
     let Job {

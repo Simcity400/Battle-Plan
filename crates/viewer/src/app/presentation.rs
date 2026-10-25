@@ -244,6 +244,10 @@ impl Viewer {
         } else {
             (2, 2)
         };
+        let ahead = self
+            .options
+            .playback_cost_end
+            .map_or(ahead, |end| ahead.min(end.saturating_sub(playhead.hour)));
         let wait = exact_capture_wait(
             self.capture.as_ref().map(|capture| capture.remaining),
             profiling(),
@@ -464,6 +468,7 @@ impl Viewer {
         retired: &mut Retired,
         laps: &mut Laps,
     ) -> Result<(), std::io::Error> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("upload"));
         let hours::Built {
             epoch,
             branch,

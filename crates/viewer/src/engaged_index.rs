@@ -535,6 +535,7 @@ impl Pass {
 
     /// Folds every hour past each branch's last folded one; returns how many.
     fn fold(&mut self, replay: &Replay, tables: &[TableId]) -> usize {
+        let _cost = replay_frame::cpu::scope("viewer", Some("engagement/strikes/text"));
         let mut blocks: Vec<_> = replay.index.iter().collect();
         blocks.sort_by_key(|block| (block.branch, block.first_hour));
         let loads: BTreeMap<BranchId, Option<Hour>> = replay

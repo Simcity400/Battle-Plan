@@ -36,6 +36,7 @@ mod map_icons;
 mod map_views;
 mod paint_owner;
 mod playback;
+mod playback_cost;
 mod raid_lane;
 mod render;
 mod renderer_host;
@@ -72,6 +73,7 @@ use {
 /// desktop app, which starts this process for them.
 const USAGE: &str = "viewer is the battle-plan app's map renderer; replay-desktop.exe starts it.
 On its own it runs tooling:
+viewer --playback-cost <replay> --from-hour H --hours N --speed max --out <directory>
 viewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>
 viewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>
 viewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]
@@ -283,6 +285,7 @@ struct Options {
     out: Option<PathBuf>,
     /// `--dump`: render one frame without opening a window.
     headless_dump: bool,
+    playback_cost_end: Option<Hour>,
     // capture
     /// `--window-dump`: open the window and render one frame through the
     /// windowed path at `size` and `camera` into `dump`, then close.
@@ -1118,6 +1121,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if let Some(result) = corpus::dispatch(&args) {
+        return Ok(result?);
+    }
+    if let Some(result) = playback_cost::dispatch(&args) {
         return Ok(result?);
     }
     let options = Options::parse(args.into_iter())?;

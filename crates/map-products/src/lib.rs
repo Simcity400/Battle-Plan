@@ -170,6 +170,7 @@ impl<'a> ProductHour<'a> {
         &self,
         vision: &perspective::Vision,
     ) -> viewer_world::map::animated_map_text::events::Prepared {
+        let _cost = replay_frame::cpu::scope("viewer", Some("engagement/strikes/text"));
         use viewer_world::map::animated_map_text::events::{Context, Prepared};
         let view = vision.ours();
         match viewer_foundation::table_access::rows::<replay_data::rows::tables::MapEvents>(
@@ -317,6 +318,7 @@ impl<'a> ProductHour<'a> {
     }
 
     pub fn battle_sounds(&self) -> Option<viewer_audio::Battles> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("music/battle/audio descriptors"));
         use replay_data::rows::tables;
         use viewer_foundation::table_access::{Available, rows};
         let audio = self.content.audio.as_ref()?;
@@ -406,6 +408,7 @@ impl<'a> ProductHour<'a> {
         country: u32,
         memo: &music_inputs::Memo,
     ) -> Option<viewer_audio::Chances> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("music/battle/audio descriptors"));
         let audio = self.content.audio.as_ref()?;
         if audio.music.songs.is_empty() {
             return None;

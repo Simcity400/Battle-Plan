@@ -2915,6 +2915,7 @@ impl Document {
         &self,
         perspective: &perspective::Choice,
     ) -> io::Result<Arc<perspective::Vision>> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("fog"));
         self.hour()?.vision(perspective)
     }
 
@@ -2947,10 +2948,12 @@ impl Document {
         &self,
         perspective: &perspective::Choice,
     ) -> io::Result<viewer_world::map::aircraft::AircraftPlan> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("air/naval source choices"));
         self.hour()?.aircraft_plan(perspective)
     }
 
     pub fn nuclear_impacts(&self) -> io::Result<viewer_world::map::strike_effects::Impacts> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("engagement/strikes/text"));
         self.hour()?.nuclear_impacts()
     }
 
@@ -2958,6 +2961,7 @@ impl Document {
         &self,
         perspective: &perspective::Choice,
     ) -> io::Result<viewer_world::map::trains::TrainPlan> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("rails"));
         self.hour()?.train_plan(perspective)
     }
 
@@ -3182,6 +3186,7 @@ impl OverlayTables {
     }
 
     pub(crate) fn vision(&self) -> &Arc<perspective::Vision> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("fog"));
         &self.vision.value
     }
 
@@ -3205,10 +3210,12 @@ impl<'a> Hour<'a> {
         memos: &map_products::FogMemos,
         spans: &mut viewer_foundation::profiling::BuilderSpans,
     ) -> io::Result<Arc<map_products::FogProduct>> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("fog"));
         self.product_hour.fog(choice, memos, spans)
     }
 
     pub(crate) fn weather_field(&self) -> io::Result<viewer_world::map::weather_effects::Field> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("weather"));
         self.product_hour.weather_field()
     }
 
@@ -3430,6 +3437,7 @@ impl<'a> Hour<'a> {
         Arc<OrderField>,
         Vec<viewer_world::map::trade_routes::ConvoyLine>,
     )> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
         let plan = self.plan_field(perspective, show_allied)?;
         let ours = self.vision(perspective)?.ours();
         let heights = self.heights();
@@ -3732,6 +3740,7 @@ impl<'a> Hour<'a> {
         viewer_world::map::map_buildings::MapBuildingSummary,
         viewer_world::map::map_buildings::BuildingsBase,
     )> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("buildings"));
         let vision = spans.measure("buildings.vision", |_| self.vision(perspective))?;
         self.map_buildings.field_patched(
             self.frame,
@@ -3779,6 +3788,7 @@ impl<'a> Hour<'a> {
         lap: &mut dyn FnMut(&'static str),
         spans: &mut viewer_foundation::profiling::BuilderSpans,
     ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
         let prepared = (|| {
             let content = &self.counters;
             let definitions = &self.map.definitions;
@@ -3878,6 +3888,7 @@ impl<'a> Hour<'a> {
 
     /// This hour's nuclear impacts at their provinces' standstill anchors.
     pub fn nuclear_impacts(&self) -> io::Result<viewer_world::map::strike_effects::Impacts> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("engagement/strikes/text"));
         self.product_hour.nuclear_impacts()
     }
 
@@ -3900,6 +3911,7 @@ impl<'a> Hour<'a> {
         &self,
         perspective: &perspective::Choice,
     ) -> io::Result<viewer_world::map::aircraft::AircraftPlan> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("air/naval source choices"));
         let heights = HeightField {
             width: self.assets.heightmap.width,
             height: self.assets.heightmap.height,
@@ -3971,6 +3983,7 @@ impl<'a> Hour<'a> {
         &self,
         perspective: &perspective::Choice,
     ) -> io::Result<viewer_world::map::trains::TrainPlan> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("rails"));
         let heights = HeightField {
             width: self.assets.heightmap.width,
             height: self.assets.heightmap.height,
@@ -4000,6 +4013,7 @@ impl<'a> Hour<'a> {
         &self,
         choice: &perspective::Choice,
     ) -> io::Result<viewer_world::map::naval_dominance::Fill> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("air/naval source choices"));
         Ok(self
             .naval_dominance
             .read(self.frame, self.vision(choice)?.ours()))
@@ -4013,6 +4027,7 @@ impl<'a> Hour<'a> {
         choice: &perspective::Choice,
         colour: Option<&viewer_world::map::map_mode::ColourState>,
     ) -> io::Result<viewer_world::map::map_mode::ModeFill> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("modes/styles"));
         use viewer_world::map::map_mode;
         if *mode == map_mode::MapMode::default() {
             return Ok(map_mode::ModeFill::default());
@@ -4036,6 +4051,7 @@ impl<'a> Hour<'a> {
         &self,
         perspective: &perspective::Choice,
     ) -> io::Result<Arc<perspective::Vision>> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("fog"));
         self.product_hour.vision(perspective)
     }
 
@@ -4091,6 +4107,7 @@ impl<'a> Hour<'a> {
         &self,
         mode: &viewer_world::map::map_mode::MapMode,
     ) -> io::Result<name_pass::NameAreas> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("labels"));
         use viewer_world::map::map_mode::NameLayer;
         let layers = self.map_modes.name_layers(mode);
         let far = self.layer_areas(layers.far)?;
@@ -4170,6 +4187,7 @@ impl<'a> Hour<'a> {
         areas: &name_pass::NameAreas,
         placed: &name_pass::PlacedAreas,
     ) -> Placements {
+        let _cost = replay_frame::cpu::scope("viewer", Some("world names"));
         name_pass::place_areas(&self.placement_inputs(), areas, Some(placed))
     }
 
@@ -4238,6 +4256,7 @@ impl<'a> Hour<'a> {
         })?;
         let ours = vision.ours();
         let labels = spans.measure("overlay.tables.labels", |_| {
+            let _cost = replay_frame::cpu::scope("viewer", Some("labels"));
             labels::LabelTables::read(self.frame, ours, &self.names.localisation)
         })?;
         // Checked first: coverage that arrives during the build costs one
@@ -4467,6 +4486,7 @@ impl<'a> Hour<'a> {
         let content = self.content;
         let fraction = self.hour_fraction;
         let prepare_counters = || {
+            let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
             let _span = viewer_foundation::profiling::span("p_counters");
             let mut retained = view
                 .presentation
@@ -4482,6 +4502,7 @@ impl<'a> Hour<'a> {
             )
         };
         let prepare_other = || {
+            let _cost = replay_frame::cpu::scope("viewer", Some("modes/styles"));
             let hour = Hour::new(content, frame, fraction);
             // Raid icons sort above the labels and the counters by their layer.
             let native_raids = hour.raid_owners(
@@ -4494,6 +4515,7 @@ impl<'a> Hour<'a> {
             let raid_report = tables.raids.report.clone();
             let labels = {
                 let _span = viewer_foundation::profiling::span("p_labels");
+                let _cost = replay_frame::cpu::scope("viewer", Some("labels"));
                 labels::prepare(&label_inputs, frame, &tables.labels)?
             };
             let label_report = labels.report.clone();

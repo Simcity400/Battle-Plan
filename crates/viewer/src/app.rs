@@ -72,6 +72,7 @@ mod faction_highlight;
 pub(crate) mod fly;
 mod fly_aircraft;
 pub(crate) mod picker;
+pub(crate) mod playback_cost;
 mod presentation;
 #[cfg(test)]
 pub(crate) use presentation::{exact_capture_wait, grid_activation};
@@ -1455,7 +1456,9 @@ impl Viewer {
         );
         let hidden_since = embedded.as_ref().map(|_| Instant::now());
         // The monitors are read off the UI thread; start before the first map.
-        refresh_monitors(|| ());
+        if options.playback_cost_end.is_none() {
+            refresh_monitors(|| ());
+        }
         Self {
             dashboard: None,
             dashboard_active: false,
@@ -3330,6 +3333,18 @@ impl Viewer {
         frame: &eframe::Frame,
         document: &mut Document,
     ) -> Result<(), String> {
+        let state = frame
+            .wgpu_render_state()
+            .ok_or("WGPU renderer is unavailable")?;
+        self.map_with_state(ui, state, document)
+    }
+
+    fn map_with_state(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &eframe::egui_wgpu::RenderState,
+        document: &mut Document,
+    ) -> Result<(), String> {
         let map_timer = Instant::now();
         self.drew_frame = false;
         let mut laps = self
@@ -3338,9 +3353,6 @@ impl Viewer {
             .unwrap_or_else(|| Laps::new(Duration::ZERO));
         laps.lap("before_map");
         viewer_foundation::map::counter_move::take_profile();
-        let state = frame
-            .wgpu_render_state()
-            .ok_or("WGPU renderer is unavailable")?;
         if profiling() {
             static ADAPTER_ONCE: std::sync::Once = std::sync::Once::new();
             let info = state.adapter.get_info();

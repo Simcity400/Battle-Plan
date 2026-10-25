@@ -1877,6 +1877,7 @@ impl Scene {
         queue: &wgpu::Queue,
         request: Request<'_>,
     ) -> io::Result<()> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("render-submit"));
         let rendered = self.render_frame(device, queue, request);
         // A frame that failed before its walk leaves the schedule as if it was never cut.
         self.restore_province_frame();

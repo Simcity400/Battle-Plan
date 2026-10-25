@@ -1941,6 +1941,16 @@ impl coordinator::BuildTarget for Coordinator {
             let worker_etas =
                 matches!(name, "overlay" | "movers").then(|| Arc::clone(&worker_etas));
             jobs.push_back(HeldJob { name, work: Box::new(move || {
+                let _cost = replay_frame::cpu::scope("viewer", Some(match name {
+                    "political" => "territory",
+                    "names" => "world names",
+                    "overlay" | "movers" => "actors/units",
+                    "rails" => "rails",
+                    "buildings" => "buildings",
+                    "fog" => "fog",
+                    "snow" => "weather",
+                    _ => "other",
+                }));
                 job_trace.start(name);
                 if !alive.load(Ordering::Relaxed) {
                     // Dropping `work` fills its slots with nothing.
@@ -2216,12 +2226,15 @@ impl coordinator::BuildTarget for Coordinator {
                     let aircraft = view.aircraft_plan(&movers_perspective)?;
                     laps.lap("aircraft_plan");
                     let units = Arc::new(units);
-                    let effects = weather_effects::prepare(
-                        &view.weather_effects,
-                        view.weather_field()?,
-                        camera,
-                        viewport,
-                    );
+                    let effects = {
+                        let _cost = replay_frame::cpu::scope("viewer", Some("weather"));
+                        weather_effects::prepare(
+                            &view.weather_effects,
+                            view.weather_field()?,
+                            camera,
+                            viewport,
+                        )
+                    };
                     laps.lap("weather_effects_prepare");
                     let impacts = Arc::new(view.nuclear_impacts()?);
                     laps.lap("nuclear_impacts");
@@ -2250,6 +2263,7 @@ impl coordinator::BuildTarget for Coordinator {
             "snow",
             Box::new(move |view, _spans| {
                 let live = || {
+                    let _cost = replay_frame::cpu::scope("viewer", Some("weather"));
                     view.snow_cells().and_then(|cells| {
                         memos.snow_shared.get_or_build(view.frame, |projected| {
                             map_snow::build(cells, projected, &view.assets.post.volumes)
@@ -2258,6 +2272,7 @@ impl coordinator::BuildTarget for Coordinator {
                 };
                 Part::Snow(match view.map_export.reader(&snow_replay) {
                     Ok(exports) => {
+                        let _cost = replay_frame::cpu::scope("viewer", Some("codec"));
                         exports.build_or_restore_admitted(
                             view.frame.branch,
                             view.frame.hour,

@@ -211,6 +211,7 @@ impl Scene {
         queue: &wgpu::Queue,
         input: SceneInput<'_>,
     ) -> io::Result<SceneOutput> {
+        let _cost = replay_frame::cpu::scope("viewer", Some("upload"));
         let applied = SceneOutput::Applied;
         Ok(match input {
             SceneInput::WarmTrains(assets) => {
