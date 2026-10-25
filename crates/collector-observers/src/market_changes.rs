@@ -229,8 +229,9 @@ pub fn boundary(clock: Option<engine_native::cgame_state::Clock<u64>>, invalidat
     // Recover current state before the existing economy census runs. The
     // occurrence interval keeps its own loss verdict through the later drain.
     let invalidate = invalidate || LEDGER.interval_incomplete() || held::recovery_requested();
+    let recover_countries = !invalidate && held::begin_hour();
     for watch in &WATCHES {
-        watch.boundary(invalidate);
+        watch.boundary(invalidate || recover_countries);
     }
     VARIABLES_WATCH.boundary(invalidate);
     RESET_WATCH.boundary(invalidate);
@@ -1236,6 +1237,22 @@ pub mod test_support {
         }
         pub fn automation(&self, owner: u32) {
             drop(WATCHES[AUTOMATION].notify(country_receiver(owner)));
+        }
+        pub fn country_domain(&self, owner: u32, domain: usize) {
+            drop(WATCHES[domain].notify(country_receiver(owner)));
+        }
+        pub fn inventory(&self, memory: &impl Memory, owner: u32) {
+            let event = root(
+                memory,
+                0,
+                lease::Identity {
+                    giver: owner,
+                    ..Default::default()
+                },
+                INVENTORY,
+            )
+            .unwrap();
+            mark_holder(event, 0, INVENTORY_MARK, 0).unwrap();
         }
         pub fn contract_delivery(&self, memory: &impl Memory, pointer: usize) {
             let event = contract_root(memory, 0, pointer, CONTRACT_STATE).unwrap();

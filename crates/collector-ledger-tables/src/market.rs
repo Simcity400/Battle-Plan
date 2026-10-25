@@ -120,6 +120,7 @@ impl Captured {
                     refusals: [Some(reason); 3],
                     events: std::mem::take(&mut self.events),
                     full,
+                    countries_full: full,
                 });
             }
         }
@@ -184,8 +185,12 @@ impl Captured {
         let first = |rows, owners, refusal| match refusal {
             Some(reason) => unavailable(reason).into(),
             None => match projection.as_deref() {
-                Some(projection) => projection.certified_owners(rows, owners, changes.full),
-                None if changes.full => TableInput::SharedComplete(std::sync::Arc::new(rows)),
+                Some(projection) => {
+                    projection.certified_owners(rows, owners, changes.countries_full)
+                }
+                None if changes.countries_full => {
+                    TableInput::SharedComplete(std::sync::Arc::new(rows))
+                }
                 None => unavailable("market conversion has no baseline projection").into(),
             },
         };
@@ -280,7 +285,7 @@ mod tests {
             assert_eq!(
                 *outcome,
                 Outcome::Unavailable {
-                    reason: "market bootstrap instance or manager unreadable"
+                    reason: "market bootstrap manager unreadable"
                 }
             );
         }
@@ -602,6 +607,7 @@ mod tests {
                 contracts: Vec::new(),
                 agreements: Vec::new(),
                 full: false,
+                countries_full: false,
             });
             pack.outcomes = pack.observed_outcomes();
             assert_eq!(pack.outcomes()[3], Outcome::Rows { len: 4 });
@@ -680,6 +686,7 @@ mod tests {
             contracts: Vec::new(),
             agreements: Vec::new(),
             full: true,
+            countries_full: true,
         });
         pack.outcomes = pack.observed_outcomes();
         assert_eq!(pack.outcomes()[3], Outcome::Rows { len: 2 });
@@ -717,6 +724,7 @@ mod tests {
             contracts: Vec::new(),
             agreements: Vec::new(),
             full: true,
+            countries_full: true,
         });
         pack.outcomes = pack.observed_outcomes();
         let outcomes = pack.outcomes();

@@ -72,12 +72,19 @@ impl Native {
         self.u64(entries, VARIANT as u64);
         self.u64(entries + 8, amount as u64);
     }
-    fn country(&mut self, id: u32, pointer: usize, slot: u32, instance: u32) -> ccountry::Country {
+    fn country(
+        &mut self,
+        id: u32,
+        pointer: usize,
+        slot: u32,
+        surrender_target: u32,
+    ) -> ccountry::Country {
         let status = pointer + 0x1800;
         let stock = pointer + 0x1900;
         let resources = pointer + 0x1a00;
+        self.u64(pointer, ccountry::VTABLE_RVA as u64);
         self.u32(pointer + ccountry::ID, id);
-        self.u32(pointer + ccountry::ID_INSTANCE, instance);
+        self.u32(pointer + ccountry::ID_INSTANCE, surrender_target);
         self.u64(pointer + ccountry::EQUIPMENT_MARKET_STATUS, status as u64);
         self.u64(pointer + ccountry::RESOURCES, resources as u64);
         self.u64(
@@ -97,7 +104,7 @@ impl Native {
         self.tree(status + market::COUNTRY_PRICE_LEVELS, pointer + 0x1c00);
         self.u64(
             status + market::COUNTRY_SUBSIDY_TOTAL,
-            12345 + u64::from(instance),
+            12345 + u64::from(surrender_target),
         );
         self.bytes[status + market::AUTOMATION] = 1;
         ccountry::Country {
@@ -214,6 +221,24 @@ fn record(
         "hour {hour}: {:?}",
         pack.outcomes()
     );
+    let decoded = encode_capture(pack, hour, encoder, decoder);
+    for table in &TABLES[..3] {
+        let TableView::Complete(rows) = &*decoded.tables[table.index()] else {
+            panic!("{table:?} unavailable");
+        };
+        for row in rows.iter() {
+            assert_eq!(row.not_recorded_fields(), 0);
+            row.visit_nested_field_gaps(&mut |f| panic!("missing {f}"));
+        }
+    }
+    decoded
+}
+fn encode_capture(
+    pack: Captured,
+    hour: i32,
+    encoder: &mut FrameEncoder,
+    decoder: &mut FrameDecoder,
+) -> DecodedFrame {
     let scratch = ProjectionScratch::default();
     let mut projection = Projection::new(encoder, 1, hour, false, &scratch);
     let inputs = pack.table_inputs(Some(&mut projection));
@@ -230,15 +255,6 @@ fn record(
     let frame = wire.decode().unwrap();
     replay::spool::encode_record(&replay::spool::Record::Frame(frame.clone())).unwrap();
     let decoded = decoder.apply(&frame).unwrap();
-    for table in &TABLES[..3] {
-        let TableView::Complete(rows) = &*decoded.tables[table.index()] else {
-            panic!("{table:?} unavailable");
-        };
-        for row in rows.iter() {
-            assert_eq!(row.not_recorded_fields(), 0);
-            row.visit_nested_field_gaps(&mut |f| panic!("missing {f}"));
-        }
-    }
     decoded.clone()
 }
 struct NoReads;
@@ -472,4 +488,370 @@ fn daily_discovery_then_observed_birth_and_removal_needs_no_surviving_definition
         [producer::CONTRACT_CREATED, producer::CONTRACT_REMOVED]
     );
     assert!(events.iter().all(|r| r.agreement == id(20)));
+}
+
+#[test]
+fn surrender_target_changes_do_not_change_inventory_or_marked_country_identity() {
+    let session = producer::test_support::Session::default();
+    let mut memory = Native::new();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::for_tables(&TABLES);
+    memory.clock(100);
+    boundary(100);
+    memory.start();
+    let baseline = record(&memory, 100, &mut encoder, &mut decoder);
+    memory.forbidden.extend([0x100c..0x1010, 0x300c..0x3010]);
+    for (index, target) in [77, 0, 5000, u32::MAX, 19, 0, 31, 0]
+        .into_iter()
+        .enumerate()
+    {
+        let hour = 101 + index as i32;
+        memory.clock(hour);
+        memory.u32(0x300c, target);
+        if index % 4 == 0 {
+            session.inventory(&memory, 5000);
+        } else {
+            session.country_domain(5000, index % 4 - 1);
+        }
+        boundary(hour);
+        memory.start();
+        let frame = record(&memory, hour, &mut encoder, &mut decoder);
+        assert_eq!(
+            frame.complete::<tables::CountryMarket>().unwrap(),
+            baseline.complete::<tables::CountryMarket>().unwrap()
+        );
+    }
+    boundary(109);
+    record(&NoReads, 109, &mut encoder, &mut decoder);
+}
+
+#[test]
+fn authenticated_census_replacement_rebinds_holdings_without_a_reset_occurrence() {
+    let session = producer::test_support::Session::default();
+    let mut memory = Native::new();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::for_tables(&TABLES);
+    memory.clock(100);
+    boundary(100);
+    memory.start();
+    record(&memory, 100, &mut encoder, &mut decoder);
+    memory.clock(101);
+    let replacement = memory.country(5000, 0x5000, 1, 2);
+    memory.u64(0x5000 + 0x1b00 + 8, 9_900_000);
+    session.inventory(&memory, 5000);
+    session.automation(5000);
+    memory.u64(CONTRACT + contract::EQUIPMENT_PROGRESS, 50_000);
+    session.contract_delivery(&memory, CONTRACT);
+    boundary(101);
+    held::discover_country(&memory, 0, GAME, replacement, 0);
+    memory.forbidden.push(0x3000..0x4d00);
+    let frame = record(&memory, 101, &mut encoder, &mut decoder);
+    let rows = frame.complete::<tables::CountryMarket>().unwrap();
+    assert_eq!(rows.len(), 2);
+    let row = rows.iter().find(|r| r.country == 5000).unwrap();
+    assert_eq!(row.inventory.items[0].amount_raw, 9_900_000);
+    assert_eq!(row.subsidy_total_raw, 12347);
+    assert_eq!(
+        frame
+            .complete::<tables::MarketContractTerms>()
+            .unwrap()
+            .len(),
+        1
+    );
+    let events = frame.complete::<tables::MarketEvents>().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        (events[0].kind, events[0].amount_raw),
+        (producer::CONTRACT_DELIVERED, 1_000_000)
+    );
+    boundary(102);
+    record(&NoReads, 102, &mut encoder, &mut decoder);
+}
+
+struct Missing<'a> {
+    native: &'a Native,
+    range: std::ops::Range<usize>,
+}
+impl Memory for Missing<'_> {
+    fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+        if at < self.range.end && at + out.len() > self.range.start {
+            return false;
+        }
+        self.native.copy(at, out)
+    }
+}
+
+#[test]
+fn each_country_read_refusal_recovers_first_exact_hour_and_keeps_contract_totals() {
+    for domain in 0..4 {
+        let session = producer::test_support::Session::default();
+        let mut memory = Native::new();
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::for_tables(&TABLES);
+        memory.clock(100);
+        boundary(100);
+        memory.start();
+        record(&memory, 100, &mut encoder, &mut decoder);
+        for hour in 101..=103 {
+            memory.clock(hour);
+            memory.u64(0x3000 + 0x1b00 + 8, hour as u64 * 100_000);
+            memory.u64(0x4800 + market::COUNTRY_SUBSIDY_TOTAL, hour as u64);
+            memory.u64(
+                CONTRACT + contract::EQUIPMENT_PROGRESS,
+                (hour - 100) as u64 * 25_000,
+            );
+            session.contract_delivery(&memory, CONTRACT);
+            if hour == 101 {
+                if domain == 0 {
+                    session.inventory(&memory, 5000);
+                } else {
+                    session.country_domain(5000, domain - 1);
+                }
+            }
+            boundary(hour);
+            memory.start();
+            let mut pack = Captured::vacant();
+            let fault = Missing {
+                native: &memory,
+                range: 0x3000..0x3008,
+            };
+            if hour < 103 {
+                pack.capture_growing(&fault, 0, GAME, hour, false);
+            } else {
+                pack.capture_growing(&memory, 0, GAME, hour, false);
+            }
+            assert_eq!(
+                matches!(pack.outcomes()[0], Outcome::Unavailable { .. }),
+                hour < 103
+            );
+            assert!(matches!(pack.outcomes()[1], Outcome::Rows { .. }));
+            assert!(matches!(pack.outcomes()[3], Outcome::Rows { .. }));
+            let frame = encode_capture(pack, hour, &mut encoder, &mut decoder);
+            if hour < 103 {
+                assert!(matches!(
+                    &*frame.tables[TableId::CountryMarket.index()],
+                    TableView::Unavailable { .. }
+                ));
+            } else {
+                let rows = frame.complete::<tables::CountryMarket>().unwrap();
+                assert_eq!(rows.len(), 2);
+                let row = rows.iter().find(|r| r.country == 5000).unwrap();
+                assert_eq!(row.inventory.items[0].amount_raw, 10_300_000);
+                assert_eq!(row.subsidy_total_raw, 103);
+            }
+            let events = frame.complete::<tables::MarketEvents>().unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(
+                (events[0].kind, events[0].amount_raw),
+                (producer::CONTRACT_DELIVERED, 500_000)
+            );
+        }
+        boundary(104);
+        assert!(!held::full_publication_required());
+        record(&NoReads, 104, &mut encoder, &mut decoder);
+    }
+}
+
+#[test]
+fn unreadable_reset_holder_is_retained_for_first_exact_rebind() {
+    let session = producer::test_support::Session::default();
+    let mut memory = Native::new();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::for_tables(&TABLES);
+    memory.clock(100);
+    boundary(100);
+    memory.start();
+    record(&memory, 100, &mut encoder, &mut decoder);
+    memory.clock(101);
+    memory.country(5000, 0x3000, 1, 2);
+    session.reset_country(&memory, 5000);
+    boundary(101);
+    let mut pack = Captured::vacant();
+    pack.capture_growing(
+        &Missing {
+            native: &memory,
+            range: 0x4800..0x4808,
+        },
+        0,
+        GAME,
+        101,
+        false,
+    );
+    assert!(matches!(pack.outcomes()[0], Outcome::Unavailable { .. }));
+    encode_capture(pack, 101, &mut encoder, &mut decoder);
+    memory.clock(102);
+    boundary(102);
+    memory.start();
+    let frame = record(&memory, 102, &mut encoder, &mut decoder);
+    let row = frame
+        .complete::<tables::CountryMarket>()
+        .unwrap()
+        .iter()
+        .find(|r| r.country == 5000)
+        .unwrap();
+    assert_eq!(row.subsidy_total_raw, 12347);
+    assert_eq!(row.inventory.items[0].amount_raw, 700_000);
+    boundary(103);
+    record(&NoReads, 103, &mut encoder, &mut decoder);
+}
+
+#[test]
+fn country_identity_validation_stays_strict_and_recovers_after_each_bad_holder() {
+    for field in [
+        0x3000,
+        0x3000 + ccountry::ID,
+        0x4800 + market::COUNTRY_BACKLINK,
+        0x4800 + engine_production::cequipment_market_status::MANAGER,
+    ] {
+        let session = producer::test_support::Session::default();
+        let mut memory = Native::new();
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::for_tables(&TABLES);
+        memory.clock(100);
+        boundary(100);
+        memory.start();
+        record(&memory, 100, &mut encoder, &mut decoder);
+        let previous = memory.bytes[field..field + 8].to_vec();
+        memory.u64(field, 123);
+        memory.clock(101);
+        session.inventory(&memory, 5000);
+        boundary(101);
+        let mut pack = Captured::vacant();
+        pack.capture_growing(&memory, 0, GAME, 101, false);
+        assert!(matches!(pack.outcomes()[0], Outcome::Unavailable { .. }));
+        encode_capture(pack, 101, &mut encoder, &mut decoder);
+        memory.bytes[field..field + 8].copy_from_slice(&previous);
+        memory.clock(102);
+        boundary(102);
+        memory.start();
+        let frame = record(&memory, 102, &mut encoder, &mut decoder);
+        assert_eq!(frame.complete::<tables::CountryMarket>().unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn country_recovery_rebinds_a_fresh_market_manager_from_the_existing_census() {
+    let session = producer::test_support::Session::default();
+    let mut memory = Native::new();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::for_tables(&TABLES);
+    memory.clock(100);
+    boundary(100);
+    memory.start();
+    record(&memory, 100, &mut encoder, &mut decoder);
+    const NEXT_MANAGER: usize = 0xa000;
+    memory.u64(GAME + cgame_state::MARKET_MANAGER, NEXT_MANAGER as u64);
+    for status in [0x2800, 0x4800] {
+        memory.u64(
+            status + engine_production::cequipment_market_status::MANAGER,
+            NEXT_MANAGER as u64,
+        );
+    }
+    memory.clock(101);
+    session.automation(5000);
+    boundary(101);
+    let mut pack = Captured::vacant();
+    pack.capture_growing(&memory, 0, GAME, 101, false);
+    assert!(matches!(pack.outcomes()[0], Outcome::Unavailable { .. }));
+    encode_capture(pack, 101, &mut encoder, &mut decoder);
+    memory.clock(102);
+    boundary(102);
+    memory.start();
+    let frame = record(&memory, 102, &mut encoder, &mut decoder);
+    assert_eq!(frame.complete::<tables::CountryMarket>().unwrap().len(), 2);
+    assert_eq!(
+        frame
+            .complete::<tables::MarketContractTerms>()
+            .unwrap()
+            .len(),
+        1
+    );
+    boundary(103);
+    record(&NoReads, 103, &mut encoder, &mut decoder);
+}
+
+#[test]
+fn country_market_writer_rebinding_has_no_country_count_or_id_cap() {
+    let session = producer::test_support::Session::default();
+    producer::presize(1500, 1500);
+    let mut memory = Native::new();
+    memory.bytes.resize(0x20000 + 1498 * 0x2000, 0);
+    let holders: Vec<_> = (0..1498)
+        .map(|index| {
+            memory.country(
+                10_000 + index,
+                0x20000 + index as usize * 0x2000,
+                index + 2,
+                0,
+            )
+        })
+        .collect();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::for_tables(&TABLES);
+    memory.clock(100);
+    boundary(100);
+    memory.start();
+    for country in &holders {
+        held::discover_country(&memory, 0, GAME, *country, 0);
+    }
+    held::finish_seed(true);
+    record(&memory, 100, &mut encoder, &mut decoder);
+    memory.clock(101);
+    for country in &holders {
+        memory.u32(country.pointer + ccountry::ID_INSTANCE, 5000);
+        session.inventory(&memory, country.id);
+        session.automation(country.id);
+    }
+    boundary(101);
+    let frame = record(&memory, 101, &mut encoder, &mut decoder);
+    let rows = frame.complete::<tables::CountryMarket>().unwrap();
+    assert_eq!(rows.len(), 1500);
+    assert!(
+        rows.iter()
+            .all(|row| row.inventory.items[0].amount_raw == 700_000)
+    );
+}
+
+#[test]
+fn failed_initial_country_seed_recovers_without_publishing_a_default_row() {
+    let _session = producer::test_support::Session::default();
+    let mut memory = Native::new();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::for_tables(&TABLES);
+    memory.clock(100);
+    boundary(100);
+    let fault = Missing {
+        native: &memory,
+        range: 0x4800..0x4808,
+    };
+    for (id, canonical_slot, pointer) in [(0, 0, 0x1000), (5000, 1, 0x3000)] {
+        held::discover_country(
+            &fault,
+            0,
+            GAME,
+            ccountry::Country {
+                id,
+                canonical_slot,
+                pointer,
+            },
+            0,
+        );
+    }
+    held::finish_seed(true);
+    held::recover_contracts(&memory, 0, GAME);
+    let mut pack = Captured::vacant();
+    pack.capture_growing(&fault, 0, GAME, 100, false);
+    assert!(matches!(pack.outcomes()[0], Outcome::Unavailable { .. }));
+    encode_capture(pack, 100, &mut encoder, &mut decoder);
+    memory.clock(101);
+    boundary(101);
+    memory.start();
+    let frame = record(&memory, 101, &mut encoder, &mut decoder);
+    let rows = frame.complete::<tables::CountryMarket>().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| {
+        row.inventory.items[0].amount_raw == 700_000 && row.subsidy_total_raw == 12346
+    }));
+    boundary(102);
+    record(&NoReads, 102, &mut encoder, &mut decoder);
 }

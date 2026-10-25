@@ -450,11 +450,7 @@ pub(super) fn acquire_marked(
                 .countries
                 .get_mut(&owner)
                 .ok_or("market inventory holder absent")?;
-            if read::<u32>(memory, held.identity.pointer + ccountry::ID_INSTANCE)
-                != Some(held.instance)
-            {
-                return Err("market inventory holder identity changed");
-            }
+            authenticate_country(memory, base, held.identity)?;
             market::country(
                 memory,
                 base,

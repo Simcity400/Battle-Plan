@@ -20,7 +20,6 @@ static RECOVERY: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<State> = Mutex::new(State::new(0));
 struct Country {
     identity: ccountry::Country,
-    instance: u32,
     manager: usize,
     cutoff: u64,
     row: CountryMarketRow,
@@ -41,6 +40,7 @@ struct State {
     epoch: u64,
     complete: bool,
     publish_full: bool,
+    recover_countries: bool,
     contracts_complete: bool,
     contracts_attempted: bool,
     discovered_contracts: BTreeSet<(u32, u64, u8)>,
@@ -56,8 +56,7 @@ struct State {
     agreements: BTreeMap<(u32, u64), Agreement>,
     changed: [BTreeSet<u32>; 2],
     changed_contracts: BTreeSet<(u32, u64, u8)>,
-    pending_countries: BTreeMap<u32, (ccountry::Country, u32, usize)>,
-    reset_countries: BTreeSet<u32>,
+    pending_countries: BTreeMap<u32, (ccountry::Country, usize)>,
     unavailable_agreements: BTreeSet<(u32, u64)>,
     unavailable_contracts: BTreeSet<(u32, u64, u8)>,
     changed_agreements: BTreeSet<(u32, u64)>,
@@ -71,6 +70,7 @@ impl State {
             epoch,
             complete: false,
             publish_full: true,
+            recover_countries: false,
             contracts_complete: false,
             contracts_attempted: false,
             discovered_contracts: BTreeSet::new(),
@@ -87,7 +87,6 @@ impl State {
             changed: [const { BTreeSet::new() }; 2],
             changed_contracts: BTreeSet::new(),
             pending_countries: BTreeMap::new(),
-            reset_countries: BTreeSet::new(),
             unavailable_agreements: BTreeSet::new(),
             unavailable_contracts: BTreeSet::new(),
             changed_agreements: BTreeSet::new(),
@@ -100,6 +99,15 @@ impl State {
 pub fn invalidate() {
     EPOCH.fetch_add(1, Ordering::SeqCst);
     RECOVERY.store(false, Ordering::SeqCst);
+}
+pub(super) fn begin_hour() -> bool {
+    let mut state = STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if state.refusals[0].take().is_some() {
+        state.recover_countries = true;
+    }
+    state.recover_countries
 }
 pub(super) fn recovery_requested() -> bool {
     RECOVERY.load(Ordering::SeqCst)
@@ -337,62 +345,36 @@ fn read_runtime(
         history_collected_raw: scalar(memory, at, market::CONTRACT_HISTORY_COLLECTED)?,
     })
 }
-/// Existing census has authenticated the country, canonical slot and instance.
-/// Only a newly admitted/replaced country or invalidated world reads its holders.
-pub fn seed_country(
+fn read_country(
     memory: &impl Memory,
     base: usize,
-    country: ccountry::Country,
-    instance: u32,
+    identity: ccountry::Country,
     manager: usize,
-) {
-    if !ENABLED.load(Ordering::SeqCst) {
-        return;
+) -> Result<Country, &'static str> {
+    authenticate_country(memory, base, identity)?;
+    let mut native = market::Country::default();
+    market::country(
+        memory,
+        base,
+        identity,
+        manager,
+        market::Demand::ALL,
+        &mut native,
+    )?;
+    RESET_WATCH
+        .register(country_receiver(identity.id))
+        .ok_or("market reset holder registration uncertified")?;
+    for watch in &WATCHES {
+        watch
+            .register(country_receiver(identity.id))
+            .ok_or("market holder registration uncertified")?;
     }
-    let mut state = STATE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let epoch = EPOCH.load(Ordering::Acquire);
-    if state.epoch != epoch {
-        *state = State::new(epoch);
-    }
-    if state
-        .countries
-        .get(&country.id)
-        .is_some_and(|held| held.identity == country && held.instance == instance)
-    {
-        return;
-    }
-    if state.countries.contains_key(&country.id) {
-        // Census can discover replacement before this interval's terminal
-        // records drain. The ordered reset must consume the old baselines first.
-        state
-            .pending_countries
-            .insert(country.id, (country, instance, manager));
-        return;
-    }
-
-    let cutoff = OCCURRENCE.load(Ordering::Acquire);
-    let result = (|| {
-        let mut native = market::Country::default();
-        market::country(
-            memory,
-            base,
-            country,
-            manager,
-            market::Demand::ALL,
-            &mut native,
-        )?;
-        RESET_WATCH
-            .register(country_receiver(country.id))
-            .ok_or("market reset holder registration uncertified")?;
-        for watch in &WATCHES {
-            watch
-                .register(country_receiver(country.id))
-                .ok_or("market holder registration uncertified")?;
-        }
-        let row = CountryMarketRow {
-            country: country.id,
+    Ok(Country {
+        identity,
+        manager,
+        cutoff: OCCURRENCE.load(Ordering::Acquire),
+        row: CountryMarketRow {
+            country: identity.id,
             inventory: pool(
                 native.stockpile.allow_zero,
                 native
@@ -408,37 +390,65 @@ pub fn seed_country(
             auto_accept_market_access: native.auto_accept_market_access,
             auto_send_market_access: native.auto_send_market_access,
             auto_accept_purchase: native.auto_accept_purchase,
-        };
-        state.countries.insert(
-            country.id,
-            Country {
-                identity: country,
-                instance,
-                manager,
-                cutoff,
-                row,
-                scratch: native,
-            },
-        );
-        state.changed[0].insert(country.id);
-        Ok(())
-    })();
-    if let Err(reason) = result {
-        state.refusals[0] = Some(reason);
-        state.countries.insert(
-            country.id,
-            Country {
-                identity: country,
-                instance,
-                manager,
-                cutoff,
-                row: CountryMarketRow {
-                    country: country.id,
-                    ..Default::default()
-                },
-                scratch: market::Country::default(),
-            },
-        );
+        },
+        scratch: native,
+    })
+}
+fn authenticate_country(
+    memory: &impl Memory,
+    base: usize,
+    country: ccountry::Country,
+) -> Result<(), &'static str> {
+    let expected = base
+        .checked_add(ccountry::VTABLE_RVA)
+        .ok_or("market country vtable address overflow")? as u64;
+    if read::<u64>(memory, country.pointer) != Some(expected)
+        || scalar::<u32>(memory, country.pointer, ccountry::ID)? != country.id
+    {
+        return Err("market country holder identity mismatch");
+    }
+    Ok(())
+}
+/// The existing census authenticates membership; reset occurrences order old delivery baselines.
+pub fn seed_country(memory: &impl Memory, base: usize, country: ccountry::Country, manager: usize) {
+    if !ENABLED.load(Ordering::SeqCst) {
+        return;
+    }
+    let mut state = STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let epoch = EPOCH.load(Ordering::Acquire);
+    if state.epoch != epoch {
+        *state = State::new(epoch);
+    }
+    if state
+        .countries
+        .get(&country.id)
+        .is_some_and(|held| held.identity == country && held.manager == manager)
+        && !state.pending_countries.contains_key(&country.id)
+    {
+        return;
+    }
+    if state.countries.contains_key(&country.id)
+        || state.pending_countries.contains_key(&country.id)
+    {
+        state
+            .pending_countries
+            .insert(country.id, (country, manager));
+        return;
+    }
+    let cutoff = OCCURRENCE.load(Ordering::Acquire);
+    match read_country(memory, base, country, manager) {
+        Ok(held) => {
+            state.countries.insert(country.id, held);
+            state.changed[0].insert(country.id);
+        }
+        Err(reason) => {
+            state.refusals[0] = Some(reason);
+            state
+                .pending_countries
+                .insert(country.id, (country, manager));
+        }
     }
     let lease_seed = (|| {
         let resources: u64 = scalar(memory, country.pointer, ccountry::RESOURCES)?;
@@ -514,8 +524,7 @@ pub fn seed_country(
         state.refusals[1] = Some(reason);
     }
 }
-/// Called by the existing hourly resource census. Existing holders cost only
-/// an owned identity lookup; only a new holder reads an instance or market root.
+/// The existing census reads the market root only for discovery or recovery.
 pub fn discover_country(
     memory: &impl Memory,
     base: usize,
@@ -538,22 +547,16 @@ pub fn discover_country(
             .countries
             .get(&country.id)
             .is_some_and(|held| held.identity == country)
+            && !state.recover_countries
+            && !state.pending_countries.contains_key(&country.id)
         {
             return;
         }
     }
-    let instance = read::<u32>(memory, country.pointer + ccountry::ID_INSTANCE);
     let manager = read::<u64>(memory, game + engine_native::cgame_state::MARKET_MANAGER);
-    match (instance, manager) {
-        (Some(instance), Some(manager)) if manager != 0 => {
-            seed_country(memory, base, country, instance, manager as usize)
-        }
-        _ => {
-            STATE
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .failure = Some("market bootstrap instance or manager unreadable")
-        }
+    match manager {
+        Some(manager) if manager != 0 => seed_country(memory, base, country, manager as usize),
+        _ => refuse("market bootstrap manager unreadable"),
     }
 }
 pub fn seed_contract(memory: &impl Memory, base: usize, pointer: usize, id: u64, owner: u32) {
@@ -701,6 +704,7 @@ pub fn finish_seed(complete: bool) {
         state
             .failure
             .get_or_insert("market bootstrap census incomplete");
+        RECOVERY.store(true, Ordering::SeqCst);
     }
 }
 pub fn refuse(reason: &'static str) {
@@ -712,82 +716,41 @@ pub fn refuse(reason: &'static str) {
 }
 fn reset_country(state: &mut State, owner: u32) {
     if let Some(held) = state.countries.remove(&owner) {
-        state.pending_countries.entry(owner).or_insert((
-            held.identity,
-            held.instance,
-            held.manager,
-        ));
+        state
+            .pending_countries
+            .entry(owner)
+            .or_insert((held.identity, held.manager));
     }
-    state.reset_countries.insert(owner);
     // Country holdings are reset, while live exchanges and manager-owned
     // contracts keep their identities. Their own removal/amendment witnesses
     // decide lifetime; purging them here would discard surviving baselines.
     state.dirty_inventory.remove(&owner);
     state.changed[0].insert(owner);
 }
-// The ordered reset has consumed terminal records before any baseline is
-// replaced. Reread only that country's holdings; post-reset agreement terms
-// and contract admissions are already supplied by their reached writers.
-fn reseed_reset_countries(state: &mut State, memory: &impl Memory, base: usize) -> BTreeSet<u32> {
+// Rebind holdings only after consuming the interval's ordered delivery records.
+fn reseed_countries(state: &mut State, memory: &impl Memory, base: usize) -> BTreeSet<u32> {
+    if state.recover_countries {
+        for (&owner, held) in &state.countries {
+            state
+                .pending_countries
+                .entry(owner)
+                .or_insert((held.identity, held.manager));
+        }
+    }
+    let pending = std::mem::take(&mut state.pending_countries);
     let mut acquired = BTreeSet::new();
-    for owner in std::mem::take(&mut state.reset_countries) {
-        let Some((identity, _, manager)) = state.pending_countries.remove(&owner) else {
-            continue;
-        };
-        let result = (|| {
-            if read::<u32>(memory, identity.pointer + ccountry::ID) != Some(owner) {
-                return Err("market reset country identity changed");
-            }
-            let instance = scalar(memory, identity.pointer, ccountry::ID_INSTANCE)?;
-            let mut native = market::Country::default();
-            market::country(
-                memory,
-                base,
-                identity,
-                manager,
-                market::Demand::ALL,
-                &mut native,
-            )?;
-            RESET_WATCH
-                .register(country_receiver(owner))
-                .ok_or("market reset holder registration uncertified")?;
-            for watch in &WATCHES {
-                watch
-                    .register(country_receiver(owner))
-                    .ok_or("market reset country registration uncertified")?;
-            }
-            Ok(Country {
-                identity,
-                instance,
-                manager,
-                cutoff: OCCURRENCE.load(Ordering::Acquire),
-                row: CountryMarketRow {
-                    country: owner,
-                    inventory: pool(
-                        native.stockpile.allow_zero,
-                        native
-                            .stockpile
-                            .equipment
-                            .iter()
-                            .map(|e| (e.variant, e.amount_raw)),
-                    )
-                    .into(),
-                    prices: levels(&native.price_levels).into(),
-                    subsidies: subsidies(&native.subsidies).into(),
-                    subsidy_total_raw: native.subsidy_total_raw,
-                    auto_accept_market_access: native.auto_accept_market_access,
-                    auto_send_market_access: native.auto_send_market_access,
-                    auto_accept_purchase: native.auto_accept_purchase,
-                },
-                scratch: native,
-            })
-        })();
-        match result {
+    for (owner, (identity, manager)) in pending {
+        match read_country(memory, base, identity, manager) {
             Ok(country) => {
                 state.countries.insert(owner, country);
+                state.changed[0].insert(owner);
+                state.dirty_inventory.remove(&owner);
                 acquired.insert(owner);
             }
-            Err(reason) => state.refusals[0] = Some(reason),
+            Err(reason) => {
+                state.refusals[0] = Some(reason);
+                state.pending_countries.insert(owner, (identity, manager));
+            }
         }
     }
     acquired
@@ -1097,6 +1060,7 @@ pub struct Changes {
     pub contracts: Vec<MarketContractTermsRow>,
     pub agreements: Vec<LendLeaseAgreementRow>,
     pub full: bool,
+    pub countries_full: bool,
 }
 fn observe_interval(
     state: &mut State,
@@ -1165,8 +1129,7 @@ fn observe_interval(
         }
     }
 }
-/// Only marked domains and native occurrence operands are acquired. No fallback
-/// polling is allowed when a writer certificate or bootstrap is missing.
+/// Read marked domains, or recertify country holdings after a refused hour.
 pub fn acquire(
     memory: &impl Memory,
     base: usize,
@@ -1195,10 +1158,7 @@ pub fn acquire(
             state.refusals[1] = Some("market new contract has no observed birth");
         }
     }
-    let reset_holdings = reseed_reset_countries(&mut state, memory, base);
-    if !state.pending_countries.is_empty() {
-        return Err("market country replacement has no ordered reset witness");
-    }
+    let reset_holdings = reseed_countries(&mut state, memory, base);
     acquire_admissions(&mut state, memory, base);
     worker::acquire_marked(&mut state, memory, base, &mut observed);
     let mut variable_failure = None;
@@ -1250,11 +1210,8 @@ pub fn acquire(
                     failure = Some("market marked country has no bootstrap");
                     return;
                 };
-                if read::<u32>(memory, held.identity.pointer + ccountry::ID_INSTANCE)
-                    != Some(held.instance)
-                    || read::<u32>(memory, held.identity.pointer + ccountry::ID) != Some(owner)
-                {
-                    failure = Some("market marked country identity changed");
+                if let Err(reason) = authenticate_country(memory, base, held.identity) {
+                    failure = Some(reason);
                     return;
                 }
                 let demand = market::Demand {
@@ -1316,6 +1273,13 @@ pub fn acquire(
 }
 fn publish_changes(state: &mut State, full: bool) -> Changes {
     state.publish_full = false;
+    let countries_full = full || state.recover_countries;
+    if countries_full {
+        state.changed[0].extend(state.countries.keys().copied());
+    }
+    if state.refusals[0].is_none() {
+        state.recover_countries = false;
+    }
     let owners = state
         .changed
         .each_ref()
@@ -1361,6 +1325,7 @@ fn publish_changes(state: &mut State, full: bool) -> Changes {
         contracts,
         agreements,
         full,
+        countries_full,
     }
 }
 
@@ -1385,7 +1350,6 @@ pub(super) fn test_census(rows: [replay_data::rows::TableRows; 3]) {
                                 id: row.country,
                                 canonical_slot: row.country,
                             },
-                            instance: 0,
                             manager: 0,
                             cutoff: 0,
                             row,
