@@ -10,8 +10,9 @@ use engine_research::{
 use std::cell::{Cell, RefCell};
 
 pub const GAME: usize = 0x1000;
-const IMAGE_START: usize = modifier_definition::TABLE_RVA & !0xffff;
-const IMAGE_LEN: usize = 0x10000;
+pub const IMAGE_START: usize = modifier_definition::TABLE_RVA & !0xffff;
+pub const IMAGE_LEN: usize =
+    (tech::BASE_COST_SCALE_RVA + size_of::<i64>()).next_multiple_of(0x10000) - IMAGE_START;
 const STRIDE: usize = 0x8000;
 pub const STATUS: usize = 0x1800;
 pub const SLOTS: usize = 0x1980;

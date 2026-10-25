@@ -520,7 +520,15 @@ mod provenance_sites {
                 assert_eq!(route(entry.callers, caller.return_rva - 5), None);
             }
         }
-        assert_eq!(route(&STATE_OWNER_CALLERS, 0x006c_8232), Some("StateAnnex"));
+        let annex = STATE_OWNER_CALLERS
+            .iter()
+            .find(|caller| caller.route == "StateAnnex")
+            .unwrap();
+        assert_eq!(
+            route(&STATE_OWNER_CALLERS, annex.return_rva),
+            Some("StateAnnex")
+        );
+        assert_eq!(route(&STATE_OWNER_CALLERS, annex.return_rva - 5), None);
     }
 
     #[test]

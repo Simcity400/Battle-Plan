@@ -2982,15 +2982,16 @@ impl Processor {
         result: io::Result<PreparedFrame>,
     ) -> io::Result<PreparedFrame> {
         if let Err(error) = &result {
+            self.error(error);
+            let completed = self.drain_writer();
             self.stats
                 .order_counters
                 .observe_error(captured, branch, Some(error));
-            self.error(error);
+            completed?;
             if error.kind() != io::ErrorKind::OutOfMemory
                 && !crate::allocation::failed()
                 && let (Some(branch), Some(clock)) = (branch, &captured.clock)
             {
-                self.poll_writer()?;
                 let id = std::str::from_utf8(clock.campaign_id.as_bytes())
                     .map_err(|_| invalid("prepared campaign has invalid identity"))?;
                 let campaign = self.campaigns.get_mut(id).unwrap();
@@ -3303,15 +3304,13 @@ impl Processor {
         if let Some(ticks) = work.frame_encoding {
             self.stats.frame_encoding.record_ticks(ticks, frequency);
         }
-        if let Err(error) = result {
+        if result.is_err() {
             if crate::allocation::failed() {
-                return Err(error);
+                return result;
             }
-            witness.bind(
-                &mut self.stats.order_counters,
-                &Err(io::Error::from(error.kind())),
-            );
-            self.poll_writer()?;
+            let completed = self.drain_writer();
+            witness.bind(&mut self.stats.order_counters, &result);
+            completed?;
             let campaign = self.campaigns.get_mut(&id).unwrap();
             campaign.reset_after_write_failure();
             if !crate::allocation::failed() {
@@ -3323,7 +3322,7 @@ impl Processor {
                 )?;
                 self.retry_full = true;
             }
-            return Err(error);
+            return result;
         }
         let campaign = self.campaigns.get_mut(&id).unwrap();
         let mut frame = engine_allocation::boxed(QueuedFrame {
@@ -3361,16 +3360,14 @@ impl Processor {
                     receipt_bytes,
                 )
         })();
-        if let Err(error) = result {
+        if let Err(error) = &result {
             if crate::allocation::failed() {
-                return Err(error);
+                return result;
             }
-            self.error(&error);
-            frame.witness.bind(
-                &mut self.stats.order_counters,
-                &Err(io::Error::from(error.kind())),
-            );
-            self.poll_writer()?;
+            self.error(error);
+            let completed = self.drain_writer();
+            frame.witness.bind(&mut self.stats.order_counters, &result);
+            completed?;
             let campaign = self.campaigns.get_mut(&frame.id).unwrap();
             campaign.restore_context(std::mem::take(&mut frame.context))?;
             campaign.reset_after_write_failure();
@@ -3381,7 +3378,7 @@ impl Processor {
                 engine_allocation::string("spool write failed")?,
             )?;
             self.retry_full = true;
-            return Err(error);
+            return result;
         }
         crate::allocation::attempted_hour(None);
         self.retry_full |= retry_full || work.validation_refused;
@@ -6608,7 +6605,7 @@ mod tests {
         captured
     }
 
-    fn prepare_order_counter_sample(source: &mut Captured, hour: i32, seq: u64) {
+    pub(super) fn prepare_order_counter_sample(source: &mut Captured, hour: i32, seq: u64) {
         source.capture_seq = seq;
         source.clock = Some(clock(hour));
         source.qpc = 1000;

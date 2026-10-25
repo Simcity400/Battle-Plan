@@ -1046,17 +1046,28 @@ fn continued_recording(
     let key = String::from_utf8_lossy(campaign).to_ascii_lowercase();
     match selection.recordings.get(&key).map(Vec::as_slice) {
         // A recording that appeared since is this session's own only if it holds one of its
-        // sessions, or of those whose unsaved hours it continues.
+        // sessions, continued unsaved sessions, or a verified revision this session saved.
         None | Some([]) => match look()? {
             None => Ok(None),
             Some(path) => {
                 let continued = selection.continues.get(&key).map_or(&[][..], Vec::as_slice);
                 let found =
                     Replay::read_session_ids(&path).map_err(|error| failure(&path, error))?;
-                if found
+                let holds_session = found
                     .iter()
-                    .any(|session| sessions.contains(session) || continued.contains(session))
-                {
+                    .any(|session| sessions.contains(session) || continued.contains(session));
+                let saved_ancestor = if holds_session {
+                    false
+                } else if let Some(saved) = read_saved(&session_dir.join(&key)) {
+                    let previous = held_recording(&path)?;
+                    previous
+                        .require_undamaged()
+                        .map_err(|error| failure(&path, error))?;
+                    saved_ancestry(&saved, replay_dir, campaign, &path, &previous)?
+                } else {
+                    false
+                };
+                if holds_session || saved_ancestor {
                     Ok(Some(path))
                 } else {
                     Err(failure(
@@ -5055,6 +5066,24 @@ fn read_saved(campaign_dir: &Path) -> Option<Saved> {
     })
 }
 
+fn saved_ancestry(
+    saved: &Saved,
+    replay_dir: &Path,
+    campaign: &[u8],
+    base: &Path,
+    previous: &Replay,
+) -> Result<bool> {
+    let saved_folder = checkpoint_folder(&saved.replay)?;
+    Ok(
+        folder_key(saved_folder).map_err(|error| failure(saved_folder, error))?
+            == folder_key(replay_dir).map_err(|error| failure(replay_dir, error))?
+            && previous.campaign_id.eq_ignore_ascii_case(campaign)
+            && previous
+                .contains_revision(saved.revision)
+                .map_err(|error| failure(base, error))?,
+    )
+}
+
 fn verified_saved(
     campaign_dir: &Path,
     replay_dir: &Path,
@@ -5066,14 +5095,7 @@ fn verified_saved(
         return Ok(None);
     };
     let campaign = campaign_dir.file_name().unwrap().as_encoded_bytes();
-    let saved_folder = checkpoint_folder(&saved.replay)?;
-    if folder_key(saved_folder).map_err(|error| failure(saved_folder, error))?
-        != folder_key(replay_dir).map_err(|error| failure(replay_dir, error))?
-        || !previous.campaign_id.eq_ignore_ascii_case(campaign)
-        || !previous
-            .contains_revision(saved.revision)
-            .map_err(|error| failure(base, error))?
-    {
+    if !saved_ancestry(&saved, replay_dir, campaign, base, previous)? {
         return Ok(None);
     }
     if saved.replay != base || saved.revision != previous.revision() {
@@ -7253,7 +7275,7 @@ mod tests {
         admissions
             .admit(&session, &target, name, FIRST_LOAD)
             .unwrap();
-        let first = set_aside_segment(&campaign, 0, 9, 2..=4, FIRST_LOAD);
+        set_aside_segment(&campaign, 0, 9, 2..=4, FIRST_LOAD);
         let saved = save_campaign(
             &session,
             &target,
@@ -7282,7 +7304,7 @@ mod tests {
         assert!(waiting.undecided);
         assert_eq!((waiting.hours, waiting.first_hour), (0, None));
         discard_unsaved(&session, name).unwrap();
-        assert_eq!(segment_paths(&campaign).unwrap(), [(0, first)]);
+        assert!(segment_paths(&campaign).unwrap().is_empty());
         assert_eq!(fs::read(&saved).unwrap(), bytes);
         fs::remove_dir_all(directory).unwrap();
     }
@@ -8431,7 +8453,7 @@ mod tests {
                         .unwrap_err()
                         .contains("load signal has no matching committed context")
                 );
-                assert!(fs::read_dir(&output).unwrap().next().is_none());
+                assert_only_naming_lock(&output);
             }
             assert_eq!(fs::read(&spool_path).unwrap(), spool);
             assert_eq!(fs::read(&witness_path).unwrap(), witness.encode());

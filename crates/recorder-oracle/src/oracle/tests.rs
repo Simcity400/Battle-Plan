@@ -3313,7 +3313,7 @@ fn land_combat_sides_match_the_saved_combat_census() {
 }
 
 #[test]
-fn land_combat_primary_sets_hold_every_saved_units_logical_owner() {
+fn land_combat_side_sets_do_not_infer_history_but_resolve_primary_references() {
     let (mut frame, mut saved, _, _) = fixture();
     let combat = (7_u64 << 32) | 62;
     let (attacker, defender) = ((1_u64 << 32) | 51, (1_u64 << 32) | 52);
@@ -3348,8 +3348,7 @@ fn land_combat_primary_sets_hold_every_saved_units_logical_owner() {
             },
         );
     }
-    // The attacker set names GER through its alias; the defender set
-    // lacks it.
+    // Historical sets need not contain the units' current logical owner.
     *frame.tables[TableId::LandCombatSides.index()] =
         TableView::Complete(TableRows::LandCombatSides(vec![
             replay_data::rows::LandCombatSideRow {
@@ -3365,8 +3364,35 @@ fn land_combat_primary_sets_hold_every_saved_units_logical_owner() {
         .iter()
         .filter(|d| d.starts_with("LandCombatSides"))
         .collect();
-    assert_eq!(found.len(), 1, "{found:?}");
-    assert!(found[0].contains("defender_primary") && found[0].contains("GER"));
+    assert!(found.is_empty(), "{found:?}");
+    assert!(!report.failed_comparisons.contains_key("LandCombatSides"));
+    assert_eq!(report.compared_tables.get("LandCombatSides"), Some(&1));
+    assert!(report.limitations.iter().any(|(reason, subjects)| {
+        reason.contains("the save's current owners cannot certify membership")
+            && subjects.iter().any(|subject| subject == "LandCombatSides")
+    }));
+    for attacker in [true, false] {
+        let mut row = replay_data::rows::LandCombatSideRow {
+            combat,
+            ..Default::default()
+        };
+        if attacker {
+            row.attacker_primary = vec![u32::MAX];
+        } else {
+            row.defender_primary = vec![u32::MAX];
+        }
+        *frame.tables[TableId::LandCombatSides.index()] =
+            TableView::Complete(TableRows::LandCombatSides(vec![row]));
+        let mut report = Report::default();
+        combat_details::compare(&frame, &saved, &mut report);
+        assert_eq!(
+            report
+                .failed_comparisons
+                .get("LandCombatSides")
+                .map(String::as_str),
+            Some("unresolved country reference 4294967295")
+        );
+    }
 }
 
 #[test]

@@ -16,6 +16,8 @@
 # Capture-mode scope (extended::records_any) only tests the session's table list.
 call:Arc::as_ptr
 call:Arc::clone
+# Shared weak ownership only; no hook construction or game access.
+call:Arc::downgrade
 call:Arc::new
 call:AtomicU32::new
 call:CombatHintState::default
@@ -89,6 +91,8 @@ call:crate::country_scale::observe_reserved_visibility
 call:crate::country_scale::observe_saved_targets
 call:crate::country_scale::presize_table_inputs
 call:crate::country_scale::source_demand::Demand::observe
+# Registers scratch-pool byte accounting against the weak Shared owner; no hooks.
+call:crate::design_changes::account_scratch
 call:crate::division_panel_forwarder::attach
 call:crate::equipment_destruction::capacity
 call:crate::extended::records_any
@@ -205,6 +209,8 @@ macro:format
 macro:format_args
 macro:retain_detach
 macro:vec
+# Binds writer/receipt byte accounting to Shared.pool_bytes; no hooks or game reads.
+method:account_writer
 method:acquisition_failed
 method:activate
 method:allocated_bytes

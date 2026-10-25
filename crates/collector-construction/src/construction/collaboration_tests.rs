@@ -764,7 +764,7 @@ fn collaboration_owned_grows_to_fifteen_hundred_countries_with_outgoing_and_inco
         ccountry_collaboration_status::walk_growing(&memory, 0, kit::BASE, &mut direct),
         Outcome::Rows { len: COUNTRIES }
     );
-    assert_eq!(direct, expected);
+    assert_eq!(&direct[..COUNTRIES], &expected);
     let mut job = ConstructionRestJob::new();
     assert!(
         copy_construction_rest_refresh_growing(

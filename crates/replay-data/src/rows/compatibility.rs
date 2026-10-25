@@ -4487,6 +4487,7 @@ mod tests {
 
     #[test]
     fn later_appended_fields_survive_every_catalog_pass() {
+        const LATER_FORMAT: u16 = FORMAT_VERSION + 1;
         for kind in [
             ChangeKind::AppendedOnly,
             ChangeKind::Layout,
@@ -4498,12 +4499,12 @@ mod tests {
                     kind,
                     ..appended_at(
                         table,
-                        FORMAT_VERSION,
+                        LATER_FORMAT,
                         "later declaration fixture",
                         &[AppendedField {
                             index: 0,
                             name: "later_operand",
-                            introduced: FORMAT_VERSION,
+                            introduced: LATER_FORMAT,
                         }],
                     )
                 };
@@ -4513,13 +4514,13 @@ mod tests {
 
             for table in TableId::ALL {
                 let entry = history[table.index()];
-                assert_eq!(entry.format, FORMAT_VERSION, "{table:?} {kind:?}");
+                assert_eq!(entry.format, LATER_FORMAT, "{table:?} {kind:?}");
                 assert_eq!(entry.kind, kind, "{table:?}");
                 assert_eq!(entry.introduced, PROVEN_FROM, "{table:?}");
                 assert_eq!(entry.commit, "later declaration fixture", "{table:?}");
                 assert_eq!(entry.appended.len(), 1, "{table:?}");
                 assert_eq!(entry.appended[0].name, "later_operand", "{table:?}");
-                assert_eq!(entry.appended[0].introduced, FORMAT_VERSION, "{table:?}");
+                assert_eq!(entry.appended[0].introduced, LATER_FORMAT, "{table:?}");
                 assert_eq!(
                     entry.retired,
                     RETIRED_TABLES

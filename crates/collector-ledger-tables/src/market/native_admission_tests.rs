@@ -13,6 +13,8 @@ const CONTRACT: usize = 0x10000;
 const OTHER: usize = 0x11000;
 const VARIANT: usize = 0x1e000;
 const VARIANT_ID: u64 = (55_u64 << 32) | 70;
+// Keep the resource object's outgoing exchange header inside each country fixture.
+const COUNTRY_STRIDE: usize = 0x3000;
 fn id(n: u32) -> u64 {
     (u64::from(n) << 32) | u64::from(contract::TYPE)
 }
@@ -824,12 +826,12 @@ fn country_market_writer_rebinding_has_no_country_count_or_id_cap() {
     let session = producer::test_support::Session::default();
     producer::presize(1500, 1500);
     let mut memory = Native::new();
-    memory.bytes.resize(0x20000 + 1498 * 0x2000, 0);
+    memory.bytes.resize(0x20000 + 1498 * COUNTRY_STRIDE, 0);
     let holders: Vec<_> = (0..1498)
         .map(|index| {
             memory.country(
                 10_000 + index,
-                0x20000 + index as usize * 0x2000,
+                0x20000 + index as usize * COUNTRY_STRIDE,
                 index + 2,
                 0,
             )
@@ -911,12 +913,12 @@ fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writ
     let session = producer::test_support::Session::default();
     producer::presize(1500, 1500);
     let mut memory = Native::new();
-    memory.bytes.resize(0x20000 + 1498 * 0x2000, 0);
+    memory.bytes.resize(0x20000 + 1498 * COUNTRY_STRIDE, 0);
     let holders: Vec<_> = (0..1498)
         .map(|index| {
             memory.country(
                 10_000 + index,
-                0x20000 + index as usize * 0x2000,
+                0x20000 + index as usize * COUNTRY_STRIDE,
                 index + 2,
                 0,
             )
@@ -1058,7 +1060,7 @@ fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writ
         for country in &holders[3..] {
             assert!(
                 memory.reads.borrow().iter().all(|&(at, len)| {
-                    at + len <= country.pointer || at >= country.pointer + 0x2000
+                    at + len <= country.pointer || at >= country.pointer + COUNTRY_STRIDE
                 }),
                 "quiet country {} reread at hour {hour}",
                 country.id
@@ -1190,7 +1192,7 @@ fn refused_country_registration_renews_only_once_without_reacquiring_recovered_h
     memory.start();
     record(&memory, 100, &mut encoder, &mut decoder);
     let owner = session.fill_country_domain(producer::PRICES);
-    memory.bytes.resize(0x22000, 0);
+    memory.bytes.resize(0x20000 + COUNTRY_STRIDE, 0);
     let country = memory.country(owner, 0x20000, 2, 0);
     for hour in 101..=104 {
         memory.clock(hour);
@@ -1260,7 +1262,7 @@ fn exhausted_country_registration_retries_a_deferred_renewal_at_the_first_quiet_
     memory.start();
     record(&memory, 100, &mut encoder, &mut decoder);
     let owner = session.fill_country_domain(producer::PRICES);
-    memory.bytes.resize(0x22000, 0);
+    memory.bytes.resize(0x20000 + COUNTRY_STRIDE, 0);
     let country = memory.country(owner, 0x20000, 2, 0);
     for hour in 101..=103 {
         memory.clock(hour);
@@ -1379,12 +1381,12 @@ fn offered_country_growth_survives_a_draining_predecessor_and_recovers_after_col
                     .take(count),
             );
         }
-        memory.bytes.resize(0x20000 + owners.len() * 0x2000, 0);
+        memory.bytes.resize(0x20000 + owners.len() * COUNTRY_STRIDE, 0);
         let countries: Vec<_> = owners
             .into_iter()
             .enumerate()
             .map(|(index, owner)| {
-                memory.country(owner, 0x20000 + index * 0x2000, index as u32 + 2, 0)
+                memory.country(owner, 0x20000 + index * COUNTRY_STRIDE, index as u32 + 2, 0)
             })
             .collect();
         let recovered_hour = offer_hour.max(102) + 1;

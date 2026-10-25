@@ -4649,7 +4649,7 @@ mod tests {
         let mod_path = names_mod.to_string_lossy().replace('\\', "/");
         for (path, text) in [
             (game.join("hoi4.exe"), "synthetic executable".to_owned()),
-            (user.join("settings.txt"), "language=l_english".to_owned()),
+            (user.join("settings.txt"), "language=english".to_owned()),
             (
                 user.join("dlc_load.json"),
                 r#"{"enabled_mods":["mod/names.mod"],"disabled_dlcs":[]}"#.to_owned(),

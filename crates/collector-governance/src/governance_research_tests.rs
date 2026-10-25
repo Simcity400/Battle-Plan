@@ -15,7 +15,7 @@
 //! `ResearchPart`'s buffer slicing or outcome accumulation.
 //!
 //! Memory is a sparse overlay, not one flat image. A small heap window holds
-//! the objects, and a 64 KiB module-data window, zero unless written, serves
+//! the objects, and a layout-sized module-data window, zero unless written, serves
 //! the research cost, research modifier and modifier-definition defines. The
 //! module base is zero, as in the engine research tests, so each vtable
 //! identity is its bare RVA. Addresses outside both windows are unreadable,
@@ -23,6 +23,7 @@
 
 use super::*;
 use crate::country_input_changes::{Domain, Table};
+use engine_governance_tests::{IMAGE_LEN, IMAGE_START};
 use engine_native::{cgame_state, modifier_definition};
 use engine_research::{climited_use_tech_bonus as bonus, research_inputs, research_modifiers};
 
@@ -34,11 +35,6 @@ const COUNTRY_TABLE: usize = 0x2000;
 const LINK_TABLE: usize = 0x2100;
 /// Modifier-definition rows. Key 0xcd's row sits at index 0xcd, inside the heap.
 const METADATA: usize = 0x3000;
-/// The module data window. It is placed from a public engine RVA, and
-/// `World::new` checks that it also covers the research modifier
-/// defines by requiring `research_modifiers::Context::read` to succeed.
-const IMAGE_START: usize = modifier_definition::TABLE_RVA & !0xffff;
-const IMAGE_LEN: usize = 0x1_0000;
 
 const COST_SCALE: i64 = 130_000;
 const AHEAD_PENALTY: i64 = 175_000;

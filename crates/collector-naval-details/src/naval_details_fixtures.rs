@@ -315,8 +315,8 @@ impl Fixture {
                 this.put(side + 0xb8, &[1]);
                 let damage_sentinel = side + 0x3b0;
                 let damage_node = side + 0x3d0;
-                this.u64(side + 0x290, damage_sentinel as u64);
-                this.u64(side + 0x298, 1);
+                this.u64(side + 0x2b0, damage_sentinel as u64);
+                this.u64(side + 0x2b8, 1);
                 this.u64(damage_sentinel, damage_node as u64);
                 this.u64(damage_node, damage_sentinel as u64);
                 this.u64(damage_node + 8, damage_sentinel as u64);

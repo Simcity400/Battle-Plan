@@ -324,6 +324,104 @@ fn failed_write_gaps_all_queued_hours_once_and_restarts_with_a_keyframe() {
     ));
 }
 
+fn forced_frame(hour: i32, seq: u64) -> Captured {
+    let mut source = campaign_frame(ID, 7, hour);
+    super::tests::prepare_order_counter_sample(&mut source, hour, seq);
+    source.clock.as_mut().unwrap().play_session_started_at = 7;
+    source
+}
+
+#[test]
+fn later_failures_keep_their_witness_when_older_writes_complete_at_poll_or_detach() {
+    for preparation in [false, true] {
+        for forced in [false, true] {
+            for detach in [false, true] {
+                let (mut processor, store) = processor();
+                processor.frame(&forced_frame(8, 5)).unwrap();
+                let release = block(&store, 9, false);
+                admit(&mut processor, ID, 7, 9);
+                release.0.entered();
+                let prepared = processor.prepare_frame(&forced_frame(10, 7)).unwrap();
+                processor.write_prepared(prepared).unwrap();
+                assert_eq!(processor.queued.len(), 2);
+                assert_eq!(processor.recorded_hours(), 1);
+                let source = if forced {
+                    forced_frame(11, 8)
+                } else {
+                    campaign_frame(ID, 7, 11)
+                };
+                let mut prepared = processor.prepare_frame(&source).unwrap();
+                let branch = prepared.source.branch;
+                prepared.source.tables[TableId::Clock.index()] =
+                    TableView::Complete(TableRows::Clock(vec![ClockRow {
+                        hour: 12,
+                        ..Default::default()
+                    }]))
+                    .into();
+                let detail = "Clock: clock row hour differs from frame hour";
+                let drain = processor.writer.test_drain_probe();
+                let failing = std::thread::spawn(move || {
+                    let _details = replay_data::codec::error_details_scope();
+                    let error = if preparation {
+                        drop(prepared);
+                        processor
+                            .finish_preparation(&source, Some(branch), Err(invalid(detail)))
+                            .err()
+                            .unwrap()
+                    } else {
+                        processor.write_prepared(prepared).unwrap_err()
+                    };
+                    assert_eq!(error.to_string(), detail);
+                    let after_failure = processor.stats.order_counters.json();
+                    if detach {
+                        processor.detach().unwrap();
+                    } else {
+                        processor.writer.drain().unwrap();
+                        processor.poll_writer().unwrap();
+                    }
+                    (processor, after_failure)
+                });
+                drain();
+                release.0.release();
+                let (mut processor, after_failure) = failing.join().unwrap();
+                let expected = format!("spool validation failed: {detail}");
+                for witness in [after_failure, processor.stats.order_counters.json()] {
+                    let sample = &witness["sample"];
+                    assert_eq!(
+                        sample["clock"]["campaign"],
+                        std::str::from_utf8(ID).unwrap()
+                    );
+                    assert_eq!(sample["clock"]["hour"], if forced { 11 } else { 10 });
+                    assert_eq!(sample["sequence"], if forced { 8 } else { 7 });
+                    assert_eq!(sample["branch"], branch);
+                    assert_eq!(sample["countries"][0]["counter"], 3806);
+                    assert_eq!(sample["sample_valid"], true);
+                    assert_eq!(sample["frame_write_succeeded"], !forced);
+                    if forced {
+                        assert_eq!(sample["frame_write_error"], expected);
+                        assert!(sample["subsequent_io_error"].is_null());
+                    } else {
+                        assert!(sample["frame_write_error"].is_null());
+                        assert_eq!(sample["subsequent_io_error"], expected);
+                    }
+                    assert_eq!(sample["usable_with_recorded_frame"], false);
+                }
+                assert_eq!(processor.recorded_hours(), 3);
+                assert!(processor.queued.is_empty());
+                assert_eq!(processor.json()["write_errors"], 1);
+                assert_eq!(processor.json()["last_error"], expected);
+                processor.detach().unwrap();
+                let replay = replay(&store);
+                assert_eq!(replay.recorded_hours(branch).unwrap(), [8, 9, 10]);
+                assert_eq!(replay.gaps.len(), 1);
+                assert_eq!(replay.gaps[0].branch, branch);
+                assert_eq!(replay.gaps[0].first_hour, 11);
+                assert_eq!(replay.gaps[0].last_hour, 11);
+            }
+        }
+    }
+}
+
 #[test]
 fn postcommit_sync_failure_does_not_gap_the_committed_frame() {
     let (mut processor, store) = processor();

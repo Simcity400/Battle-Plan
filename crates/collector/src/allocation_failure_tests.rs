@@ -368,7 +368,7 @@ fn set_aside_witness() -> io::Result<()> {
         allocation::fail(Phase::Spool, Code::Reserve);
     }
     let witness = allocation::failure().unwrap();
-    assert_eq!(witness.committed_campaign_id, Some(*CAMPAIGN));
+    assert_eq!(witness.committed_campaign_id, Some(*OTHER));
     assert_eq!(witness.campaign_id, Some(*OTHER));
     assert_eq!(Some(witness), read_witness(&witness_file)?);
     allocation::clear_handle();
@@ -380,6 +380,22 @@ fn set_aside_witness() -> io::Result<()> {
             .map_err(io::Error::other)?;
     assert!(finalized.errors.is_empty(), "{:?}", finalized.errors);
     assert_eq!(finalized.replays.len(), 2);
+    let first = finalized
+        .replays
+        .iter()
+        .find_map(|path| {
+            let replay = replay::container::Replay::open_path(path).unwrap();
+            (replay.campaign_id.as_slice() == CAMPAIGN).then_some(replay)
+        })
+        .unwrap();
+    assert_eq!(
+        first
+            .gaps
+            .iter()
+            .map(|gap| (gap.branch, gap.first_hour, gap.last_hour))
+            .collect::<Vec<_>>(),
+        [(first.branches[0].id, 12, 12)]
+    );
     Ok(())
 }
 

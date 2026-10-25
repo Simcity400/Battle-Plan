@@ -487,6 +487,61 @@ fn a_first_save_interrupted_before_noting_its_recording_continues_it() {
 }
 
 #[test]
+fn a_trimmed_spool_continues_only_its_saved_ancestry_in_the_selected_folder() {
+    let fixture = Fixture::new("trimmed-saved-ancestry");
+    let session = fixture.start(
+        "session",
+        &fixture.output,
+        &session_records(7, 9, &[(hour(1936), "democratic", 1)]),
+    );
+    let selection = fs::read(session.join(RECORDINGS_FILE)).unwrap();
+    let published = fixture.save(&session).replays[0].clone();
+    let bytes = fs::read(&published).unwrap();
+    let campaign = session.join(std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap());
+    for (_, path) in segment_paths(&campaign).unwrap() {
+        fs::remove_file(path).unwrap();
+    }
+    assert!(spool_session(&segment_paths(&campaign).unwrap()).is_empty());
+    fs::write(session.join(RECORDINGS_FILE), &selection).unwrap();
+    let moved = recording_files::rename(&published, "Moved").unwrap();
+    assert_eq!(fixture.save(&session).replays, [published.clone()]);
+    assert!(!moved.exists());
+    assert_eq!(fs::read(&published).unwrap(), bytes);
+
+    let saved_path = campaign.join(SAVED_FILE);
+    let saved_bytes = fs::read(&saved_path).unwrap();
+    let elsewhere = fixture.directory.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let mut saved: Value = serde_json::from_slice(&saved_bytes).unwrap();
+    saved["replay"] = json!(elsewhere.join(published.file_name().unwrap()));
+    fs::write(&saved_path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    fs::write(session.join(RECORDINGS_FILE), &selection).unwrap();
+    let refused = finalize_session(&session, &fixture.output).unwrap_err();
+    assert!(
+        refused.contains("appeared after the session started"),
+        "{refused}"
+    );
+    assert_eq!(fs::read(&published).unwrap(), bytes);
+
+    fs::write(&saved_path, &saved_bytes).unwrap();
+    let other = fixture.start(
+        "other",
+        &elsewhere,
+        &session_records(8, 12, &[(hour(1937), "democratic", 1)]),
+    );
+    let foreign = fixture.save_into(&other, &elsewhere, true).replays[0].clone();
+    let foreign_bytes = fs::read(foreign).unwrap();
+    fs::write(&published, &foreign_bytes).unwrap();
+    let refused = finalize_session(&session, &fixture.output).unwrap_err();
+    assert!(
+        refused.contains("appeared after the session started"),
+        "{refused}"
+    );
+    assert_eq!(fs::read(&published).unwrap(), foreign_bytes);
+    assert_eq!(fs::read(&saved_path).unwrap(), saved_bytes);
+}
+
+#[test]
 fn a_save_into_another_folder_leaves_the_noted_recording_alone() {
     let fixture = Fixture::new("other-output-folder");
     let first = fixture.start(

@@ -35,14 +35,16 @@ struct World {
 }
 impl World {
     fn new() -> Self {
+        let invalid_at = creference_registry::INVALID_REFERENCE_RVA - cgame_state::SINGLETON_RVA;
+        let globals_end = (invalid_at + size_of::<u64>())
+            .max(0x100 + cgame_state::CURRENT_HOUR + size_of::<i32>());
         let mut world = Self {
-            globals: vec![0; 0xe000 / 8],
+            globals: vec![0; globals_end.div_ceil(size_of::<u64>())],
             combat: vec![0; 0x200 / 8],
             result: vec![0; 0x200 / 8],
         };
         let base = world.base();
         world.globals[0] = world.state() as u64;
-        let invalid_at = creference_registry::INVALID_REFERENCE_RVA - cgame_state::SINGLETON_RVA;
         world.globals[invalid_at / 8] = u64::MAX;
         world.combat[0] = (base + cnaval_combat::VTABLE_RVA) as u64;
         world.result[0] = (base + cnaval_combat_results::VTABLE_RVA) as u64;
