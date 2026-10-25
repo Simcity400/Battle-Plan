@@ -1861,14 +1861,6 @@ unsafe fn around_with_identities<const SITE: usize>(
     result
 }
 
-fn copy_rows<S: rows::TableSchema>(source: &[S::Row]) -> std::io::Result<Vec<S::Row>> {
-    let mut result = engine_allocation::vec(source.len())?;
-    for row in source {
-        result.push(rows::RowCodec::try_clone(row)?);
-    }
-    Ok(result)
-}
-
 /// Only changed rows own storage. Membership changes and keyframes use the
 /// complete path below; ordinary edits never clone unrelated design payloads.
 fn replace<S: rows::TableSchema>(
@@ -2299,6 +2291,62 @@ fn replace_sources(
     Ok(())
 }
 
+// Membership edits keep stable slots; only the terminal census is sorted.
+struct DefinitionState {
+    rows: Vec<Option<rows::VariantDefinitionRow>>,
+    positions: HashMap<u64, usize>,
+}
+impl DefinitionState {
+    fn new(baseline: &[rows::VariantDefinitionRow]) -> Result<Self, &'static str> {
+        let mut rows = engine_allocation::vec(baseline.len())
+            .map_err(|_| "variant change allocation failed")?;
+        let mut positions = HashMap::new();
+        engine_allocation::reserve_map(&mut positions, baseline.len())
+            .map_err(|_| "variant change allocation failed")?;
+        for row in baseline {
+            let row =
+                rows::RowCodec::try_clone(row).map_err(|_| "variant change allocation failed")?;
+            positions.insert(row.id, rows.len());
+            rows.push(Some(row));
+        }
+        Ok(Self { rows, positions })
+    }
+    fn get(&self, variant: u64) -> Option<&rows::VariantDefinitionRow> {
+        self.rows.get(*self.positions.get(&variant)?)?.as_ref()
+    }
+    fn get_mut(&mut self, variant: u64) -> Option<&mut rows::VariantDefinitionRow> {
+        self.rows.get_mut(*self.positions.get(&variant)?)?.as_mut()
+    }
+    fn remove(&mut self, variant: u64) {
+        if let Some(&index) = self.positions.get(&variant) {
+            self.rows[index] = None;
+        }
+    }
+    fn insert(&mut self, row: rows::VariantDefinitionRow) -> Result<(), &'static str> {
+        if let Some(&index) = self.positions.get(&row.id) {
+            if self.rows[index].is_some() {
+                return Err("variant change produced duplicate engine ids");
+            }
+            self.rows[index] = Some(row);
+        } else {
+            engine_allocation::reserve_map(&mut self.positions, 1)
+                .map_err(|_| "variant change allocation failed")?;
+            engine_allocation::reserve(&mut self.rows, 1)
+                .map_err(|_| "variant change allocation failed")?;
+            self.positions.insert(row.id, self.rows.len());
+            self.rows.push(Some(row));
+        }
+        Ok(())
+    }
+    fn finish(self) -> Result<Vec<rows::VariantDefinitionRow>, &'static str> {
+        let mut rows = engine_allocation::vec(self.rows.len())
+            .map_err(|_| "variant change allocation failed")?;
+        rows.extend(self.rows.into_iter().flatten());
+        rows.sort_unstable_by_key(rows::RowCodec::key);
+        Ok(rows)
+    }
+}
+
 fn project_definitions(
     history: snapshots::History<'_>,
     projection: Option<&Projection<'_>>,
@@ -2420,18 +2468,15 @@ fn project_definitions(
                 return Ok(input);
             }
         }
-        let mut result = copy_rows::<tables::VariantDefinitions>(baseline)
-            .map_err(|_| "variant change allocation failed")?;
+        let mut result = DefinitionState::new(baseline)?;
         for change in history.iter() {
             let event = change?.view();
             if event.organisation.is_some() {
                 continue;
             }
             if let Some(scalar) = &event.scalar {
-                let index = result.partition_point(|row| row.id < event.variant);
                 let row = result
-                    .get_mut(index)
-                    .filter(|row| row.id == event.variant)
+                    .get_mut(event.variant)
                     .ok_or("variant scalar names an unknown design")?;
                 scalar
                     .apply_definition(row)
@@ -2439,10 +2484,8 @@ fn project_definitions(
                 continue;
             }
             if let Some(sources) = &event.sources {
-                let index = result.partition_point(|row| row.id < event.variant);
                 let row = result
-                    .get_mut(index)
-                    .filter(|row| row.id == event.variant)
+                    .get_mut(event.variant)
                     .ok_or("variant sources name an unknown design")?;
                 let state = row
                     .design
@@ -2452,10 +2495,8 @@ fn project_definitions(
                 continue;
             }
             if let Some(flags) = event.flags {
-                let index = result.partition_point(|row| row.id < event.variant);
                 let row = result
-                    .get_mut(index)
-                    .filter(|row| row.id == event.variant)
+                    .get_mut(event.variant)
                     .ok_or("variant flags name an unknown design")?;
                 let state = row
                     .design
@@ -2468,18 +2509,16 @@ fn project_definitions(
                 ] = flags;
                 continue;
             }
-            let start = result.partition_point(|row| row.id < event.variant);
-            let end = start + result[start..].partition_point(|row| row.id == event.variant);
             if !event.removed
-                && end - start == 1
-                && event
-                    .snapshot
-                    .as_ref()
-                    .is_some_and(|snapshot| snapshot.definition.matches(&result[start]))
+                && result.get(event.variant).is_some_and(|row| {
+                    event
+                        .snapshot
+                        .is_some_and(|snapshot| snapshot.definition.matches(row))
+                })
             {
                 continue;
             }
-            result.drain(start..end);
+            result.remove(event.variant);
             if !event.removed {
                 let snapshot = event
                     .snapshot
@@ -2488,14 +2527,11 @@ fn project_definitions(
                 let definition = snapshot
                     .try_definition()
                     .map_err(|_| "variant change allocation failed")?;
-                engine_allocation::reserve(&mut result, 1)
-                    .map_err(|_| "variant change allocation failed")?;
-                let index = result.partition_point(|row| row.id <= definition.id);
-                result.insert(index, definition);
+                result.insert(definition)?;
             }
         }
         Ok::<_, &'static str>(
-            TableView::Complete(rows::TableRows::VariantDefinitions(result)).into(),
+            TableView::Complete(rows::TableRows::VariantDefinitions(result.finish()?)).into(),
         )
     })();
     result.unwrap_or_else(|reason| unavailable(reason).into())

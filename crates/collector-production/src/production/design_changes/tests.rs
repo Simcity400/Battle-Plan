@@ -1395,3 +1395,235 @@ fn private_snapshots_read_outside_store_and_intervening_observers_use_the_exact_
     }
     assert!(!MISSED.load(Ordering::Acquire));
 }
+
+fn burst_definition(id: u64, name: &[u8]) -> rows::VariantDefinitionRow {
+    rows::VariantDefinitionRow {
+        id,
+        display_name: name.to_vec(),
+        design: rows::Recorded::Value(rows::VariantDesignState::default()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn membership_burst_replaces_stable_slots_without_shifting_the_remaining_census() {
+    let baseline: Vec<_> = (1..=5_000).map(|id| burst_definition(id, b"")).collect();
+    let replacements: Vec<_> = (0..8_000)
+        .map(|index| {
+            let mut row = burst_definition(2_500, b"");
+            row.obsolete = (index % 2) as u8;
+            row
+        })
+        .collect();
+    let mut state = DefinitionState::new(&baseline).unwrap();
+    state.insert(burst_definition(5_001, b"")).unwrap();
+    let slot = state.positions[&2_500];
+    let untouched = state.get(2_501).unwrap() as *const rows::VariantDefinitionRow;
+    let storage = state.rows.as_ptr();
+    collector_test_support::with_allocations_denied(|| {
+        for row in replacements {
+            state.remove(2_500);
+            assert_eq!(state.get(2_501).unwrap() as *const _, untouched);
+            state.insert(row).unwrap();
+            assert_eq!(state.positions[&2_500], slot);
+            assert_eq!(state.rows.as_ptr(), storage);
+        }
+    });
+    let result = state.finish().unwrap();
+    assert_eq!(result.len(), 5_001);
+    assert_eq!(result[2_499].obsolete, 1);
+    assert!(result.windows(2).all(|pair| pair[0].id < pair[1].id));
+}
+
+#[test]
+fn membership_burst_preserves_terminal_definitions_and_every_history_row_in_frame_bytes() {
+    let baseline: Vec<_> = (1..=5_000)
+        .map(|id| burst_definition(id, b"base"))
+        .collect();
+    let snapshot = |id, name: &[u8]| rows::VariantChangeRow {
+        variant: id,
+        snapshot: Some(rows::VariantSnapshot {
+            definition: burst_definition(id, name).into(),
+            stats: vec![0; 10],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut history = vec![snapshot(5_001, b"new")];
+    history
+        .extend((0..8_000).map(|index| snapshot(2_500, if index % 2 == 0 { b"a" } else { b"b" })));
+    history.extend([
+        rows::VariantChangeRow {
+            variant: 2_500,
+            scalar: Some(rows::VariantScalarChange {
+                obsolete: Some(1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        rows::VariantChangeRow {
+            variant: 2_500,
+            sources: Some(rows::VariantSourceReferences {
+                direct: vec![7],
+                named: vec![11],
+            }),
+            ..Default::default()
+        },
+        rows::VariantChangeRow {
+            variant: 2_500,
+            flags: Some([1, 0, 1]),
+            ..Default::default()
+        },
+        rows::VariantChangeRow {
+            variant: 3,
+            removed: true,
+            ..Default::default()
+        },
+        snapshot(3, b"republished"),
+        rows::VariantChangeRow {
+            organisation: Some(rows::VariantOrganisationChange {
+                organisation: 79,
+                live: false,
+            }),
+            ..Default::default()
+        },
+    ]);
+    for (index, row) in history.iter_mut().enumerate() {
+        row.sequence = index as u64 + 1;
+        row.hour = 1;
+    }
+    let mut expected = baseline.clone();
+    expected[2] = burst_definition(3, b"republished");
+    expected[2_499] = burst_definition(2_500, b"b");
+    expected[2_499].obsolete = 1;
+    let state = expected[2_499].design.require_mut("fixture").unwrap();
+    state.bonus_sources = vec![7];
+    state.named_sources = vec![11];
+    [
+        state.can_upgrade_type,
+        state.can_upgrade_variant,
+        state.can_upgrade_modules,
+    ] = [1, 0, 1];
+    expected.push(burst_definition(5_001, b"new"));
+    for force in [false, true] {
+        let mut optimized = replay_frame::frame::FrameEncoder::new();
+        let mut reference = replay_frame::frame::FrameEncoder::new();
+        for encoder in [&mut optimized, &mut reference] {
+            let mut first = input(0);
+            first.tables[TableId::VariantDefinitions.index()] =
+                TableView::Complete(rows::TableRows::VariantDefinitions(baseline.clone())).into();
+            encoder.encode_input(first, false).unwrap();
+        }
+        let mut captured = Captured::vacant();
+        captured.rows = history.clone();
+        captured.outcome = Outcome::Rows { len: history.len() };
+        let scratch = crate::projection::ProjectionScratch::default();
+        let projection = Projection::new(&optimized, 1, 1, force, &scratch);
+        let definitions = project_definitions(captured.history(), Some(&projection));
+        assert!(
+            matches!(&definitions, TableInput::Sampled(TableView::Complete(rows))
+            if rows.rows::<tables::VariantDefinitions>() == Some(expected.as_slice()))
+        );
+        let changes = captured.table_input(Some(&projection));
+        assert!(
+            matches!(&changes, TableInput::Sampled(TableView::Complete(rows))
+            if rows.rows::<tables::VariantChanges>() == Some(history.as_slice()))
+        );
+        let mut actual = input(1);
+        actual.tables[TableId::VariantDefinitions.index()] = definitions;
+        actual.tables[TableId::VariantChanges.index()] = changes;
+        let mut wanted = input(1);
+        wanted.tables[TableId::VariantDefinitions.index()] =
+            TableView::Complete(rows::TableRows::VariantDefinitions(expected.clone())).into();
+        wanted.tables[TableId::VariantChanges.index()] =
+            TableView::Complete(rows::TableRows::VariantChanges(history.clone())).into();
+        let mut actual_bytes = Vec::new();
+        let mut wanted_bytes = Vec::new();
+        optimized
+            .encode_input(actual, force)
+            .unwrap()
+            .encode(&mut actual_bytes)
+            .unwrap();
+        reference
+            .encode_input(wanted, force)
+            .unwrap()
+            .encode(&mut wanted_bytes)
+            .unwrap();
+        assert_eq!(actual_bytes, wanted_bytes);
+    }
+}
+
+#[test]
+fn membership_projection_refuses_intermediate_unknown_and_incomplete_occurrences() {
+    let mut encoder = replay_frame::frame::FrameEncoder::new();
+    let mut first = input(0);
+    first.tables[TableId::VariantDefinitions.index()] = TableView::Complete(
+        rows::TableRows::VariantDefinitions(vec![burst_definition(1, b"base")]),
+    )
+    .into();
+    encoder.encode_input(first, false).unwrap();
+    let snapshot = |id| rows::VariantChangeRow {
+        variant: id,
+        snapshot: Some(rows::VariantSnapshot {
+            definition: burst_definition(id, b"new").into(),
+            stats: vec![0; 10],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let scratch = crate::projection::ProjectionScratch::default();
+    for force in [false, true] {
+        let projection = Projection::new(&encoder, 1, 1, force, &scratch);
+        for (bad, reason) in [
+            (
+                rows::VariantChangeRow {
+                    variant: 1,
+                    scalar: Some(rows::VariantScalarChange {
+                        obsolete: Some(1),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                "variant scalar names an unknown design",
+            ),
+            (
+                rows::VariantChangeRow {
+                    variant: 1,
+                    sources: Some(Default::default()),
+                    ..Default::default()
+                },
+                "variant sources name an unknown design",
+            ),
+            (
+                rows::VariantChangeRow {
+                    variant: 1,
+                    flags: Some([1, 0, 1]),
+                    ..Default::default()
+                },
+                "variant flags name an unknown design",
+            ),
+            (
+                rows::VariantChangeRow {
+                    variant: 1,
+                    ..Default::default()
+                },
+                "variant changes have an incomplete observation",
+            ),
+        ] {
+            let history = [
+                snapshot(2),
+                rows::VariantChangeRow {
+                    variant: 1,
+                    removed: true,
+                    ..Default::default()
+                },
+                bad,
+                snapshot(1),
+            ];
+            assert!(
+                matches!(project_definitions(snapshots::History::from_rows(&history), Some(&projection)),
+                TableInput::Sampled(TableView::Unavailable { reason: actual }) if actual == reason)
+            );
+        }
+    }
+}
