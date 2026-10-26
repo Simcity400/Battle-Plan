@@ -5,3 +5,4 @@
 ui/src/generated/dashboard.ts text eol=lf
 *.png binary
 LICENSES/** text eol=lf
+tools/boat_* text eol=lf

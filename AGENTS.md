@@ -15,8 +15,9 @@
 - Needs Rust 1.96+ with the x64 MSVC toolchain, Visual Studio C++ Build Tools with a Windows SDK, and Node.js 22.12+.
 - Desktop app: `npm.cmd ci`, then `npm.cmd run dev` (add `-- -- -- "<replay>"` to open one). Release build: `npm.cmd run build:desktop`.
 - Command-line recorder: `cargo build -p recorder -p collector --release`.
-- Use Boat for compilation and static checks, including release builds: `boat exec <vm> -- <command>`. Upload only this worktree's current source, use the Windows target, reuse an idle project VM when available, and keep concurrent jobs isolated. After completion, set `boat extend <vm> --ttl 120`. Target affected crates while iterating; avoid redundant checks.
-- If Boat cannot be used for any reason, run the required work locally instead.
+- Compile on Boat, not this machine, with `tools/boat.py` from inside your worktree: `python tools/boat.py check --all-targets -p <crate>...` (or `--workspace`), `python tools/boat.py ui`, and `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>` for release binaries. It uploads the worktree's current source, picks, isolates and stops the VM, and passes Cargo's exit code through. Don't drive `boat` by hand or pass `-j`. Check only the affected crates while iterating.
+- Exit 75 means Boat itself failed: run the same work locally.
+- Compare benchmarks only between binaries built the same way, both on Boat or both locally.
 
 ## Where things are
 
@@ -50,7 +51,7 @@
 
 ## Sharing this machine
 
-- Only recorder benchmarks need a quiet machine. Each one holds a `BENCH_RUNNING` file under `captures` while it runs. Don't start builds, tests or other benchmarks while one exists.
+- Only recorder benchmarks need a quiet machine. Each one holds a `BENCH_RUNNING` file under `captures` while it runs. Don't start local builds, tests or other benchmarks while one exists; `tools/boat.py` runs elsewhere and needn't wait.
 - Viewer, dashboard and playback measurements don't need a quiet machine: run them in parallel, without a `BENCH_RUNNING` file, and pause them while one exists.
 - Don't start a recorder benchmark while `captures\ci\TESTS_RUNNING` exists: the daily tests hold it, and wait for running recorder benchmarks to end first. One older than 20 hours is stale.
 - If a single test holds up the daily run for more than an hour, stop the run.
