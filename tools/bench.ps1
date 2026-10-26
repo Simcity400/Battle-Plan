@@ -37,6 +37,11 @@ defaults to 420; choose a cap above the expected progress for a full-duration ru
 recorder attaches; they briefly take the foreground, and console.png shows the
 game's replies. "status_every_s" appends the recorder's cumulative pause counters,
 histogram and slowest hours to status_series.jsonl at that interval during a screen.
+"save_at_hour" pauses the first screen that reaches that game hour, saves the game
+through its menu as "save_name" (default BENCH_H<hour>) in the user directory, and
+resumes; the pause counts toward neither the screen's duration nor its elapsed time.
+The name is a plain file name; a trailing .hoi4 is dropped. The UI config then needs
+save_menu, save_name and save_confirm.
 Ordinary recorder candidates require -MetricsTool pointing to a reader built for
 their replay format. Missing or incomplete metrics, failed drains, drops and write
 errors fail the screen. Bare-game references do not need a metrics reader.
@@ -117,6 +122,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $UiConfig) { $UiConfig = Join-Path $scriptDir 'bench_ui.json' }
 $ui = Get-Content -LiteralPath $UiConfig -Raw | ConvertFrom-Json
 $smoke = Join-Path $scriptDir 'smoke.ps1'
+$script:planSaved = $false
 $script:menuPatchPath = $MenuPatch
 if ($MenuPatchOrigin.Count -ne 2 -or $MenuPatchOrigin[0] -lt 0 -or $MenuPatchOrigin[1] -lt 0) { throw 'MenuPatchOrigin requires two nonnegative pixel coordinates.' }
 $script:chainStarted = $false
@@ -934,6 +940,57 @@ function Invoke-PlanConsole([string]$runDir) {
     $null = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Key -Key Grave -GameId $script:game.Id -Foreground
     Start-Sleep -Seconds 1
 }
+# Menu widgets need foreground input that stays focused between clicks, as in smoke.ps1.
+function Send-MenuInput([hashtable]$extra) {
+    $null = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -UserDirectory $userPath -GameId $script:game.Id -Foreground -KeepForeground @extra
+}
+function Save-Game($clock) {
+    $name = $(if ($spec.PSObject.Properties['save_name'] -and $spec.save_name) { [string]$spec.save_name } else { "BENCH_H$($clock.hour)" })
+    # The game adds the extension itself.
+    if ($name -match '\.hoi4$') { $name = $name.Substring(0, $name.Length - 5) }
+    if (-not $name -or $name -ne [IO.Path]::GetFileName($name) -or $name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { throw "save_name must be a plain file name: $name" }
+    $path = Join-Path (Join-Path $userPath 'save games') ($name + '.hoi4')
+    if (Test-Path -LiteralPath $path) { throw "The plan's save already exists: $path" }
+    $paused = Set-Paused $true
+    # Only the confirmed-paused stretch is left out; running time either side still counts.
+    $pausedAt = [Hoi4ClockBaseline]::Qpc()
+    Log "Saving at hour $($paused.hour) as $name."
+    # The menu keeps the game focused; hand the foreground back before resuming.
+    $previous = [Hoi4ProbeInput]::AcquireTargetFocus($script:window, [uint32]$script:game.Id)
+    try {
+        foreach ($widget in 'menu', 'save_menu', 'save_name') {
+            $point = $ui.$widget
+            Send-MenuInput @{ Action = 'Click'; X = [int]$point[0]; Y = [int]$point[1] }
+            Start-Sleep -Milliseconds 600
+        }
+        Send-MenuInput @{ Action = 'Key'; Key = 'CtrlA' }
+        Send-MenuInput @{ Action = 'Text'; Text = $name }
+        $point = $ui.save_confirm
+        Send-MenuInput @{ Action = 'Click'; X = [int]$point[0]; Y = [int]$point[1] }
+        # The game holds the file open until it is complete.
+        $limit = [DateTime]::UtcNow.AddSeconds(120); $complete = $false
+        do {
+            Start-Sleep -Milliseconds 250
+            if (Test-Path -LiteralPath $path) {
+                try {
+                    $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+                    try { $complete = $stream.Length -gt 10000 } finally { $stream.Dispose() }
+                } catch { $complete = $false }
+            }
+            if (-not $complete -and [DateTime]::UtcNow -gt $limit) { throw "The game did not write a complete save: $path" }
+        } until ($complete)
+    } finally {
+        [Hoi4ProbeInput]::RestoreForeground($previous, $script:window)
+        if ($Background) { [void][Hoi4ProbeInput]::PushBehind($script:window, $previous) }
+    }
+    Start-Sleep -Seconds 2
+    if ((Read-Clock).hour -ne $paused.hour) { throw 'The game advanced during the save.' }
+    Send-Move $ui.cursor_park
+    $resumedAt = [Hoi4ClockBaseline]::Qpc()
+    $null = Set-Paused $false; Set-Speed $speed
+    Log "Saved $path."
+    [pscustomobject]@{ path = $path; paused_ticks = $resumedAt - $pausedAt }
+}
 function Invoke-Screen($attached, [string]$runDir) {
     $identity = Set-Paused $true
     if ($identity.hour -ne $expectedHour -and -not $script:chainStarted) { throw "Screen must start at hour $expectedHour, found $($identity.hour)." }
@@ -964,9 +1021,12 @@ function Invoke-Screen($attached, [string]$runDir) {
     $statusEvery = $(if ($attached -and $spec.PSObject.Properties['status_every_s'] -and $spec.status_every_s) { [double]$spec.status_every_s } else { 0 })
     $statusSeries = $(if ($statusEvery -gt 0) { [IO.StreamWriter]::new((Join-Path $runDir 'status_series.jsonl'), $false, $utf8) } else { $null })
     $nextStatus = $startQpc
+    $saveAt = $(if (-not $script:planSaved -and $spec.PSObject.Properties['save_at_hour'] -and $spec.save_at_hour) { [int64]$spec.save_at_hour } else { 0L })
+    $savedTo = $null; $pausedTicks = 0L
     $stopReason = 'duration_limit'
     try {
-        while (([Hoi4ClockBaseline]::Qpc() - $startQpc) / $frequency -lt $seconds) {
+        # Active time: a plan save's pause counts toward neither the duration nor the samples.
+        while (([Hoi4ClockBaseline]::Qpc() - $pausedTicks - $startQpc) / $frequency -lt $seconds) {
             if ($null -ne $last -and ([int64]$last.hour - [int64]$first.hour) -ge $maxHours) { $stopReason = 'max_hours'; break }
             $qpcNow = [Hoi4ClockBaseline]::Qpc()
             if ($qpcNow -ge $nextGuard) {
@@ -979,7 +1039,8 @@ function Invoke-Screen($attached, [string]$runDir) {
                 $nextOtherCpu = $qpcNow + 5 * [int64]$frequency
             }
             $clock = $script:reader.Sample()
-            $qpc = [Hoi4ClockBaseline]::Qpc()
+            $wallQpc = [Hoi4ClockBaseline]::Qpc()
+            $qpc = $wallQpc - $pausedTicks
             if ($null -eq $clock) { $missing++ }
             else {
                 Assert-Identity $clock $identity
@@ -988,8 +1049,14 @@ function Invoke-Screen($attached, [string]$runDir) {
                 $valid++
                 if ($null -eq $first) { $first = $clock; $firstQpc = $qpc }
                 $last = $clock; $lastQpc = $qpc
+                if ($saveAt -and -not $savedTo -and $clock.hour -ge $saveAt) {
+                    $save = Save-Game $clock
+                    $savedTo = $save.path
+                    $script:planSaved = $true
+                    $pausedTicks += $save.paused_ticks
+                }
             }
-            $entry = [ordered]@{ qpc = $qpc; elapsed_s = ($qpc - $startQpc) / $frequency; hour = $(if ($clock) { $clock.hour } else { $null }) }
+            $entry = [ordered]@{ qpc = $wallQpc; elapsed_s = ($qpc - $startQpc) / $frequency; hour = $(if ($clock) { $clock.hour } else { $null }) }
             if ($qpc -ge $nextMemory -and $clock) {
                 $nextMemory = $qpc + [int64]$frequency
                 $memory = Get-MemorySample $attached
@@ -1042,6 +1109,7 @@ function Invoke-Screen($attached, [string]$runDir) {
         hours_per_s = [math]::Round($rate, 4)
         historical_baseline_fraction = $(if ($historicalBaselineRate) { [math]::Round($rate / $historicalBaselineRate, 4) } else { $null })
         valid_samples = $valid; missing_samples = $missing; contaminated_by = @($contaminants.Keys)
+        saved_game = $savedTo; save_pause_s = [math]::Round($pausedTicks / $frequency, 3)
         other_cpu = $otherCpuWindow
         load_signal = $identity.play_session_started_at
         memory = [ordered]@{
