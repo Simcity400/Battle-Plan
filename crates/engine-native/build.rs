@@ -3,6 +3,14 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
     {
-        cc::Build::new().file("src/seh_read.c").compile("seh_read");
+        let mut build = cc::Build::new();
+        let compiler = build.get_compiler();
+        // Clang drops a __try around plain loads unless asynchronous exceptions are on; a guarded read would then crash the game.
+        if compiler.is_like_clang_cl() {
+            build.flag("/EHa");
+        } else if compiler.is_like_clang() {
+            panic!("seh_read.c needs clang-cl, whose /EHa keeps its guarded reads handled");
+        }
+        build.file("src/seh_read.c").compile("seh_read");
     }
 }
