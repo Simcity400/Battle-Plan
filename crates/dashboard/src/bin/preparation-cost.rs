@@ -15,7 +15,20 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const DEFAULT_RECORDING: &str =
     r"captures\lane-perf\recording\longrec117.battleplan";
+const CAPTURES: &str = r"captures";
 const ROOT: &str = r"captures\w1b-cost";
+const RUNTIME_ROOT: &str = r"captures\w1b-runtime\self";
+const USAGE: &str = concat!(
+    "Usage: preparation-cost --mode decode|decode-sequential|families|runtime ",
+    "[--recording PATH] [--output NEW-EMPTY-DIRECTORY] [--cores N] [--scopes-off] ",
+    "[--file-cache uncontrolled|warm|operator-cold]\n",
+    "Output must be under captures/w1b-cost or captures/w1b-runtime/self (canonical exact roots).\n",
+    "Runtime defaults to captures/w1b-runtime/self; other modes default to captures/w1b-cost.\n",
+    "Decode floors require --cores 1; runtime permits --cores 16 when available.\n",
+    "Runtime is a PARTIAL main-store borrowed-extract measurement, not whole-app one-decode runtime. ",
+    "All registered families, coordinator, side jobs, main encoders, store and publication cadence remain; ",
+    "no S3, byte credits, frozen roots or spools."
+);
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
@@ -45,6 +58,25 @@ fn lock(output: &Path) -> io::Result<Lock> {
     })
 }
 
+fn write_failure(output: &Path, error: &io::Error) {
+    let mut causes = Vec::new();
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = cause {
+        causes.push(current.to_string());
+        cause = current.source();
+    }
+    let failure = serde_json::json!({
+        "failed":true,"error":error.to_string(),"error_chain":causes,
+        "error_debug":format!("{error:?}"),"error_kind":format!("{:?}", error.kind()),
+        "raw_os_error":error.raw_os_error()
+    });
+    let result = File::create(output.join("failure.json"))
+        .and_then(|file| serde_json::to_writer_pretty(file, &failure).map_err(io::Error::from));
+    if let Err(failure_error) = result {
+        eprintln!("preparation-cost: could not write failure.json: {failure_error}");
+    }
+}
+
 fn run() -> io::Result<()> {
     let mut recording = env::var_os("BATTLE_PLAN_COST_RECORDING").or_else(|| env::var_os("HOI4_COST_RECORDING"))
         .map(PathBuf::from)
@@ -56,6 +88,10 @@ fn run() -> io::Result<()> {
     let mut file_cache = "uncontrolled".to_owned();
     let mut args = env::args_os().skip(1);
     while let Some(arg) = args.next() {
+        if arg == "--help" || arg == "-h" {
+            println!("{USAGE}");
+            return Ok(());
+        }
         if arg == "--scopes-off" {
             scopes = false;
             continue;
@@ -72,12 +108,11 @@ fn run() -> io::Result<()> {
                     .ok_or_else(|| invalid("Invalid core count"))?
             }
             Some("--file-cache") => file_cache = value.to_string_lossy().into_owned(),
-            _ => {
-                return Err(invalid(
-                    "Usage: preparation-cost --mode decode|decode-sequential|families [--recording PATH] [--output EMPTY-DIRECTORY-UNDER-w1b-cost] [--cores N] [--scopes-off] [--file-cache uncontrolled|warm|operator-cold]",
-                ));
-            }
+            _ => return Err(invalid(USAGE)),
         }
+    }
+    if !["decode", "decode-sequential", "families", "runtime"].contains(&mode.as_str()) {
+        return Err(invalid(USAGE));
     }
     if !["uncontrolled", "warm", "operator-cold"].contains(&file_cache.as_str()) {
         return Err(invalid("Invalid file-cache label"));
@@ -107,17 +142,34 @@ fn run() -> io::Result<()> {
             "Prerequisite failed: BATTLE_PLAN_GAME_DIR must contain hoi4.exe and BATTLE_PLAN_USER_DIR must exist",
         ));
     }
-    fs::create_dir_all(ROOT)?;
-    let root = fs::canonicalize(ROOT)?;
+    let root = if mode == "runtime" {
+        RUNTIME_ROOT
+    } else {
+        ROOT
+    };
+    fs::create_dir_all(root)?;
+    let root = fs::canonicalize(root)?;
     let output = output.unwrap_or_else(|| root.join(format!("{mode}-{}", uuid::Uuid::new_v4())));
     let parent = fs::canonicalize(
         output
             .parent()
             .ok_or_else(|| invalid("Output needs a parent"))?,
     )?;
-    if !parent.starts_with(&root) {
-        return Err(invalid("Output must stay under captures/w1b-cost"));
+    let captures = fs::canonicalize(CAPTURES)?;
+    let roots = [
+        captures.join("w1b-cost"),
+        captures.join("w1b-runtime").join("self"),
+    ];
+    if !roots.iter().any(|root| parent.starts_with(root)) {
+        return Err(invalid(
+            "Output must stay under captures/w1b-cost or captures/w1b-runtime/self (canonical exact roots)",
+        ));
     }
+    let output = parent.join(
+        output
+            .file_name()
+            .ok_or_else(|| invalid("Output needs a new directory name"))?,
+    );
     fs::create_dir(&output).map_err(|error| {
         invalid(format!(
             "Output must be a new empty directory: {}: {error}",
@@ -125,48 +177,50 @@ fn run() -> io::Result<()> {
         ))
     })?;
     let output = fs::canonicalize(output)?;
-    let _lock = lock(&output)?;
-    let local = output.join("cache/local");
-    let roaming = output.join("cache/roaming");
-    fs::create_dir_all(&local)?;
-    fs::create_dir_all(&roaming)?;
-    // This executable sets isolation before starting any worker threads.
-    unsafe {
-        env::set_var("LOCALAPPDATA", &local);
-        env::set_var("APPDATA", &roaming);
+    if !roots.iter().any(|root| output.starts_with(root)) {
+        return Err(invalid(
+            "Canonical output escaped the allowed capture roots",
+        ));
     }
-    let options = Options {
-        recording: fs::canonicalize(recording)?,
-        output: output.clone(),
-        mode,
-        scopes,
-        cores,
-        file_cache,
-        content: ContentOptions {
-            options: installed_content_core::ResolveOptions {
-                game_dir: game,
-                user_dir: user,
-                cache_dir: output.join("cache/content"),
+    let result = (|| -> io::Result<()> {
+        let _lock = lock(&output)?;
+        let local = output.join("cache/local");
+        let roaming = output.join("cache/roaming");
+        fs::create_dir_all(&local)?;
+        fs::create_dir_all(&roaming)?;
+        // This executable sets isolation before starting any worker threads.
+        unsafe {
+            env::set_var("LOCALAPPDATA", &local);
+            env::set_var("APPDATA", &roaming);
+        }
+        let options = Options {
+            recording: fs::canonicalize(recording)?,
+            output: output.clone(),
+            mode,
+            scopes,
+            cores,
+            file_cache,
+            content: ContentOptions {
+                options: installed_content_core::ResolveOptions {
+                    game_dir: game,
+                    user_dir: user,
+                    cache_dir: output.join("cache/content"),
+                },
+                allow_unverified: false,
+                presentation: Default::default(),
             },
-            allow_unverified: false,
-            presentation: Default::default(),
-        },
-    };
-    fs::create_dir_all(&options.content.options.cache_dir)?;
-    match cost::run(&options) {
-        Ok(_) => {
-            println!("{}", fs::read_to_string(output.join("summary.txt"))?);
-            println!("Report: {}", output.join("report.json").display());
-            Ok(())
-        }
-        Err(error) => {
-            serde_json::to_writer_pretty(
-                File::create(output.join("failure.json"))?,
-                &serde_json::json!({"failed":true,"error":error.to_string()}),
-            )?;
-            Err(error)
-        }
+        };
+        fs::create_dir_all(&options.content.options.cache_dir)?;
+        cost::run(&options)?;
+        println!("{}", fs::read_to_string(output.join("summary.txt"))?);
+        println!("Report: {}", output.join("report.json").display());
+        Ok(())
+    })();
+    if let Err(error) = result {
+        write_failure(&output, &error);
+        return Err(error);
     }
+    Ok(())
 }
 
 fn main() -> ExitCode {

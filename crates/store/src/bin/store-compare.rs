@@ -37,7 +37,7 @@ enum Change {
     CheckpointBytes,
 }
 
-// Schema-37 wire types mirror restoration without importing dashboard dependencies.
+// Schema-40 wire types mirror restoration without importing dashboard dependencies.
 #[derive(Deserialize, Serialize)]
 struct Checkpoint {
     schema: u32,
@@ -56,7 +56,7 @@ struct Checkpoint {
     #[serde(default)]
     independent: BTreeMap<String, FamilyProgress>,
     #[serde(default)]
-    newest: BTreeMap<String, BTreeMap<String, Coverage>>,
+    production: BTreeMap<String, Coverage>,
     bytes: u64,
 }
 
@@ -218,10 +218,11 @@ impl Input {
             .open(&self.directory)?
             .read_to_end(&mut packet)?;
         let state: Checkpoint = serde_json::from_slice(&packet)?;
-        if state.schema != 37 {
-            return Err(invalid(
-                "Unsupported completion schema; teach the comparator its completion contract",
-            ));
+        if state.schema != 40 {
+            return Err(invalid(format!(
+                "Unsupported completion schema {}; expected 40",
+                state.schema
+            )));
         }
         state
             .bytes
@@ -274,59 +275,61 @@ impl Input {
         if !side["pending"].as_array().is_some_and(Vec::is_empty) {
             return Err(invalid("Side preparation is incomplete"));
         }
-        for scan in side["production"]
-            .as_array()
-            .ok_or_else(|| invalid("Missing production completion inventory"))?
-        {
-            let branch = scan[0]
+        let production = checkpoint["production"]
+            .as_object()
+            .ok_or_else(|| invalid("Missing production completion inventory"))?;
+        let mut last = BTreeMap::new();
+        for block in checkpoint["index"].as_array().unwrap() {
+            let branch = block["branch"]
                 .as_u64()
-                .ok_or_else(|| invalid("Invalid production branch"))?;
-            let tag = scan[1]
-                .as_str()
-                .ok_or_else(|| invalid("Invalid production country"))?;
-            let hex: String = tag.bytes().map(|byte| format!("{byte:02x}")).collect();
-            let mut meta = None;
-            for name in [
-                format!("production-lines-scan-v5-{branch}-{hex}"),
-                format!("production-lines-scan-meta-v5-{branch}-{hex}"),
-            ] {
-                let &(section, count) = self
-                    .sections
-                    .get(&name)
-                    .ok_or_else(|| invalid(format!("Missing production scan: {name}")))?;
-                let range = self
-                    .listing
-                    .range(section, 0)?
-                    .filter(|id| !id.is_empty())
-                    .ok_or_else(|| invalid(format!("Empty production scan: {name}")))?;
-                if count != 1 {
-                    return Err(invalid("Invalid production scan range count"));
-                }
-                if name.contains("-meta-") {
-                    meta = Some(serde_json::from_reader::<_, Value>(
-                        zstd::stream::Decoder::new(range.open(&self.directory)?)?,
-                    )?);
-                }
+                .ok_or_else(|| invalid("Invalid completed block branch"))?;
+            last.insert(branch, block);
+        }
+        if production.len() != last.len() {
+            return Err(invalid(
+                "Production completion inventory differs from recorded branches",
+            ));
+        }
+        for (&branch, block) in &last {
+            let coverage = production
+                .get(&branch.to_string())
+                .ok_or_else(|| invalid(format!("Missing production coverage: {branch}")))?;
+            if coverage["schema"] != 40
+                || coverage["complete"] != true
+                || coverage["lastHour"] != block["last"]
+            {
+                return Err(invalid(format!("Production scan is incomplete: {branch}")));
             }
-            let last = checkpoint["index"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .rev()
-                .find(|block| block["branch"].as_u64() == Some(branch));
-            let expected = last
-                .map(|block| json!([block["first"], block["last"], block["offset"]]))
-                .unwrap_or(Value::Null);
-            if meta.as_ref().unwrap()["last_block"] != expected {
+            let name = format!("production-lines-directory-v1-{branch}");
+            let directory: Value = serde_json::from_reader(zstd::stream::Decoder::new(
+                self.single_range(&name)?.open(&self.directory)?,
+            )?)?;
+            if directory["branch"].as_u64() != Some(branch)
+                || directory["coverage"]["complete"] != true
+                || directory["coverage"]["lastHour"] != block["last"]
+                || directory["last_block"]
+                    != json!([block["first"], block["last"], block["offset"]])
+            {
                 return Err(invalid(format!(
-                    "Production scan is incomplete: {branch}/{tag}"
+                    "Production directory is incomplete: {branch}"
+                )));
+            }
+            if directory["coverage"] != *coverage {
+                return Err(invalid(format!(
+                    "Production checkpoint coverage differs from its directory: {branch}"
+                )));
+            }
+            let published = self.json(&format!("preparation-family-production-lines-{branch}"))?;
+            if published != directory["coverage"] {
+                return Err(invalid(format!(
+                    "Production coverage differs from its directory: {branch}"
                 )));
             }
         }
         Ok(json!({"blocks": blocks, "families": families, "side": side,
             "header": checkpoint["header"], "content": checkpoint["content"],
             "index": checkpoint["index"], "sessions": checkpoint["sessions"],
-            "branches": checkpoint["branches"], "gaps": checkpoint["gaps"]}))
+            "branches": checkpoint["branches"], "gaps": checkpoint["gaps"], "production": checkpoint["production"]}))
     }
 }
 
@@ -636,7 +639,23 @@ mod tests {
     use super::*;
     use std::fs::OpenOptions;
 
-    const SIDE: &[u8] = br#"{"pending":[],"production":[]}"#;
+    const SIDE: &[u8] = br#"{"pending":[]}"#;
+    const PRODUCTION_COVERAGE: &[u8] =
+        br#"{"schema":40,"firstHour":1,"lastHour":2,"complete":true}"#;
+    fn production_document() -> Value {
+        json!({"branch":1,
+            "coverage":serde_json::from_slice::<Value>(PRODUCTION_COVERAGE).unwrap(),
+            "last_block":[1,2,0]})
+    }
+    fn compressed(document: &Value) -> Vec<u8> {
+        zstd::stream::encode_all(serde_json::to_vec(document).unwrap().as_slice(), 1).unwrap()
+    }
+    fn production_directory() -> Vec<u8> {
+        compressed(&production_document())
+    }
+    fn base_bytes() -> u64 {
+        (SIDE.len() + PRODUCTION_COVERAGE.len() + production_directory().len()) as u64
+    }
 
     struct Fixture {
         root: PathBuf,
@@ -672,16 +691,30 @@ mod tests {
             complete: bool,
             update: impl FnOnce(Vec<u8>) -> Vec<u8>,
         ) -> Input {
-            products.push(("preparation-side-work-v1", vec![SIDE.to_vec()]));
+            for (section, ranges) in [
+                ("preparation-side-work-v1", vec![SIDE.to_vec()]),
+                (
+                    "production-lines-directory-v1-1",
+                    vec![production_directory()],
+                ),
+                (
+                    "preparation-family-production-lines-1",
+                    vec![PRODUCTION_COVERAGE.to_vec()],
+                ),
+            ] {
+                if !products.iter().any(|(name, _)| *name == section) {
+                    products.push((section, ranges));
+                }
+            }
             let bytes: usize = products
                 .iter()
                 .flat_map(|(_, ranges)| ranges)
                 .map(Vec::len)
                 .sum();
-            let checkpoint = serde_json::to_vec(&json!({"schema":37,
+            let checkpoint = serde_json::to_vec(&json!({"schema":40,
                 "index":[{"branch":1,"first":1,"last":2,"offset":0,"length":8,"raw_length":16}],
                 "cursor":{"next_block":if complete {1}else{0},"previous":null},
-                "independent":{"synthetic":{"next_block":1,"refused":{}}},"newest":{},"selected":[1,2],
+                "independent":{"synthetic":{"next_block":1,"refused":{}}},"production":{"1":{"schema":40,"firstHour":1,"lastHour":2,"complete":true}},"selected":[1,2],
                 "header":[1,2,3],"content":false,"sessions":[],"branches":[],"gaps":[],
                 "map":{"stride":720,"selected":[1,2],"branches":{},"resume_range":null,"gaps":{},"ranges":{}},
                 "display_error":null,"display_failures":0,"refused":{},"bytes":bytes})).unwrap();
@@ -726,6 +759,189 @@ mod tests {
             schema: 1,
             source: None,
             rules: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pending_only_side_progress_still_requires_real_production_completion() {
+        let fixture = Fixture::new();
+        let current = fixture.store("pending-only-side", vec![], 1, true);
+        assert_eq!(
+            compare(&current, &current, &strict()).unwrap()["passed"],
+            true
+        );
+        let extra = fixture.store(
+            "extra-side-field",
+            vec![(
+                "preparation-side-work-v1",
+                vec![br#"{"pending":[],"production":[]}"#.to_vec()],
+            )],
+            2,
+            true,
+        );
+        extra.completion().unwrap();
+        assert_eq!(
+            compare(&current, &extra, &strict()).unwrap()["passed"],
+            false
+        );
+        for (index, pending) in [Value::Null, json!(false), json!({}), json!(["waiting"])]
+            .into_iter()
+            .enumerate()
+        {
+            let input = fixture.store(
+                &format!("invalid-pending-{index}"),
+                vec![(
+                    "preparation-side-work-v1",
+                    vec![serde_json::to_vec(&json!({"pending":pending})).unwrap()],
+                )],
+                3,
+                true,
+            );
+            assert!(
+                input
+                    .completion()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Side preparation")
+            );
+        }
+    }
+
+    #[test]
+    fn production_completion_binds_every_branch_to_its_checkpoint_coverage() {
+        let fixture = Fixture::new();
+        for (index, production) in [
+            json!({}),
+            json!({"2":{"schema":40,"firstHour":1,"lastHour":2,"complete":true}}),
+            json!({"1":{"schema":40,"firstHour":1,"lastHour":1,"complete":true}}),
+            json!({"1":{"schema":40,"firstHour":1,"lastHour":2,"complete":false}}),
+            json!({"1":{"schema":40,"firstHour":0,"lastHour":2,"complete":true}}),
+            json!({"1":{"schema":41,"firstHour":1,"lastHour":2,"complete":true}}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let input = fixture.store_with_checkpoint(
+                &format!("invalid-production-coverage-{index}"),
+                vec![],
+                1,
+                true,
+                |packet| edit_checkpoint(packet, |document| document["production"] = production),
+            );
+            assert!(
+                input
+                    .completion()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Production")
+            );
+        }
+    }
+
+    #[test]
+    fn production_directories_bind_the_final_block_and_published_coverage() {
+        let fixture = Fixture::new();
+        for (index, (pointer, value)) in [
+            ("/branch", json!(2)),
+            ("/last_block", Value::Null),
+            ("/last_block", json!([1, 1, 0])),
+            ("/last_block", json!([1, 2, 1])),
+            ("/coverage/complete", json!(false)),
+            ("/coverage/lastHour", json!(1)),
+            ("/coverage/firstHour", json!(0)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut directory = production_document();
+            *directory.pointer_mut(pointer).unwrap() = value;
+            let input = fixture.store(
+                &format!("invalid-production-directory-{index}"),
+                vec![(
+                    "production-lines-directory-v1-1",
+                    vec![compressed(&directory)],
+                )],
+                1,
+                true,
+            );
+            assert!(
+                input
+                    .completion()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Production")
+            );
+        }
+        let input = fixture.store(
+            "invalid-published-production-coverage",
+            vec![(
+                "preparation-family-production-lines-1",
+                vec![br#"{"schema":40,"firstHour":1,"lastHour":2,"complete":false}"#.to_vec()],
+            )],
+            1,
+            true,
+        );
+        assert!(
+            input
+                .completion()
+                .unwrap_err()
+                .to_string()
+                .contains("Production coverage differs")
+        );
+        for (index, ranges) in [vec![], vec![production_directory(), production_directory()]]
+            .into_iter()
+            .enumerate()
+        {
+            let input = fixture.store(
+                &format!("invalid-production-ranges-{index}"),
+                vec![("production-lines-directory-v1-1", ranges)],
+                1,
+                true,
+            );
+            assert!(
+                input
+                    .completion()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("range count")
+            );
+        }
+        let original = fixture.store("public-production-directory-original", vec![], 1, true);
+        let mut directory = production_document();
+        directory["visual"] = json!("changed public product");
+        let changed = fixture.store(
+            "public-production-directory-changed",
+            vec![(
+                "production-lines-directory-v1-1",
+                vec![compressed(&directory)],
+            )],
+            2,
+            true,
+        );
+        assert_eq!(
+            compare(&original, &changed, &strict()).unwrap()["passed"],
+            false
+        );
+    }
+
+    #[test]
+    fn completion_rejects_obsolete_or_unknown_schema() {
+        let fixture = Fixture::new();
+        for schema in [37, 38, 39, 41] {
+            let input = fixture.store_with_checkpoint(
+                &format!("unsupported-schema-{schema}"),
+                vec![],
+                1,
+                true,
+                |packet| edit_checkpoint(packet, |document| document["schema"] = json!(schema)),
+            );
+            assert!(
+                input
+                    .checkpoint()
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&schema.to_string())
+            );
         }
     }
 
@@ -805,13 +1021,13 @@ mod tests {
             section: "preparation-checkpoint-v1".into(),
             change: Change::CheckpointBytes,
             ranges: 1,
-            accounting: Some([SIDE.len() as u64 + 1, SIDE.len() as u64]),
+            accounting: Some([base_bytes() + 1, base_bytes()]),
             reason: "Removed private continuation changes only stored-byte accounting".into(),
         });
         assert_eq!(compare(&left, &right, &policy).unwrap()["passed"], true);
-        policy.rules[1].accounting = Some([SIDE.len() as u64 + 2, SIDE.len() as u64]);
+        policy.rules[1].accounting = Some([base_bytes() + 2, base_bytes()]);
         assert_eq!(compare(&left, &right, &policy).unwrap()["passed"], false);
-        policy.rules[1].accounting = Some([SIDE.len() as u64 + 1, SIDE.len() as u64]);
+        policy.rules[1].accounting = Some([base_bytes() + 1, base_bytes()]);
         assert_eq!(compare(&left, &left, &policy).unwrap()["passed"], false);
         policy.rules[0].section = "private-*".into();
         assert!(compare(&left, &right, &policy).is_err());
@@ -835,7 +1051,7 @@ mod tests {
     }
 
     fn remove_private_policy(fixture: &Fixture) -> Policy {
-        let mut policy = checkpoint_policy(fixture, [SIDE.len() as u64 + 1, SIDE.len() as u64]);
+        let mut policy = checkpoint_policy(fixture, [base_bytes() + 1, base_bytes()]);
         policy.rules.push(Rule {
             section: "map.resume".into(),
             change: Change::RemovedPrivate,
@@ -865,8 +1081,8 @@ mod tests {
                 |packet| edit_checkpoint(packet, |document| document["bytes"] = json!(bytes)),
             );
             for (a, b, accounting) in [
-                (&left, &right, [SIDE.len() as u64, bytes]),
-                (&right, &left, [bytes, SIDE.len() as u64]),
+                (&left, &right, [base_bytes(), bytes]),
+                (&right, &left, [bytes, base_bytes()]),
             ] {
                 let error = compare(a, b, &checkpoint_policy(&fixture, accounting)).unwrap_err();
                 assert_eq!(error.kind(), io::ErrorKind::InvalidData);
@@ -879,7 +1095,7 @@ mod tests {
     fn exact_source_bound_accounting_rules_require_the_manifest_payload_total() {
         let fixture = Fixture::new();
         let left = fixture.store("left", vec![], 1, true);
-        for (index, bytes) in [0, SIDE.len() as u64 - 1, SIDE.len() as u64 + 1]
+        for (index, bytes) in [0, base_bytes() - 1, base_bytes() + 1]
             .into_iter()
             .enumerate()
         {
@@ -891,8 +1107,8 @@ mod tests {
                 |packet| edit_checkpoint(packet, |document| document["bytes"] = json!(bytes)),
             );
             for (a, b, accounting) in [
-                (&left, &right, [SIDE.len() as u64, bytes]),
-                (&right, &left, [bytes, SIDE.len() as u64]),
+                (&left, &right, [base_bytes(), bytes]),
+                (&right, &left, [bytes, base_bytes()]),
             ] {
                 let error = compare(a, b, &checkpoint_policy(&fixture, accounting)).unwrap_err();
                 assert!(
@@ -919,7 +1135,7 @@ mod tests {
         let error = compare(
             &left,
             &boundary,
-            &checkpoint_policy(&fixture, [SIDE.len() as u64, boundary_bytes]),
+            &checkpoint_policy(&fixture, [base_bytes(), boundary_bytes]),
         )
         .unwrap_err();
         assert!(
@@ -933,11 +1149,11 @@ mod tests {
     fn valid_private_accounting_changes_cannot_hide_duplicate_checkpoint_fields() {
         let fixture = Fixture::new();
         let left = fixture.store("left", vec![("map.resume", vec![vec![1]])], 1, true);
-        let bytes = SIDE.len();
+        let bytes = base_bytes();
         for (index, (field, replacement)) in [
             (
-                "\"schema\":37".to_owned(),
-                "\"schema\":0,\"schema\":37".to_owned(),
+                "\"schema\":40".to_owned(),
+                "\"schema\":0,\"schema\":40".to_owned(),
             ),
             (
                 format!("\"bytes\":{bytes}"),
@@ -998,21 +1214,32 @@ mod tests {
             ("/index/0/length", json!(-1)),
             ("/map/stride", json!(-1)),
             ("/map/selected", json!("not a table selection")),
-            ("/map/branches", json!({"1":{"checkpoints":0,"since_checkpoint":-1}})),
+            (
+                "/map/branches",
+                json!({"1":{"checkpoints":0,"since_checkpoint":-1}}),
+            ),
             ("/map/gaps", json!({"1":{"range":0}})),
             ("/map/ranges", json!({"1":[1,"not an hour"]})),
             ("/content", json!("false")),
             ("/display_failures", json!(-1)),
-            ("/refused", json!({"1":{"synthetic":{"hour":"not an hour","error":"refused"}}})),
+            (
+                "/refused",
+                json!({"1":{"synthetic":{"hour":"not an hour","error":"refused"}}}),
+            ),
             ("/independent/synthetic/refused", json!({"not a branch":{}})),
-            ("/newest", json!({"synthetic":{"1":{"schema":37,"firstHour":1,"lastHour":"not an hour","complete":true}}})),
+            (
+                "/production",
+                json!({"1":{"schema":40,"firstHour":1,"lastHour":"not an hour","complete":true}}),
+            ),
         ]
         .into_iter()
         .enumerate()
         {
-            let corrupt = |packet| edit_checkpoint(packet, |document| {
-                *document.pointer_mut(pointer).unwrap() = value.clone();
-            });
+            let corrupt = |packet| {
+                edit_checkpoint(packet, |document| {
+                    *document.pointer_mut(pointer).unwrap() = value.clone();
+                })
+            };
             let left = fixture.store_with_checkpoint(
                 &format!("invalid-left-{index}"),
                 vec![("map.resume", vec![vec![1]])],
@@ -1027,7 +1254,10 @@ mod tests {
                 true,
                 &corrupt,
             );
-            assert!(compare(&left, &right, &remove_private_policy(&fixture)).is_err(), "{pointer}");
+            assert!(
+                compare(&left, &right, &remove_private_policy(&fixture)).is_err(),
+                "{pointer}"
+            );
         }
         for (index, field) in ["selected", "map", "display_failures", "bytes"]
             .into_iter()
@@ -1076,9 +1306,9 @@ mod tests {
                 document["refused"] = json!({"1":{"synthetic":{
                     "hour":2,"error":"Synthetic recorded refusal","from":null
                 }}});
-                document["newest"] = json!({"synthetic":{"1":{
-                    "schema":37,"firstHour":1,"lastHour":2,"complete":true
-                }}});
+                document["production"] = json!({"1":{
+                    "schema":40,"firstHour":1,"lastHour":2,"complete":true
+                }});
             })
         };
         let left = fixture.store_with_checkpoint("nested-left", vec![], 1, true, &update);
@@ -1086,7 +1316,6 @@ mod tests {
         assert_eq!(compare(&left, &right, &strict()).unwrap()["passed"], true);
         let defaults = |packet| {
             edit_checkpoint(packet, |document| {
-                document.as_object_mut().unwrap().remove("newest");
                 document["independent"]["synthetic"]
                     .as_object_mut()
                     .unwrap()
@@ -1184,7 +1413,7 @@ mod tests {
                             section: "preparation-checkpoint-v1".into(),
                             change: Change::CheckpointBytes,
                             ranges: 1,
-                            accounting: Some(accounting.map(|bytes| bytes + SIDE.len() as u64)),
+                            accounting: Some(accounting.map(|bytes| bytes + base_bytes())),
                             reason: "Exact byte accounting".into(),
                         },
                     ],
@@ -1273,7 +1502,7 @@ mod tests {
                     section: "preparation-checkpoint-v1".into(),
                     change: Change::CheckpointBytes,
                     ranges: 1,
-                    accounting: Some([SIDE.len() as u64 + 2, SIDE.len() as u64 + 1]),
+                    accounting: Some([base_bytes() + 2, base_bytes() + 1]),
                     reason: "Removed continuation byte".into(),
                 },
             ],

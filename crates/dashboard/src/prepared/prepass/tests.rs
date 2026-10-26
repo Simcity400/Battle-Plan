@@ -59,6 +59,7 @@ fn facts(outcome: Outcome) -> (ThreadId, Vec<i32>) {
     match outcome {
         Outcome::Facts(facts) => *facts.downcast::<(ThreadId, Vec<i32>)>().unwrap(),
         Outcome::Sequential => panic!("block observed hourly"),
+        Outcome::Declined(error) | Outcome::Failed(error) => panic!("extract failed: {error}"),
     }
 }
 
@@ -593,6 +594,7 @@ fn families_read_together_are_each_handed_what_their_own_read_hands_them() {
         .map(|(outcome, ..)| match outcome {
             Outcome::Facts(facts) => *facts.downcast::<Given>().unwrap(),
             Outcome::Sequential => panic!("the block was observed hourly"),
+            Outcome::Declined(error) | Outcome::Failed(error) => panic!("extract failed: {error}"),
         })
         .collect()
     };
@@ -772,6 +774,7 @@ fn capture(
     .map(|(outcome, ..)| match outcome {
         Outcome::Facts(facts) => *facts.downcast::<Vec<Captured>>().unwrap(),
         Outcome::Sequential => panic!("the block was observed hourly"),
+        Outcome::Declined(error) | Outcome::Failed(error) => panic!("extract failed: {error}"),
     })
     .collect();
     let after = replay_frame::cpu::delta_copies();
@@ -830,6 +833,92 @@ fn releasing_follow_views_preserves_partial_watches_deadlines_gaps_and_partial_t
             capture(&replay, families, true).0
         );
     }
+}
+
+#[test]
+fn runtime_preserves_main_projection_quiet_deadline_carry_and_gap_delivery() {
+    static PROJECTED: Family = Family {
+        name: "capture projected",
+        extract: "capture-projected.extract",
+        sequential: "capture-projected.sequential",
+        fallback: "capture-projected.fallback",
+        tables: &[TableId::Countries, TableId::States, TableId::CountryLinks],
+        fields: Some(|| Ok(vec![power(), TableFields::keys(TableId::States)])),
+        start: |_| Box::<Capture>::default(),
+    };
+    for quiet in [false, true] {
+        let replay = moving_tables(32, quiet);
+        for families in [&[&PROJECTED][..], &[&PROJECTED, &CAPTURE_ALL][..]] {
+            let events = |knobs: &Knobs| -> Vec<Vec<Captured>> {
+                extract_block_measured(
+                    &replay,
+                    &replay.index[0],
+                    families,
+                    &AtomicBool::new(false),
+                    knobs,
+                )
+                .outcomes
+                .into_iter()
+                .map(|(outcome, ..)| match outcome {
+                    Outcome::Facts(facts) => *facts.downcast::<Vec<Captured>>().unwrap(),
+                    other => panic!("expected extracted facts: {other:?}"),
+                })
+                .collect()
+            };
+            let main = events(&Knobs::default());
+            let session = runtime::Session::start().unwrap();
+            let borrowed = events(&Knobs::current());
+            assert_eq!(main, borrowed);
+            assert_eq!(
+                session.report().unwrap()["delivered_family_count"],
+                families.len()
+            );
+        }
+    }
+}
+
+/// A family's panic in hour 101 stops the shared read before hour 102: the
+/// read's later interruption must not replace the panic as that family's failure.
+#[test]
+fn runtime_keeps_an_earlier_panic_over_a_later_shared_read_failure() {
+    let replay = recording(1);
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = Arc::clone(&stop);
+    let hook: Hook = Arc::new(move |family, frame| {
+        if family == HOURS.name && frame.hour == 101 {
+            stopping.store(true, Ordering::Release);
+            return Fault::Panic;
+        }
+        Fault::Continue
+    });
+    let _session = runtime::Session::start().unwrap();
+    let knobs = Knobs {
+        runtime: runtime::current(),
+        hook: Some(hook),
+        ..Knobs::default()
+    };
+    let errors: Vec<io::Error> = extract_block_measured(
+        &replay,
+        &replay.index[0],
+        &[&HOURS, &HOURS_POWER],
+        &stop,
+        &knobs,
+    )
+    .outcomes
+    .into_iter()
+    .map(|(outcome, ..)| match outcome {
+        Outcome::Failed(error) => error,
+        other => panic!("expected a runtime failure: {other:?}"),
+    })
+    .collect();
+    assert!(runtime::panicking(&errors[0]), "{}", errors[0]);
+    assert!(!runtime::panicking(&errors[1]), "{}", errors[1]);
+    assert_eq!(
+        errors[1].kind(),
+        io::ErrorKind::Interrupted,
+        "{}",
+        errors[1]
+    );
 }
 
 #[test]

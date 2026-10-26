@@ -410,6 +410,15 @@ struct Pending {
 }
 
 impl Replay {
+    pub fn block_ordinal(&self, position: usize) -> io::Result<usize> {
+        self.ordinals.get(position).copied().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Physical block position is absent",
+            )
+        })
+    }
+
     pub fn partial(&self) -> Option<&ControlRecord> {
         self.partial_control
             .and_then(|index| self.controls.get(index))

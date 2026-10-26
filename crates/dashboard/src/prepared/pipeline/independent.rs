@@ -953,6 +953,28 @@ pub(super) fn cost_tables(phase: &Phase<'_>) -> Vec<TableId> {
     tables
 }
 
+pub(super) fn runtime_inventory() -> serde_json::Value {
+    let mut borrowed: Vec<_> = registry()
+        .iter()
+        .filter(|own| own.laned())
+        .map(|own| own.family().name)
+        .collect();
+    borrowed.extend(prepass::families().into_iter().map(|family| family.name));
+    borrowed.sort_unstable();
+    borrowed.dedup();
+    let old: Vec<_> = FAMILIES
+        .iter()
+        .filter(|family| !borrowed.contains(&family.name))
+        .map(|family| family.name)
+        .collect();
+    serde_json::json!({"candidate_borrowed_extract_families":borrowed,
+        "families_on_main_path":old,
+        "unchanged_nonfamily_jobs":["production_scans", "air_statistics_external", "map_export"],
+        "store":"main store::Writer and existing publication/coverage/checkpoint drivers",
+        "delivery":"one main watched read per prepass task, existing family-selected borrowed projections; old folds and reread fallbacks unchanged",
+        "S3":false,"partial":true})
+}
+
 /// The families prepared on their own, in name order (the checkpoint's).
 pub(super) fn names() -> Vec<&'static str> {
     let mut names: Vec<_> = registry().iter().map(|own| own.family().name).collect();
@@ -2125,7 +2147,8 @@ fn prepare_family(
                     }
                     reached
                 }
-                Some(Outcome::Sequential) => {
+                Some(Outcome::Failed(error)) => return Err(error),
+                Some(Outcome::Sequential | Outcome::Declined(_)) => {
                     note(timings, family.sequential);
                     let cpu_started = ::replay_frame::cpu::thread_cycles();
                     let reached = state.observe_block(&at, &mut observed, &mut check)?;

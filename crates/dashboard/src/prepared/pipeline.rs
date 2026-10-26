@@ -3344,7 +3344,8 @@ fn run_planned(
                     }
                     match outcome {
                         Outcome::Facts(facts) => folds.push((family, facts)),
-                        Outcome::Sequential => {
+                        Outcome::Failed(error) => return Err(error),
+                        Outcome::Sequential | Outcome::Declined(_) => {
                             let counted = start_timing(&family_timings);
                             finish_timing(&mut family_timings, counted, family.sequential, false);
                             prepass::note(family.sequential);

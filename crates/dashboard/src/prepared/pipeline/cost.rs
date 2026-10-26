@@ -261,15 +261,50 @@ pub fn run(options: &Options) -> io::Result<Value> {
             "Prerequisite failed: benchmark needs an empty isolated prepared store",
         ));
     }
-    if !["decode", "decode-sequential", "families"].contains(&options.mode.as_str()) {
+    if !["decode", "decode-sequential", "families", "runtime"].contains(&options.mode.as_str()) {
         return Err(invalid(
-            "Mode must be decode, decode-sequential, or families",
+            "Mode must be decode, decode-sequential, families, or runtime",
         ));
     }
+    let runtime_mode = options.mode == "runtime";
+    let preparation_mode = options.mode == "families" || runtime_mode;
     let _affinity = Affinity::pin(options.cores)?;
-    if options.mode != "families" && options.cores != 1 {
+    if !preparation_mode && options.cores != 1 {
         return Err(invalid("The decode floor requires exactly one logical CPU"));
     }
+    let runtime_inventory = if runtime_mode {
+        let mut inventory = independent::runtime_inventory();
+        let coordinator: Vec<_> = prepass::families()
+            .into_iter()
+            .map(|family| family.name)
+            .collect();
+        let candidates = inventory["candidate_borrowed_extract_families"]
+            .as_array()
+            .ok_or_else(|| invalid("Runtime inventory is missing borrowed-extract candidates"))?;
+        let mut own = Vec::new();
+        for candidate in candidates {
+            let name = candidate
+                .as_str()
+                .ok_or_else(|| invalid("Runtime inventory contains an invalid family name"))?;
+            if !coordinator.contains(&name) {
+                own.push(name.to_owned());
+            }
+        }
+        inventory["independent_extract_candidates"] = json!({"count":own.len(),"families":own});
+        inventory["coordinator_extract_candidates"] =
+            json!({"count":coordinator.len(),"families":coordinator});
+        inventory["registered_independent_family_count"] = json!(independent::names().len());
+        inventory["evidence"] = json!(
+            "Registry-derived candidates and unchanged old paths, not completed delivery; runtime session statistics report actual delivered families"
+        );
+        serde_json::to_writer_pretty(
+            File::create(options.output.join("runtime-inventory.json"))?,
+            &inventory,
+        )?;
+        Some(inventory)
+    } else {
+        None
+    };
     if options.scopes {
         cpu::enable_blocks();
     }
@@ -298,13 +333,13 @@ pub fn run(options: &Options) -> io::Result<Value> {
         ));
     }
     engine_executable::executable_tables::initialize(&options.content.options.game_dir)?;
-    let union = if options.mode != "families" {
+    let union = if !preparation_mode {
         union_tables(&source, &options.content)?
     } else {
         Vec::new()
     };
     let setup_seconds = wall.elapsed().as_secs_f64();
-    if options.mode != "families" {
+    if !preparation_mode {
         before = if options.scopes {
             cpu::block_snapshot()
         } else {
@@ -313,13 +348,21 @@ pub fn run(options: &Options) -> io::Result<Value> {
         cpu_start = process_cpu()?;
         wall = Instant::now();
     }
-    let (hours, blocks, tables, completion, checksum) = if options.mode == "families" {
+    let (hours, blocks, tables, completion, checksum) = if preparation_mode {
+        let runtime_session = runtime_mode
+            .then(crate::prepared::prepass::runtime::Session::start)
+            .transpose()?;
         let accepted = super::run(
             &source,
             Some(&options.content),
             &AtomicBool::new(false),
             |_| {},
         )?;
+        let runtime = runtime_session
+            .as_ref()
+            .map(|session| session.report())
+            .transpose()?;
+        drop(runtime_session);
         let total = source.replay_ref().index.len();
         let (store, key) = crate::prepared::files(&source, Some(&options.content))?;
         let (checkpoint, _) = checkpoint(&store, &key, None)?
@@ -331,8 +374,11 @@ pub fn run(options: &Options) -> io::Result<Value> {
                 "Preparation returned before every forward family and side job completed",
             ));
         }
-        let completion = json!({"walk_next_block":accepted.next_block,"total_blocks":total,"sections":accepted.sections,"families":accepted.families});
-        // Count actual input frames outside the family interval, without inferred gap lengths.
+        let mut completion = json!({"walk_next_block":accepted.next_block,"total_blocks":total,"sections":accepted.sections,"families":accepted.families});
+        if let Some(runtime) = runtime {
+            completion["runtime"] = runtime;
+        }
+        // Count actual input frames outside the preparation interval, without inferred gap lengths.
         (Vec::new(), Vec::new(), Vec::new(), completion, None)
     } else {
         let (hours, blocks, tables, checksum) =
@@ -354,7 +400,7 @@ pub fn run(options: &Options) -> io::Result<Value> {
         json!([])
     };
     let accounting = options.scopes.then(cpu::snapshot);
-    let (hours, blocks) = if options.mode == "families" {
+    let (hours, blocks) = if preparation_mode {
         let mut hours = Vec::new();
         let mut blocks = Vec::new();
         for (ordinal, index) in source.replay_ref().index.iter().enumerate() {
@@ -409,7 +455,7 @@ pub fn run(options: &Options) -> io::Result<Value> {
     if key != key.recapture()? {
         return Err(invalid("Inputs changed during the benchmark"));
     }
-    let report = json!({"schema":1,"mode":options.mode,"scopes_enabled":options.scopes,
+    let mut report = json!({"schema":1,"mode":options.mode,"scopes_enabled":options.scopes,
         "allocator":"mimalloc", "profile": if cfg!(debug_assertions) {"debug"} else {"release"},
         "logical_cpus": options.cores,"affinity_mask":format!("{:x}",_affinity.1), "driver":"ordinary production preparation; existing private readers and player/requested production scans",
         "file_cache_state":options.file_cache, "cold_prepared_store":true,
@@ -428,12 +474,47 @@ pub fn run(options: &Options) -> io::Result<Value> {
         "families_and_phases":summarize(&raw, &hours),"exclusive_scopes":raw,"blocks":blocks,"completion":completion,
         "selected_tables":tables.iter().map(|table|format!("{table:?}")).collect::<Vec<_>>(),
         "limitations":["Current-driver baseline, not the future W1B one-pass runtime or all-country production", "Group adoption/checkpoint/manifest CPU is shared commit, with no block attribution; family staging retains its family and block", "Decode-sequential reuses today's ReplayStream decoder; it is not a new anchor cache", "Source/content fingerprinting and family-mode hour counting are outside the timed interval"]});
+    if let Some(inventory) = runtime_inventory {
+        report["runtime"] = report["completion"]["runtime"].clone();
+        report["runtime_inventory"] = inventory;
+        report["driver"] = json!(
+            "PARTIAL main-store borrowed-extract measurement through ordinary production preparation; not whole-app one-decode runtime"
+        );
+        report["runtime_measurement"] = json!({
+            "status":"PARTIAL",
+            "scope":"All registered Own families, the coordinator and side jobs still run through the ordinary preparation driver",
+            "borrowed_family_evidence":"runtime and completion.runtime are the session's actual delivered statistics; runtime_inventory lists candidates, not completed delivery",
+            "all_family_process_cpu_ns":process_ns,
+            "all_family_process_cpu_us_per_recorded_hour":process_ns as f64 / 1000.0 / total_hours as f64,
+            "cpu_scope":"Total timed process CPU, including unchanged family paths, coordinator, side jobs and main publication; not only borrowed extracts",
+            "unchanged_paths":"Non-borrowed family paths and private/shared readers, coordinator observation and side-job scans remain; see runtime_inventory and delivered statistics",
+            "main_encoders":"unchanged",
+            "main_store":"unchanged",
+            "publication_cadence":"unchanged",
+            "s3":false,"byte_credits":false,"frozen_roots":false,"spools":false,
+            "whole_app_one_decode_runtime":false,
+            "hour_counting":"Actual accepted frames counted after the timed interval, exactly as families mode; no union_tables pass in runtime mode"
+        });
+        report["limitations"] = json!([
+            "PARTIAL main-store borrowed-extract measurement, not whole-app one-decode runtime or all-country production",
+            "Candidate inventory is not delivered-family coverage; session statistics report actual delivery only",
+            "All registered Own families, coordinator and side jobs remain; old paths outside borrowed delivery are unchanged",
+            "Main encoders, store, publication cadence and completion/integrity checks are unchanged; no S3, byte credits, frozen roots or spools",
+            "Group adoption/checkpoint/manifest CPU is shared commit, with no block attribution; family staging retains its family and block",
+            "Source/content fingerprinting and actual-frame hour counting are outside the timed interval"
+        ]);
+    }
     serde_json::to_writer_pretty(File::create(options.output.join("report.json"))?, &report)?;
+    let mode_label = if runtime_mode {
+        "runtime (PARTIAL main-store borrowed-extract; not whole-app one-decode)"
+    } else {
+        options.mode.as_str()
+    };
     std::fs::write(
         options.output.join("summary.txt"),
         format!(
             "{}: {} recorded hours, {:.6} s wall, {:.3} CPU-us/hour; decoded checksum {}; exclusive CPU reconciliation {}\n",
-            options.mode,
+            mode_label,
             total_hours,
             seconds,
             process_ns as f64 / 1000.0 / total_hours as f64,
