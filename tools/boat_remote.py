@@ -6,9 +6,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
+import time
 
 ROOT = Path('/home/user/hoi4')
 SRC = ROOT / 'src'
@@ -36,6 +38,42 @@ def checkpoint():
         json.dump(mtimes, output)
     Path(str(METADATA) + '.tmp').replace(METADATA)
     BOOT_MARKER.write_text(Path('/proc/sys/kernel/random/boot_id').read_text())
+
+def prune_incremental():
+    # Every lane's checks leave incremental sessions behind (106 of 147 GB seen on one VM).
+    usage = shutil.disk_usage(ROOT)
+    if usage.used < usage.total * 0.7:
+        return
+    failed = []
+    target = ROOT / 'target'
+    for incremental in [*target.glob('*/incremental'), *target.glob('*/*/incremental')]:
+        shutil.rmtree(incremental, onerror=lambda function, path, error: failed.append(path))
+    after = shutil.disk_usage(ROOT)
+    note = f'; {len(failed)} paths could not be removed' if failed else ''
+    print(f'Pruned incremental caches: disk {usage.used * 100 // usage.total}% -> {after.used * 100 // after.total}%{note}', file=sys.stderr, flush=True)
+
+def drain(process):
+    """True once the job's process group is gone within five seconds; it is killed only while its leader is unreaped."""
+    # A reaped leader frees its ID for reuse, so a group outliving its leader is never signalled, only kept claimed.
+    deadline = time.monotonic() + 5
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            return False
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+        time.sleep(0.1)
+    return False
 
 def restore_metadata():
     boot = Path('/proc/sys/kernel/random/boot_id').read_text()
@@ -175,6 +213,8 @@ elif mode in {'check', 'build', 'ui'}:
     os.environ['CARGO_BUILD_JOBS'] = str((4 if memory_gib > 10 else 2) if mode == 'build' else (6 if memory_gib > 10 else 3))
     with (ROOT / 'running.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = None
+        launched = False
         try:
             if mode == 'ui':
                 package_hash = hashlib.sha256((SRC / 'package-lock.json').read_bytes()).hexdigest()
@@ -199,15 +239,19 @@ elif mode in {'check', 'build', 'ui'}:
                     (SRC / 'node_modules').symlink_to(modules, target_is_directory=True)
                 command = ['npm', 'run', 'check:ui']
             else:
+                prune_incremental()
                 command = ['cargo', 'xwin', *args, '--target', TARGET]
                 if mode == 'build':
                     command.append('--message-format=json-render-diagnostics')
             print('Remote command: ' + ' '.join(command), file=sys.stderr, flush=True)
             if mode != 'build':
-                result = subprocess.run(command, cwd=SRC)
+                launched = True
+                result = subprocess.Popen(command, cwd=SRC, start_new_session=True)
+                result.wait()
             else:
                 artifacts = []
-                result = subprocess.Popen(command, cwd=SRC, stdout=subprocess.PIPE, text=True)
+                launched = True
+                result = subprocess.Popen(command, cwd=SRC, stdout=subprocess.PIPE, text=True, start_new_session=True)
                 for line in result.stdout:
                     try:
                         event = json.loads(line)
@@ -250,8 +294,13 @@ elif mode in {'check', 'build', 'ui'}:
                     print('BOAT_BUNDLE=' + str(bundle), flush=True)
             sys.exit(result.returncode)
         finally:
+            # The job's command group (Cargo, npm check) must not outlive its claim: the next job prunes incremental files under it.
+            # A launch interrupted before Popen returned may have left Cargo running without a handle.
+            drained = not launched or (result is not None and drain(result))
             checkpoint()
-            if CLAIM.exists() and owned(token):
+            if not drained:
+                print('WARNING: processes of this job are still running; the claim stays for quarantine', file=sys.stderr, flush=True)
+            elif CLAIM.exists() and owned(token):
                 (CLAIM / 'token').unlink()
                 CLAIM.rmdir()
 else:
