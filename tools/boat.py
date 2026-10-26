@@ -29,6 +29,7 @@ import msvcrt
 import os
 from pathlib import Path
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -54,6 +55,11 @@ UNAVAILABLE = 75
 USABLE = {"ready", "idle", "running", "stopped"}
 # The runner refuses to start on a VM holding another run's claim.
 REMOTE_CLAIMED = 73
+# Waits between attempts when the Boat API drops a connection (bursts of TLS handshake failures, 26 Oct).
+RETRY_SECONDS = (2, 5, 10, 20, 40, 60)
+# STATUS_DLL_INIT_FAILED: Windows could not start boat.exe under load, so nothing reached Boat.
+LAUNCH_FAILED = 0xC0000142
+IDEMPOTENT = {"list", "info", "extend", "scp", "push"}
 
 
 class Failure(Exception):
@@ -110,14 +116,55 @@ def boat_exe():
     return os.environ.get("BOAT_EXE") or shutil.which("boat") or str(Path.home() / ".ascii" / "bin" / "boat.exe")
 
 
-def boat(*args, check=True):
-    result = subprocess.run([boat_exe(), "--json", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+def parse_events(stdout):
     events = []
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         try:
             events.append(json.loads(line))
         except ValueError:
             pass
+    return events
+
+
+def transient(result, idempotent):
+    # Nothing shows whether a failed create, resume, exec or snapshot took effect, so only those that never ran repeat.
+    if result.returncode & 0xFFFFFFFF == LAUNCH_FAILED:
+        return True
+    text = result.stdout + result.stderr
+    return idempotent and ("could not reach the Boat API" in text or '"status":5' in text)
+
+
+class Held:
+    """Holds Ctrl-C until the block ends, so a remote job is never left started or stopped halfway."""
+
+    def __enter__(self):
+        self.interrupted = False
+        self.main = threading.current_thread() is threading.main_thread()
+        if self.main:
+            self.previous = signal.signal(signal.SIGINT, self.hold)
+        return self
+
+    def hold(self, *_):
+        self.interrupted = True
+
+    def __exit__(self, kind, error, trace):
+        if self.main:
+            signal.signal(signal.SIGINT, self.previous)
+        if self.interrupted and kind is not None and not issubclass(kind, KeyboardInterrupt):
+            raise KeyboardInterrupt from error
+
+
+def boat(*args, check=True, idempotent=None, shielded=False):
+    idempotent = args[0] in IDEMPOTENT if idempotent is None else idempotent
+    # A shielded call runs in its own process group, so the console's Ctrl-C cannot cut its request short.
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP if shielded else 0
+    for wait in (*RETRY_SECONDS, None):
+        result = subprocess.run([boat_exe(), "--json", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=flags)
+        events = parse_events(result.stdout)
+        if not result.returncode or wait is None or not transient(result, idempotent):
+            break
+        say(f"Boat {args[0]} failed ({result.returncode}), retrying in {wait} s: {(result.stderr or result.stdout).strip()[:300]}")
+        time.sleep(wait)
     if check and result.returncode:
         raise Failure(f"Boat {args[0]} failed ({result.returncode}): {result.stderr.strip()} {result.stdout.strip()}")
     return result, events
@@ -128,34 +175,107 @@ def info(vmid):
     return next(event["sandbox"] for event in events if "sandbox" in event)
 
 
+def attach(vmid, pid, seen, stream):
+    """One `exec --attach` pass: the job's exit code (None if the stream dropped first) and this pass's whole replay."""
+    process = subprocess.Popen([boat_exe(), "--json", "exec", vmid, "--attach", str(pid)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+    start, replay, exit_code, headers = {"stdout": 0, "stderr": 0}, {"stdout": [], "stderr": []}, None, 0
+    try:
+        for line in process.stdout:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                if stream:
+                    say(line.rstrip())
+                continue
+            kind = event.get("type")
+            if kind == "attached":
+                # The CLI reconnects on its own with a header at the current offsets; one that skips or rewinds breaks the replay.
+                offsets = {"stdout": event.get("stdoutOffset", 0), "stderr": event.get("stderrOffset", 0)}
+                if offsets != (start if headers else {"stdout": 0, "stderr": 0}):
+                    replay = None
+                start, headers = offsets, headers + 1
+            elif kind in seen:
+                text, end = event.get("data", ""), event["nextOffset"]
+                begin, start[kind] = start[kind], end
+                if replay is not None:
+                    replay[kind].append(text)
+                if end <= seen[kind]:
+                    continue
+                if begin < seen[kind]:
+                    raw = text.encode("utf-8")
+                    if len(raw) == end - begin:
+                        text = raw[seen[kind] - begin:].decode("utf-8", errors="replace")
+                    else:
+                        # The CLI replaced undecodable bytes, so the overlap cannot be cut exactly: repeat it, never drop it.
+                        say(f"Boat attach: up to {seen[kind] - begin} bytes of {kind} repeat below")
+                seen[kind] = end
+                if stream:
+                    print(text, end="", file=sys.stderr if kind == "stderr" else sys.stdout, flush=True)
+            elif kind == "exit":
+                if event.get("exitCode") is None:
+                    raise Failure(f"Boat remote job {pid} on {vmid} ended without an exit code: {json.dumps(event)}")
+                exit_code = event["exitCode"]
+                if exit_code:
+                    say("Boat remote exit: " + json.dumps(event))
+            elif event.get("error"):
+                say(str(event))
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+    return exit_code, replay
+
+
+def stop(vmid, pid):
+    # A detached job outlives Ctrl-C; the foreground exec it replaced died with its caller, so end it the same way.
+    with Held():
+        boat("exec", vmid, "--kill", str(pid), check=False, idempotent=True, shielded=True)
+        for wait in (*RETRY_SECONDS, None):
+            _, events = boat("exec", vmid, "--status", str(pid), check=False, idempotent=True, shielded=True)
+            if any(event.get("pid") == pid and event.get("running") is False for event in events):
+                return
+            if wait is None:
+                break
+            time.sleep(wait)
+    say(f"WARNING: Boat job {pid} on {vmid} may still be running; its remote claim stays so nothing overlaps it")
+
+
 def remote(vmid, *args, stream=False):
-    command = [boat_exe(), "--json", "exec", vmid, "--cwd", REMOTE, "--timeout", "0", "--stream", "--", "bash", REMOTE + "/run.sh", *args]
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
-    output, errors, exit_code = [], [], None
-    for line in process.stdout:
-        try:
-            event = json.loads(line)
-        except ValueError:
-            if stream:
-                say(line.rstrip())
-            continue
-        if event.get("type") in {"stdout", "stderr"}:
-            data = event.get("data", "")
-            (output if event["type"] == "stdout" else errors).append(data)
-            if stream:
-                print(data, end="", file=sys.stderr if event["type"] == "stderr" else sys.stdout, flush=True)
-        elif event.get("type") == "exit":
-            exit_code = event.get("exitCode")
-            if exit_code:
-                say("Boat remote exit: " + json.dumps(event))
-        elif event.get("error"):
-            say(str(event))
-    process.wait()
+    # Detached, the job outlives a dropped connection; each attach replays from the start, so offsets skip what was seen.
+    # Detached exec takes --cwd relative to the sandbox's work directory, so the job changes directory itself.
+    pid, seen, exit_code, replay = None, {"stdout": 0, "stderr": 0}, None, None
+    try:
+        with Held() as held:
+            _, events = boat("exec", vmid, "--detach", "--", "bash", "-c", 'cd "$0" && exec bash run.sh "$@"', REMOTE, *args, shielded=True)
+            pid = next((event["pid"] for event in events if "pid" in event), None)
+        if held.interrupted:
+            raise KeyboardInterrupt
+        if pid is None:
+            raise Failure(f"Boat exec --detach on {vmid} returned no process id")
+        for wait in (*RETRY_SECONDS, None):
+            exit_code, replay = attach(vmid, pid, seen, stream)
+            if exit_code is not None or wait is None:
+                break
+            say(f"Boat attach to job {pid} on {vmid} dropped; re-attaching in {wait} s")
+            time.sleep(wait)
+    except KeyboardInterrupt:
+        if pid is None:
+            say(f"WARNING: interrupted while starting a Boat job on {vmid}; if it started, its remote claim stays so nothing overlaps it")
+        else:
+            try:
+                stop(vmid, pid)
+            except Exception as error:
+                say(f"WARNING: could not stop Boat job {pid} on {vmid} ({error}); its remote claim stays so nothing overlaps it")
+        raise
     if exit_code is None:
-        raise Failure(f"Boat exec lost its terminal result (CLI exit {process.returncode}); the remote claim stays so nothing overlaps a surviving job")
-    if exit_code and errors and not stream:
-        say("".join(errors).rstrip())
-    return exit_code, "".join(output)
+        raise Failure(f"Boat lost job {pid} on {vmid} after {len(RETRY_SECONDS) + 1} attaches; the remote claim stays so nothing overlaps it")
+    # Callers parse what is returned, so it must be the whole log from offset 0; the displayed text may repeat or be cut.
+    if replay is None:
+        raise Failure(f"Boat replay of job {pid} on {vmid} was not one unbroken log from offset 0, so its output cannot be trusted")
+    stdout, stderr = "".join(replay["stdout"]), "".join(replay["stderr"])
+    if exit_code and stderr and not stream:
+        say(stderr.rstrip())
+    return exit_code, stdout
 
 
 def git(worktree, *args):
