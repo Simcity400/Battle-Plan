@@ -2962,8 +2962,11 @@ impl Replay {
         index: &BlockIndex,
         tables: &[TableId],
     ) -> io::Result<RecordedFrame> {
-        let _consumer =
-            self.section_block_reader(self.block_position(index).unwrap_or(0), None, "read");
+        let _consumer = self.section_block_reader(
+            self.block_position(index).unwrap_or(0),
+            Some(tables),
+            "read",
+        );
         if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
             return Err(invalid("block exceeds raw size limit"));
         }
@@ -3094,8 +3097,11 @@ impl Replay {
         check: &mut Check<'_>,
     ) -> io::Result<Vec<RecordedFrame>> {
         check.run()?;
-        let _consumer =
-            self.section_block_reader(self.block_position(index).unwrap_or(0), None, "read");
+        let _consumer = self.section_block_reader(
+            self.block_position(index).unwrap_or(0),
+            Some(tables),
+            "read",
+        );
         let block = self.grouped_block(index)?;
         let frames = read_recorded_through_checked(
             self,
@@ -3317,7 +3323,7 @@ fn read_recorded_through_checked(
     check: &mut Check<'_>,
 ) -> io::Result<Vec<RecordedFrame>> {
     let _consumer =
-        replay.section_block_reader(replay.block_position(index).unwrap_or(0), None, "read");
+        replay.section_block_reader(replay.block_position(index).unwrap_or(0), selected, "read");
     let _cpu = crate::cpu::scope("decode", None);
     let format = replay.format;
     if format.version() < GROUPED_FORMAT {
@@ -3471,8 +3477,11 @@ fn read_selected_updates_inner(
     mut table_check: Option<&mut dyn FnMut() -> io::Result<()>>,
     check: &mut Check<'_>,
 ) -> io::Result<SelectedUpdates> {
-    let _consumer =
-        replay.section_block_reader(replay.block_position(index).unwrap_or(0), None, "read");
+    let _consumer = replay.section_block_reader(
+        replay.block_position(index).unwrap_or(0),
+        Some(selected),
+        "read",
+    );
     let _cpu = crate::cpu::scope("decode", None);
     let format = replay.format;
     if format.version() < GROUPED_FORMAT {

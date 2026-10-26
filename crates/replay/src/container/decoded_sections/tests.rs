@@ -1866,3 +1866,24 @@ fn a_bypass_can_publish_after_its_successful_owner_is_pruned() {
     assert!(log.iter().all(|decode| decode.returned));
     assert_consistent(&cache);
 }
+
+#[test]
+fn selected_grouped_reads_never_pin_unrelated_cached_columns() {
+    let replay = recording(1);
+    let table = TableId::Clock;
+    assert!(!widen(replay.format.version(), &[TableId::Countries])[table.index()]);
+    fill(&replay, 0, table, 1_500);
+    let mut snapshots = 0;
+    replay
+        .read_block_recorded_selected_with(&replay.index[0], &[TableId::Countries], || {
+            let census = replay.decoded_section_census(Some((0, 0)));
+            if census.readers != 0 {
+                snapshots += 1;
+                assert_eq!(census.retaining[table.index()], None);
+                assert_eq!(census.needed[table.index()], 0);
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert!(snapshots > 0);
+}
