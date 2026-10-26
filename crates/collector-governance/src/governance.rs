@@ -27,6 +27,8 @@ use replay_data::{rows, rows::RowCodec, rows::TableId, rows::TableSchema, rows::
 use replay_frame::{frame::TableInput, frame::TableView};
 use std::{mem::size_of, sync::OnceLock};
 
+mod technology_parts;
+pub use technology_parts::{TechnologyDispatch, TechnologyPart};
 mod demand;
 use crate::drift;
 mod leader_store;
@@ -221,7 +223,21 @@ struct TacticRow {
     token_start: usize,
 }
 
+pub const ACQUISITION_PHASE_NAMES: [&str; 9] = [
+    "technology_native",
+    "technology_fingerprint",
+    "technology_carry",
+    "technology_hold",
+    "politics_finish",
+    "acquire_inclusive",
+    "capture_inclusive",
+    "politics_begin",
+    "technology_definition_prefix",
+];
+
 pub struct Captured {
+    profile_acquisition: bool,
+    acquisition_phases: [u64; 9],
     /// The tables the capture mode leaves out ([`Self::leave_out`]).
     left_out: [bool; N],
     nested_bytes: OnceLock<usize>,
@@ -754,6 +770,8 @@ impl Captured {
             slots: CaptureRows::new(capacity.rows[3]),
             definitions: CaptureRows::new(capacity.rows[4]),
             definitions_pending: false,
+            profile_acquisition: false,
+            acquisition_phases: [0; 9],
             politics: CaptureRows::new(capacity.rows[5]),
             parties: CaptureRows::new(capacity.rows[6]),
             party_leaders: CaptureRows::new(capacity.rows[21]),
@@ -831,6 +849,7 @@ impl Captured {
             leaders,
             parties,
             false,
+            None,
         )
     }
 
@@ -853,6 +872,29 @@ impl Captured {
             leaders,
             parties,
             true,
+            None,
+        )
+    }
+
+    pub fn acquire_owned_partitioned(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        technology_fingerprints: &mut SliceFingerprints,
+        focus_fingerprints: &mut SliceFingerprints,
+        leaders: Option<&mut LeaderStore>,
+        parties: Option<&mut PartyStore>,
+        dispatch: TechnologyDispatch<'_>,
+    ) -> CaptureReport {
+        self.capture_owned_impl(
+            memory,
+            context,
+            technology_fingerprints,
+            focus_fingerprints,
+            leaders,
+            parties,
+            true,
+            Some(dispatch),
         )
     }
 
@@ -866,6 +908,7 @@ impl Captured {
         leaders: Option<&mut LeaderStore>,
         parties: Option<&mut PartyStore>,
         defer_definitions: bool,
+        dispatch: Option<TechnologyDispatch<'_>>,
     ) -> CaptureReport {
         let burned_in = |every| crate::sampled_verify::Check::burned_in(context.hour, every);
         let politics = PoliticsWalk {
@@ -892,8 +935,21 @@ impl Captured {
             },
             Some(politics),
             defer_definitions,
+            dispatch,
         );
         CaptureReport { ticks }
+    }
+
+    pub fn profile_acquisition(&mut self, enabled: bool) {
+        self.profile_acquisition = enabled;
+    }
+
+    pub fn technology_certified(&self) -> bool {
+        self.technology_changed.certified
+    }
+
+    pub fn acquisition_phases(&self) -> Option<[u64; 9]> {
+        self.profile_acquisition.then_some(self.acquisition_phases)
     }
 
     /// No Memory capability or native fallback. All retained dictionary
@@ -904,8 +960,7 @@ impl Captured {
             if matches!(
                 self.definitions.outcome,
                 Outcome::Rows { .. } | Outcome::Truncated { .. }
-            )
-                && let Outcome::Unavailable { .. } = outcome
+            ) && let Outcome::Unavailable { .. } = outcome
             {
                 self.definitions.outcome = outcome;
             }
@@ -970,6 +1025,7 @@ impl Captured {
 
     pub fn reset(&mut self) {
         self.definitions_pending = false;
+        self.acquisition_phases = [0; 9];
         self.nested_bytes.take();
         self.focus.reset();
         self.completed.reset();
@@ -1211,6 +1267,7 @@ impl Captured {
             slots: &mut self.slots.rows,
             definitions: &mut self.definitions.rows,
             defer_definitions: self.definitions_pending,
+            profile: self.profile_acquisition,
             politics: &mut self.politics.rows,
             parties: &mut self.parties.rows,
             ideas: &mut self.ideas.rows,
@@ -1295,14 +1352,7 @@ impl Captured {
         politics: Option<PoliticsWalk<'_>>,
     ) -> [u64; N] {
         self.capture_sliced_impl(
-            memory,
-            base,
-            game_state,
-            hour,
-            force_full,
-            slices,
-            politics,
-            false,
+            memory, base, game_state, hour, force_full, slices, politics, false, None,
         )
     }
 
@@ -1317,7 +1367,9 @@ impl Captured {
         slices: Slices<'_>,
         politics: Option<PoliticsWalk<'_>>,
         defer_definitions: bool,
+        dispatch: Option<TechnologyDispatch<'_>>,
     ) -> [u64; N] {
+        let capture_started = self.profile_acquisition.then(qpc);
         self.reset();
         self.technology_selection.reset(hour, force_full);
         self.focus_selection.reset_daily(hour, force_full);
@@ -1331,7 +1383,7 @@ impl Captured {
             *walk &= !left_out;
         }
         self.definitions_pending = defer_definitions && walk[2];
-        let first = acquire(
+        let first = acquire_partitioned(
             memory,
             base,
             game_state,
@@ -1340,6 +1392,7 @@ impl Captured {
             &walk,
             slices,
             politics,
+            dispatch,
         );
         self.focus.outcome = first.outcomes[0];
         self.completed.outcome = first.outcomes[1];
@@ -1385,6 +1438,7 @@ impl Captured {
         self.decision_countries.len = first.lens[11];
         self.decision_countries.required = first.required[11];
         self.dictionary_required = first.dictionary_required;
+        self.acquisition_phases = first.phases;
         let mut ticks = first.ticks;
         let started = qpc();
         let _reads = read_accounting::table(TABLES[22]);
@@ -1428,6 +1482,9 @@ impl Captured {
                 self.random_item_text.required = result.required_bytes;
             }
             ticks[index] = elapsed(started);
+        }
+        if let Some(started) = capture_started {
+            self.acquisition_phases[6] = elapsed(started);
         }
         ticks
     }
@@ -1807,6 +1864,7 @@ struct Buffers<'a> {
     slots: &'a mut Vec<cresearch_slot::Row>,
     definitions: &'a mut Vec<ctechnology_template::Row>,
     defer_definitions: bool,
+    profile: bool,
     politics: &'a mut Vec<CountryRow<cpolitical_status::Row>>,
     parties: &'a mut Vec<cpolitical_party::Row>,
     ideas: &'a mut Vec<cpolitical_status::IdeaRow>,
@@ -1845,6 +1903,7 @@ struct Buffers<'a> {
     focus_changed: &'a mut crate::slicing::Changed,
 }
 struct Observation {
+    phases: [u64; 9],
     outcomes: [Outcome; N],
     ticks: [u64; N],
     lens: [usize; 12],
@@ -1855,6 +1914,7 @@ impl Observation {
     fn new() -> Self {
         Self {
             outcomes: [Outcome::Rows { len: 0 }; N],
+            phases: [0; 9],
             ticks: [0; N],
             lens: [0; 12],
             required: [0; 12],
@@ -1888,6 +1948,7 @@ macro_rules! politics_tables {
     clippy::too_many_arguments,
     reason = "Keep the independently borrowed table buffers, selection slices and politics walk in one ordered acquisition."
 )]
+#[cfg(test)]
 fn acquire(
     memory: &impl Memory,
     base: usize,
@@ -1898,15 +1959,43 @@ fn acquire(
     slices: Slices<'_>,
     politics: Option<PoliticsWalk<'_>>,
 ) -> Observation {
+    acquire_partitioned(
+        memory,
+        base,
+        game_state,
+        capture_hour,
+        b,
+        enabled,
+        slices,
+        politics,
+        None,
+    )
+}
+
+fn acquire_partitioned(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    capture_hour: i32,
+    b: Buffers<'_>,
+    enabled: &[bool; N],
+    slices: Slices<'_>,
+    politics: Option<PoliticsWalk<'_>>,
+    dispatch: Option<TechnologyDispatch<'_>>,
+) -> Observation {
     use crate::country_input_changes::Table;
     let Slices {
         technologies: technology_fingerprints,
         focus: focus_fingerprints,
         changes,
     } = slices;
+    let acquisition_started = b.profile.then(qpc);
     // Taken before the walk's first read or registration.
     let mut hour = politics.map(|walk| politics_hour::Hour::start(walk, base, game_state, enabled));
     let mut o = Observation::new();
+    if let Some(started) = acquisition_started {
+        o.phases[7] = elapsed(started);
+    }
     // The Daily(6) slot's census, and between slots while an owner
     // certificate waits for recovery: this walk visits every country hourly.
     let delayed_census =
@@ -2060,6 +2149,25 @@ fn acquire(
         }
         _ => false,
     };
+    let preparation = if enabled[2] && b.technology_selection.force_full && dispatch.is_some() {
+        let started = qpc();
+        let prepared = countries
+            .as_ref()
+            .and_then(|countries| countries.as_ref().ok())
+            .and_then(|countries| {
+                technology_parts::prepare(memory, countries, dispatch, &mut definitions)
+            });
+        let ticks = elapsed(started);
+        o.ticks[2] += ticks;
+        o.phases[0] += ticks;
+        prepared
+    } else {
+        None
+    };
+    let (mut prepared, technology_roster) = preparation.map_or((None, None), |preparation| {
+        o.phases[8] = preparation.definition_ticks;
+        (preparation.prepared, Some(preparation.roster))
+    });
     let election_cache_observed = hour.as_ref().map_or(
         cfg!(any(test, feature = "test-support")),
         politics_hour::Hour::election_cache_certified,
@@ -2104,7 +2212,11 @@ fn acquire(
                 }
                 for slot in 1..countries.count() {
                     let started = qpc();
-                    let country = read_accounting::with_table(TABLES[5], || countries.at(slot));
+                    let country = read_accounting::with_table(TABLES[5], || {
+                        technology_roster
+                            .as_ref()
+                            .map_or_else(|| countries.at(slot), |roster| roster[slot as usize - 1])
+                    });
                     o.ticks[5] += elapsed(started);
                     let country = match country {
                         Ok(Some(country)) => country,
@@ -2214,6 +2326,7 @@ fn acquire(
                         // certified take, differs from its held roster only
                         // by progress ([`drift`]); it admits no definition,
                         // which every roster reaches alike.
+                        let carry_started = b.profile.then(qpc);
                         let held = if !b.technology_selection.force_full
                             && b.technology_changed.carries(country.id)
                             && !technology_check.covers(u64::from(country.id))
@@ -2230,6 +2343,9 @@ fn acquire(
                         } else {
                             drift::Carried::Miss
                         };
+                        if let Some(started) = carry_started {
+                            o.phases[2] += elapsed(started);
+                        }
                         let result = match held {
                             drift::Carried::Rows(len) => {
                                 technology_carried += 1;
@@ -2244,24 +2360,42 @@ fn acquire(
                                 Outcome::Unavailable { reason }
                             }
                             drift::Carried::Miss => {
-                                let result = ctechnology_status::walk_technologies(
-                                    memory,
-                                    base,
-                                    country.pointer,
-                                    country.id,
-                                    (&mut *b.technologies, &mut *b.technology_pointers),
-                                    first,
-                                    &mut definitions,
-                                );
+                                let native_started = b.profile.then(qpc);
+                                let result = if let Some(prepared) = prepared.as_mut() {
+                                    prepared.copy_country(
+                                        country.id,
+                                        b.technologies,
+                                        b.technology_pointers,
+                                        first,
+                                    )
+                                } else {
+                                    ctechnology_status::walk_technologies(
+                                        memory,
+                                        base,
+                                        country.pointer,
+                                        country.id,
+                                        (&mut *b.technologies, &mut *b.technology_pointers),
+                                        first,
+                                        &mut definitions,
+                                    )
+                                };
+                                if let Some(started) = native_started {
+                                    o.phases[0] += elapsed(started);
+                                }
                                 technology_reads += 1;
                                 // An incomplete read holds nothing to compare with.
                                 match result {
                                     Outcome::Rows { len } => {
                                         let rows = &b.technologies[first..first + len];
+                                        let digest_started = b.profile.then(qpc);
+                                        let digest = technology_digest(rows);
+                                        if let Some(started) = digest_started {
+                                            o.phases[1] += elapsed(started);
+                                        }
                                         if b.technology_changed.read(
                                             technology_fingerprints,
                                             country.id,
-                                            technology_digest(rows),
+                                            digest,
                                         ) {
                                             changes.mismatch(
                                                 Table::Technologies,
@@ -2303,6 +2437,7 @@ fn acquire(
                                 Outcome::Rows { len } => Some(&b.slots[first..first + len]),
                                 _ => None,
                             };
+                            let hold_started = b.profile.then(qpc);
                             technology_fingerprints.drift.hold_technologies(
                                 memory,
                                 base,
@@ -2312,6 +2447,9 @@ fn acquire(
                                 &b.technology_pointers[rows..rows + len],
                                 slots,
                             );
+                            if let Some(started) = hold_started {
+                                o.phases[3] += elapsed(started);
+                            }
                         }
                         append(&mut o.outcomes[3], result);
                         o.ticks[3] += elapsed(started);
@@ -2756,7 +2894,14 @@ fn acquire(
         );
     }
     if let Some(hour) = hour {
+        let finish_started = b.profile.then(qpc);
         hour.finish(&politics_tables!(b), &o, census);
+        if let Some(started) = finish_started {
+            o.phases[4] += elapsed(started);
+        }
+    }
+    if let Some(started) = acquisition_started {
+        o.phases[5] = elapsed(started);
     }
     o
 }

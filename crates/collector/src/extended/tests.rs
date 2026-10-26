@@ -3709,3 +3709,121 @@ fn map_assembly_refuses_the_packs_it_leaves_out_and_keeps_the_rest() {
         }
     }
 }
+
+#[test]
+fn only_force_full_governance_and_recorded_projects_promote_the_long_join_tail() {
+    use crate::acquisition_jobs::{Job, Role};
+    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    for force_full in [false, true] {
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let governance = Job::Governance(captured.take_governance_request(
+            &countries,
+            0,
+            0,
+            1,
+            force_full,
+            Box::new(crate::slicing::SliceFingerprints::new()),
+            Box::new(crate::slicing::SliceFingerprints::new()),
+            None,
+            None,
+            None,
+        ));
+        assert_eq!(
+            governance.priority(),
+            if force_full {
+                0
+            } else {
+                Role::Governance.priority()
+            }
+        );
+        let mut gated = captured.take_gated_request(
+            0,
+            0,
+            1,
+            force_full,
+            Box::new(crate::slicing::SliceFingerprints::new()),
+            Some(Arc::clone(&countries)),
+        );
+        let mut projects = gated.take_projects();
+        projects.recorded = true;
+        let mut projects = Job::GatedProjects(projects);
+        assert_eq!(
+            projects.priority(),
+            if force_full {
+                0
+            } else {
+                Role::GatedProjects.priority()
+            }
+        );
+        let Job::GatedProjects(request) = &mut projects else {
+            unreachable!()
+        };
+        request.recorded = false;
+        assert_eq!(projects.priority(), Role::GatedProjects.priority());
+    }
+}
+
+#[test]
+fn independent_variant_family_survives_every_final_input_return_order_without_allocating() {
+    for variant_order in 0..3 {
+        for failure in [None, Some("final input continuation failed")] {
+            let mut capacity = Capacities::default();
+            capacity.production.rows[3..7].fill(67);
+            capacity.production.definition_bytes = 4096;
+            capacity.production.rows[0] = 1500;
+            let mut captured = Captured::with_capacities(&capacity);
+            let mut variant = Some(captured.take_variants_request(0, 0, 60759371, true));
+            variant
+                .as_mut()
+                .unwrap()
+                .variants
+                .fail("original variant verdict", 60759371, true);
+            variant
+                .as_mut()
+                .unwrap()
+                .changes
+                .fail("original changes verdict");
+            variant.as_mut().unwrap().changes_finished = true;
+            let bytes = captured.allocated_bytes() + variant.as_ref().unwrap().allocated_bytes();
+            let countries =
+                Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+            crate::test_support::with_allocations_denied(|| {
+                if variant_order == 0 {
+                    captured
+                        .restore_variants_request(variant.take().unwrap(), Ok([0; production::N]));
+                }
+                let request = captured.take_final_inputs_request(&countries, 0, 0, 60759371, true);
+                if variant_order == 1 {
+                    captured
+                        .restore_variants_request(variant.take().unwrap(), Ok([0; production::N]));
+                }
+                captured.restore_final_inputs_request(
+                    request,
+                    FinalInputsReport::default(),
+                    failure,
+                );
+                if variant_order == 2 {
+                    captured
+                        .restore_variants_request(variant.take().unwrap(), Ok([0; production::N]));
+                }
+            });
+            assert_eq!(captured.allocated_bytes(), bytes);
+            let outcomes = captured.production.outcomes();
+            for outcome in &outcomes[3..7] {
+                assert_eq!(
+                    *outcome,
+                    Outcome::Unavailable {
+                        reason: "original variant verdict"
+                    }
+                );
+            }
+            assert_eq!(
+                outcomes[17],
+                Outcome::Unavailable {
+                    reason: "original changes verdict"
+                }
+            );
+            assert_eq!(captured.production.lines.rows.capacity(), 1500);
+        }
+    }
+}

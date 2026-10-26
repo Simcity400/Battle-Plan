@@ -301,6 +301,239 @@ fn presize_inner() {
     drop(prepared);
 }
 
+pub struct SetupPart {
+    ordinal: usize,
+    work: SetupWork,
+}
+enum SetupWork {
+    Batch {
+        events: usize,
+        spans: usize,
+        bytes: usize,
+        output: Option<Batch>,
+    },
+    Scratch {
+        spans: usize,
+        bytes: usize,
+        entries: Vec<Scratch>,
+    },
+}
+impl SetupPart {
+    pub fn capture(&mut self) {
+        let _phase = profile::Timer::new(profile::Phase::ColdStorageParts);
+        engine_allocation::advisory(|| match &mut self.work {
+            SetupWork::Batch {
+                events,
+                spans,
+                bytes,
+                output,
+            } => {
+                *output = Some(prepared(*events, *spans, *bytes));
+            }
+            SetupWork::Scratch {
+                spans,
+                bytes,
+                entries,
+            } => {
+                for scratch in entries {
+                    scratch.log.grow();
+                    scratch.clear();
+                    scratch.log.presize(*spans, *bytes);
+                    let _ = scratch.interests.prepare(*spans);
+                    let _ = scratch.interests.prepare_organisations(*spans);
+                }
+            }
+        });
+    }
+}
+pub(in crate::production) fn presize_partitioned(
+    lanes: usize,
+    acquire: &mut impl FnMut(Vec<SetupPart>) -> Result<Vec<SetupPart>, &'static str>,
+) {
+    let _phase = profile::Timer::new(profile::Phase::ColdStorage);
+    engine_allocation::advisory(|| presize_with(lanes, acquire));
+}
+fn presize_with(
+    worker_lanes: usize,
+    acquire: &mut impl FnMut(Vec<SetupPart>) -> Result<Vec<SetupPart>, &'static str>,
+) {
+    let Ok(_sizing) = SIZING.try_lock() else {
+        return;
+    };
+    let Some(store) = STORE.get() else {
+        return;
+    };
+    let (events, spans, bytes, active, spare) = {
+        let store = store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let events = EVENTS
+            .load(Ordering::Relaxed)
+            .max(store.batch.required_events)
+            .max(store.spare.required_events);
+        let mut spans = SPANS
+            .load(Ordering::Relaxed)
+            .max(events.saturating_mul(SINGLE_SPANS.load(Ordering::Relaxed)));
+        let mut bytes = BYTES
+            .load(Ordering::Relaxed)
+            .max(events.saturating_mul(SINGLE_BYTES.load(Ordering::Relaxed)));
+        for batch in [&store.batch, &store.spare] {
+            if batch.log.overflowed {
+                spans = spans.max(batch.log.spans.capacity().saturating_mul(2));
+                bytes = bytes.max(batch.log.bytes.capacity().saturating_mul(2));
+            }
+        }
+        (
+            events,
+            spans,
+            bytes,
+            store.batch.events.is_empty()
+                && store.batch.failure.is_none()
+                && !adequate(&store.batch, events, spans, bytes),
+            store.spare.events.is_empty()
+                && store.spare.failure.is_none()
+                && !adequate(&store.spare, events, spans, bytes),
+        )
+    };
+    let Ok(mut parts) = engine_allocation::vec(2) else {
+        return;
+    };
+    for (ordinal, needed) in [active, spare].into_iter().enumerate() {
+        if needed {
+            parts.push(SetupPart {
+                ordinal,
+                work: SetupWork::Batch {
+                    events,
+                    spans,
+                    bytes,
+                    output: None,
+                },
+            });
+        }
+    }
+    let Ok(parts) = acquire(parts) else { return };
+    let mut replacements = [None, None];
+    for part in parts {
+        if let SetupWork::Batch { output, .. } = part.work {
+            replacements[part.ordinal] = output;
+        }
+    }
+    {
+        let mut store = store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Store { batch, spare, .. } = &mut *store;
+        for (index, batch) in [batch, spare].into_iter().enumerate() {
+            if batch.events.is_empty()
+                && batch.failure.is_none()
+                && !adequate(batch, events, spans, bytes)
+                && let Some(replacement) = &mut replacements[index]
+                && adequate(replacement, events, spans, bytes)
+            {
+                std::mem::swap(batch, replacement);
+            }
+        }
+    }
+    // Retired arenas and their committed pages are released outside STORE.
+    drop(replacements);
+    let spans = SINGLE_SPANS.load(Ordering::Relaxed);
+    let bytes = SINGLE_BYTES.load(Ordering::Relaxed);
+    if spans == 0 || bytes == 0 {
+        return;
+    }
+    let lanes = std::thread::available_parallelism().map_or(1, usize::from);
+    let mut prepared = {
+        let mut pool = SCRATCH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if LOANED.load(Ordering::Relaxed) != 0
+            || (pool.entries.len() >= lanes
+                && pool.entries.iter().all(|scratch| {
+                    !scratch.log.overflowed
+                        && scratch.log.spans.capacity() >= spans
+                        && scratch.log.bytes.capacity() >= bytes
+                }))
+        {
+            return;
+        }
+        std::mem::take(&mut pool.entries)
+    };
+    struct Charge;
+    impl Drop for Charge {
+        fn drop(&mut self) {
+            let mut pool = SCRATCH
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let bytes = allocated_bytes(&pool.entries);
+            if let Some(accounting) = pool.accounting.as_ref().and_then(Weak::upgrade) {
+                accounting.replace_scratch_bytes(pool.bytes, bytes);
+            }
+            pool.bytes = bytes;
+        }
+    }
+    let _charge = Charge;
+    let additional = lanes.saturating_sub(prepared.len());
+    if engine_allocation::reserve(&mut prepared, additional).is_ok() {
+        while prepared.len() < lanes {
+            prepared.push(Scratch {
+                log: RawLog::new(0, 0),
+                interests: sources::Interests::default(),
+            });
+        }
+    }
+    let width = prepared.len().div_ceil(worker_lanes.max(1)).max(1);
+    let Ok(mut parts) = engine_allocation::vec(prepared.len().div_ceil(width)) else {
+        let mut pool = SCRATCH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let bytes = allocated_bytes(&prepared);
+        pool.replace(&mut prepared, bytes);
+        return;
+    };
+    for ordinal in 0..prepared.len().div_ceil(width) {
+        let Ok(entries) = engine_allocation::vec(width) else {
+            let mut pool = SCRATCH
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let bytes = allocated_bytes(&prepared);
+            pool.replace(&mut prepared, bytes);
+            return;
+        };
+        parts.push(SetupPart {
+            ordinal,
+            work: SetupWork::Scratch {
+                spans,
+                bytes,
+                entries,
+            },
+        });
+    }
+    let mut source = prepared.drain(..);
+    for part in &mut parts {
+        let SetupWork::Scratch { entries, .. } = &mut part.work else {
+            unreachable!()
+        };
+        entries.extend(source.by_ref().take(width));
+    }
+    drop(source);
+    let Ok(mut parts) = acquire(parts) else {
+        return;
+    };
+    parts.sort_unstable_by_key(|part| part.ordinal);
+    for part in parts {
+        if let SetupWork::Scratch { mut entries, .. } = part.work {
+            prepared.append(&mut entries);
+        }
+    }
+    let bytes = allocated_bytes(&prepared);
+    let mut pool = SCRATCH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    pool.replace(&mut prepared, bytes);
+    drop(pool);
+    drop(prepared);
+}
+
 pub(super) fn recycle(mut batch: Batch) {
     let Some(store) = STORE.get() else {
         return;
@@ -512,5 +745,115 @@ mod tests {
             (scratch.log.spans.capacity(), scratch.log.bytes.capacity()),
             (spans, bytes)
         );
+    }
+}
+
+#[cfg(test)]
+mod cold_setup_tests {
+    use super::*;
+    fn parts(countries: usize) -> Vec<SetupPart> {
+        vec![
+            SetupPart {
+                ordinal: 0,
+                work: SetupWork::Batch {
+                    events: countries * 2,
+                    spans: countries * 21,
+                    bytes: countries * 64,
+                    output: None,
+                },
+            },
+            SetupPart {
+                ordinal: 1,
+                work: SetupWork::Scratch {
+                    spans: countries,
+                    bytes: countries * 64,
+                    entries: (0..7)
+                        .map(|_| Scratch {
+                            log: RawLog::new(0, 0),
+                            interests: sources::Interests::default(),
+                        })
+                        .collect(),
+                },
+            },
+        ]
+    }
+    fn demands(parts: &[SetupPart]) -> Vec<(usize, usize, usize, usize)> {
+        parts
+            .iter()
+            .map(|part| match &part.work {
+                SetupWork::Batch { output, .. } => {
+                    let batch = output.as_ref().unwrap();
+                    (
+                        part.ordinal,
+                        batch.events.capacity(),
+                        batch.log.spans.capacity(),
+                        batch.log.bytes.capacity(),
+                    )
+                }
+                SetupWork::Scratch { entries, .. } => (
+                    part.ordinal,
+                    entries.len(),
+                    entries.iter().map(|s| s.log.spans.capacity()).sum(),
+                    entries.iter().map(|s| s.log.bytes.capacity()).sum(),
+                ),
+            })
+            .collect()
+    }
+    #[test]
+    fn cold_storage_parts_preserve_serial_capacity_for_uneven_and_large_censuses() {
+        for countries in [67, 1500] {
+            let mut expected = parts(countries);
+            for part in &mut expected {
+                part.capture();
+            }
+            let mut actual = std::thread::scope(|scope| {
+                let jobs: Vec<_> = parts(countries)
+                    .into_iter()
+                    .map(|mut part| {
+                        scope.spawn(move || {
+                            part.capture();
+                            part
+                        })
+                    })
+                    .collect();
+                jobs.into_iter()
+                    .rev()
+                    .map(|job| job.join().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            actual.sort_unstable_by_key(|part| part.ordinal);
+            assert_eq!(demands(&actual), demands(&expected));
+        }
+    }
+    #[test]
+    fn optional_cold_storage_denial_never_calls_the_terminal_hook() {
+        const NAME: &str = "optional_cold_storage_denial_never_calls_the_terminal_hook";
+        const ENV: &str = "BATTLE_PLAN_COLD_STORAGE_TEST";
+        if std::env::var(ENV).ok().as_deref() != Some(NAME) {
+            assert!(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        &format!("production::design_changes::storage::cold_setup_tests::{NAME}")
+                    ])
+                    .env(ENV, NAME)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            return;
+        }
+        fn failed() {
+            panic!("optional scratch allocation became terminal")
+        }
+        let mut parts = parts(67);
+        engine_allocation::set_hooks(None, Some(failed));
+        collector_test_support::with_allocations_denied(|| {
+            for part in &mut parts {
+                part.capture();
+            }
+        });
+        engine_allocation::set_hooks(None, None);
+        assert_eq!(demands(&parts)[0].1, 0);
     }
 }

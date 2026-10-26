@@ -511,9 +511,9 @@ fn final_inputs_wait_only_for_their_producers_and_prior_dispatch_admission() {
         .unwrap();
     let unpublished = PendingAcquisition::Accepted(ticket);
     let rejected = PendingAcquisition::Rejected(ticket);
-    // Residual Intel, capitulation, optional Session and Relations, Variants
+    // Residual Intel, capitulation, optional Session and Relations
     // and the character parts: every scheduled producer must publish.
-    let producers = 5 + CHARACTER_PARTS - 1;
+    let producers = 4 + CHARACTER_PARTS - 1;
     crate::test_support::with_allocations_denied(|| {
         assert!(!final_inputs_ready(&batch, false, [None]));
         assert!(final_inputs_ready(&batch, true, [None]));

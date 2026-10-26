@@ -737,6 +737,7 @@ pub(super) fn seed_partitioned(
     let _reads = read_accounting::table(TableId::DesignCountryModifiers);
     let mut cache = cache();
     worker_reset(&mut cache);
+    let cold = cold_demands(&mut cache, memory, base, variants, lanes, acquire);
     seed_cached_with(
         &mut cache,
         memory,
@@ -745,6 +746,7 @@ pub(super) fn seed_partitioned(
         full,
         super::design_changes::enabled(),
         Cache::admit_templates,
+        cold,
         |cache| {
             if lanes > 1 {
                 cache.refresh_partitioned(lanes, acquire)
@@ -772,6 +774,7 @@ fn seed_cached(
         full,
         designs_observed,
         admit_templates,
+        None,
         |cache| cache.refresh(memory, base),
     )
 }
@@ -783,6 +786,7 @@ fn seed_cached_with(
     full: bool,
     designs_observed: bool,
     admit_templates: impl FnOnce(&mut Cache) -> Result<(), &'static str>,
+    cold: Option<ColdSeed>,
     refresh: impl FnOnce(&mut Cache) -> Result<Snapshot, &'static str>,
 ) -> Result<Snapshots, &'static str> {
     // Country-context admission is independent of the three design proofs.
@@ -801,6 +805,7 @@ fn seed_cached_with(
         full,
         designs_observed,
         admit_templates,
+        cold,
         refresh,
     );
     if let Err(reason) = result {
@@ -822,6 +827,7 @@ fn seed_demands(
     full: bool,
     designs_observed: bool,
     admit_templates: impl FnOnce(&mut Cache) -> Result<(), &'static str>,
+    cold: Option<ColdSeed>,
     refresh: impl FnOnce(&mut Cache) -> Result<Snapshot, &'static str>,
 ) -> Result<Snapshots, &'static str> {
     admit_templates(cache)?;
@@ -834,6 +840,7 @@ fn seed_demands(
     let upgrades = &variants.upgrades.rows[..variants.upgrades.outcome.len()];
     let mut module_index = 0;
     let mut upgrade_index = 0;
+    let mut cold = cold.map(|cold| cold.install(cache)).transpose()?;
     for definition in &variants.definitions.rows[..variants.definitions.outcome.len()] {
         let first_module = module_index;
         while modules
@@ -857,13 +864,31 @@ fn seed_demands(
             continue;
         }
         // The legacy module census is already owned; no new native module walk.
-        cache.track(
-            memory,
-            definition,
-            &modules[first_module..module_index],
-            upgrades[first_upgrade..upgrade_index].first(),
-            reseed_organisation_owner(memory, base, definition)?,
-        )?;
+        if let Some(cold) = cold.as_mut() {
+            let row = cold
+                .next()
+                .ok_or("design context seed census incomplete")??;
+            if row.id != definition.identity.id {
+                return Err("design context seed census order inconsistent");
+            }
+            cache.demand_bytes += row.keys.capacity() * size_of::<u32>();
+            cache.designs.insert(
+                row.id,
+                Demand {
+                    country: row.country,
+                    keys: row.keys,
+                    generation,
+                },
+            );
+        } else {
+            cache.track(
+                memory,
+                definition,
+                &modules[first_module..module_index],
+                upgrades[first_upgrade..upgrade_index].first(),
+                reseed_organisation_owner(memory, base, definition)?,
+            )?;
+        }
     }
     if module_index != modules.len() || upgrade_index != upgrades.len() {
         return Err("design context module census order inconsistent");
@@ -1722,7 +1747,356 @@ struct CountryDemand {
     template: bool,
     observe_template: bool,
 }
+struct SeedInput {
+    definition: cequipment_variant::DefinitionRow<Arc<rows::VariantDesignState>>,
+    modules: std::ops::Range<usize>,
+    upgrade: Option<cequipment_upgrades_instance::Row>,
+    owner: Result<Option<u32>, &'static str>,
+}
+struct SeedRow {
+    id: u64,
+    country: u32,
+    keys: Vec<u32>,
+}
+struct SeedRows {
+    rows: std::vec::IntoIter<SeedRow>,
+    failure: Option<&'static str>,
+}
+impl Iterator for SeedRows {
+    type Item = Result<SeedRow, &'static str>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.rows
+            .next()
+            .map(Ok)
+            .or_else(|| self.failure.take().map(Err))
+    }
+}
+struct ColdSeed {
+    rows: Vec<SeedRow>,
+    caches: Vec<Cache>,
+    failure: Option<&'static str>,
+}
+impl ColdSeed {
+    fn refused(reason: &'static str) -> Self {
+        Self {
+            rows: Vec::new(),
+            caches: Vec::new(),
+            failure: Some(reason),
+        }
+    }
+    fn install(self, cache: &mut Cache) -> Result<SeedRows, &'static str> {
+        let _phase =
+            design_changes::profile::Timer::new(design_changes::profile::Phase::ContextSeedJoin);
+        engine_allocation::reserve_map(&mut cache.designs, self.rows.len())
+            .map_err(|_| "design context seed join allocation failed")?;
+        let country_count = self.caches.iter().map(|part| part.countries.len()).sum();
+        let template_count = self
+            .caches
+            .iter()
+            .map(|part| part.template_demands.len())
+            .sum();
+        let organisation_count = self
+            .caches
+            .iter()
+            .map(|part| part.organisation_demands.len())
+            .sum();
+        engine_allocation::reserve_map(&mut cache.template_demands, template_count)
+            .map_err(|_| "design context seed join allocation failed")?;
+        engine_allocation::reserve_map(&mut cache.organisation_demands, organisation_count)
+            .map_err(|_| "design context seed join allocation failed")?;
+        engine_allocation::reserve_map(&mut cache.countries, country_count)
+            .map_err(|_| "design context seed join allocation failed")?;
+        engine_allocation::reserve_map(&mut cache.dirty, country_count)
+            .map_err(|_| "design context seed join allocation failed")?;
+        engine_allocation::reserve_map(&mut cache.template_dirty, template_count)
+            .map_err(|_| "design context seed join allocation failed")?;
+        // Move shard-owned maps; do not rebuild each design's demands on the parent.
+        for mut part in self.caches {
+            for (country, keys) in part.countries.drain() {
+                if let Some(target) = cache.countries.get_mut(&country) {
+                    let before = target.capacity();
+                    engine_allocation::reserve_map(target, keys.len())
+                        .map_err(|_| "design context seed join allocation failed")?;
+                    cache.owner_key_bytes +=
+                        (target.capacity() - before) * size_of::<(u32, usize)>();
+                    for (key, amount) in keys {
+                        let count = target.entry(key).or_default();
+                        *count = count
+                            .checked_add(amount)
+                            .ok_or("design context demand overflow")?;
+                    }
+                } else {
+                    cache.owner_key_bytes += keys.capacity() * size_of::<(u32, usize)>();
+                    cache.countries.insert(country, keys);
+                }
+            }
+            for (country, amount) in part.template_demands.drain() {
+                let count = cache.template_demands.entry(country).or_default();
+                *count = count
+                    .checked_add(amount)
+                    .ok_or("design template demand overflow")?;
+            }
+            cache
+                .organisation_demands
+                .extend(part.organisation_demands.drain());
+            for (country, all) in part.dirty.drain() {
+                cache
+                    .dirty
+                    .entry(country)
+                    .and_modify(|old| *old |= all)
+                    .or_insert(all);
+            }
+            cache.template_dirty.extend(part.template_dirty.drain());
+        }
+        Ok(SeedRows {
+            rows: self.rows.into_iter(),
+            failure: self.failure,
+        })
+    }
+}
+fn seed_operand(
+    memory: &impl Memory,
+    held: &mut HashMap<u32, u32>,
+    local: &mut HashMap<u32, u32>,
+    token: u32,
+    pointer: usize,
+    offset: usize,
+) -> Result<(), &'static str> {
+    let key = immutable_key(memory, held, token, pointer, offset)?;
+    if !local.contains_key(&token) {
+        reserve(local)?;
+        local.insert(token, key);
+    }
+    Ok(())
+}
+fn seed_operands(cache: &mut Cache, parts: &mut [CountryPart], memory: &impl Memory, base: usize) {
+    let _reads = read_accounting::table(TableId::DesignCountryModifiers);
+    let _phase =
+        design_changes::profile::Timer::new(design_changes::profile::Phase::ContextSeedOperands);
+    let mut failure = None;
+    // Native first occurrences stay serial; owned per-design aggregation stays parallel.
+    for part in parts {
+        let seed = part.seed.as_mut().unwrap();
+        for input in &mut seed.inputs {
+            input.owner = if let Some(reason) = failure {
+                Err(reason)
+            } else {
+                (|| {
+                    let owner = reseed_organisation_owner(memory, base, &input.definition)?;
+                    if let Some(upgrade) = input.upgrade.as_ref() {
+                        seed_operand(
+                            memory,
+                            &mut cache.upgrade_currencies,
+                            &mut seed.cache.upgrade_currencies,
+                            upgrade.definition_token as u32,
+                            upgrade.definition_pointer,
+                            engine_native::cequipment_upgrade::COST_CURRENCY,
+                        )?;
+                    }
+                    seed_operand(
+                        memory,
+                        &mut cache.types,
+                        &mut seed.cache.types,
+                        input.definition.identity.archetype_token,
+                        input.definition.archetype_pointer,
+                        engine_native::cequipment_type::DESIGN_COST_MODIFIER,
+                    )?;
+                    for module in &seed.modules[input.modules.clone()] {
+                        seed_operand(
+                            memory,
+                            &mut cache.modules,
+                            &mut seed.cache.modules,
+                            module.definition_token,
+                            module.definition_pointer,
+                            engine_native::cequipment_module::DESIGN_COST_MODIFIER,
+                        )?;
+                    }
+                    Ok(owner)
+                })()
+            };
+            failure = input.owner.err();
+        }
+    }
+}
+struct SeedPart {
+    acquired: bool,
+    inputs: Vec<SeedInput>,
+    modules: Vec<equipment_module_container::Row>,
+    cache: Cache,
+    rows: Vec<SeedRow>,
+}
+impl SeedPart {
+    fn read(&mut self, memory: &impl Memory, _base: usize) -> Result<(), &'static str> {
+        let _reads = read_accounting::table(TableId::DesignCountryModifiers);
+        self.acquired = true;
+        self.rows.clear();
+        engine_allocation::reserve(&mut self.rows, self.inputs.len())
+            .map_err(|_| "design context seed allocation failed")?;
+        for input in &self.inputs {
+            let owner = input.owner?;
+            self.cache.track(
+                memory,
+                &input.definition,
+                &self.modules[input.modules.clone()],
+                input.upgrade.as_ref(),
+                owner,
+            )?;
+            let id = input.definition.identity.id;
+            let demand = self
+                .cache
+                .designs
+                .remove(&id)
+                .ok_or("design context seed identity repeated")?;
+            self.rows.push(SeedRow {
+                id,
+                country: demand.country,
+                keys: demand.keys,
+            });
+        }
+        Ok(())
+    }
+}
+fn cold_demands(
+    cache: &mut Cache,
+    memory: &impl Memory,
+    base: usize,
+    variants: &Variants,
+    lanes: usize,
+    acquire: &mut impl FnMut(Vec<CountryPart>) -> Result<Vec<CountryPart>, &'static str>,
+) -> Option<ColdSeed> {
+    if lanes <= 1
+        || cache.seeded
+        || cache.failure.is_some()
+        || cache.generation != 0
+        || !cache.designs.is_empty()
+    {
+        return None;
+    }
+    let definitions = &variants.definitions.rows[..variants.definitions.outcome.len()];
+    if definitions.len() < 64 {
+        return None;
+    }
+    let plan = design_changes::profile::Timer::new(design_changes::profile::Phase::ContextSeedPlan);
+    let mut parts = engine_allocation::advisory(|| {
+        let width = definitions.len().div_ceil(lanes);
+        let modules = &variants.modules.rows[..variants.modules.outcome.len()];
+        let upgrades = &variants.upgrades.rows[..variants.upgrades.outcome.len()];
+        let mut ids =
+            engine_allocation::collect_vec(definitions.iter().map(|row| row.identity.id)).ok()?;
+        ids.sort_unstable();
+        if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return None;
+        }
+        let mut parts = engine_allocation::vec(definitions.len().div_ceil(width)).ok()?;
+        let (mut module, mut upgrade) = (0, 0);
+        for chunk in definitions.chunks(width) {
+            let module_start = module;
+            let mut inputs = engine_allocation::vec(chunk.len()).ok()?;
+            for row in chunk {
+                let first = module;
+                while modules
+                    .get(module)
+                    .is_some_and(|m| m.variant == row.identity.id)
+                {
+                    module += 1;
+                }
+                let first_upgrade = upgrade;
+                while upgrades
+                    .get(upgrade)
+                    .is_some_and(|u| u.variant == row.identity.id)
+                {
+                    upgrade += 1;
+                }
+                inputs.push(SeedInput {
+                    definition: cequipment_variant::DefinitionRow {
+                        identity: row.identity,
+                        archetype_pointer: row.archetype_pointer,
+                        organisation_pointer: row.organisation_pointer,
+                        source_links: None,
+                        display_name: row.display_name,
+                        variant_name: row.variant_name,
+                        explicit_entity: row.explicit_entity,
+                        icon_active: row.icon_active,
+                        icon_kind: row.icon_kind,
+                        icon: row.icon,
+                        version: row.version,
+                        design: Arc::clone(&row.design),
+                    },
+                    owner: Err("design context seed operands not acquired"),
+                    modules: first - module_start..module - module_start,
+                    upgrade: upgrades
+                        .get(first_upgrade)
+                        .filter(|_| first_upgrade < upgrade)
+                        .copied(),
+                });
+            }
+            parts.push(CountryPart {
+                ordinal: parts.len(),
+                demands: Vec::new(),
+                owners: Vec::new(),
+                modifiers: Vec::new(),
+                templates: Vec::new(),
+                failure: None,
+                complete: false,
+                seed: Some(SeedPart {
+                    acquired: false,
+                    inputs,
+                    modules: copy_vec(&modules[module_start..module]).ok()?,
+                    cache: Cache::default(),
+                    rows: Vec::new(),
+                }),
+            });
+        }
+        if module != modules.len() || upgrade != upgrades.len() {
+            return None;
+        }
+        Some(parts)
+    })?;
+    drop(plan);
+    seed_operands(cache, &mut parts, memory, base);
+    let count = parts.len();
+    let mut parts = match acquire(parts) {
+        Ok(parts) => parts,
+        Err(reason) => return Some(ColdSeed::refused(reason)),
+    };
+    parts.sort_unstable_by_key(|part| part.ordinal);
+    if parts.len() != count
+        || parts.iter().enumerate().any(|(i, part)| {
+            part.ordinal != i || !part.seed.as_ref().is_some_and(|seed| seed.acquired)
+        })
+    {
+        return Some(ColdSeed::refused(
+            "design context seed acquisition incomplete",
+        ));
+    }
+    let _phase =
+        design_changes::profile::Timer::new(design_changes::profile::Phase::ContextSeedJoin);
+    let joined = (|| {
+        let mut rows = engine_allocation::vec(definitions.len())
+            .map_err(|_| "design context seed join allocation failed")?;
+        let mut caches = engine_allocation::vec(parts.len())
+            .map_err(|_| "design context seed join allocation failed")?;
+        let mut failure = None;
+        for part in &mut parts {
+            let seed = part.seed.as_mut().unwrap();
+            rows.append(&mut seed.rows);
+            caches.push(std::mem::take(&mut seed.cache));
+            if part.failure.is_some() {
+                failure = part.failure;
+                break;
+            }
+        }
+        Ok(ColdSeed {
+            rows,
+            caches,
+            failure,
+        })
+    })();
+    Some(joined.unwrap_or_else(ColdSeed::refused))
+}
+
 pub struct CountryPart {
+    seed: Option<SeedPart>,
     ordinal: usize,
     demands: Vec<CountryDemand>,
     owners: Vec<(u32, u32)>,
@@ -1732,7 +2106,18 @@ pub struct CountryPart {
     complete: bool,
 }
 impl CountryPart {
+    pub fn seed_work(&self) -> bool {
+        self.seed.is_some()
+    }
     pub fn capture(&mut self, memory: &impl Memory, base: usize) {
+        if let Some(seed) = self.seed.as_mut() {
+            let _phase = design_changes::profile::Timer::new(
+                design_changes::profile::Phase::ContextSeedParts,
+            );
+            self.failure = seed.read(memory, base).err();
+            self.complete = self.failure.is_none();
+            return;
+        }
         let _phase =
             design_changes::profile::Timer::new(design_changes::profile::Phase::ContextParts);
         self.owners.clear();
@@ -1847,6 +2232,7 @@ impl Cache {
         for (index, demand) in demands.into_iter().enumerate() {
             if index % width == 0 {
                 parts.push(CountryPart {
+                    seed: None,
                     ordinal: parts.len(),
                     demands: engine_allocation::vec(width)
                         .map_err(|_| "design context partition allocation failed")?,
@@ -2038,5 +2424,350 @@ mod partition_tests {
             assert!(cache.values.is_empty());
             assert!(cache.template_values.is_empty());
         }
+    }
+}
+
+#[cfg(test)]
+mod cold_seed_tests {
+    use super::*;
+    fn variants(count: usize) -> Variants {
+        let mut variants = Variants::vacant();
+        let state = Arc::new(rows::VariantDesignState::default());
+        for index in 0..count * 2 + 3 {
+            let id = index as u64 + 1;
+            variants
+                .definitions
+                .rows
+                .push(cequipment_variant::DefinitionRow {
+                    identity: cequipment_variant::Row {
+                        id,
+                        creator_link: (index % count) as u32 + 1,
+                        archetype_token: 7,
+                        ..Default::default()
+                    },
+                    archetype_pointer: 0x1000,
+                    design: Arc::clone(&state),
+                    ..Default::default()
+                });
+            if index % 3 == 0 {
+                variants.modules.rows.push(equipment_module_container::Row {
+                    variant: id,
+                    definition_token: 9,
+                    definition_pointer: 0x3000,
+                    ..Default::default()
+                });
+            }
+            if index % 5 == 0 {
+                for pointer in [0x4000, usize::MAX] {
+                    variants
+                        .upgrades
+                        .rows
+                        .push(cequipment_upgrades_instance::Row {
+                            variant: id,
+                            definition_token: 13,
+                            definition_pointer: pointer,
+                            ..Default::default()
+                        });
+                }
+            }
+        }
+        variants.definitions.outcome = Outcome::Rows { len: count * 2 + 3 };
+        variants.modules.outcome = Outcome::Rows {
+            len: variants.modules.rows.len(),
+        };
+        variants.upgrades.outcome = Outcome::Rows {
+            len: variants.upgrades.rows.len(),
+        };
+        variants
+    }
+    fn bytes() -> Vec<u8> {
+        let mut bytes = vec![0; 0x5000];
+        for (pointer, offset, value) in [
+            (
+                0x1000,
+                engine_native::cequipment_type::DESIGN_COST_MODIFIER,
+                777u32,
+            ),
+            (
+                0x3000,
+                engine_native::cequipment_module::DESIGN_COST_MODIFIER,
+                778u32,
+            ),
+            (
+                0x4000,
+                engine_native::cequipment_upgrade::COST_CURRENCY,
+                2u32,
+            ),
+        ] {
+            let at = pointer - 0x1000 + offset;
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+    fn run(
+        memory: &(impl Memory + Sync),
+        variants: &Variants,
+        lanes: usize,
+    ) -> (Cache, Result<Snapshots, &'static str>) {
+        let mut cache = Cache::default();
+        let mut acquire = |parts: Vec<CountryPart>| {
+            Ok(std::thread::scope(|scope| {
+                let jobs: Vec<_> = parts
+                    .into_iter()
+                    .map(|mut part| {
+                        scope.spawn(move || {
+                            part.capture(memory, 0);
+                            part
+                        })
+                    })
+                    .collect();
+                jobs.into_iter()
+                    .rev()
+                    .map(|job| job.join().unwrap())
+                    .collect()
+            }))
+        };
+        let cold = cold_demands(&mut cache, memory, 0, variants, lanes, &mut acquire);
+        if lanes > 1 {
+            assert!(cold.is_some());
+        }
+        let result = seed_cached_with(
+            &mut cache,
+            memory,
+            0,
+            variants,
+            true,
+            true,
+            |_| Ok(()),
+            cold,
+            |cache| cache.refresh(memory, 0),
+        );
+        (cache, result)
+    }
+    #[test]
+    fn cold_context_seed_parts_match_serial_for_uneven_and_fifteen_hundred_countries() {
+        let bytes = bytes();
+        let memory = engine_native::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        for count in [67, 1500] {
+            let variants = variants(count);
+            let (expected, rows) = run(&memory, &variants, 1);
+            assert!(rows.as_ref().unwrap().0.is_some());
+            assert!(expected.seeded && expected.failure.is_none());
+            assert_eq!(expected.designs.len(), count * 2 + 3);
+            assert_eq!(expected.template_demands.len(), count);
+            for lanes in [2, 3, 15] {
+                let (actual, observed) = run(&memory, &variants, lanes);
+                assert_eq!(observed, rows);
+                assert_eq!(actual.countries, expected.countries);
+                assert_eq!(actual.template_demands, expected.template_demands);
+                assert_eq!(actual.organisation_demands, expected.organisation_demands);
+                assert_eq!(
+                    (
+                        actual.seeded,
+                        actual.failure,
+                        actual.failures,
+                        actual.template_admitted,
+                        actual.template_epoch,
+                        actual.epoch
+                    ),
+                    (
+                        expected.seeded,
+                        expected.failure,
+                        expected.failures,
+                        expected.template_admitted,
+                        expected.template_epoch,
+                        expected.epoch
+                    )
+                );
+                assert_eq!(actual.types, expected.types);
+                assert_eq!(actual.modules, expected.modules);
+                assert_eq!(actual.upgrade_currencies, expected.upgrade_currencies);
+                assert_eq!(actual.template_dirty, expected.template_dirty);
+                assert_eq!(actual.dirty, expected.dirty);
+                for (id, demand) in &expected.designs {
+                    let other = &actual.designs[id];
+                    assert_eq!(
+                        (other.country, &other.keys, other.generation),
+                        (demand.country, &demand.keys, demand.generation)
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn one_shot_seed_operands_keep_serial_first_occurrences_and_partial_demand() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct OneShot<'a> {
+            inner: engine_native::memory::SliceMemory<'a>,
+            at: usize,
+            reads: AtomicUsize,
+        }
+        impl Memory for OneShot<'_> {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                if at <= self.at
+                    && self.at < at.saturating_add(out.len())
+                    && self.reads.fetch_add(1, Ordering::Relaxed) == 0
+                {
+                    return false;
+                }
+                self.inner.copy(at, out)
+            }
+        }
+        let bytes = bytes();
+        for late in [false, true] {
+            let mut variants = variants(67);
+            if late {
+                variants.definitions.rows[35].identity.archetype_token = 8;
+                variants.definitions.rows[35].archetype_pointer = 0x2000;
+            }
+            let faults = if late {
+                vec![0x2000 + engine_native::cequipment_type::DESIGN_COST_MODIFIER]
+            } else {
+                vec![
+                    0x1000 + engine_native::cequipment_type::DESIGN_COST_MODIFIER,
+                    0x3000 + engine_native::cequipment_module::DESIGN_COST_MODIFIER,
+                    0x4000 + engine_native::cequipment_upgrade::COST_CURRENCY,
+                ]
+            };
+            for at in faults {
+                let memory = || OneShot {
+                    inner: engine_native::memory::SliceMemory {
+                        base: 0x1000,
+                        bytes: &bytes,
+                    },
+                    at,
+                    reads: AtomicUsize::new(0),
+                };
+                let serial = memory();
+                let (expected, result) = run(&serial, &variants, 1);
+                assert_eq!(result, Err("design content modifier key unreadable"));
+                for lanes in [2, 3, 15] {
+                    let parallel = memory();
+                    let (actual, observed) = run(&parallel, &variants, lanes);
+                    assert_eq!(observed, result);
+                    assert_eq!(parallel.reads.load(Ordering::Relaxed), 1);
+                    assert_eq!(actual.countries, expected.countries);
+                    assert_eq!(actual.template_demands, expected.template_demands);
+                    assert_eq!(actual.organisation_demands, expected.organisation_demands);
+                    assert_eq!(actual.types, expected.types);
+                    assert_eq!(actual.modules, expected.modules);
+                    assert_eq!(actual.upgrade_currencies, expected.upgrade_currencies);
+                    assert_eq!(
+                        (
+                            actual.seeded,
+                            actual.failure,
+                            actual.failures,
+                            actual.generation
+                        ),
+                        (
+                            expected.seeded,
+                            expected.failure,
+                            expected.failures,
+                            expected.generation
+                        )
+                    );
+                    assert_eq!(actual.designs.len(), expected.designs.len());
+                    for (id, demand) in &expected.designs {
+                        let other = &actual.designs[id];
+                        assert_eq!(
+                            (other.country, &other.keys, other.generation),
+                            (demand.country, &demand.keys, demand.generation)
+                        );
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn cold_seed_workers_aggregate_only_callback_owned_operands() {
+        struct NoNativeReads;
+        impl Memory for NoNativeReads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("seed worker repeated a native operand read")
+            }
+        }
+        let bytes = bytes();
+        let memory = engine_native::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let variants = variants(67);
+        let (expected, rows) = run(&memory, &variants, 1);
+        let mut cache = Cache::default();
+        let cold = cold_demands(&mut cache, &memory, 0, &variants, 15, &mut |mut parts| {
+            for part in &mut parts {
+                part.capture(&NoNativeReads, 0);
+            }
+            parts.reverse();
+            Ok(parts)
+        });
+        assert!(cold.is_some());
+        let actual = seed_cached_with(
+            &mut cache,
+            &memory,
+            0,
+            &variants,
+            true,
+            true,
+            |_| Ok(()),
+            cold,
+            |cache| cache.refresh(&memory, 0),
+        );
+        assert_eq!(actual, rows);
+        assert_eq!(cache.countries, expected.countries);
+        assert_eq!(cache.template_demands, expected.template_demands);
+        assert_eq!(cache.types, expected.types);
+        assert_eq!(cache.modules, expected.modules);
+        assert_eq!(cache.upgrade_currencies, expected.upgrade_currencies);
+    }
+    #[test]
+    fn conflicting_tokens_use_the_serial_first_pointer_and_missing_parts_do_not_retry() {
+        let mut bytes = bytes();
+        let key = engine_native::cequipment_type::DESIGN_COST_MODIFIER;
+        bytes[0x1000 + key..0x1000 + key + 4].copy_from_slice(&888u32.to_le_bytes());
+        let memory = engine_native::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut variants = variants(67);
+        variants.definitions.rows[35].archetype_pointer = 0x2000;
+        let (_, expected) = run(&memory, &variants, 1);
+        assert_eq!(run(&memory, &variants, 15).1, expected);
+        let mut cache = Cache::default();
+        let cold = cold_demands(&mut cache, &memory, 0, &variants, 15, &mut |mut parts| {
+            for part in &mut parts {
+                part.capture(&memory, 0);
+            }
+            parts.pop();
+            Ok(parts)
+        });
+        assert!(cold.is_some());
+        assert_eq!(
+            seed_cached_with(
+                &mut cache,
+                &memory,
+                0,
+                &variants,
+                true,
+                true,
+                |_| Ok(()),
+                cold,
+                |cache| cache.refresh(&memory, 0)
+            ),
+            Err("design context seed acquisition incomplete")
+        );
+        struct Refused;
+        impl Memory for Refused {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                false
+            }
+        }
+        assert_eq!(
+            run(&Refused, &variants, 15).1,
+            run(&Refused, &variants, 1).1
+        );
     }
 }

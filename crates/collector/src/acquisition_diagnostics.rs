@@ -38,7 +38,7 @@ impl Identity {
             "role": crate::status::DebugValue(ROLES[self.role]),
             "part": self.part,
             "partition": self.partition,
-            "kind": ["job", "variant_part", "variant_context_part", "event_feed_seal"][self.kind as usize],
+            "kind": ["job", "variant_part", "variant_context_part", "event_feed_seal", "technology_part", "project_part", "cold_setup_part", "variant_context_seed_part", "project_runtime_part", "cold_storage_warmup"][self.kind as usize],
         })
     }
 }
@@ -534,6 +534,7 @@ impl Hour {
                 finish_lock_ticks: fields[11],
                 growths: fields[12],
                 caller: fields[13] != 0,
+                thread_work: None,
             };
         }
         hour.jobs.research = (fields[FIELDS - 1] != 0).then_some(research);

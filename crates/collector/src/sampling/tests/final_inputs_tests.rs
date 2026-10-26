@@ -88,7 +88,7 @@ fn final_sources_early_join_requires_every_successful_report_without_consuming_a
         }
     });
     let mut batch = acquisition::Batch::new(&pool);
-    let producers: [PendingAcquisition; 5] = std::array::from_fn(|index| unsafe {
+    let producers: [PendingAcquisition; 4] = std::array::from_fn(|index| unsafe {
         submit_acquisition(&shared, &mut batch, source(index, 0))
     });
     batch.wait_ready(|batch| {
@@ -115,19 +115,13 @@ fn final_sources_early_join_requires_every_successful_report_without_consuming_a
         assert!(
             final_sources_published(
                 &batch,
-                [
-                    Some(&producers[0]),
-                    Some(&producers[1]),
-                    None,
-                    None,
-                    Some(&producers[4])
-                ]
+                [Some(&producers[0]), Some(&producers[1]), None, None]
             )
             .is_some()
         );
     });
-    assert_eq!(pool.calibration().executor.uncollected, 5);
-    for index in [0, 1, 4] {
+    assert_eq!(pool.calibration().executor.uncollected, 4);
+    for index in [0, 1] {
         let mut refs = producers.each_ref().map(Some);
         refs[index] = None;
         assert!(final_sources_published(&batch, refs).is_none());
@@ -475,4 +469,56 @@ fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
             assert_eq!(reads.finish(), expected);
         }
     }
+}
+
+#[test]
+fn final_inputs_dispatches_while_the_unrelated_variant_job_is_still_running() {
+    let shared = Shared::new(0, 0, 1);
+    let gate = Arc::new(Gate::default());
+    let (started, start) = mpsc::channel();
+    let (finished, finish) = mpsc::channel();
+    let pool = acquisition::Pool::with_test_runner(2, {
+        let gate = Arc::clone(&gate);
+        move |job| match job {
+            acquisition::Job::Provinces(request) if request.base == 4 => {
+                started.send(()).unwrap();
+                gate.wait();
+                acquisition::Report::Variants([0; extended::production::N])
+            }
+            acquisition::Job::Provinces(request) => match request.base {
+                0 => acquisition::Report::IntelResidual(Default::default()),
+                1 => acquisition::Report::Capitulation(extended::intel::CapitulationCopyReport {
+                    raw_ok: true,
+                    ..Default::default()
+                }),
+                2 => acquisition::Report::Session(extended::session::SessionCopyReport {
+                    raw_ok: true,
+                    ..Default::default()
+                }),
+                3 => acquisition::Report::Relations(extended::intel::RelationsCopyReport {
+                    raw_ok: true,
+                    ..Default::default()
+                }),
+                _ => unreachable!(),
+            },
+            acquisition::Job::FinalInputs(_) => {
+                finished.send(()).unwrap();
+                acquisition::Report::FinalInputs(Default::default())
+            }
+            _ => unreachable!(),
+        }
+    });
+    let mut batch = acquisition::Batch::new(&pool);
+    let variant = unsafe { submit_acquisition(&shared, &mut batch, source(4, 0)) };
+    start.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+    let producers: [PendingAcquisition; 4] = std::array::from_fn(|index| unsafe {
+        submit_acquisition(&shared, &mut batch, source(index, 0))
+    });
+    let published =
+        batch.wait_ready(|batch| final_sources_published(batch, producers.each_ref().map(Some)));
+    assert!(!pending_complete(&batch, &variant));
+    batch.final_inputs().arm(final_request(), 0, published);
+    finish.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+    assert!(!pending_complete(&batch, &variant));
+    gate.release();
 }

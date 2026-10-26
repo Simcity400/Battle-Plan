@@ -50,7 +50,7 @@ const AIR_RELATION_PARTS: usize = extended::air_relations::PARTS;
 const AIR_HISTORY_PARTS: usize = extended::air_histories::PARTS;
 const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
-pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first held burst of independent jobs; 1 completion-driven dependency scheduling through Late/history and FinalInputs dispatch (root census -> Orders/parts -> stitch -> Fronts and, with Naval/wing, ChildFronts; division inputs/parts -> Divisions -> ArmyIcons and PresentationPrepare -> status ranges -> Presentation; census consumers, raw verdicts, map sample, AirMissions and ScoresRails are joined only when their full producer barrier is ready); 2-7 unused; 8 weather/lexical + core joins (presentation publication edges continue during these and later joins); 9 supply/portraits/order/template/slow/war overview/stability/raid/gated/character input/governance/research joins + event-feed seal dispatch + ShipModels detail joins + Ordinary family joins + event-feed seal join + slot-8 production and part joins; 10 capture_tables; 11 Late join + Fronts join + presentation and movement joins + order transport + border inputs; 12 history-part joins + FinalInputs join + capture_tables_late; 13 Intel and AirBases joins + visibility + failure handling; 14 ShipModels completed projection";
+pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first held burst of independent jobs; 1 completion-driven dependency scheduling through Late/history and FinalInputs dispatch (root census -> Orders/parts -> stitch -> Fronts and, with Naval/wing, ChildFronts; division inputs/parts -> Divisions -> ArmyIcons and PresentationPrepare -> status ranges -> Presentation; census consumers, raw verdicts, map sample, AirMissions and ScoresRails are joined only when their full producer barrier is ready); 2-7 unused; 8 weather/lexical + core joins (presentation publication edges continue during these and later joins); 9 supply/portraits/order/template/slow/war overview/stability/raid/gated/character input/governance/research joins + event-feed seal dispatch + ShipModels detail joins + Ordinary family joins + event-feed seal join + slot-8 production and part joins + independent Variants join; 10 capture_tables; 11 Late join + Fronts join + presentation and movement joins + order transport + border inputs; 12 history-part joins + FinalInputs join + capture_tables_late; 13 Intel and AirBases joins + visibility + failure handling; 14 ShipModels completed projection";
 /// Core row capacities: countries, provinces, links, states, divisions, wars,
 /// factions, faction members, faction name bytes, border-conflict provinces,
 /// their admitted group handles, and state name bytes.
@@ -2677,7 +2677,9 @@ unsafe fn acquire_with_memory(
         let mut force_full = false;
         let mut recovery = false;
         let mut refresh = false;
+        let mut attach_diagnostics = None;
         if let Some(clock) = entry {
+            attach_diagnostics = Some(crate::attach_diagnostics::begin(clock.hour, dispatched, shared.frequency));
             // Out of line: the layout report (about 10 KiB) stays off this frame.
             out_of_line(|| {
                 frame.fixed_layout = Some(match shared.fixed_layout.get() {
@@ -3986,24 +3988,6 @@ unsafe fn acquire_with_memory(
                             Err(payload) => decode::recycle_relations_job(payload),
                         }
                     }
-                    {
-                        let (pending, loaned_bytes) =
-                            variants_pending.take().expect("variant producer");
-                        let (request, report) = collected!(pending, Variants);
-                        let acquired_bytes = request.allocated_bytes();
-                        if acquired_bytes >= loaned_bytes {
-                            shared.pool_bytes.fetch_add(
-                                (acquired_bytes - loaned_bytes) as u64,
-                                Ordering::Relaxed,
-                            );
-                        } else {
-                            shared.pool_bytes.fetch_sub(
-                                (loaned_bytes - acquired_bytes) as u64,
-                                Ordering::Relaxed,
-                            );
-                        }
-                        frame.extended.restore_variants_request(request, report);
-                    }
                 }};
             }
             while late_pending.is_none() || final_inputs_pending.is_none() {
@@ -4176,7 +4160,6 @@ unsafe fn acquire_with_memory(
                                     capitulation_pending.as_ref(),
                                     session_pending.as_ref(),
                                     relations_pending.as_ref(),
-                                    variants_pending.as_ref().map(|(pending, _)| pending),
                                 ],
                             )
                             .is_some()
@@ -4200,7 +4183,6 @@ unsafe fn acquire_with_memory(
                                     capitulation_pending.as_ref(),
                                     session_pending.as_ref(),
                                     relations_pending.as_ref(),
-                                    variants_pending.as_ref().map(|(pending, _)| pending),
                                 ]
                                 .into_iter()
                                 .chain(characters_pending[1..].iter().map(Option::as_ref)),
@@ -5383,7 +5365,6 @@ unsafe fn acquire_with_memory(
                                 capitulation_pending.as_ref(),
                                 session_pending.as_ref(),
                                 relations_pending.as_ref(),
-                                variants_pending.as_ref().map(|(pending, _)| pending),
                             ],
                         )
                         .expect("successful final input sources");
@@ -6116,6 +6097,23 @@ unsafe fn acquire_with_memory(
                     *starts = frame.extended.production_modifier_starts(*starts);
                 }
             }
+            out_of_line(|| {
+                let (pending, loaned_bytes) = variants_pending
+                    .take()
+                    .expect("independent variant producer");
+                let (request, report) = collected!(pending, Variants);
+                let acquired_bytes = request.allocated_bytes();
+                if acquired_bytes >= loaned_bytes {
+                    shared
+                        .pool_bytes
+                        .fetch_add((acquired_bytes - loaned_bytes) as u64, Ordering::Relaxed);
+                } else {
+                    shared
+                        .pool_bytes
+                        .fetch_sub((loaned_bytes - acquired_bytes) as u64, Ordering::Relaxed);
+                }
+                frame.extended.restore_variants_request(request, report);
+            });
             segment!(9);
             let assembly_begin = qpc();
             let mut ticks =
@@ -6779,6 +6777,9 @@ unsafe fn acquire_with_memory(
         } else {
             HourCost::default()
         };
+        if let Some(diagnostics) = attach_diagnostics {
+            diagnostics.finish(frame, shared.ns(game_elapsed));
+        }
         shared
             .phase_inline_walk_ns
             .fetch_add(inline_walk_ns, Ordering::Relaxed);
@@ -7125,7 +7126,7 @@ fn pending_complete(batch: &acquisition::Batch<'_>, pending: &PendingAcquisition
 /// Failed, rejected, cancelled and incomplete captures keep ordered settlement.
 fn final_sources_published(
     batch: &acquisition::Batch<'_>,
-    producers: [Option<&PendingAcquisition>; 5],
+    producers: [Option<&PendingAcquisition>; 4],
 ) -> Option<i64> {
     producers
         .into_iter()
@@ -7141,8 +7142,7 @@ fn final_sources_published(
                 return None;
             };
             let complete = match (index, report) {
-                (0, acquisition::Report::IntelResidual(_))
-                | (4, acquisition::Report::Variants(_)) => true,
+                (0, acquisition::Report::IntelResidual(_)) => true,
                 (1, acquisition::Report::Capitulation(report)) => report.raw_ok,
                 (2, acquisition::Report::Session(report)) => report.raw_ok,
                 (3, acquisition::Report::Relations(report)) => report.raw_ok,
@@ -8179,6 +8179,7 @@ mod role_timeline_tests {
                 finish_lock_ticks: 2_900,
                 growths: 0,
                 caller: false,
+                thread_work: None,
             },
             2_000,
             ns,
@@ -8194,6 +8195,7 @@ mod role_timeline_tests {
                 finish_lock_ticks: 1,
                 growths: 0,
                 caller: false,
+                thread_work: None,
             },
             6_000,
             ns,

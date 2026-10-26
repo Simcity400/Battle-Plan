@@ -1369,11 +1369,12 @@ impl Captured {
     }
 
     /// No native-memory capability reaches the independent owned publication tails.
-    pub(crate) fn decode_owned_censuses(&mut self) -> ([u64; 3], u64) {
+    pub(crate) fn decode_owned_censuses(&mut self) -> ([u64; 4], u64) {
         let bytes = |this: &Self| {
             this.naval_bases.allocated_bytes()
                 + this.group_counters.allocated_bytes()
                 + this.governance.allocated_bytes()
+                + this.projects.allocated_bytes()
                 + this.naval_counters.allocated_bytes()
         };
         let before = bytes(self);
@@ -1387,8 +1388,11 @@ impl Captured {
         let start = crate::sampling::qpc();
         self.naval_counters.decode_owned();
         let tasks = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
+        let start = crate::sampling::qpc();
+        self.projects.decode_owned();
+        let projects = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
         (
-            [map, governance, tasks],
+            [map, governance, tasks, projects],
             (bytes(self) as u64).wrapping_sub(before as u64),
         )
     }
@@ -1828,6 +1832,7 @@ impl Captured {
             governance::TABLES.map(|table| !replay_data::scope::records(self.capture_mode, table)),
         );
         crate::acquisition_jobs::GovernanceRequest {
+            workers: Default::default(),
             technology_fingerprints,
             focus_fingerprints,
             building_store,

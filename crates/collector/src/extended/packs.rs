@@ -2685,6 +2685,11 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> FinalInputsRequest {
+        let variants = self.production.take_variants();
+        let changes = self.production.take_design_changes();
+        let production = std::mem::replace(&mut self.production, production::Captured::vacant());
+        self.production.restore_variants(variants);
+        self.production.restore_design_changes(changes);
         FinalInputsRequest {
             countries: Arc::clone(countries),
             base,
@@ -2700,7 +2705,7 @@ impl Captured {
                 &mut self.experience_gains,
                 super::experience_gains::Captured::vacant(),
             ),
-            production: std::mem::replace(&mut self.production, production::Captured::vacant()),
+            production,
             economy: std::mem::replace(&mut self.economy, economy::Captured::vacant()),
             session: std::mem::replace(&mut self.session, session::Captured::vacant()),
             characters: std::mem::replace(&mut self.characters, characters::Captured::vacant()),
@@ -2806,6 +2811,13 @@ impl Captured {
         self.divisions = request.divisions;
         self.new_divisions = request.new_divisions;
         self.experience_gains = request.experience;
+        // FinalInputs never borrows the independently acquired variant family.
+        request
+            .production
+            .restore_variants(self.production.take_variants());
+        request
+            .production
+            .restore_design_changes(self.production.take_design_changes());
         self.production = request.production;
         self.economy = request.economy;
         self.session = request.session;

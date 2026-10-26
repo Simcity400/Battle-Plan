@@ -959,6 +959,14 @@ impl Domain {
         }
     }
 
+    fn offer_countries(&self, ids: usize) {
+        engine_allocation::advisory(|| {
+            for set in &self.sets {
+                set.offer(ids);
+            }
+        });
+    }
+
     /// An enabled domain with bitmaps for `ids` countries installed, reading
     /// slices (no verify).
     #[cfg(any(test, feature = "test-support"))]
@@ -1366,6 +1374,14 @@ pub fn accumulator_quiet() -> Option<(u64, u64)> {
 pub fn accumulator_sequence(country: usize) -> Option<(u64, u64)> {
     DOMAIN.accumulator.sequence(country)
 }
+/// Off-thread registry demand, available before the first hourly census.
+pub fn presize_countries(ids: usize) {
+    IDS.fetch_max(ids, Ordering::Relaxed);
+    if ids != 0 {
+        DOMAIN.offer_countries(ids);
+    }
+}
+
 pub fn presize() {
     crate::wargoal_changes::presize();
     DOMAIN.accumulator.offer(
@@ -1380,9 +1396,7 @@ pub fn presize() {
     );
     let ids = IDS.load(Ordering::Relaxed);
     if ids != 0 {
-        for set in &DOMAIN.sets {
-            set.offer(ids);
-        }
+        DOMAIN.offer_countries(ids);
     }
 }
 

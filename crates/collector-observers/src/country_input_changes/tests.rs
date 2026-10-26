@@ -936,3 +936,107 @@ fn research_mismatch_keeps_numeric_diagnostics_in_first_last_and_status() {
     );
     assert!(domain.poisoned(Table::Research));
 }
+
+#[test]
+fn startup_country_offer_keeps_the_seed_epoch_and_observes_writes_at_scale() {
+    let domain = Domain {
+        every: [false; SETS],
+        ..Domain::new()
+    };
+    domain.hooks.store(true, Ordering::SeqCst);
+    for forwarder in &domain.forwarders {
+        forwarder.store(true, Ordering::SeqCst);
+    }
+    domain.apply();
+    assert_eq!(take(&domain, Table::Technologies).0, None);
+    domain.offer_countries(1_501);
+    domain.boundary(true);
+    for table in [
+        Table::Technologies,
+        Table::Projects,
+        Table::Research,
+        Table::Focus,
+    ] {
+        use collector_certificates::slicing::{
+            Changed, SliceFingerprints, SliceSelection, select_changed,
+        };
+        let first = take(&domain, table).0.expect("seed epoch");
+        let mut store = SliceFingerprints::new();
+        let mut selection = SliceSelection::new(false);
+        let mut changed = Changed::default();
+        selection.reset(10, true);
+        select_changed(
+            &mut selection,
+            &mut store,
+            &mut changed,
+            |visit| domain.take(table, visit),
+            0,
+            false,
+        );
+        assert!(!changed.certified && selection.force_full);
+        domain.boundary(false);
+        domain.write(table, 1_500);
+        selection.reset(11, false);
+        select_changed(
+            &mut selection,
+            &mut store,
+            &mut changed,
+            |visit| domain.take(table, visit),
+            0,
+            false,
+        );
+        assert!(changed.certified && !selection.force_full);
+        assert_eq!(changed.marked(), 1);
+        assert!(selection.contains(1_500));
+        assert_eq!(take(&domain, table), (Some(first), vec![]));
+        domain.offer_countries(3_001);
+        domain.boundary(false);
+        assert_eq!(take(&domain, table), (Some(first), vec![]));
+        domain.write(table, 9_000);
+        assert_ne!(take(&domain, table).0, Some(first));
+    }
+}
+
+#[test]
+fn denied_startup_country_offer_stays_uncertified_and_retries_without_stopping() {
+    const CHILD: &str = "BATTLE_PLAN_COUNTRY_BITMAP_OFFER_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "country_input_changes::tests::denied_startup_country_offer_stays_uncertified_and_retries_without_stopping", "--nocapture"])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    static TERMINAL: AtomicBool = AtomicBool::new(false);
+    fn failed() {
+        TERMINAL.store(true, Ordering::SeqCst);
+    }
+    fn stopped() -> bool {
+        TERMINAL.load(Ordering::SeqCst)
+    }
+    let domain = Domain {
+        every: [false; SETS],
+        ..Domain::new()
+    };
+    domain.hooks.store(true, Ordering::SeqCst);
+    for forwarder in &domain.forwarders {
+        forwarder.store(true, Ordering::SeqCst);
+    }
+    domain.apply();
+    engine_allocation::set_hooks(None, Some(failed));
+    engine_allocation::set_stop_hook(Some(stopped));
+    let denied = crate::test_support::NullGuard::new(1);
+    domain.offer_countries(1_501);
+    drop(denied);
+    assert!(crate::test_support::DENIALS.load(Ordering::Relaxed) > 0);
+    assert!(!stopped() && !engine_allocation::capture_stopped());
+    domain.boundary(true);
+    assert_eq!(take(&domain, Table::Technologies).0, None);
+    domain.offer_countries(1_501);
+    domain.boundary(false);
+    assert!(take(&domain, Table::Technologies).0.is_some());
+    engine_allocation::set_hooks(None, None);
+    engine_allocation::set_stop_hook(None);
+}

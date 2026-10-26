@@ -255,14 +255,51 @@ pub fn walk_with_history_selected(
     walk_tables(memory, base, game_state, projects, Some(histories), select)
 }
 
+pub struct PartitionReport {
+    pub outcomes: (Outcome, Outcome),
+    pub census_error: Option<&'static str>,
+}
+
+/// Partition capture defers global duplicate checks to its ordered join.
+pub fn walk_partition(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    projects: Buffer<'_, Row>,
+    histories: Buffer<'_, history::Row>,
+    select: &mut dyn FnMut(u32) -> bool,
+) -> PartitionReport {
+    walk_tables_report(
+        memory,
+        base,
+        game_state,
+        projects,
+        Some(histories),
+        select,
+        false,
+    )
+}
+
 fn walk_tables(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    projects: Buffer<'_, Row>,
+    histories: Option<Buffer<'_, history::Row>>,
+    select: &mut dyn FnMut(u32) -> bool,
+) -> (Outcome, Outcome) {
+    walk_tables_report(memory, base, game_state, projects, histories, select, true).outcomes
+}
+
+fn walk_tables_report(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     mut projects: Buffer<'_, Row>,
     mut histories: Option<Buffer<'_, history::Row>>,
     select: &mut dyn FnMut(u32) -> bool,
-) -> (Outcome, Outcome) {
+    check_duplicates: bool,
+) -> PartitionReport {
     let mut project_len = 0_usize;
     let mut project_unread = 0_u32;
     let mut project_error = None;
@@ -466,33 +503,42 @@ fn walk_tables(
         )
     })();
     if let Err(reason) = result {
-        return (
-            Outcome::Unavailable { reason },
-            Outcome::Unavailable { reason },
-        );
+        return PartitionReport {
+            outcomes: (
+                Outcome::Unavailable { reason },
+                Outcome::Unavailable { reason },
+            ),
+            census_error: Some(reason),
+        };
     }
     if project_error.is_none() {
         projects[..project_len].sort_unstable_by_key(|row| row.key());
-        if projects[..project_len]
-            .windows(2)
-            .any(|pair| pair[0].key() == pair[1].key())
+        if check_duplicates
+            && projects[..project_len]
+                .windows(2)
+                .any(|pair| pair[0].key() == pair[1].key())
         {
             project_error = Some("duplicate country-local project id");
         }
     }
     if let Some(mut histories) = histories.filter(|_| history_error.is_none()) {
         histories[..history_len].sort_unstable_by_key(|row| (row.owner, row.project, row.ordinal));
-        if histories[..history_len].windows(2).any(|pair| {
-            (pair[0].owner, pair[0].project, pair[0].ordinal)
-                == (pair[1].owner, pair[1].project, pair[1].ordinal)
-        }) {
+        if check_duplicates
+            && histories[..history_len].windows(2).any(|pair| {
+                (pair[0].owner, pair[0].project, pair[0].ordinal)
+                    == (pair[1].owner, pair[1].project, pair[1].ordinal)
+            })
+        {
             history_error = Some("duplicate country-local project history row");
         }
     }
-    (
-        outcome(project_len, project_unread, project_error),
-        outcome(history_len, history_unread, history_error),
-    )
+    PartitionReport {
+        outcomes: (
+            outcome(project_len, project_unread, project_error),
+            outcome(history_len, history_unread, history_error),
+        ),
+        census_error: None,
+    }
 }
 
 fn outcome(len: usize, unread_rows: u32, error: Option<&'static str>) -> Outcome {

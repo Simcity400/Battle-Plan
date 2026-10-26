@@ -820,50 +820,8 @@ pub struct Held {
 /// The most field groups a family digests separately ([`Changed::read_groups`]).
 pub const GROUPS: usize = 110;
 
-/// FNV-1a over the fields of one owner's read that its hooked writers
-/// certify ([`Changed::read`]); stable within a process, never persisted.
-pub struct Digest(u64);
-
-impl Default for Digest {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Digest {
-    #[inline]
-    pub fn new() -> Self {
-        Self(0xcbf2_9ce4_8422_2325)
-    }
-
-    #[inline]
-    pub fn bytes(&mut self, bytes: &[u8]) -> &mut Self {
-        for &byte in bytes {
-            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-        }
-        self
-    }
-
-    #[inline]
-    pub fn u64(&mut self, value: u64) -> &mut Self {
-        self.bytes(&value.to_le_bytes())
-    }
-
-    #[inline]
-    pub fn i64(&mut self, value: i64) -> &mut Self {
-        self.bytes(&value.to_le_bytes())
-    }
-
-    /// A length-prefixed byte string, so adjacent strings cannot alias.
-    pub fn text(&mut self, text: &[u8]) -> &mut Self {
-        self.u64(text.len() as u64).bytes(text)
-    }
-
-    #[inline]
-    pub fn finish(&self) -> u64 {
-        self.0
-    }
-}
+mod digest;
+pub use digest::Digest;
 
 /// One hour's change-driven selection ([`select_changed`]).
 #[derive(Default)]
@@ -1032,6 +990,24 @@ mod tests {
         assert_eq!(digest.finish(), expected);
         digest.bytes(&[]);
         assert_eq!(digest.finish(), expected);
+    }
+
+    #[test]
+    fn digest_zero_suffix_shortcut_preserves_every_word_boundary() {
+        let mut expected = Digest::new();
+        let mut actual = Digest::new();
+        for seed in [0, 1, 0x9876_5432_10fe_dcba_u64, u64::MAX] {
+            for bits in 0..64 {
+                for value in [seed, 1_u64 << bits, (1_u64 << bits).wrapping_sub(1)] {
+                    expected.bytes(&value.to_le_bytes()).bytes(b"next");
+                    actual.u64(value).bytes(b"next");
+                    assert_eq!(actual.finish(), expected.finish());
+                    expected.bytes(&(value as i64).to_le_bytes());
+                    actual.i64(value as i64);
+                    assert_eq!(actual.finish(), expected.finish());
+                }
+            }
+        }
     }
 
     /// A certificate family marks each owner whose certificate changed, so

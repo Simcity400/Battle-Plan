@@ -59,6 +59,35 @@ pub fn scientist_active_data() -> impl serde::Serialize {
     })
 }
 
+/// Assemble captured variable bytes without any native-memory capability.
+fn freeze_project_variables(
+    entries: &[engine_scripts::cvariables::Row],
+    names: &[u8],
+    seed: u32,
+) -> std::io::Result<std::sync::Arc<rows::ProjectVariableStore>> {
+    let entries = map_slice(entries, |entry| rows::ProjectVariable {
+        name: owned_vec(copy_vec(
+            &names[entry.name_start..entry.name_start + entry.name_len],
+        )),
+        value_raw: entry.value_raw,
+    })?;
+    engine_allocation::allocation_attempt()?;
+    Ok(std::sync::Arc::new(rows::ProjectVariableStore {
+        seed,
+        entries,
+    }))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn deferred_variable_allocation_fixture() -> Captured {
+    let mut captured = Captured::vacant();
+    captured.project_runtime = runtime::Runtime::allocation_failure_fixture();
+    captured
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod variable_test_kit;
+
 pub const N: usize = 20;
 pub const TABLES: [TableId; N] = [
     TableId::ProjectPrograms,
@@ -189,7 +218,18 @@ impl Capacities {
     }
 }
 
+pub const ACQUISITION_PHASE_NAMES: [&str; 6] = [
+    "selection",
+    "project_native",
+    "runtime_native",
+    "fingerprint",
+    "family_inclusive",
+    "cold_join",
+];
+
 pub struct Captured {
+    profile_acquisition: bool,
+    acquisition_phases: [u64; 6],
     programs: CaptureRows<nproject_cprogram::Row>,
     facilities: CaptureRows<raid_facilities::Row>,
     raid_intel: CaptureRows<engine_raid_inputs::raid_intel_inputs::Row>,
@@ -340,8 +380,22 @@ impl Captured {
             project_owners: Vec::new(),
             project_read: Vec::new(),
             project_runtime: runtime::Runtime::default(),
+            profile_acquisition: false,
+            acquisition_phases: [0; 6],
             scientist_injury_read: false,
         }
+    }
+
+    pub fn profile_acquisition(&mut self, enabled: bool) {
+        self.profile_acquisition = enabled;
+    }
+
+    pub fn projects_certified(&self) -> bool {
+        self.project_changed.certified
+    }
+
+    pub fn acquisition_phases(&self) -> Option<[u64; 6]> {
+        self.profile_acquisition.then_some(self.acquisition_phases)
     }
 
     /// The owners whose project rows this frame's read replaced.
@@ -361,6 +415,7 @@ impl Captured {
         self.tooltip_operands.reset();
         self.counteroperatives.reset();
         self.projects.reset();
+        self.acquisition_phases = [0; 6];
         self.history.reset();
         self.breakthroughs.reset();
         self.nukes.reset();
@@ -529,6 +584,74 @@ impl Captured {
         projects: &mut SliceFingerprints,
         changes: &dyn crate::country_input_changes::Changes,
     ) -> [u64; N] {
+        self.capture_selected_impl(
+            memory, roster, base, game_state, hour, force_full, projects, changes, false, None,
+        )
+    }
+
+    /// Copy every selected native value now; freeze variable rows on the FIFO worker.
+    #[allow(clippy::too_many_arguments)]
+    pub fn acquire_selected(
+        &mut self,
+        memory: &impl Memory,
+        roster: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        projects: &mut SliceFingerprints,
+        changes: &dyn crate::country_input_changes::Changes,
+    ) -> [u64; N] {
+        self.capture_selected_impl(
+            memory, roster, base, game_state, hour, force_full, projects, changes, true, None,
+        )
+    }
+
+    pub fn acquire_selected_partitioned(
+        &mut self,
+        memory: &impl Memory,
+        roster: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        projects: &mut SliceFingerprints,
+        changes: &dyn crate::country_input_changes::Changes,
+        dispatch: ProjectDispatch<'_>,
+    ) -> [u64; N] {
+        self.capture_selected_impl(
+            memory,
+            roster,
+            base,
+            game_state,
+            hour,
+            force_full,
+            projects,
+            changes,
+            true,
+            Some(dispatch),
+        )
+    }
+
+    /// Owns all source bytes and accepts no native-memory capability.
+    pub fn decode_owned(&mut self) {
+        self.project_runtime.decode();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_selected_impl(
+        &mut self,
+        memory: &impl Memory,
+        roster: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        projects: &mut SliceFingerprints,
+        changes: &dyn crate::country_input_changes::Changes,
+        defer_runtime: bool,
+        dispatch: Option<ProjectDispatch<'_>>,
+    ) -> [u64; N] {
         self.reset();
         let mut ticks = [0; N];
         let active = TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
@@ -557,7 +680,15 @@ impl Captured {
         }
         let begin = qpc();
         self.capture_project_family(
-            roster, base, game_state, hour, force_full, projects, changes,
+            roster,
+            base,
+            game_state,
+            hour,
+            force_full,
+            projects,
+            changes,
+            defer_runtime,
+            dispatch,
         );
         ticks[1] = elapsed(begin);
         macro_rules! plain {
@@ -1356,9 +1487,12 @@ impl Captured {
         force_full: bool,
         store: &mut SliceFingerprints,
         changes: &dyn crate::country_input_changes::Changes,
+        defer_runtime: bool,
+        dispatch: Option<ProjectDispatch<'_>>,
     ) {
         use crate::country_input_changes::{self as family, Table};
         let _reads = read_accounting::table(TABLES[1]);
+        let family_started = self.profile_acquisition.then(qpc);
         self.project_selection.reset_daily(hour, force_full);
         crate::slicing::select_changed(
             &mut self.project_selection,
@@ -1373,7 +1507,11 @@ impl Captured {
             captured.projects.outcome = Outcome::Unavailable { reason };
             captured.history.outcome = Outcome::Unavailable { reason };
         };
-        match self.select_project_owners(memory, base, game_state, store) {
+        let owners = self.select_project_owners(memory, base, game_state, store);
+        if let Some(started) = family_started {
+            self.acquisition_phases[0] = elapsed(started);
+        }
+        match owners {
             Err(reason) => fail(self, reason),
             Ok(census) => {
                 if census {
@@ -1381,28 +1519,80 @@ impl Captured {
                     self.project_selection.finish_census(store);
                 }
                 let selection = &self.project_selection;
-                let (projects, histories) = nproject_cproject::walk_with_history_selected(
-                    memory,
-                    base,
-                    game_state,
-                    engine_native::walk::Buffer::Growing(&mut self.projects.rows),
-                    engine_native::walk::Buffer::Growing(&mut self.history.rows),
-                    &mut |id| selection.contains(id),
-                );
+                let native_started = self.profile_acquisition.then(qpc);
+                let mut runtime_acquired = false;
+                let cold = if force_full && defer_runtime {
+                    cold_parts::capture(
+                        memory,
+                        base,
+                        game_state,
+                        &self.project_read,
+                        self.project_runtime.is_empty(),
+                        dispatch,
+                    )
+                } else {
+                    None
+                };
+                let (projects, histories) = if let Some(cold) = cold {
+                    runtime_acquired = cold.runtime_acquired();
+                    let started = self.profile_acquisition.then(qpc);
+                    let outcomes = cold.join(
+                        &mut self.projects.rows,
+                        &mut self.history.rows,
+                        &mut self.project_runtime,
+                    );
+                    if let Some(started) = started {
+                        self.acquisition_phases[5] = elapsed(started);
+                    }
+                    outcomes
+                } else {
+                    nproject_cproject::walk_with_history_selected(
+                        memory,
+                        base,
+                        game_state,
+                        engine_native::walk::Buffer::Growing(&mut self.projects.rows),
+                        engine_native::walk::Buffer::Growing(&mut self.history.rows),
+                        &mut |id| selection.contains(id),
+                    )
+                };
+                if let Some(started) = native_started {
+                    self.acquisition_phases[1] = elapsed(started);
+                }
                 self.projects.outcome = bounded(projects, self.projects.rows.len());
                 self.history.outcome = bounded(histories, self.history.rows.len());
-                self.project_runtime.read(
-                    memory,
-                    base,
-                    &self.projects.rows[..self.projects.outcome.len()],
-                    force_full,
-                    census
-                        && matches!(self.projects.outcome, Outcome::Rows { .. })
-                        && (force_full
-                            || hour.rem_euclid(replay_data::cadence::STAGGER_PERIOD) == 0),
-                    Some(&self.project_selection),
-                );
+                let read = if defer_runtime {
+                    runtime::Runtime::acquire
+                } else {
+                    runtime::Runtime::read
+                };
+                let runtime_started = self.profile_acquisition.then(qpc);
+                if !runtime_acquired {
+                    read(
+                        &mut self.project_runtime,
+                        memory,
+                        base,
+                        &self.projects.rows[..self.projects.outcome.len()],
+                        force_full,
+                        census
+                            && matches!(self.projects.outcome, Outcome::Rows { .. })
+                            && (force_full
+                                || hour.rem_euclid(replay_data::cadence::STAGGER_PERIOD) == 0),
+                        Some(&self.project_selection),
+                    );
+                } else if census && matches!(self.projects.outcome, Outcome::Rows { .. }) {
+                    self.project_runtime.finish_census(
+                        &self.projects.rows[..self.projects.outcome.len()],
+                        Some(&self.project_selection),
+                    );
+                }
+                if let Some(started) = runtime_started {
+                    self.acquisition_phases[2] = elapsed(started);
+                }
+                let digest_started = self.profile_acquisition.then(qpc);
                 self.compare_project_owners(store, changes);
+                if let Some(started) = digest_started {
+                    self.acquisition_phases[3] = elapsed(started);
+                }
             }
         }
         family::record(
@@ -1416,6 +1606,9 @@ impl Captured {
             },
             None,
         );
+        if let Some(started) = family_started {
+            self.acquisition_phases[4] = elapsed(started);
+        }
     }
 
     /// The hour's census: every raw id linking to each live country is an
@@ -1565,8 +1758,10 @@ impl Captured {
     }
 }
 
+mod cold_parts;
 mod owned;
 mod runtime;
+pub use cold_parts::{ProjectDispatch, ProjectPart};
 #[cfg(test)]
 use owned::{CensusEntry, M_PROGRAMS, ProjectCensus, copy_program_row, span};
 pub use owned::{ProjectsCopyContext, ProjectsCopyReport, ProjectsJob, copy_projects_refresh};

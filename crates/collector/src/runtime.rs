@@ -1000,6 +1000,7 @@ fn run(
             ))
             .unwrap_or(0),
     );
+    crate::country_input_changes::presize_countries(slots);
     crate::relation_changes::presize(slots);
     crate::world_input_changes::presize(slots);
     crate::history_changes::presize(slots, strategic_regions(&memory, base));
@@ -2862,6 +2863,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
     let base = status!({
         "decode_work": decode::calibration_json(),
         "hook_timing": crate::hook_timing::status(),
+        "attach_callbacks": crate::attach_diagnostics::Status,
         "hook_publication": crate::hook::publication::status(),
         "portrait_changes": crate::portrait_changes::status(),
         "advisor_changes": crate::advisor_changes::status(),
@@ -5366,6 +5368,7 @@ fn sizing_pass(
                 ))
                 .unwrap_or(0),
         );
+        crate::country_input_changes::presize_countries(slots);
         crate::relation_changes::presize(slots);
         crate::world_input_changes::presize(slots);
         crate::history_changes::presize(slots, regions);

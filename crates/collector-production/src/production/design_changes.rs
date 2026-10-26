@@ -11,6 +11,7 @@ mod repair;
 mod scalar;
 mod snapshots;
 mod storage;
+pub use storage::SetupPart as ColdSetupPart;
 pub use storage::{ScratchPoolAccounting, account_scratch, presize};
 mod source_hooks;
 mod sources;
@@ -642,7 +643,39 @@ fn stage(
 
 /// Called after a complete census on its acquisition worker. Capacity derives
 /// from that census's owned values, including every nested native occurrence.
+#[cfg(test)]
 pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
+    prepare_with(registry, variants, presize);
+}
+pub(super) fn prepare_partitioned(
+    registry: &[native::RegistryRow],
+    variants: &Variants,
+    lanes: usize,
+    acquire: &mut impl FnMut(Vec<storage::SetupPart>) -> Result<Vec<storage::SetupPart>, &'static str>,
+) {
+    prepare_with(registry, variants, || {
+        storage::presize_partitioned(lanes, acquire)
+    });
+}
+struct ColdDemand {
+    events: usize,
+    spans: usize,
+    bytes: usize,
+    single_spans: usize,
+    single_bytes: usize,
+}
+impl ColdDemand {
+    fn record(&self) {
+        storage::census(
+            self.events,
+            self.spans,
+            self.bytes,
+            self.single_spans,
+            self.single_bytes,
+        );
+    }
+}
+fn cold_demand(registry: &[native::RegistryRow], variants: &Variants) -> Option<ColdDemand> {
     let mut bytes = registry.len().saturating_mul(ROOT_BYTES + 36);
     let mut spans = registry.len().saturating_mul(21);
     let (mut single_spans, mut single_bytes) = (21, ROOT_BYTES + 36);
@@ -682,18 +715,14 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
         let Ok((source_bytes, source_spans)) =
             super::bonus_snapshots::raw_demand(&state.bonus_sources)
         else {
-            RECOVER.store(true, Ordering::Release);
-            unobserved!();
-            return;
+            return None;
         };
         bytes = bytes.saturating_add(source_bytes);
         spans = spans.saturating_add(source_spans);
         let Ok((source_bytes, source_spans)) =
             super::bonus_snapshots::raw_demand(&state.named_sources)
         else {
-            RECOVER.store(true, Ordering::Release);
-            unobserved!();
-            return;
+            return None;
         };
         bytes = bytes.saturating_add(source_bytes);
         spans = spans.saturating_add(source_spans);
@@ -739,7 +768,16 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
     let upgrades = variants.upgrades.outcome.len();
     spans = spans.saturating_add(modules.saturating_mul(3) + upgrades);
     bytes = bytes.saturating_add(modules.saturating_mul(33) + upgrades.saturating_mul(28));
-    let store = STORE.get_or_init(|| {
+    Some(ColdDemand {
+        events: registry.len().saturating_mul(2).max(1),
+        spans,
+        bytes,
+        single_spans,
+        single_bytes,
+    })
+}
+fn cold_store() -> &'static Mutex<Store> {
+    STORE.get_or_init(|| {
         Mutex::new(Store {
             batch: Batch::empty(),
             spare: Batch::empty(),
@@ -747,14 +785,49 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
             interests: sources::Interests::default(),
             epoch: EPOCH.load(Ordering::Acquire),
         })
+    })
+}
+
+pub struct ColdStorage(ColdDemand);
+impl ColdStorage {
+    pub fn capture(
+        &mut self,
+        lanes: usize,
+        acquire: &mut impl FnMut(
+            Vec<storage::SetupPart>,
+        ) -> Result<Vec<storage::SetupPart>, &'static str>,
+    ) {
+        cold_store();
+        self.0.record();
+        storage::presize_partitioned(lanes, acquire);
+    }
+}
+pub(super) fn cold_storage(
+    registry: &[native::RegistryRow],
+    variants: &Variants,
+) -> Option<ColdStorage> {
+    let cold = STORE.get().is_none_or(|store| {
+        store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .batch
+            .events
+            .capacity()
+            == 0
     });
-    storage::census(
-        registry.len().saturating_mul(2).max(1),
-        spans,
-        bytes,
-        single_spans,
-        single_bytes,
-    );
+    cold.then(|| cold_demand(registry, variants).map(ColdStorage))
+        .flatten()
+}
+
+fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: impl FnOnce()) {
+    let _phase = profile::Timer::new(profile::Phase::ColdCertificates);
+    let Some(demand) = cold_demand(registry, variants) else {
+        RECOVER.store(true, Ordering::Release);
+        unobserved!();
+        return;
+    };
+    let store = cold_store();
+    demand.record();
     let epoch = EPOCH.load(Ordering::Acquire);
     let revision = SEED_REVISION.load(Ordering::Acquire);
     let (old_epoch, organisations, pointers, cold) = {
@@ -783,7 +856,7 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
         return;
     }
     if cold {
-        presize();
+        sizing();
     }
     let prepared = (|| {
         writers::prepare(registry.len().saturating_mul(2).max(1))?;

@@ -151,6 +151,7 @@ pub(crate) struct Timeline {
     /// Checked heap growth attempts admitted inside this job's body.
     pub growths: u64,
     pub caller: bool,
+    pub thread_work: Option<crate::attach_diagnostics::ThreadWork>,
 }
 
 /// Diagnostic stages in raw QPC ticks. The publisher cannot stamp a wake's
@@ -677,6 +678,9 @@ impl<J, R> Shared<J, R> {
         self.body_begin[index].store(runner_begin_qpc.max(0) as u64, Ordering::Release);
         #[cfg(feature = "callback_profile")]
         let runner_cycles_begin = crate::callback_profile::thread_cycles();
+        let thread_work = crate::attach_diagnostics::measuring()
+            .then(crate::attach_diagnostics::thread_work)
+            .flatten();
         let growths_before = engine_allocation::growths();
         let mut report = if crate::allocation::failed() {
             Err(Failure::Stopped)
@@ -716,6 +720,8 @@ impl<J, R> Shared<J, R> {
         #[cfg(feature = "callback_profile")]
         let runner_cycles_end = crate::callback_profile::thread_cycles();
         let runner_end_qpc = crate::sampling::qpc();
+        let thread_work =
+            thread_work.and_then(|begin| begin.delta(crate::attach_diagnostics::thread_work()?));
         drop(borrowed_context);
         if let Err(failure) = report {
             add(
@@ -741,6 +747,7 @@ impl<J, R> Shared<J, R> {
             (*completion).timeline.body_end_qpc = runner_end_qpc;
             (*completion).timeline.growths = growths;
             (*completion).timeline.caller = caller;
+            (*completion).timeline.thread_work = thread_work;
             #[cfg(feature = "callback_profile")]
             {
                 (*completion).profile.runner_begin_qpc = runner_begin_qpc;

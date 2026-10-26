@@ -75,6 +75,7 @@ pub(crate) struct WorldReport {
 pub(crate) type EconomyRequest =
     RawRequest<economy::EconomyRestJob, economy::EconomyRestCopyContext>;
 pub(crate) struct GovernanceRequest {
+    pub workers: variant_workers::Dispatch,
     pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub captured: governance::Captured,
@@ -589,6 +590,7 @@ pub(crate) struct GatedRequest {
     pub countries: Option<Arc<engine_native::country_memory::Cache>>,
 }
 pub(crate) struct GatedProjectsRequest {
+    pub workers: variant_workers::Dispatch,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -602,6 +604,7 @@ pub(crate) struct GatedProjectsRequest {
 impl GatedRequest {
     pub(crate) fn take_projects(&mut self) -> GatedProjectsRequest {
         GatedProjectsRequest {
+            workers: Default::default(),
             base: self.base,
             game_state: self.game_state,
             hour: self.hour,
@@ -633,7 +636,9 @@ impl GatedProjectsRequest {
     ) {
         let _phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         if self.recorded {
-            self.ticks = self.captured.capture_selected(
+            let workers = &self.workers;
+            let mut acquire = |parts| workers.projects(parts, roster, self.base, self.game_state);
+            self.ticks = self.captured.acquire_selected_partitioned(
                 memory,
                 roster,
                 self.base,
@@ -642,6 +647,10 @@ impl GatedProjectsRequest {
                 self.force_full,
                 &mut self.fingerprints,
                 changes,
+                projects::ProjectDispatch {
+                    lanes: workers.lanes(),
+                    acquire: &mut acquire,
+                },
             );
         } else {
             self.captured.fail_gated_capture(
@@ -1430,12 +1439,7 @@ impl Job {
             _ => None,
         };
         match self {
-            Self::VariantPart(request) => {
-                identity.kind = match request.part {
-                    variant_workers::Work::Variant(_) => 1,
-                    variant_workers::Work::Context(_) => 2,
-                }
-            }
+            Self::VariantPart(request) => identity.kind = request.part.kind(),
             Self::EventFeedSeal(_) => identity.kind = 3,
             Self::ProductionModifierPart(request) => {
                 identity.partition = Some((request.slots.start, request.slots.end))
@@ -1444,6 +1448,15 @@ impl Job {
         }
         identity
     }
+    pub(crate) fn priority(&self) -> u8 {
+        let cold_tail = match self {
+            Self::Governance(request) => request.context.force_full,
+            Self::GatedProjects(request) => request.force_full && request.recorded,
+            _ => false,
+        };
+        if cold_tail { 0 } else { self.role().priority() }
+    }
+
     pub(crate) fn role(&self) -> Role {
         match self {
             Self::Characters(request) => [
@@ -1475,7 +1488,8 @@ impl Job {
             Self::World(..) => Role::World,
             Self::Economy(..) => Role::Economy,
             Self::Governance(..) => Role::Governance,
-            Self::Variants(..) | Self::VariantPart(..) => Role::Variants,
+            Self::Variants(..) => Role::Variants,
+            Self::VariantPart(request) => request.part.role(),
             Self::Research(..) => Role::Research,
             Self::Intel(..) => Role::Intel,
             Self::FinalInputs(..) => Role::FinalInputs,
@@ -1660,6 +1674,7 @@ fn note_completion<R>(counters: &Counters, report: &Result<R, Failure>) {
 
 fn account_completion(calibration: &SharedCalibration, completed: &Completion<Job, Report>) {
     crate::read_accounting::merge(&completed.table_reads);
+    crate::attach_diagnostics::completed(completed);
     let role = completed.request.role();
     note_completion(&calibration.roles[role as usize], &completed.report);
     if matches!(role, Role::World | Role::Economy)
@@ -1708,6 +1723,7 @@ fn catch_failure<R>(work: impl FnOnce() -> R) -> Result<R, Failure> {
 }
 
 struct SharedCalibration {
+    cold_parents: std::sync::atomic::AtomicUsize,
     roles: [Counters; ROLE_COUNT],
     world: Mutex<WorldCalibration>,
     presentation_continuations: [presentation::ContinuationCounters; 4],
@@ -1715,6 +1731,7 @@ struct SharedCalibration {
 impl Default for SharedCalibration {
     fn default() -> Self {
         Self {
+            cold_parents: Default::default(),
             roles: std::array::from_fn(|_| Counters::default()),
             world: Mutex::new(WorldCalibration::default()),
             presentation_continuations: Default::default(),
@@ -1967,15 +1984,24 @@ fn run_with_memory(
             Report::Economy(run_economy_shared(request, memory, &calibration.world))
         }
         Job::Governance(request) => {
+            request
+                .captured
+                .profile_acquisition(crate::attach_diagnostics::measuring());
             let cached = request.countries.roster_view(memory);
             let context = request.context;
-            let governance = request.captured.acquire_owned(
+            let workers = &request.workers;
+            let mut acquire = |parts| workers.technologies(parts, &cached, context.base);
+            let governance = request.captured.acquire_owned_partitioned(
                 &cached,
                 context,
                 &mut request.technology_fingerprints,
                 &mut request.focus_fingerprints,
                 request.leader_store.as_deref_mut(),
                 request.party_store.as_deref_mut(),
+                governance::TechnologyDispatch {
+                    lanes: workers.lanes(),
+                    acquire: &mut acquire,
+                },
             );
             let buildings = request.buildings.capture_carried(
                 &cached,
@@ -2026,7 +2052,7 @@ fn run_with_memory(
             drop(registry_phase);
             let _variants_phase = Timer::new(Phase::Variants);
             let workers = &request.workers;
-            let mut variants = request.variants.capture_deferred_partitioned(
+            let mut variants = request.variants.capture_deferred_overlapped(
                 memory,
                 context.base,
                 request.registry.sources(),
@@ -2035,6 +2061,10 @@ fn run_with_memory(
                 workers.lanes(),
                 |parts| workers.acquire(parts, memory, context.base),
                 |parts| workers.context(parts, memory, context.base),
+                |parts| workers.setup(parts, memory, context.base),
+                Some(|part, run: &mut dyn FnMut()| {
+                    workers.storage_during(part, memory, context.base, run)
+                }),
             );
             variants[3] = variants[3].saturating_add(registry_ticks);
             Report::Variants(variants)
@@ -2395,6 +2425,9 @@ fn run_with_memory(
             Report::Gated(GatedReport)
         }
         Job::GatedProjects(request) => {
+            request
+                .captured
+                .profile_acquisition(crate::attach_diagnostics::measuring());
             let countries = request.countries.clone();
             match countries.as_deref() {
                 Some(countries) => request.capture(
@@ -2582,7 +2615,8 @@ impl Role {
     /// Slots this role contributes to the peak hourly request reservation.
     const fn jobs_per_hour(self) -> usize {
         match self {
-            Self::Variants => acquisition::MAX_WORKERS,
+            Self::Variants => 2 * acquisition::MAX_WORKERS,
+            Self::Governance | Self::GatedProjects => acquisition::MAX_WORKERS,
             Self::AirWing => air::WING_PARTS,
             Self::AirRelations => crate::extended::air_relations::PARTS,
             Self::AirHistories => crate::extended::air_histories::PARTS,
@@ -2695,19 +2729,19 @@ impl Pool {
         request: &mut Option<Job>,
         wake: bool,
     ) -> Result<Ticket, acquisition::SubmitError> {
-        if let Some(Job::Variants(request)) = request.as_mut() {
-            request.workers.arm(self);
+        match request.as_mut() {
+            Some(Job::Variants(request)) => request.workers.arm(self),
+            Some(Job::Governance(request)) => request.workers.arm(self),
+            Some(Job::GatedProjects(request)) => request.workers.arm(self),
+            _ => {}
         }
         let role = request.as_ref().map(Job::role);
+        let priority = request.as_ref().map_or(0, Job::priority);
         let worker_only = request.as_ref().is_some_and(Job::worker_only);
         // SAFETY: the caller retains the admitted callback lease.
         let result = unsafe {
-            self.executor.submit_with_priority(
-                request,
-                role.map_or(0, Role::priority),
-                worker_only,
-                wake,
-            )
+            self.executor
+                .submit_with_priority(request, priority, worker_only, wake)
         };
         if let Some(role) = role {
             note_dispatch(&self.calibration.roles[role as usize], result.is_ok());

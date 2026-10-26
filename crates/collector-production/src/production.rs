@@ -26,6 +26,7 @@ use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::{frame::TableInput, frame::TableView};
 
 mod variant_parts;
+pub use design_changes::{ColdSetupPart, ColdStorage};
 pub use variant_parts::VariantPart;
 
 pub const N: usize = 23;
@@ -386,6 +387,12 @@ impl Variants {
                 }
                 Ok(parts)
             },
+            |mut parts| {
+                for part in &mut parts {
+                    part.capture();
+                }
+                Ok(parts)
+            },
         )
     }
 
@@ -397,8 +404,36 @@ impl Variants {
         hour: i32,
         full: bool,
         lanes: usize,
+        acquire: impl FnMut(Vec<VariantPart>) -> Result<Vec<VariantPart>, &'static str>,
+        context: impl FnMut(Vec<DesignContextPart>) -> Result<Vec<DesignContextPart>, &'static str>,
+        setup: impl FnMut(Vec<ColdSetupPart>) -> Result<Vec<ColdSetupPart>, &'static str>,
+    ) -> [u64; N] {
+        self.capture_deferred_overlapped(
+            memory,
+            base,
+            variants,
+            hour,
+            full,
+            lanes,
+            acquire,
+            context,
+            setup,
+            None::<fn(ColdStorage, &mut dyn FnMut())>,
+        )
+    }
+
+    pub fn capture_deferred_overlapped(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        variants: Sources<'_, cequipment_variant::RegistryRow>,
+        hour: i32,
+        full: bool,
+        lanes: usize,
         mut acquire: impl FnMut(Vec<VariantPart>) -> Result<Vec<VariantPart>, &'static str>,
         mut context: impl FnMut(Vec<DesignContextPart>) -> Result<Vec<DesignContextPart>, &'static str>,
+        mut setup: impl FnMut(Vec<ColdSetupPart>) -> Result<Vec<ColdSetupPart>, &'static str>,
+        mut overlap: Option<impl FnMut(ColdStorage, &mut dyn FnMut())>,
     ) -> [u64; N] {
         self.baseline_admitted = false;
         let recovery = design_changes::needs_full();
@@ -458,14 +493,26 @@ impl Variants {
             .iter()
             .all(|o| matches!(o, Outcome::Rows { .. }))
         {
-            let context_phase =
-                design_changes::profile::Timer::new(design_changes::profile::Phase::Context);
-            (self.context, self.templates) =
-                design_context::seed_partitioned(memory, base, self, full, lanes, &mut context)
-                    .unwrap_or_default();
-            drop(context_phase);
+            let storage = overlap.as_ref().and_then(|_| {
+                design_changes::enabled()
+                    .then(|| design_changes::cold_storage(&registry[..len], self))
+                    .flatten()
+            });
+            let mut seed = || {
+                let context_phase =
+                    design_changes::profile::Timer::new(design_changes::profile::Phase::Context);
+                (self.context, self.templates) =
+                    design_context::seed_partitioned(memory, base, self, full, lanes, &mut context)
+                        .unwrap_or_default();
+                drop(context_phase);
+            };
+            if let (Some(storage), Some(overlap)) = (storage, overlap.as_mut()) {
+                overlap(storage, &mut seed);
+            } else {
+                seed();
+            }
             if design_changes::enabled() {
-                design_changes::prepare(&registry[..len], self);
+                design_changes::prepare_partitioned(&registry[..len], self, lanes, &mut setup);
                 self.baseline_admitted = full && design_changes::baseline_admitted();
                 self.liveness = design_changes::liveness::observation()
                     .unwrap_or_else(|_| design_changes::liveness::Observation::refused());

@@ -1076,6 +1076,7 @@ function Invoke-Screen($attached, [string]$runDir) {
                         elapsed_s = $entry.elapsed_s; hour = $entry.hour
                         callback_work = $status.callback_work; native_tick_work = $status.native_tick_work
                         callback_tail = $status.callback_tail
+                        attach_callbacks = $status.attach_callbacks
                         variants_profile = $status.variant_changes.variants_profile
                         callback_profile = $status.callback_profile
                         callback_histogram = $status.callback_tail.histogram; slowest = $status.callback_tail.slowest

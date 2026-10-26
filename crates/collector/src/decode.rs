@@ -62,7 +62,7 @@ use crate::{
 use replay_data::rows::TableId;
 
 static CAPTURE_TAIL_DECODE_NS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-static CENSUS_TAIL_DECODE_NS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static CENSUS_TAIL_DECODE_NS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 static MISSION_TAIL_DECODE_NS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
 use crossbeam_queue::ArrayQueue;
@@ -1325,10 +1325,11 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     let start = sampling::qpc();
     let bytes = frame.map.naval.decode_owned();
     let ships = sampling::qpc().saturating_sub(start).max(0) as u64;
-    let ([map, governance, tasks], extended_bytes) = frame.extended.decode_owned_censuses();
-    for (total, ticks) in CENSUS_TAIL_DECODE_NS.iter().zip([ships, map, governance, tasks]) {
+    let ([map, governance, tasks, projects], extended_bytes) = frame.extended.decode_owned_censuses();
+    for (total, ticks) in CENSUS_TAIL_DECODE_NS.iter().zip([ships, map, governance, tasks, projects]) {
         total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
     }
+    crate::attach_diagnostics::project_variables_decoded(frame.qpc, shared.ns(projects as i64));
     shared.pool_bytes.fetch_add(bytes.wrapping_add(extended_bytes), Ordering::Relaxed);
     failure::stage("owned mission tails", None);
     let (ticks, bytes) = frame.extended.decode_mission_tails();
@@ -2064,7 +2065,7 @@ pub fn calibration() -> Calibration {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Calibration {
     pub mission_tail_decode_ns: [u64; 2],
-    pub census_tail_decode_ns: [u64; 4],
+    pub census_tail_decode_ns: [u64; 5],
     pub capture_tail_decode_ns: [u64; 5],
     pub jobs: u64,
     pub refresh_jobs: u64,
@@ -2172,7 +2173,7 @@ impl Calibration {
             "census_tail_decode_ns": self.census_tail_decode_ns,
             "mission_tail_decode_ns": self.mission_tail_decode_ns,
             "mission_tail_roles": ["OrdinaryNavies", "RailwayGuns"],
-            "census_tail_roles": ["ShipModels", "OrdinaryMap", "Governance", "OrdinaryTaskForces"],
+            "census_tail_roles": ["ShipModels", "OrdinaryMap", "Governance", "OrdinaryTaskForces", "ProjectVariables"],
             "capture_tail_roles": ["Templates", "ShipModelDetails", "RaidState", "Variants", "OrdinaryCombat"],
             "relations_copy_ns": self.relations_copy_ns,
             "relations_decode_ns": self.relations_decode_ns,

@@ -8,7 +8,7 @@ use std::{
 };
 
 const CAPACITY: usize = 64;
-const PHASES: usize = 12;
+const PHASES: usize = 19;
 pub(super) const CACHE_FIELDS: usize = 15;
 const WIDTH: usize = 4 + PHASES * 3 + CACHE_FIELDS;
 const PHASE_NAMES: [&str; PHASES] = [
@@ -24,6 +24,13 @@ const PHASE_NAMES: [&str; PHASES] = [
     "registry_walk",
     "variants_walk",
     "variant_parts",
+    "cold_certificates",
+    "cold_storage",
+    "cold_storage_parts",
+    "design_context_seed_parts",
+    "design_context_seed_plan",
+    "design_context_seed_operands",
+    "design_context_seed_join",
 ];
 const CACHE_NAMES: [&str; CACHE_FIELDS] = [
     "full_copy_hits",
@@ -76,6 +83,13 @@ pub enum Phase {
     Registry,
     Variants,
     VariantParts,
+    ColdCertificates,
+    ColdStorage,
+    ColdStorageParts,
+    ContextSeedParts,
+    ContextSeedPlan,
+    ContextSeedOperands,
+    ContextSeedJoin,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub(super) struct Cost {

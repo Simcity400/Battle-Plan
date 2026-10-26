@@ -27,6 +27,48 @@ fn terminal_failure_releases_a_decode_handoff_waiting_on_a_full_queue() {
     assert_eq!(ready.pop(), Some(8));
 }
 
+#[test]
+fn required_project_freeze_failure_is_terminal_before_ready_publication() {
+    const CHILD: &str = "BATTLE_PLAN_PROJECT_FREEZE_PUBLICATION_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "decode::tests::required_project_freeze_failure_is_terminal_before_ready_publication", "--nocapture"])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    for ordinal in [1, 2] {
+        let ready = crossbeam_queue::ArrayQueue::new(1);
+        let completed = std::sync::atomic::AtomicI64::new(99);
+        let mut captured = collector_projects::projects::deferred_variable_allocation_fixture();
+        crate::allocation::reset();
+        crate::allocation::install_hooks();
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Decode);
+        let denied = crate::test_support::NullGuard::new(ordinal);
+        captured.decode_owned();
+        drop(denied);
+        assert!(crate::test_support::DENIALS.load(Ordering::Relaxed) > 0);
+        assert!(crate::allocation::failed());
+        assert!(engine_allocation::capture_stopped());
+        let failure = crate::allocation::failure().unwrap();
+        assert_eq!(failure.phase, crate::allocation::Phase::Decode as u8);
+        assert_eq!(failure.code, crate::allocation::Code::Reserve as u8);
+        assert!(!publish_ready(
+            &ready,
+            0,
+            &completed,
+            123,
+            crate::allocation::failed
+        ));
+        assert_eq!(ready.pop(), None);
+        assert_eq!(completed.load(Ordering::Acquire), 0);
+        engine_allocation::set_hooks(None, None);
+        engine_allocation::set_stop_hook(None);
+    }
+}
+
 // Tests retaining payloads exercise decoding directly and publish only after
 // that successful walk; production also gates after payload recycling.
 fn process_test_job(shared: &Shared, job: &mut DecodeJob, memo: &mut AirBasesMemo) {
@@ -3513,4 +3555,132 @@ fn air_slot(table: replay_data::rows::TableId) -> usize {
         .iter()
         .position(|&candidate| candidate == table)
         .expect("an air pack table")
+}
+#[test]
+fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denial() {
+    const CHILD: &str = "BATTLE_PLAN_PROJECT_VARIABLE_FIFO_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "decode::tests::project_variables_survive_production_fifo_recycling_and_terminal_decode_denial", "--nocapture"])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    use collector_observers::project_variable_changes as changes;
+    use collector_projects::projects::variable_test_kit as kit;
+    changes::enabled(true);
+    changes::project_hooks_enabled(true);
+    crate::allocation::reset();
+    let shared = Shared::new(0, 0, 1);
+    let memory = kit::Fixture::new(0x1000, 7);
+    // Hold every free lease so recycling must return the exact frame below.
+    let leases = (0..shared.free.len())
+        .map(|_| shared.free.pop().unwrap())
+        .collect::<Vec<_>>();
+    let mut expected = Vec::new();
+    for (&index, seed) in leases[..2].iter().zip([7, 9]) {
+        memory.written(seed);
+        expected.push(kit::reference(&memory));
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        kit::acquire(frame.extended.projects_pilot(), &memory, false);
+        assert!(kit::variables(frame.extended.projects_pilot()).is_none());
+        assert!(
+            enqueue(
+                &shared,
+                bare_job(index, u64::from(seed), seed as i32, i64::from(seed))
+            )
+            .is_none()
+        );
+    }
+    memory.replace(11);
+    memory.refuse.set(true);
+    let reads = memory.reads.get();
+    let mut memo = AirBasesMemo::default();
+    for (&index, bytes) in leases[..2].iter().zip(&expected) {
+        let job = shared.decode_queue.pop().expect("production FIFO");
+        assert_eq!(job.index, index);
+        process_owned_job(&shared, job, &mut memo);
+        assert_eq!(shared.ready.pop(), Some(index));
+        assert!(shared.completed[index].load(Ordering::Acquire) > 0);
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        assert_eq!(kit::encoded(frame.extended.projects_pilot()), *bytes);
+        assert_eq!(
+            kit::variables(frame.extended.projects_pilot())
+                .unwrap()
+                .entries
+                .len(),
+            3
+        );
+        shared.recycle_frame_prepared(index);
+    }
+    assert!(shared.decode_queue.is_empty() && shared.ready.is_empty());
+    assert_eq!(memory.reads.get(), reads);
+    let index = shared.free.pop().unwrap();
+    assert_eq!(index, leases[0]);
+    shared.completed[index].store(0, Ordering::Relaxed);
+    memory.refuse.set(false);
+    memory.written(13);
+    let bytes = kit::reference(&memory);
+    {
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        kit::acquire(frame.extended.projects_pilot(), &memory, false);
+    }
+    assert!(enqueue(&shared, bare_job(index, 13, 13, 13)).is_none());
+    memory.replace(15);
+    memory.refuse.set(true);
+    let reads = memory.reads.get();
+    process_owned_job(&shared, shared.decode_queue.pop().unwrap(), &mut memo);
+    assert_eq!(shared.ready.pop(), Some(index));
+    {
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        assert_eq!(kit::encoded(frame.extended.projects_pilot()), bytes);
+    }
+    assert_eq!(memory.reads.get(), reads);
+    // Reacquiring the same frame must not expose its previous successful store.
+    shared.recycle_frame_prepared(index);
+    let recycled = shared.free.pop().unwrap();
+    assert_eq!(recycled, leases[1]);
+    shared.completed[recycled].store(0, Ordering::Relaxed);
+    let frame = unsafe { &mut *shared.frames[recycled].load(Ordering::Acquire) };
+    kit::acquire(frame.extended.projects_pilot(), &memory, true);
+    assert!(enqueue(&shared, bare_job(recycled, 16, 16, 16)).is_none());
+    process_owned_job(&shared, shared.decode_queue.pop().unwrap(), &mut memo);
+    assert_eq!(shared.ready.pop(), Some(recycled));
+    let frame = unsafe { &mut *shared.frames[recycled].load(Ordering::Acquire) };
+    assert!(kit::variables(frame.extended.projects_pilot()).is_none());
+    shared.recycle_frame_prepared(recycled);
+    let index = shared.free.pop().unwrap();
+    assert_eq!(index, leases[0]);
+    shared.completed[index].store(0, Ordering::Relaxed);
+    memory.refuse.set(false);
+    memory.written(17);
+    let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+    kit::acquire(frame.extended.projects_pilot(), &memory, false);
+    assert!(enqueue(&shared, bare_job(index, 17, 17, 17)).is_none());
+    memory.replace(19);
+    memory.refuse.set(true);
+    let job = shared.decode_queue.pop().unwrap();
+    crate::allocation::install_hooks();
+    let denied = crate::test_support::NullGuard::new(1);
+    process_owned_job(&shared, job, &mut memo);
+    drop(denied);
+    assert!(crate::test_support::DENIALS.load(Ordering::Relaxed) > 0);
+    assert!(crate::allocation::failed() && engine_allocation::capture_stopped());
+    let failure = crate::allocation::failure().unwrap();
+    assert_eq!(failure.phase, crate::allocation::Phase::Decode as u8);
+    assert_eq!(failure.code, crate::allocation::Code::Reserve as u8);
+    assert!(shared.ready.is_empty() && shared.decode_queue.is_empty());
+    assert_eq!(shared.completed[index].load(Ordering::Acquire), 0);
+    let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+    assert!(kit::variables(frame.extended.projects_pilot()).is_none());
+    assert_eq!(
+        kit::pending(frame.extended.projects_pilot()),
+        0,
+        "production decode reached freezing"
+    );
+    assert_ne!(shared.free.pop(), Some(index));
+    engine_allocation::set_hooks(None, None);
+    engine_allocation::set_stop_hook(None);
 }

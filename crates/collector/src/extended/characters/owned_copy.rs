@@ -214,6 +214,10 @@ pub(super) enum AppendedRole {
 }
 
 impl CharactersJob {
+    pub(crate) fn quiet_roster(&self) -> bool {
+        self.roster.quiet
+    }
+
     /// Whether recycling keeps the job. A leader role job that carried its
     /// rows from the census copied no raw log, but its held rows are its
     /// storage: dropping it would start every later hour cold.

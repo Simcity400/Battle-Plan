@@ -1627,3 +1627,123 @@ fn membership_projection_refuses_intermediate_unknown_and_incomplete_occurrences
         }
     }
 }
+
+#[test]
+fn cold_storage_warmup_keeps_the_serial_census_capacity_and_certificate_decision() {
+    const NAME: &str =
+        "cold_storage_warmup_keeps_the_serial_census_capacity_and_certificate_decision";
+    const ENV: &str = "BATTLE_PLAN_COLD_WARMUP_TEST";
+    if std::env::var(ENV).ok().as_deref() != Some(NAME) {
+        assert!(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &format!("production::design_changes::tests::{NAME}")
+                ])
+                .env(ENV, NAME)
+                .status()
+                .unwrap()
+                .success()
+        );
+        return;
+    }
+    for count in [67, 1500] {
+        let space = super::super::variant_scale_tests::space(count, 1);
+        let mut registry = Vec::new();
+        let outcome =
+            native::walk_registry(&space.memory(), space.base, space.game_state, &mut registry);
+        let mut variants = Variants::vacant();
+        variants.capture_state_carried(
+            &space.memory(),
+            space.base,
+            Sources {
+                rows: &registry,
+                outcome,
+            },
+            7,
+            true,
+            false,
+        );
+        assert_eq!(variants.definitions.outcome.len(), registry.len());
+        let mut reference = None;
+        for warm in [false, true] {
+            storage::release();
+            held::release();
+            sources::release();
+            liveness::release();
+            *cold_store().lock().unwrap() = Store {
+                batch: Batch::empty(),
+                spare: Batch::empty(),
+                watched: HashMap::new(),
+                interests: sources::Interests::default(),
+                epoch: EPOCH.load(Ordering::Acquire),
+            };
+            SAVED_BASELINE.store(false, Ordering::Release);
+            SOURCE_BASELINE.store(false, Ordering::Release);
+            LIVENESS_BASELINE.store(false, Ordering::Release);
+            RECOVER.store(true, Ordering::Release);
+            ENABLED.store(true, Ordering::Release);
+            begin_read();
+            if warm {
+                let mut work = cold_storage(&registry, &variants).unwrap();
+                work.capture(3, &mut |parts| {
+                    Ok(std::thread::scope(|scope| {
+                        let jobs: Vec<_> = parts
+                            .into_iter()
+                            .map(|mut part| {
+                                scope.spawn(move || {
+                                    part.capture();
+                                    part
+                                })
+                            })
+                            .collect();
+                        jobs.into_iter()
+                            .rev()
+                            .map(|job| job.join().unwrap())
+                            .collect()
+                    }))
+                });
+                assert!(!SAVED_BASELINE.load(Ordering::Acquire));
+                assert!(!SOURCE_BASELINE.load(Ordering::Acquire));
+                assert!(!LIVENESS_BASELINE.load(Ordering::Acquire));
+            }
+            prepare_partitioned(&registry, &variants, 3, &mut |mut parts| {
+                for part in &mut parts {
+                    part.capture();
+                }
+                Ok(parts)
+            });
+            let store = cold_store().lock().unwrap();
+            let mut watches: Vec<_> = store
+                .watched
+                .values()
+                .map(|watch| (watch.id, watch.pointer, watch.flags))
+                .collect();
+            watches.sort_unstable();
+            let capacities = [&store.batch, &store.spare].map(|batch| {
+                (
+                    batch.events.capacity(),
+                    batch.log.spans.capacity(),
+                    batch.log.bytes.capacity(),
+                    batch.failure,
+                )
+            });
+            let certificate = (
+                SAVED_BASELINE.load(Ordering::Acquire),
+                SOURCE_BASELINE.load(Ordering::Acquire),
+                LIVENESS_BASELINE.load(Ordering::Acquire),
+                RECOVER.load(Ordering::Acquire),
+                CENSUS_BASELINE.load(Ordering::Acquire),
+                store.epoch,
+            );
+            assert!(certificate.0 && certificate.1 && certificate.2 && !certificate.3);
+            assert_eq!(watches.len(), registry.len());
+            let value = (watches, capacities, certificate);
+            if let Some(reference) = reference.as_ref() {
+                assert_eq!(&value, reference);
+            } else {
+                reference = Some(value);
+            }
+        }
+    }
+}

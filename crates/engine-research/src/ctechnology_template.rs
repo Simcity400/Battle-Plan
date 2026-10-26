@@ -114,6 +114,7 @@ pub struct Entry {
     pub template_pointer: usize,
     pub copied: bool,
     occupied: bool,
+    admitted_handle: u32,
     // Local acquisition index only; these never enter a replay or survive a
     // Dictionary::new. A generation separates each country's roster.
     instance_generation: u32,
@@ -122,6 +123,13 @@ pub struct Entry {
     source_pointer: usize,
     source_row: u32,
     source_generation: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct Admission {
+    database_index: i32,
+    template: usize,
+    handle: u32,
 }
 
 /// Every declaration has a unique database index and a case-insensitively
@@ -139,6 +147,7 @@ pub struct Dictionary<'a> {
     copied: usize,
     error: Option<&'static str>,
     instance_generation: u32,
+    admissions: Option<&'a mut Vec<Admission>>,
 }
 
 impl<'a> Dictionary<'a> {
@@ -154,6 +163,7 @@ impl<'a> Dictionary<'a> {
             copied: 0,
             error: None,
             instance_generation: 0,
+            admissions: None,
         }
     }
 
@@ -163,6 +173,52 @@ impl<'a> Dictionary<'a> {
         } else {
             Outcome::Rows { len: self.copied }
         }
+    }
+
+    pub fn refuse(&mut self, reason: &'static str) {
+        self.error.get_or_insert(reason);
+    }
+
+    pub fn instances(
+        entries: &'a mut Vec<Entry>,
+        names: &'a mut Vec<u8>,
+        admissions: &'a mut Vec<Admission>,
+    ) -> Self {
+        admissions.clear();
+        Self {
+            admissions: Some(admissions),
+            ..Self::new(entries, names)
+        }
+    }
+
+    /// Interpret owned admissions; copy each definition once in serial encounter order.
+    pub fn merge_attempts(
+        &mut self,
+        memory: &impl Memory,
+        admissions: &[Admission],
+    ) -> Result<(), &'static str> {
+        for admission in admissions {
+            let slot = self.ensure_entry(admission.database_index)?;
+            let target = &self.entries[slot];
+            if target.template_pointer != 0 {
+                if target.copied && target.row.technology_handle != admission.handle {
+                    self.error
+                        .get_or_insert("technology template handle mismatch");
+                }
+                if target.template_pointer != admission.template {
+                    self.error
+                        .get_or_insert("technology occurrence has inconsistent template pointers");
+                }
+            } else {
+                self.admit(
+                    memory,
+                    admission.template,
+                    admission.handle,
+                    admission.database_index,
+                );
+            }
+        }
+        Ok(())
     }
 
     fn index_slot(entries: &[Entry], database_index: i32) -> Option<usize> {
@@ -226,6 +282,7 @@ impl<'a> Dictionary<'a> {
                     entry.copied = old.copied;
                     entry.occupied = true;
                     entry.instance_generation = old.instance_generation;
+                    entry.admitted_handle = old.admitted_handle;
                 }
                 if self.instance_generation != 0
                     && old.source_generation == self.instance_generation
@@ -300,6 +357,9 @@ impl<'a> Dictionary<'a> {
         }
         entry.instance_generation = self.instance_generation;
         let read_definition = entry.template_pointer == 0;
+        let record = read_definition
+            || entry.template_pointer != template
+            || entry.admitted_handle != handle;
         if entry.copied && entry.row.technology_handle != handle {
             self.error
                 .get_or_insert("technology template handle mismatch");
@@ -308,16 +368,46 @@ impl<'a> Dictionary<'a> {
             self.error
                 .get_or_insert("technology occurrence has inconsistent template pointers");
         }
+        if record && !read_definition {
+            self.record_admission(database_index, template, handle)?;
+        }
         if self.instance_pointer_row(pointer).is_some() {
             return Err("duplicate technology pointer in country roster");
+        }
+        if read_definition {
+            if record {
+                self.record_admission(database_index, template, handle)?;
+            }
+            self.entries[slot].admitted_handle = handle;
+            if self.admissions.is_some() {
+                self.entries[slot].template_pointer = template;
+            }
         }
         let slot = Self::pointer_slot(self.entries, pointer, self.instance_generation)
             .expect("technology pointer index has space for admitted definitions");
         self.entries[slot].source_pointer = pointer;
         self.entries[slot].source_row = previous.len() as u32;
         self.entries[slot].source_generation = self.instance_generation;
-        if read_definition {
+        if read_definition && self.admissions.is_none() {
             self.admit(memory, template, handle, database_index);
+        }
+        Ok(())
+    }
+
+    fn record_admission(
+        &mut self,
+        database_index: i32,
+        template: usize,
+        handle: u32,
+    ) -> Result<(), &'static str> {
+        if let Some(admissions) = self.admissions.as_mut() {
+            crate::allocation::reserve(admissions, 1)
+                .map_err(|_| "technology admission allocation failed")?;
+            admissions.push(Admission {
+                database_index,
+                template,
+                handle,
+            });
         }
         Ok(())
     }

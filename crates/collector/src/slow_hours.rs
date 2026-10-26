@@ -199,6 +199,7 @@ mod tests {
             .next()
             .unwrap();
         assert!(series.contains("callback_tail = $status.callback_tail"));
+        assert!(series.contains("attach_callbacks = $status.attach_callbacks"));
         assert!(series.contains("variants_profile = $status.variant_changes.variants_profile"));
         assert!(series.contains("callback_profile = $status.callback_profile"));
         assert!(series.contains("ConvertTo-Json -Compress -Depth 16"));

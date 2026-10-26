@@ -33,6 +33,7 @@ mod acquisition_gather;
 mod acquisition_jobs;
 mod acquisition_states;
 mod acquisition_wars;
+mod attach_diagnostics;
 mod advisor_changes;
 mod crew_store;
 mod faction_accounts;
