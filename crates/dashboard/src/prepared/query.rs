@@ -1,5 +1,7 @@
 //! Host-direct reads of the integrated slice's prepared pages.
 
+mod served;
+
 #[cfg(test)]
 mod profile_tests;
 pub(crate) use dashboard_base::prepared::query::progressive;
@@ -69,7 +71,7 @@ struct Reply<'a> {
     source_id: &'a str,
     revision: &'a str,
     product: &'a str,
-    data: Value,
+    data: served::Served<'a>,
     /// For a pending or partial reply ([`waits`]), the preparation status
     /// entries it waits for: `walk` for the hourly walk's coverage, or a
     /// family prepared on its own, listed under its name in the status's
@@ -2761,6 +2763,7 @@ fn content_warning_paths(product: &str, name: &str) -> &'static [&'static [&'sta
 }
 
 /// Visits every value at `path` below `value`.
+#[cfg(test)]
 fn each_at(value: &mut Value, path: &[&str], visit: &mut dyn FnMut(&mut Value)) {
     match path.split_first() {
         None => visit(value),
@@ -2781,6 +2784,7 @@ fn each_at(value: &mut Value, path: &[&str], visit: &mut dyn FnMut(&mut Value)) 
 /// each place the reply keeps them ([`content_warning_paths`]), where it is
 /// served ([`Source::append_stack_warnings`]): published payloads leave them
 /// out, since other consumers' reads add to them at their own pace.
+#[cfg(test)]
 pub(in crate::prepared) fn append_stack_warnings(
     source: &Source,
     product: &str,
@@ -2820,6 +2824,7 @@ pub(crate) fn served_lines(
 }
 
 /// `lines` added to a reply's first content warning list, each once.
+#[cfg(test)]
 fn append_lines(product: &str, name: &str, lines: Vec<String>, data: &mut Value) {
     if lines.is_empty() {
         return;
@@ -2947,28 +2952,24 @@ pub fn query(
     } else {
         std::sync::Arc::new(read(None)?)
     };
-    let mut data = answer.data.clone();
-    let short = answer.short.clone();
     check_cancel(cancelled)?;
     // What a pending or partial reply waits for: the coverage it found short,
     // or, when it consulted none, the coverage its product waits for.
-    let gate = waits(&data).then(|| {
-        if short.is_empty() {
+    let gate = waits(&answer.data).then(|| {
+        if answer.short.is_empty() {
             super::pipeline::gate(name)
         } else {
-            short.into_iter().collect()
+            answer.short.iter().copied().collect()
         }
     });
-    append_stack_warnings(source, &request.product, name, &mut data);
-    let lines = served_lines(source, content, &answer.fallbacks);
-    append_lines(&request.product, name, lines, &mut data);
-    // A history's replies add the lines a served reply adds as of each serving.
-    if request.product == crate::products::division_equipment::history::QUERY
-        && let Some(fields) = data.as_object_mut()
-    {
-        let served = crate::products::division_equipment::history::served_lines(source, content);
-        fields.insert("served".into(), Value::from(served));
-    }
+    let data = served::Served::new(
+        source,
+        &request.product,
+        name,
+        &answer.data,
+        content,
+        &answer.fallbacks,
+    );
     bounded_json(
         &Reply {
             source_id: &request.source_id,
