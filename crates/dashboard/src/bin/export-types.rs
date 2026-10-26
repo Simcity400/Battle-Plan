@@ -1,10 +1,25 @@
-use std::{fs, io, path::PathBuf};
+use std::{env, fs, io, path::PathBuf};
 
 fn main() -> io::Result<()> {
-    let path =
+    // A Boat-built exporter carries the VM's source path, so `--out` names this worktree's contract file.
+    let mut path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/src/generated/dashboard.ts");
+    let mut check = false;
+    let mut arguments = env::args().skip(1);
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--check" => check = true,
+            "--out" => {
+                path = arguments
+                    .next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| io::Error::other("--out needs the contract file's path"))?
+            }
+            other => return Err(io::Error::other(format!("unknown argument {other}"))),
+        }
+    }
     let text = dashboard::typescript_contract();
-    if std::env::args().any(|argument| argument == "--check") {
+    if check {
         if fs::read_to_string(&path)? != text {
             return Err(io::Error::other(
                 "dashboard TypeScript contract needs regeneration",

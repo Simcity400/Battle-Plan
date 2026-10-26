@@ -8,7 +8,6 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::ExitCode,
-    time::{Duration, SystemTime},
 };
 
 #[global_allocator]
@@ -33,53 +32,17 @@ impl Drop for Lock {
     }
 }
 
-fn test_lock() -> io::Result<()> {
-    let path = Path::new(r"captures\ci\TESTS_RUNNING");
-    match fs::metadata(path) {
-        Ok(meta)
-            if SystemTime::now()
-                .duration_since(meta.modified()?)
-                .unwrap_or_default()
-                < Duration::from_secs(20 * 3600) =>
-        {
-            Err(invalid(format!(
-                "Prerequisite failed: {} is active",
-                path.display()
-            )))
-        }
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
+// No work waits for anything (AGENTS.md): the lock only keeps two runs out of one output.
 fn lock(output: &Path) -> io::Result<Lock> {
-    test_lock()?;
-    let captures = Path::new(r"captures");
-    let mut markers = vec![captures.join("BENCH_RUNNING")];
-    for entry in fs::read_dir(captures)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            markers.push(entry.path().join("BENCH_RUNNING"));
-        }
-    }
-    if let Some(active) = markers.into_iter().find(|path| path.exists()) {
-        return Err(invalid(format!(
-            "Prerequisite failed: {} exists",
-            active.display()
-        )));
-    }
     let path = output.join("MEASURE_RUNNING");
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&path)?;
-    let lock = Lock {
+    Ok(Lock {
         path,
         file: Some(file),
-    };
-    test_lock()?;
-    Ok(lock)
+    })
 }
 
 fn run() -> io::Result<()> {

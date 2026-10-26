@@ -5,8 +5,8 @@
 
 `install` makes the runner's own worktree of origin/main and registers the Windows task that runs
 it daily at `--at`, or as soon as it can after a missed start. `run` moves that worktree to the
-newest origin/main and holds TESTS_RUNNING while it waits for running benchmarks to end, then runs
-every Rust test, the UI typecheck and tests and the dependency checks. Its report goes to
+newest origin/main and holds TESTS_RUNNING while it runs every Rust test, the UI typecheck and
+tests and the dependency checks. Its report goes to
 captures\\ci: latest.md, a folder per run with each step's log, kept 30 days, and
 history.tsv, kept whole.
 """
@@ -31,7 +31,6 @@ CAPTURES = Path(os.environ.get("BATTLE_PLAN_CAPTURES", os.environ.get("HOI4_CAPT
 REPORTS = CAPTURES / "ci"
 MARKER = REPORTS / "TESTS_RUNNING"
 TASK = "Battle Plan daily tests"
-BENCH_WAIT = datetime.timedelta(hours=6)
 # From taking the lock, below the task's 20-hour limit, so a run that overruns still reports and
 # cleans up.
 DEADLINE = datetime.timedelta(hours=18)
@@ -108,12 +107,6 @@ def git(*args):
         if code != 0:
             raise RuntimeError(f"git {' '.join(args)}: {read(stderr)}")
         return read(stdout)
-
-
-def benches():
-    # As deep as agents look for them.
-    patterns = ("BENCH_RUNNING", "*/BENCH_RUNNING", "*/*/BENCH_RUNNING")
-    return [path for pattern in patterns for path in CAPTURES.glob(pattern)]
 
 
 def lock_runner():
@@ -209,16 +202,6 @@ def run(args):
         git("checkout", "--quiet", "--detach", "--force", "origin/main")
         commit = git("rev-parse", "HEAD")
         heading = f"main {commit[:10]} {git('log', '-1', '--format=%s')}"
-        waiting_since = time.monotonic()
-        while held := benches():
-            waited = time.monotonic() - waiting_since
-            if waited > BENCH_WAIT.total_seconds() or time.monotonic() >= deadline:
-                names = ", ".join(str(path) for path in held)
-                record_history(started, commit, "skipped", None)
-                recorded = True
-                write_report("SKIPPED", [heading, "", f"Benchmarks held the machine: {names}."])
-                return 0
-            time.sleep(60)
         folder = run_folder(started, commit)
         environment = dict(
             os.environ, BATTLE_PLAN_GAME_DIR=args.game_dir, CARGO_TERM_COLOR="never", NO_COLOR="1"

@@ -8,7 +8,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime},
+    time::Instant,
 };
 
 const CAPTURES: &str = r"captures";
@@ -65,44 +65,8 @@ impl Drop for Locks {
     }
 }
 
-fn check_tests() -> io::Result<()> {
-    let path = Path::new(CAPTURES).join("ci/TESTS_RUNNING");
-    match path.metadata() {
-        Ok(meta)
-            if SystemTime::now()
-                .duration_since(meta.modified()?)
-                .unwrap_or_default()
-                < Duration::from_secs(20 * 3600) =>
-        {
-            Err(invalid(format!("Active daily tests: {}", path.display())))
-        }
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
-fn active_benchmark(dir: &Path) -> io::Result<Option<PathBuf>> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        if entry.file_name() == "BENCH_RUNNING" {
-            return Ok(Some(entry.path()));
-        }
-        if entry.file_type()?.is_dir()
-            && !entry.file_type()?.is_symlink()
-            && let Some(path) = active_benchmark(&entry.path())?
-        {
-            return Ok(Some(path));
-        }
-    }
-    Ok(None)
-}
-
+// No work waits for anything (AGENTS.md): the lock only keeps two runs out of one output.
 fn lock(output: &Path) -> io::Result<Locks> {
-    check_tests()?;
-    if let Some(path) = active_benchmark(Path::new(CAPTURES))? {
-        return Err(invalid(format!("Active benchmark: {}", path.display())));
-    }
     let path = output.join("MEASURE_RUNNING");
     let file = OpenOptions::new()
         .write(true)
@@ -114,7 +78,6 @@ fn lock(output: &Path) -> io::Result<Locks> {
         "viewer --playback-cost pid={}",
         std::process::id()
     )?;
-    check_tests()?;
     Ok(locks)
 }
 

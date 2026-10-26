@@ -15,8 +15,7 @@ A candidate with "frozen": null is a matched no-recorder reference. The report
 uses clean references from this plan for its same-run percentage. An optional
 baseline_hours_per_s is labelled historical and does not establish current
 performance. Runs are interleaved per repeat. Timed windows refuse to start
-while build processes run, then wait until other processes have used little CPU
-for a minute. A screen is marked contaminated when a build process appears
+while build processes run. A screen is marked contaminated when a build process appears
 mid-window or when other processes' measured CPU over the window passes a share
 of the machine.
 With -BuildPauseDir, such a plan holds that directory from its first timed
@@ -411,25 +410,6 @@ function Measure-OtherCpu([hashtable]$tally, [double]$elapsedSeconds, [int]$core
         top = @($top); reasons = @($reasons)
     }
 }
-# Before a timed window: wait until other processes stayed under the window limits for
-# $QuietSeconds (sampled every $SampleSeconds), at most $LimitMinutes; logs what was busy.
-function Wait-CpuQuiet([int]$QuietSeconds = 60, [int]$SampleSeconds = 20, [int]$LimitMinutes = 30,
-        [scriptblock]$Snapshot = { Get-OtherCpuSnapshot }, [scriptblock]$Sleep = { param($s) Start-Sleep -Seconds $s },
-        [scriptblock]$Now = { [DateTime]::UtcNow }) {
-    $cores = [Environment]::ProcessorCount
-    $deadline = (& $Now).AddMinutes($LimitMinutes); $quiet = 0
-    while ($quiet -lt $QuietSeconds) {
-        if ((& $Now) -ge $deadline) { Log "Other processes stayed busy for $LimitMinutes min; starting anyway (the screen will be measured)."; return $false }
-        $start = & $Now
-        $tally = New-OtherCpu (& $Snapshot) $start.Ticks
-        & $Sleep $SampleSeconds
-        Update-OtherCpu $tally (& $Snapshot)
-        $measure = Measure-OtherCpu $tally ((& $Now) - $start).TotalSeconds $cores
-        if ($measure.reasons.Count -eq 0) { $quiet += $SampleSeconds }
-        else { $quiet = 0; Log ('Waiting for a quiet machine: ' + ($measure.reasons -join '; ')) }
-    }
-    return $true
-}
 function Get-RecorderPrivate($attached) {
     if (-not $attached -or $attached.process.HasExited) { return $null }
     try { $attached.process.Refresh(); return [int64]$attached.process.PrivateMemorySize64 } catch { return $null }
@@ -482,8 +462,6 @@ function Wait-Quiet {
         } elseif (([DateTime]::UtcNow - $quietSince).TotalSeconds -ge 2) { break }
         Start-Sleep -Seconds 1
     }
-    if ($spec.PSObject.Properties['skip_cpu_quiet'] -and $spec.skip_cpu_quiet) { return }
-    $null = Wait-CpuQuiet
 }
 
 # ---- reload ------------------------------------------------------------------

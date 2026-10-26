@@ -9,7 +9,7 @@
 Run it inside the worktree. Its tracked and unignored files, uncommitted changes included, are
 synchronized to a VM cloned from the `hoi4-check` image (tools/boat_setup.sh) and compiled with
 cargo-xwin for x86_64-pc-windows-msvc. Nothing runs tests or Windows programs. Cargo's exit code
-passes through (101 for compile errors); exit 75 means Boat failed, so run the work locally.
+passes through (101 for compile errors); exit 75 means Boat failed: run it again, never locally.
 
 `build` downloads the named exe/dll/pdb outputs, checks their SHA-256 and records them with the
 source digest in `<dir>/boat-artifacts.json`; `--refresh-image` then re-saves `hoi4-check` from
@@ -764,7 +764,7 @@ def main(argv):
         say("Interrupted; a surviving remote job keeps its claim, and the VM stops when its lease ends.")
         return 130
     except Exception as error:
-        say(f"BOAT UNAVAILABLE: {error}\nRun the same work locally instead.")
+        say(f"BOAT UNAVAILABLE: {error}\nRun it on Boat again; never compile locally.")
         return UNAVAILABLE
 
 
