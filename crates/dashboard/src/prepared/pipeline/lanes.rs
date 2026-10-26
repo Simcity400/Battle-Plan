@@ -276,7 +276,9 @@ impl<'scope> Lanes<'scope> {
                 #[cfg(test)]
                 let registry = super::independent::test_registry();
                 let priority = JobPriority::current();
+                let cpu = replay_frame::cpu::Context::capture();
                 let join = scope.spawn(move || {
+                    let _cpu = cpu.enter("observer lane");
                     #[cfg(test)]
                     registry.install();
                     priority.enter(Level::BelowNormal);

@@ -27,9 +27,12 @@ pub fn map_entering<T: Sync, R: Send>(
     let mut results: Vec<Option<R>> = Vec::new();
     results.resize_with(items.len(), || None);
     std::thread::scope(|scope| {
+        let (next, enter, work) = (&next, &enter, &work);
         let tasks: Vec<_> = (0..workers)
             .map(|_| {
-                scope.spawn(|| {
+                let cpu = job_priority::accounting::Context::capture();
+                scope.spawn(move || {
+                    let _cpu = cpu.enter("content parallel");
                     enter();
                     let mut done = Vec::new();
                     loop {
@@ -62,7 +65,9 @@ pub fn spawn<'scope, T: Send + 'scope>(
     work: impl FnOnce() -> T + Send + 'scope,
 ) -> std::thread::ScopedJoinHandle<'scope, T> {
     let caller = job_priority::Caller::current();
+    let cpu = job_priority::accounting::Context::capture();
     scope.spawn(move || {
+        let _cpu = cpu.enter("content helper");
         caller.enter();
         work()
     })

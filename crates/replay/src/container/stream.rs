@@ -205,7 +205,9 @@ impl ReplayStream {
             // joining a producer blocked on a full frame channel.
             let (sender, receiver) = mpsc::sync_channel(1);
             let priority = job_priority::Caller::current();
+            let cpu = replay_frame::cpu::Context::capture();
             let worker = std::thread::Builder::new().spawn_scoped(scope, move || {
+                let _cpu = cpu.enter("walk decode");
                 priority.enter();
                 let check = || {
                     if worker_stopped.load(Ordering::Acquire) {

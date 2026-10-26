@@ -1152,7 +1152,9 @@ pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation>
             .chunks(files.len().div_ceil(4).max(1))
             .map(|chunk| {
                 let priority = job_priority::JobPriority::current();
+                let cpu = job_priority::accounting::Context::capture();
                 scope.spawn(move || -> io::Result<Vec<_>> {
+                    let _cpu = cpu.enter("content localisation");
                     priority.enter(job_priority::Level::Normal);
                     chunk
                         .iter()

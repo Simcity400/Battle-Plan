@@ -333,7 +333,9 @@ where
             .chunks_mut(chunk)
             .map(|rows| {
                 let priority = JobPriority::current();
+                let cpu = replay_frame::cpu::Context::capture();
                 scope.spawn(move || {
+                    let _cpu_context = cpu.enter("fold projection helper");
                     priority.enter(Level::Normal);
                     let _cpu = replay_frame::cpu::scope("fold projection", cpu_family);
                     rows.iter_mut()

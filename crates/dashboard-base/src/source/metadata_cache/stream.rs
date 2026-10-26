@@ -83,9 +83,11 @@ fn encode<T: Serialize + Sync>(
 ) -> io::Result<()> {
     let (sender, receiver) = mpsc::sync_channel(1);
     std::thread::scope(|scope| {
+        let cpu = replay_frame::cpu::Context::capture();
         let encoder = std::thread::Builder::new()
             .name("metadata cache JSON".into())
             .spawn_scoped(scope, move || -> io::Result<()> {
+                let _cpu = cpu.enter("metadata cache JSON");
                 let mut output = Encoder {
                     sender,
                     pending: Chunk::default(),

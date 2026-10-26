@@ -185,7 +185,9 @@ fn stamps(
             .chunks(paths.len().div_ceil(workers))
             .map(|part| {
                 let priority = job_priority::JobPriority::current();
+                let cpu = job_priority::accounting::Context::capture();
                 scope.spawn(move || {
+                    let _cpu = cpu.enter("store source stamps");
                     priority.enter(job_priority::Level::Normal);
                     let result = part.iter().map(read).collect::<io::Result<Vec<_>>>();
                     #[cfg(test)]
@@ -3423,7 +3425,9 @@ fn sync_packs(files: &[Arc<File>]) -> io::Result<()> {
             .chunks(files.len().div_ceil(workers))
             .map(|part| {
                 let priority = job_priority::JobPriority::current();
+                let cpu = job_priority::accounting::Context::capture();
                 scope.spawn(move || {
+                    let _cpu = cpu.enter("store sync packs");
                     priority.enter(job_priority::Level::Normal);
                     part.iter().try_for_each(|file| file.sync_all())
                 })

@@ -2722,9 +2722,11 @@ fn present_window(
             .chunks(size)
             .map(|part| {
                 let priority = JobPriority::current();
+                let cpu = ::replay_frame::cpu::Context::capture();
                 let started = std::thread::Builder::new()
                     .name("politics ledger presentation".into())
                     .spawn_scoped(scope, move || {
+                        let _cpu_context = cpu.enter("politics ledger presentation");
                         priority.enter(Level::Normal);
                         let _cpu = ::replay_frame::cpu::scope(
                             "fold",

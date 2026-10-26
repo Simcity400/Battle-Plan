@@ -9145,6 +9145,7 @@ dependencies = [
  "crc32fast",
  "engine-allocation",
  "engine-native",
+ "job-priority",
  "replay-data",
  "replay-frame",
  "replay-identity",

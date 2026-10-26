@@ -613,9 +613,11 @@ impl Shared {
             let priority = JobPriority::current();
             // A reader that cannot start leaves its blocks to the others or
             // to the families themselves.
+            let cpu = replay_frame::cpu::Context::capture();
             let spawned = std::thread::Builder::new()
                 .name(format!("preparation shared block reader {reader}"))
                 .spawn(move || {
+                    let _cpu = cpu.enter("shared block reader");
                     priority.enter(Level::BelowNormal);
                     while let Some(block) = thread.claim() {
                         let ended = thread.read(block);

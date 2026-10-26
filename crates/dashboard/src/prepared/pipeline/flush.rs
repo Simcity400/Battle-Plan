@@ -233,7 +233,9 @@ fn parallel(
         let helpers: Vec<_> = (0..helpers)
             .map(|_| {
                 let priority = JobPriority::current();
+                let cpu = replay_frame::cpu::Context::capture();
                 scope.spawn(move || {
+                    let _cpu = cpu.enter("flush helper");
                     #[cfg(test)]
                     registry.install();
                     priority.enter(Level::Normal);

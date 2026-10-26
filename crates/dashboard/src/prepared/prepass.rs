@@ -870,9 +870,11 @@ impl Pool {
                 drop((alive, replay, knobs, priority));
                 continue;
             }
+            let cpu = replay_frame::cpu::Context::capture();
             if let Ok(handle) = std::thread::Builder::new()
                 .name(format!("preparation family pre-pass {worker}"))
                 .spawn(move || {
+                    let _cpu = cpu.enter("family pre-pass");
                     priority.enter(Level::BelowNormal);
                     work_pool(&replay, alive, &knobs)
                 })

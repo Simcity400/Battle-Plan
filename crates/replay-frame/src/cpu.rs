@@ -79,6 +79,13 @@ pub fn enable() {
     TSC_HZ.get_or_init(calibrate);
     replay_data::measurement::enable();
     ENABLED.store(true, Ordering::Release);
+    job_priority::accounting::install(|| {
+        enabled().then(|| {
+            let context = Context::capture();
+            Box::new(move |category| Box::new(context.enter(category)) as Box<dyn std::any::Any>)
+                as job_priority::accounting::Enter
+        })
+    });
 }
 
 pub fn enable_blocks() {
@@ -300,6 +307,54 @@ pub fn scope_named(category: &'static str, family: &str) -> Scope {
     }
     let family = intern(family);
     Scope(with_local(|acc| acc.push(category, Some(family))).is_some())
+}
+
+/// The caller's exclusive owner, phase and block for synchronous helper work.
+#[derive(Clone, Default)]
+pub struct Context(Option<(Vec<Label>, Option<usize>)>);
+
+impl Context {
+    pub fn capture() -> Self {
+        Self(if enabled() {
+            with_local(|acc| (acc.stack.clone(), acc.block))
+        } else {
+            None
+        })
+    }
+
+    pub fn enter(self, category: &'static str) -> ContextScope {
+        ContextScope(self.0.and_then(|(mut stack, block)| {
+            with_local(|acc| {
+                acc.charge(current_cycles());
+                let family = stack.last().map_or("-", |label| label.1);
+                stack.push((category, family));
+                let previous = (std::mem::replace(&mut acc.stack, stack), acc.block);
+                acc.block = block;
+                acc.totals.entry((category, family)).or_default()[1] += 1;
+                if BLOCKS.load(Ordering::Relaxed) {
+                    acc.blocks
+                        .entry(block_label(acc.block, &acc.stack).unwrap())
+                        .or_default()[1] += 1;
+                }
+                previous
+            })
+        }))
+    }
+}
+
+#[must_use]
+pub struct ContextScope(Option<(Vec<Label>, Option<usize>)>);
+
+impl Drop for ContextScope {
+    fn drop(&mut self) {
+        if let Some((stack, block)) = self.0.take() {
+            with_local(|acc| {
+                acc.charge(current_cycles());
+                acc.stack = stack;
+                acc.block = block;
+            });
+        }
+    }
 }
 
 /// The family on top of this thread's labels, for work handed to other
@@ -1017,6 +1072,64 @@ pub fn capture_reader_calls<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn helper_context_keeps_parent_ownership_and_restores_the_worker_on_unwind() {
+        std::thread::spawn(|| {
+            let original = with_local(|acc| (acc.stack.clone(), acc.block)).unwrap();
+            for (stack, block, owner, phase) in [
+                (vec![("harness", "shared")], None, "shared", "shared"),
+                (
+                    vec![("fold", "family"), ("extract", "family:part")],
+                    Some(3),
+                    "family",
+                    "extract",
+                ),
+                (
+                    vec![("fold", "family"), ("commit", "family")],
+                    Some(8),
+                    "family",
+                    "publication",
+                ),
+                (
+                    vec![("commit", "family"), ("shared commit", "shared commit")],
+                    Some(8),
+                    "shared commit",
+                    "shared commit",
+                ),
+            ] {
+                let context = Context(Some((stack, block)));
+                let result = std::panic::catch_unwind(|| {
+                    let _helper = context.enter("helper");
+                    with_local(|acc| {
+                        assert_eq!(acc.block, block);
+                        assert_eq!(
+                            block_label(acc.block, &acc.stack),
+                            Some((
+                                if owner == "shared commit" {
+                                    None
+                                } else {
+                                    block
+                                },
+                                "helper",
+                                owner,
+                                phase,
+                            ))
+                        );
+                        assert_eq!(acc.totals[acc.stack.last().unwrap()][1], 1);
+                    });
+                    panic!("synthetic helper failure");
+                });
+                assert!(result.is_err());
+                assert_eq!(
+                    with_local(|acc| (acc.stack.clone(), acc.block)).unwrap(),
+                    original
+                );
+            }
+        })
+        .join()
+        .unwrap();
+    }
 
     #[test]
     fn group_publication_attribution_is_independent_of_leader_and_block() {

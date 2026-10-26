@@ -7,6 +7,8 @@
 //! preparation thread is started with [`JobPriority::current`] and enters it
 //! first with [`JobPriority::enter`].
 
+pub mod accounting;
+
 use std::{
     cell::{Cell, RefCell},
     sync::{

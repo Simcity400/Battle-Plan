@@ -549,7 +549,9 @@ fn read_files(
                     .iter()
                     .map(|file| {
                         let priority = job_priority::JobPriority::current();
+                        let cpu = job_priority::accounting::Context::capture();
                         scope.spawn(move || {
+                            let _cpu = cpu.enter("content focus");
                             priority.enter(job_priority::Level::Normal);
                             parse_one(file)
                         })

@@ -13,6 +13,7 @@ doctest = false
 test-support = []
 
 [dependencies]
+job-priority.workspace = true
 engine-allocation.workspace = true
 replay-data.workspace = true
 crc32fast = "1"
