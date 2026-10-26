@@ -2159,7 +2159,10 @@ fn reads_after_many_commits_of_appends_and_replacements_return_every_write() {
     listing.write_snapshot(&mut file).unwrap();
     drop(file);
     let copy = Listing::open(&snapshot).unwrap().unwrap();
-    assert_eq!(copy.source_key(&fixture.store.directory).unwrap(), fixture.key());
+    assert_eq!(
+        copy.source_key(&fixture.store.directory).unwrap(),
+        fixture.key()
+    );
     assert!(copy.sections().eq(listing.sections()));
     for (index, (_, count)) in listing.sections().enumerate() {
         for range in 0..count {
@@ -3097,4 +3100,102 @@ fn truncated_entry_compaction_leaves_the_previous_root_and_no_temporary_spool() 
         root
     );
     assert!(fixture.names().iter().all(|name| !name.ends_with(".tmp")));
+}
+
+#[test]
+fn indexed_sections_share_snapshots_and_rollback_created_names_atomically() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    for index in 0..1_500 {
+        writer.ensure_section(&format!("section-{index}")).unwrap();
+    }
+    writer.write("section-1499", &b"base"[..]).unwrap();
+    writer.commit().unwrap();
+    let mut writer = fixture.store.extend(&key).unwrap();
+    assert_eq!(writer.position("section-1499"), Some(1_499));
+    assert_eq!(writer.position("missing"), None);
+    let mut first = writer.stage().unwrap();
+    let mut second = writer.stage().unwrap();
+    assert!(Arc::ptr_eq(&writer.section_index, &first.section_index));
+    assert!(Arc::ptr_eq(&writer.section_index, &second.section_index));
+    first.write("fresh", &b"first"[..]).unwrap();
+    first
+        .write_at("section-1499", 0, &b"first replacement"[..])
+        .unwrap();
+    assert!(!Arc::ptr_eq(&writer.section_index, &first.section_index));
+    assert_eq!(writer.position("fresh"), None);
+    assert_eq!(second.position("fresh"), None);
+    assert_eq!(first.position("fresh"), Some(1_500));
+    second
+        .write_at("section-1499", 0, &b"stale replacement"[..])
+        .unwrap();
+    let before = (writer.bytes_written(), writer.payload_bytes_change());
+    let mut batches = first.into_staged().unwrap();
+    batches.extend(second.into_staged().unwrap());
+    assert!(writer.adopt_all(batches).is_err());
+    assert_eq!(writer.sections.len(), 1_500);
+    assert_eq!(writer.section_index.len(), 1_500);
+    assert_eq!(writer.position("fresh"), None);
+    assert_eq!(writer.position("section-1499"), Some(1_499));
+    assert_eq!(
+        (writer.bytes_written(), writer.payload_bytes_change()),
+        before
+    );
+    assert_eq!(
+        bytes(writer.read_at("section-1499", 0).unwrap().unwrap()),
+        b"base"
+    );
+    let mut next = writer.stage().unwrap();
+    next.write("fresh", &b"accepted"[..]).unwrap();
+    writer.adopt_all(next.into_staged().unwrap()).unwrap();
+    assert_eq!(writer.position("fresh"), Some(1_500));
+    writer.commit().unwrap();
+    let writer = fixture.store.extend(&key).unwrap();
+    assert_eq!(writer.position("fresh"), Some(1_500));
+    assert_eq!(writer.section_index.len(), 1_501);
+    assert_eq!(
+        bytes(fixture.store.read(&key, "fresh", 0).unwrap().unwrap()),
+        b"accepted"
+    );
+}
+
+#[test]
+fn source_validation_borrows_stamps_and_preserves_recapture_refusals() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let content = Arc::clone(&key.content);
+    for _ in 0..3 {
+        INPUT_CHECKS.set(0);
+        assert!(key.current().unwrap());
+        assert_eq!(INPUT_CHECKS.get(), 1 + key.content.len());
+        assert!(Arc::ptr_eq(&content, &key.content));
+    }
+    fs::write(&fixture.content[0], b"changed content length").unwrap();
+    assert_eq!(key.current().unwrap(), key.recapture().unwrap() == key);
+    fs::remove_file(&fixture.content[1]).unwrap();
+    assert_eq!(
+        key.current().unwrap_err().kind(),
+        key.recapture().unwrap_err().kind()
+    );
+    fs::create_dir(&fixture.content[1]).unwrap();
+    assert_eq!(
+        key.current().unwrap_err().to_string(),
+        key.recapture().unwrap_err().to_string()
+    );
+}
+
+/// A flat manifest may list a name twice: the writer's lookup keeps the first
+/// section, the one readers select, as the linear search did.
+#[test]
+fn a_repeated_flat_section_name_keeps_selecting_its_first_section() {
+    let sections = [
+        PendingSection::new("x"),
+        PendingSection::new("y"),
+        PendingSection::new("x"),
+    ];
+    let index = section_index(&sections);
+    assert_eq!(index.get("x"), Some(&0));
+    assert_eq!(index.get("y"), Some(&1));
+    assert_eq!(index.len(), 2);
 }

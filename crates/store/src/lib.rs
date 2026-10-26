@@ -153,14 +153,25 @@ impl Stamp {
         Self::read(std::path::absolute(path)?)
     }
 
-    fn read(path: PathBuf) -> io::Result<Self> {
+    fn metadata(path: &Path) -> io::Result<fs::Metadata> {
         #[cfg(test)]
         tests::INPUT_CHECKS.set(tests::INPUT_CHECKS.get() + 1);
         count!(stats);
-        let metadata = fs::metadata(&path)?;
+        let metadata = fs::metadata(path)?;
         if !metadata.is_file() {
             return Err(invalid("source is not a file"));
         }
+        Ok(metadata)
+    }
+
+    fn current(&self) -> io::Result<bool> {
+        let metadata = Self::metadata(&self.path)?;
+        let modified = metadata.modified()?;
+        Ok(metadata.len() == self.size && modified == self.modified)
+    }
+
+    fn read(path: PathBuf) -> io::Result<Self> {
+        let metadata = Self::metadata(&path)?;
         Ok(Self {
             path,
             size: metadata.len(),
@@ -169,10 +180,10 @@ impl Stamp {
     }
 }
 
-fn stamps(
-    paths: &[PathBuf],
-    read: impl Fn(&PathBuf) -> io::Result<Stamp> + Sync,
-) -> io::Result<Vec<Stamp>> {
+fn stamps<T: Sync, U: Send>(
+    paths: &[T],
+    read: impl Fn(&T) -> io::Result<U> + Sync,
+) -> io::Result<Vec<U>> {
     let workers = std::thread::available_parallelism()
         .map_or(1, |count| count.get())
         .min(paths.len());
@@ -306,13 +317,15 @@ impl SourceKey {
     }
 
     fn recording_current(&self) -> io::Result<bool> {
-        Ok(Stamp::read(self.recording.path.clone())? == self.recording)
+        self.recording.current()
     }
 
     fn current(&self) -> io::Result<bool> {
         #[cfg(test)]
         tests::VALIDATIONS.set(tests::VALIDATIONS.get() + 1);
-        Ok(self.recapture()? == *self)
+        let recording = self.recording.current()?;
+        let content = stamps(&self.content, Stamp::current)?;
+        Ok(recording && content.into_iter().all(|current| current))
     }
 
     /// Whether a commit may publish under this key: the recording's stamp is
@@ -2266,6 +2279,7 @@ pub struct Writer {
     source: Option<Uuid>,
     base: Option<Arc<Catalog>>,
     sections: Vec<PendingSection>,
+    section_index: Arc<HashMap<Arc<str>, usize>>,
     bytes_written: u64,
     bytes_replaced: u64,
     transaction: Uuid,
@@ -2281,6 +2295,15 @@ pub struct Writer {
     incomplete: bool,
 }
 
+/// Each section name's position. A flat manifest may repeat a name: lookups keep the first, as readers do.
+fn section_index(sections: &[PendingSection]) -> HashMap<Arc<str>, usize> {
+    let mut index = HashMap::with_capacity(sections.len());
+    for (position, section) in sections.iter().enumerate() {
+        index.entry(Arc::clone(&section.name)).or_insert(position);
+    }
+    index
+}
+
 impl Writer {
     fn new(
         directory: PathBuf,
@@ -2290,6 +2313,7 @@ impl Writer {
         base: Option<Arc<Catalog>>,
         sections: Vec<PendingSection>,
     ) -> Self {
+        let section_index = Arc::new(section_index(&sections));
         Self {
             directory,
             _lock: lock,
@@ -2297,6 +2321,7 @@ impl Writer {
             source,
             base,
             sections,
+            section_index,
             bytes_written: 0,
             bytes_replaced: 0,
             transaction: Uuid::new_v4(),
@@ -2356,6 +2381,7 @@ impl Writer {
             source: self.source,
             base: self.base.clone(),
             sections: self.sections.clone(),
+            section_index: Arc::clone(&self.section_index),
             bytes_written: 0,
             bytes_replaced: 0,
             transaction: self.transaction,
@@ -2633,7 +2659,8 @@ impl Writer {
                 for step in undo.into_iter().rev() {
                     match step {
                         Undo::Created => {
-                            self.sections.pop();
+                            let section = self.sections.pop().expect("created section");
+                            Arc::make_mut(&mut self.section_index).remove(&section.name);
                         }
                         Undo::Placed { index, range, old } => {
                             self.sections[index].unplace(range, old);
@@ -2674,7 +2701,7 @@ impl Writer {
                     if self.position(&name).is_some() {
                         return Err(overlap(&name));
                     }
-                    self.sections.push(PendingSection::new(&name));
+                    self.create_section(&name);
                     undo.push(Undo::Created);
                 }
                 Operation::ReadJournal(journal) => journal.validate(self, detached)?,
@@ -2735,9 +2762,14 @@ impl Writer {
     }
 
     fn position(&self, section: &str) -> Option<usize> {
-        self.sections
-            .iter()
-            .position(|entry| *entry.name == *section)
+        self.section_index.get(section).copied()
+    }
+
+    fn create_section(&mut self, name: &str) {
+        let section = PendingSection::new(name);
+        Arc::make_mut(&mut self.section_index)
+            .insert(Arc::clone(&section.name), self.sections.len());
+        self.sections.push(section);
     }
 
     fn resolve(&self, section: &SectionRef) -> Option<usize> {
@@ -2886,7 +2918,7 @@ impl Writer {
             return Err(invalid("empty section name"));
         }
         if self.position(section).is_none() {
-            self.sections.push(PendingSection::new(section));
+            self.create_section(section);
             self.record(|_| Operation::Create(section.to_owned()));
         }
         Ok(())
