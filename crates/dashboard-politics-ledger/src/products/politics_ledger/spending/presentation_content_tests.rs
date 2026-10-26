@@ -1819,3 +1819,47 @@ fn power_content_reader_notes_reach_counted_ledger_diagnostics() {
         );
     }
 }
+
+#[test]
+fn frame_texts_share_same_hour_inputs_but_keep_each_country_root() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let stack = Stack::new();
+    stack.write(
+        &stack.base(),
+        "localisation/countries_l_english.yml",
+        r#"l_english:
+ C1:0 "First"
+ C2:0 "Second"
+"#,
+    );
+    let content = stack.content();
+    let frame = named_frame(24, "");
+    let texts = FrameTexts::default();
+    let first = texts.scripted(&content, &frame, 1).unwrap();
+    let second = texts.scripted(&content, &frame, 2).unwrap();
+    assert!(!std::rc::Rc::ptr_eq(&first, &second));
+    assert!(std::rc::Rc::ptr_eq(
+        &first,
+        &texts.scripted(&content, &frame, 1).unwrap()
+    ));
+    assert!(std::rc::Rc::ptr_eq(
+        &second,
+        &texts.scripted(&content, &frame, 2).unwrap()
+    ));
+    assert_eq!(
+        first.expand("[ROOT.GetTag] / [ROOT.GetName]"),
+        Ok("C1 / First".into())
+    );
+    assert_eq!(
+        second.expand("[ROOT.GetTag] / [ROOT.GetName]"),
+        Ok("C2 / Second".into())
+    );
+    let later = named_frame(25, "");
+    let later_texts = FrameTexts::default();
+    let later_second = later_texts.scripted(&content, &later, 2).unwrap();
+    assert!(!std::rc::Rc::ptr_eq(&second, &later_second));
+    assert_eq!(
+        later_second.expand("[ROOT.GetTag] / [ROOT.GetName]"),
+        Ok("C2 / Second".into())
+    );
+}

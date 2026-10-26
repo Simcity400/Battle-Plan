@@ -607,9 +607,9 @@ pub fn stored_text(
 pub struct ScriptedText<'a> {
     localisation: &'a Localisation,
     content: &'a ScriptedContent,
-    scopes: RecordedScopes,
-    names: recorded_names::RecordedNames<'a>,
-    lexical_names: crate::faction_names::LexicalNames,
+    scopes: std::sync::Arc<RecordedScopes>,
+    names: std::sync::Arc<recorded_names::RecordedNames<'a>>,
+    lexical_names: std::sync::Arc<crate::faction_names::LexicalNames>,
     frame: &'a dyn replay_frame::frame::DecodedSource,
     root: u32,
     pub(crate) nato_counters: bool,
@@ -817,12 +817,32 @@ impl<'a> ScriptedText<'a> {
         Self {
             localisation,
             content,
-            scopes,
-            names: recorded_names::RecordedNames(CountryNames::read(frame, localisation)),
-            lexical_names: crate::faction_names::LexicalNames::from_source(frame),
+            scopes: std::sync::Arc::new(scopes),
+            names: std::sync::Arc::new(recorded_names::RecordedNames(CountryNames::read(
+                frame,
+                localisation,
+            ))),
+            lexical_names: std::sync::Arc::new(crate::faction_names::LexicalNames::from_source(
+                frame,
+            )),
             frame,
             root,
             nato_counters: installed_content_settings::settings::Counters::default().nato == 1,
+            world: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// A different root using these same hour inputs, with its own lazy world.
+    pub fn for_root(&self, root: u32) -> Self {
+        Self {
+            localisation: self.localisation,
+            content: self.content,
+            scopes: std::sync::Arc::clone(&self.scopes),
+            names: std::sync::Arc::clone(&self.names),
+            lexical_names: std::sync::Arc::clone(&self.lexical_names),
+            frame: self.frame,
+            root,
+            nato_counters: self.nato_counters,
             world: std::sync::OnceLock::new(),
         }
     }
@@ -2272,3 +2292,6 @@ mod organisation_tests;
 
 #[cfg(test)]
 mod dependence_tests;
+
+#[cfg(test)]
+mod root_tests;

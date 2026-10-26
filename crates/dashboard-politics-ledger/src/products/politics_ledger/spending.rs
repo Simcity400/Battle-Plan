@@ -2056,9 +2056,7 @@ fn daily_mutation(cost: &LedgerDailyCost) -> LedgerMutation {
         covered: cost.covered,
     }
 }
-/// What resolving an hour's item texts builds once: the trigger world, and the
-/// scripted-text context of each root country (each reads every country's names
-/// and scopes from the frame).
+/// One hour's item texts share naming and scope inputs across country roots.
 #[derive(Default)]
 struct FrameTexts<'a> {
     world: std::sync::OnceLock<Result<dashboard_text::triggers::World<'a>, String>>,
@@ -2078,12 +2076,17 @@ impl<'a> FrameTexts<'a> {
         if let Some(scripted) = self.scripted.borrow().get(&root) {
             return Ok(std::rc::Rc::clone(scripted));
         }
-        let scripted = std::rc::Rc::new(dashboard_text::scripted_text::ScriptedText::new(
-            frame,
-            &content.catalogue.localisation,
-            content.catalogue.scripted_content()?,
-            root,
-        ));
+        let scripted = if let Some(existing) = self.scripted.borrow().values().next() {
+            existing.for_root(root)
+        } else {
+            dashboard_text::scripted_text::ScriptedText::new(
+                frame,
+                &content.catalogue.localisation,
+                content.catalogue.scripted_content()?,
+                root,
+            )
+        };
+        let scripted = std::rc::Rc::new(scripted);
         self.scripted
             .borrow_mut()
             .insert(root, std::rc::Rc::clone(&scripted));
