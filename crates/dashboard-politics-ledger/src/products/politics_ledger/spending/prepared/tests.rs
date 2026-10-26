@@ -1,6 +1,7 @@
 use super::super::tests::{event, frame, put};
 use super::*;
 use dashboard_base::prepared::series::tests::Fixture;
+use replay_frame::frame::TableView;
 use serde_json::json;
 
 #[test]
@@ -3776,6 +3777,478 @@ fn shared_tags_slots_and_aliases_keep_ordinary_capture_accounting_bytes() {
                     );
                 }
             }
+        }
+    }
+}
+
+fn modifier_input(hour: i32) -> DecodedFrame {
+    let mut input = frame(hour, 1);
+    put(&mut input, command_power(1));
+    put(
+        &mut input,
+        TableRows::ModifierDefinitions(
+            [10, 20, 30, 40, u32::MAX]
+                .into_iter()
+                .enumerate()
+                .map(|(index, token)| ModifierDefinitionRow {
+                    index: index as u32,
+                    token,
+                    name_key: format!("definition-{token}").into_bytes(),
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    put(
+        &mut input,
+        TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 10,
+                literal: b"SHARED".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 20,
+                literal: b"shared".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 40,
+                literal: vec![0xff],
+            },
+            LexicalTokenRow {
+                token: 90,
+                literal: b"unused".to_vec(),
+            },
+        ]),
+    );
+    input
+}
+
+fn edit_modifier_lexical(input: &mut DecodedFrame, token: u32, literal: Option<&[u8]>) {
+    let mut rows = input.complete::<tables::LexicalTokens>().unwrap().to_vec();
+    rows.retain(|row| row.token != token);
+    if let Some(literal) = literal {
+        rows.push(LexicalTokenRow {
+            token,
+            literal: literal.to_vec(),
+        });
+    }
+    rows.sort_unstable_by_key(|row| row.token);
+    put(input, TableRows::LexicalTokens(rows));
+}
+
+fn native_modifier_refresh(scan: &mut Scanned, frame: &DecodedFrame) {
+    if let (Ok(rows), Ok(tokens)) = (
+        frame.complete::<tables::ModifierDefinitions>(),
+        frame.complete::<tables::LexicalTokens>(),
+    ) {
+        let definitions = &frame.tables[TableId::ModifierDefinitions.index()];
+        let lexical = &frame.tables[TableId::LexicalTokens.index()];
+        let same = scan
+            .modifier_views
+            .as_ref()
+            .is_some_and(|(old_definitions, old_lexical)| {
+                old_definitions.is(definitions) && old_lexical.is(lexical)
+            });
+        if !same {
+            scan.modifier_definitions = Some(idea_format::index_recorded(rows, tokens));
+            scan.modifier_views = Some((definitions.identity(), lexical.identity()));
+        }
+    }
+}
+
+#[test]
+fn modifier_inverse_skips_only_unreferenced_keys_and_keeps_native_winners() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let mut tracker = FrameChangeTracker::new();
+    let mut recorded = Recorded::new();
+    let mut input = modifier_input(24);
+    let mut fast = Scanned::default();
+    let mut native = Scanned::default();
+    let mut reindexes = 0;
+    for hour in 24..=33 {
+        input.hour = hour;
+        match hour {
+            25 => edit_modifier_lexical(&mut input, 90, Some(b"unrelated-change")),
+            26 => edit_modifier_lexical(&mut input, 30, Some(b"formerly-missing")),
+            27 => edit_modifier_lexical(&mut input, 40, Some(b"formerly-invalid")),
+            28 => edit_modifier_lexical(&mut input, 20, None),
+            29 => edit_modifier_lexical(&mut input, 90, None),
+            30 => edit_modifier_lexical(&mut input, 10, Some(b"renamed")),
+            31 => edit_modifier_lexical(&mut input, u32::MAX, Some(b"maximum-token")),
+            32 => {
+                let mut rows = input
+                    .complete::<tables::ModifierDefinitions>()
+                    .unwrap()
+                    .to_vec();
+                rows[0].name_key = b"changed-payload".to_vec();
+                put(&mut input, TableRows::ModifierDefinitions(rows));
+            }
+            33 => edit_modifier_lexical(&mut input, 90, Some(b"unrelated-insert")),
+            _ => {}
+        }
+        let (decoded, wire) = recorded.next(&mut input, hour == 24);
+        let changes =
+            tracker.observe_updates(&decoded, wire, replay_data::format::FormatVersion::CURRENT);
+        let untouched = [25, 29, 33].contains(&hour);
+        let old_payload = fast
+            .modifier_definitions
+            .as_ref()
+            .and_then(|map| map.values().next())
+            .map(|row| row.name_key.as_ptr());
+        fast.refresh_modifier_formats(&decoded, Some(&changes))
+            .unwrap();
+        native_modifier_refresh(&mut native, &decoded);
+        reindexes += usize::from(!untouched);
+        assert_eq!(fast.modifier_reindexes, reindexes, "hour {hour}");
+        assert_eq!(
+            fast.modifier_definitions, native.modifier_definitions,
+            "hour {hour}"
+        );
+        assert_eq!(
+            fast.modifier_tokens.as_ref().unwrap().keys.as_ref(),
+            &[10, 20, 30, 40, u32::MAX]
+        );
+        if untouched {
+            assert_eq!(
+                old_payload,
+                fast.modifier_definitions
+                    .as_ref()
+                    .and_then(|map| map.values().next())
+                    .map(|row| row.name_key.as_ptr()),
+                "no winning payload copied at {hour}"
+            );
+        }
+        let map = fast.modifier_definitions.as_ref().unwrap();
+        if hour <= 27 {
+            assert_eq!(map["shared"].index, 1, "last folded-name occurrence wins");
+        } else if hour <= 29 {
+            assert_eq!(
+                map["shared"].index, 0,
+                "deleting a winner exposes its predecessor"
+            );
+        }
+        if hour >= 26 {
+            assert_eq!(map["formerly-missing"].index, 2);
+        }
+        if hour >= 27 {
+            assert_eq!(map["formerly-invalid"].index, 3);
+        }
+        if hour >= 31 {
+            assert_eq!(map["maximum-token"].index, 4);
+        }
+        assert_eq!(
+            serde_json::to_vec(&Continuation::from_scan(&fast).unwrap()).unwrap(),
+            serde_json::to_vec(&Continuation::from_scan(&native).unwrap()).unwrap(),
+            "native private checkpoint at {hour}",
+        );
+    }
+}
+
+#[test]
+fn modifier_tokens_admit_every_definition_and_charge_replacement_overlap() {
+    let rows = [30, 10, 30].map(|token| ModifierDefinitionRow {
+        token,
+        ..Default::default()
+    });
+    let budget = MemoryBudget::new(24);
+    let first = ModifierTokens::new(&rows, &budget).unwrap();
+    assert_eq!(first.keys.as_ref(), &[10, 30, 30]);
+    assert_eq!(budget.used(), 12);
+    let second = ModifierTokens::new(&rows, &budget).unwrap();
+    assert_eq!((budget.used(), budget.peak()), (24, 24));
+    let error = ModifierTokens::new(&rows, &budget).err().unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert!(
+        error
+            .to_string()
+            .contains("Politics ledger modifier tokens")
+    );
+    assert_eq!(budget.used(), 24);
+    drop(first);
+    assert_eq!(budget.used(), 12);
+    drop(second);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn modifier_refresh_rejects_uncertain_transition_and_delta_shapes() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use replay_frame::frame::TableUpdate;
+    for case in 0..14 {
+        let mut tracker = FrameChangeTracker::new();
+        let mut recorded = Recorded::new();
+        let mut input = modifier_input(24);
+        let (first, first_wire) = recorded.next(&mut input, true);
+        let mut scan = Scanned::default();
+        let changes = tracker.observe_updates(
+            &first,
+            first_wire,
+            replay_data::format::FormatVersion::CURRENT,
+        );
+        scan.refresh_modifier_formats(&first, Some(&changes))
+            .unwrap();
+        input.hour = 25;
+        edit_modifier_lexical(&mut input, 90, Some(b"unrelated"));
+        if case == 2 {
+            input.hour = 26;
+        }
+        if case == 3 {
+            input.branch = 2;
+        }
+        if case == 5 {
+            scan.resume(&first);
+        }
+        if case == 6 {
+            let mut incomplete = first.clone();
+            incomplete.tables[TableId::LexicalTokens.index()] = TableView::Truncated {
+                rows: TableRows::LexicalTokens(Vec::new()),
+                missing: 1,
+            }
+            .into();
+            let old = scan.modifier_definitions.clone();
+            scan.refresh_modifier_formats(&incomplete, None).unwrap();
+            assert_eq!(
+                scan.modifier_definitions, old,
+                "incomplete never becomes empty"
+            );
+        }
+        let (mut second, wire) = recorded.next(&mut input, case == 1 || case == 3);
+        let mut wire = (*wire).clone();
+        if case == 4 {
+            second.hour = 23;
+            wire.hour = 23;
+        }
+        if let TableUpdate::Delta {
+            baseline,
+            changed,
+            deleted,
+        } = &mut wire.tables[TableId::LexicalTokens.index()]
+        {
+            match case {
+                7 => *baseline -= 1,
+                8 => changed[0].key = u128::from(u32::MAX) + 1,
+                9 => changed.push(changed[0].clone()),
+                10 => deleted.push(changed[0].key),
+                11 => changed[0].format = 0,
+                12 => changed[0].recorded_fields += 1,
+                13 => changed[0].mask = 0,
+                _ => {}
+            }
+        }
+        let changes = tracker.observe_updates(
+            &second,
+            Arc::new(wire),
+            replay_data::format::FormatVersion::CURRENT,
+        );
+        scan.refresh_modifier_formats(&second, (case != 0).then_some(&changes))
+            .unwrap();
+        assert_eq!(scan.modifier_reindexes, 2, "cold boundary {case}");
+        assert_eq!(
+            scan.modifier_definitions,
+            Some(idea_format::index_recorded(
+                second.complete::<tables::ModifierDefinitions>().unwrap(),
+                second.complete::<tables::LexicalTokens>().unwrap(),
+            ))
+        );
+    }
+}
+
+#[test]
+fn modifier_refresh_keeps_duplicate_definition_aliases_and_refuses_unordered_lexer_proofs() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    use replay_frame::frame::{Frame, TableUpdate};
+    for shape in 0..3 {
+        let mut first = modifier_input(24);
+        let mut definitions = first
+            .complete::<tables::ModifierDefinitions>()
+            .unwrap()
+            .to_vec();
+        definitions[1].index = definitions[0].index;
+        put(&mut first, TableRows::ModifierDefinitions(definitions));
+        edit_modifier_lexical(&mut first, 20, Some(b"second"));
+        let mut lexical = first.complete::<tables::LexicalTokens>().unwrap().to_vec();
+        if shape == 1 {
+            lexical.swap(0, 2);
+        }
+        if shape == 2 {
+            lexical.insert(1, lexical[0].clone());
+        }
+        put(&mut first, TableRows::LexicalTokens(lexical));
+        let mut tracker = FrameChangeTracker::new();
+        tracker.observe(&first, replay_data::format::FormatVersion::CURRENT);
+        let mut scan = Scanned::default();
+        let mut native = Scanned::default();
+        scan.refresh_modifier_formats(&first, None).unwrap();
+        native_modifier_refresh(&mut native, &first);
+        let mut second = first.clone();
+        second.hour = 25;
+        edit_modifier_lexical(&mut second, 90, Some(b"unused-new"));
+        let row = LexicalTokenRow {
+            token: 90,
+            literal: b"unused-new".to_vec(),
+        };
+        let old = first
+            .complete::<tables::LexicalTokens>()
+            .unwrap()
+            .iter()
+            .find(|row| row.token == 90)
+            .unwrap();
+        let wire = Frame {
+            branch: second.branch,
+            hour: second.hour,
+            keyframe: false,
+            metrics: Default::default(),
+            tables: std::array::from_fn(|index| {
+                if index == TableId::LexicalTokens.index() {
+                    TableUpdate::Delta {
+                        baseline: first.hour,
+                        changed: vec![row.delta(Some(old)).unwrap().unwrap()],
+                        deleted: Vec::new(),
+                    }
+                } else {
+                    TableUpdate::Unchanged {
+                        baseline: first.hour,
+                    }
+                }
+            }),
+        };
+        let changes = tracker.observe_updates(
+            &second,
+            Arc::new(wire),
+            replay_data::format::FormatVersion::CURRENT,
+        );
+        scan.refresh_modifier_formats(&second, Some(&changes))
+            .unwrap();
+        native_modifier_refresh(&mut native, &second);
+        assert_eq!(scan.modifier_reindexes, if shape == 0 { 1 } else { 2 });
+        assert_eq!(scan.modifier_definitions, native.modifier_definitions);
+        let saved = serde_json::to_vec(&Continuation::from_scan(&scan).unwrap()).unwrap();
+        assert_eq!(
+            saved,
+            serde_json::to_vec(&Continuation::from_scan(&native).unwrap()).unwrap()
+        );
+        let restored = serde_json::from_slice::<Continuation>(&saved)
+            .unwrap()
+            .into_scan()
+            .unwrap();
+        assert!(restored.modifier_tokens.is_none());
+        assert!(restored.modifier_read.is_none());
+        if shape == 0 {
+            let before = scan.modifier_definitions.as_ref().unwrap();
+            assert_eq!((before["shared"].token, before["second"].token), (10, 20));
+            let after = restored.modifier_definitions.as_ref().unwrap();
+            assert_eq!(
+                after["shared"].token, after["second"].token,
+                "native duplicate-index alias collapse is unchanged"
+            );
+        }
+    }
+}
+
+#[test]
+fn modifier_refresh_prepared_keeps_all_section_bytes_across_both_accounting_paths_and_resume() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay_data::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    for dense in [false, true] {
+        let fixtures = [Fixture::new(), Fixture::new()];
+        let mut observers = [Prepared::default(), Prepared::default()];
+        for observer in &mut observers {
+            observer.dense = dense;
+        }
+        let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
+        let mut recorded = Recorded::new();
+        let mut input = modifier_input(24);
+        let mut hits = 0;
+        for hour in (24..=43).filter(|hour| *hour != 38) {
+            input.hour = hour;
+            extend_captures(&mut input);
+            if hour == 30 {
+                input.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+                    reason: "synthetic lexer unavailable".into(),
+                }
+                .into();
+            } else if hour == 31 {
+                let lexical = modifier_input(hour)
+                    .complete::<tables::LexicalTokens>()
+                    .unwrap()
+                    .to_vec();
+                put(&mut input, TableRows::LexicalTokens(lexical));
+            } else {
+                edit_modifier_lexical(&mut input, 90, Some(format!("unused-{hour}").as_bytes()));
+            }
+            match hour {
+                27 => edit_modifier_lexical(&mut input, 30, Some(b"formerly-missing")),
+                28 => edit_modifier_lexical(&mut input, 20, None),
+                32 => edit_modifier_lexical(&mut input, 40, Some(b"formerly-invalid")),
+                35 => {
+                    let mut rows = input
+                        .complete::<tables::ModifierDefinitions>()
+                        .unwrap()
+                        .to_vec();
+                    rows[0].name_key = b"changed-native-payload".to_vec();
+                    put(&mut input, TableRows::ModifierDefinitions(rows));
+                }
+                _ => {}
+            }
+            let (decoded, wire) = recorded.next(&mut input, hour == 24 || hour == 33);
+            observers[1].scan.modifier_read = None;
+            let before = observers
+                .each_ref()
+                .map(|observer| observer.scan.modifier_reindexes);
+            for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+                let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
+                observer.observe(&decoded, &changes, &flag).unwrap();
+            }
+            if hour > 24
+                && observers[0].scan.modifier_reindexes == before[0]
+                && observers[1].scan.modifier_reindexes > before[1]
+            {
+                hits += 1;
+            }
+            assert_eq!(
+                observers[0].scan.modifier_definitions, observers[1].scan.modifier_definitions,
+                "dense {dense}, hour {hour}"
+            );
+            if ![29, 34, 39, 43].contains(&hour) {
+                continue;
+            }
+            let saved = observers
+                .each_mut()
+                .map(|observer| observer.saved_bytes().unwrap());
+            assert_eq!(
+                saved[0], saved[1],
+                "private saved state: dense {dense}, hour {hour}"
+            );
+            for (observer, fixture) in observers.iter_mut().zip(&fixtures) {
+                publish(observer, fixture);
+            }
+            assert_eq!(
+                sections(&fixtures[0]),
+                sections(&fixtures[1]),
+                "every section: dense {dense}, hour {hour}"
+            );
+            for view in ["raw", "spending", "balance", "governments"] {
+                assert_eq!(
+                    read(&fixtures[0], "C1", 24, hour, view),
+                    read(&fixtures[1], "C1", 24, hour, view)
+                );
+            }
+            if hour == 34 {
+                for (observer, tracker) in observers.iter_mut().zip(&mut trackers) {
+                    *observer = Prepared::read(observer.saved_bytes().unwrap().as_slice()).unwrap();
+                    observer.dense = dense;
+                    assert!(observer.scan.modifier_tokens.is_none());
+                    observer.resume(&decoded);
+                    tracker.invalidate();
+                }
+            }
+        }
+        assert!(hits > 0, "the unrelated-token cache hit must be exercised");
+        if dense {
+            assert!(observers[0].accounted_hours() > 0);
+        } else {
+            assert!(observers[0].advanced_hours() > 0);
         }
     }
 }

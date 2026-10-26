@@ -20,6 +20,12 @@ pub struct Credit {
     bytes: usize,
 }
 impl MemoryBudget {
+    pub fn preparation() -> Self {
+        static SHARED: std::sync::OnceLock<MemoryBudget> = std::sync::OnceLock::new();
+        SHARED
+            .get_or_init(|| Self::new(6 * 1024 * 1024 * 1024))
+            .clone()
+    }
     pub fn new(bytes: usize) -> Self {
         Self(Arc::new(Budget {
             limit: bytes,

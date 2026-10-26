@@ -558,6 +558,7 @@ impl Scanned {
         &mut self,
         frame: &DecodedFrame,
         content: Option<&PoliticsContent>,
+        changes: Option<&FrameChanges>,
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:advance_accounting");
         let hour = frame.hour;
@@ -573,7 +574,7 @@ impl Scanned {
         // As observe_accounting: its event, identity, diagnostic and row
         // steps visit none of the joined countries, of which there are none.
         super::observe_presence(self, frame)?;
-        self.refresh_modifier_formats(frame);
+        self.refresh_modifier_formats(frame, changes)?;
         super::holds::observe_holds(frame, self, content);
         self.first_hour.get_or_insert(hour);
         self.last_hour = Some(self.last_hour.map_or(hour, |last| last.max(hour)));

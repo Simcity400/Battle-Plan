@@ -2,6 +2,8 @@
 //! clamped; CP subtracts its operand. Upkeep commits on each paid activation
 //! anniversary. Reconciliation, grants and refunds are never payments.
 use super::*;
+use dashboard_base::prepared::facts::{Credit, MemoryBudget};
+use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_base::products::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 use dashboard_base::products::politics_content::{PoliticsContent, recorded_politics_content};
 use dashboard_base::products::{
@@ -14,6 +16,7 @@ use dashboard_core::transport::json_len;
 use dashboard_text::catalogue::Catalogue;
 use dashboard_text::catalogue::{View, plain_text};
 use dashboard_text::identity::{Look, NamingCountry, character_script_token};
+use dashboard_text::triggers::inputs::{TableChange, TableChanges};
 use installed_content_country_names::country_names::CountryNames;
 use std::sync::Arc;
 mod facts;
@@ -130,6 +133,11 @@ pub(super) struct Scanned {
         replay_frame::frame::ViewIdentity,
         replay_frame::frame::ViewIdentity,
     )>,
+    modifier_tokens: Option<ModifierTokens>,
+    modifier_read: Option<(u64, i32)>,
+    modifier_lexical_ordered: bool,
+    #[cfg(test)]
+    modifier_reindexes: usize,
     /// The previous read: whole, or only its naming tables
     /// ([`naming_frame`]) when `replay` can decode it again.
     previous: Option<DecodedFrame>,
@@ -175,6 +183,29 @@ pub(super) struct Scanned {
     /// Hours joined from their changed rows alone.
     #[cfg(test)]
     row_hours: usize,
+}
+struct ModifierTokens {
+    keys: Box<[u32]>,
+    _credit: Credit,
+}
+impl ModifierTokens {
+    fn new(rows: &[ModifierDefinitionRow], budget: &MemoryBudget) -> io::Result<Self> {
+        let bytes = rows.len().checked_mul(size_of::<u32>()).ok_or_else(|| {
+            dashboard_core::invalid("Politics ledger modifier token allocation overflow")
+        })?;
+        let credit = budget.admit(bytes).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("Politics ledger modifier tokens: {error}"),
+            )
+        })?;
+        let mut keys: Box<[_]> = rows.iter().map(|row| row.token).collect();
+        keys.sort_unstable();
+        Ok(Self {
+            keys,
+            _credit: credit,
+        })
+    }
 }
 #[cfg(any(test, feature = "test-support"))]
 pub mod oracle;
@@ -624,6 +655,8 @@ impl Scanned {
     }
 
     pub(super) fn resume(&mut self, frame: &DecodedFrame) {
+        self.modifier_read = None;
+        self.modifier_lexical_ordered = false;
         self.retain_previous(frame);
         self.pending_known = false;
         self.costs_pruned = false;
@@ -975,24 +1008,111 @@ impl Scanned {
             self.naming.insert((*raw, frame.hour), value);
         }
     }
-    fn refresh_modifier_formats(&mut self, frame: &DecodedFrame) {
-        if let (Ok(rows), Ok(tokens)) = (
-            frame.complete::<tables::ModifierDefinitions>(),
-            frame.complete::<tables::LexicalTokens>(),
-        ) {
-            let definitions = &frame.tables[TableId::ModifierDefinitions.index()];
-            let lexical = &frame.tables[TableId::LexicalTokens.index()];
-            let same =
-                self.modifier_views
-                    .as_ref()
-                    .is_some_and(|(old_definitions, old_lexical)| {
-                        old_definitions.is(definitions) && old_lexical.is(lexical)
-                    });
-            if !same {
-                self.modifier_definitions = Some(idea_format::index_recorded(rows, tokens));
-                self.modifier_views = Some((definitions.identity(), lexical.identity()));
+    fn modifier_lexical_delta<'a>(
+        &self,
+        frame: &DecodedFrame,
+        changes: Option<&'a FrameChanges>,
+    ) -> Option<(&'a [DeltaRow], &'a [u128])> {
+        let (branch, hour) = self.modifier_read?;
+        if branch != frame.branch || hour.checked_add(1) != Some(frame.hour) {
+            return None;
+        }
+        let changes = changes?;
+        let recorded = changes.recorded()?;
+        if recorded.branch != frame.branch || recorded.hour != frame.hour {
+            return None;
+        }
+        let table = TableId::LexicalTokens;
+        let replay_frame::frame::TableUpdate::Delta { baseline, .. } =
+            &recorded.tables[table.index()]
+        else {
+            return None;
+        };
+        if *baseline != hour {
+            return None;
+        }
+        let TableChange::Rows(changed, deleted) = changes.table(table) else {
+            return None;
+        };
+        if changed.iter().any(|row| {
+            row.key > u128::from(u32::MAX)
+                || row.format != replay_data::FORMAT_VERSION
+                || row.recorded_fields != LexicalTokenRow::SCHEMA.len()
+                || row.mask != 1
+        }) || deleted.iter().any(|key| *key > u128::from(u32::MAX))
+            || changed.windows(2).any(|pair| pair[0].key >= pair[1].key)
+            || deleted.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return None;
+        }
+        let mut gone = deleted.iter().peekable();
+        for row in changed {
+            while gone.peek().is_some_and(|key| **key < row.key) {
+                gone.next();
+            }
+            if gone.peek().is_some_and(|key| **key == row.key) {
+                return None;
             }
         }
+        Some((changed, deleted))
+    }
+
+    fn refresh_modifier_formats(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: Option<&FrameChanges>,
+    ) -> io::Result<()> {
+        let (Ok(rows), Ok(tokens)) = (
+            frame.complete::<tables::ModifierDefinitions>(),
+            frame.complete::<tables::LexicalTokens>(),
+        ) else {
+            self.modifier_read = None;
+            self.modifier_lexical_ordered = false;
+            return Ok(());
+        };
+        let definitions = &frame.tables[TableId::ModifierDefinitions.index()];
+        let lexical = &frame.tables[TableId::LexicalTokens.index()];
+        let same_definitions = self
+            .modifier_views
+            .as_ref()
+            .is_some_and(|(old, _)| old.is(definitions));
+        let same_lexical = self
+            .modifier_views
+            .as_ref()
+            .is_some_and(|(_, old)| old.is(lexical));
+        if !same_definitions || !same_lexical {
+            let delta = self.modifier_lexical_delta(frame, changes);
+            let unaffected = same_definitions
+                && self.modifier_definitions.is_some()
+                && self.modifier_lexical_ordered
+                && delta.is_some_and(|(changed, deleted)| {
+                    self.modifier_tokens.as_ref().is_some_and(|tokens| {
+                        changed
+                            .iter()
+                            .map(|row| row.key)
+                            .chain(deleted.iter().copied())
+                            .all(|key| tokens.keys.binary_search(&(key as u32)).is_err())
+                    })
+                });
+            if !unaffected {
+                if !same_definitions || self.modifier_tokens.is_none() {
+                    self.modifier_tokens =
+                        Some(ModifierTokens::new(rows, &MemoryBudget::preparation())?);
+                }
+                self.modifier_definitions = Some(idea_format::index_recorded(rows, tokens));
+                // An exact decoded delta preserves a certified unique ascending baseline.
+                self.modifier_lexical_ordered = (self.modifier_lexical_ordered
+                    && (same_lexical || delta.is_some()))
+                    || tokens.windows(2).all(|pair| pair[0].token < pair[1].token);
+                #[cfg(test)]
+                {
+                    self.modifier_reindexes += 1;
+                }
+            }
+            self.modifier_views = Some((definitions.identity(), lexical.identity()));
+        }
+        self.modifier_read = Some((frame.branch, frame.hour));
+        Ok(())
     }
 }
 /// A read the next read dates no row at, as that read uses it: to name
@@ -1265,13 +1385,14 @@ pub(super) fn observe_all(
 ) -> io::Result<()> {
     Arc::make_mut(&mut scan.inputs).refresh(frame, None);
     scan.costs_pruned = false;
-    observe_accounting(frame, scan, content)
+    observe_accounting(frame, scan, content, None)
 }
 
 fn observe_accounting(
     frame: &DecodedFrame,
     scan: &mut Scanned,
     content: Option<&PoliticsContent>,
+    changes: Option<&FrameChanges>,
 ) -> io::Result<()> {
     let native = Arc::clone(&scan.inputs);
     let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:accounting_apply");
@@ -1284,7 +1405,7 @@ fn observe_accounting(
             + native.accounting_cost().count();
     }
     observe_presence(scan, frame)?;
-    scan.refresh_modifier_formats(frame);
+    scan.refresh_modifier_formats(frame, changes)?;
     let mut event_countries = BTreeSet::new();
     for row in native.accounting_power() {
         if !scan

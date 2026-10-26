@@ -1522,7 +1522,7 @@ impl Prepared {
         };
         self.scan.dirty.extend(hold_boundaries.iter().cloned());
         self.scan.begin_accounting(frame)?;
-        observe_accounting(frame, &mut self.scan, content)?;
+        observe_accounting(frame, &mut self.scan, content, Some(changes))?;
         self.scan.end_accounting(frame.hour);
         drop(cpu);
         let census_starts = self.publish_census(frame)?;
@@ -2027,7 +2027,8 @@ impl Prepared {
         changes: &FrameChanges,
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("politics_ledger:observe_apply");
-        self.scan.advance_accounting(frame, content)?;
+        self.scan
+            .advance_accounting(frame, content, Some(changes))?;
         self.publish_census(frame)?;
         self.scan.prune_publications(frame);
         self.settle_native(changes)?;
