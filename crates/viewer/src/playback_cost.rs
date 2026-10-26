@@ -103,22 +103,17 @@ fn lock(output: &Path) -> io::Result<Locks> {
     if let Some(path) = active_benchmark(Path::new(CAPTURES))? {
         return Err(invalid(format!("Active benchmark: {}", path.display())));
     }
-    let mut locks = Locks(Vec::new());
-    for path in [
-        Path::new(CAPTURES).join("BENCH_RUNNING"),
-        output.join("BENCH_RUNNING"),
-    ] {
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        locks.0.push((path, file));
-        writeln!(
-            locks.0.last_mut().unwrap().1,
-            "viewer --playback-cost pid={}",
-            std::process::id()
-        )?;
-    }
+    let path = output.join("MEASURE_RUNNING");
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    let mut locks = Locks(vec![(path, file)]);
+    writeln!(
+        locks.0[0].1,
+        "viewer --playback-cost pid={}",
+        std::process::id()
+    )?;
     check_tests()?;
     Ok(locks)
 }

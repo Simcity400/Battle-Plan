@@ -53,7 +53,7 @@ fn test_lock() -> io::Result<()> {
     }
 }
 
-fn lock() -> io::Result<Lock> {
+fn lock(output: &Path) -> io::Result<Lock> {
     test_lock()?;
     let captures = Path::new(r"captures");
     let mut markers = vec![captures.join("BENCH_RUNNING")];
@@ -69,7 +69,7 @@ fn lock() -> io::Result<Lock> {
             active.display()
         )));
     }
-    let path = Path::new(ROOT).join("BENCH_RUNNING");
+    let path = output.join("MEASURE_RUNNING");
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -162,7 +162,7 @@ fn run() -> io::Result<()> {
         ))
     })?;
     let output = fs::canonicalize(output)?;
-    let _lock = lock()?;
+    let _lock = lock(&output)?;
     let local = output.join("cache/local");
     let roaming = output.join("cache/roaming");
     fs::create_dir_all(&local)?;
