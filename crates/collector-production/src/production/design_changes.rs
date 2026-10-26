@@ -862,6 +862,7 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
             return;
         }
     };
+    snapshots::prune(&watched);
     {
         let mut store = store
             .lock()
@@ -2209,7 +2210,16 @@ fn drain_shared(
         // Reject consumed parent identities against the preceding held state,
         // before a terminal read can follow dead storage or replace that proof.
         held::check_lifetimes(&batch.events)?;
-        decode_batch_shared(&batch, base, hour, output, snapshots)?;
+        let mut retained = snapshots::retained(epoch, base);
+        let mut cache = snapshots::Cache::with_retained(&mut retained);
+        decode_batch_with_cache(&batch, base, hour, output, snapshots, &mut cache)?;
+        // Terminal repairs have no copied capacity witness; discard their earlier cached states.
+        for watch in &repairs.watches {
+            cache.remove(watch.id);
+        }
+        cache.finish(&batch);
+        drop(cache);
+        drop(retained);
         {
             let _phase = profile::Timer::new(profile::Phase::Liveness);
             liveness::refresh_context(memory, base, &batch.events)?;
@@ -2268,6 +2278,8 @@ fn drain_shared(
         Ok(repairs.lost)
     })();
     if let Err(reason) = result {
+        // A failed drain must not preserve states whose shrink observations were discarded.
+        snapshots::release();
         diagnostics::refused();
         diagnostics::refusal(reason);
         REFUSED_INTERVALS.fetch_add(1, Ordering::Relaxed);
@@ -2887,6 +2899,7 @@ impl Drop for Hooks {
         sources::release();
         liveness::release();
         held::release();
+        snapshots::release();
         super::design_context::invalidate();
     }
 }
@@ -2975,6 +2988,7 @@ fn decode_batch(
     decode_batch_shared(batch, base, hour, output, &mut snapshots)?;
     snapshots.materialize(output)
 }
+#[cfg(test)]
 fn decode_batch_shared(
     batch: &Batch,
     base: usize,
@@ -2982,9 +2996,25 @@ fn decode_batch_shared(
     output: &mut Vec<rows::VariantChangeRow>,
     snapshots: &mut snapshots::Shared,
 ) -> Result<(), &'static str> {
+    decode_batch_with_cache(
+        batch,
+        base,
+        hour,
+        output,
+        snapshots,
+        &mut snapshots::Cache::default(),
+    )
+}
+fn decode_batch_with_cache(
+    batch: &Batch,
+    base: usize,
+    hour: i32,
+    output: &mut Vec<rows::VariantChangeRow>,
+    snapshots: &mut snapshots::Shared,
+    cache: &mut snapshots::Cache<'_>,
+) -> Result<(), &'static str> {
     let _phase = profile::Timer::new(profile::Phase::DecodeBatch);
     snapshots.reserve(batch.events.len())?;
-    let mut cache = snapshots::Cache::default();
     let mut preceding_sequence = 0;
     for event in &batch.events {
         if event.sequence == 0 || event.sequence <= preceding_sequence {
@@ -3050,6 +3080,7 @@ fn decode_batch_shared(
             continue;
         }
         if event.removed {
+            cache.remove(event.variant);
             super::design_context::remove(event.variant)?;
             sources::remove(event.variant);
             engine_allocation::reserve(output, 1)

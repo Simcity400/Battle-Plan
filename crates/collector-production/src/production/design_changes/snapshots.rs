@@ -1,5 +1,8 @@
 use super::*;
+mod copied;
 mod missions;
+mod retained;
+pub(super) use retained::{Retained, prune, release, retained};
 mod witness;
 use profile::Outcome as CacheOutcome;
 use std::{
@@ -11,6 +14,23 @@ pub(super) struct Decoded {
     pub value: rows::VariantSnapshot,
     pub definition: native::DefinitionRow<Arc<rows::VariantDesignState>>,
     pub context: Option<super::super::design_context::Event>,
+}
+impl Decoded {
+    fn allocated_bytes(&self) -> usize {
+        size_of::<Decoded>()
+            + 2 * size_of::<usize>()
+            + replay_data::value::Value::heap_bytes(&self.value)
+            + rows::NativeValue::heap_bytes(self.definition.design.as_ref())
+            + self
+                .definition
+                .source_links
+                .as_ref()
+                .map_or(0, |links| links.direct.capacity() * size_of::<usize>())
+            + self
+                .context
+                .as_ref()
+                .map_or(0, super::super::design_context::Event::allocated_bytes)
+    }
 }
 pub(super) struct Occurrence {
     index: usize,
@@ -185,8 +205,22 @@ struct Entry {
     missions: Option<missions::Proof>,
     mission_next: Option<usize>,
 }
+struct Verified {
+    range: std::ops::Range<usize>,
+    value: Arc<Decoded>,
+    index: Option<usize>,
+}
+struct SourceHeads {
+    pointer: usize,
+    states: HashMap<u32, Verified>,
+}
 #[derive(Default)]
-pub(super) struct Cache {
+pub(super) struct Cache<'a> {
+    retained: Option<&'a mut Retained>,
+    retained_charge: u64,
+    source_heads: HashMap<u64, SourceHeads>,
+    #[cfg(test)]
+    removal_visits: usize,
     heads: HashMap<u64, usize>,
     witness_heads: HashMap<u64, usize>,
     shape_heads: HashMap<u64, usize>,
@@ -202,7 +236,7 @@ pub(super) struct Cache {
     full_decode: profile::Cost,
     miss: Option<CacheOutcome>,
 }
-impl Drop for Cache {
+impl Drop for Cache<'_> {
     fn drop(&mut self) {
         profile::add_cache(self.counts);
         profile::add_cost(profile::Phase::FullDecode, self.full_decode);
@@ -239,16 +273,63 @@ fn shape_key(log: &RawLog<1>, range: std::ops::Range<usize>, pointer: usize) -> 
 }
 fn equal(log: &RawLog<1>, left: std::ops::Range<usize>, right: std::ops::Range<usize>) -> bool {
     let (left, right) = (&log.spans[left], &log.spans[right]);
-    left.len() == right.len()
-        && left.iter().zip(right).all(|(left, right)| {
-            left.addr == right.addr
-                && left.len == right.len
-                && left.ok == right.ok
-                && left.bulk == right.bulk
-                && payload(log, left) == payload(log, right)
-        })
+    if left.len() != right.len() {
+        return false;
+    }
+    let Some((first_left, first_right)) = left.first().zip(right.first()) else {
+        return true;
+    };
+    let (left_start, right_start) = (first_left.start as usize, first_right.start as usize);
+    let (mut left_end, mut right_end) = (left_start, right_start);
+    let mut contiguous = true;
+    for (left, right) in left.iter().zip(right) {
+        if left.addr != right.addr
+            || left.len != right.len
+            || left.ok != right.ok
+            || left.bulk != right.bulk
+        {
+            return false;
+        }
+        contiguous &=
+            left.ok && left.start as usize == left_end && right.start as usize == right_end;
+        left_end = left.start as usize + left.len as usize;
+        right_end = right.start as usize + right.len as usize;
+    }
+    if contiguous {
+        // Staged contiguous payloads need one byte comparison, not one per small span.
+        log.bytes[left_start..left_end] == log.bytes[right_start..right_end]
+    } else {
+        left.iter()
+            .zip(right)
+            .all(|(left, right)| payload(log, left) == payload(log, right))
+    }
 }
-impl Cache {
+impl<'a> Cache<'a> {
+    pub fn with_retained(retained: &'a mut Retained) -> Self {
+        let mut cache = Self::default();
+        cache.retained = Some(retained);
+        static NEXT_CHARGE: AtomicU64 = AtomicU64::new(1);
+        cache.retained_charge = NEXT_CHARGE.fetch_add(1, Ordering::Relaxed);
+        cache
+    }
+    pub fn remove(&mut self, variant: u64) {
+        if let Some(heads) = self.source_heads.remove(&variant) {
+            for _ in heads.states {
+                #[cfg(test)]
+                {
+                    self.removal_visits += 1;
+                }
+            }
+        }
+        if let Some(retained) = &mut self.retained {
+            retained.remove(variant);
+        }
+    }
+    pub fn finish(&mut self, _batch: &Batch) {
+        if let Some(retained) = &mut self.retained {
+            retained.remember(std::mem::take(&mut self.entries), &self.source_heads);
+        }
+    }
     fn consistent(
         &mut self,
         log: &RawLog<1>,
@@ -308,7 +389,9 @@ impl Cache {
         Ok(true)
     }
     fn reuse(&self, index: usize) -> Result<Arc<Decoded>, &'static str> {
-        let value = &self.entries[index].value;
+        Self::observe(&self.entries[index].value)
+    }
+    fn observe(value: &Arc<Decoded>) -> Result<Arc<Decoded>, &'static str> {
         sources::track(&value.definition)?;
         liveness::sample(&value.definition)?;
         value
@@ -318,7 +401,69 @@ impl Cache {
             .apply();
         Ok(Arc::clone(value))
     }
-    fn remember(&mut self, pointer: usize, index: usize) {
+    fn source_heads(
+        heads: &mut HashMap<u64, SourceHeads>,
+        id: u64,
+        pointer: usize,
+    ) -> Option<&mut SourceHeads> {
+        if !heads.contains_key(&id) {
+            engine_allocation::reserve_map(heads, 1).ok()?;
+        }
+        let heads = heads.entry(id).or_insert_with(|| SourceHeads {
+            pointer,
+            states: HashMap::new(),
+        });
+        if heads.pointer != pointer {
+            heads.pointer = pointer;
+            heads.states.clear();
+        }
+        Some(heads)
+    }
+    fn verified(
+        heads: &mut HashMap<u64, SourceHeads>,
+        pointer: usize,
+        range: std::ops::Range<usize>,
+        value: &Arc<Decoded>,
+        index: Option<usize>,
+    ) -> bool {
+        engine_allocation::advisory(|| {
+            let heads = Self::source_heads(heads, value.definition.identity.id, pointer)?;
+            let count = value.definition.design.bonus_sources.len() as u32;
+            if let Some(previous) = heads.states.get_mut(&count) {
+                previous.range = range;
+                previous.index = index;
+                if !Arc::ptr_eq(&previous.value, value) {
+                    previous.value = Arc::clone(value);
+                }
+            } else {
+                engine_allocation::reserve_map(&mut heads.states, 1).ok()?;
+                heads.states.insert(
+                    count,
+                    Verified {
+                        range,
+                        value: Arc::clone(value),
+                        index,
+                    },
+                );
+            }
+            Some(())
+        })
+        .is_some()
+    }
+    fn remember(&mut self, pointer: usize, index: usize, range: std::ops::Range<usize>) {
+        let Some(entry) = self.entries.get(index) else {
+            return;
+        };
+        if !Self::verified(
+            &mut self.source_heads,
+            pointer,
+            range.clone(),
+            &entry.value,
+            Some(index),
+        ) {
+            self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
+        }
+
         if let Some((latest, previous)) = self.recent.get_mut(&pointer) {
             if *latest != index {
                 *previous = Some(*latest);
@@ -344,12 +489,113 @@ impl Cache {
     ) -> Result<Arc<Decoded>, &'static str> {
         let range = event.start..event.end;
         self.miss = None;
+        let source = copied::sources(&batch.log, range.clone(), event.pointer);
+        // Capacity evidence must survive every optional cache allocation and early return.
+        if let Some(retained) = &mut self.retained {
+            retained.observe(
+                event.variant,
+                event.pointer,
+                source.map(|(_, capacity)| capacity),
+            );
+        }
+        if let Some((count, _)) = source
+            && let Some(heads) = self
+                .source_heads
+                .get_mut(&event.variant)
+                .filter(|heads| heads.pointer == event.pointer)
+        {
+            if let Some(head) = heads.states.get_mut(&count)
+                && equal(&batch.log, head.range.clone(), range.clone())
+            {
+                // Equal complete copies inherit the verified occurrence's overlap consistency.
+                let value = Self::observe(&head.value)?;
+                head.range = range;
+                self.counts[CacheOutcome::FullCopyHit as usize] += 1;
+                return Ok(value);
+            }
+        }
+        if let Some(index) = source.and_then(|(count, _)| {
+            self.source_heads
+                .get(&event.variant)
+                .filter(|heads| heads.pointer == event.pointer)?
+                .states
+                .get(&count)?
+                .index
+        }) && self.entries[index].pointer == event.pointer
+        {
+            let entry = &self.entries[index];
+            if entry.witness.as_ref().is_some_and(|witness| {
+                witness.equal(&batch.log, entry.range.clone(), range.clone())
+            }) {
+                let value = self.reuse(index)?;
+                self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                self.remember(event.pointer, index, range.clone());
+                return Ok(value);
+            }
+            if entry.missions.is_some() {
+                let matched = engine_allocation::advisory(|| {
+                    if !self.consistent_for(&batch.log, range.clone(), false).ok()? {
+                        return None;
+                    }
+                    let memory = copied::MemoryView::new(&batch.log, range.clone(), &self.order);
+                    let entry = &self.entries[index];
+                    entry.missions.as_ref()?.equal(
+                        &memory,
+                        entry.witness.as_ref()?,
+                        event.pointer,
+                        &entry.value.definition.design.mission_stats,
+                        &mut self.comparison,
+                    )
+                });
+                if matched == Some(true) {
+                    let value = self.reuse(index)?;
+                    self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                    self.remember(event.pointer, index, range.clone());
+                    return Ok(value);
+                }
+            }
+        }
+        if self
+            .retained
+            .as_ref()
+            .is_some_and(|retained| retained.contains(event))
+        {
+            let matched = engine_allocation::advisory(|| {
+                if !self.consistent_for(&batch.log, range.clone(), false).ok()? {
+                    return None;
+                }
+                let memory = copied::MemoryView::new(&batch.log, range.clone(), &self.order);
+                let entry = self
+                    .retained
+                    .as_ref()?
+                    .find(&memory, event, &mut self.comparison)?;
+                let charge = entry.charge(self.retained_charge);
+                Some((Arc::clone(&entry.value), charge))
+            });
+            if let Some((value, charge)) = matched {
+                let value = Self::observe(&value)?;
+                // A retained hit supersedes any earlier local revision at this source count.
+                if !Self::verified(
+                    &mut self.source_heads,
+                    event.pointer,
+                    range.clone(),
+                    &value,
+                    None,
+                ) {
+                    self.source_heads.remove(&event.variant);
+                    self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
+                }
+                shared.heap_bytes += charge;
+                self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                return Ok(value);
+            }
+        }
         if let Some((latest, previous)) = self.recent.get(&event.pointer).copied() {
             for index in std::iter::once(latest).chain(previous) {
                 if equal(&batch.log, self.entries[index].range.clone(), range.clone()) {
                     let value = self.reuse(index)?;
                     self.counts[CacheOutcome::FullCopyHit as usize] += 1;
-                    self.remember(event.pointer, index);
+                    self.remember(event.pointer, index, range.clone());
                     return Ok(value);
                 }
             }
@@ -363,7 +609,7 @@ impl Cache {
                 if mismatch == Some(None) {
                     let value = self.reuse(index)?;
                     self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
-                    self.remember(event.pointer, index);
+                    self.remember(event.pointer, index, range.clone());
                     return Ok(value);
                 }
                 if index == latest {
@@ -401,7 +647,7 @@ impl Cache {
             {
                 let value = self.reuse(index)?;
                 self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
-                self.remember(event.pointer, index);
+                self.remember(event.pointer, index, range.clone());
                 return Ok(value);
             }
             let Some(key) = witness.key(
@@ -426,7 +672,7 @@ impl Cache {
                 {
                     let value = self.reuse(index)?;
                     self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
-                    self.remember(event.pointer, index);
+                    self.remember(event.pointer, index, range.clone());
                     return Ok(value);
                 }
                 next = self.entries[index].witness_next;
@@ -434,16 +680,19 @@ impl Cache {
         }
         if !self.mission_heads.is_empty() && self.recent.contains_key(&event.pointer) {
             let matched = engine_allocation::advisory(|| {
-                let memory = crate::raw::Recorded::build_range(&batch.log, range.clone()).ok()?;
                 if !self.consistent_for(&batch.log, range.clone(), false).ok()? {
                     return None;
                 }
-                self.mission_candidate(&memory, event.pointer)
+                let order = std::mem::take(&mut self.order);
+                let memory = copied::MemoryView::new(&batch.log, range.clone(), &order);
+                let candidate = self.mission_candidate(&memory, event.pointer);
+                self.order = order;
+                candidate
             });
             if let Some(index) = matched {
                 let value = self.reuse(index)?;
                 self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
-                self.remember(event.pointer, index);
+                self.remember(event.pointer, index, range.clone());
                 return Ok(value);
             }
         }
@@ -505,7 +754,7 @@ impl Cache {
             {
                 let value = self.reuse(index)?;
                 self.counts[CacheOutcome::FullCopyHit as usize] += 1;
-                self.remember(event.pointer, index);
+                self.remember(event.pointer, index, range.clone());
                 return Ok(value);
             }
             next = entry.next;
@@ -538,19 +787,7 @@ impl Cache {
             let recorded = crate::raw::Recorded::build_range(&batch.log, range.clone())?;
             let memory = witness::Observed::new(&recorded, range.len());
             let value = Arc::new(decode_snapshot(&memory, base, hour, event.pointer, false)?);
-            shared.heap_bytes += size_of::<Decoded>()
-                + 2 * size_of::<usize>()
-                + replay_data::value::Value::heap_bytes(&value.value)
-                + rows::NativeValue::heap_bytes(value.definition.design.as_ref())
-                + value
-                    .definition
-                    .source_links
-                    .as_ref()
-                    .map_or(0, |links| links.direct.capacity() * size_of::<usize>())
-                + value
-                    .context
-                    .as_ref()
-                    .map_or(0, super::super::design_context::Event::allocated_bytes);
+            shared.heap_bytes += value.allocated_bytes();
             if !value
                 .context
                 .as_ref()
@@ -563,12 +800,7 @@ impl Cache {
                 return Ok(value);
             }
             let (complete, allocation_failed, read_failed) = memory.diagnostics();
-            let witness = memory.finish(
-                &batch.log,
-                range.clone(),
-                &self.order,
-                !value.definition.design.mission_stats.is_empty(),
-            );
+            let witness = memory.finish(&batch.log, range.clone(), &self.order, true);
             if allocation_failed || (complete && witness.is_none()) {
                 self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
             }
@@ -585,41 +817,39 @@ impl Cache {
                     )
                 })
             });
-            if self.insert(&batch.log, range, event.pointer, key, &value, witness)
-                && let Some(proof) = proof
-                && self
-                    .entries
-                    .last()
-                    .is_some_and(|entry| entry.witness.is_some())
-                && let Some(model_key) = missions::model_key(&recorded, event.pointer)
-                && let Some(mission_key) = engine_allocation::advisory(|| {
-                    proof.key(
-                        &recorded,
-                        self.entries.last()?.witness.as_ref()?,
-                        model_key,
-                        &mut self.comparison,
-                    )
-                })
-            {
-                if engine_allocation::advisory(|| {
-                    engine_allocation::reserve_map(&mut self.mission_heads, 1)?;
-                    engine_allocation::reserve_map(&mut self.mission_models, 1)
-                })
-                .is_ok()
-                {
-                    let index = self.entries.len() - 1;
-                    self.mission_models.insert(model_key, index);
-                    self.entries[index].missions = Some(proof);
-                    self.entries[index].mission_next =
-                        self.mission_heads.insert(mission_key, index);
-                } else {
-                    self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
-                }
+            if self.insert(&batch.log, range, event.pointer, key, &value, witness) {
+                self.index_missions(&recorded, event.pointer, proof);
             }
             Ok(value)
         })();
         self.full_decode.add(stamp.finish());
         result
+    }
+    fn index_missions(
+        &mut self,
+        memory: &impl Memory,
+        pointer: usize,
+        proof: Option<missions::Proof>,
+    ) {
+        let Some(proof) = proof else {
+            return;
+        };
+        let indexed = engine_allocation::advisory(|| {
+            let witness = self.entries.last()?.witness.as_ref()?;
+            let model_key = missions::model_key(memory, pointer)?;
+            let mission_key = proof.key(memory, witness, model_key, &mut self.comparison)?;
+            engine_allocation::reserve_map(&mut self.mission_heads, 1).ok()?;
+            engine_allocation::reserve_map(&mut self.mission_models, 1).ok()?;
+            Some((model_key, mission_key))
+        });
+        if let Some((model_key, mission_key)) = indexed {
+            let index = self.entries.len() - 1;
+            self.mission_models.insert(model_key, index);
+            self.entries[index].missions = Some(proof);
+            self.entries[index].mission_next = self.mission_heads.insert(mission_key, index);
+        } else {
+            self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
+        }
     }
     fn insert(
         &mut self,
@@ -657,7 +887,7 @@ impl Cache {
                 .insert(shape_key(log, range.clone(), pointer), index);
         }
         self.entries.push(Entry {
-            range,
+            range: range.clone(),
             pointer,
             next: self.heads.insert(key, index),
             value: Arc::clone(value),
@@ -666,7 +896,7 @@ impl Cache {
             missions: None,
             mission_next: None,
         });
-        self.remember(pointer, index);
+        self.remember(pointer, index, range);
         true
     }
 }

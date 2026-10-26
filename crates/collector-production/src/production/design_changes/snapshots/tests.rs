@@ -795,7 +795,9 @@ fn optional_cache_failures_never_reach_the_terminal_hook_but_required_ones_still
     assert!(!collector_test_support::with_allocations_denied(|| {
         cache.insert(&batch.log, range.clone(), event.pointer, 0, &value, None)
     }));
-    collector_test_support::with_allocations_denied(|| cache.remember(event.pointer, 0));
+    collector_test_support::with_allocations_denied(|| {
+        cache.remember(event.pointer, 0, range.clone())
+    });
     let unobserved =
         collector_test_support::with_allocations_denied(|| witness::Observed::new(&memory, 1));
     assert!(unobserved.finish(&log, 0..1, &[0], false).is_none());
@@ -820,7 +822,7 @@ fn optional_cache_failures_never_reach_the_terminal_hook_but_required_ones_still
     });
     assert_eq!(grown, 1);
     assert!(growing.finish(&log, 0..1, &[0], false).is_none());
-    // Heads and entries succeed, the witness index and the recent map are denied.
+    // Heads and entries succeed; witness indexing, source candidates and the recent map fail.
     let mut indexed = Cache::default();
     let (inserted, indexed_denials) = {
         let _guard = collector_test_support::NullGuard::new(3);
@@ -828,13 +830,17 @@ fn optional_cache_failures_never_reach_the_terminal_hook_but_required_ones_still
         (inserted, denials())
     };
     assert!(inserted);
-    assert_eq!(indexed_denials, 2);
+    assert_eq!(indexed_denials, 3);
     assert_eq!(indexed.entries.len(), 1);
     assert!(indexed.entries[0].witness.is_none());
-    assert!(indexed.witness_heads.is_empty() && indexed.recent.is_empty());
+    assert!(
+        indexed.witness_heads.is_empty()
+            && indexed.source_heads.is_empty()
+            && indexed.recent.is_empty()
+    );
     assert_eq!(TERMINAL.with(std::cell::Cell::get), 0);
-    assert_eq!(cache.counts[CacheOutcome::AllocationSkipped as usize], 4);
-    assert_eq!(indexed.counts[CacheOutcome::AllocationSkipped as usize], 2);
+    assert_eq!(cache.counts[CacheOutcome::AllocationSkipped as usize], 3);
+    assert_eq!(indexed.counts[CacheOutcome::AllocationSkipped as usize], 3);
     // The read index reserves, but the shape index fails: neither optional index publishes.
     let observed = witness::Observed::new(&memory, 1);
     assert!(observed.copy(0x1000, &mut output));
@@ -847,14 +853,48 @@ fn optional_cache_failures_never_reach_the_terminal_hook_but_required_ones_still
         (inserted, denials())
     };
     assert!(inserted);
-    assert_eq!(denied, 2);
+    assert_eq!(denied, 3);
     assert!(shaped.entries[0].witness.is_none());
     assert!(
         shaped.witness_heads.is_empty()
             && shaped.shape_heads.is_empty()
+            && shaped.source_heads.is_empty()
             && shaped.recent.is_empty()
     );
+    assert_eq!(shaped.counts[CacheOutcome::AllocationSkipped as usize], 3);
     assert_eq!(TERMINAL.with(std::cell::Cell::get), 0);
+    for ordinal in [3, 4] {
+        let mut candidate = Cache::default();
+        engine_allocation::reserve_map(&mut candidate.recent, 1).unwrap();
+        let (inserted, denied) = {
+            let _guard = collector_test_support::NullGuard::new(ordinal);
+            let inserted =
+                candidate.insert(&batch.log, range.clone(), event.pointer, 0, &value, None);
+            (inserted, denials())
+        };
+        assert!(inserted);
+        assert_eq!(denied, 1);
+        assert_eq!(candidate.entries.len(), 1);
+        assert_eq!(candidate.source_heads.is_empty(), ordinal == 3);
+        if ordinal == 4 {
+            let heads = &candidate.source_heads[&value.definition.identity.id];
+            assert_eq!(heads.pointer, event.pointer);
+            assert!(heads.states.is_empty());
+        }
+        assert_eq!(candidate.recent[&event.pointer], (0, None));
+        assert_eq!(
+            candidate.counts[CacheOutcome::AllocationSkipped as usize],
+            1
+        );
+        assert_eq!(TERMINAL.with(std::cell::Cell::get), 0);
+        candidate.remember(event.pointer, 0, range.clone());
+        let head = &candidate.source_heads[&value.definition.identity.id].states
+            [&(value.definition.design.bonus_sources.len() as u32)];
+        assert_eq!(head.index, Some(0));
+        assert_eq!(head.range, range);
+        assert!(Arc::ptr_eq(&head.value, &value));
+        assert_eq!(TERMINAL.with(std::cell::Cell::get), 0);
+    }
     mission_proof_denials_are_nonterminal();
     assert_eq!(TERMINAL.with(std::cell::Cell::get), 0);
     let mut shared = Shared::default();
@@ -1036,6 +1076,7 @@ fn a_colliding_shape_candidate_cannot_substitute_another_shape_or_changed_read_b
     for event in &batch.events[..4] {
         cache.decode(&batch, event, 0, 7, &mut shared).unwrap();
     }
+    cache.source_heads.clear();
     let event = batch.events[4];
     let key = shape_key(&batch.log, event.start..event.end, event.pointer);
     cache.shape_heads.insert(key, 3);
@@ -1522,3 +1563,552 @@ fn mission_proof_denials_are_nonterminal() {
         .is_none()
     );
 }
+
+#[test]
+fn source_count_witnesses_survive_monthly_gaps_without_retaining_design_revisions() {
+    let batch = changing_source_shapes(4);
+    let mut retained = Retained::default();
+    let mut first = Cache::with_retained(&mut retained);
+    let mut shared = Shared::default();
+    let values: Vec<_> = batch
+        .events
+        .iter()
+        .map(|event| first.decode(&batch, event, 0, 7, &mut shared).unwrap())
+        .collect();
+    assert_eq!(first.counts[CacheOutcome::FullDecode as usize], 4);
+    first.finish(&batch);
+    drop(first);
+    let mut later = Cache::with_retained(&mut retained);
+    for (index, event) in batch.events.iter().enumerate() {
+        let actual = later
+            .decode(&batch, event, 0, 7 + 744, &mut shared)
+            .unwrap();
+        assert!(Arc::ptr_eq(&actual, &values[index]));
+    }
+    assert_eq!(later.counts[CacheOutcome::FullDecode as usize], 0);
+    assert_eq!(later.counts[CacheOutcome::ReadWitnessHit as usize], 4);
+    later.finish(&batch);
+    drop(later);
+    assert_eq!(retained.state_count(), 4);
+    for revision in 0..32 {
+        let mut changed = changing_source_shapes(4);
+        for event in &changed.events {
+            let root = changed.log.spans[event.start].start as usize;
+            changed.log.bytes[root + native::DISPLAY_NAME] = b'A' + revision % 26;
+            changed.log.bytes[root + native::DISPLAY_NAME + 16..root + native::DISPLAY_NAME + 24]
+                .copy_from_slice(&1_u64.to_le_bytes());
+        }
+        let mut cache = Cache::with_retained(&mut retained);
+        for event in &changed.events {
+            let memory =
+                crate::raw::Recorded::build_range(&changed.log, event.start..event.end).unwrap();
+            let expected = snapshot(&memory, 0, 7, event.pointer, false).unwrap();
+            let actual = cache.decode(&changed, event, 0, 7, &mut shared).unwrap();
+            assert_eq!(actual.value, expected);
+        }
+        cache.finish(&changed);
+        drop(cache);
+        assert_eq!(retained.state_count(), 4);
+    }
+}
+
+#[test]
+fn retained_witnesses_keep_overlap_failed_read_identity_and_removal_guards() {
+    let batch = changing_source_shapes(4);
+    let mut retained = Retained::default();
+    let mut cache = Cache::with_retained(&mut retained);
+    let mut shared = Shared::default();
+    let first = cache
+        .decode(&batch, &batch.events[0], 0, 7, &mut shared)
+        .unwrap();
+    cache.finish(&batch);
+    drop(cache);
+    for fault in 0..4 {
+        let mut current = changing_source_shapes(1);
+        let mut event = current.events[0];
+        if fault == 0 {
+            current.log.spans[event.start].ok = false;
+        }
+        if fault == 1 {
+            let at = current.log.spans[event.start].start as usize + native::DISPLAY_NAME;
+            current.log.bytes[at] = b'Z';
+            current.log.bytes[at + 16..at + 24].copy_from_slice(&1_u64.to_le_bytes());
+        }
+        if fault == 3 {
+            let bytes = engine_native::memory::SliceMemory {
+                base: event.pointer + native::UPGRADES + 24,
+                bytes: &[1, 2, 3, 4],
+            };
+            current
+                .log
+                .take_bulk(&bytes, bytes.base, bytes.bytes.len(), 1)
+                .unwrap();
+            event.end = current.log.spans.len();
+        }
+        let event = if fault == 2 {
+            Event {
+                pointer: event.pointer + 1,
+                ..event
+            }
+        } else {
+            event
+        };
+        let mut cache = Cache::with_retained(&mut retained);
+        let actual = cache.decode(&current, &event, 0, 7 + 744, &mut shared);
+        if let Ok(actual) = actual {
+            assert!(!Arc::ptr_eq(&actual, &first));
+        }
+        assert_eq!(cache.counts[CacheOutcome::ReadWitnessHit as usize], 0);
+    }
+    let mut cache = Cache::with_retained(&mut retained);
+    cache
+        .decode(&batch, &batch.events[0], 0, 7, &mut shared)
+        .unwrap();
+    cache.remove(first.definition.identity.id);
+    cache.finish(&batch);
+    drop(cache);
+    assert_eq!(retained.state_count(), 0);
+}
+
+#[test]
+fn retained_missions_compare_operands_after_relocation_without_raw_index_allocations() {
+    let batch = relocated_mission_shapes(8);
+    let mut retained = Retained::default();
+    let mut cache = Cache::with_retained(&mut retained);
+    let mut shared = Shared::default();
+    let first = cache
+        .decode(&batch, &batch.events[0], 0, 7, &mut shared)
+        .unwrap();
+    cache.finish(&batch);
+    drop(cache);
+    let mut cache = Cache::with_retained(&mut retained);
+    let actual = cache
+        .decode(&batch, &batch.events[4], 0, 7 + 744, &mut shared)
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &actual));
+    assert_eq!(cache.counts[CacheOutcome::FullDecode as usize], 0);
+    assert_eq!(cache.counts[CacheOutcome::ReadWitnessHit as usize], 1);
+    cache.finish(&batch);
+    drop(cache);
+    assert_eq!(retained.state_count(), 1);
+    let mut later = Cache::with_retained(&mut retained);
+    let next = later
+        .decode(&batch, &batch.events[0], 0, 7 + 1_488, &mut shared)
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &next));
+    assert_eq!(later.counts[CacheOutcome::FullDecode as usize], 0);
+}
+
+#[test]
+fn retained_cache_allocation_denials_skip_retention_without_calling_the_terminal_hook() {
+    thread_local! { static TERMINAL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+    fn terminal() {
+        TERMINAL.with(|calls| calls.set(calls.get() + 1));
+    }
+    struct Hook;
+    impl Drop for Hook {
+        fn drop(&mut self) {
+            engine_allocation::set_hooks(None, None);
+        }
+    }
+    let batch = changing_source_shapes(4);
+    let mut retained = Retained::default();
+    let mut shared = Shared::default();
+    let mut cache = Cache::with_retained(&mut retained);
+    let decoded = cache
+        .decode(&batch, &batch.events[0], 0, 7, &mut shared)
+        .unwrap();
+    let _hook = Hook;
+    engine_allocation::set_hooks(None, Some(terminal));
+    collector_test_support::with_allocations_denied(|| cache.finish(&batch));
+    drop(cache);
+    assert_eq!(retained.state_count(), 0);
+    assert_eq!(TERMINAL.with(std::cell::Cell::get), 0);
+    let mut cache = Cache::with_retained(&mut retained);
+    let repeated = cache
+        .decode(&batch, &batch.events[0], 0, 7 + 744, &mut shared)
+        .unwrap();
+    assert_eq!(decoded.value, repeated.value);
+    assert!(!Arc::ptr_eq(&decoded, &repeated));
+}
+
+#[test]
+fn the_last_retained_hit_wins_over_an_earlier_local_revision_of_the_same_source_count() {
+    let original = changing_source_shapes(1);
+    let mut retained = Retained::default();
+    let mut shared = Shared::default();
+    let mut warm = Cache::with_retained(&mut retained);
+    let first = warm
+        .decode(&original, &original.events[0], 0, 7, &mut shared)
+        .unwrap();
+    warm.finish(&original);
+    drop(warm);
+    let mut batch = changing_source_shapes(2);
+    let event = batch.events[0];
+    replace_copied_bytes(
+        &mut batch,
+        &event,
+        event.pointer + native::DISPLAY_NAME,
+        b"Z",
+    );
+    replace_copied_bytes(
+        &mut batch,
+        &event,
+        event.pointer + native::DISPLAY_NAME + 16,
+        &1_u64.to_le_bytes(),
+    );
+    let event = batch.events[1];
+    replace_copied_bytes(
+        &mut batch,
+        &event,
+        event.pointer + native::BONUS_SOURCES + 12,
+        &0_u32.to_le_bytes(),
+    );
+    let mut cache = Cache::with_retained(&mut retained);
+    let changed = cache
+        .decode(&batch, &batch.events[0], 0, 751, &mut shared)
+        .unwrap();
+    assert!(!Arc::ptr_eq(&changed, &first));
+    let restored = cache
+        .decode(&batch, &batch.events[1], 0, 751, &mut shared)
+        .unwrap();
+    assert!(Arc::ptr_eq(&restored, &first));
+    cache.finish(&batch);
+    drop(cache);
+    assert_eq!(retained.state_count(), 1);
+    let mut later = Cache::with_retained(&mut retained);
+    let actual = later
+        .decode(&original, &original.events[0], 0, 1_495, &mut shared)
+        .unwrap();
+    assert!(Arc::ptr_eq(&actual, &first));
+}
+
+#[test]
+fn removing_fifteen_hundred_designs_visits_only_their_own_source_candidates() {
+    let mut cache = Cache::default();
+    for id in 1..=1_500 {
+        let mut definition = native::DefinitionRow::default();
+        definition.identity.id = id;
+        definition.design = Arc::new(rows::VariantDesignState::default());
+        let value = Arc::new(Decoded {
+            value: Default::default(),
+            definition,
+            context: None,
+        });
+        assert!(Cache::verified(
+            &mut cache.source_heads,
+            id as usize,
+            0..0,
+            &value,
+            None,
+        ));
+    }
+    for id in 1..=1_500 {
+        let before = cache.removal_visits;
+        cache.remove(id);
+        assert_eq!(cache.removal_visits - before, 1);
+        assert_eq!(cache.source_heads.len(), 1_500 - id as usize);
+        cache.remove(id);
+        assert_eq!(cache.removal_visits - before, 1);
+    }
+    assert_eq!(cache.removal_visits, 1_500);
+}
+
+enum Lifecycle {
+    Epoch,
+    Base,
+    Census,
+    Release,
+    Identity,
+    Removal,
+}
+fn retained_lifecycle(change: Lifecycle) {
+    for different in [false, true] {
+        let original = changing_source_shapes(1);
+        let mut current = changing_source_shapes(1);
+        let mut retained = Retained::default();
+        retained.reset(1, 0);
+        let mut shared = Shared::default();
+        let mut cache = Cache::with_retained(&mut retained);
+        let first = cache
+            .decode(&original, &original.events[0], 0, 7, &mut shared)
+            .unwrap();
+        cache.finish(&original);
+        drop(cache);
+        assert_eq!(retained.state_count(), 1);
+        if different {
+            let event = current.events[0];
+            replace_copied_bytes(
+                &mut current,
+                &event,
+                event.pointer + native::DISPLAY_NAME,
+                b"Z",
+            );
+            replace_copied_bytes(
+                &mut current,
+                &event,
+                event.pointer + native::DISPLAY_NAME + 16,
+                &1_u64.to_le_bytes(),
+            );
+        }
+        match change {
+            Lifecycle::Epoch => retained.reset(2, 0),
+            Lifecycle::Base => retained.reset(1, 1),
+            Lifecycle::Census => {
+                retained.prune(&HashMap::new());
+                let event = current.events[0];
+                let watches = HashMap::from([(
+                    event.pointer,
+                    Watch {
+                        id: event.variant,
+                        pointer: event.pointer,
+                        flags: [0; 3],
+                        dirty: false,
+                    },
+                )]);
+                retained.prune(&watches);
+            }
+            Lifecycle::Release => {
+                retained.release();
+                retained.reset(1, 0);
+            }
+            Lifecycle::Identity => {
+                let event = current.events[0];
+                let id = event.variant.wrapping_add(1 << 32);
+                replace_copied_bytes(
+                    &mut current,
+                    &event,
+                    event.pointer + native::ID,
+                    &((id >> 32) as u32).to_le_bytes(),
+                );
+                current.events[0].variant = id;
+                let watches = HashMap::from([(
+                    event.pointer,
+                    Watch {
+                        id,
+                        pointer: event.pointer,
+                        flags: [0; 3],
+                        dirty: false,
+                    },
+                )]);
+                retained.prune(&watches);
+            }
+            Lifecycle::Removal => {
+                let mut cache = Cache::with_retained(&mut retained);
+                cache
+                    .decode(&original, &original.events[0], 0, 7, &mut shared)
+                    .unwrap();
+                cache.remove(first.definition.identity.id);
+                cache.finish(&original);
+            }
+        }
+        assert_eq!(retained.state_count(), 0);
+        let event = &current.events[0];
+        let memory =
+            crate::raw::Recorded::build_range(&current.log, event.start..event.end).unwrap();
+        let expected = snapshot(&memory, 0, 751, event.pointer, false).unwrap();
+        let mut cache = Cache::with_retained(&mut retained);
+        let returned = cache.decode(&current, event, 0, 751, &mut shared).unwrap();
+        assert!(!Arc::ptr_eq(&first, &returned));
+        assert_eq!(returned.value, expected);
+        assert_eq!(cache.counts[CacheOutcome::FullDecode as usize], 1);
+        cache.finish(&current);
+        drop(cache);
+        let mut cache = Cache::with_retained(&mut retained);
+        let verified = cache
+            .decode(&current, event, 0, 1_495, &mut shared)
+            .unwrap();
+        assert!(Arc::ptr_eq(&returned, &verified));
+        assert_eq!(cache.counts[CacheOutcome::FullDecode as usize], 0);
+    }
+}
+#[test]
+fn retained_witnesses_do_not_cross_an_epoch_or_base_reset() {
+    retained_lifecycle(Lifecycle::Epoch);
+    retained_lifecycle(Lifecycle::Base);
+}
+#[test]
+fn retained_witnesses_do_not_cross_census_departure_and_return() {
+    retained_lifecycle(Lifecycle::Census);
+}
+#[test]
+fn retained_witnesses_do_not_cross_release_and_reattachment() {
+    retained_lifecycle(Lifecycle::Release);
+}
+#[test]
+fn retained_witnesses_do_not_cross_a_new_identity_at_the_same_address() {
+    retained_lifecycle(Lifecycle::Identity);
+}
+#[test]
+fn retained_witnesses_do_not_cross_removal_and_readdition_under_the_same_id() {
+    retained_lifecycle(Lifecycle::Removal);
+}
+
+#[test]
+fn the_last_verified_copy_bypasses_indexes_after_local_and_retained_witness_hits() {
+    let batch = relocated_mission_shapes(8);
+    let mut retained = Retained::default();
+    let mut shared = Shared::default();
+    let mut warm = Cache::with_retained(&mut retained);
+    let first = warm
+        .decode(&batch, &batch.events[0], 0, 7, &mut shared)
+        .unwrap();
+    warm.finish(&batch);
+    drop(warm);
+    for retention in [false, true] {
+        let mut cache = if retention {
+            Cache::with_retained(&mut retained)
+        } else {
+            Cache::default()
+        };
+        let model = cache
+            .decode(&batch, &batch.events[0], 0, 751, &mut shared)
+            .unwrap();
+        let relocated = cache
+            .decode(&batch, &batch.events[4], 0, 751, &mut shared)
+            .unwrap();
+        assert!(Arc::ptr_eq(&model, &relocated));
+        if retention {
+            assert!(Arc::ptr_eq(&first, &relocated));
+        }
+        cache.heads.clear();
+        cache.recent.clear();
+        cache.witness_heads.clear();
+        cache.shape_heads.clear();
+        cache.mission_heads.clear();
+        cache.mission_models.clear();
+        let before = cache.counts;
+        let probes = cache.probes;
+        for _ in 0..16 {
+            let actual = collector_test_support::with_allocations_denied(|| {
+                cache
+                    .decode(&batch, &batch.events[4], 0, 751, &mut shared)
+                    .unwrap()
+            });
+            assert!(Arc::ptr_eq(&actual, &relocated));
+        }
+        assert_eq!(
+            cache.counts[CacheOutcome::FullCopyHit as usize]
+                - before[CacheOutcome::FullCopyHit as usize],
+            16
+        );
+        assert_eq!(
+            cache.counts[CacheOutcome::FullDecode as usize],
+            before[CacheOutcome::FullDecode as usize]
+        );
+        assert_eq!(cache.probes, probes);
+    }
+}
+
+#[test]
+fn a_last_verified_copy_still_checks_changed_reads_failed_spans_and_unread_overlaps() {
+    for fault in 0..3 {
+        let mut batch = changing_source_shapes(1);
+        let mut shared = Shared::default();
+        let mut cache = Cache::default();
+        let event = batch.events[0];
+        let first = cache.decode(&batch, &event, 0, 7, &mut shared).unwrap();
+        if fault == 0 {
+            replace_copied_bytes(
+                &mut batch,
+                &event,
+                event.pointer + native::DISPLAY_NAME,
+                b"Z",
+            );
+            replace_copied_bytes(
+                &mut batch,
+                &event,
+                event.pointer + native::DISPLAY_NAME + 16,
+                &1_u64.to_le_bytes(),
+            );
+        } else if fault == 1 {
+            batch.log.spans[event.start].ok = false;
+        } else {
+            let memory = engine_native::memory::SliceMemory {
+                base: event.pointer + native::UPGRADES + 24,
+                bytes: &[1, 2, 3, 4],
+            };
+            batch
+                .log
+                .take_bulk(&memory, memory.base, memory.bytes.len(), 1)
+                .unwrap();
+            batch.events[0].end = batch.log.spans.len();
+        }
+        // Keep the model's immutable bytes separate from the faulted current occurrence.
+        let model = changing_source_shapes(1);
+        let mut joined = Batch::empty();
+        joined.prepare(2, 320, ROOT_BYTES * 12);
+        let (start, end) = storage::append(&mut joined.log, &model.log).unwrap();
+        joined.events.push(Event {
+            start,
+            end,
+            ..event
+        });
+        let (start, end) = storage::append(&mut joined.log, &batch.log).unwrap();
+        joined.events.push(Event {
+            start,
+            end,
+            sequence: 2,
+            ..batch.events[0]
+        });
+        let mut cache = Cache::default();
+        let model = cache
+            .decode(&joined, &joined.events[0], 0, 7, &mut shared)
+            .unwrap();
+        let result = cache.decode(&joined, &joined.events[1], 0, 7, &mut shared);
+        if let Ok(actual) = result {
+            assert!(!Arc::ptr_eq(&model, &actual));
+            if fault == 0 {
+                assert_ne!(first.value, actual.value);
+            }
+        }
+        assert_eq!(cache.counts[CacheOutcome::FullCopyHit as usize], 0);
+        assert_eq!(cache.counts[CacheOutcome::ReadWitnessHit as usize], 0);
+    }
+}
+
+#[test]
+fn contiguous_copy_comparison_preserves_sparse_failed_and_metadata_semantics() {
+    for case in 0..8 {
+        let memory = engine_native::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &[1, 2, 3, 4, 5, 6, 7, 8],
+        };
+        let mut log = RawLog::<1>::new(4, 16);
+        for _ in 0..2 {
+            log.take_bulk(&memory, memory.base, 4, 1).unwrap();
+            log.take_bulk(&memory, memory.base + 4, 4, 1).unwrap();
+        }
+        match case {
+            1 => log.spans[2].start = log.spans[0].start,
+            2 => log.bytes[log.spans[2].start as usize] ^= 1,
+            3 => log.spans[2].len -= 1,
+            4 => {
+                log.spans[0].ok = false;
+                log.spans[2].ok = false;
+            }
+            5 => log.spans[2].bulk = false,
+            6 => log.spans[2].addr += 1,
+            7 => {
+                log.spans[0].len = 2;
+                log.spans[2].len = 2;
+            }
+            _ => {}
+        }
+        let expected = log.spans[..2]
+            .iter()
+            .zip(&log.spans[2..])
+            .all(|(left, right)| {
+                left.addr == right.addr
+                    && left.len == right.len
+                    && left.ok == right.ok
+                    && left.bulk == right.bulk
+                    && payload(&log, left) == payload(&log, right)
+            });
+        assert_eq!(equal(&log, 0..2, 2..4), expected, "copy layout case {case}");
+    }
+}
+
+mod drain_lifecycle;
+
+mod capacity;

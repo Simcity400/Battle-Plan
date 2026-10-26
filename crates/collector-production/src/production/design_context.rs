@@ -917,6 +917,13 @@ impl Event {
     fn apply_to(&self, cache: &mut Cache) {
         let result = (|| {
             let (id, country, observed, owner) = self.demand.as_ref().map_err(|reason| *reason)?;
+            if let Some(old) = cache.designs.get_mut(id)
+                && old.country == *country
+                && old.keys == *observed
+            {
+                old.generation = cache.generation;
+                return cache.replace_organisation(*id, *owner);
+            }
             let mut keys = std::mem::take(&mut cache.spare_keys);
             keys.clear();
             engine_allocation::reserve(&mut keys, observed.len())
@@ -1144,6 +1151,24 @@ pub(super) fn template_input(snapshot: &Snapshot) -> TableInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unchanged_event_demand_refreshes_its_generation_without_copying_scratch_keys() {
+        let mut cache = Cache::default();
+        cache.replace(1, 1_500, vec![1, 3, 5]).unwrap();
+        cache.replace_organisation(1, Some(1_501)).unwrap();
+        cache.spare_keys = Vec::new();
+        cache.generation += 1;
+        let event = Event {
+            demand: Ok((1, 1_500, vec![1, 3, 5], Some(1_501))),
+        };
+        collector_test_support::with_allocations_denied(|| event.apply_to(&mut cache));
+        assert!(cache.failure.is_none());
+        assert_eq!(cache.designs[&1].generation, cache.generation);
+        assert!(cache.spare_keys.is_empty());
+        assert_eq!(cache.countries[&1_500].len(), 3);
+        assert_eq!(cache.countries[&1_501][&ORGANISATION_CHANGE_FACTOR], 1);
+    }
+
     #[test]
     fn copied_event_demands_follow_repeated_replacements_and_keep_context_refusals() {
         let mut expected = Cache::default();

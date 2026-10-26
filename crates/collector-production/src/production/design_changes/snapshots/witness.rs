@@ -184,6 +184,22 @@ pub(super) struct Witness {
     overlaps: Vec<Overlap>,
 }
 impl Witness {
+    pub fn matches(&self, memory: &impl Memory, buffer: &mut Vec<u8>) -> Option<bool> {
+        if self.requests.is_empty() {
+            return None;
+        }
+        for request in &self.requests {
+            engine_allocation::reserve(buffer, request.bytes.len().saturating_sub(buffer.len()))
+                .ok()?;
+            buffer.resize(request.bytes.len(), 0);
+            if !memory.copy(request.address, buffer)
+                || buffer.as_slice() != &self.bytes[request.bytes.clone()]
+            {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
     pub fn key(
         &self,
         log: &RawLog<1>,
