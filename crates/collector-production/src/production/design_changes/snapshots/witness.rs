@@ -34,14 +34,54 @@ impl<'a, M: Memory> Observed<'a, M> {
             self.read_failed.get(),
         )
     }
-    pub fn finish(self, log: &RawLog<1>, range: Range<usize>, order: &[usize]) -> Option<Witness> {
-        engine_allocation::advisory(move || self.build(log, range, order))
+    pub fn finish(
+        self,
+        log: &RawLog<1>,
+        range: Range<usize>,
+        order: &[usize],
+        trace: bool,
+    ) -> Option<Witness> {
+        engine_allocation::advisory(move || self.build(log, range, order, trace))
     }
-    fn build(self, log: &RawLog<1>, range: Range<usize>, order: &[usize]) -> Option<Witness> {
+    fn trace(source: &M, reads: &[Range<usize>]) -> Option<(Vec<Request>, Vec<u8>)> {
+        let len = reads
+            .iter()
+            .try_fold(0_usize, |len, read| len.checked_add(read.len()))?;
+        let mut bytes = engine_allocation::vec(len).ok()?;
+        bytes.resize(len, 0);
+        let mut requests = engine_allocation::vec(reads.len()).ok()?;
+        let mut start = 0;
+        for read in reads {
+            let end = start + read.len();
+            if !source.copy(read.start, &mut bytes[start..end]) {
+                return None;
+            }
+            requests.push(Request {
+                address: read.start,
+                bytes: start..end,
+            });
+            start = end;
+        }
+        Some((requests, bytes))
+    }
+    fn build(
+        self,
+        log: &RawLog<1>,
+        range: Range<usize>,
+        order: &[usize],
+        trace: bool,
+    ) -> Option<Witness> {
         if !self.complete.get() {
             return None;
         }
         let mut reads = self.reads.into_inner();
+        // Only overlap-consistent immutable occurrences can request a relocation trace.
+        let (requests, bytes) = if trace {
+            Self::trace(self.source, &reads)
+        } else {
+            None
+        }
+        .unwrap_or_default();
         reads.sort_unstable_by_key(|range| range.start);
         let mut count = 0;
         for index in 0..reads.len() {
@@ -91,7 +131,12 @@ impl<'a, M: Memory> Observed<'a, M> {
             }
             covering = Some(index);
         }
-        Some(Witness { pieces, overlaps })
+        Some(Witness {
+            pieces,
+            overlaps,
+            requests,
+            bytes,
+        })
     }
 }
 impl<M: Memory> Memory for Observed<'_, M> {
@@ -128,7 +173,13 @@ struct Overlap {
     offset: usize,
     len: usize,
 }
+pub(super) struct Request {
+    pub address: usize,
+    pub bytes: Range<usize>,
+}
 pub(super) struct Witness {
+    pub requests: Vec<Request>,
+    pub bytes: Vec<u8>,
     pieces: Vec<Piece>,
     overlaps: Vec<Overlap>,
 }
@@ -231,7 +282,7 @@ mod tests {
             covered[at..at + len].fill(true);
         }
         let order: Vec<usize> = (0..SPANS).collect();
-        let witness = observed.finish(&log, 0..SPANS, &order).unwrap();
+        let witness = observed.finish(&log, 0..SPANS, &order, false).unwrap();
         let mut expected = Vec::new();
         for span in 0..SPANS {
             let covered = &covered[span * LEN..][..LEN];

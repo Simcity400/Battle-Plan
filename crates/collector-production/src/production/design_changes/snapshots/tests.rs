@@ -657,7 +657,7 @@ fn a_requested_witness_preserves_failures_bulk_admission_and_read_bytes() {
     let observed = witness::Observed::new(&recorded, 2);
     let mut bytes = [0; 2];
     assert!(observed.copy(0x1000, &mut bytes));
-    let witness = observed.finish(&log, 0..1, &[0]).unwrap();
+    let witness = observed.finish(&log, 0..1, &[0], false).unwrap();
     assert!(witness.equal(&log, 0..1, 1..2));
     assert!(!witness.equal(&log, 0..1, 2..3));
     drop(recorded);
@@ -669,7 +669,7 @@ fn a_requested_witness_preserves_failures_bulk_admission_and_read_bytes() {
     let recorded = crate::raw::Recorded::build_range(&log, 0..1).unwrap();
     let observed = witness::Observed::new(&recorded, 2);
     assert!(!observed.copy(0x2000, &mut bytes));
-    assert!(observed.finish(&log, 0..1, &[0]).is_none());
+    assert!(observed.finish(&log, 0..1, &[0], false).is_none());
 }
 
 #[test]
@@ -696,7 +696,7 @@ fn a_requested_witness_still_rejects_contradictory_overlapping_copies() {
     let recorded = crate::raw::Recorded::build_range(&log, 0..2).unwrap();
     let observed = witness::Observed::new(&recorded, 2);
     assert!(observed.copy(0x1000, &mut [0; 1]));
-    let witness = observed.finish(&log, 0..2, &cache.order).unwrap();
+    let witness = observed.finish(&log, 0..2, &cache.order, false).unwrap();
     assert!(!witness.equal(&log, 0..2, 2..4));
     assert_eq!(
         witness.mismatch(&log, 0..2, 2..4),
@@ -721,7 +721,7 @@ fn unavailable_observation_storage_disables_reuse_without_losing_the_read() {
     assert_eq!(output, [1, 2, 3, 4]);
     assert!(
         observed
-            .finish(&RawLog::<1>::new(0, 0), 0..0, &[])
+            .finish(&RawLog::<1>::new(0, 0), 0..0, &[], false)
             .is_none()
     );
 }
@@ -739,8 +739,10 @@ fn unavailable_witness_storage_does_not_refuse_a_successful_observation() {
     let mut output = [0; 2];
     assert!(observed.copy(0x1000, &mut output));
     assert!(
-        collector_test_support::with_allocations_denied(|| { observed.finish(&log, 0..1, &[0]) })
-            .is_none()
+        collector_test_support::with_allocations_denied(|| {
+            observed.finish(&log, 0..1, &[0], false)
+        })
+        .is_none()
     );
     assert_eq!(output, [1, 2]);
 }
@@ -778,7 +780,7 @@ fn optional_cache_failures_never_reach_the_terminal_hook_but_required_ones_still
     assert!(read.copy(0x1000, &mut output));
     let witnessed = witness::Observed::new(&bytes, 1);
     assert!(witnessed.copy(0x1000, &mut output));
-    let read_witness = witnessed.finish(&log, 0..1, &[0]);
+    let read_witness = witnessed.finish(&log, 0..1, &[0], false);
     assert!(read_witness.is_some());
     let denials = || collector_test_support::DENIALS.load(std::sync::atomic::Ordering::Relaxed);
     let mut cache = Cache::default();
@@ -796,9 +798,10 @@ fn optional_cache_failures_never_reach_the_terminal_hook_but_required_ones_still
     collector_test_support::with_allocations_denied(|| cache.remember(event.pointer, 0));
     let unobserved =
         collector_test_support::with_allocations_denied(|| witness::Observed::new(&memory, 1));
-    assert!(unobserved.finish(&log, 0..1, &[0]).is_none());
+    assert!(unobserved.finish(&log, 0..1, &[0], false).is_none());
     assert!(
-        collector_test_support::with_allocations_denied(|| read.finish(&log, 0..1, &[0])).is_none()
+        collector_test_support::with_allocations_denied(|| read.finish(&log, 0..1, &[0], false))
+            .is_none()
     );
     // Reserving heads succeeds, entries fails: the partial reservation leaves no entry behind.
     let partial = {
@@ -816,7 +819,7 @@ fn optional_cache_failures_never_reach_the_terminal_hook_but_required_ones_still
         denials()
     });
     assert_eq!(grown, 1);
-    assert!(growing.finish(&log, 0..1, &[0]).is_none());
+    assert!(growing.finish(&log, 0..1, &[0], false).is_none());
     // Heads and entries succeed, the witness index and the recent map are denied.
     let mut indexed = Cache::default();
     let (inserted, indexed_denials) = {
@@ -835,7 +838,7 @@ fn optional_cache_failures_never_reach_the_terminal_hook_but_required_ones_still
     // The read index reserves, but the shape index fails: neither optional index publishes.
     let observed = witness::Observed::new(&memory, 1);
     assert!(observed.copy(0x1000, &mut output));
-    let witness = observed.finish(&log, 0..1, &[0]);
+    let witness = observed.finish(&log, 0..1, &[0], false);
     assert!(witness.is_some());
     let mut shaped = Cache::default();
     let (inserted, denied) = {
@@ -851,6 +854,8 @@ fn optional_cache_failures_never_reach_the_terminal_hook_but_required_ones_still
             && shaped.shape_heads.is_empty()
             && shaped.recent.is_empty()
     );
+    assert_eq!(TERMINAL.with(std::cell::Cell::get), 0);
+    mission_proof_denials_are_nonterminal();
     assert_eq!(TERMINAL.with(std::cell::Cell::get), 0);
     let mut shared = Shared::default();
     assert!(collector_test_support::with_allocations_denied(|| shared.reserve(1)).is_err());
@@ -1073,4 +1078,447 @@ fn equal_rows_with_different_read_capacities_keep_distinct_witnesses_for_each_sh
     assert_eq!(values[0].value, values[4].value);
     assert!(!Arc::ptr_eq(&values[0], &values[4]));
     assert!(Arc::ptr_eq(&values[0], &values[12]));
+}
+
+fn relocated_mission_shapes(count: usize) -> Batch {
+    let source = changing_source_shapes(count);
+    let mut batch = Batch::empty();
+    batch.prepare(count, count * 160, count * ROOT_BYTES * 6);
+    for (index, event) in source.events.iter().enumerate() {
+        let memory =
+            crate::raw::Recorded::build_range(&source.log, event.start..event.end).unwrap();
+        let mut log = RawLog::<1>::new(160, ROOT_BYTES * 6);
+        for span in &source.log.spans[event.start..event.end] {
+            log.take_bulk(&memory, span.addr, span.len as usize, 1)
+                .unwrap();
+        }
+        let outer = 0x100_0000 + index * 0x1000;
+        let stats = outer + 0x100;
+        let mut bytes = [0; 128];
+        bytes[..4].copy_from_slice(&3_u32.to_le_bytes());
+        bytes[16..24].copy_from_slice(&(stats as u64).to_le_bytes());
+        bytes[24..28].copy_from_slice(&2_u32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&2_u32.to_le_bytes());
+        let root = log
+            .spans
+            .iter()
+            .find(|span| span.addr == kit::VARIANT + native::MISSION_GROUP_DATA)
+            .unwrap()
+            .start as usize;
+        log.bytes[root..root + 8].copy_from_slice(&(outer as u64).to_le_bytes());
+        log.bytes[root + 8..root + 12].copy_from_slice(&1_u32.to_le_bytes());
+        log.bytes[root + 12..root + 16].copy_from_slice(&1_u32.to_le_bytes());
+        let outer_memory = engine_native::memory::SliceMemory {
+            base: outer,
+            bytes: &bytes,
+        };
+        log.take_bulk(&outer_memory, outer, 40, 1).unwrap();
+        let mut bytes = [0; 32];
+        bytes[..4].copy_from_slice(&9_u32.to_le_bytes());
+        bytes[8..16].copy_from_slice(&17_i64.to_le_bytes());
+        bytes[16..20].copy_from_slice(&12_u32.to_le_bytes());
+        bytes[24..32].copy_from_slice(&(-23_i64).to_le_bytes());
+        let stats_memory = engine_native::memory::SliceMemory {
+            base: stats,
+            bytes: &bytes,
+        };
+        log.take_bulk(&stats_memory, stats, bytes.len(), 1).unwrap();
+        let (start, end) = storage::append(&mut batch.log, &log).unwrap();
+        batch.events.push(Event {
+            start,
+            end,
+            ..*event
+        });
+    }
+    batch
+}
+
+fn replace_copied_bytes(batch: &mut Batch, event: &Event, address: usize, value: &[u8]) {
+    let mut copies = 0;
+    for span in &batch.log.spans[event.start..event.end] {
+        if span.addr <= address && address + value.len() <= span.addr + span.len as usize {
+            let start = span.start as usize + address - span.addr;
+            batch.log.bytes[start..start + value.len()].copy_from_slice(value);
+            copies += 1;
+        }
+    }
+    assert_ne!(copies, 0);
+}
+
+#[test]
+fn distinct_nonmission_states_keep_every_candidate_chain_and_mission_read_count_bounded() {
+    use std::cell::Cell;
+    struct Counted<'a, M> {
+        source: &'a M,
+        reads: Cell<usize>,
+    }
+    impl<M: Memory> Memory for Counted<'_, M> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.set(self.reads.get() + 1);
+            self.source.copy(address, output)
+        }
+    }
+    const STATES: usize = 128;
+    for missions in [false, true] {
+        for initially_relocated in [false, true] {
+            let mut batch = if missions {
+                relocated_mission_shapes(STATES * 2)
+            } else {
+                changing_source_shapes(STATES * 2)
+            };
+            for index in 0..batch.events.len() {
+                let event = batch.events[index];
+                replace_copied_bytes(
+                    &mut batch,
+                    &event,
+                    event.pointer + native::BONUS_SOURCES + 12,
+                    &0_u32.to_le_bytes(),
+                );
+                replace_copied_bytes(
+                    &mut batch,
+                    &event,
+                    event.pointer + native::MAP_RANGE_STAT,
+                    &((index % STATES) as i64).to_le_bytes(),
+                );
+                replace_copied_bytes(
+                    &mut batch,
+                    &event,
+                    event.pointer + native::CAN_UPGRADE_MODULES,
+                    &[(index % 2) as u8],
+                );
+                if missions && !initially_relocated && index < STATES {
+                    let outer = 0x100_0000 + index * 0x1000;
+                    let fixed = 0x100_0000;
+                    replace_copied_bytes(
+                        &mut batch,
+                        &event,
+                        event.pointer + native::MISSION_GROUP_DATA,
+                        &(fixed as u64).to_le_bytes(),
+                    );
+                    replace_copied_bytes(
+                        &mut batch,
+                        &event,
+                        outer + 16,
+                        &((fixed + 0x100) as u64).to_le_bytes(),
+                    );
+                    for span in &mut batch.log.spans[event.start..event.end] {
+                        if span.addr == outer || span.addr == outer + 0x100 {
+                            span.addr -= outer - fixed;
+                        }
+                    }
+                }
+            }
+            let mut cache = Cache::default();
+            let mut shared = Shared::default();
+            let mut originals = Vec::new();
+            let mut model_key = None;
+            let mut miss_reads = None;
+            let mut hit_reads = None;
+            for (index, event) in batch.events.iter().enumerate() {
+                let recorded =
+                    crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+                if missions {
+                    let current_key = missions::model_key(&recorded, event.pointer).unwrap();
+                    assert_eq!(*model_key.get_or_insert(current_key), current_key);
+                    let counted = Counted {
+                        source: &recorded,
+                        reads: Cell::new(0),
+                    };
+                    let probes = cache.probes;
+                    let found = engine_allocation::advisory(|| {
+                        cache.mission_candidate(&counted, event.pointer)
+                    });
+                    let hit = index >= STATES;
+                    assert_eq!(found, hit.then_some(index % STATES));
+                    assert_eq!(cache.probes[2] - probes[2], usize::from(hit));
+                    if index != 0 {
+                        let reads = if hit { &mut hit_reads } else { &mut miss_reads };
+                        assert_eq!(
+                            *reads.get_or_insert(counted.reads.get()),
+                            counted.reads.get()
+                        );
+                    }
+                }
+                let probes = cache.probes;
+                let value = cache.decode(&batch, event, 0, 7, &mut shared).unwrap();
+                for (before, after) in probes.into_iter().zip(cache.probes) {
+                    assert!(after - before <= 1, "candidate chain grew at state {index}");
+                }
+                let original = snapshot(&recorded, 0, 7, event.pointer, false).unwrap();
+                assert_eq!(value.value, original);
+                if index < STATES {
+                    originals.push(value);
+                    assert_eq!(cache.entries.len(), index + 1);
+                } else {
+                    assert!(Arc::ptr_eq(&value, &originals[index % STATES]));
+                    assert_eq!(cache.entries.len(), STATES);
+                }
+            }
+            assert_eq!(
+                cache.counts[CacheOutcome::FullDecode as usize],
+                STATES as u64
+            );
+            assert_eq!(
+                cache.counts[CacheOutcome::ReadWitnessHit as usize],
+                STATES as u64
+            );
+            if missions {
+                assert_eq!(cache.mission_models.len(), 1);
+                assert_eq!(cache.mission_heads.len(), STATES);
+                assert!(hit_reads.unwrap() > miss_reads.unwrap());
+            }
+        }
+    }
+}
+
+#[test]
+fn rebuilt_mission_storage_reuses_exact_states_across_every_distinct_layout() {
+    let batch = relocated_mission_shapes(512);
+    let mut cache = Cache::default();
+    let mut shared = Shared::default();
+    let mut owned = Captured::vacant();
+    for (index, event) in batch.events.iter().enumerate() {
+        let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+        let original = snapshot(&memory, 0, 7, event.pointer, false).unwrap();
+        let value = cache.decode(&batch, event, 0, 7, &mut shared).unwrap();
+        assert_eq!(value.value, original);
+        owned.rows.push(rows::VariantChangeRow {
+            sequence: event.sequence,
+            hour: event.hour,
+            variant: event.variant,
+            snapshot: Some(original),
+            ..Default::default()
+        });
+        shared
+            .push(index, event.sequence, event.hour, event.variant, value)
+            .unwrap();
+    }
+    assert_eq!(cache.entries.len(), 4);
+    assert!(cache.entries.iter().all(|entry| entry.missions.is_some()));
+    assert_eq!(cache.counts[CacheOutcome::FullDecode as usize], 4);
+    assert_eq!(cache.counts[CacheOutcome::ReadWitnessHit as usize], 508);
+    let mut captured = Captured::vacant();
+    captured.outcome = Outcome::Rows {
+        len: batch.events.len(),
+    };
+    captured.snapshots = shared;
+    owned.outcome = captured.outcome;
+    for keyframe in [false, true] {
+        for existing in [false, true] {
+            assert_eq!(
+                converted_bytes(&captured, keyframe, existing),
+                converted_bytes(&owned, keyframe, existing)
+            );
+        }
+    }
+}
+
+#[test]
+fn mission_layout_reuse_checks_masks_stats_invariants_admission_and_all_overlaps() {
+    let mut batch = relocated_mission_shapes(12);
+    let mut cache = Cache::default();
+    let mut shared = Shared::default();
+    let first = cache
+        .decode(&batch, &batch.events[0], 0, 7, &mut shared)
+        .unwrap();
+    let originals = std::iter::once(Arc::clone(&first))
+        .chain(
+            batch.events[1..4]
+                .iter()
+                .map(|event| cache.decode(&batch, event, 0, 7, &mut shared).unwrap()),
+        )
+        .collect::<Vec<_>>();
+    for (ordinal, event) in batch.events[4..7].iter().enumerate() {
+        let span = if ordinal == 0 {
+            &batch.log.spans[event.end - 2]
+        } else if ordinal == 1 {
+            &batch.log.spans[event.end - 1]
+        } else {
+            &batch.log.spans[event.start]
+        };
+        let offset = [0, 8, native::TYPE][ordinal];
+        batch.log.bytes[span.start as usize + offset] ^= 1;
+    }
+    for event in &batch.events[4..6] {
+        let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+        let original = snapshot(&memory, 0, 7, event.pointer, false).unwrap();
+        let decoded = cache.decode(&batch, event, 0, 7, &mut shared).unwrap();
+        assert_eq!(decoded.value, original);
+        assert!(
+            originals
+                .iter()
+                .all(|original| !Arc::ptr_eq(original, &decoded))
+        );
+    }
+    assert!(
+        cache
+            .decode(&batch, &batch.events[6], 0, 7, &mut shared)
+            .is_err()
+    );
+    let event = batch.events[7];
+    let span = batch.log.spans[event.start..event.end]
+        .iter()
+        .find(|span| span.addr == event.pointer + native::MAP_RANGE_STAT)
+        .unwrap();
+    batch.log.bytes[span.start as usize] ^= 1;
+    let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+    let expected = snapshot(&memory, 0, 7, event.pointer, false).unwrap();
+    drop(memory);
+    let decoded = cache.decode(&batch, &event, 0, 7, &mut shared).unwrap();
+    assert_eq!(decoded.value, expected);
+    assert!(
+        originals
+            .iter()
+            .all(|original| !Arc::ptr_eq(original, &decoded))
+    );
+    let event = batch.events[8];
+    batch.log.spans[event.end - 1].bulk = false;
+    assert!(cache.decode(&batch, &event, 0, 7, &mut shared).is_err());
+    let event = batch.events[9];
+    let span = batch.log.spans[event.end - 2];
+    batch.log.bytes[span.start as usize + 24..span.start as usize + 28]
+        .copy_from_slice(&0_u32.to_le_bytes());
+    assert!(cache.decode(&batch, &event, 0, 7, &mut shared).is_err());
+    let mut event = batch.events[10];
+    let span = batch.log.spans[event.end - 1];
+    let conflicting = engine_native::memory::SliceMemory {
+        base: span.addr,
+        bytes: &[0; 32],
+    };
+    let at = batch.log.spans.len();
+    batch.log.take_bulk(&conflicting, span.addr, 32, 1).unwrap();
+    let mut spans = batch.log.spans[event.start..event.end].to_vec();
+    spans.push(batch.log.spans[at]);
+    event.start = batch.log.spans.len();
+    batch.log.spans.extend_from_slice(&spans);
+    event.end = batch.log.spans.len();
+    if let Ok(decoded) = cache.decode(&batch, &event, 0, 7, &mut shared) {
+        assert!(
+            originals
+                .iter()
+                .all(|original| !Arc::ptr_eq(original, &decoded))
+        );
+    }
+}
+
+#[test]
+fn mission_proofs_refuse_aliased_invariant_reads_and_optional_failures() {
+    let batch = relocated_mission_shapes(1);
+    let event = batch.events[0];
+    let recorded = crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+    let observed = witness::Observed::new(&recorded, event.end - event.start);
+    let value = decode_snapshot(&observed, 0, 7, event.pointer, false).unwrap();
+    let span = batch.log.spans[event.end - 1];
+    assert!(observed.copy(span.addr, &mut [0; 16]));
+    let mut cache = Cache::default();
+    assert!(
+        cache
+            .consistent(&batch.log, event.start..event.end)
+            .unwrap()
+    );
+    let witness = observed
+        .finish(&batch.log, event.start..event.end, &cache.order, true)
+        .unwrap();
+    assert!(
+        engine_allocation::advisory(|| missions::Proof::build(
+            &recorded,
+            &witness,
+            event.pointer,
+            &value.definition.design.mission_stats
+        ))
+        .is_none()
+    );
+    assert!(
+        collector_test_support::with_allocations_denied(|| engine_allocation::advisory(|| {
+            missions::Proof::build(
+                &recorded,
+                &witness,
+                event.pointer,
+                &value.definition.design.mission_stats,
+            )
+        }))
+        .is_none()
+    );
+    let value = cache
+        .decode(&batch, &event, 0, 7, &mut Shared::default())
+        .unwrap();
+    assert_eq!(value.value.definition.id, event.variant);
+}
+
+#[test]
+fn mission_key_collisions_still_check_invariant_bytes_and_pointer_identity() {
+    let mut batch = relocated_mission_shapes(12);
+    let mut cache = Cache::default();
+    let mut shared = Shared::default();
+    for event in &batch.events[..4] {
+        cache.decode(&batch, event, 0, 7, &mut shared).unwrap();
+    }
+    let event = batch.events[4];
+    let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+    let model_key = missions::model_key(&memory, event.pointer).unwrap();
+    let model = &cache.entries[cache.mission_models[&model_key]];
+    let key = model
+        .missions
+        .as_ref()
+        .unwrap()
+        .key(
+            &memory,
+            model.witness.as_ref().unwrap(),
+            model_key,
+            &mut Vec::new(),
+        )
+        .unwrap();
+    drop(memory);
+    cache.mission_heads.insert(key, 3);
+    cache.entries[3].mission_next = Some(0);
+    let value = cache.decode(&batch, &event, 0, 7, &mut shared).unwrap();
+    assert!(Arc::ptr_eq(&value, &cache.entries[0].value));
+    assert!(!Arc::ptr_eq(&value, &cache.entries[3].value));
+    let event = batch.events[8];
+    cache.entries[0].pointer += 1;
+    let other = cache.decode(&batch, &event, 0, 7, &mut shared).unwrap();
+    assert!(!Arc::ptr_eq(&other, &value));
+    assert_eq!(other.value, value.value);
+    let event = batch.events[9];
+    let span = batch.log.spans[event.end - 1];
+    batch.log.bytes[span.start as usize + 4] ^= 1;
+    let current = cache.decode(&batch, &event, 0, 7, &mut shared).unwrap();
+    assert!(Arc::ptr_eq(&current, &cache.entries[1].value));
+}
+
+fn mission_proof_denials_are_nonterminal() {
+    let batch = relocated_mission_shapes(5);
+    let mut cache = Cache::default();
+    let mut shared = Shared::default();
+    cache
+        .decode(&batch, &batch.events[0], 0, 7, &mut shared)
+        .unwrap();
+    let entry = &cache.entries[0];
+    let proof = entry.missions.as_ref().unwrap();
+    let witness = entry.witness.as_ref().unwrap();
+    let event = batch.events[4];
+    let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+    assert!(
+        collector_test_support::with_allocations_denied(|| engine_allocation::advisory(|| {
+            proof.equal(
+                &memory,
+                witness,
+                event.pointer,
+                &entry.value.definition.design.mission_stats,
+                &mut Vec::new(),
+            )
+        }))
+        .is_none()
+    );
+    assert!(
+        collector_test_support::with_allocations_denied(|| engine_allocation::advisory(|| {
+            missions::Proof::build(
+                &memory,
+                witness,
+                event.pointer,
+                &entry.value.definition.design.mission_stats,
+            )
+        }))
+        .is_none()
+    );
 }

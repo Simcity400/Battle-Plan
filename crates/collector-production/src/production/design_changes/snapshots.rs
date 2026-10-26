@@ -1,4 +1,5 @@
 use super::*;
+mod missions;
 mod witness;
 use profile::Outcome as CacheOutcome;
 use std::{
@@ -181,12 +182,19 @@ struct Entry {
     value: Arc<Decoded>,
     witness: Option<witness::Witness>,
     witness_next: Option<usize>,
+    missions: Option<missions::Proof>,
+    mission_next: Option<usize>,
 }
 #[derive(Default)]
 pub(super) struct Cache {
     heads: HashMap<u64, usize>,
     witness_heads: HashMap<u64, usize>,
     shape_heads: HashMap<u64, usize>,
+    mission_heads: HashMap<u64, usize>,
+    mission_models: HashMap<u64, usize>,
+    #[cfg(test)]
+    probes: [usize; 3],
+    comparison: Vec<u8>,
     entries: Vec<Entry>,
     recent: HashMap<usize, (usize, Option<usize>)>,
     order: Vec<usize>,
@@ -246,6 +254,14 @@ impl Cache {
         log: &RawLog<1>,
         range: std::ops::Range<usize>,
     ) -> Result<bool, &'static str> {
+        self.consistent_for(log, range, true)
+    }
+    fn consistent_for(
+        &mut self,
+        log: &RawLog<1>,
+        range: std::ops::Range<usize>,
+        report: bool,
+    ) -> Result<bool, &'static str> {
         self.order.clear();
         // The cache is optional: an allocation failure only skips caching, never the hour.
         if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.order, range.len()))
@@ -262,7 +278,9 @@ impl Cache {
         for index in &self.order {
             let span = &log.spans[*index];
             if !span.ok {
-                self.counts[CacheOutcome::UnreadableCopy as usize] += 1;
+                if report {
+                    self.counts[CacheOutcome::UnreadableCopy as usize] += 1;
+                }
                 return Ok(false);
             }
             let end = span
@@ -275,7 +293,9 @@ impl Cache {
                     let offset = span.addr - previous.addr;
                     let len = (previous_end - span.addr).min(span.len as usize);
                     if payload(log, previous)[offset..offset + len] != payload(log, span)[..len] {
-                        self.counts[CacheOutcome::InsertOverlap as usize] += 1;
+                        if report {
+                            self.counts[CacheOutcome::InsertOverlap as usize] += 1;
+                        }
                         return Ok(false);
                     }
                 }
@@ -394,6 +414,10 @@ impl Cache {
             };
             let mut next = self.witness_heads.get(&key).copied();
             while let Some(index) = next {
+                #[cfg(test)]
+                {
+                    self.probes[1] += 1;
+                }
                 let entry = &self.entries[index];
                 if entry.pointer == event.pointer
                     && entry.witness.as_ref().is_some_and(|witness| {
@@ -408,8 +432,55 @@ impl Cache {
                 next = self.entries[index].witness_next;
             }
         }
+        if !self.mission_heads.is_empty() && self.recent.contains_key(&event.pointer) {
+            let matched = engine_allocation::advisory(|| {
+                let memory = crate::raw::Recorded::build_range(&batch.log, range.clone()).ok()?;
+                if !self.consistent_for(&batch.log, range.clone(), false).ok()? {
+                    return None;
+                }
+                self.mission_candidate(&memory, event.pointer)
+            });
+            if let Some(index) = matched {
+                let value = self.reuse(index)?;
+                self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                self.remember(event.pointer, index);
+                return Ok(value);
+            }
+        }
         let key = fingerprint(&batch.log, range.clone(), event.pointer);
         self.decode_key(batch, event, base, hour, shared, key)
+    }
+    fn mission_candidate(&mut self, memory: &impl Memory, pointer: usize) -> Option<usize> {
+        let model_key = missions::model_key(memory, pointer)?;
+        // A single model selects the invariant reads; only the complete key selects candidates.
+        let model = &self.entries[*self.mission_models.get(&model_key)?];
+        let key = model.missions.as_ref()?.key(
+            memory,
+            model.witness.as_ref()?,
+            model_key,
+            &mut self.comparison,
+        )?;
+        let mut next = self.mission_heads.get(&key).copied();
+        while let Some(index) = next {
+            #[cfg(test)]
+            {
+                self.probes[2] += 1;
+            }
+            let entry = &self.entries[index];
+            if entry.pointer == pointer
+                && entry.missions.as_ref()?.equal(
+                    memory,
+                    entry.witness.as_ref()?,
+                    pointer,
+                    &entry.value.definition.design.mission_stats,
+                    &mut self.comparison,
+                )?
+            {
+                return Some(index);
+            }
+            next = entry.mission_next;
+        }
+        None
     }
     fn decode_key(
         &mut self,
@@ -423,6 +494,10 @@ impl Cache {
         let range = event.start..event.end;
         let mut next = self.heads.get(&key).copied();
         while let Some(index) = next {
+            #[cfg(test)]
+            {
+                self.probes[0] += 1;
+            }
             let entry = &self.entries[index];
             // A hash only selects candidates; every copied witness must still match.
             if entry.pointer == event.pointer
@@ -460,8 +535,8 @@ impl Cache {
         self.counts[miss as usize] += 1;
         let stamp = profile::Stamp::new();
         let result = (|| {
-            let memory = crate::raw::Recorded::build_range(&batch.log, range.clone())?;
-            let memory = witness::Observed::new(&memory, range.len());
+            let recorded = crate::raw::Recorded::build_range(&batch.log, range.clone())?;
+            let memory = witness::Observed::new(&recorded, range.len());
             let value = Arc::new(decode_snapshot(&memory, base, hour, event.pointer, false)?);
             shared.heap_bytes += size_of::<Decoded>()
                 + 2 * size_of::<usize>()
@@ -488,14 +563,59 @@ impl Cache {
                 return Ok(value);
             }
             let (complete, allocation_failed, read_failed) = memory.diagnostics();
-            let witness = memory.finish(&batch.log, range.clone(), &self.order);
+            let witness = memory.finish(
+                &batch.log,
+                range.clone(),
+                &self.order,
+                !value.definition.design.mission_stats.is_empty(),
+            );
             if allocation_failed || (complete && witness.is_none()) {
                 self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
             }
             if read_failed {
                 self.counts[CacheOutcome::WitnessReadFailed as usize] += 1;
             }
-            self.insert(&batch.log, range, event.pointer, key, &value, witness);
+            let proof = witness.as_ref().and_then(|witness| {
+                engine_allocation::advisory(|| {
+                    missions::Proof::build(
+                        &recorded,
+                        witness,
+                        event.pointer,
+                        &value.definition.design.mission_stats,
+                    )
+                })
+            });
+            if self.insert(&batch.log, range, event.pointer, key, &value, witness)
+                && let Some(proof) = proof
+                && self
+                    .entries
+                    .last()
+                    .is_some_and(|entry| entry.witness.is_some())
+                && let Some(model_key) = missions::model_key(&recorded, event.pointer)
+                && let Some(mission_key) = engine_allocation::advisory(|| {
+                    proof.key(
+                        &recorded,
+                        self.entries.last()?.witness.as_ref()?,
+                        model_key,
+                        &mut self.comparison,
+                    )
+                })
+            {
+                if engine_allocation::advisory(|| {
+                    engine_allocation::reserve_map(&mut self.mission_heads, 1)?;
+                    engine_allocation::reserve_map(&mut self.mission_models, 1)
+                })
+                .is_ok()
+                {
+                    let index = self.entries.len() - 1;
+                    self.mission_models.insert(model_key, index);
+                    self.entries[index].missions = Some(proof);
+                    self.entries[index].mission_next =
+                        self.mission_heads.insert(mission_key, index);
+                } else {
+                    self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
+                }
+            }
             Ok(value)
         })();
         self.full_decode.add(stamp.finish());
@@ -543,6 +663,8 @@ impl Cache {
             value: Arc::clone(value),
             witness,
             witness_next: witness_key.and_then(|key| self.witness_heads.insert(key, index)),
+            missions: None,
+            mission_next: None,
         });
         self.remember(pointer, index);
         true
