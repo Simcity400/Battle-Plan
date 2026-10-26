@@ -21,6 +21,7 @@ fn same(a: &KeyState, b: &KeyState) -> bool {
     a.last == b.last
         && a.runs == b.runs
         && a.events == b.events
+        && a.event_order == b.event_order
         && a.partial
             .iter()
             .zip(&b.partial)

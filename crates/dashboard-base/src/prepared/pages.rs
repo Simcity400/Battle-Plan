@@ -8,7 +8,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    io::{self, Read},
+    io::{self, Read, Seek, SeekFrom},
 };
 
 /// The production publication budget, shared by independent family folds.
@@ -112,6 +112,23 @@ pub trait Pages {
     fn write(&mut self, section: &str, data: &[u8]) -> io::Result<u64>;
     /// The latest bytes of `range` of `section`, written or committed.
     fn read_at(&mut self, section: &str, range: u64) -> io::Result<Option<Vec<u8>>>;
+    fn read_slice(
+        &mut self,
+        section: &str,
+        range: u64,
+        offset: u64,
+        output: &mut [u8],
+    ) -> io::Result<()> {
+        let bytes = self
+            .read_at(section, range)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing prepared page"))?;
+        let start = usize::try_from(offset).ok();
+        let slice = start
+            .and_then(|start| bytes.get(start..start.checked_add(output.len())?))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Truncated prepared page"))?;
+        output.copy_from_slice(slice);
+        Ok(())
+    }
     /// Immutable identities of the first `count` slots, including missing
     /// ones. None disables publication reuse for a page writer that cannot
     /// authenticate its current ranges without reading their payloads.
@@ -142,6 +159,17 @@ impl Pages for store::Writer {
             })
             .transpose()
     }
+    fn read_slice(
+        &mut self,
+        section: &str,
+        range: u64,
+        offset: u64,
+        output: &mut [u8],
+    ) -> io::Result<()> {
+        let mut file = store::Writer::read_at(self, section, range)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing prepared page"))?;
+        read_slice(&mut file, offset, output)
+    }
     fn range_ids(
         &mut self,
         section: &str,
@@ -152,6 +180,20 @@ impl Pages for store::Writer {
             .collect::<io::Result<Vec<_>>>()
             .map(Some)
     }
+}
+
+fn read_slice(file: &mut store::Range, offset: u64, output: &mut [u8]) -> io::Result<()> {
+    if offset
+        .checked_add(output.len() as u64)
+        .is_none_or(|end| end > file.len())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Truncated prepared page",
+        ));
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(output)
 }
 
 /// One held write: an explicit range, or an append.
@@ -184,14 +226,17 @@ pub struct Committed<'a> {
 }
 
 impl Committed<'_> {
-    fn read(&self, section: &str, range: u64) -> io::Result<Option<Vec<u8>>> {
-        let file = match self.saved {
+    fn open(&self, section: &str, range: u64) -> io::Result<Option<store::Range>> {
+        Ok(match self.saved {
             None => return Ok(None),
             Some(previous) if previous != self.key => {
                 self.store.read_prefix(previous, self.key, section, range)?
             }
             Some(_) => self.store.read(self.key, section, range)?,
-        };
+        })
+    }
+    fn read(&self, section: &str, range: u64) -> io::Result<Option<Vec<u8>>> {
+        let file = self.open(section, range)?;
         file.map(|mut file| {
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes)?;
@@ -329,6 +374,32 @@ impl Pages for HeldView<'_, '_> {
         Ok(range)
     }
 
+    fn read_slice(
+        &mut self,
+        section: &str,
+        range: u64,
+        offset: u64,
+        output: &mut [u8],
+    ) -> io::Result<()> {
+        if let Some(&position) = self.held.at.get(&(section.to_owned(), range)) {
+            let bytes = match &self.held.writes[position] {
+                Write::At(_, _, data) | Write::Append(_, _, data) => data,
+            };
+            let slice = usize::try_from(offset)
+                .ok()
+                .and_then(|start| bytes.get(start..start.checked_add(output.len())?))
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Truncated prepared page")
+                })?;
+            output.copy_from_slice(slice);
+            return Ok(());
+        }
+        let mut file = self
+            .committed
+            .open(section, range)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing prepared page"))?;
+        read_slice(&mut file, offset, output)
+    }
     fn read_at(&mut self, section: &str, range: u64) -> io::Result<Option<Vec<u8>>> {
         if let Some(&position) = self.held.at.get(&(section.to_owned(), range)) {
             return Ok(Some(match &self.held.writes[position] {
@@ -412,11 +483,19 @@ mod tests {
         }
         let ops = |pages: &mut dyn Pages| {
             assert_eq!(pages.read_at("page", 0).unwrap().unwrap(), b"committed");
+            let mut slice = [0; 3];
+            pages.read_slice("page", 0, 1, &mut slice).unwrap();
+            assert_eq!(&slice, b"omm");
+            assert!(pages.read_slice("page", 0, 8, &mut [0; 2]).is_err());
             pages.write_at("page", 0, b"replaced").unwrap();
             pages.write_at("page", 1, b"next").unwrap();
             assert_eq!(pages.write("log", b"second").unwrap(), 1);
             pages.write_at("page", 0, b"again").unwrap();
             assert_eq!(pages.read_at("page", 0).unwrap().unwrap(), b"again");
+            let mut slice = [0; 2];
+            pages.read_slice("page", 0, 1, &mut slice).unwrap();
+            assert_eq!(&slice, b"ga");
+            assert!(pages.read_slice("page", 0, 4, &mut [0; 2]).is_err());
             assert_eq!(pages.read_at("log", 0).unwrap().unwrap(), b"first");
             assert_eq!(pages.write("log", b"third").unwrap(), 2);
             // A range appended, then written again before the commit.

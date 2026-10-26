@@ -739,6 +739,7 @@ fn a_published_country_link_keeps_its_lifetime_when_it_returns() {
         .clone();
     let flag = AtomicBool::new(false);
     prepared.flush(&mut pages, &flag).unwrap();
+    prepared.save(&mut pages, &flag).unwrap();
     let scan = assemble(
         &prepared.directory,
         &native_key(&country),
@@ -1943,6 +1944,12 @@ fn unchanged_censuses_and_independent_read_dates_stitch_exactly_across_spill_and
         frame.hour = FIRST + offset;
         if offset > 0 {
             frame.metrics.table_ns.fill(0);
+        }
+        if offset % 7 == 0 {
+            frame.metrics.table_ns[TableId::VariantStats.index()] = 1;
+        }
+        if offset % 11 == 0 {
+            frame.metrics.table_ns[TableId::IndustrialOrganisationDetails.index()] = 1;
         }
         frame.tables[TableId::VariantStats.index()] = frame.tables[TableId::VariantStats.index()]
             .clone()

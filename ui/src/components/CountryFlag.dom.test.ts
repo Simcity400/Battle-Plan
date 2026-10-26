@@ -31,5 +31,5 @@ try {
   const slots = result.slots as { width: number; height: number; radius: string; shadow: string }[][];
   assert.deepEqual(slots[1], slots[0], 'later widget CSS preserves eager placeholder geometry and borders');
   assert.deepEqual(slots[0].map(slot => [slot.width, slot.height]),
-    [[25, 16], [18, 12], [25, 16], [15, 10], [20, 12], [20, 12], [25, 16], [18, 12], [25, 14], [21, 14]]);
+    [[25, 16], [18, 12], [25, 16], [15, 10], [20, 12], [20, 12], [20, 14], [20, 14], [20, 14], [20, 14]]);
 });

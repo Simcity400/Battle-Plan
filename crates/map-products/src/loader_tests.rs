@@ -26,7 +26,7 @@ fn fixture(name: &str) -> Stack {
     stack.write(
         &base,
         "map/definition.csv",
-        "1;1;2;3;land;false;synthetic;1\n",
+        "0;0;0;0;land;false;synthetic;0\n1;1;2;3;land;false;synthetic;1\n",
     );
     stack.write(&base, "map/adjacencies.csv", "From;To;Type;Through;start_x;start_y;stop_x;stop_y;adjacency_rule_name;Comment\n-1;-1;;-1;-1;-1;-1;-1;;\n");
     stack.write(&base, "map/continents.txt", "continents = { synthetic }");
@@ -666,8 +666,12 @@ fn artwork_localisation_keeps_the_previous_named_fallback_and_renderer_isolation
             && layer.id == visual_layer.id && layer.index == visual_index)));
 
     let path = art.join(relative);
-    std::fs::rename(&path, path.with_extension("saved")).unwrap();
-    std::fs::create_dir(&path).unwrap();
+    use std::os::windows::fs::OpenOptionsExt;
+    let unreadable = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&path)
+        .unwrap();
     let old = previous_inputs(&layers, &stack.base(), "english").unwrap();
     let fallback = ProductContent::load(&layers, &stack.base(), "english").unwrap();
     assert_eq!(fallback.localisation, old.localisation);
@@ -692,6 +696,7 @@ fn artwork_localisation_keeps_the_previous_named_fallback_and_renderer_isolation
         .has_file("interface/not_loaded.gui")
         .unwrap();
     assert_eq!(before, fallback.reads.witness().unwrap());
+    drop(unreadable);
 }
 
 #[test]

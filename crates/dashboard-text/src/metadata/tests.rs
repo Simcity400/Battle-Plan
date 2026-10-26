@@ -204,30 +204,66 @@ fn catalogue_checked_allocation_failures_propagate_instead_of_becoming_success()
         .unwrap(),
     );
     let read = || {
-        super::read(
+        super::read_resident(
             &replay,
             Path::new("memory.battleplan"),
             &AtomicBool::new(false),
         )
     };
-    // Initialize shared views and verify the block before counting checked growth.
-    read().unwrap();
+    let healthy = read().unwrap();
+    assert_eq!(healthy.countries.len(), 1);
+    assert_eq!(healthy.countries[0].id, "7");
+    assert_eq!(healthy.countries[0].observed_hour, 100);
+    assert_eq!(healthy.branches.len(), 1);
+    assert_eq!(healthy.branches[0].catalogue_hour, Some(100));
+    assert!(healthy.refusals.is_empty());
+    assert!(!healthy.warnings.is_empty());
+    let expected_refusals = serde_json::json!({
+        "warnings": healthy.warnings,
+        "reasons": healthy.damaged.as_ref().map_or(&[][..], |damage| damage.reasons.as_slice()),
+    });
+    let mut complete = serde_json::to_value(&healthy.value).unwrap();
+    complete["warnings"] = serde_json::json!([]);
+    if healthy.damaged.is_some() {
+        complete["damaged"]["reasons"] = serde_json::json!([]);
+    }
+    let read_refused = || super::with_storage_failure_after(0, read);
+    let refused = read_refused().unwrap();
+    assert_eq!(serde_json::to_value(&refused.value).unwrap(), complete);
+    assert_eq!(
+        serde_json::to_value(&refused.refusals).unwrap(),
+        expected_refusals
+    );
+
+    // Sustained warning denial bypasses only recoverable storage, leaving every mandatory growth isolated.
     engine_allocation::set_stop_hook(Some(fail_allocation));
-    let healthy = read();
+    let healthy = read_refused();
     engine_allocation::set_stop_hook(None);
-    healthy.unwrap();
+    let healthy = healthy.unwrap();
+    assert_eq!(serde_json::to_value(&healthy.value).unwrap(), complete);
+    assert_eq!(
+        serde_json::to_value(&healthy.refusals).unwrap(),
+        expected_refusals
+    );
     let attempts = ATTEMPTS.get();
     assert!(attempts > 0);
     for ordinal in 1..=attempts {
         ATTEMPTS.set(0);
         FAIL_AT.set(Some(ordinal));
         engine_allocation::set_stop_hook(Some(fail_allocation));
-        let result = read();
+        let result = read_refused();
         engine_allocation::set_stop_hook(None);
         assert_eq!(
-            result.unwrap_err().kind(),
+            result
+                .err()
+                .expect("mandatory allocation denial must propagate")
+                .kind(),
             io::ErrorKind::OutOfMemory,
-            "checked allocation {ordinal}"
+            "isolated mandatory allocation {ordinal}"
+        );
+        assert!(
+            ATTEMPTS.get() >= ordinal,
+            "allocation {ordinal} was not reached"
         );
     }
 }

@@ -204,6 +204,17 @@ fn reused_raw_country_does_not_reassign_old_events_and_daily_batches_can_finish_
     let mut later = frame(26, b"BBB", 10);
     set(
         &mut later,
+        TableRows::PoliticsCaptureCoverage(vec![PoliticsCaptureCoverageRow {
+            country: 5001,
+            instance: 10,
+            epoch: 2,
+            since_hour: 25,
+            through_hour: 26,
+            streams: PoliticsCaptureCoverageRow::ALL_STREAMS,
+        }]),
+    );
+    set(
+        &mut later,
         TableRows::CountryPowerChanges(vec![
             CountryPowerChangeRow {
                 country: 5001,
@@ -216,7 +227,7 @@ fn reused_raw_country_does_not_reassign_old_events_and_daily_batches_can_finish_
             CountryPowerChangeRow {
                 country: 5001,
                 instance: 10,
-                epoch: 1,
+                epoch: 2,
                 sequence: 8,
                 hour: 25,
                 ..Default::default()
@@ -233,7 +244,7 @@ fn reused_raw_country_does_not_reassign_old_events_and_daily_batches_can_finish_
         TableRows::PoliticsCaptureCoverage(vec![PoliticsCaptureCoverageRow {
             country: 5001,
             instance: 9,
-            epoch: 2,
+            epoch: 3,
             since_hour: 26,
             through_hour: 27,
             streams: PoliticsCaptureCoverageRow::ALL_STREAMS,
@@ -253,7 +264,7 @@ fn reused_raw_country_does_not_reassign_old_events_and_daily_batches_can_finish_
             CountryPowerChangeRow {
                 country: 5001,
                 instance: 9,
-                epoch: 2,
+                epoch: 3,
                 sequence: 12,
                 hour: 26,
                 ..Default::default()

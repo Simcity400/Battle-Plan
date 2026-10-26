@@ -1064,27 +1064,24 @@ fn a_declaration_moves_need_between_tables_over_the_columns_retained() {
 #[test]
 fn a_grouped_reads_own_reader_holds_its_block_while_another_reader_passes_it() {
     let replay = recording(4);
-    let divisions = TableId::Divisions;
-    let walk = replay.section_reader(0, &[divisions], "walk");
+    let table = TableId::Countries;
+    let walk = replay.section_reader(0, &[table], "walk");
     // A far reach keeps the span budget out of the way.
     walk.reading(9);
-    fill(&replay, 1, divisions, 1_500);
+    fill(&replay, 1, table, 1_500);
     let index = &replay.index[1];
-    let held = Key::new(&replay, index, divisions);
+    let held = Key::new(&replay, index, table);
     let block = replay.block_bytes(index).unwrap();
     let mut checked = false;
-    read_selected_updates(&replay, index, &block, &[TableId::Countries], &mut || {
+    read_selected_updates(&replay, index, &block, &[table], &mut || {
         if !checked {
             checked = true;
             for later in [2, 3] {
-                fill(&replay, later, divisions, 1_500);
+                fill(&replay, later, table, 1_500);
             }
             walk.at(4);
-            let read = Reads::block(&replay, 1, None);
-            assert_needs(
-                &replay,
-                &[&read, &Reads::window(&replay, 4, 9, &[divisions])],
-            );
+            let read = Reads::block(&replay, 1, Some(&[table]));
+            assert_needs(&replay, &[&read, &Reads::window(&replay, 4, 9, &[table])]);
             let state = replay.decoded_sections.lock();
             assert!(
                 !state.entries[&held].obsolete,
@@ -1095,7 +1092,7 @@ fn a_grouped_reads_own_reader_holds_its_block_while_another_reader_passes_it() {
     })
     .unwrap();
     assert!(checked, "the read checks before each table");
-    assert_needs(&replay, &[&Reads::window(&replay, 4, 9, &[divisions])]);
+    assert_needs(&replay, &[&Reads::window(&replay, 4, 9, &[table])]);
     assert!(
         replay
             .decoded_sections

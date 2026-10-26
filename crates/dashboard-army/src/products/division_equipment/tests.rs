@@ -1704,9 +1704,12 @@ fn an_hour_rebuilds_and_scans_only_what_its_changes_reach_among_fifteen_hundred(
     let (pending, held) = (prepared.bytes(), prepared.held_bytes());
     let fixture = dashboard_base::prepared::series::tests::Fixture::new();
     let mut writer = fixture.writer();
+    let framing = dashboard_base::prepared::pages::framing::bytes();
     prepared
         .flush(&mut writer, 1, &AtomicBool::new(false))
         .unwrap();
+    let framing =
+        usize::try_from(dashboard_base::prepared::pages::framing::bytes() - framing).unwrap();
     let continuation = serde_json::to_vec(&prepared).unwrap();
     writer
         .write_at(CONTINUATION, 0, continuation.as_slice())
@@ -1724,14 +1727,16 @@ fn an_hour_rebuilds_and_scans_only_what_its_changes_reach_among_fifteen_hundred(
         .map(|range| length(&dashboard_keyed::series_section(history::NAME, 1), range))
         .take_while(|bytes| *bytes > 0)
         .sum();
-    let written = runs + page + length(CONTINUATION, 0);
+    // The production pending audit charges records separately from exact writer-reported framing.
+    let records = (runs + page).checked_sub(framing).unwrap();
+    let written = records + length(CONTINUATION, 0);
     assert!(
         pending + held >= written,
         "{pending} pending and {held} held, {written} written"
     );
     assert!(
-        pending >= runs + page,
-        "{pending} pending, {runs} of runs and {page} of catalogue written"
+        pending >= records,
+        "{pending} pending, {records} record bytes and {framing} framing bytes written"
     );
     // A flush releases what was pending; the continuation stays held.
     assert!(prepared.bytes() < pending);
@@ -1894,8 +1899,14 @@ fn numeric_churn_frames() -> Vec<DecodedFrame> {
         .map(|offset| {
             let mut f = scale_frame(4, offset);
             f.metrics.table_ns.fill(0);
-            if offset == 2 {
-                f.metrics.table_ns[TableId::VariantModules.index()] = 1;
+            if [2, 20, 44, 68].contains(&offset) {
+                for table in [
+                    TableId::DivisionEquipment,
+                    TableId::Stockpiles,
+                    TableId::VariantModules,
+                ] {
+                    f.metrics.table_ns[table.index()] = 1;
+                }
             }
             if let TableView::Complete(TableRows::Countries(rows)) =
                 &mut *f.tables[TableId::Countries.index()]

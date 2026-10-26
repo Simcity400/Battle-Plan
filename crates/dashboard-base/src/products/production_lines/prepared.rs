@@ -476,6 +476,12 @@ impl Prepared {
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<bool> {
         if self
+            .quiet
+            .is_some_and(|(_, last)| last.checked_add(1) != Some(frame.hour))
+        {
+            self.drain_quiet(writer)?;
+        }
+        if self
             .world
             .quiet(replay, frame, changes, self.evidence_ready)
         {

@@ -13,6 +13,7 @@ use std::{
 };
 use ts_rs::TS;
 mod idle;
+mod order;
 mod query;
 mod saved;
 #[cfg(any(test, feature = "test-support"))]
@@ -150,6 +151,7 @@ pub struct KeyState {
     pub last: Option<Run>,
     pub runs: u64,
     pub events: u64,
+    event_order: Option<order::Position>,
     partial: [Option<Partial>; 4],
 }
 /// A level's open summary bucket. Most keys hold one value through a bucket's
@@ -276,6 +278,7 @@ fn tail_span(aligned: i64, last: Run) -> Partial {
 /// A key's saved state: runs as tuples, and a span ending the open run as its
 /// alignment alone.
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SavedKeyState {
     #[serde(rename = "l")]
     last: Option<(i32, i32, i128, bool)>,
@@ -283,6 +286,8 @@ struct SavedKeyState {
     runs: u64,
     #[serde(rename = "e")]
     events: u64,
+    #[serde(rename = "b", default, skip_serializing_if = "Option::is_none")]
+    event_order: Option<order::Position>,
     #[serde(rename = "p")]
     partial: [Option<SavedPartial>; 4],
 }
@@ -328,6 +333,7 @@ impl From<KeyState> for SavedKeyState {
                 .map(|run| (run.first_hour, run.last_hour, run.value, run.break_before)),
             runs: state.runs,
             events: state.events,
+            event_order: state.event_order,
             partial,
         }
     }
@@ -369,6 +375,7 @@ impl TryFrom<SavedKeyState> for KeyState {
             last,
             runs: saved.runs,
             events: saved.events,
+            event_order: saved.event_order,
             partial,
         })
     }
@@ -1309,8 +1316,12 @@ impl Batch {
         self.first.is_none() && self.last == 0 && self.keys.is_empty() && self.bytes == 0
     }
     pub fn through(&mut self, hour: i32) {
-        self.first.get_or_insert(hour);
-        self.last = hour;
+        if self.first.is_some() {
+            self.last = self.last.max(hour);
+        } else {
+            self.first = Some(hour);
+            self.last = hour;
+        }
     }
     pub fn bytes(&self) -> usize {
         self.bytes
@@ -1483,6 +1494,7 @@ impl Batch {
         cancelled: &AtomicBool,
         mut encoding: Encoding<'_>,
     ) -> io::Result<()> {
+        let mut keys: Vec<_> = keys.collect();
         let count = keys.len();
         let mut empty_keys = 0_usize;
         let mut bytes = vec![0; (HEADER + DIRECTORY * keys.len() as u64) as usize];
@@ -1495,7 +1507,7 @@ impl Batch {
         let mut payloads = HashMap::<[u8; 32], (usize, usize, [Option<Partial>; 4])>::new();
         let mut identity = Vec::new();
         let mut empty: Option<(usize, usize)> = None;
-        for (index, (key, runs, events, state)) in keys.enumerate() {
+        for (index, &mut (key, runs, events, ref mut state)) in keys.iter_mut().enumerate() {
             check_cancel(cancelled)?;
             let at = HEADER as usize + index * DIRECTORY as usize;
             put(&mut bytes, at, &key.to_le_bytes());
@@ -1701,6 +1713,12 @@ impl Batch {
         check_cancel(cancelled)?;
         let _cpu = ::replay_frame::cpu::scope_phase("series:write_page");
         let _range = writer.write(section, bytes.as_slice())?;
+        let _order_bytes =
+            order::publish(writer, section, _range, &mut bytes, &mut keys, cancelled)?;
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            framing += _order_bytes;
+        }
         #[cfg(any(test, feature = "test-support"))]
         writer.note_framing(section, _range, framing);
         if super::state_census::on() {
@@ -2211,6 +2229,7 @@ struct Directory {
     event_base: u64,
     event_rows: u64,
     last_end: i32,
+    order_slot: Option<u64>,
 }
 impl Directory {
     fn first_run(self) -> u64 {
@@ -2243,6 +2262,7 @@ fn directory(file: &mut (impl Read + Seek), key: u64) -> io::Result<Directory> {
         event_base: u64_at(&bytes, 40),
         event_rows: u64_at(&bytes, 48),
         last_end: i32_at(&bytes, 56),
+        order_slot: order::slot(&bytes, index)?,
     })
 }
 /// One batch's whole directory, read at once: its entries in key order.
@@ -2290,6 +2310,7 @@ impl Table {
             event_base: u64_at(bytes, 40),
             event_rows: u64_at(bytes, 48),
             last_end: i32_at(bytes, 56),
+            order_slot: order::slot(bytes, index)?,
         })
     }
 }
@@ -2440,6 +2461,7 @@ pub struct Reader<'a> {
     publication: Option<Arc<Vec<[u64; 3]>>>,
     event_walk: Option<EventWalk>,
     run_bounds: HashMap<u64, (u64, Run)>,
+    event_orders: HashMap<u64, Option<order::Position>>,
 }
 // A merged event cursor belongs to this reader's immutable manifest and one
 // exact selection. Keeping the merge frontier avoids seeking every key again
@@ -2480,6 +2502,7 @@ impl<'a> Reader<'a> {
             publication: None,
             event_walk: None,
             run_bounds: HashMap::new(),
+            event_orders: HashMap::new(),
         }
     }
 
@@ -2511,6 +2534,7 @@ impl<'a> Reader<'a> {
             publication: None,
             event_walk: None,
             run_bounds: HashMap::new(),
+            event_orders: HashMap::new(),
         })
     }
     fn file(&mut self, batch: u64) -> io::Result<&mut store::Range> {
@@ -2641,6 +2665,7 @@ impl<'a> Reader<'a> {
         self.publication = None;
         self.event_walk = None;
         self.run_bounds.clear();
+        self.event_orders.clear();
         match self.count.checked_sub(1) {
             Some(last) => Ok(Some(self.hours(last)?.1)),
             None => Ok(None),
@@ -3180,25 +3205,38 @@ impl<'a> Reader<'a> {
     pub fn event_count_through(&mut self, key: u64, hour: i32) -> io::Result<u64> {
         #[cfg(test)]
         EVENT_COUNTS.set(EVENT_COUNTS.get() + 1);
+        let ordinary = self.ordinary_count_through(key, hour)?;
+        let late = match self.event_order(key)? {
+            Some(root) => order::count_through(root, hour, |position| self.order_node(position))?,
+            None => 0,
+        };
+        ordinary
+            .checked_add(late)
+            .ok_or_else(|| invalid("event count overflow"))
+    }
+    fn ordinary_count_through(&mut self, key: u64, hour: i32) -> io::Result<u64> {
         let end = lower(self.count, |batch| Ok(self.hours(batch)?.0 <= hour))?;
-        if end == 0 {
+        let Some(batch) = end.checked_sub(1) else {
             return Ok(0);
-        }
-        let dir = self.info(end - 1, key)?;
-        Ok(dir.event_base
-            + self
-                .data(end - 1, key)?
+        };
+        let dir = self.info(batch, key)?;
+        let within = if dir.event_rows == 0 || self.hours(batch)?.1 <= hour {
+            dir.event_rows
+        } else {
+            self.data(batch, key)?
                 .events
-                .partition_point(|(date, _)| *date <= hour) as u64)
+                .partition_point(|(date, _)| *date <= hour) as u64
+        };
+        (dir.event_base + within)
+            .checked_sub(self.order_count(batch, key)?)
+            .ok_or_else(|| invalid("event order count exceeds its prefix"))
     }
     fn event_at(&mut self, key: u64, ordinal: u64) -> io::Result<DatedRow> {
-        let batch = lower(self.count, |batch| {
-            let dir = self.info(batch, key)?;
-            Ok(dir.event_base + dir.event_rows <= ordinal)
-        })?;
+        let native = self.event_native(key, ordinal)?;
+        let batch = self.event_batch(key, native)?;
         let id = self.file(batch)?.id().cache_key();
-        let (hour, row) = self.event_row(batch, key, ordinal)?;
-        let parsed = query::event((id, key, ordinal), || {
+        let (hour, row) = self.event_row(batch, key, native)?;
+        let parsed = query::event((id, key, native), || {
             #[cfg(test)]
             EVENT_PARSES.set(EVENT_PARSES.get() + 1);
             Ok(serde_json::from_slice(row)?)
@@ -3232,6 +3270,14 @@ impl<'a> Reader<'a> {
         let mut rows = Vec::with_capacity(keys.len());
         for &key in keys {
             check_cancel(self.cancelled)?;
+            if self.event_order(key)?.is_some() {
+                let count = self.event_count_through(key, hour)?;
+                rows.push(match count.checked_sub(1) {
+                    Some(ordinal) => Some(self.event_raw(key, ordinal)?),
+                    None => None,
+                });
+                continue;
+            }
             let Some(last) = end.checked_sub(1) else {
                 rows.push(None);
                 continue;
@@ -3597,22 +3643,107 @@ impl<'a> Reader<'a> {
             clusters,
         })
     }
-    /// The hour of a key's event at a native ordinal.
-    pub fn event_date(&mut self, key: u64, ordinal: u64) -> io::Result<i32> {
+    fn event_order(&mut self, key: u64) -> io::Result<Option<order::Position>> {
+        if let Some(&root) = self.event_orders.get(&key) {
+            return Ok(root);
+        }
+        let root = match self.count.checked_sub(1) {
+            Some(batch) => self.order_root(batch, key)?,
+            None => None,
+        };
+        self.event_orders.insert(key, root);
+        Ok(root)
+    }
+    fn order_root(&mut self, batch: u64, key: u64) -> io::Result<Option<order::Position>> {
+        match self.info(batch, key)?.order_slot {
+            Some(slot) => {
+                let file = self.file(batch)?;
+                let count = u64_at(&read::<16>(file, 0)?, 8);
+                let at = order::root_offset(file.len(), count, slot)?;
+                Ok(Some(order::Position::decode(&read::<16>(file, at)?)?))
+            }
+            None => Ok(None),
+        }
+    }
+    fn order_count(&mut self, batch: u64, key: u64) -> io::Result<u64> {
+        match self.order_root(batch, key)? {
+            Some(root) => Ok(self.order_node(root)?.count),
+            None => Ok(0),
+        }
+    }
+    fn order_node(&mut self, position: order::Position) -> io::Result<order::Node> {
+        order::Node::decode(&read::<56>(self.file(position.batch)?, position.offset)?)
+    }
+    fn event_native(&mut self, key: u64, ordinal: u64) -> io::Result<u64> {
+        let Some(root) = self.event_order(key)? else {
+            return Ok(ordinal);
+        };
+        let count = self.order_node(root)?.count;
+        // A late date is behind the frontier, so no later ordinary row can share it.
+        let late = lower(count, |index| {
+            let (date, _) = order::select(root, index, |position| self.order_node(position))?;
+            let rank = self
+                .ordinary_count_through(key, date)?
+                .checked_add(index)
+                .ok_or_else(|| invalid("event count overflow"))?;
+            Ok(rank <= ordinal)
+        })?;
+        if let Some(index) = late.checked_sub(1) {
+            let (date, native) = order::select(root, index, |position| self.order_node(position))?;
+            if self.ordinary_count_through(key, date)?.checked_add(index) == Some(ordinal) {
+                return Ok(native);
+            }
+        }
+        self.ordinary_native(key, ordinal - late)
+    }
+    fn ordinary_native(&mut self, key: u64, ordinal: u64) -> io::Result<u64> {
         let batch = lower(self.count, |batch| {
             let dir = self.info(batch, key)?;
-            Ok(dir.event_base + dir.event_rows <= ordinal)
+            let count = (dir.event_base + dir.event_rows)
+                .checked_sub(self.order_count(batch, key)?)
+                .ok_or_else(|| invalid("event order count exceeds its prefix"))?;
+            Ok(count <= ordinal)
         })?;
-        Ok(self.event_row(batch, key, ordinal)?.0)
+        if batch == self.count {
+            return Err(invalid("event order ordinal is out of range"));
+        }
+        let dir = self.info(batch, key)?;
+        let late_before = match batch.checked_sub(1) {
+            Some(previous) => self.order_count(previous, key)?,
+            None => 0,
+        };
+        let late = self
+            .order_count(batch, key)?
+            .checked_sub(late_before)
+            .filter(|count| *count <= dir.event_rows)
+            .ok_or_else(|| invalid("event order count exceeds its batch"))?;
+        let base = dir
+            .event_base
+            .checked_sub(late_before)
+            .ok_or_else(|| invalid("event order count exceeds its prefix"))?;
+        dir.event_base
+            .checked_add(late)
+            .and_then(|native| native.checked_add(ordinal - base))
+            .ok_or_else(|| invalid("event ordinal overflow"))
     }
-    /// A key's event at a native ordinal with its row as stored, for rows a
+    fn event_batch(&mut self, key: u64, native: u64) -> io::Result<u64> {
+        lower(self.count, |batch| {
+            let dir = self.info(batch, key)?;
+            Ok(dir.event_base + dir.event_rows <= native)
+        })
+    }
+    /// The hour of a key's event in date/duplicate order.
+    pub fn event_date(&mut self, key: u64, ordinal: u64) -> io::Result<i32> {
+        let native = self.event_native(key, ordinal)?;
+        let batch = self.event_batch(key, native)?;
+        Ok(self.event_row(batch, key, native)?.0)
+    }
+    /// A key's event in date/duplicate order with its row as stored, for rows a
     /// family writes in its own byte form ([`Accumulator::event_raw`]).
     pub fn event_raw(&mut self, key: u64, ordinal: u64) -> io::Result<(i32, Vec<u8>)> {
-        let batch = lower(self.count, |batch| {
-            let dir = self.info(batch, key)?;
-            Ok(dir.event_base + dir.event_rows <= ordinal)
-        })?;
-        let (hour, row) = self.event_row(batch, key, ordinal)?;
+        let native = self.event_native(key, ordinal)?;
+        let batch = self.event_batch(key, native)?;
+        let (hour, row) = self.event_row(batch, key, native)?;
         Ok((*hour, row.clone()))
     }
     /// A key's event at a native ordinal, within the batch that should hold it.

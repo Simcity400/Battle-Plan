@@ -477,7 +477,7 @@ mod tests {
         let restored = fixture.open();
         assert!(restored.cached_inputs.is_some());
         let appended_bytes = concat!(
-            r#"["Branch 1 block 10 – 10 is unreadable: frame campaign identity differs from replay header","#,
+            r#"["branch blocks are not contiguous","session blocks are not contiguous","Branch 1 block 10 – 10 is unreadable: frame campaign identity differs from replay header","#,
             r#""Branch 2 block 20 – 20 is unreadable: frame campaign identity differs from replay header","#,
             r#""Branch 1 block 11 – 11 is unreadable: frame campaign identity differs from replay header"]"#,
         );
@@ -489,7 +489,7 @@ mod tests {
         let reopened = fixture.open();
         assert!(reopened.cached_inputs.is_some());
         let expected_damage = concat!(
-            r#"{"parts":3,"firstHour":10,"lastHour":20,"reasons":["Branch 1 block 10 – 10 is unreadable: frame campaign identity differs from replay header","#,
+            r#"{"parts":3,"firstHour":10,"lastHour":20,"reasons":["branch blocks are not contiguous","session blocks are not contiguous","Branch 1 block 10 – 10 is unreadable: frame campaign identity differs from replay header","#,
             r#""Branch 1 block 11 – 11 is unreadable: frame campaign identity differs from replay header","#,
             r#""Branch 2 block 20 – 20 is unreadable: frame campaign identity differs from replay header"]}"#,
         );

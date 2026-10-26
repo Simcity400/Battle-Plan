@@ -2973,3 +2973,678 @@ fn empty_batches_keep_public_state_bytes_and_bounds_only_batches_resume() {
         "bounds-only checkpoint",
     );
 }
+
+#[test]
+fn backdated_events_do_not_move_the_forward_frontier() {
+    let flag = AtomicBool::new(false);
+    for resume in [false, true] {
+        let fixture = Fixture::new();
+        let mut values = Accumulator::default();
+        values.advance(48).unwrap();
+        values.observe(1, 48, Some(100), true);
+        for (hour, instance) in [(24, 1), (29, 2), (30, 1)] {
+            values
+                .event(9, hour, &json!({"instance": instance}))
+                .unwrap();
+        }
+        if resume {
+            values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
+        }
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "revisions", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        let mut reader =
+            Reader::new(&fixture.store, &fixture.key, "revisions".into(), &flag).unwrap();
+        assert_eq!(reader.value_at(1, 48).unwrap().unwrap().value, 100);
+        let revisions = reader.events(&[9], 24, 29, 0, 10).unwrap();
+        assert_eq!(revisions.total, 2);
+        assert_eq!(
+            revisions
+                .rows
+                .iter()
+                .map(|row| (row.hour, row.row["instance"].as_u64().unwrap()))
+                .collect::<Vec<_>>(),
+            vec![(24, 1), (29, 2)]
+        );
+        assert_eq!(reader.events(&[9], 30, 48, 0, 10).unwrap().total, 1);
+    }
+}
+
+#[test]
+fn backdated_event_ranks_include_committed_and_resumed_batches() {
+    let flag = AtomicBool::new(false);
+    for resume in [false, true] {
+        let mut fixture = Fixture::new();
+        let mut values = Accumulator::default();
+        let restore = |values: &mut Accumulator| {
+            if resume {
+                *values = serde_json::from_slice(&serde_json::to_vec(values).unwrap()).unwrap();
+            }
+        };
+        for hour in 24..=30 {
+            values.advance(hour).unwrap();
+            values.observe(1, hour, Some(100), hour == 24);
+            values.event(9, hour, &json!({"instance": 1})).unwrap();
+            if hour == 26 || hour == 30 {
+                values.event(10, hour, &json!({"instance": 1})).unwrap();
+            }
+            let mut writer = fixture.writer();
+            values.flush(&mut writer, "revisions", 0, &flag).unwrap();
+            writer.commit().unwrap();
+            restore(&mut values);
+        }
+        values.advance(48).unwrap();
+        values.observe(1, 48, Some(4800), true);
+        for hour in [24, 29, 30] {
+            values.event(9, hour, &json!({"instance": 2})).unwrap();
+        }
+        values.event(10, 22, &json!({"instance": 2})).unwrap();
+        values.event(12, 23, &json!({"instance": 7})).unwrap();
+        restore(&mut values);
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "revisions", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        let mut earlier =
+            Reader::new(&fixture.store, &fixture.key, "revisions".into(), &flag).unwrap();
+        assert_eq!(earlier.event_count_through(9, 29).unwrap(), 8);
+        assert_eq!(
+            earlier.latest_event(9, 29).unwrap(),
+            Some((29, json!({"instance": 2})))
+        );
+        restore(&mut values);
+        values.advance(60).unwrap();
+        values.observe(1, 60, Some(6000), true);
+        for (hour, instance) in [(25, 3), (28, 3), (29, 3), (29, 4)] {
+            values
+                .event(9, hour, &json!({"instance": instance}))
+                .unwrap();
+        }
+        values.event(10, 21, &json!({"instance": 3})).unwrap();
+        values.event(11, 60, &json!({"instance": 5})).unwrap();
+        restore(&mut values);
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "revisions", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        assert_eq!(earlier.event_count_through(9, 29).unwrap(), 8);
+        assert_eq!(
+            earlier.latest_event(9, 29).unwrap(),
+            Some((29, json!({"instance": 2})))
+        );
+        drop(earlier);
+        restore(&mut values);
+        // A later ordinary publication must retain the index even without new events for its keys.
+        values.advance(61).unwrap();
+        values.event(11, 61, &json!({"instance": 6})).unwrap();
+        let mut writer = if resume {
+            fixture.append_writer()
+        } else {
+            fixture.writer()
+        };
+        values.flush(&mut writer, "revisions", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        let mut reader =
+            Reader::new(&fixture.store, &fixture.key, "revisions".into(), &flag).unwrap();
+        for (hour, expected) in [
+            (23, 0),
+            (24, 2),
+            (25, 4),
+            (26, 5),
+            (27, 6),
+            (28, 8),
+            (29, 12),
+            (30, 14),
+            (61, 14),
+        ] {
+            assert_eq!(
+                reader.event_count_through(9, hour).unwrap(),
+                expected,
+                "hour {hour}, resume {resume}"
+            );
+        }
+        let expected = vec![
+            (24, 1),
+            (24, 2),
+            (25, 1),
+            (25, 3),
+            (26, 1),
+            (27, 1),
+            (28, 1),
+            (28, 3),
+            (29, 1),
+            (29, 2),
+            (29, 3),
+            (29, 4),
+            (30, 1),
+            (30, 2),
+        ];
+        let rows = |page: &EventsPage| {
+            page.rows
+                .iter()
+                .map(|row| (row.hour, row.row["instance"].as_u64().unwrap()))
+                .collect::<Vec<_>>()
+        };
+        let all = reader.events(&[9], 24, 61, 0, 20).unwrap();
+        assert_eq!(all.total, 14);
+        assert_eq!(all.cursor, None);
+        assert_eq!(rows(&all), expected);
+        for (ordinal, &(hour, instance)) in expected.iter().enumerate() {
+            let row = reader.event_at(9, ordinal as u64).unwrap();
+            assert_eq!(
+                (row.hour, row.ordinal, row.row),
+                (hour, ordinal as u64, json!({"instance": instance}))
+            );
+            assert_eq!(reader.event_date(9, ordinal as u64).unwrap(), hour);
+            let (date, raw) = reader.event_raw(9, ordinal as u64).unwrap();
+            assert_eq!(
+                (date, serde_json::from_slice::<Value>(&raw).unwrap()),
+                (hour, json!({"instance": instance}))
+            );
+        }
+        assert!(reader.event_at(9, 14).is_err());
+        assert_eq!(
+            reader.latest_event(9, 29).unwrap(),
+            Some((29, json!({"instance": 4})))
+        );
+        assert_eq!(
+            reader.latest_event(10, 25).unwrap(),
+            Some((22, json!({"instance": 2})))
+        );
+        let latest = reader.latest_event_rows(&[9, 10, 12, 99], 29).unwrap();
+        assert_eq!(
+            latest
+                .into_iter()
+                .map(|row| row
+                    .map(|(hour, raw)| (hour, serde_json::from_slice::<Value>(&raw).unwrap())))
+                .collect::<Vec<_>>(),
+            vec![
+                Some((29, json!({"instance": 4}))),
+                Some((26, json!({"instance": 1}))),
+                Some((23, json!({"instance": 7}))),
+                None
+            ]
+        );
+        let first = reader.events(&[9], 24, 29, 0, 4).unwrap();
+        assert_eq!((first.first, first.total, first.cursor), (0, 12, Some(4)));
+        assert_eq!(rows(&first), vec![(24, 1), (24, 2), (25, 1), (25, 3)]);
+        let next = reader.events(&[9], 24, 29, 4, 4).unwrap();
+        assert_eq!((next.first, next.total, next.cursor), (4, 12, Some(8)));
+        assert_eq!(rows(&next), vec![(26, 1), (27, 1), (28, 1), (28, 3)]);
+        let last = reader.events(&[9], 24, 29, 8, 4).unwrap();
+        assert_eq!((last.first, last.total, last.cursor), (8, 12, None));
+        assert_eq!(rows(&last), vec![(29, 1), (29, 2), (29, 3), (29, 4)]);
+        let within = reader
+            .events_within(&[(9, 25, 28), (10, 21, 22), (12, 23, 23)], 0, 20)
+            .unwrap();
+        assert_eq!(within.total, 9);
+        assert_eq!(
+            within
+                .rows
+                .iter()
+                .map(|row| (row.hour, row.key, row.row["instance"].as_u64().unwrap()))
+                .collect::<Vec<_>>(),
+            vec![
+                (21, 10, 3),
+                (22, 10, 2),
+                (23, 12, 7),
+                (25, 9, 1),
+                (25, 9, 3),
+                (26, 9, 1),
+                (27, 9, 1),
+                (28, 9, 1),
+                (28, 9, 3)
+            ]
+        );
+        let clusters = reader.event_clusters(9, 24.0, 30.0, 18).unwrap().clusters;
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(
+            (
+                clusters[0].first_hour,
+                clusters[0].last_hour,
+                clusters[0].count.as_str(),
+                clusters[0].first_ordinal.as_str()
+            ),
+            (24, 30, "14", "0")
+        );
+        assert_eq!(reader.value_at(1, 29).unwrap().unwrap().value, 100);
+        assert!(reader.value_at(1, 31).unwrap().is_none());
+        assert_eq!(reader.value_at(1, 48).unwrap().unwrap().value, 4800);
+        assert_eq!(reader.value_at(1, 60).unwrap().unwrap().value, 6000);
+        assert_eq!(reader.through_hour(48).unwrap(), Some(48));
+        assert_eq!(reader.event_count_through(9, 29).unwrap(), 8);
+        assert_eq!(
+            reader.latest_event(9, 29).unwrap(),
+            Some((29, json!({"instance": 2})))
+        );
+        assert_eq!(reader.through_hour(30).unwrap(), Some(30));
+        assert_eq!(reader.event_count_through(9, 29).unwrap(), 6);
+        assert_eq!(
+            reader.latest_event(9, 29).unwrap(),
+            Some((29, json!({"instance": 1})))
+        );
+        assert_eq!(reader.latest_event(12, 30).unwrap(), None);
+    }
+}
+
+#[test]
+fn ordinary_event_batches_keep_their_exact_unindexed_format() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    let mut expected = PublishedPayloads::new();
+    for (batch, hour) in (24_i32..=30).enumerate() {
+        values.event(9, hour, &1).unwrap();
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "events", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
+        let mut raw = vec![hour as u8 * 2, 1, b'1'];
+        raw.extend_from_slice(&[0, 1, 32, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]);
+        let compressed = compress(&raw, 3).unwrap();
+        let mut page = Vec::new();
+        page.extend_from_slice(&hour.to_le_bytes());
+        page.extend_from_slice(&hour.to_le_bytes());
+        for value in [1_u64, 9, 80, compressed.len() as u64, 0, 0, batch as u64, 1] {
+            page.extend_from_slice(&value.to_le_bytes());
+        }
+        page.extend_from_slice(&hour.to_le_bytes());
+        page.extend_from_slice(&[0; 4]);
+        page.extend(compressed);
+        expected.insert(("events".into(), batch as u64), page);
+    }
+    assert_payloads_equal(&fixture.payloads(), &expected, "ordinary event encoding");
+    let saved = serde_json::to_value(&values).unwrap();
+    assert_eq!(
+        saved["states"]["9"],
+        json!({"l": null, "r": 0, "e": 7, "p": [null, null, null, null]})
+    );
+}
+
+#[test]
+fn backdated_event_counts_do_not_scan_committed_batches() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    let mut writer = fixture.writer();
+    for hour in 0..256 {
+        values.advance(hour).unwrap();
+        values.event(9, hour, &1).unwrap();
+        values.flush(&mut writer, "events", 0, &flag).unwrap();
+    }
+    values.advance(512).unwrap();
+    values.event(9, 127, &2).unwrap();
+    values.flush(&mut writer, "events", 0, &flag).unwrap();
+    writer.commit().unwrap();
+    for offset in 1..=64 {
+        values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
+        values.advance(512 + offset).unwrap();
+        values.event(9, -offset, &3).unwrap();
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "events", 0, &flag).unwrap();
+        writer.commit().unwrap();
+    }
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "events".into(), &flag).unwrap();
+    let before = directory_tests::SMALL_READS.get();
+    let decoded = decoded_event_rows();
+    assert_eq!(reader.ordinary_count_through(9, 127).unwrap(), 128);
+    let prefix_reads = directory_tests::SMALL_READS.get() - before;
+    assert!(
+        prefix_reads <= 11,
+        "{prefix_reads} reads for 321 batch boundaries"
+    );
+    let before = directory_tests::SMALL_READS.get();
+    assert_eq!(reader.event_count_through(9, 127).unwrap(), 193);
+    let reads = directory_tests::SMALL_READS.get() - before;
+    assert_eq!(decoded_event_rows(), decoded, "rank decoded event payloads");
+    let root = reader.event_order(9).unwrap().unwrap();
+    let height = u64::from(reader.order_node(root).unwrap().height);
+    assert!(height <= 2 * (321_u64.ilog2() as u64 + 1));
+    assert_eq!(reader.order_node(root).unwrap().count, 65);
+    assert!(height <= 2 * (65_u64.ilog2() as u64 + 1));
+    assert!(reads <= 2 * height + 5, "{reads} reads at height {height}");
+    assert_eq!(reader.event_count_through(9, -65).unwrap(), 0);
+    assert_eq!(reader.event_count_through(9, -1).unwrap(), 64);
+    assert_eq!(reader.event_count_through(9, 576).unwrap(), 321);
+    assert_eq!(reader.latest_event(9, 127).unwrap(), Some((127, json!(2))));
+    for (ordinal, hour, value) in [
+        (0, -64, 3),
+        (63, -1, 3),
+        (64, 0, 1),
+        (192, 127, 2),
+        (320, 255, 1),
+    ] {
+        let row = reader.event_at(9, ordinal).unwrap();
+        assert_eq!((row.hour, row.row), (hour, json!(value)));
+    }
+}
+
+#[test]
+fn event_only_backdating_keeps_unindexed_keys_and_batch_bounds_exact() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for hour in [10, 20, 30, 5, 31] {
+        if hour == 31 {
+            values.event(10, hour, &1).unwrap();
+        } else {
+            values
+                .event(9, hour, &if hour == 5 { 2 } else { 1 })
+                .unwrap();
+        }
+        if hour == 30 {
+            values.event(10, hour, &1).unwrap();
+        }
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "events", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
+    }
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "events".into(), &flag).unwrap();
+    for (batch, expected) in [
+        (0, (10, 10)),
+        (1, (20, 20)),
+        (2, (30, 30)),
+        (3, (30, 30)),
+        (4, (31, 31)),
+    ] {
+        assert_eq!(reader.hours(batch).unwrap(), expected);
+    }
+    assert_eq!(reader.event_count_through(9, 20).unwrap(), 3);
+    assert_eq!(reader.latest_event(9, 5).unwrap(), Some((5, json!(2))));
+    assert_eq!(reader.event_count_through(10, 29).unwrap(), 0);
+    assert_eq!(reader.latest_event(10, 29).unwrap(), None);
+    assert_eq!(reader.latest_event(10, 30).unwrap(), Some((30, json!(1))));
+    let mut file = fixture
+        .store
+        .read(&fixture.key, "events", 4)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        Table::read(&mut file)
+            .unwrap()
+            .unwrap()
+            .entry(9)
+            .unwrap()
+            .order_slot,
+        Some(0)
+    );
+    assert_eq!(directory(&mut file, 9).unwrap().order_slot, Some(0));
+    assert_eq!(reader.through_hour(20).unwrap(), Some(20));
+    assert_eq!(reader.event_count_through(9, 20).unwrap(), 2);
+    assert_eq!(reader.latest_event(9, 5).unwrap(), None);
+}
+
+#[cfg(test)]
+struct OrderConstruction<'a> {
+    inner: &'a mut dyn super::super::pages::Pages,
+    read_bytes: usize,
+    index_bytes: usize,
+    initial_bytes: usize,
+}
+#[cfg(test)]
+impl super::super::pages::Pages for OrderConstruction<'_> {
+    fn write_at(&mut self, section: &str, range: u64, bytes: &[u8]) -> io::Result<()> {
+        self.index_bytes += bytes.len() - self.initial_bytes;
+        self.inner.write_at(section, range, bytes)
+    }
+    fn write(&mut self, section: &str, bytes: &[u8]) -> io::Result<u64> {
+        self.initial_bytes = bytes.len();
+        self.inner.write(section, bytes)
+    }
+    fn read_at(&mut self, _: &str, _: u64) -> io::Result<Option<Vec<u8>>> {
+        panic!("index construction must not materialize historical pages")
+    }
+    fn read_slice(
+        &mut self,
+        section: &str,
+        range: u64,
+        offset: u64,
+        output: &mut [u8],
+    ) -> io::Result<()> {
+        self.read_bytes += output.len();
+        self.inner.read_slice(section, range, offset, output)
+    }
+}
+
+#[test]
+fn first_backdate_construction_is_independent_of_the_forward_history() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for batch in 0..256 {
+        for hour in batch * 64..(batch + 1) * 64 {
+            values.event(9, hour, &1).unwrap();
+        }
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "events", 0, &flag).unwrap();
+        writer.commit().unwrap();
+    }
+    values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
+    values.advance(32768).unwrap();
+    values.event(9, 17, &2).unwrap();
+    let mut writer = fixture.writer();
+    let mut pages = OrderConstruction {
+        inner: &mut writer,
+        read_bytes: 0,
+        index_bytes: 0,
+        initial_bytes: 0,
+    };
+    let decoded = decoded_event_rows();
+    let blobs = BLOB_DECODES.get();
+    order::BUILT_NODES.set(0);
+    order::CAPACITY_GROWTH.set(0);
+    order::PEAK_DEPTH.set(0);
+    values.flush(&mut pages, "events", 0, &flag).unwrap();
+    assert_eq!(decoded_event_rows() - decoded, 0);
+    assert_eq!(BLOB_DECODES.get() - blobs, 0);
+    assert_eq!(pages.read_bytes, 16);
+    assert_eq!(pages.index_bytes, 72);
+    assert_eq!(order::BUILT_NODES.get(), 1);
+    assert_eq!(order::PEAK_DEPTH.get(), 1);
+    assert!(order::CAPACITY_GROWTH.get() <= 72);
+    writer.commit().unwrap();
+    values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
+    values.advance(32769).unwrap();
+    values.event(9, 32769, &3).unwrap();
+    let mut writer = fixture.writer();
+    order::BUILT_NODES.set(0);
+    values.flush(&mut writer, "events", 0, &flag).unwrap();
+    assert_eq!(
+        order::BUILT_NODES.get(),
+        0,
+        "forward rows must remain implicit"
+    );
+    writer.commit().unwrap();
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "events".into(), &flag).unwrap();
+    assert_eq!(reader.event_count_through(9, 17).unwrap(), 19);
+    assert_eq!(reader.event_count_through(9, 32769).unwrap(), 16386);
+    for (ordinal, hour, value) in [
+        (17, 17, 1),
+        (18, 17, 2),
+        (16384, 16383, 1),
+        (16385, 32769, 3),
+    ] {
+        let row = reader.event_at(9, ordinal).unwrap();
+        assert_eq!((row.hour, row.row), (hour, json!(value)));
+    }
+}
+
+#[test]
+fn staggered_first_backdates_do_not_seed_any_of_fifteen_hundred_keys() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for hour in 0..64 {
+        for key in 0..1500 {
+            values.event(key, hour, &1).unwrap();
+        }
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "events", 0, &flag).unwrap();
+        writer.commit().unwrap();
+    }
+    for step in 0..32 {
+        values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
+        values.advance(512 + step).unwrap();
+        values.event(step as u64 * 47, 7, &2).unwrap();
+        let mut writer = fixture.writer();
+        let mut pages = OrderConstruction {
+            inner: &mut writer,
+            read_bytes: 0,
+            index_bytes: 0,
+            initial_bytes: 0,
+        };
+        let decoded = decoded_event_rows();
+        let blobs = BLOB_DECODES.get();
+        order::BUILT_NODES.set(0);
+        order::CAPACITY_GROWTH.set(0);
+        order::PEAK_DEPTH.set(0);
+        values.flush(&mut pages, "events", 0, &flag).unwrap();
+        assert_eq!(decoded_event_rows() - decoded, 0, "first backdate {step}");
+        assert_eq!(BLOB_DECODES.get() - blobs, 0, "first backdate {step}");
+        assert_eq!(pages.read_bytes, 16, "first backdate {step}");
+        assert_eq!(pages.index_bytes, 24056, "first backdate {step}");
+        assert_eq!(order::BUILT_NODES.get(), 1, "first backdate {step}");
+        assert_eq!(order::PEAK_DEPTH.get(), 1, "first backdate {step}");
+        assert!(
+            order::CAPACITY_GROWTH.get() <= 24056,
+            "first backdate {step}"
+        );
+        writer.commit().unwrap();
+    }
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "events".into(), &flag).unwrap();
+    for key in (0..32).map(|step| step * 47) {
+        assert_eq!(reader.event_count_through(key, 7).unwrap(), 9);
+        assert_eq!(reader.event_count_through(key, 543).unwrap(), 65);
+        for (ordinal, hour, value) in [(7, 7, 1), (8, 7, 2), (64, 63, 1)] {
+            let row = reader.event_at(key, ordinal).unwrap();
+            assert_eq!((row.hour, row.row), (hour, json!(value)));
+        }
+        let root = reader.event_order(key).unwrap().unwrap();
+        assert_eq!(reader.order_node(root).unwrap().count, 1);
+    }
+    assert_eq!(reader.event_count_through(1499, 7).unwrap(), 8);
+    assert_eq!(reader.event_count_through(1499, 543).unwrap(), 64);
+    assert!(reader.event_order(1499).unwrap().is_none());
+}
+
+#[test]
+fn backdated_index_allocation_refusal_propagates_before_roots_change() {
+    const CHILD: &str = "BATTLE_PLAN_EVENT_ORDER_ALLOCATION_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "prepared::series::tests::backdated_index_allocation_refusal_propagates_before_roots_change", "--nocapture"])
+            .env(CHILD, "1").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    let flag = AtomicBool::new(false);
+    let mut bytes = vec![0; 80];
+    put(&mut bytes, 0, &48_i32.to_le_bytes());
+    put(&mut bytes, 4, &48_i32.to_le_bytes());
+    put(&mut bytes, 8, &1_u64.to_le_bytes());
+    let original = bytes.clone();
+    let mut state = KeyState {
+        events: 1,
+        ..Default::default()
+    };
+    let events = [(24, vec![b'1'])];
+    engine_allocation::set_stop_hook(Some(|| true));
+    let result = order::publish(
+        &mut writer,
+        "events",
+        0,
+        &mut bytes,
+        &mut [(9, &[], &events, &mut state)],
+        &flag,
+    );
+    engine_allocation::set_stop_hook(None);
+    let error = result.unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+    assert_eq!(error.to_string(), "Prepared event order allocation refused");
+    assert_eq!(bytes, original);
+    assert!(state.event_order.is_none());
+}
+
+#[test]
+fn mixed_backdated_and_forward_rows_merge_at_publication_ties() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for (publication, rows) in [
+        (10, vec![(10, 1)]),
+        (20, vec![(20, 2)]),
+        (20, vec![(5, 3), (20, 4), (21, 5)]),
+        (21, vec![(5, 6), (5, 7), (20, 8), (21, 9), (22, 10)]),
+        (48, vec![(i32::MIN, 11), (20, 12), (48, 13)]),
+    ] {
+        values.advance(publication).unwrap();
+        for (hour, value) in rows {
+            values.event(9, hour, &value).unwrap();
+        }
+        values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
+        let mut writer = fixture.writer();
+        values.flush(&mut writer, "events", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
+    }
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "events".into(), &flag).unwrap();
+    for (hour, count) in [
+        (i32::MIN, 1),
+        (5, 4),
+        (20, 9),
+        (21, 11),
+        (22, 12),
+        (48, 13),
+        (i32::MAX, 13),
+    ] {
+        assert_eq!(reader.event_count_through(9, hour).unwrap(), count);
+    }
+    let expected = [
+        (i32::MIN, 11),
+        (5, 3),
+        (5, 6),
+        (5, 7),
+        (10, 1),
+        (20, 2),
+        (20, 4),
+        (20, 8),
+        (20, 12),
+        (21, 5),
+        (21, 9),
+        (22, 10),
+        (48, 13),
+    ];
+    for (ordinal, (hour, value)) in expected.into_iter().enumerate() {
+        let row = reader.event_at(9, ordinal as u64).unwrap();
+        assert_eq!((row.hour, row.row), (hour, json!(value)));
+    }
+    assert!(reader.event_at(9, 13).is_err());
+    let root = reader.event_order(9).unwrap().unwrap();
+    assert_eq!(reader.order_node(root).unwrap().count, 6);
+    assert_eq!(reader.through_hour(21).unwrap(), Some(21));
+    assert_eq!(reader.event_count_through(9, 5).unwrap(), 1);
+    assert_eq!(reader.event_count_through(9, 21).unwrap(), 5);
+    assert_eq!(reader.latest_event(9, 20).unwrap(), Some((20, json!(4))));
+}
+
+#[test]
+fn late_only_order_roots_refuse_the_full_history_format() {
+    let mut directory = [0; 64];
+    put(&mut directory, 60, &1_u32.to_le_bytes());
+    assert_eq!(
+        order::slot(&directory, 0).unwrap_err().to_string(),
+        "invalid event order directory flag"
+    );
+    assert!(
+        serde_json::from_value::<KeyState>(json!({
+            "l": null, "r": 0, "e": 1, "p": [null, null, null, null],
+            "o": {"batch": 0, "offset": 80}
+        }))
+        .is_err()
+    );
+}

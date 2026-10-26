@@ -828,13 +828,14 @@ mod tests {
                 true,
                 |packet| edit_checkpoint(packet, |document| document["production"] = production),
             );
-            assert!(
-                input
-                    .completion()
-                    .unwrap_err()
-                    .to_string()
-                    .contains("Production")
-            );
+            let expected = match index {
+                0 => "Production completion inventory differs from recorded branches",
+                1 => "Missing production coverage: 1",
+                2 | 3 | 5 => "Production scan is incomplete: 1",
+                4 => "Production checkpoint coverage differs from its directory: 1",
+                _ => unreachable!(),
+            };
+            assert_eq!(input.completion().unwrap_err().to_string(), expected);
         }
     }
 

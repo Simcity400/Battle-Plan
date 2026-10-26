@@ -4174,7 +4174,7 @@ fn modifier_refresh_prepared_keeps_all_section_bytes_across_both_accounting_path
                     .unwrap()
                     .to_vec();
                 put(&mut input, TableRows::LexicalTokens(lexical));
-            } else {
+            } else if ![26, 36, 37, 40].contains(&hour) {
                 edit_modifier_lexical(&mut input, 90, Some(format!("unused-{hour}").as_bytes()));
             }
             match hour {

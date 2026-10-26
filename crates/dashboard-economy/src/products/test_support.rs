@@ -9,6 +9,12 @@ pub fn frame(hour: i32) -> DecodedFrame {
         hour,
         tables: std::array::from_fn(|index| {
             let table = TableId::ALL[index];
+            if table == TableId::GameScoreMultipliers {
+                return TableView::Unavailable {
+                    reason: "synthetic game-score defines were not read".into(),
+                }
+                .into();
+            }
             let mut rows = if table.key_bits() == 0 {
                 TableRows::one_default(table)
             } else {
