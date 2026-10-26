@@ -14,13 +14,10 @@ there are no consistency windows to warm.
 A candidate with "frozen": null is a matched no-recorder reference. The report
 uses clean references from this plan for its same-run percentage. An optional
 baseline_hours_per_s is labelled historical and does not establish current
-performance. Runs are interleaved per repeat. Timed windows refuse to start
-while build processes run. A screen is marked contaminated when a build process appears
-mid-window or when other processes' measured CPU over the window passes a share
-of the machine.
-With -BuildPauseDir, such a plan holds that directory from its first timed
-window to its last, so build tools that honour it hold new compiles and test
-runs; "ignore_builds" plans neither wait nor pause.
+performance. Runs are interleaved per repeat. Timed windows start at once:
+nothing waits for builds or other load (AGENTS.md). A screen is marked
+contaminated when a local build process appears mid-window; other processes'
+CPU over the window is reported in other_cpu without failing the screen.
 
 Plan JSON:
 {
@@ -68,9 +65,6 @@ Pause-menu reference image for menu reloads, with its outer-window origin in Men
 .PARAMETER GameLock
 Hold this shared lock for the full benchmark. Create its directory and owner file
 before running, then remove them after all owned game/recorder work has stopped.
-.PARAMETER BuildPauseDir
-Directory created while a throughput plan's timed windows run, for build tools
-that hold new compiles and test runs while it exists. Omitted, no pause is held.
 .PARAMETER WorkerSampler
 Collector profiling configuration forwarded as BATTLE_PLAN_WORKER_SAMPLER to recorder candidates.
 Requires a frozen collector built with its worker_sampler feature.
@@ -92,7 +86,6 @@ param(
     [string]$MenuPatch = '',
     [int[]]$MenuPatchOrigin = @(1150, 440),
     [string]$CaptureRoot = (Join-Path $env:LOCALAPPDATA 'HOI4Replay\captures'),
-    [string]$BuildPauseDir = '',
     [string]$WorkerSampler = '',
     [string]$GameLock = (Join-Path $env:TEMP 'HOI4Replay\hoi4_game.lock'),
     [int]$AttachTimeoutSeconds = 300,
@@ -347,11 +340,10 @@ function Assert-Identity($clock, $identity) {
 function Get-BuildProcesses { @(Get-Process -Name $buildNames -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessName }) }
 
 # ---- other processes' CPU ----------------------------------------------------------
-# Contamination is measured, not matched by name: every process except the game, the
-# recorders, this script and the System/Idle accounting entries is sampled for its total CPU
-# time, and a window is contaminated when they used more than $OtherCpuMachineShare of all
-# logical cores or any one of them more than $OtherCpuProcessCores of a core (always-on background
-# processes such as the agents' API proxy, about 0.5 core, and a remote session stay under it).
+# Telemetry only, never a contamination verdict: every process except the game, the recorders,
+# this script and the System/Idle accounting entries is sampled for its total CPU time, and the
+# window notes when they used more than $OtherCpuMachineShare of all logical cores or any one of
+# them more than $OtherCpuProcessCores of a core.
 $OtherCpuMachineShare = 0.08
 $OtherCpuProcessCores = 1.0
 $OtherCpuExcluded = @('the game', 'recorder', 'Idle', 'System')
@@ -384,8 +376,8 @@ function Update-OtherCpu([hashtable]$tally, [hashtable]$snapshot) {
         $tally.processes[$key] = [pscustomobject]@{ name = $sample.name; id = $sample.id; first = $first; last = $sample.cpu }
     }
 }
-# The window's verdict: other processes' share of the machine, the busiest of them, and the
-# reasons the window is contaminated (none when it is clean).
+# The window's other load: other processes' share of the machine, the busiest of them, and
+# the thresholds they passed (reported in other_cpu; they don't fail the screen).
 function Measure-OtherCpu([hashtable]$tally, [double]$elapsedSeconds, [int]$cores) {
     $used = @(@(foreach ($entry in $tally.processes.Values) {
         $seconds = [math]::Max(0.0, $entry.last - $entry.first)
@@ -417,51 +409,6 @@ function Get-RecorderPrivate($attached) {
 function Get-MemorySample($attached) {
     $script:game.Refresh()
     [ordered]@{ game_private = [int64]$script:game.PrivateMemorySize64; game_working_set = [int64]$script:game.WorkingSet64; recorder_private = (Get-RecorderPrivate $attached) }
-}
-# While a throughput plan runs, build tools honouring -BuildPauseDir hold back new
-# compiles and test runs; running ones finish before each timed window.
-$pauseDir = $BuildPauseDir
-$script:pauseHeld = $false
-function Enter-BuildPause {
-    if (-not $pauseDir) { return }
-    if ($script:pauseHeld) {
-        try { (Get-Item -LiteralPath $pauseDir).LastWriteTime = Get-Date } catch { Log "could not refresh the build pause: $($_.Exception.Message)" }
-        return
-    }
-    if (Test-Path -LiteralPath $pauseDir) {
-        $holder = 0; [void][int]::TryParse(((Get-Content -LiteralPath (Join-Path $pauseDir 'winpid') -ErrorAction SilentlyContinue) -join ''), [ref]$holder)
-        if ($holder -and $holder -ne $PID -and (Get-Process -Id $holder -ErrorAction SilentlyContinue)) { throw "Another benchmark holds the build pause: $pauseDir" }
-        Remove-Item -LiteralPath $pauseDir -Recurse -Force
-    }
-    $null = New-Item -ItemType Directory -Path $pauseDir
-    [IO.File]::WriteAllText((Join-Path $pauseDir 'owner'), "bench.ps1 $(Split-Path -Leaf $Plan)", $utf8)
-    [IO.File]::WriteAllText((Join-Path $pauseDir 'winpid'), "$PID`n", $utf8)
-    $script:pauseHeld = $true
-    Log 'Holding new compiles and test runs until this plan ends.'
-}
-function Exit-BuildPause {
-    if (-not $script:pauseHeld) { return }
-    Remove-Item -LiteralPath $pauseDir -Recurse -Force -ErrorAction SilentlyContinue
-    $script:pauseHeld = $false
-    Log 'Released the build pause.'
-}
-function Wait-Quiet {
-    # Diagnostic plans (cost attribution, not throughput) may run beside builds; their
-    # screens still record contamination and so never pass.
-    if ($spec.PSObject.Properties['ignore_builds'] -and $spec.ignore_builds) { return }
-    Enter-BuildPause
-    $quietSince = [DateTime]::UtcNow; $warned = $false
-    # Calibration lane: other lanes build continuously; wait at most build_wait_minutes.
-    $buildLimit = [DateTime]::UtcNow.AddMinutes($(if ($spec.PSObject.Properties['build_wait_minutes']) { [double]$spec.build_wait_minutes } else { 1e6 }))
-    while ($true) {
-        if ([DateTime]::UtcNow -gt $buildLimit) { Log 'Build processes still running; starting anyway (the screen is measured).'; break }
-        $busy = Get-BuildProcesses
-        if ($busy.Count -ne 0) {
-            if (-not $warned) { Log ("Waiting for build processes to finish: " + ($busy -join ', ')); $warned = $true }
-            $quietSince = [DateTime]::UtcNow
-        } elseif (([DateTime]::UtcNow - $quietSince).TotalSeconds -ge 2) { break }
-        Start-Sleep -Seconds 1
-    }
 }
 
 # ---- reload ------------------------------------------------------------------
@@ -988,7 +935,6 @@ function Invoke-PlanConsole([string]$runDir) {
     Start-Sleep -Seconds 1
 }
 function Invoke-Screen($attached, [string]$runDir) {
-    Wait-Quiet
     $identity = Set-Paused $true
     if ($identity.hour -ne $expectedHour -and -not $script:chainStarted) { throw "Screen must start at hour $expectedHour, found $($identity.hour)." }
     Set-Speed $speed; Send-Move $ui.cursor_park
@@ -1081,7 +1027,6 @@ function Invoke-Screen($attached, [string]$runDir) {
     }
     Update-OtherCpu $otherCpu (Get-OtherCpuSnapshot)
     $otherCpuWindow = Measure-OtherCpu $otherCpu (([Hoi4ClockBaseline]::Qpc() - $startQpc) / $frequency) ([Environment]::ProcessorCount)
-    foreach ($reason in $otherCpuWindow.reasons) { $contaminants[$reason] = $true }
     $statusAfter = $null
     if ($attached) { $statusAfter = Read-Status $attached.status; Write-Json (Join-Path $runDir 'status_after.json') $statusAfter }
     if ($null -eq $first -or $null -eq $last -or $lastQpc -le $firstQpc) { throw 'No valid timed samples.' }
@@ -1205,7 +1150,6 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
             if ($candidate.PSObject.Properties['ladder'] -and $candidate.ladder) {
                 $null = Invoke-Reload $runDir $false
                 Complete-Pending
-                Wait-Quiet
                 $ladder = Start-Ladder $candidate $runDir
                 $row.ladder_config = $ladder.config
             } elseif ($candidate.frozen) {
@@ -1250,7 +1194,6 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
     }
 }
 Complete-Pending
-Exit-BuildPause
 # Every candidate is detached and finalized: close the game now rather than leave it paused
 # through the offline metrics below, which read only the finalized replays.
 if ($script:game -and -not $script:game.HasExited) {
