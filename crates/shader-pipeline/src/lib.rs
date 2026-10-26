@@ -138,19 +138,20 @@ impl Compiler {
     /// Refuses a missing executable and any build other than the pinned [`DXC_VERSION`].
     pub fn at(executable: PathBuf) -> Result<Self, String> {
         if !executable.is_file() {
-            return Err(format!("DXC not found at {}", executable.display()));
+            // Installation paths must not enter persisted presentation refusals.
+            return Err(
+                "DXC not found; install shader-tools/dxc/dxc.exe or set BATTLE_PLAN_SHADER_COMPILER"
+                    .into(),
+            );
         }
         let mut command = Command::new(&executable);
         command.arg("--version");
         no_window(&mut command);
-        let output = command
-            .output()
-            .map_err(|e| format!("launch DXC at {}: {e}", executable.display()))?;
+        let output = command.output().map_err(|e| format!("launch DXC: {e}"))?;
         let version = String::from_utf8_lossy(&output.stdout);
         if !output.status.success() || !version.contains(DXC_VERSION) {
             return Err(format!(
-                "DXC at {} reports {:?}, not the pinned {DXC_VERSION}",
-                executable.display(),
+                "DXC reports {:?}, not the pinned {DXC_VERSION}",
                 version.trim()
             ));
         }

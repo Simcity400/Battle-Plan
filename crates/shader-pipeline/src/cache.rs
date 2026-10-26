@@ -300,11 +300,19 @@ pub(crate) mod tests {
         assert!(super::super::DXC_VERSION.starts_with("1.9.0.5402 (0d3ee6b55"));
         assert!(ABI.contains("/dxc-1.9.0.5402-0d3ee6b55/"));
         let scratch = super::super::Scratch::new().unwrap();
-        let missing = scratch.0.join("shader-tools/dxc/dxc.exe");
-        let Err(reason) = Compiler::at(missing.clone()) else {
-            panic!("a missing compiler must be refused");
-        };
-        assert_eq!(reason, format!("DXC not found at {}", missing.display()));
+        for installation in ["baseline-main", "lane-det-1"] {
+            let missing = scratch
+                .0
+                .join(installation)
+                .join("shader-tools/dxc/dxc.exe");
+            let Err(reason) = Compiler::at(missing) else {
+                panic!("a missing compiler must be refused");
+            };
+            assert_eq!(
+                reason,
+                "DXC not found; install shader-tools/dxc/dxc.exe or set BATTLE_PLAN_SHADER_COMPILER"
+            );
+        }
     }
 
     #[test]
@@ -317,7 +325,7 @@ pub(crate) mod tests {
                 _: &Technique,
                 _: &[String],
             ) -> Result<Compiled, String> {
-                Err("effect \"vanilla.shader\", technique \"Up\": DXC not found at missing/shader-tools/dxc/dxc.exe".into())
+                Err("effect \"vanilla.shader\", technique \"Up\": DXC not found; install shader-tools/dxc/dxc.exe or set BATTLE_PLAN_SHADER_COMPILER".into())
             }
         }
         let cache = Arc::new(Cache::new(None, Arc::new(Missing)));
@@ -331,7 +339,7 @@ pub(crate) mod tests {
             assert!(
                 reason.contains("vanilla.shader")
                     && reason.contains("Up")
-                    && reason.contains("DXC not found at")
+                    && reason.contains("DXC not found;")
             );
         }
         assert_eq!(cache.diagnostics().refused.values().sum::<u64>(), 2);
