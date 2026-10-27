@@ -225,7 +225,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
         let callback = scope.spawn(|| {
             let _callback = acquisition::callback_parks::Scope::enter();
             let mut probe = Some(probe);
-            let handoff = executor.wait_ready_without_spin(|| {
+            let handoff = executor.wait_ready(|| {
                 if abort.load(Ordering::Acquire) {
                     return Some(None);
                 }

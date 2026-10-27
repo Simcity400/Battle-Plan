@@ -2,6 +2,155 @@
 use super::*;
 use std::sync::mpsc;
 
+/// The job that holds the pool's only worker.
+const HOLD: u8 = u8::MAX;
+/// Releases the held worker when dropped.
+struct Held(Arc<AtomicBool>);
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// As in production: every slot reserved for workers, and the pool's one worker held
+/// on a job the callback may not help, so admitted work waits for the callback.
+fn held_pool(
+    capacity: usize,
+    eligible: fn(&u8) -> bool,
+    run: impl Fn(u8) -> u8 + Send + Sync + 'static,
+) -> (Pool<u8, u8>, Held, Ticket) {
+    let release = Arc::new(AtomicBool::new(false));
+    let held = Arc::clone(&release);
+    let pool = Pool::start(1, capacity + 1, move |job: &mut u8| {
+        if *job == HOLD {
+            while !held.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            return HOLD;
+        }
+        run(*job)
+    })
+    .unwrap();
+    pool.reserve_worker_slots(capacity + 1).unwrap();
+    pool.set_callback_help(eligible);
+    let hold = unsafe { pool.submit_with_priority(&mut Some(HOLD), 0, true, true) }.unwrap();
+    let until = std::time::Instant::now() + crate::TEST_HANG_GUARD;
+    while pool.calibration().active == 0 {
+        assert!(std::time::Instant::now() < until, "worker never took the held job");
+        std::thread::yield_now();
+    }
+    (pool, Held(release), hold)
+}
+
+#[test]
+fn callback_help_preserves_eligible_priority_fifo_and_collection_ownership() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&order);
+    let (pool, held, hold) = held_pool(
+        4,
+        |job| *job != HOLD && *job != 0,
+        move |job| {
+            seen.lock().unwrap().push(job);
+            job
+        },
+    );
+    let tickets: Vec<_> = [(0, 0), (2, 2), (3, 1), (4, 1)]
+        .into_iter()
+        .map(|(job, priority)| unsafe {
+            pool.submit_with_priority(&mut Some(job), priority, true, false)
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        pool.park_until_ready(|| pool.completed_report(tickets[1])),
+        Ok(2)
+    );
+    assert_eq!(*order.lock().unwrap(), [3, 4, 2]);
+    assert_eq!(pool.calibration().uncollected, 5);
+    for (index, expected) in [(1, 2), (2, 3), (3, 4)] {
+        assert_eq!(pool.finish(tickets[index]).unwrap().report, Ok(expected));
+    }
+    assert!(!pool.help_callback());
+    pool.shared.stop();
+    assert_eq!(
+        pool.finish(tickets[0]).unwrap().report,
+        Err(Failure::Stopped)
+    );
+    drop(held);
+    assert_eq!(pool.finish(hold).unwrap().report, Ok(HOLD));
+    assert_eq!(pool.calibration().callback_help_executed, 3);
+    assert_eq!(pool.calibration().uncollected, 0);
+}
+
+#[test]
+fn callback_help_never_runs_rejected_work_or_runs_before_readiness_is_checked() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&calls);
+    let (pool, held, hold) = held_pool(
+        1,
+        |job| *job != HOLD,
+        move |job| {
+            seen.fetch_add(1, Ordering::Relaxed);
+            job
+        },
+    );
+    let ticket = unsafe { pool.submit_with_priority(&mut Some(7), 0, true, false) }.unwrap();
+    let mut rejected = Some(9);
+    assert_eq!(
+        unsafe { pool.submit_with_priority(&mut rejected, 0, true, false) },
+        Err(SubmitError::Full)
+    );
+    assert_eq!(pool.park_until_ready(|| Some(11)), 11);
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        pool.park_until_ready(|| pool.completed_report(ticket)),
+        Ok(7)
+    );
+    assert_eq!(pool.finish(ticket).unwrap().report, Ok(7));
+    assert_eq!(rejected, Some(9));
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    drop(held);
+    assert_eq!(pool.finish(hold).unwrap().report, Ok(HOLD));
+}
+
+#[test]
+fn callback_help_contains_panics_and_preserves_the_cancelled_completion() {
+    let (pool, held, hold) = held_pool(
+        2,
+        |job| *job != HOLD,
+        |job| {
+            assert_ne!(job, 1, "synthetic helped panic");
+            job
+        },
+    );
+    let first = unsafe { pool.submit_with_priority(&mut Some(1), 0, true, false) }.unwrap();
+    let second = unsafe { pool.submit_with_priority(&mut Some(2), 0, true, false) }.unwrap();
+    assert_eq!(
+        pool.park_until_ready(|| pool.completed_report(first)),
+        Err(Failure::Panicked)
+    );
+    assert_eq!(pool.finish(first).unwrap().report, Err(Failure::Panicked));
+    assert_eq!(pool.finish(second).unwrap().report, Err(Failure::Stopped));
+    drop(held);
+    assert_eq!(pool.finish(hold).unwrap().report, Ok(HOLD));
+    assert_eq!(pool.calibration().callback_help_executed, 1);
+    assert_eq!(pool.calibration().active, 0);
+    assert_eq!(pool.calibration().uncollected, 0);
+}
+
+#[test]
+fn callback_join_can_help_its_admitted_worker_only_target() {
+    let (pool, held, hold) = held_pool(1, |job| *job != HOLD, |job| job);
+    let ticket = unsafe { pool.submit_with_priority(&mut Some(7), 0, true, false) }.unwrap();
+    let mut completed = None;
+    assert!(pool.finish_into_timed(ticket, &mut completed));
+    assert_eq!(completed.unwrap().report, Ok(7));
+    assert_eq!(pool.calibration().callback_help_executed, 1);
+    drop(held);
+    assert_eq!(pool.finish(hold).unwrap().report, Ok(HOLD));
+    assert_eq!(pool.calibration().uncollected, 0);
+}
+
 #[test]
 fn outstanding_scan_rejects_replacement_identity_before_its_generation_is_published() {
     use crate::{
@@ -283,7 +432,7 @@ fn readiness_cannot_lose_publication_before_registration_or_before_address_wait(
         .unwrap();
         let ticket = unsafe { pool.submit(&mut Some(7)).unwrap() };
         let mut calls = 0;
-        pool.wait_ready_with_spin(std::time::Duration::ZERO, || {
+        pool.park_until_ready(|| {
             calls += 1;
             if calls == if before_registration { 1 } else { 2 } {
                 // The late case publishes after the registered sequence
@@ -391,7 +540,7 @@ fn readiness_registration_is_removed_on_unwind() {
     let mut calls = 0;
     assert!(
         catch_unwind(AssertUnwindSafe(|| {
-            pool.wait_ready_with_spin::<()>(std::time::Duration::ZERO, || {
+            pool.park_until_ready::<()>(|| {
                 calls += 1;
                 assert!(calls == 1, "synthetic readiness unwind");
                 None
@@ -401,47 +550,6 @@ fn readiness_registration_is_removed_on_unwind() {
     );
     assert!(!pool.shared.ready_waiting.load(Ordering::SeqCst));
     assert_eq!(pool.wait_ready(|| Some(7)), 7);
-}
-
-#[test]
-fn readiness_spin_observes_publication_without_registering_an_address_wait() {
-    let _callback = callback_parks::Scope::enter();
-    let parks_before = callback_parks::snapshot()[callback_parks::Site::Readiness as usize].calls;
-    let (release, released) = mpsc::channel();
-    let released = Mutex::new(released);
-    let pool = Pool::start(1, 1, move |job: &mut u8| {
-        released
-            .lock()
-            .unwrap()
-            .recv_timeout(crate::TEST_HANG_GUARD)
-            .unwrap();
-        *job
-    })
-    .unwrap();
-    let ticket = unsafe { pool.submit(&mut Some(7)).unwrap() };
-    let mut calls = 0;
-    pool.wait_ready_with_spin(crate::TEST_HANG_GUARD, || {
-        calls += 1;
-        assert!(!pool.shared.ready_waiting.load(Ordering::SeqCst));
-        if calls == 2 {
-            release.send(()).unwrap();
-            let until = std::time::Instant::now() + crate::TEST_HANG_GUARD;
-            while !pool.is_complete(ticket) {
-                assert!(std::time::Instant::now() < until, "producer did not publish");
-                std::thread::yield_now();
-            }
-        }
-        pool.is_complete(ticket).then_some(())
-    });
-    assert_eq!(calls, 2);
-    assert_eq!(pool.calibration().spins, 1);
-    assert_eq!(pool.calibration().join_sleeps, 0);
-    assert_eq!(
-        callback_parks::snapshot()[callback_parks::Site::Readiness as usize].calls,
-        parks_before
-    );
-    assert_eq!(pool.calibration().uncollected, 1);
-    assert_eq!(pool.finish(ticket).unwrap().report, Ok(7));
 }
 
 #[test]
@@ -472,7 +580,7 @@ fn callback_readiness_park_records_its_wait_without_worker_waits() {
     });
     {
         let _callback = callback_parks::Scope::enter();
-        pool.wait_ready_with_spin(std::time::Duration::ZERO, || {
+        pool.park_until_ready(|| {
             pool.is_complete(ticket).then_some(())
         });
     }
@@ -559,7 +667,7 @@ fn readiness_multi_producer_barrier_keeps_dispatch_order_and_first_failure() {
 fn a_detached_handoff_notification_between_readiness_recheck_and_park_is_not_lost() {
     let pool = Pool::start(1, 2, |_: &mut u8| 0_u8).unwrap();
     let mut polls = 0;
-    let result = pool.wait_ready_with_spin(std::time::Duration::ZERO, || {
+    let result = pool.park_until_ready(|| {
         polls += 1;
         match polls {
             1 => None,
@@ -669,7 +777,7 @@ impl WakeFixture {
         let comparison = self.pool.shared.ready_wake.load(Ordering::SeqCst);
         let begin = crate::sampling::qpc();
         self.pool
-            .wait_ready_with_spin(std::time::Duration::ZERO, || {
+            .park_until_ready(|| {
                 self.pool.is_complete(self.ticket).then_some(())
             });
         let signal = receive(&self.readiness.lock().unwrap());
@@ -707,7 +815,7 @@ impl WakeFixture {
 
 #[test]
 fn readiness_wake_survives_callback_progress_and_same_slot_reuse_before_join_wake() {
-    for spin in [false, true] {
+    {
         let fixture = WakeFixture::new();
         let (wait, readiness) = fixture.wait_for_readiness();
         assert_eq!(fixture.pool.finish(fixture.ticket).unwrap().report, Ok(1));
@@ -729,36 +837,22 @@ fn readiness_wake_survives_callback_progress_and_same_slot_reuse_before_join_wak
                 .shared
                 .hooks
                 .before_join_wait
-                .set(Box::new(move |ticket, spin| {
-                    joining.send((ticket, spin)).unwrap();
+                .set(Box::new(move |ticket| {
+                    joining.send(ticket).unwrap();
                 }))
                 .is_ok()
         );
-        let before = fixture.pool.shared.spin_wake.load(Ordering::SeqCst);
         std::thread::scope(|scope| {
             let fixture = &fixture;
             scope.spawn(move || {
-                assert_eq!(receive(&registered), (next, spin));
+                assert_eq!(receive(&registered), next);
                 fixture.resume_wake.send(()).unwrap();
                 receive(&fixture.notification.lock().unwrap());
-                assert_eq!(
-                    fixture.pool.shared.spin_wake.load(Ordering::SeqCst),
-                    before,
-                    "the old generation woke the replacement's spin waiter"
-                );
                 fixture.resume_next.send(()).unwrap();
                 fixture.resume_notification.send(()).unwrap();
             });
             let mut completion = None;
-            assert!(fixture.pool.finish_into_timed(
-                next,
-                &mut completion,
-                if spin {
-                    crate::TEST_HANG_GUARD
-                } else {
-                    std::time::Duration::ZERO
-                }
-            ));
+            assert!(fixture.pool.finish_into_timed(next, &mut completion));
             assert_eq!(completion.unwrap().report, Ok(2));
         });
         let hour = fixture.diagnostics(wait);
@@ -770,27 +864,22 @@ fn readiness_wake_survives_callback_progress_and_same_slot_reuse_before_join_wak
 }
 
 #[test]
-fn one_publication_records_readiness_and_each_join_address_as_separate_wakes() {
-    for spin in [false, true] {
+fn one_publication_records_readiness_and_its_join_address_as_separate_wakes() {
+    {
         for readiness_wait in [false, true] {
             let fixture = WakeFixture::new();
             let (readiness, signal) = fixture.wait_for_readiness();
             // Keep this generation registered to exercise both wake addresses in one publication.
-            fixture.pool.shared.awaited.store(
-                fixture.ticket.generation | if spin { AWAITED_SPIN } else { 0 },
-                Ordering::SeqCst,
-            );
+            fixture
+                .pool
+                .shared
+                .awaited
+                .store(fixture.ticket.generation, Ordering::SeqCst);
             fixture.resume_wake.send(()).unwrap();
             receive(&fixture.notification.lock().unwrap());
             let join = idle_diagnostics::Wait {
-                address: if spin {
-                    idle_diagnostics::Address::Spin
-                } else {
-                    idle_diagnostics::Address::Slot
-                },
+                address: idle_diagnostics::Address::Slot,
                 ticket: Some(fixture.ticket),
-                comparison: 0,
-                observed: fixture.pool.shared.spin_wake.load(Ordering::SeqCst),
                 begin: readiness.end,
                 end: crate::sampling::qpc(),
                 ..Default::default()
@@ -806,8 +895,7 @@ fn one_publication_records_readiness_and_each_join_address_as_separate_wakes() {
                 let joined = hour.signal.unwrap();
                 assert_eq!(joined.ticket, Some(fixture.ticket));
                 assert_eq!(joined.readiness, 0);
-                assert_eq!(joined.spin != 0, spin);
-                assert_eq!(joined.slot, !spin);
+                assert!(joined.slot);
             }
         }
     }

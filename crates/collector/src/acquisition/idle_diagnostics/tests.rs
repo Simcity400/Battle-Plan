@@ -55,14 +55,6 @@ fn wake_matching_uses_sequence_or_exact_ticket_not_the_longest_job() {
         }
         .matches(wait)
     );
-    let spin = Wait {
-        address: Address::Spin,
-        comparison: 4,
-        observed: 5,
-        ..wait
-    };
-    assert!(Signal { spin: 5, ..signal }.matches(spin));
-    assert!(!Signal { spin: 6, ..signal }.matches(spin));
 }
 
 #[test]
@@ -123,7 +115,6 @@ fn wait_status_distinguishes_missing_measurements_and_publisher_return_after_col
     assert_eq!(status["publish_to_wait_return_ns"], 9_000_000_000_u64);
     assert_eq!(status["wake_call_ns"], 8_000_000_000_u64);
     assert!(status["readiness_sequence"].is_null());
-    assert!(status["spin_sequence"].is_null());
     let readiness = serde_json::to_value(
         Signal {
             readiness: 7,

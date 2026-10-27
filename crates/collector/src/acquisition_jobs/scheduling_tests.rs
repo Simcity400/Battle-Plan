@@ -3,6 +3,31 @@ use crate::country_input_changes::{Changes, Mismatch, Table};
 use engine_native::{Memory, walk::Outcome};
 use std::sync::{Condvar, atomic::AtomicUsize, mpsc};
 
+#[test]
+fn callback_help_keeps_nested_acquisition_and_coordinator_jobs_on_workers() {
+    for role in [
+        Role::Variants,
+        Role::Governance,
+        Role::GatedProjects,
+        Role::PresentationPrepare,
+        Role::PresentationSettle,
+        Role::Presentation,
+        Role::FinalInputs,
+    ] {
+        assert!(!role.callback_help());
+        assert!(role.worker_only());
+    }
+    for role in [
+        Role::Countries,
+        Role::DivisionInputs,
+        Role::AirWing,
+        Role::Characters,
+    ] {
+        assert!(role.callback_help());
+        assert!(role.worker_only());
+    }
+}
+
 struct Unreadable;
 impl Memory for Unreadable {
     fn copy(&self, _: usize, _: &mut [u8]) -> bool {

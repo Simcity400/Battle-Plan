@@ -7,8 +7,6 @@ pub(crate) enum Address {
     #[default]
     Readiness,
     #[cfg(any(test, feature = "callback_profile"))]
-    Spin,
-    #[cfg(any(test, feature = "callback_profile"))]
     Slot,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -31,8 +29,6 @@ impl Wait {
             "address": match self.address {
                 Address::Readiness => "readiness",
                 #[cfg(any(test, feature = "callback_profile"))]
-                Address::Spin => "spin_eligibility",
-                #[cfg(any(test, feature = "callback_profile"))]
                 Address::Slot => "slot",
             },
             "ticket": self.ticket, "comparison": self.comparison, "observed": self.observed,
@@ -52,7 +48,6 @@ pub(crate) struct Signal {
     pub wake_end: i64,
     pub thread: u32,
     pub readiness: u64,
-    pub spin: u64,
     pub slot: bool,
     pub handoff: bool,
 }
@@ -66,7 +61,6 @@ impl Signal {
             Address::Readiness => {
                 self.readiness > wait.comparison && self.readiness <= wait.observed
             }
-            Address::Spin => self.spin > wait.comparison && self.spin <= wait.observed,
             Address::Slot => self.slot && self.ticket == wait.ticket,
         }
     }
@@ -78,7 +72,6 @@ impl Signal {
             "ticket": self.ticket, "identity": self.identity.map(Identity::status),
             "source": if self.handoff { "inputs_handoff" } else if self.published != 0 { "publication" } else { "claim" },
             "readiness_sequence": (self.readiness != 0).then_some(self.readiness),
-            "spin_sequence": (self.spin != 0).then_some(self.spin),
             "publisher_thread_id": self.thread,
             "published_qpc": (self.published != 0).then_some(self.published),
             "released_qpc": (self.released != 0).then_some(self.released),

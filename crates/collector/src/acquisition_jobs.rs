@@ -1104,6 +1104,49 @@ impl Role {
     pub(crate) const fn worker_only(self) -> bool {
         true
     }
+    // Only admitted leaf captures; coordinators can wait for children or retain loans.
+    const fn callback_help(self) -> bool {
+        matches!(
+            self,
+            Role::Characters
+                | Role::CountryLeaderRoles
+                | Role::AdvisorRoles
+                | Role::CharacterTraits
+                | Role::Relations
+                | Role::AirWing
+                | Role::AirStats
+                | Role::AirBases
+                | Role::Capitulation
+                | Role::Players
+                | Role::Projects
+                | Role::Lexical
+                | Role::Session
+                | Role::Weather
+                | Role::Radar
+                | Role::OrderRoots
+                | Role::DivisionInputs
+                | Role::DivisionInputParts
+                | Role::Divisions
+                | Role::PresentationPreparation
+                | Role::PresentationStatus
+                | Role::World
+                | Role::Economy
+                | Role::Research
+                | Role::CharacterPortraits
+                | Role::ProvinceUnitOrder
+                | Role::AirRelations
+                | Role::AirHistories
+                | Role::ArmyIcons
+                | Role::Orders
+                | Role::OrdersPart
+                | Role::Fronts
+                | Role::ShipModels
+                | Role::Countries
+                | Role::Wars
+                | Role::States
+        )
+    }
+
     /// Shared native work follows an hourly consumer in mixed families. Detail
     /// acquisition opens nested scopes when it reads its own sources.
     fn read_anchor(self) -> replay_data::rows::TableId {
@@ -1402,6 +1445,10 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::GatedProjects,
 ];
 impl Job {
+    fn callback_help(&self) -> bool {
+        self.role().callback_help()
+    }
+
     /// Whether this job must run on a worker: its role's rule, except a
     /// ChildFronts pass that allocates nothing, which a joining thread may
     /// run while it is still queued.
@@ -2706,6 +2753,7 @@ impl Pool {
                 run_with_memory(job, &memory, &runner_calibration)
             },
         )?;
+        executor.set_callback_help(Job::callback_help);
         executor.set_on_completed(presentation::completed);
         executor.set_diagnostics(Job::diagnostic_identity);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS)?;
