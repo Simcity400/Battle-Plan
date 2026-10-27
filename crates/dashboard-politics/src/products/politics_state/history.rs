@@ -12,7 +12,8 @@
 //! across it, and an unreadable table leaves its values unknown (no run),
 //! never zero.
 //!
-//! - Elections: the recorded game predicate (`has_elections`, 1 or 0), the
+//! - Elections: the recorded game predicate (`has_elections`, 1 or 0) for a
+//!   country owning states (the game holds no others' elections), the
 //!   stored signed interval and the next date from the shared native calendar
 //!   step ([`country_people::next_election_date`]). A known "not held" and an
 //!   unrecorded eligibility stay apart. An initial read establishes a
@@ -136,10 +137,13 @@ impl Part {
             Part::ALL.map(|part| {
                 let mut reads = identity_reads().to_vec();
                 match part {
-                    Part::Elections => reads.push(TableRead::fields(
-                        TableId::Politics,
-                        &["last_election", "has_elections", "election_interval", "next_election_cache"],
-                    )),
+                    Part::Elections => reads.extend([
+                        TableRead::fields(
+                            TableId::Politics,
+                            &["last_election", "has_elections", "election_interval", "next_election_cache"],
+                        ),
+                        TableRead::fields(TableId::CountryCounterInputs, &["owned_state_count"]),
+                    ]),
                     Part::Exiles => {
                         // The exile rows' own supplying reads, among every sliced table's.
                         let sliced = (TableId::CountryStabilityInputs.index() as u128) << 32;
@@ -398,18 +402,44 @@ impl Prepared {
                 return false;
             }
         };
+        // The game's daily politics, elections included, skip a country owning no states.
+        let owned = match frame.complete::<tables::CountryCounterInputs>() {
+            Ok(counters) => {
+                let mut owned = HashMap::new();
+                for counter in counters {
+                    owned.entry(counter.country).or_insert(counter.owned_state_count);
+                }
+                Some(owned)
+            }
+            Err(error) => {
+                self.refuse(format!("country existence unavailable: {error}"));
+                None
+            }
+        };
         for row in rows {
             let Some(slot) = tags.slot(row.country) else {
                 self.refuse("an election schedule's country has no identity");
                 continue;
             };
-            let held = row.has_elections.require("election eligibility").ok();
+            let exists = owned
+                .as_ref()
+                .and_then(|owned| owned.get(&row.country))
+                .map(|&count| count > 0);
+            let held = match (row.has_elections.require("election eligibility").ok().copied(), exists) {
+                (Some(false), _) | (Some(true), Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                (Some(true), None) => {
+                    self.refuse("election eligibility: country existence not recorded");
+                    None
+                }
+                (None, _) => {
+                    self.refuse("election eligibility not recorded");
+                    None
+                }
+            };
             let interval = row.election_interval.require("election interval").ok();
-            if held.is_none() {
-                self.refuse("election eligibility not recorded");
-            }
             for (field, value) in [
-                (Field::ElectionsHeld, held.map(|held| i128::from(*held))),
+                (Field::ElectionsHeld, held.map(i128::from)),
                 (
                     Field::ElectionInterval,
                     interval.map(|interval| i128::from(*interval)),

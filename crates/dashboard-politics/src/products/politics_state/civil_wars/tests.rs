@@ -130,7 +130,7 @@ fn a_breakaway_that_splits_again_builds_one_tree_with_asymmetric_lists() {
 }
 
 #[test]
-fn only_civil_war_annexation_of_every_other_side_proves_a_winner() {
+fn annexation_of_every_other_side_by_a_side_proves_a_winner() {
     let lists = [(1, 2), (2, 1)];
     let ended = |annexations: &[Annexation]| {
         let mut state = Prepared::default();
@@ -150,12 +150,17 @@ fn only_civil_war_annexation_of_every_other_side_proves_a_winner() {
         })
     );
     assert_eq!(war.sides[1].exit.as_ref().unwrap().kind, SideExitKind::AnnexedBySide);
-    // An ordinary annexation by a side, or one by an outsider, decides nothing.
-    for annexation in [annex(121, "OLD", "NEW", false), annex(121, "OUT", "NEW", true)] {
-        let reply = ended(std::slice::from_ref(&annexation));
-        assert_eq!(reply.wars[0].outcome, None, "{annexation:?}");
-        assert!(reply.wars[0].sides[1].exit.is_some());
-    }
+    // A side annexing the other by another route, such as a peace conference, wins too.
+    let won = ended(&[annex(121, "OLD", "NEW", false)]);
+    assert_eq!(won.wars[0].outcome.as_ref().map(|outcome| outcome.winner), Some(0));
+    assert_eq!(
+        won.wars[0].sides[1].exit.as_ref().unwrap().kind,
+        SideExitKind::AnnexedBySideOtherwise
+    );
+    // An annexation by an outsider decides nothing.
+    let reply = ended(&[annex(121, "OUT", "NEW", true)]);
+    assert_eq!(reply.wars[0].outcome, None);
+    assert!(reply.wars[0].sides[1].exit.is_some());
     // Lists ending with no annexation leave the outcome unknown.
     assert_eq!(ended(&[]).wars[0].outcome, None);
 }

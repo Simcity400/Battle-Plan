@@ -697,7 +697,7 @@ fn progressive_query(
         .iter()
         .map(|tag| (tag.clone(), "0".into()))
         .collect::<Vec<_>>();
-    let read = |coverage| {
+    let read = |coverage: Option<&dashboard_base::prepared::coverage::Coverage>| {
         let available = std::cell::Cell::new(false);
         let defines = std::cell::RefCell::new(None);
         let warnings = std::cell::RefCell::new(Vec::new());
@@ -715,7 +715,8 @@ fn progressive_query(
             }
             Ok(samples)
         };
-        let point = if from == to {
+        // An hour the prepared prefix answers is never read a second time.
+        let point = if from == to && coverage.is_none_or(|coverage| from > coverage.last_hour) {
             progressive::frame_at(source, branch, from, TABLES, cancelled)?
         } else {
             None

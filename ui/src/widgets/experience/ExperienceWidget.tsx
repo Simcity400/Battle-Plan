@@ -268,7 +268,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
             if (!end) return [];
             if (!single) wanted.push({ tag: end.tag, hour: end.hour });
             return [{ id: line.id, y: frame.toY(Number(end.raw) / data.scale), color: end.country.colours[line.branch],
-              text: `${single ? BRANCH_LABELS[line.branch] : `${end.name} · ${BRANCH_LABELS[line.branch]}`} ${formatExperience(end.raw, data.scale, measure)}` }];
+              text: single ? BRANCH_LABELS[line.branch] : `${end.name} · ${BRANCH_LABELS[line.branch]}`, suffix: formatExperience(end.raw, data.scale, measure) }];
           });
           askEndNames([...new Map(wanted.map(item => [nameKey(item.hour, item.tag), item])).values()]);
           placeEndLabels(ctx, frame, chartTokens, ends);

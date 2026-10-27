@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { NavalLossesReply, NavalLossRun } from '../../generated/dashboard';
-import { navalBands, navalChoiceReads, navalHolderBands, navalLines, navalLookHour, navalModel, navalPeriodLabel, navalReadHour, navalRequest, navalTooltip, navalValue, rankNaval, validateNavalLossesReply } from './navalLossesData.ts';
+import { navalAllZero, navalBands, navalChoiceReads, navalHolderBands, navalLines, navalLookHour, navalModel, navalPeriodLabel, navalReadHour, navalRequest, navalTooltip, navalValue, rankNaval, validateNavalLossesReply } from './navalLossesData.ts';
 import { countryDrillSpans } from '../../dashboard/countryIdentity.ts';
 import { definition } from './definition.ts';
 import { resolveCountries } from '../../dashboard/groups.ts';
@@ -56,6 +56,11 @@ test('naval chooser reads each drawn native holder through its unique supplying 
 test('naval counts preserve zero and omit unknown parts from the selected ranking', () => {
   const model = navalModel(validateNavalLossesReply(fixture()));
   assert.deepEqual(rankNaval(model, ['mod tag'], 100, 'both', 10).map(entry => entry.value), [0]);
+  assert.deepEqual(rankNaval(model, ['mod tag'], 100, 'both', 10, true), [], 'a top N lists only countries with losses');
+  assert.equal(navalAllZero(model, ['mod tag'], 100, 'both'), true, 'every present tally is a known zero');
+  assert.equal(navalAllZero(model, ['mod tag'], 105, 'both'), false, 'an unknown part is not a zero');
+  assert.equal(navalAllZero(model, ['mod tag'], 102, 'both'), false, 'losses are not none');
+  assert.equal(navalAllZero(model, [], 100, 'both'), false, 'no present country proves nothing');
   assert.deepEqual(rankNaval(model, model.tags, 102, 'both', 10).map(entry => entry.tag), ['another tag', 'mod tag']);
   assert.deepEqual(rankNaval(model, ['mod tag'], 105, 'both', 10), []);
   assert.equal(rankNaval(model, ['mod tag'], 105, 'ships', 10)[0].value, 5);

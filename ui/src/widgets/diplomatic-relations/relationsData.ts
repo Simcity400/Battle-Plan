@@ -1,6 +1,8 @@
 import type { Run } from '../../charts/series';
 import type { HolderAt } from '../../dashboard/holderLooks';
-import type { CountryGroupReply, DiplomacyOpinionsReply, DiplomacyRun } from '../../generated/dashboard';
+import type { CountryGroupReply, DiplomacyOpinionsReply, DiplomacyRun, ScoreboardColumnKey, ScoreboardPreparedReply } from '../../generated/dashboard';
+import { fieldPreparing, pendingReplyAt } from '../../dashboard/preparedPrefix.ts';
+import { preparedScoreboardRows } from '../scoreboard/preparedScoreboard.ts';
 
 export type OpinionCell = { value: number; readHour: number | null } | { unknown: true } | null;
 
@@ -40,6 +42,13 @@ export function orderCountries(tags: readonly string[], order: 'faction' | 'name
     }
     return collator.compare(name(a), name(b)) || collator.compare(a, b);
   });
+}
+
+/** A top N's countries from one Scoreboard reply, highest first; null while that reply's
+ * hour or measure is still being prepared, which ranks nothing yet. */
+export function topTags(reply: ScoreboardPreparedReply, hour: number, measure: ScoreboardColumnKey): string[] | null {
+  if (pendingReplyAt(reply, hour) || fieldPreparing(reply, measure)) return null;
+  return preparedScoreboardRows(reply, undefined, measure, true).map(row => row.tag);
 }
 
 /** A direction's line: recorded values only; unknown stretches are gaps. */

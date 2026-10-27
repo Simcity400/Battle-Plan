@@ -21,6 +21,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useParityPreparation } from '../../dashboard/parityPreparation';
+import { pendingAt } from '../../dashboard/preparedPrefix';
 import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { CATEGORIES, EVENT_ICONS, OPTIONS } from './definition';
 import { Icon } from '../../components/Icons';
@@ -53,9 +54,10 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
   const categoriesKey = JSON.stringify(CATEGORIES.filter(category => options[category.value] === true).map(category => category.value));
   const categories = useMemo<ReadonlySet<string>>(() => new Set(JSON.parse(categoriesKey)), [categoriesKey]);
   const artwork = options.artwork !== false;
-  const filter = useMemo<FeedFilter>(() => ({ categories, country: match.matches, firstHour: from, allCountries: !filtered }),
-    [categories, match, from, filtered]);
-  const filterKey = JSON.stringify([categoriesKey, widget.countries, fallback, from]);
+  const observations = options.observations === true;
+  const filter = useMemo<FeedFilter>(() => ({ categories, observations, country: match.matches, firstHour: from, allCountries: !filtered }),
+    [categories, observations, match, from, filtered]);
+  const filterKey = JSON.stringify([categoriesKey, observations, widget.countries, fallback, from]);
   const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
   const feed = useEventFeed(runtime, track, active && match.ready && inBranch, hour, filter, filterKey, parity?.requested);
   const [visible, setVisible] = useState<readonly LogRow<FeedEvent>[]>(NO_ROWS);
@@ -105,6 +107,9 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
   if (feedError) return <>{groupFailure}<WidgetState kind="error" detail={feedError} onRetry={feed.retry} /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (!feed.data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading the event feed…" /></>;
+  // The log's coverage line says the hour is still being prepared: no row there is not proof of none.
+  const empty = pendingAt(feed.prefix, hour!) ? null
+    : match.known(from ?? track.branch.firstHour, hour!) ? 'No recorded events match these settings.' : MEMBERSHIP_PREPARING;
 
   return <div className="log-widget event-feed-widget">{groupFailure}
     {log.chips && <div className="log-chips"><ChipSet label="Event categories" chips={chips}
@@ -128,7 +133,7 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
       }}
       describe={row => eventDescription(row.item, tag => labels(row)(tag).name, stateName)}
       tooltip={row => eventTooltip(row.item, tag => labels(row)(tag).name, stateName)}
-      menu={row => [jumpItem(runtime, track.id, row.hour)]} empty={match.known(from ?? track.branch.firstHour, hour!) ? "No recorded events match these settings." : MEMBERSHIP_PREPARING} />
+      menu={row => [jumpItem(runtime, track.id, row.hour)]} empty={empty} />
     {feed.errors.size > 0 && <div className="event-feed-load">Some events couldn’t load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
   </div>;
 }

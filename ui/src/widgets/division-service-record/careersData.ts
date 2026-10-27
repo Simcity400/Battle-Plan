@@ -1,4 +1,5 @@
 import { usNumber } from '../../charts/numberFormat.ts';
+import { sortRows } from '../../charts/table/logic.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { LogRow } from '../../charts/log/logData';
 import { fixedNumber } from '../../charts/valueAxis.ts';
@@ -6,6 +7,7 @@ import { formatDateTime } from '../../dashboard/calendar.ts';
 import { createWidget } from '../../dashboard/model.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import type { CareerFacts, CareerMedal, CareerRow, DivisionCareersReply, DivisionRecordReply, RecordEntry } from '../../generated/dashboard';
+import { DEFAULT_SORT } from '../most-decorated-divisions/definition.ts';
 
 const isArray = Array.isArray;
 const validFacts = (facts: CareerFacts | null) => facts === null || (isArray(facts.awards) && (facts.medals === null || Number.isInteger(facts.medals)));
@@ -88,6 +90,16 @@ export function pinnedRecord(source: WidgetSpec, division: string, track: Pick<B
   } };
   return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time,
     contentScale: source.contentScale, options: { division } };
+}
+
+export const divisionKey = (row: CareerRow) => row.division;
+export const medalsValue = (row: CareerRow) => row.facts.medals;
+// Keyed by column, so a different default sort column fails to compile here.
+const defaultSortValue = { medals: medalsValue }[DEFAULT_SORT.column];
+/** Most decorated divisions' first row at its default sort, when it holds a medal. */
+export function topDivision(rows: readonly CareerRow[]): CareerRow | null {
+  const first = sortRows(rows, defaultSortValue, DEFAULT_SORT.direction, divisionKey)[0];
+  return first && (first.facts.medals ?? 0) > 0 ? first : null;
 }
 
 /** Division choices from a careers reply: name and country, ordered by name. */

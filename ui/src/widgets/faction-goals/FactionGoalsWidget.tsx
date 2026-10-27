@@ -19,7 +19,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useHeldFailures } from '../../dashboard/heldFailures';
 import { DEFAULT_SORT, OPTIONS } from './definition';
-import { ABSENT_FACTION, asksDetails, completedCount, filterGoals, goalRows, goalsAt, termOrder } from './factionGoalsData';
+import { ABSENT_FACTION, asksDetails, completedCount, filterGoals, goalRows, goalsAt, missingProgress, termOrder, unmeasured } from './factionGoalsData';
 import type { GoalFilter, GoalRow } from './factionGoalsData';
 import { partAt, useGoalHistory } from './goalHistory';
 import './factionGoals.css';
@@ -71,17 +71,17 @@ export default function FactionGoalsWidget({ widget, runtime, active, headerSlot
       render: row => <span className="faction-goal-name" title={row.name}>{row.definition.icon ? <img src={row.definition.icon} alt="" /> : <ArtFallback icon="target" />}
         <span className={row.definition.reason ? 'faction-goal-missing' : undefined}>{row.name}</span></span> },
     { key: 'progress', header: 'Progress', label: 'Progress', numeric: true, width: 'minmax(120px, 1fr)', priority: 2, renderMissing: true,
-      value: row => row.progress, text: row => row.progress == null ? 'Not recorded' : `${formatFixed(row.progressRaw!, 3, 1)}%`,
-      render: row => <span className="faction-goal-progress"><ProgressMeter value={row.progress} label={`${row.name} progress`}
-        state={row.state === 'completed' ? 'done' : row.state === 'cancelled' ? 'idle' : 'live'} />
-        {row.progress == null ? <span className="faction-goal-missing">Not recorded</span> : <span>{formatFixed(row.progressRaw!, 3, 1)}%</span>}</span> },
+      value: row => row.progress, text: row => row.progress == null ? missingProgress(row) : `${formatFixed(row.progressRaw!, 3, 1)}%`,
+      render: row => <span className="faction-goal-progress">{!unmeasured(row) && <ProgressMeter value={row.progress} label={`${row.name} progress`}
+        state={row.state === 'completed' ? 'done' : row.state === 'cancelled' ? 'idle' : 'live'} />}
+        {row.progress == null ? <span className="faction-goal-missing">{missingProgress(row)}</span> : <span>{formatFixed(row.progressRaw!, 3, 1)}%</span>}</span> },
     { key: 'status', header: 'Status', label: 'Status', width: 'max-content', priority: 1, value: row => row.statusText,
       render: row => <span className={`pill${row.state === 'inProgress' ? ' accent' : row.state === 'completed' ? ' positive' : ''}`}>{row.statusText}</span> },
   ], []);
   const tooltip = useCallback((row: GoalRow) => {
     const rows: TooltipRow[] = [
       { label: 'Status', value: row.history ? `${row.statusText} (held in the faction’s list)` : row.statusText },
-      { label: 'Progress', value: row.progress == null ? 'Not recorded' : `${formatFixed(row.progressRaw!, 3, 3)}%` },
+      { label: 'Progress', value: row.progress == null ? missingProgress(row) : `${formatFixed(row.progressRaw!, 3, 3)}%` },
       ...(row.categoryName ? [{ label: 'Term', value: row.categoryName }] : []),
     ];
     return fitTooltip([{ title: row.name, subtitle: dayLabel(hour), rows, description: row.definition.description ?? undefined }], viewport);

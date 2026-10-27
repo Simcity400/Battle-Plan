@@ -1,6 +1,6 @@
 .air-regions { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
 .air-regions .chart-legend { max-height: calc(var(--type-sm) * 6); overflow-y: auto; flex-shrink: 0; }
-.air-region-scroll { flex: 1; min-height: 0; overflow: auto; }
+.air-region-scroll { flex: 1; min-height: 0; overflow: auto; padding-inline: var(--space-3); }
 .air-region-rows { position: relative; }
 .air-region-row { height: 100%; display: grid; grid-template-columns: minmax(80px, 24%) minmax(40px, 1fr) auto; align-items: center; gap: 12px; font-size: var(--type-sm); }
 .air-region-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }

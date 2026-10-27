@@ -1,9 +1,9 @@
 import type { SpecialProjectDetails, ProjectEffects, ProjectLabel, ProgramDetails } from '../../generated/dashboard';
-import { contentTitle } from '../../dashboard/contentTitles';
+import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles';
 import { dayLabel } from '../../charts/draw';
 import { researchNumber } from '../research/researchBreakdown';
 
-const Name = ({ label }: { label: ProjectLabel }) => <span title={label.token}>{contentTitle(label.name, label.token, 'Name unavailable')}</span>;
+const Name = ({ label }: { label: ProjectLabel }) => <span data-tooltip={contentTitleHint(label.token)}>{contentTitle(label.name, label.token, 'Name unavailable')}</span>;
 const number = (raw: string) => researchNumber(BigInt(raw));
 function Effects({ value }: { value: ProjectEffects | null }) {
   if (!value) return <p>Effects unavailable.</p>;

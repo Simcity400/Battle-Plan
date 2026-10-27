@@ -68,6 +68,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const keyboardMenu = useRef(false);
   const contextMenu = useContextMenu(`${label} actions`);
   const scroll = useRef<HTMLDivElement>(null);
+  const tableElement = useRef<HTMLTableElement>(null);
   const [view, setView] = useState({ top: 0, height: 0, width: 0, rowHeight: 0, headerHeight: 0 });
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
   const [description, setDescription] = useState<{ key: string; text: string } | null>(null);
@@ -390,9 +391,9 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     requestAnimationFrame(() => scroll.current?.querySelector<HTMLElement>(`tr[aria-rowindex="${slot + 2}"]:not([aria-hidden="true"])`)?.focus());
   };
   const grid = tableGrid(shownColumns, rank, natural.scope === widthScope ? natural.widths : new Map());
-  // Hide or restore one prioritised column per pass before paint, until the content fits.
+  // Hide or restore one prioritised column per pass before paint, until the table itself fits (the scroller's padding masks a little overflow).
   useLayoutEffect(() => {
-    const element = scroll.current;
+    const element = tableElement.current ?? scroll.current;
     if (!element || !order.length) return;
     setFit(before => {
       const held = before.scope === fitScope ? before.fit : FULL_FIT;
@@ -407,7 +408,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
       '--table-header-height': `${view.headerHeight || 24}px`, '--table-cell-y': rowHeight == null ? undefined : '0px', '--row-glide': `${glideMs}ms`, '--table-bar-glide': tokens.reducedMotion ? '0ms' : '300ms' } as CSSProperties}
     onWheel={() => { focusAnchor.current = false; }} onPointerDown={() => { focusAnchor.current = false; }}
     onScroll={event => { const element = event.currentTarget; const top = element.scrollTop; bottomAnchor.current = element.scrollHeight - element.clientHeight - top < 1; setView(before => before.top === top ? before : { ...before, top }); }} onPointerLeave={() => { if (activeTip.current?.origin === 'pointer') clearTip(); }}>
-    <table aria-label={label} aria-rowcount={ordered.length + 1} role={tree ? 'treegrid' : undefined}>
+    <table ref={tableElement} aria-label={label} aria-rowcount={ordered.length + 1} role={tree ? 'treegrid' : undefined}>
       <thead><tr>{rank && <th scope="col" className="table-rank">#</th>}{shownColumns.map(column => <th key={column.key} scope="col"
         className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`} aria-label={column.label} data-tooltip={column.hint}
         aria-sort={column.sortable === false || unsorted ? undefined : sort.column === column.key ? sort.direction : 'none'}>

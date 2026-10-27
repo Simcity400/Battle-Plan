@@ -9,6 +9,8 @@ export interface AirStatisticsReply { window: KeyedWindow; channels: readonly Ai
 
 /** The channel the widget starts with: the recording schema's fighters-lost pair. */
 export const DEFAULT_CHANNEL = '3';
+/** The game's statistic names end in a colon, as they lead a number in its window. */
+export const statisticName = (text: string) => text.replace(/\s*:\s*$/, '');
 /** The schema's ours channels come first, then the same number of enemy channels. */
 const PAIRS = 12;
 
@@ -86,8 +88,8 @@ export function pairTooltip(row: RegionPair, channel: AirChannel, readDate: stri
   return {
     title: row.name,
     rows: [
-      { label: channel.ours, value: row.ours === null ? 'Not recorded' : scaled(row.ours, channel.divisor) },
-      { label: channel.enemy, value: row.enemy === null ? 'Not recorded' : scaled(row.enemy, channel.divisor) },
+      { label: statisticName(channel.ours), value: row.ours === null ? 'Not recorded' : scaled(row.ours, channel.divisor) },
+      { label: statisticName(channel.enemy), value: row.enemy === null ? 'Not recorded' : scaled(row.enemy, channel.divisor) },
       { label: 'Enemy per ours', value: pairRatio(row, channel.divisor) },
       { label: 'Window', value: 'Current year window (twelve 30-day periods)' },
       ...readDate ? [{ label: 'As of', value: readDate }] : [],

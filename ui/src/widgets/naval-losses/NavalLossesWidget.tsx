@@ -33,7 +33,7 @@ import type { NavalLossesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { navalPinOrigin } from './navalPinOrigin';
 import { NAVAL_PARTS, navalChoiceReads, navalDrillActors, navalHolderBands, formatNavalCount, navalKindLabel, navalLines, navalLineTooltip, navalLookHour, navalModel, navalNumbers, navalPeriodLabel, navalReadHour, navalRequest, navalSegmentAt,
-  navalTooltip, rankNaval } from './navalLossesData';
+  navalAllZero, navalTooltip, rankNaval } from './navalLossesData';
 
 const NO_WARNINGS: string[] = [];
 
@@ -73,8 +73,11 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
     groups.data, track?.branch.lastHour ?? 0, identities, track?.branch.firstHour ?? 0)),
     [resolved, widget.countries, fallback, groups.data, track?.branch.lastHour, track?.branch.firstHour, identities]);
   const slots = resolved.top ?? Math.max(1, counted.tags.length);
-  const ranked = useMemo(() => model ? rankNaval(model, rankedCandidates(counted, moment, model.tags), moment, kind, slots) : [],
-    [model, counted, moment, kind, slots]);
+  const top = resolved.top != null;
+  const ranked = useMemo(() => model ? rankNaval(model, rankedCandidates(counted, moment, model.tags), moment, kind, slots, top) : [],
+    [model, counted, moment, kind, slots, top]);
+  // A Top N ranks known tallies only: all of them zero says no known losses, never none at all.
+  const noLosses = top && !!model && !ranked.length && navalAllZero(model, rankedCandidates(counted, moment, model.tags), moment, kind);
   const lineTags = useMemo(() => prepared.dense ? [...prepared.summaries.keys()] : resolved.top == null ? counted.tags
     : model?.reply.series.filter(series=>series.runs.length).map(series=>series.tag)??[], [resolved.top,counted,model,prepared.dense,prepared.summaries]);
   const lines = useMemo(() => {
@@ -177,7 +180,7 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
         playing: false, playhead: widget.time.mode === 'follow' ? liveHour : null });
       return;
     }
-    const actors = rankNaval(model, drillCandidates, moment, kind, slots).map(row => row.tag);
+    const actors = rankNaval(model, drillCandidates, moment, kind, slots, top).map(row => row.tag);
     setDrillOwner(scope);
     if (actors.length === 1) {
       setDrillOrigin({ scope, tag: actors[0], hour: moment });
@@ -236,7 +239,8 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
     parts={NAVAL_PARTS} raceLegendParts={kind === 'both' ? NAVAL_PARTS : []} partsLabel="Naval losses"
     labels={{ race: `${label}, ${dayLabel(moment)}`, lines: `${label} over time`, actions: 'Naval loss actions' }}
     onPick={kind === 'both' ? open : undefined} pickOwner={pickOwner} resetKey={scopeKey}
-    label={label} empty={counted.known(moment) ? 'Naval losses unknown at this time.' : MEMBERSHIP_PREPARING} formatValue={formatNavalCount}
+    label={label} empty={noLosses ? period === 'month' ? 'No known naval losses this month.' : 'No known naval losses yet.'
+      : counted.known(moment) ? 'Naval losses unknown at this time.' : MEMBERSHIP_PREPARING} formatValue={formatNavalCount}
     countryTags={view === 'race' ? ranked.map(entry => entry.tag) : lineTags} countryLookHour={countryLookHour}
     beforeChart={data && <p className="chart-line-key">{navalPeriodLabel(data, period)}</p>}
     presentation={{ exact: false, held: false, lineColourHours: 'labels', linePadding: CHART_LAYOUT.countryEndLabels, raceEmptyState: false, resetTimeView: true }}

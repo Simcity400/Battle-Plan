@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pairRatio, pairsAt, rankedPairs, scaled, theatreRegions, validateAirStatistics } from './airStatisticsData.ts';
+import { pairRatio, pairsAt, rankedPairs, scaled, statisticName, theatreRegions, validateAirStatistics } from './airStatisticsData.ts';
 
 const reply = (series: { name: string; runs: [number, number, string, boolean][] }[], known = [{ firstHour: 0, lastHour: 100 }]) => validateAirStatistics({
   window: { firstHour: 0, lastHour: 100, known, reads: [[0, 47, 0], [48, 100, 48]], series },
@@ -56,4 +56,9 @@ test('values keep their exact display scale and the ratio needs both sides', () 
 test('a malformed reply is refused', () => {
   assert.throws(() => validateAirStatistics({ window: {}, channels: [], regions: [], warnings: [] }));
   assert.throws(() => validateAirStatistics({ ...reply([]), channels: [{ id: '1', ours: 'A', enemy: 'B', divisor: 0 }] }));
+});
+
+test('statistic names drop the colon the game puts before its numbers', () => {
+  assert.equal(statisticName('Our fighters lost:'), 'Our fighters lost');
+  assert.equal(statisticName('Fighters lost'), 'Fighters lost');
 });

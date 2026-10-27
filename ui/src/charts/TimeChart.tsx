@@ -3,7 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { ZoomReset } from './ZoomReset';
 import { BADGE_STRIP, badgesAt, drawBadges, visibleBadges } from './badges';
 import type { EventBadge } from './badges';
-import { clusterHour, drawMarkSummary, markClusterAt, markSummaryMatches } from './markSummary';
+import { clusterHour, drawMarkSummary, eventCount, markClusterAt, markSummaryMatches } from './markSummary';
 import type { MarkCluster, MarkSummary } from './markSummary';
 import { clipToPlot, dayLabel, drawAxes, drawCrosshair, drawPlayhead, drawSelection, VALUE_LABEL_GAP, valueLabelWidth } from './draw';
 import { approach, easeTau } from './easing';
@@ -312,7 +312,7 @@ export default function TimeChart(props: TimeChartProps) {
       if (preparedMarks) {
         spokeSummary = true;
         const text = summaries.flatMap(summary => summary.clusters.map(cluster => cluster.badge ? `${dayLabel(cluster.badge.hour)}, ${cluster.badge.label}`
-          : `${dayLabel(cluster.firstHour)} to ${dayLabel(cluster.lastHour)}, ${cluster.count} events`)).join('; ');
+          : `${dayLabel(cluster.firstHour) === dayLabel(cluster.lastHour) ? dayLabel(cluster.firstHour) : `${dayLabel(cluster.firstHour)} to ${dayLabel(cluster.lastHour)}`}, ${eventCount(cluster.count)}`)).join('; ');
         setSpoken(previous => previous === text ? previous : text);
       }
       p.overlay?.(context, frame, tokens);

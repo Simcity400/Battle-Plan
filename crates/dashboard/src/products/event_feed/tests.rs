@@ -1463,3 +1463,17 @@ fn event_feed_same_date_completions_keep_insertion_order_across_decimal_boundari
         std::cmp::Ordering::Greater
     );
 }
+
+#[test]
+fn a_feed_page_keeps_every_naming_frame_but_only_its_latest_scripted_frame() {
+    let mut frames = BTreeMap::new();
+    for hour in 0..1_500 {
+        keep_frame(&mut frames, (hour, false), hour);
+        keep_frame(&mut frames, (hour, true), hour);
+    }
+    assert_eq!(frames.keys().filter(|key| !key.1).count(), 1_500);
+    assert_eq!(
+        frames.iter().filter(|(key, _)| key.1).collect::<Vec<_>>(),
+        vec![(&(1_499, true), &1_499)]
+    );
+}

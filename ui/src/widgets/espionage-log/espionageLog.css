@@ -2,5 +2,4 @@
 .espionage-muted { color: var(--muted); }
 .espionage-progress { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; color: var(--muted); font-size: var(--type-xs); }
 
-.espionage-navigation { display: flex; gap: var(--space-2); padding-bottom: var(--space-2); }
 .espionage-log .log-flag.country-flag-unavailable { width: 25px; height: 16px; border-radius: 2px; box-shadow: inset 0 0 0 1px var(--line-soft); }

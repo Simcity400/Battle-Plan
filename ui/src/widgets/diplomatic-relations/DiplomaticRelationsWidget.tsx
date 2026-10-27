@@ -28,10 +28,15 @@ import { contentKey, resolveOptions, setToken } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { useHeldFailure } from '../../dashboard/heldFailures';
+import { useViewRead } from '../../dashboard/viewRead';
 import { OPTIONS, PAIR } from './definition';
-import { opinionDomain, opinionIndex, opinionText, orderCountries, pairHolders, pairLine, pairOf, pairToken } from './relationsData';
+import { opinionDomain, opinionIndex, topTags, opinionText, orderCountries, pairHolders, pairLine, pairOf, pairToken } from './relationsData';
 import type { ChosenPair } from './relationsData';
-import type { DiplomacyOpinionsReply, DiplomacyPairReply } from '../../generated/dashboard';
+import type { DiplomacyOpinionsReply, DiplomacyPairReply, ScoreboardColumnKey, ScoreboardPreparedParams, ScoreboardPreparedReply } from '../../generated/dashboard';
+import type { DashboardClient, DashboardSource } from '../../dashboard/client';
+import { queryScoreboard, scoreboardRegistryRequest, validatePreparedScoreboard } from '../scoreboard/preparedScoreboard';
+import { rankingSort } from '../scoreboard/scoreboardData';
 import './diplomaticRelations.css';
 
 const NO_WARNINGS: string[] = [];
@@ -72,6 +77,29 @@ function PairHistory({ runtime, track, pair: chosen, hour, active }: Pick<Widget
   </div>;
 }
 
+const NO_TAGS: readonly string[] = [];
+
+/** A top N: the countries highest on a Scoreboard measure at the hour, as the Scoreboard ranks them.
+ * One ranking is read at a time, so playback never cancels it; the last stays shown while the newest hour's loads. */
+function useTopCountries(client: DashboardClient, source: DashboardSource | undefined, branchId: string | undefined, hour: number, count: number | null,
+  measure: ScoreboardColumnKey | null, active: boolean) {
+  const lane = source && branchId !== undefined && count !== null && measure !== null ? JSON.stringify([source.id, source.revision, branchId, count, measure]) : null;
+  const known = useRef<{ lane: string; tags: readonly string[] } | null>(null);
+  const read = useViewRead<number, { tags: readonly string[] | null; preparing: boolean }>(lane, hour, String(hour), active, (at, signal, publish, restart) => {
+    const request: ScoreboardPreparedParams = { selection: { branchId: branchId!, columns: [measure!], tags: [], top: { count: count!, sort: measure!, descending: true } },
+      hour: at, sort: measure!, descending: true, index: true, bars: false };
+    // Each prepared prefix replaces the last; one still preparing this hour or measure ranks nothing yet.
+    const ranking = (reply: ScoreboardPreparedReply) => {
+      const tags = topTags(reply, at, measure!);
+      if (tags) known.current = { lane: lane!, tags };
+      return { tags: tags ?? (known.current?.lane === lane ? known.current.tags : null), preparing: tags === null };
+    };
+    return queryScoreboard(client, source!, request, signal, restart, reply => publish(ranking(reply))).then(ranking);
+  }, client);
+  const error = useHeldFailure(read.error, read.data !== undefined, read.retry);
+  return { tags: read.data?.tags ?? null, preparing: read.data?.preparing === true, error, retry: read.retry };
+}
+
 export default function DiplomaticRelationsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
@@ -81,8 +109,15 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const groups = useCountryGroups(runtime, track, active);
   const resolved = track ? resolveCountries(widget.countries, [defaultCountryTag(track) ?? ''].filter(Boolean), groups.data, track.branch.lastHour, Number.MAX_SAFE_INTEGER) : null;
-  const tags = useMemo(() => (resolved?.tags ?? []).filter(tag => !resolved?.membership || resolved.membership.get(tag)?.some(run => run.firstHour <= hour && hour <= run.lastHour)),
+  const members = useMemo(() => (resolved?.tags ?? []).filter(tag => !resolved?.membership || resolved.membership.get(tag)?.some(run => run.firstHour <= hour && hour <= run.lastHour)),
     [resolved?.tags.join(','), resolved?.membership, hour]); // eslint-disable-line react-hooks/exhaustive-deps
+  const top = resolved?.top ?? null;
+  const registryRequest = track && top !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params: scoreboardRegistryRequest(track.branch.id) } : null;
+  const registry = useProduct<ScoreboardPreparedReply>(runtime.client, registryRequest, active, validatePreparedScoreboard, track?.source);
+  const registryData = registry.data?.data;
+  const measure = registryData ? rankingSort(registryData.columns, { column: '', direction: 'descending' }, options.topMeasure, registryData.defaultSort).column : null;
+  const ranked = useTopCountries(runtime.client, track?.source, track?.branch.id, hour, top, measure, active);
+  const tags = top === null ? members : ranked.tags ?? NO_TAGS;
   const opinions = useProduct<DiplomacyOpinionsReply>(runtime.client, track && tags.length > 1 ? { sourceId: track.source.id, revision: track.source.revision, product: 'diplomacy-state',
     params: { view: 'opinions', branchId: track.branch.id, hour, tags } } : null, active, undefined, track?.source);
   const data = opinions.data;
@@ -135,6 +170,9 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   // A group with no member found yet says what the hour was once read, not that too few were chosen.
   const none = resolved && noMembersAt(widget.countries, resolved, groups.data, hour, track.branch.lastHour);
   if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="handshake" /></>;
+  const rankingError = registry.error ?? ranked.error;
+  if (top !== null && rankingError) return <>{groupFailure}<WidgetState kind="error" what="the top countries" detail={rankingError} onRetry={() => { registry.retry(); ranked.retry(); }} /></>;
+  if (top !== null && !ranked.tags) return <>{groupFailure}<WidgetState kind="loading" label={ranked.preparing ? 'This range is still being prepared.' : 'Ranking countries…'} /></>;
   // A group's members at an hour still being prepared are not known yet: too few is not proof.
   if (tags.length < 2 && resolved && !resolved.known(hour)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (tags.length < 2) return <>{groupFailure}<WidgetState kind="empty" icon="handshake" message="Choose at least two countries." /></>;

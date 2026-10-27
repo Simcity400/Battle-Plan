@@ -92,6 +92,23 @@ test('real waits permit unchanged accepted progress without rereading pages', as
   assert.deepEqual({ queries, statuses, waits }, { queries: 3, statuses: 3, waits: 2 });
 });
 
+test('a real wait measured a fraction short of its delay keeps polling unchanged progress', async () => {
+  let queries = 0, statuses = 0, clock = 0;
+  const value = { states: [] };
+  const client = {
+    preparedQuery: async () => ++queries < 3 ? null : value,
+    preparationStatus: async (request: object) => {
+      ++statuses;
+      return { ...request, state: 'preparing', sections: [{ id: 'country-measure', label: 'Balances', state: 'preparing',
+        done: statuses < 3 ? '7' : '8', total: '9', error: null }], backgroundEnabled: true, bytes: '0', error: null };
+    },
+  } as unknown as DashboardClient;
+  // Coarsened clocks put a 500 ms timer at 499.9 ms.
+  assert.equal(await preparedSeriesQuery(client, source, 'series-state', {}, new AbortController().signal, false, undefined,
+    async () => { clock += 499.9; }, undefined, () => clock), value);
+  assert.deepEqual({ queries, statuses }, { queries: 3, statuses: 3 });
+});
+
 test('explicit retry restarts failure while background is disabled, terminal states stop polling', async () => {
   let queries = 0, starts = 0;
   const client = {

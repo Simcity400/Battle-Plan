@@ -140,7 +140,7 @@ test('actual cipher label reads finish during fast playback and retain only thei
     view = render(99); await settle();
     assert.ok(unfinished.every(call => call.signal.aborted), 'a backward move before the read segment releases its requests');
     view = render(130); await settle();
-    assert.equal(view.labels.pair(view.row).owner.name, 'Country name unavailable');
+    assert.equal(view.labels.pair(view.row).owner.name, 'Loading name…');
     assert.equal(view.labels.pair(view.row).owner.flag, undefined, 'a native tag change cannot borrow the old pair');
     assert.equal(view.labels.pair(view.row).owner.flagPending, true, 'a valid new actor awaits its deferred sample, rather than claiming unavailable');
     fixture.advance(2000); render(130); render(130); await settle();

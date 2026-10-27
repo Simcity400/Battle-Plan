@@ -7,7 +7,7 @@ import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useProduct } from '../../dashboard/products';
 import type { MarketLedgerReply } from '../../generated/dashboard';
-import { extendCursors, ledgerCursors, ledgerRows, MARKET_LEDGER, PAGE_SIZE, validateLedger } from './ledgerData';
+import { extendCursors, ledgerCursors, ledgerPages, MARKET_LEDGER, PAGE_SIZE, validateLedger } from './ledgerData';
 import type { LedgerCountries, LedgerItem } from './ledgerData';
 
 const NO_WARNINGS: readonly string[] = [];
@@ -27,7 +27,6 @@ export function useMarketLedger(runtime: WidgetRuntime, track: BoundTrack | unde
       kinds: [...kinds], lastHour: hour, pageSize: PAGE_SIZE, ...before === null ? {} : { before } } });
   const first = useProduct<MarketLedgerReply>(runtime.client, track && countries && hour !== null && kinds.length ? request(null) : null,
     active, validateLedger, track?.source);
-  const total = first.data?.total == null ? null : Number(first.data.total);
   const snapshot = first.data ? JSON.stringify([first.data.lastHour, first.data.total, first.data.next, first.data.rows.length,
     first.data.rows[0]?.id ?? null, preparedPrefix(first.data)]) : null;
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content, countries, kinds, hour, snapshot]) : null;
@@ -46,18 +45,9 @@ export function useMarketLedger(runtime: WidgetRuntime, track: BoundTrack | unde
     const next = extendCursors(first.data, known, index => chunks.data.get(index));
     if (next !== known) setCursors({ identity, next });
   }, [first.data, known, chunks.data, identity]);
-  const pages = useMemo<readonly LogPage<LedgerItem>[]>(() => {
-    if (!first.data || !first.data.rows.length) return [];
-    const branchStart = track?.branch.firstHour ?? 0;
-    return Array.from({ length: chained.length }, (_, index) => {
-      const reply = index === 0 ? first.data : chunks.data.get(index);
-      const rows = reply ? ledgerRows(reply, index) : undefined;
-      const count = rows?.length ?? (total === null ? PAGE_SIZE : Math.max(1, Math.min(PAGE_SIZE, total - index * PAGE_SIZE)));
-      const start = rows?.length ? rows.at(-1)!.hour : branchStart;
-      const end = rows?.length ? rows[0].hour : hour ?? branchStart;
-      return { key: String(index), start, end, count, rows, error: chunks.errors.get(index) };
-    });
-  }, [first.data, chunks.data, chunks.errors, total, chained.length, hour, track?.branch.firstHour]);
+  const pages = useMemo<readonly LogPage<LedgerItem>[]>(() => !first.data || !first.data.rows.length ? []
+    : ledgerPages(first.data, chained.length, index => chunks.data.get(index), chunks.errors, hour, track?.branch.firstHour ?? 0),
+  [first.data, chunks.data, chunks.errors, chained.length, hour, track?.branch.firstHour]);
   const onWantedPages = useCallback((keys: readonly string[]) => {
     const next = keys.map(Number).filter(Number.isInteger);
     setWanted(previous => previous.identity === identity && previous.pages.join(',') === next.join(',') ? previous : { identity, pages: next });

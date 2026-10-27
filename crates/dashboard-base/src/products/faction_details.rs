@@ -891,8 +891,7 @@ fn read(
                     .iter()
                     .map(|index| *index as i32)
                     .collect(),
-                progress_percent: super::finite_fixed64(row.progress_raw)
-                    .then_some(row.progress_raw as f64 / 1000.0),
+                progress_percent: super::faction_goal_progress_percent(row.progress_raw),
                 date: row.date,
             }),
             1 => reply.completed.push(definition(row.token)),

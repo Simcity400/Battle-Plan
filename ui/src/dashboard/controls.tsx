@@ -128,7 +128,7 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client 
           onChange={(event) => { setDraft(null); clock.seek(Number(event.currentTarget.value)); }} />
         <div className="timeline-prepared-markers" aria-label="Exact prepared hours">{exact.map((span, index) =>
           <span key={index} className="timeline-prepared" style={{ left: `${span.left}%`, width: `${span.width}%` }}
-            data-tooltip={`Exact prepared hours ? ${formatDateTime(span.firstHour)} to ${formatDateTime(span.lastHour)}`} />)}</div>
+            data-tooltip={`Exact prepared hours · ${formatDateTime(span.firstHour)} to ${formatDateTime(span.lastHour)}`} />)}</div>
         <div className="timeline-gap-markers">{gaps.map((gap, index) => <span key={index} className="timeline-gap" style={{ left: `${gap.left}%`, width: `${gap.width}%` }}
           data-tooltip={`Reported recording gap · ${formatDateTime(gap.firstHour)} to ${formatDateTime(gap.lastHour)} · ${gap.reason}`} />)}</div>
         {hover && <span className="timeline-hover" style={{ left: hover.left }} aria-hidden="true">{formatDateTime(hover.hour)}</span>}

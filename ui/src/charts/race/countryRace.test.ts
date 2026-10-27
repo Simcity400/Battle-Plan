@@ -116,10 +116,10 @@ test('end labels stop at each drawn read and retain exact raw text', () => {
   const lines = [{ tag: 'a', runs: [{ firstHour: 1, lastHour: 4, value: 2 }, { firstHour: 8, lastHour: 10, value: 3 }] }];
   const name = (_tag: string, hour?: number) => hour === undefined ? 'Moment' : `At ${hour}`;
   const color = (_tag: string, hour?: number) => hour === undefined ? 'moment-colour' : `colour-${hour}`;
-  assert.deepEqual(countryRaceEnds(lines, 1, 7, null, name, color, String), [{ id: 'a', color: 'colour-4', value: 2, text: 'At 4 2' }]);
-  assert.equal(countryRaceEnds(lines, 1, 10, 9, name, color, String)[0].text, 'At 9 3');
+  assert.deepEqual(countryRaceEnds(lines, 1, 7, null, name, color, String), [{ id: 'a', color: 'colour-4', value: 2, text: 'At 4', suffix: '2' }]);
+  assert.deepEqual(countryRaceEnds(lines, 1, 10, 9, name, color, String).map(end => [end.text, end.suffix]), [['At 9', '3']]);
   assert.deepEqual(countryRaceEnds([...lines, { tag: 'b', runs: [{ firstHour: 1, lastHour: 3, value: 8 }] }], 1, 10, 9, name, color, String),
-    [{ id: 'a', color: 'colour-9', value: 3, text: 'At 9 3' }, { id: 'b', color: 'colour-3', value: 8, text: 'At 3 8' }]);
+    [{ id: 'a', color: 'colour-9', value: 3, text: 'At 9', suffix: '3' }, { id: 'b', color: 'colour-3', value: 8, text: 'At 3', suffix: '8' }]);
   assert.deepEqual(countryRaceEnds(lines, 5, 7, null, name, color, String), []);
   assert.deepEqual(countryRaceEnds([{ ...lines[0], color: 'capacity', muted: true, endLabel: hour => `Exact ${hour}: 9,007,199,254,740,993` }],
     1, 7, null, name, color, String), [{ id: 'a', color: 'capacity', value: 2, muted: true, text: 'Exact 4: 9,007,199,254,740,993' }]);
@@ -138,7 +138,7 @@ test('country secondary measures keep their own endpoints and opaque identities'
     runs: [{ firstHour: 1, lastHour: 8, value: 10 }] },
   { tag: 'MOD A', id: JSON.stringify(['MOD A', 'secondary']), measure: 'secondary', runs: [{ firstHour: 1, lastHour: 4, value: 3 }] }];
   const ends = countryRaceEnds(lines, 1, 8, null, (_tag, hour) => `Country at ${hour}`, () => 'country-colour', String);
-  assert.deepEqual(ends.map(end => [end.id, end.text]), [[lines[0].id, 'Country at 8 · primary 10'], [lines[1].id, 'Country at 4 · secondary 3']]);
+  assert.deepEqual(ends.map(end => [end.id, end.text, end.suffix]), [[lines[0].id, 'Country at 8 · primary', '10'], [lines[1].id, 'Country at 4 · secondary', '3']]);
   assert.deepEqual(linesAt(4, lines), ['MOD A']);
   const entries = countryRaceItems([{ tag: 'MOD A', value: 10, label: '10 / 3', stretch: 1, inset: 3 }], new Map(), () => 'country', 'missing', false);
   assert.deepEqual(entries[0].inset, { value: 3, color: 'country' });
@@ -176,8 +176,8 @@ test('one country compares independent measures without stacking or bridging the
   const lines = [{ tag: 'MOD A', id: 'resistance', runs: [{ firstHour: 1, lastHour: 4, value: 20 }] },
     { tag: 'MOD A', id: 'compliance', runs: [{ firstHour: 1, lastHour: 8, value: 70 }] }];
   assert.deepEqual(countryRaceEnds(lines, 1, 10, null, (_tag, hour) => `Name at ${hour}`, () => 'country', String),
-    [{ id: 'resistance', color: 'country', value: 20, text: 'Name at 4 20' },
-      { id: 'compliance', color: 'country', value: 70, text: 'Name at 8 70' }]);
+    [{ id: 'resistance', color: 'country', value: 20, text: 'Name at 4', suffix: '20' },
+      { id: 'compliance', color: 'country', value: 70, text: 'Name at 8', suffix: '70' }]);
   assert.deepEqual(linesAt(3, lines), ['MOD A']);
   assert.deepEqual(linesAt(6, lines), ['MOD A']);
   assert.deepEqual(linesAt(9, lines), []);

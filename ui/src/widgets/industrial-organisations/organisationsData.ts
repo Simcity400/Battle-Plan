@@ -1,5 +1,6 @@
 import type { OrganisationHistory, ProductionCatalogueReply } from '../../generated/dashboard';
 import { object } from '../../dashboard/validation.ts';
+import { formatAmount } from '../../charts/valueAxis.ts';
 import { bigAt, fixedText, isEconomyRuns, isHolderMap, numberAt, runAt, tagAt, validateEconomyReply, valueAt } from '../../dashboard/economyHistory.ts';
 
 export function validateOrganisations(value: unknown): ProductionCatalogueReply {
@@ -57,7 +58,9 @@ export function organisationsAt(reply: ProductionCatalogueReply, tag: string, ho
     || (a.funds === null ? 1 : b.funds === null ? -1 : a.funds === b.funds ? 0 : a.funds > b.funds ? -1 : 1) || (BigInt(a.key) < BigInt(b.key) ? -1 : BigInt(a.key) > BigInt(b.key) ? 1 : 0));
 }
 
-export const fundsText = (raw: bigint | null) => raw === null ? '—' : fixedText(raw, 100000n);
+/** Funds as the game's organisation screen shows them: whole numbers. */
+export const fundsText = (raw: bigint | null) => raw === null ? '—' : formatAmount(raw, 5, 0);
+export const exactFundsText = (raw: bigint) => fixedText(raw, 100000n);
 /** The selected policy; "None" only where the state was read (an unread state is unknown). */
 export function policyText(row: OrganisationRow): string {
   const policy = row.policy ?? (row.size === null ? '—' : 'None');

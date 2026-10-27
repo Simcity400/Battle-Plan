@@ -98,9 +98,9 @@ const forms: Record<string, { kind: string; render: () => ReactNode }> = {
       { value: 'c', label: 'Awaiting choice only' }]} selected={['a', 'b']} max={3} onToggle={() => {}} /></div>
     <LogList label="Event choices" layout="card" density="comfortable" months animate={false} rows={choices} rowHeight={() => 78 + 18 * options.length}
       describe={row => row.key} renderRow={row => <article className="peace-deal event-choice">
-        <div className="peace-heading"><span className="log-art" aria-hidden="true"><ArtFallback icon="ballot" /></span>
+        <div className="event-choice-heading"><span className="log-art" aria-hidden="true"><ArtFallback icon="ballot" /></span>
           <b>A mod event with a long title that needs room {row.key}</b><small>3 Mar 1938 → chosen 5 Mar 1938 · 2 days</small></div>
-        <div className="peace-observation event-choice-countries"><span><b>{sortName(row.item.tag)}</b></span>
+        <div className="event-choice-countries"><span><b>{sortName(row.item.tag)}</b></span>
           {row.item.sender && <><span>from</span><span><b>{sortName(row.item.sender)}</b></span></>}
           {row.item.chosen === null && <span className="pill accent"><span>Awaiting choice · 12 days open</span></span>}</div>
         <ol className="event-choice-options">{options.map((text, i) => <li key={text} className={`event-choice-option${row.item.chosen === i ? ' is-chosen' : ''}`}>
@@ -125,7 +125,7 @@ export const fixture = {
     const tableScroll = [...card.querySelectorAll<HTMLElement>('.chart-table')].map(element => element.scrollWidth - element.clientWidth);
     // Controls and text rows must not be pushed past the card's right edge.
     const bounds = card.getBoundingClientRect();
-    const clipped = [...card.querySelectorAll<HTMLElement>('.chip-set, .balance-headline, .peace-heading, .event-choice-countries, .event-choice-option, .drill-part-label, .chart-line-key')]
+    const clipped = [...card.querySelectorAll<HTMLElement>('.chip-set, .balance-headline, .event-choice-heading, .event-choice-countries, .event-choice-option, .drill-part-label, .chart-line-key')]
       .filter(element => element.getBoundingClientRect().right > bounds.right + 1).map(element => element.className);
     return { cardScrollWidth: card.scrollWidth, cardWidth: card.clientWidth, tableScroll, clipped,
       headers: [...card.querySelectorAll('[role="columnheader"]')].map(cell => cell.getAttribute('aria-label') ?? cell.textContent),

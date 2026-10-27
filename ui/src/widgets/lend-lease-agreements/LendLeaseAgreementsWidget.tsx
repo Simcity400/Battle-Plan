@@ -82,16 +82,21 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const artTag = fallback[0] ?? null;
   const art = useVariantArt(runtime, track, artTag, hour, useMemo(() => visible.flatMap(row => row.items[0]?.variant ? [row.items[0].variant] : []), [visible]), active);
   const name = useCallback((tag: string | null, at: number) => tag === null ? 'Country name unavailable' : names.get(nameKey(at, tag)) ?? tag, [names]);
+  // Titles read the shown rows' labels; sorting keeps the tag order until every name has arrived.
+  const title = useCallback((tag: string | null, at: number) => tag === null ? 'Country name unavailable' : names.get(nameKey(at, tag)) ?? labelAt(at)(tag).name,
+    [names, labelAt]);
   const columns = useMemo<readonly TableColumn<AgreementRow>[]>(() => {
-    const country = (key: 'from' | 'partner', header: string, priority?: number): TableColumn<AgreementRow> => ({ key, header, label: header, priority,
-      width: 'minmax(6em, 1.2fr)', renderMissing: true, value: row => row[key] === null ? null : name(row[key], row.at),
-      text: row => name(row[key], row.at),
-      render: row => row[key] === null ? 'Country name unavailable' : <CountryCell {...labelAt(row.at)(row[key]!)} /> });
+    const country = (tag: string | null, at: number) => tag === null ? 'Country name unavailable' : <CountryCell {...labelAt(at)(tag)} />;
+    const header = several ? 'From → to' : direction === 'sent' ? 'Sent to' : 'Received from';
     return [
-      // The partner leads: a table's first column never hides.
-      country('partner', 'Partner'),
-      ...several ? [country('from', 'From', 5)] : [],
-      { key: 'equipment', header: 'Equipment', label: 'Equipment', width: 'minmax(6em, 1.4fr)',
+      // The countries lead: a table's first column never hides. Several countries' agreements name both sides.
+      { key: 'partner', header, label: header, width: 'minmax(var(--lend-lease-country-min, var(--table-name-min)), 1.4fr)', renderMissing: true,
+        value: row => { const tag = several ? row.giver : row.partner; return tag === null ? null : name(tag, row.at); },
+        text: row => several ? `${title(row.giver, row.at)} → ${title(row.receiver, row.at)}` : title(row.partner, row.at),
+        render: row => several ? <span className="lend-lease-pair">{country(row.giver, row.at)}<span className="lend-lease-to">→ {country(row.receiver, row.at)}</span></span>
+          : country(row.partner, row.at) },
+      // A name beside its icon.
+      { key: 'equipment', header: 'Equipment', label: 'Equipment', width: 'minmax(calc(var(--table-name-min) + 3em), 1.4fr)',
         value: row => row.items[0]?.name ?? null, renderMissing: true,
         text: row => row.items.map(item => item.name ?? 'Equipment name unavailable').join(', '),
         render: row => <EquipmentCell name={row.items[0]?.name ?? null} icon={row.items[0]?.variant ? art.get(row.items[0].variant) : null}
@@ -108,7 +113,7 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
       { key: 'since', header: 'Since', label: 'Since', numeric: true, width: 'max-content', priority: 4,
         value: row => row.since, text: row => row.since === null ? '—' : dayLabel(row.since), render: row => row.since === null ? '—' : dayLabel(row.since) },
     ];
-  }, [several, name, labelAt, art]);
+  }, [several, direction, name, title, labelAt, art]);
   const tooltip = useCallback((row: AgreementRow) => {
     const lines: TooltipRow[] = [];
     for (const item of row.items) {
@@ -121,8 +126,8 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
     if (row.since !== null) lines.push({ label: 'Active since', value: dayLabel(row.since) });
     if (row.last !== null) lines.push({ label: 'Last delivery', value: dayLabel(row.last) });
     if (row.ended) lines.push({ label: `Last recorded ${dayLabel(row.at)}`, tone: 'muted' });
-    return fitTooltip([{ title: `${name(row.from, row.at)} → ${name(row.partner, row.at)}`, rows: lines }], viewport);
-  }, [name, viewport]);
+    return fitTooltip([{ title: `${title(row.giver, row.at)} → ${title(row.receiver, row.at)}`, rows: lines }], viewport);
+  }, [title, viewport]);
   const menu = useCallback((row: AgreementRow) => track ? [row.since, row.last, row.ended ? row.at : null]
     .flatMap(at => at === null ? [] : [jumpItem(runtime, track.id, at)]) : [], [runtime, track]);
   const playing = runtime.clock.getSnapshot().playing;
@@ -163,7 +168,7 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   return <div ref={anchor} className="lend-lease-agreements-host">{groupFailure}
     {headerSlot && createPortal(<span className="pill">{active_.toLocaleString()} active</span>, headerSlot)}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
-      title={picked ? `${name(picked.from, picked.at)} → ${name(picked.partner, picked.at)}` : AGREEMENT.label} day={dayLabel(at)}
+      title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={dayLabel(at)}
       following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
       main={main}>
       {picked && <MarketDrill runtime={runtime} track={track} hour={drill.follow ? hour : at} active={active}

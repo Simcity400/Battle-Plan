@@ -10,6 +10,7 @@ export const COLUMNS = [
 export const DEFAULT_SORT = { column: 'defense', direction: 'descending' } as const;
 export const OPTIONS: readonly OptionField[] = [
   { key: 'includeUncreated', section: 'options', label: 'Include agencies not created', kind: 'toggle', default: false },
+  { key: 'intelRecords', section: 'options', label: 'Show recorded intel records', hint: 'The raw intel the recording holds for one viewing country.', kind: 'toggle', default: false },
   { key: 'topMeasure', section: 'options', label: 'Top countries by', hint: 'Ranks Top N independently of table sorting.', kind: 'choice', default: 'defense', visibleWhen: (_options, countries) => countries?.kind === 'group' && countries.group.type === 'top',
     choices: [{ value: 'defense', label: 'Defence' }, { value: 'active', label: 'Active operatives' }, { value: 'maximum', label: 'Maximum operatives' }] },
   ...TABLE_OPTIONS, ...tableSortOptions(COLUMNS, DEFAULT_SORT),

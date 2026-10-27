@@ -125,6 +125,7 @@ pub use static_lists::scaled_static_modifiers;
 mod dispatch;
 mod empty;
 mod events;
+pub use events::decision_name_key_at;
 mod lists;
 mod modifiers;
 mod numeric;

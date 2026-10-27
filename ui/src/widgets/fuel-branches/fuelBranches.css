@@ -3,6 +3,8 @@
 .fuel-branch-track { gap: 1px !important; }
 .fuel-branch-unmet { font-size: var(--type-xs); color: var(--muted); }
 .fuel-branches .resource-bars b { font-weight: 600; white-space: nowrap; }
+/* A flex item drops its leading space: keep " / requested" apart from the received amount. */
+.fuel-branch-requested { white-space: pre; }
 .fuel-branches-time { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; padding: var(--space-2) 0; }
 .fuel-branches-time > .legend { padding: 0 var(--space-3); }
 .fuel-branches-chart { flex: 1; min-height: 0; }

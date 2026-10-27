@@ -29,7 +29,7 @@ import type { OptionField } from './options';
 import { usePlaybackHour, usePlaybackSpeed } from './playback';
 import { useCountryGroups } from './useCountryGroups';
 import { useMilitaryAirLedger } from './useMilitaryAirLedger';
-import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, BOMBING_GAP_NOTE, ledgerCountries, ledgerCountryAt, ledgerDifference, ledgerFormat, ledgerPinnedIdentity, ledgerRuns, ledgerScale, ledgerSegmentAt, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, militaryAirTooltip, militaryAirPreparing } from './militaryAirLedger';
+import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, BOMBING_GAP_NOTE, ledgerCountries, ledgerCountryAt, ledgerDifference, ledgerLabel, ledgerPinnedIdentity, ledgerRuns, ledgerScale, ledgerSegmentAt, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, militaryAirTooltip, militaryAirPreparing } from './militaryAirLedger';
 import type { LedgerRow } from './militaryAirLedger';
 import { airLossDrillActor, airLossDrillActors, pinAirLossDrill } from './airLossDrill';
 import AirLossDrill from './AirLossDrill.tsx';
@@ -88,7 +88,8 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
       const runs = ledgerRuns(series, from, end, dealt, ledgerScale(family), series.country.membership ?? (membership ? membership.get(series.country.tag) ?? [] : null));
       return { tag: series.country.tag, id: JSON.stringify([series.country.identity, series.country.tag, dealt]), measure: dealt ? 'Enemy losses' : 'Own losses',
         runs, dash: dealt ? undefined : SECONDARY_DASH,
-        endLabel: (at: number, name: string) => name + ' · ' + (dealt ? 'credited ' : 'lost ') + ledgerFormat(ledgerDifference(series.points, from, at)[dealt ? 'dealt' : 'taken'], family) };
+        endLabel: (at: number, name: string) => ({ text: `${name} · ${dealt ? 'credited' : 'lost'}`,
+          suffix: ledgerLabel(ledgerDifference(series.points, from, at)[dealt ? 'dealt' : 'taken'], family) }) };
     })).filter(line => line.runs.length);
   }, [air, options.view, lineSeries, grouped, widget.countries, fallbackKey, groups.data, lastHour, from, end, family]); // eslint-disable-line react-hooks/exhaustive-deps
   const segmentAt = useMemo(() => index ? ledgerSegmentAt(index) : () => null, [index]);
@@ -98,12 +99,12 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const colour = useCountryColours(tags, looks.color, tokens, looks);
   const items = useMemo<Item[]>(() => selected.rows.map(row => ({ id: itemId(row), label: looks.name(row.tag, hour), flag: looks.flag(row.tag, hour), color: colour(row.tag, hour),
     countryFlag: { flag: looks.flag(row.tag, hour), flagReason: looks.flagReason(row.tag, hour), flagPending: looks.flagPending(row.tag, hour) },
-    left: Number(row.taken) / ledgerScale(family), right: Number(row.dealt) / ledgerScale(family), leftText: ledgerFormat(row.taken, family), rightText: ledgerFormat(row.dealt, family),
+    left: Number(row.taken) / ledgerScale(family), right: Number(row.dealt) / ledgerScale(family), leftText: ledgerLabel(row.taken, family), rightText: ledgerLabel(row.dealt, family),
     ratioText: row.complete ? formatRatio(row.dealt, row.taken) : 'Not known', segment: String(row.segment), row })), [selected.rows, looks, colour, hour, family]);
   // Built only when their inputs change, so the race keeps its own memoised layers.
   const shownValue = metric === 'dealt' ? 'dealt' : 'taken';
   const ranked = useMemo(() => air ? selected.rows.map(row => ({ tag: row.tag, value: Number(row[shownValue]) / ledgerScale(family),
-    label: ledgerFormat(row[shownValue], family) + (options.ratio !== false ? ' · ' + (row.complete ? formatRatio(row.dealt, row.taken) : 'Not known') : ''),
+    label: ledgerLabel(row[shownValue], family) + (options.ratio !== false ? ' · ' + (row.complete ? formatRatio(row.dealt, row.taken) : 'Not known') : ''),
     stretch: JSON.stringify([row.identity, row.segment]) })) : [], [air, selected.rows, shownValue, family, options.ratio]);
   const raceTags = useMemo(() => options.view === 'lines' ? [...new Set(lines.map(line => line.tag))] : tags, [options.view, lines, tags]);
   const extentStart = widget.time.mode === 'range' ? from : track?.branch.firstHour ?? from;
@@ -208,7 +209,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const main = <div className="military-air-ledger">{content}
     <p className="chart-line-key">Counted from {formatDateTime(from)}. {air ? AIR_LEDGER_NOTE : 'Building levels.'} {selected.rows.some(row => !row.complete) ? air ? LEDGER_GAP_NOTE : BOMBING_GAP_NOTE : ''}</p>
     {air && options.view === 'lines' && <p className="chart-line-key">Solid: enemy losses. Dashed: own losses.</p>}
-    {!!index?.unknown.length && <p className="chart-line-key">Unattributed: {leftLabel.toLowerCase()} {ledgerFormat(unknown?.taken ?? 0n, family)}; {rightLabel.toLowerCase()} {ledgerFormat(unknown?.dealt ?? 0n, family)}.</p>}
+    {!!index?.unknown.length && <p className="chart-line-key">Unattributed: {leftLabel.toLowerCase()} {ledgerLabel(unknown?.taken ?? 0n, family)}; {rightLabel.toLowerCase()} {ledgerLabel(unknown?.dealt ?? 0n, family)}.</p>}
   </div>;
   if (air) {
     const detail = index && airActor ? <AirLossDrill index={index} runtime={runtime} track={track} tag={airActor.tag} identity={airActor.identity}

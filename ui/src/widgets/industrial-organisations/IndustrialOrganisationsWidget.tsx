@@ -2,6 +2,7 @@ import { createPortal } from 'react-dom';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import ArtFallback from '../../components/ArtFallback';
+import { contentTitleHint } from '../../dashboard/contentTitles';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel } from '../../charts/draw';
@@ -26,7 +27,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { ProductionCatalogueReply } from '../../generated/dashboard';
 import { PRODUCTION_CATALOGUE } from '../production-licences/licencesData';
 import { DEFAULT_SORT, OPTIONS, POLICY } from './definition';
-import { fundsText, organisationsAt, policyText, rosterKnown, validateOrganisations } from './organisationsData';
+import { exactFundsText, fundsText, organisationsAt, policyText, rosterKnown, validateOrganisations } from './organisationsData';
 import type { OrganisationRow } from './organisationsData';
 import '../equipment-stockpile/equipmentStockpile.css';
 import './industrialOrganisations.css';
@@ -67,7 +68,7 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const columns = useMemo<readonly TableColumn<OrganisationRow>[]>(() => [
     { key: 'organisation', header: 'Organisation', label: 'Organisation', width: 'minmax(var(--table-name-min), 2fr)',
       value: row => row.name ?? NAME_UNAVAILABLE,
-      render: row => <span className="stockpile-equipment" data-tooltip={row.token || undefined}>
+      render: row => <span className="stockpile-equipment" data-tooltip={contentTitleHint(row.token)}>
         {row.icon ? <img className="mio-icon" src={row.icon} alt="" /> : <span className="mio-icon"><ArtFallback icon="factory" /></span>}
         <span><b>{row.name ?? NAME_UNAVAILABLE}</b></span></span> },
     { key: 'size', header: 'Size', label: 'Size', numeric: true, width: 'max-content', renderMissing: true,
@@ -78,12 +79,12 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
       value: row => row.traits, render: row => row.traits === null ? '—' : row.traits.toString() },
     { key: 'policy', header: 'Policy', label: 'Policy', width: 'minmax(120px, 1.4fr)', priority: 1, renderMissing: true,
       value: row => row.policy, text: policyText,
-      render: row => <span className={row.policy === null ? 'mio-muted' : undefined} data-tooltip={row.policyToken ?? undefined}>{policyText(row)}</span> },
+      render: row => <span className={row.policy === null ? 'mio-muted' : undefined} data-tooltip={contentTitleHint(row.policyToken)}>{policyText(row)}</span> },
   ], []);
   const tooltip = useCallback((row: OrganisationRow) => {
     const lines: TooltipRow[] = [
       { label: 'Size', value: row.size === null ? 'Not recorded' : row.size.toString() },
-      { label: 'Funds', value: row.funds === null ? 'Not recorded' : fundsText(row.funds) },
+      { label: 'Funds', value: row.funds === null ? 'Not recorded' : exactFundsText(row.funds) },
       { label: 'Unspent points', value: row.points === null ? 'Not recorded' : row.points.toString() },
       { label: 'Traits unlocked', value: row.traits === null ? 'Not recorded' : row.traits.toString() },
       { label: 'Policy', value: policyText(row), lookupKey: row.policyToken ?? undefined },

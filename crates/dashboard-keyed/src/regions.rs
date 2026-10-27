@@ -14,6 +14,8 @@ use std::{
 /// The strategic regions the content defines, with their titles.
 pub struct RegionNames {
     names: BTreeMap<u32, Result<String, String>>,
+    /// Regions with provinces: the only ones the game's map can show.
+    mapped: BTreeSet<u32>,
     /// The region files' own reader notes.
     pub warnings: Vec<String>,
 }
@@ -59,15 +61,30 @@ impl RegionNames {
                         (id, name)
                     })
                     .collect();
+                let mapped = definitions
+                    .regions
+                    .iter()
+                    .filter(|(_, region)| !region.provinces.is_empty())
+                    .map(|(&id, _)| id)
+                    .collect();
                 warnings.extend(definitions.notes.clone());
-                Ok(RegionNames { names, warnings })
+                Ok(RegionNames {
+                    names,
+                    mapped,
+                    warnings,
+                })
             })
             .map_err(|error| error.to_string())
     }
 
     /// Names from an already resolved catalogue (tests and offline checks).
     pub fn new(names: BTreeMap<u32, Result<String, String>>, warnings: Vec<String>) -> Self {
-        Self { names, warnings }
+        let mapped = names.keys().copied().collect();
+        Self {
+            names,
+            mapped,
+            warnings,
+        }
     }
 
     /// A region's title, or why it has none.
@@ -82,6 +99,11 @@ impl RegionNames {
     /// Every region the content defines.
     pub fn ids(&self) -> impl Iterator<Item = u32> + '_ {
         self.names.keys().copied()
+    }
+
+    /// Whether the content gives the region provinces, so the game's map shows it.
+    pub fn mapped(&self, id: u32) -> bool {
+        self.mapped.contains(&id)
     }
 }
 

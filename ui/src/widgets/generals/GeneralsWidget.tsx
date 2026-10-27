@@ -23,15 +23,13 @@ import CareerView from '../general-career/CareerView';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import { Attributes, AttributesHeader } from './Attributes';
 import { LeaderIdentity, SkillStars } from './LeaderIdentity';
-import { firstSeenHour, leadersAt, leaderName, leaderTooltip, pinnedCareer, attributeNames, recordedSince } from './generalsData';
+import { firstSeenHour, leaderKey as rowKey, leadersAt, leaderName, leaderSkill as skillValue, leaderTooltip, pinnedCareer, attributeNames, recordedSince } from './generalsData';
 import type { LeaderRow } from './generalsData';
 import { useLeaderCountries, useLeaders } from './useLeaders';
 import './generals.css';
 
 const EMPTY: readonly LeaderRow[] = [];
-const rowKey = (row: LeaderRow) => row.key;
 // Artwork and labels rebuild cells without changing the table's sort identity.
-const skillValue = (row: LeaderRow) => row.value.skill;
 const wonValue = (row: LeaderRow) => row.won;
 const lostValue = (row: LeaderRow) => row.lost;
 const unresolvedValue = (row: LeaderRow) => row.unresolved;

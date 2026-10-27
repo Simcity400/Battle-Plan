@@ -30,7 +30,7 @@ test('occupation historical lines survive a missing reached value and keep the i
   assert.equal(lines[0].runs.length, 0);
   assert.equal(lines[1].runs[0].value, 9.87654);
   assert.deepEqual(result.series[0].runs, []);
-  assert.equal(lines[0].endLabel!(200, 'Occupier'), 'Occupier Resistance Not recorded');
+  assert.deepEqual(lines[0].endLabel!(200, 'Occupier'), { text: 'Occupier Resistance', suffix: 'Not recorded' });
 });
 
 test('occupation labels use exact endpoint facts rather than extrema or an unreached state', () => {

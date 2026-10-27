@@ -15,9 +15,9 @@ import './serviceRecord.css';
 
 /** One division's header line and dated record: the standalone widget's body and
  * the Most decorated divisions drill. */
-export default function RecordView({ runtime, trackId, division, hour, show, log, live, active, onDiagnostics }: {
+export default function RecordView({ runtime, trackId, division, hour, show, log, live, active, onDiagnostics, caption }: {
   runtime: WidgetRuntime; trackId: string; division: string; hour: number; show: string; log: LogSettings; live: boolean; active: boolean;
-  onDiagnostics: WidgetProps['onDiagnostics'];
+  onDiagnostics: WidgetProps['onDiagnostics']; caption?: string;
 }) {
   const track = runtime.tracks.find(t => t.id === trackId);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'division-record',
@@ -35,6 +35,7 @@ export default function RecordView({ runtime, trackId, division, hour, show, log
     {item.entry.award ? <ArtFallback icon="star" /> : data.template?.icon ? <img src={data.template.icon} alt="" /> : <ArtFallback icon="helmet" />}</span>
     <span className="log-text">{entryText(item)}</span></>;
   return <div className="service-record">
+    {caption && <p className="service-record-subject">{caption}</p>}
     <div className="service-record-header" data-tooltip={data.division}>
       {data.template?.icon ? <img src={data.template.icon} alt="" /> : <ArtFallback icon="helmet" />}
       <strong title={name}>{name}</strong>

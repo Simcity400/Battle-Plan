@@ -314,6 +314,8 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
     let labels = content::labels(query, &mut warnings);
     if let Ok(names) = dashboard_keyed::regions::RegionNames::read(query) {
         regions.extend(names.ids());
+        // The weather slot before the first region and empty regions are never on the map.
+        regions.retain(|&region| names.mapped(region));
     }
     let region_choices = content::region_choices(&regions, query, &mut warnings);
     let flags = content::flag_choices(labels.as_deref(), &mut warnings);

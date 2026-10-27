@@ -31,6 +31,8 @@ export const OPTIONS: readonly OptionField[] = [
   ...CATEGORIES.map(category => ({ key: category.value, section: 'options' as const, label: category.label,
     kind: 'toggle' as const, default: true })),
   { key: 'artwork', section: 'options', label: 'Game artwork', kind: 'toggle', default: true },
+  { key: 'observations', section: 'options', label: 'Recording observations', hint: 'Decision roster rebuilds and retained script state the recording observed; not moments in the game.',
+    kind: 'toggle', default: false },
   ...LOG_OPTIONS,
 ];
 

@@ -32,7 +32,7 @@ test('moment and history use the same signed available/need operands, not later 
   const before = stockpilePartsAt(reply, group, 110, 'balance');
   assert.deepEqual(before.parts.map(part => [part.id, part.raw]), [['available', 2000000n], ['need', -1500000n], ['other', 0n]]);
   assert.equal(before.total, 500000n);
-  assert.deepEqual(before.parts.map(part => stockpilePartAmount(part.raw, reply.decimals)), ['+20.00000', '−15.00000', '0.00000']);
+  assert.deepEqual(before.parts.map(part => stockpilePartAmount(part.raw, reply.decimals)), ['+20', '−15', '0']);
   assert.equal(stockpilePartAmount(1n, reply.decimals), '+0.00001');
   assert.equal(stockpilePartAmount(null, reply.decimals), 'Not recorded');
   assert.equal(balanceAt(reply, group, 110)!.stock, 99900000n);

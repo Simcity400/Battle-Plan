@@ -47,8 +47,9 @@ const agreements: Agreement[] = Array.from({ length: 24 }, (_, i) => ({ key: `a$
 const country = <T,>(key: keyof T & string, header: string, priority?: number, width = 'minmax(6em, 1.2fr)'): TableColumn<T> => ({ key, header, label: header, priority,
   width, value: row => String(row[key]), render: row => <CountryCell name={String(row[key])} /> });
 const agreementColumns: TableColumn<Agreement>[] = [
-  country<Agreement>('partner', 'Partner'), country<Agreement>('from', 'From', 5),
-  { key: 'equipment', header: 'Equipment', label: 'Equipment', width: 'minmax(6em, 1.4fr)', value: row => row.equipment,
+  { key: 'partner', header: 'From → to', label: 'From → to', width: 'minmax(var(--lend-lease-country-min, var(--table-name-min)), 1.4fr)', value: row => row.from,
+    render: row => <span className="lend-lease-pair"><CountryCell name={row.from} /><span className="lend-lease-to">→ <CountryCell name={row.partner} /></span></span> },
+  { key: 'equipment', header: 'Equipment', label: 'Equipment', width: 'minmax(calc(var(--table-name-min) + 3em), 1.4fr)', value: row => row.equipment,
     render: row => <EquipmentCell name={row.equipment} detail={row.more ? `+${row.more}` : null} /> },
   { key: 'schedule', header: 'Schedule', label: 'Schedule', width: 'minmax(120px, 1fr)', priority: 1, value: row => row.schedule },
   { key: 'delivered', header: 'Delivered', label: 'Delivered', numeric: true, width: 'max-content', value: row => row.delivered },

@@ -42,7 +42,7 @@ export function drawMarkSummary(ctx: CanvasRenderingContext2D, frame: PlotFrame,
     ctx.restore(); return;
   }
   drawBadges(ctx, frame, tokens, summary.clusters.map(cluster => cluster.badge ?? {
-    hour: clusterHour(cluster), glyph: String(cluster.count), label: `${cluster.count} events`,
+    hour: clusterHour(cluster), glyph: String(cluster.count), label: eventCount(cluster.count),
   }), null);
 }
 
@@ -94,3 +94,6 @@ export function markIndex(source: readonly EventBadge[]) {
     },
   };
 }
+
+/** Cluster counts are decimal strings (exact past 2^53). */
+export const eventCount = (count: string | number) => `${count} ${String(count) === '1' ? 'event' : 'events'}`;

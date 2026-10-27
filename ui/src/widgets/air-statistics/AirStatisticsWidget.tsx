@@ -16,7 +16,7 @@ import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
 import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useParityRows } from '../../dashboard/parityRows';
-import { barValue, pairRatio, pairsAt, pairTooltip, rankedPairs, scaled, theatreRegions } from './airStatisticsData';
+import { barValue, pairRatio, pairsAt, pairTooltip, rankedPairs, scaled, statisticName, theatreRegions } from './airStatisticsData';
 import type { RegionPair } from './airStatisticsData';
 import { useAirStatistics } from './useAirStatistics';
 import { useAirTheatres } from '../air-missions/useAirTheatres';
@@ -69,7 +69,7 @@ export default function AirStatisticsWidget({ widget, runtime, active, onDiagnos
   if (!at) return <WidgetState kind="unavailable" message="Air statistics were not recorded at this time." />;
   const picker = setOption && data.channels.length > 0 && <div className="select-row air-statistics-channel">
     <Select label="Statistic" value={channelId} onChange={value => setOption('channel', setToken(value))}
-      options={data.channels.map(item => ({ value: item.id, label: `${item.ours} / ${item.enemy}` }))} />
+      options={data.channels.map(item => ({ value: item.id, label: `${statisticName(item.ours)} / ${statisticName(item.enemy)}` }))} />
   </div>;
   const prefix = preparedPrefix(data);
   return <div ref={anchor} className="air-statistics">
@@ -79,7 +79,7 @@ export default function AirStatisticsWidget({ widget, runtime, active, onDiagnos
       : !items.length ? <WidgetState kind="empty" message={`${country ?? 'This country'} has no air statistics yet.`} />
       : <ButterflyChart key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, channel.id])} label="Air statistics by region"
         items={items} slots={top ?? items.length} labelCandidates={data.regions.map(region => region.name)}
-        leftLabel={`◀ ${channel.ours}`} rightLabel={`${channel.enemy} ▶`} ratioLabel="Ratio" showFlags={false}
+        leftLabel={`◀ ${statisticName(channel.ours)}`} rightLabel={`${statisticName(channel.enemy)} ▶`} ratioLabel="Ratio" showFlags={false}
         active={active} hoursPerSecond={hoursPerSecond} showValues={options.values !== false} showRatio={options.ratio !== false}
         tooltip={item => pairTooltip(item.data, channel, readDate)}
         contextItems={() => readHour === undefined ? [] : [jumpItem(runtime, track.id, readHour)]} />}

@@ -1,5 +1,6 @@
-.ruling-party { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; padding: var(--space-2) 0 var(--space-2); }
-.ruling-party-chart { flex: 1; min-height: 0; }
+/* A card set shorter than its parts scrolls rather than squashing the chart. */
+.ruling-party { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; overflow-y: auto; padding: var(--space-2) 0 var(--space-2); }
+.ruling-party-chart { flex: 1; min-height: 140px; }
 .ruling-party-changes { display: flex; flex-direction: column; height: 180px; min-height: 0; padding: 0 var(--space-3); }
 .ruling-party-leader { display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-3); min-width: 0; }
 .ruling-party-portrait { flex: none; display: grid; place-items: center; width: 44px; height: 44px; border: 2.5px solid var(--muted); border-radius: 50%; overflow: hidden; background: color-mix(in srgb, var(--text) 8%, transparent); }

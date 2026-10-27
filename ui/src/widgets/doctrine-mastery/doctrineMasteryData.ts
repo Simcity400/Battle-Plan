@@ -1,6 +1,6 @@
 import { countryPart, keyedKnown, keyedRead, runAtHour, validateKeyedWindow } from '../../dashboard/keyedHistory.ts';
 import type { KeyedWindow } from '../../dashboard/keyedHistory';
-import { masteryText } from '../research/doctrineData.ts';
+import { formatAmount, formatRate } from '../../charts/valueAxis.ts';
 import type { MeterMark } from '../../charts/meter/ProgressMeter';
 import type { SpriteFrame } from '../../dashboard/spriteArtwork';
 
@@ -97,11 +97,18 @@ export function doctrinesAt(reply: DoctrineMasteryReply, tag: string, hour: numb
   return { folders, readHour: keyedRead(reply.window, hour) };
 }
 
-/** The meter's scale: the track's last reward threshold (null when the content gives no
- * positive one, which leaves the meter unscaled rather than invented). */
+/** The track mastery each reward unlocks at: a reward's threshold is its own step, so the
+ * game unlocks it at the sum of its and every earlier threshold. Null from the first unknown one. */
+export function unlockMastery(track: TrackState): (bigint | null)[] {
+  let sum: bigint | null = 0n;
+  return (track.subdoctrine?.rewards ?? []).map(reward => sum = sum === null || reward.threshold === null ? null : sum + BigInt(reward.threshold));
+}
+
+/** The meter's scale: the mastery that unlocks the track's last reward (null when any
+ * threshold is unknown, which leaves the meter unscaled rather than invented). */
 export function trackScale(track: TrackState): bigint | null {
-  const thresholds = (track.subdoctrine?.rewards ?? []).flatMap(reward => reward.threshold === null ? [] : [BigInt(reward.threshold)]).filter(value => value > 0n);
-  return thresholds.length ? thresholds.reduce((max, value) => value > max ? value : max) : null;
+  const last = unlockMastery(track).at(-1);
+  return last != null && last > 0n ? last : null;
 }
 
 /** Mastery as a share of the scale, for the meter; null when either is unknown. */
@@ -124,29 +131,33 @@ export function unlockedRewards(track: TrackState): DoctrineReward[] {
   return (track.subdoctrine?.rewards ?? []).filter((_, ordinal) => rewardUnlocked(track, ordinal) === true);
 }
 
-/** Whether the recorded mastery meets a reward's authored requirement; null when unknown. Kept
+/** Whether the recorded mastery reaches the reward at `ordinal`; null when unknown. Kept
  * apart from the unlock, which the game records separately. */
-export function requirementMet(track: TrackState, reward: DoctrineReward): boolean | null {
-  return track.mastery === null || reward.threshold === null ? null : BigInt(track.mastery) >= BigInt(reward.threshold);
+export function requirementMet(track: TrackState, ordinal: number): boolean | null {
+  const needed = unlockMastery(track)[ordinal];
+  return track.mastery === null || needed == null ? null : BigInt(track.mastery) >= needed;
 }
 
 /** A mark at each authored reward threshold, reached when the recorded count unlocks it. */
 export function trackMarks(track: TrackState, labels: boolean): MeterMark[] {
   const scale = trackScale(track);
   if (scale === null) return [];
-  // A reward without a known requirement has no place on the meter; ordinals stay authored.
-  return (track.subdoctrine?.rewards ?? []).flatMap((reward, index) => reward.threshold === null ? [] : [{ id: `${reward.id}:${index}`,
-    at: Number(BigInt(reward.threshold) * 10000n / scale) / 10000,
-    reached: rewardUnlocked(track, index) === true, ...labels ? { label: rewardName(reward) } : {} }]);
+  const unlocks = unlockMastery(track);
+  return (track.subdoctrine?.rewards ?? []).map((reward, index) => ({ id: `${reward.id}:${index}`,
+    at: Number(unlocks[index]! * 10000n / scale) / 10000,
+    reached: rewardUnlocked(track, index) === true, ...labels ? { label: rewardName(reward) } : {} }));
 }
 
+/** Mastery from its fixed-point text: at most two decimals, as the game's track shows it. */
+export const masteryText = (raw: string | bigint) => formatAmount(raw, 5, 2);
+/** A daily mastery rate from its fixed-point text. */
+export const rateText = (raw: string) => formatRate(raw, 5);
+
 /** "+x a day" from the effective gain, or null when not recorded. */
-export const dailyText = (raw: string | null) => raw === null ? null : `${raw.startsWith('-') ? '' : '+'}${masteryText(raw)} a day`;
+export const dailyText = (raw: string | null) => raw === null ? null : `${raw.startsWith('-') ? '' : '+'}${rateText(raw)} a day`;
 
 /** Tracks with a subdoctrine chosen, for the header. */
 export const activeTracks = (folders: readonly FolderState[]) => folders.reduce((sum, folder) => sum + folder.tracks.filter(track => track.subToken !== null).length, 0);
-
-export { masteryText };
 
 /** A doctrine icon's sprite: the authored key's single image. */
 export const doctrineSprite = (key: string | null | undefined): SpriteFrame | null => key ? { key, frame: 0 } : null;

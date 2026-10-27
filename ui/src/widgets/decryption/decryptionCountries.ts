@@ -65,7 +65,7 @@ export function useDecryptionCountries(client: DashboardClient, track: Pick<Boun
       const pair = held.get(row.key) ?? pending.get(row.key);
       if (pair && pair.hour <= row.hour && sameIdentity(pair.row, row)) return pair;
       const waiting = valid(row);
-      const fallback = (tag: string | null) => tag === null ? missing() : { ...missing(), flagPending: waiting };
+      const fallback = (tag: string | null) => tag === null ? missing() : waiting ? { name: 'Loading name…', flagPending: true } : missing();
       return { owner: fallback(row.tags.ownerTag), target: fallback(row.tags.targetTag) };
     },
     revision: countries.revision,

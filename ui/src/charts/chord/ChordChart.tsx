@@ -4,6 +4,7 @@ import { easeTau } from '../easing';
 import { NO_HOVER, pointerMenu, reduceHover } from '../hover';
 import type { HoverState } from '../hover';
 import { canvasImage } from '../images';
+import { ellipsise, layoutEndLabels } from '../labels';
 import { countryTooltipContent, drawCountryFlag } from '../countryFlag';
 import { scheduler } from '../scheduler';
 import type { FrameTask } from '../scheduler';
@@ -12,7 +13,7 @@ import { hideTooltip, scrollTooltip, showTooltip, tooltipStore, tooltipText } fr
 import type { TooltipContent } from '../tooltip';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { ARC_BAND, RIBBON_INSET, chordStops, chordSurface, hitChord, layoutChord, stepChord } from './layout';
-import type { ChordData, ChordHit, ChordLayout, ChordSurface } from './layout';
+import type { ChordArc, ChordData, ChordHit, ChordLayout, ChordSurface } from './layout';
 import { ChordFrames } from './frame';
 import type { ChordFrame } from './frame';
 import '../charts.css';
@@ -144,25 +145,38 @@ export default function ChordChart(props: ChordChartProps) {
         context.closePath(); context.fillStyle = colours.get(ribbon.flow.source)!;
         context.globalAlpha = hot?.kind === 'flow' && hot.id !== ribbon.flow.id ? 0.1 : 0.6; context.fill();
       }
+      const labels: { arc: ChordArc; id: string; y: number; height: number; right: boolean }[] = [];
       if (radius > 0) for (const arc of layout.arcs) {
         if (arc.end <= arc.start) continue;
         context.globalAlpha = 1;
         context.beginPath(); context.arc(x, y, radius, arc.start, arc.end);
         context.arc(x, y, Math.max(0, radius - ARC_BAND), arc.end, arc.start, true); context.closePath();
         context.fillStyle = arc.node.color; context.fill();
-        const angle = (arc.start + arc.end) / 2, lx = x + Math.cos(angle) * (radius + 12), ly = y + Math.sin(angle) * (radius + 12);
-        const right = Math.cos(angle) >= 0, flagX = right ? lx : lx - 16;
-        context.globalAlpha = arc.presence;
-        if (arc.node.countryFlag) drawCountryFlag(context, arc.node.countryFlag, flagX, ly - 5, 15, 10, t, wake);
-        else {
-          const flag = arc.node.flag ? canvasImage(arc.node.flag, wake) : null;
-          if (flag) context.drawImage(flag, flagX, ly - 5, 15, 10);
+        const angle = (arc.start + arc.end) / 2;
+        labels.push({ arc, id: arc.node.id, y: y + Math.sin(angle) * (radius + 12), height: t.fontSize.small + 3, right: Math.cos(angle) >= 0 });
+      }
+      const measure = (text: string) => context.measureText(text).width;
+      for (const right of [true, false]) {
+        const side = labels.filter(label => label.right === right);
+        // Small neighbouring arcs would stack their names: spread each side apart, along the ring and clear of the caption.
+        const placed = layoutEndLabels(side, 2, height - (right ? 26 : 2), 1);
+        for (const { arc, id } of side) {
+          const ly = placed.get(id)!, ring = radius + 12, reach = Math.sqrt(Math.max(0, ring * ring - (ly - y) ** 2));
+          const lx = right ? x + reach : x - reach, flagX = right ? lx : lx - 16;
+          context.globalAlpha = arc.presence;
+          if (arc.node.countryFlag) drawCountryFlag(context, arc.node.countryFlag, flagX, ly - 5, 15, 10, t, wake);
+          else {
+            const flag = arc.node.flag ? canvasImage(arc.node.flag, wake) : null;
+            if (flag) context.drawImage(flag, flagX, ly - 5, 15, 10);
+          }
+          context.font = font(t, t.fontSize.small, 500); context.textBaseline = 'middle'; context.textAlign = right ? 'left' : 'right';
+          context.fillStyle = t.text;
+          context.fillText(ellipsise(arc.node.label, right ? width - lx - 23 : lx - 23, measure), right ? lx + 19 : lx - 19, ly);
         }
-        context.font = font(t, t.fontSize.small, 500); context.textBaseline = 'middle'; context.textAlign = right ? 'left' : 'right';
-        context.fillStyle = t.text; context.fillText(arc.node.label, right ? lx + 19 : lx - 19, ly);
       }
       context.globalAlpha = 1; context.font = font(t, t.fontSize.small, 500); context.fillStyle = t.muted;
-      context.textAlign = 'right'; context.textBaseline = 'middle'; context.fillText(p.caption, width - 12, height - 14);
+      // The caption explains ribbons, so an empty ring has none.
+      context.textAlign = 'right'; context.textBaseline = 'middle'; if (labels.length) context.fillText(p.caption, width - 12, height - 14);
       publish();
       return eased.moving || Boolean(frame.playing);
     } };

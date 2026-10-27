@@ -31,7 +31,9 @@ test('agreements show schedules, retained totals and fuel in their own units, by
   assert.equal(fuel.items[0].schedule, 'Daily 1');
   assert.equal(amountOf(fuel, fuel.items[0].delivered), '2');
   assert.equal(agreementRows(data, 'received', tag => tag === 'GIV', 20, true).length, 0);
-  assert.equal(agreementRows(data, 'received', tag => tag === 'REC', 20, true)[0].partner, 'GIV');
+  const received = agreementRows(data, 'received', tag => tag === 'REC', 20, true)[0];
+  assert.deepEqual([received.from, received.partner, received.giver, received.receiver], ['REC', 'GIV', 'GIV', 'REC']);
+  assert.deepEqual([equipment.giver, equipment.receiver], ['GIV', 'REC']);
 });
 
 test('ended agreements keep their last read and can be hidden; later ones are not shown early', () => {

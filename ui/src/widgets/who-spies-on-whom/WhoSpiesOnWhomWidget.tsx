@@ -115,7 +115,8 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
     {menu.menu}
     {groupNotice}
     {chartError && <WidgetState kind="error" detail={chartError} />}
-    {!picked?.placements.some(n => n.count > 0) && <p className="placements-empty">{picked?.known === false ? MEMBERSHIP_PREPARING : 'No operatives placed yet.'}</p>}
+    {!picked?.placements.some(n => n.count > 0) && (picked?.known === false ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
+      : <WidgetState kind="empty" message="No operatives placed yet." />)}
     {wanted.some(w => !colors.has(nameKey(w.hour, w.tag))) && <p className="sr-only">Some country colours were not recorded; their arcs use the muted theme colour.</p>}
   </div>;
 }

@@ -119,7 +119,7 @@ test('line hover uses exact wide signed values, native/read dates, dated labels 
   assert.equal(tip.rows[0].swatch, '#123456');
   assert.equal(value('Own losses'), '9,007,199,254,740,992.12345');
   assert.equal(value('Enemy losses'), '−9,007,199,254,740,993.12345');
-  assert.equal(value('Operational losses (accidents)'), '−1.00000');
+  assert.equal(value('Operational losses (accidents)'), '−1');
   assert.equal(value('Other losses with unknown opponent'), '9,007,199,254,740,993.12345');
   assert.equal(value('Ratio'), '-1.00 : 1');
   assert.equal(value('Last supplied native event'), undefined);

@@ -263,7 +263,7 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
           ? <WidgetState kind="unavailable" message="Casualty pairs were not recorded at this moment." />
           : !snapshot.flows.length ? grouped && !filter.known ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
             : <WidgetState kind="empty" message="No recorded country pairs at this moment." /> : <>
-    <ChordChart label="Casualties between countries" caption="Ribbon colour = the country dealing casualties"
+    <div className="casualty-pairs-chart"><ChordChart label="Casualties between countries" caption="Ribbon colour = the country dealing casualties"
       frame={{ data: null }} frameAt={frameAt}
       hoursPerSecond={speed} active={active && (!open || options.drill === 'popout') && !pinned} onError={setChartError}
       tooltip={(hit, frame) => { const exact = exactFrames.current.get(frame);
@@ -276,9 +276,9 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
         if (flows.length) menu.open(x, y, [{ label: 'Recorded pairs', icon: 'grid', run: () => openPairs(flows.map(flow => flow.id), exact!.hour) },
           jumpItem(runtime, track.id, exact!.hour)]);
       }} />
+      {!snapshot.flows.some(flow => flow.value > 0n) && <WidgetState kind="empty" message="No positive attributable casualties are recorded at this moment." />}</div>
     {chartError && <WidgetState kind="error" detail={chartError} />}
     {through < hour && <p className="chart-line-key" role="status">Casualties through {dayLabel(through)}; the rest is still being prepared.</p>}
-    {!snapshot.flows.some(flow => flow.value > 0n) && <p className="chart-line-key">No positive attributable casualties are recorded at this moment.</p>}
     <button type="button" className="button small" onClick={() => openPairs(snapshot.flows.map(flow => flow.id), through)}>All pairs</button>
     {snapshot.flows.some(flow => flow.value < 0n) && <button type="button" className="button small"
       onClick={() => openPairs(snapshot.flows.filter(flow => flow.value < 0n).map(flow => flow.id), through)}>Corrections</button>}

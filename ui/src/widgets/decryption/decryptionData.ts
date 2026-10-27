@@ -1,5 +1,5 @@
 import { fieldPreparing } from '../../dashboard/preparedPrefix.ts';
-import type { CipherObservation, DecryptionCoverage, DecryptionPair, DecryptionReply, DecryptionRun, DecryptionTagRun } from '../../generated/dashboard';
+import type { CipherObservation, DecryptionCoverage, DecryptionPair, DecryptionReply, DecryptionRun, DecryptionTagRun, HourSpan } from '../../generated/dashboard';
 import { runAt } from '../../charts/series.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { formatDate, gameDate } from '../../dashboard/calendar.ts';
@@ -66,8 +66,10 @@ export function valueAt(run: DecryptionRun, at: number): DecryptionValue | null 
 }
 
 /** Checks every value before local playback; neither malformed missing fields nor
- * overlapping runs can turn unknown or an unrecorded hour into zero. */
-export function validateDecryptionReply(data: unknown): DecryptionReply {
+ * overlapping runs can turn unknown or an unrecorded hour into zero. A reply for a
+ * `window` keeps each run overlapping it whole, for its daily phase, and the latest
+ * break before it, so its histories are checked against each other within it. */
+export function validateDecryptionReply(data: unknown, window: HourSpan | null = null): DecryptionReply {
   const invalid = () => { throw new Error('The decryption reply is malformed.'); };
   if (!object(data) || typeof data.branchId !== 'string' || !/^\d{1,20}$/.test(data.branchId) || BigInt(data.branchId) >= (1n << 64n)
     || !Array.isArray(data.pairs) || !Array.isArray(data.coverage) || !Array.isArray(data.warnings) || !data.warnings.every(value => typeof value === 'string')) return invalid();
@@ -100,16 +102,18 @@ export function validateDecryptionReply(data: unknown): DecryptionReply {
     if (!pair.tagRuns.every(run => object(run) && (run.ownerTag === null || tag(run.ownerTag))
       && (run.targetTag === null || tag(run.targetTag))) || !ordered(pair.tagRuns as DecryptionTagRun[])) return invalid();
     // Identity and state compress separately but describe exactly the same recorded hours.
-    if (!sameHours(runs, pair.tagRuns as DecryptionTagRun[])) return invalid();
+    if (!sameHours(runs, pair.tagRuns as DecryptionTagRun[], window)) return invalid();
     // The product owns episode detection and observation certainty. Validate
     // dated payloads here without deriving those native decisions a second time.
     if (!pair.breaks.every((value, index, all) => object(value) && hour(value.hour) && typeof value.upperBound === 'boolean'
-      && (index === 0 || (all[index - 1] as CipherObservation).hour < value.hour) && runAt(runs, value.hour))) return invalid();
+      && (index === 0 || (all[index - 1] as CipherObservation).hour < value.hour)
+      && (runAt(runs, value.hour) || window !== null && value.hour < window.firstHour))) return invalid();
   }
   // Pair observations must be inside recorded coverage, including a partial read.
   for (const pair of data.pairs as DecryptionPair[]) for (const run of pair.runs) {
-    let at = run.firstHour;
-    while (at <= run.lastHour) {
+    let at = window ? Math.max(run.firstHour, window.firstHour) : run.firstHour;
+    const last = window ? Math.min(run.lastHour, window.lastHour) : run.lastHour;
+    while (at <= last) {
       const cover = runAt(data.coverage as DecryptionCoverage[], at);
       if (!cover) return invalid();
       at = cover.lastHour + 1;
@@ -118,14 +122,17 @@ export function validateDecryptionReply(data: unknown): DecryptionReply {
   return data as unknown as DecryptionReply;
 }
 
-/** Two independently compressed histories must have the same gaps. */
-function sameHours(a: readonly { firstHour: number; lastHour: number }[], b: readonly { firstHour: number; lastHour: number }[]): boolean {
+/** Two independently compressed histories must have the same gaps (within `window`). */
+function sameHours(a: readonly HourSpan[], b: readonly HourSpan[], window: HourSpan | null): boolean {
   const stretches = (runs: typeof a) => {
-    const spans: { firstHour: number; lastHour: number }[] = [];
+    const spans: HourSpan[] = [];
     for (const run of runs) {
+      const firstHour = window ? Math.max(run.firstHour, window.firstHour) : run.firstHour;
+      const lastHour = window ? Math.min(run.lastHour, window.lastHour) : run.lastHour;
+      if (firstHour > lastHour) continue;
       const last = spans.at(-1);
-      if (last && last.lastHour + 1 === run.firstHour) last.lastHour = run.lastHour;
-      else spans.push({ firstHour: run.firstHour, lastHour: run.lastHour });
+      if (last && last.lastHour + 1 === firstHour) last.lastHour = lastHour;
+      else spans.push({ firstHour, lastHour });
     }
     return spans;
   };

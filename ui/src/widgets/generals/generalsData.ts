@@ -1,5 +1,6 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { clipToSpans, runAt } from '../../charts/series.ts';
+import { sortRows } from '../../charts/table/logic.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { stackedSpans } from '../../charts/timeline/layout.ts';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
@@ -8,6 +9,7 @@ import { createWidget } from '../../dashboard/model.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { GROW_WITH_PLAYBACK_OPTION } from '../general-career/definition.ts';
+import { DEFAULT_SORT } from './definition.ts';
 import type { NameAt } from '../../dashboard/countryFacts';
 import { nameKey } from '../../dashboard/countryFacts.ts';
 import type { LeaderSelection, LeaderChangeDate } from '../../generated/dashboard';
@@ -202,6 +204,15 @@ export function leadersAt(reply: UnitLeadersData, hour: number, countries: Reado
   const coverage = new Map([1, 2].map(k => [k, battleHistoryComplete(reply, k, hour)]));
   return reply.leaders.flatMap(l => { const row = leaderAt(reply, l, hour, coverage); return row && (!countries || row.value.owner != null && countries.has(row.value.owner))
     && (kind === 'all' || row.value.kind === (kind === 'navy' ? 2 : 1)) ? [row] : []; });
+}
+export const leaderKey = (row: LeaderRow) => row.key;
+export const leaderSkill = (row: LeaderRow) => row.value.skill;
+// Keyed by column, so a different default sort column fails to compile here.
+const defaultSortValue = { skill: leaderSkill }[DEFAULT_SORT.column];
+/** The leaderboard's first row at its default sort, when that row's sort value is recorded. */
+export function topLeader(rows: readonly LeaderRow[]): LeaderRow | null {
+  const first = sortRows(rows, defaultSortValue, DEFAULT_SORT.direction, leaderKey)[0];
+  return first && defaultSortValue(first) != null ? first : null;
 }
 
 /** Warm owner changes, then read header and hover identities at their exact hours. */

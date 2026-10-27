@@ -11,6 +11,7 @@ import { useTableHour } from '../../charts/table/useTableHour';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
+import { contentTitleHint } from '../../dashboard/contentTitles';
 import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -21,14 +22,12 @@ import { useReachedProduct } from '../../dashboard/reachedProduct';
 import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { CareerRow } from '../../generated/dashboard';
-import { careerTooltip, divisionName, experienceRatio, medalName, pinnedRecord, validateDivisionCareers } from '../division-service-record/careersData';
+import { careerTooltip, divisionKey as rowKey, divisionName, experienceRatio, medalName, medalsValue, pinnedRecord, validateDivisionCareers } from '../division-service-record/careersData';
 import RecordView from '../division-service-record/RecordView';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import './mostDecorated.css';
 
 const EMPTY: readonly CareerRow[] = [];
-const rowKey = (row: CareerRow) => row.division;
-const medalsValue = (row: CareerRow) => row.facts.medals;
 const experienceValue = (row: CareerRow) => row.facts.experienceRaw === null ? null : BigInt(row.facts.experienceRaw);
 const killsValue = (row: CareerRow) => row.facts.kills;
 const RECORD_LOG = logSettings({});
@@ -72,7 +71,7 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
       text: row => row.facts.medals === null ? 'Not recorded' : String(row.facts.medals),
       render: row => row.facts.medals === null ? <span className="decorated-missing" data-tooltip={row.facts.historyMissing ?? 'Not recorded'}>—</span>
         : <span className="decorated-medals"><b>{row.facts.medals}</b>{data && row.facts.awards.map(award =>
-          <span key={award.medal} className="decorated-medal-chip" data-tooltip={data.medals[award.medal]?.key}>{medalName(data.medals[award.medal])}{award.count > 1 ? ` ×${award.count}` : ''}</span>)}</span> },
+          <span key={award.medal} className="decorated-medal-chip" data-tooltip={contentTitleHint(data.medals[award.medal]?.key)}>{medalName(data.medals[award.medal])}{award.count > 1 ? ` ×${award.count}` : ''}</span>)}</span> },
     { key: 'experience', header: 'Experience', label: 'Experience', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 2, value: experienceValue, renderMissing: true,
       text: row => row.facts.levelName ?? 'Not recorded',
       render: row => { const ratio = experienceRatio(row.facts);

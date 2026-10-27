@@ -8,7 +8,7 @@ import type { TooltipContent } from '../../charts/tooltip';
 import { Lineage } from '../../dashboard/identity.ts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import type { WarObservation, WarParticipantRun, WarTimeline, WarsReply } from '../../generated/dashboard';
-import { casualtiesAt, countryTagAt, isWarsReply, laneCountries, observationAt, labelObservationAt, piecesThrough, viewpointSummary, participantHoldingAt, prepareWars, retainExpandedWars, sideLabel, validateWarsReply, viewpointAt, warsLanes, warsReplyState } from './warsData.ts';
+import { casualtiesAt, countryTagAt, isWarsReply, laneCountries, observationAt, labelObservationAt, piecesThrough, viewpointSummary, participantHoldingAt, prepareWars, retainExpandedWars, sideLabel, validateWarsReply, viewpointAt, warNamesAt, warsLanes, warsReplyState } from './warsData.ts';
 import type { WarsLaneOptions } from './warsData';
 
 const participant = (tag: string, side: WarParticipantRun['side'], firstHour = 10, lastHour = 19): WarParticipantRun =>
@@ -482,4 +482,15 @@ test('refetches keep existing expanded wars and drop only removed IDs', () => {
   const removed = prepareWars(reply([war('second')]));
   assert.deepEqual([...retainExpandedWars(expanded, removed.byId)], ['second']);
   assert.deepEqual([...retainExpandedWars(expanded, prepareWars(reply([])).byId)], []);
+});
+
+test('wars the game names alike are told apart by their start; a unique name stays as recorded', () => {
+  const first = war('1', 10, 40), second = { ...war('2', 30, 40), startedBy: false }, other = { ...war('3', 20, 40),
+    observations: [{ ...observation(20, 40), name: { text: 'Other name', known: true, reason: null, key: null } }] };
+  const names = warNamesAt([first, second, other], 35);
+  assert.match(names.get(first)!, /^Recorded name \(by .+\)$/);
+  assert.match(names.get(second)!, /^Recorded name \(from .+\)$/);
+  assert.equal(names.get(other), 'Other name');
+  // Before the second war starts, the first's name is its own.
+  assert.equal(warNamesAt([first, second], 20).get(first), 'Recorded name');
 });

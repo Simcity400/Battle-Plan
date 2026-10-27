@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, MarketLedgerReply } from '../../generated/dashboard';
 import type { CountrySelection } from '../../dashboard/model';
-import { extendCursors, ledgerCountries, ledgerCursors, ledgerEmpty, ledgerFigure, ledgerRows, ledgerTitle, shownKinds, validateLedger } from './ledgerData.ts';
+import { logPageItems } from '../../charts/log/logPages.ts';
+import { extendCursors, ledgerCountries, ledgerCursors, ledgerEmpty, ledgerFigure, ledgerPages, ledgerRows, ledgerTitle, shownKinds, validateLedger } from './ledgerData.ts';
 
 const row = (id: string, kind: number, amountRaw: string | null, reason: string | null = null) => ({ id, occurrence: id, hour: 20, kind, mode: kind === 34 ? 20 : 0,
   contract: '0000000000000009', seller: '1', buyer: '2', variant: 'a1', amountRaw, totalRaw: '0', reason });
@@ -37,6 +38,21 @@ test('a chosen-country ledger has no total and pages by each loaded page\'s curs
   assert.equal(extendCursors(first, next, index => loaded.get(index)), next);
   assert.deepEqual(ledgerCursors(reply({ total: null }), []), [undefined]);
   assert.throws(() => validateLedger({ ...reply(), known: [[0, 'x', '1']] }));
+});
+
+test('a page still loading waits below the page before it, so scrolling never re-asks for it', () => {
+  const at = (hour: number, id: string) => ({ ...row(id, 20, '100000'), hour });
+  const first = reply({ total: null, next: 'a', lastHour: 40, rows: [at(30, '4'), at(25, '3')] });
+  const second = reply({ total: null, next: 'b', rows: [at(20, '2'), at(12, '1')] });
+  const order = (pages: ReturnType<typeof ledgerPages>) => logPageItems(pages, false)
+    .map(item => item.kind === 'page' ? `wait ${item.page.key}` : item.kind === 'row' ? item.row.item.row.id : item.label);
+  // Newest first: the loaded first page, then page 1 waiting with no hour later than page 0's oldest row.
+  const waiting = ledgerPages(first, 2, () => undefined, new Map(), 40, 0);
+  assert.deepEqual(waiting.map(page => [page.start, page.end]), [[25, 30], [0, 25]]);
+  assert.deepEqual(order(waiting), ['4', '3', 'wait 1']);
+  // Once page 1 has loaded, the page after it waits below it in turn, and a released page stays in place.
+  assert.deepEqual(order(ledgerPages(first, 3, index => index === 1 ? second : undefined, new Map(), 40, 0)), ['4', '3', '2', '1', 'wait 2']);
+  assert.deepEqual(order(ledgerPages(first, 3, () => undefined, new Map(), 40, 0)), ['4', '3', 'wait 1', 'wait 2']);
 });
 
 test('an empty ledger says no activity only where the market was read through the hour', () => {

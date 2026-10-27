@@ -126,7 +126,7 @@ test('Both lines use country colour with secondary dashes and exact measure end 
     [['MOD A', 'launched', undefined, undefined], ['MOD A', 'succeeded', SECONDARY_DASH, undefined]]);
   assert.notEqual(lines[0].id, lines[1].id);
   const ends = countryRaceEnds(lines, 100, 105, null, () => 'Hovered country', () => 'country', value => `${value}+`);
-  assert.deepEqual(ends.map(end => [end.text, end.color]), [['Hovered country · launched 0+', 'country'], ['Hovered country · succeeded 1+', 'country']]);
+  assert.deepEqual(ends.map(end => [end.text, end.suffix, end.color]), [['Hovered country · launched', '0+', 'country'], ['Hovered country · succeeded', '1+', 'country']]);
   assert.equal(tallyLines(data.series, 'both', { firstHour: 102, lastHour: 102 }, null).length, 0);
 });
 

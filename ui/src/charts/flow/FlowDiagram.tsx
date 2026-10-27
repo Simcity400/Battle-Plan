@@ -5,7 +5,7 @@ import { font } from '../draw';
 import { easeTau } from '../easing';
 import { canvasImage } from '../images';
 import { countryTooltipContent, drawCountryFlag } from '../countryFlag';
-import { layoutEndLabels } from '../labels';
+import { ellipsise, layoutEndLabels } from '../labels';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
 import { backingSize, toLocal } from '../surface';
@@ -213,8 +213,9 @@ export default function FlowDiagram(props: FlowDiagramProps) {
           context.fillStyle = tokens.text; context.font = font(tokens, tokens.fontSize.body, 500); context.textBaseline = 'middle';
           context.textAlign = side === 'source' ? 'right' : 'left';
           const room = Math.max(8, column - FLAG_WIDTH - LABEL_GAP * 2);
-          context.fillText(box.node.label, side === 'source' ? flagX - LABEL_GAP / 2 : flagX + FLAG_WIDTH + LABEL_GAP / 2, at, room);
-          const text = Math.min(room, context.measureText(box.node.label).width) + LABEL_GAP / 2;
+          const label = ellipsise(box.node.label, room, text => context.measureText(text).width);
+          context.fillText(label, side === 'source' ? flagX - LABEL_GAP / 2 : flagX + FLAG_WIDTH + LABEL_GAP / 2, at);
+          const text = context.measureText(label).width + LABEL_GAP / 2;
           labels.push({ id: box.id, node: box.node, x: side === 'source' ? flagX - text : flagX, y: at - lineHeight / 2,
             width: FLAG_WIDTH + text, height: lineHeight, alpha: box.alpha });
         }

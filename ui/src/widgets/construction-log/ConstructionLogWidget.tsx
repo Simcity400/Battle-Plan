@@ -74,12 +74,14 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   // Countries are named and flagged as recorded when each drawn row was first read.
   const [visible, setVisible] = useState<readonly LogRow<ProjectAt>[]>(NO_ROWS);
   const onVisible = useCallback((drawn: readonly LogRow<ProjectAt>[]) => { setVisible(drawn); if (!parity?.requested) onDrawn(rows, drawn, from); }, [rows, onDrawn, from, parity?.requested]);
-  const namingActive = active && inBranch && log != null && match.ready;
+  const naming = inBranch && log != null && match.ready;
+  // Off screen only reads wait: names already read stay on their rows.
+  const namingActive = active && naming;
   // Each drawn row names its country at its own first read: every one of those hours is asked for.
-  const names = useMemo(() => rowCountryRequests(namingActive ? visible : NO_ROWS), [visible, namingActive]);
+  const names = useMemo(() => rowCountryRequests(naming ? visible : NO_ROWS), [visible, naming]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, names.wanted, namingActive, names.maxHours);
   const country = useCallback((at: ProjectAt) => labelAt(at.project.firstRead)(at.project.tag), [labelAt]);
-  const wantedStates = useMemo(() => stateNameRequests(visible.map(row => row.item.project), namingActive ? hour : null), [visible, hour, namingActive]);
+  const wantedStates = useMemo(() => stateNameRequests(visible.map(row => row.item.project), naming ? hour : null), [visible, hour, naming]);
   const stateAt = useStateNamesAt(runtime.client, track, wantedStates, namingActive);
   let paritySemantic: LogListProps<ProjectAt>['paritySemantic'];
   if (import.meta.env.MODE === 'parity') {

@@ -756,6 +756,192 @@ fn script_events(catalogue: &Catalogue) -> Arc<installed_content_events::events:
     }))
 }
 
+/// Expands scripted event text in an occurrence's recorded scopes at its naming hour.
+pub(crate) struct ScopedTexts<'a> {
+    source: &'a Source,
+    branch: u64,
+    cancelled: &'a AtomicBool,
+    /// By hour and whether it holds every scripted-text table or only the naming ones (`keep_frame`).
+    frames: std::cell::RefCell<BTreeMap<(i32, bool), Result<Arc<replay_frame::frame::DecodedFrame>, String>>>,
+    /// A failed read (not a gap) fails the query, so a refused decode reruns it where decodes are allowed.
+    failure: std::cell::RefCell<Option<io::Error>>,
+}
+
+impl<'a> ScopedTexts<'a> {
+    pub(crate) fn new(source: &'a Source, branch: u64, cancelled: &'a AtomicBool) -> Self {
+        Self {
+            source,
+            branch,
+            cancelled,
+            frames: Default::default(),
+            failure: Default::default(),
+        }
+    }
+
+    /// The first read failure, if any.
+    fn check(&self) -> io::Result<()> {
+        self.failure.borrow_mut().take().map_or(Ok(()), Err)
+    }
+
+    fn seek(
+        source: &Source,
+        branch: u64,
+        cancelled: &AtomicBool,
+        hour: i32,
+        scripted: bool,
+    ) -> io::Result<Result<Arc<replay_frame::frame::DecodedFrame>, String>> {
+        let tables: &[replay_data::rows::TableId] = if scripted {
+            crate::scripted_text::TABLES
+        } else {
+            &installed_content_country_names::country_names::TABLES
+        };
+        Ok(
+            match dashboard_base::prepared::query::frames::seek(source, branch, hour, tables, cancelled)? {
+                replay::container::SeekResult::Frame(frame) => Ok(Arc::new(*frame)),
+                replay::container::SeekResult::Gap { reason, .. } => Err(reason),
+            },
+        )
+    }
+
+    fn hold(&self, key: (i32, bool), read: io::Result<Result<Arc<replay_frame::frame::DecodedFrame>, String>>)
+        -> Result<Arc<replay_frame::frame::DecodedFrame>, String> {
+        match read {
+            Ok(read) => {
+                keep_frame(&mut self.frames.borrow_mut(), key, read.clone());
+                read
+            }
+            Err(error) => {
+                let reason = error.to_string();
+                self.failure.borrow_mut().get_or_insert(error);
+                Err(reason)
+            }
+        }
+    }
+
+    fn frame(&self, hour: i32, scripted: bool) -> Result<Arc<replay_frame::frame::DecodedFrame>, String> {
+        if let Some(held) = self.frames.borrow().get(&(hour, scripted)) {
+            return held.clone();
+        }
+        self.hold((hour, scripted), Self::seek(self.source, self.branch, self.cancelled, hour, scripted))
+    }
+
+    /// Reads the naming frames of these hours in one ordered pass that shares block decodes;
+    /// rows then present in order from them.
+    pub(crate) fn prefetch(&self, hours: impl IntoIterator<Item = i32>) {
+        let wanted: Vec<_> = hours
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|&hour| !self.frames.borrow().contains_key(&(hour, false)))
+            .collect();
+        // Where block decodes are refused, the first seek fails the query to rerun it.
+        if wanted.len() < 2 || dashboard_base::prepared::query::progressive::block_decodes_disabled() {
+            return;
+        }
+        let walked = dashboard_base::prepared::query::frames::hours(
+            self.source,
+            self.branch,
+            &wanted,
+            &installed_content_country_names::country_names::TABLES,
+            self.cancelled,
+            |hour, read| {
+                let read = match read {
+                    replay::container::SeekResult::Frame(frame) => Ok(Arc::new(*frame)),
+                    replay::container::SeekResult::Gap { reason, .. } => Err(reason),
+                };
+                self.frames.borrow_mut().insert((hour, false), read);
+                Ok(())
+            },
+        );
+        if let Err(error) = walked {
+            self.failure.borrow_mut().get_or_insert(error);
+        }
+    }
+
+    fn expand(
+        &self,
+        catalogue: &Catalogue,
+        inputs: &script_effects::Inputs,
+        hour: i32,
+        key: &str,
+    ) -> Result<String, String> {
+        script_effects::scoped_text(catalogue, inputs, &*self.frame(hour, true)?, key)
+    }
+
+    /// A decision's title, and why any scripted text in it is elided.
+    fn decision_name(
+        &self,
+        catalogue: &Catalogue,
+        inputs: &script_effects::Inputs,
+        hour: i32,
+        token: &str,
+    ) -> Result<(String, Option<String>), String> {
+        let (key, name, scoped) =
+            script_effects::decision_name(catalogue, inputs, &*self.frame(hour, false)?, token)?;
+        if !name.contains('[') {
+            return Ok((name, None));
+        }
+        let expanded = if scoped {
+            self.frame(hour, true).and_then(|frame| {
+                script_effects::decision_title_text(catalogue, inputs, &*frame, &key)
+            })
+        } else {
+            Err("it names a highlighted state the recording does not hold".into())
+        };
+        Ok(match expanded {
+            Ok(name) => (name, None),
+            Err(reason) => (
+                elide_scripted(&name),
+                Some(format!("decision title {key}: {reason}")),
+            ),
+        })
+    }
+}
+
+/// Holds a read frame by (hour, scripted). Naming frames hold only name tables; a scripted
+/// frame holds world tables, so only the latest is kept.
+fn keep_frame<T>(frames: &mut BTreeMap<(i32, bool), T>, key: (i32, bool), frame: T) {
+    if key.1 {
+        frames.retain(|held, _| !held.1);
+    }
+    frames.insert(key, frame);
+}
+
+/// Kinds whose title is a decision's name, read at the occurrence's naming hour.
+pub(crate) fn names_decision(kind: EventFeedKind) -> bool {
+    matches!(
+        kind,
+        EventFeedKind::DecisionSelected
+            | EventFeedKind::DecisionRemoved
+            | EventFeedKind::DecisionCancelled
+            | EventFeedKind::DecisionTimedOut
+            | EventFeedKind::DecisionActivated
+            | EventFeedKind::DecisionCompleted
+            | EventFeedKind::DecisionReenabled
+            | EventFeedKind::DecisionRemovalEffect
+            | EventFeedKind::DecisionCancellationEffect
+            | EventFeedKind::DecisionCompletionEffect
+            | EventFeedKind::DecisionTimeoutEffect
+            | EventFeedKind::DecisionDurationChanged
+    )
+}
+
+/// Text with each closed scripted `[...]` shown as an ellipsis, its value unknown.
+fn elide_scripted(text: &str) -> String {
+    let mut shown = String::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let Some(close) = rest[open..].find(']') else {
+            break;
+        };
+        shown.push_str(&rest[..open]);
+        shown.push('\u{2026}');
+        rest = &rest[open + close + 1..];
+    }
+    shown.push_str(rest);
+    shown
+}
+
 /// Event labels use the same recorded stack and event database lookup as
 /// effect descriptions. A plain sole title needs no runtime trigger capture.
 fn script_presentation(
@@ -764,6 +950,7 @@ fn script_presentation(
     kind: EventFeedKind,
     item: &mut EventFeedItem,
     inputs: Option<&script_effects::Inputs>,
+    texts: Option<(&ScopedTexts<'_>, i32)>,
 ) -> io::Result<()> {
     if kind == EventFeedKind::DecisionRosterRebuilt {
         return decision_roster::present(builder, catalogue, item, inputs);
@@ -774,24 +961,28 @@ fn script_presentation(
             | EventFeedKind::NewsEventFired
             | EventFeedKind::EventOptionSelected
     ) {
-        if matches!(
-            kind,
-            EventFeedKind::DecisionSelected
-                | EventFeedKind::DecisionRemoved
-                | EventFeedKind::DecisionCancelled
-                | EventFeedKind::DecisionTimedOut
-                | EventFeedKind::DecisionActivated
-                | EventFeedKind::DecisionCompleted
-                | EventFeedKind::DecisionReenabled
-                | EventFeedKind::DecisionRemovalEffect
-                | EventFeedKind::DecisionCancellationEffect
-                | EventFeedKind::DecisionCompletionEffect
-                | EventFeedKind::DecisionTimeoutEffect
-                | EventFeedKind::DecisionDurationChanged
-        ) {
+        if names_decision(kind) {
             let token = item.token.as_deref().unwrap_or("unidentified decision");
+            let named = match (texts, inputs) {
+                (Some((texts, hour)), Some(inputs)) => texts.decision_name(catalogue, inputs, hour, token),
+                _ => Err("the occurrence's owner is not recorded".into()),
+            };
+            if let Some((texts, _)) = texts {
+                texts.check()?;
+            }
+            match named {
+                Ok((name, elided)) => {
+                    item.name = Some(name);
+                    if let Some(reason) = elided {
+                        builder.unavailable("decisionPresentation", "Decision presentation",
+                            format!("Decision {token}: {reason}; its scripted text is elided."), Some(1));
+                    }
+                }
+                Err(reason) => builder.unavailable("decisionPresentation", "Decision presentation",
+                    format!("Decision {token}: title unavailable: {reason}"), Some(1)),
+            }
             builder.unavailable("decisionPresentation","Decision presentation",
-                format!("Decision {token}: country-qualified title and triggered artwork require exact historical presentation inputs."),Some(1));
+                format!("Decision {token}: triggered artwork requires exact historical presentation inputs."),Some(1));
         }
         script_effects::present(builder, catalogue, kind, item, inputs)?;
         return Ok(());
@@ -818,14 +1009,28 @@ fn script_presentation(
             return Ok(());
         }
     };
+    let scripted_refusals = std::cell::RefCell::new(Vec::new());
     let localise = |key: &[u8]| -> Result<String, String> {
         let key = std::str::from_utf8(key)
             .map_err(|_| format!("Event {token} localisation key is not UTF-8"))?;
-        catalogue
+        let text = catalogue
             .localised(key, catalogue::View::Plain)
             .ok_or_else(|| {
                 format!("Event {token}: {key} needs unavailable historical localisation operands")
-            })
+            })?;
+        if !text.contains('[') {
+            return Ok(text);
+        }
+        let expanded = match (texts, inputs) {
+            (Some((texts, hour)), Some(inputs)) => texts.expand(catalogue, inputs, hour, key),
+            _ => Err("the occurrence's scopes are not recorded".into()),
+        };
+        Ok(expanded.unwrap_or_else(|reason| {
+            scripted_refusals
+                .borrow_mut()
+                .push(format!("Event {token}: {key} shows its scripted text elided: {reason}"));
+            elide_scripted(&text)
+        }))
     };
     for (field, keys) in [
         ("title", event.sole_title_key()),
@@ -923,6 +1128,12 @@ fn script_presentation(
         if event.original_recipient_only[ordinal] {
             builder.unavailable("scriptEventOptionAdmission","Offered event option",format!("Event {token} option {ordinal}: original_recipient_only requires exact presentation ownership"),Some(1));
         }
+    }
+    if let Some((texts, _)) = texts {
+        texts.check()?;
+    }
+    for reason in scripted_refusals.into_inner() {
+        builder.unavailable("scriptEventText", "Scripted event text", reason, Some(1));
     }
     item.options = Some(authored);
     if !options.is_empty() {
@@ -1340,7 +1551,7 @@ fn build(
         for (index, kind, id) in script_items {
             let mut item = builder.feed.items[index as usize].clone();
             let inputs = builder.script_inputs.get(&id).cloned();
-            script_presentation(&mut builder, catalogue, kind, &mut item, inputs.as_ref())?;
+            script_presentation(&mut builder, catalogue, kind, &mut item, inputs.as_ref(), None)?;
             builder.feed.items[index as usize] = item;
         }
         for (reason, count) in catalogue.refusal_entries() {

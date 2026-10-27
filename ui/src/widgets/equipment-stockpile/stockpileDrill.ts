@@ -7,7 +7,7 @@ import { clipToSpans } from '../../charts/series.ts';
 import type { Run, Span } from '../../charts/series';
 import { datedCountryToken } from '../../dashboard/datedCountry.ts';
 import type { DatedCountrySelection } from '../../dashboard/datedCountry';
-import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
+import { fixedNumber, formatAmount } from '../../charts/valueAxis.ts';
 import { BREAKDOWN } from './definition.ts';
 import { balanceChangeHours, balanceOperandsAt, choiceKey, choiceRow, labelAt, stockAt, stockChoices, stockRuns } from './stockpileData.ts';
 import type { Grouping, StockGroup } from './stockpileData';
@@ -16,7 +16,7 @@ export type StockpileMode = 'balance' | 'stock';
 export interface StockpilePart { id: string; label: string; raw: bigint | null }
 
 export const stockpilePartAmount = (raw: bigint | null, decimals: number) => raw == null ? 'Not recorded'
-  : `${raw > 0n ? '+' : ''}${formatFixed(raw, decimals, decimals)}`;
+  : `${raw > 0n ? '+' : ''}${formatAmount(raw, decimals, decimals)}`;
 
 /** Names are independent of numeric ownership; design witnesses remain identity. */
 export function stockpileNumbers(reply: EquipmentStockpileReply): EquipmentStockpileReply {

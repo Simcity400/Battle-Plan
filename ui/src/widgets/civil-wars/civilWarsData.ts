@@ -16,7 +16,7 @@ import type { CivilWar, CivilWarOutcome, CivilWarSide, CivilWarsReply, HourSpan,
  * heading with its sides beneath it, a breakaway indented under the side it broke
  * from. A war is ongoing at an hour while the game's civil-war predicate holds for
  * a side, as the reply dates it. A winner is shown only where the reply proves one
- * (a civil-war annexation of every other side), and only once playback reaches the
+ * (every other side annexed by a side), and only once playback reaches the
  * read that proves it. */
 
 /** A side whose tag at the hour is not recorded. */
@@ -255,7 +255,8 @@ export function sideLine(side: SideAt, day: (hour: number) => string, branchFirs
   if (side.exit) return `Annexed ${day(side.exit.hour)}`;
   const state = side.state;
   if (side.live || state.kind === 'held') return `Since ${startUnseen(side.side.firstHour, branchFirst, unread) ? 'by ' : ''}${day(side.side.firstHour)}`;
-  if (state.kind === 'ended') return state.lastSeen == null ? `Left ${day(state.at)}` : `Left by ${day(state.at)}`;
+  // The winner's listing ends with the war it won.
+  if (state.kind === 'ended') return `${side.winner ? 'Won' : 'Left'} ${state.lastSeen == null ? '' : 'by '}${day(state.at)}`;
   return state.kind === 'unknown' ? `Last recorded ${day(state.lastSeen)}` : '';
 }
 
@@ -370,10 +371,10 @@ export function warTooltip(war: CivilWarAt, hovered: number, text: TooltipText):
   if (war.outcome) {
     const losers = war.sides.filter(side => !side.winner).map(side => name(side.tag, side.labelHour).name);
     const winner = name(war.winnerTag, war.outcome.hour);
-    rows.push({ label: 'Outcome', value: `Winner: ${winner.name} — ${listNames(losers)} annexed by ${text.day(war.outcome.hour)} (civil-war annexation)`, tone: 'positive' });
+    rows.push({ label: 'Outcome', value: `Winner: ${winner.name} — ${listNames(losers)} annexed by a side by ${text.day(war.outcome.hour)}`, tone: 'positive' });
   } else if (!war.ongoing) {
     rows.push({ label: 'Outcome', value: 'Unknown', tone: 'muted' });
-    note = 'No side annexed the others through the civil war.';
+    note = 'No side was left after the others were annexed by a side.';
   }
   rows.push({ label: 'Sides', value: String(war.sides.length), divider: true });
   for (const side of war.sides) {
@@ -387,7 +388,7 @@ export function warTooltip(war: CivilWarAt, hovered: number, text: TooltipText):
 export function exitText(exit: SideExit, by: string): string {
   switch (exit.kind) {
     case 'annexedBySide': return by;
-    case 'annexedBySideOtherwise': return `${by}, not through the civil war`;
+    case 'annexedBySideOtherwise': return `${by}, not by the civil war’s own annexation`;
     case 'annexedByOther': return `${by}, which was not a side`;
   }
 }

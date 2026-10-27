@@ -95,11 +95,11 @@ test('both means remain independent solid and dashed lines, with exact country e
   assert.equal(lines[0].dash, undefined);
   assert.equal(lines[1].dash, SECONDARY_DASH);
   const ends = countryRaceEnds(lines, 100, 105, 101, (tag, hour) => labels(hour!)(tag).name, () => 'country', String);
-  assert.deepEqual(ends.map(end => end.text), ['MOD A renamed at 101 Resistance 41.3354%', 'MOD A renamed at 101 Compliance 9.40099%']);
+  assert.deepEqual(ends.map(end => [end.text, end.suffix]), [['MOD A renamed at 101 Resistance', '41.3354%'], ['MOD A renamed at 101 Compliance', '9.40099%']]);
   assert.notEqual(ends[0].id, ends[1].id);
   const single = occupationLines(model, model.tags, 'resistance', { firstHour: 100, lastHour: 105 }, null, 5);
   assert.deepEqual(countryRaceEnds(single, 100, 105, 101, (tag, hour) => labels(hour!)(tag).name, () => 'country', String)
-    .map(end => end.text), ['MOD A renamed at 101 41.3354%']);
+    .map(end => [end.text, end.suffix]), [['MOD A renamed at 101', '41.3354%']]);
 });
 
 test('held collaboration refuses another holder\'s looks while keeping its exact amount and read', () => {

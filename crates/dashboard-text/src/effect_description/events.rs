@@ -101,6 +101,50 @@ fn name_key(
         .unwrap_or_else(|| base.to_owned())
 }
 
+/// A decision's title key for `country` at `frame`'s hour, by cosmetic tag, tag and ruling ideology.
+pub fn decision_name_key_at(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    recorded: &crate::scope::RecordedScopes,
+    localisation: &Localisation,
+    definition: &Decision,
+    country: u32,
+    tag: &str,
+) -> Result<String, String> {
+    let appearance = frame
+        .complete::<tables::CountryAppearance>()
+        .map_err(|why| why.to_string())?
+        .iter()
+        .find(|row| recorded.slot(row.country) == Some(country))
+        .ok_or("CountryAppearance lacks decision-name cosmetic tag")?;
+    let politics = frame
+        .complete::<tables::Politics>()
+        .map_err(|why| why.to_string())?
+        .iter()
+        .find(|row| recorded.slot(row.country) == Some(country))
+        .ok_or("Politics lacks decision-name ruling party")?;
+    let ruling = politics
+        .ruling_party
+        .ok_or("decision-name ruling party is absent")?;
+    let party = frame
+        .complete::<tables::PoliticalParties>()
+        .map_err(|why| why.to_string())?
+        .iter()
+        .find(|row| recorded.slot(row.country) == Some(country) && row.id == ruling)
+        .ok_or("PoliticalParties lacks decision-name ruling ideology")?;
+    let utf8 = |bytes: &[u8]| {
+        std::str::from_utf8(installed_content_core::parser::c_string(bytes))
+            .map(str::to_owned)
+            .map_err(|_| "decision-name key is not UTF-8".to_owned())
+    };
+    Ok(name_key(
+        &utf8(&definition.name)?,
+        &utf8(&appearance.cosmetic_tag)?,
+        tag,
+        &utf8(&party.token)?,
+        |key| localisation.get(key).is_some(),
+    ))
+}
+
 impl Renderer<'_, '_, '_> {
     // distinguishes authored definitions from the null sentinel
     // it is not an active-decision timer guard.
@@ -339,42 +383,14 @@ impl Renderer<'_, '_, '_> {
 
     fn decision_name_key(&self, definition: &Decision, country: u32) -> Result<String, String> {
         let world = self.context.world()?;
-        let appearance = world
-            .frame()
-            .complete::<tables::CountryAppearance>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| world.recorded().slot(row.country) == Some(country))
-            .ok_or("CountryAppearance lacks decision-name cosmetic tag")?;
-        let politics = world
-            .frame()
-            .complete::<tables::Politics>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| world.recorded().slot(row.country) == Some(country))
-            .ok_or("Politics lacks decision-name ruling party")?;
-        let ruling = politics
-            .ruling_party
-            .ok_or("decision-name ruling party is absent")?;
-        let party = world
-            .frame()
-            .complete::<tables::PoliticalParties>()
-            .map_err(|why| why.to_string())?
-            .iter()
-            .find(|row| world.recorded().slot(row.country) == Some(country) && row.id == ruling)
-            .ok_or("PoliticalParties lacks decision-name ruling ideology")?;
-        let utf8 = |bytes: &[u8]| {
-            std::str::from_utf8(installed_content_core::parser::c_string(bytes))
-                .map(str::to_owned)
-                .map_err(|_| "decision-name key is not UTF-8".to_owned())
-        };
-        Ok(name_key(
-            &utf8(&definition.name)?,
-            &utf8(&appearance.cosmetic_tag)?,
+        decision_name_key_at(
+            world.frame(),
+            world.recorded(),
+            self.context.localisation,
+            definition,
+            country,
             self.tag(country)?,
-            &utf8(&party.token)?,
-            |key| self.context.localisation.get(key).is_some(),
-        ))
+        )
     }
 
     fn decision_title_scope(

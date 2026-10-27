@@ -34,7 +34,7 @@ export interface MarkerSources {
   ideas?: IdeaHistoryFirstView;
   parties?: PartyHistoryReply;
   focus?: FocusReply;
-  /** Scoped titles resolved at each completion's recorded observation hour. */
+  /** Scoped titles at each completion's observation hour: null when none, undefined while reading. */
   focusName?: (token: string, hour: number) => string | null | undefined;
 }
 
@@ -172,7 +172,11 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
         if (entry.completedByHour == null || seen.has(occurrence)) continue;
         seen.add(occurrence);
         const hour = entry.completedByHour;
-        push('focus', hour, () => `Focus: ${contentTitle(sources.focusName?.(entry.token, hour) ?? names.get(entry.token), entry.token, 'Focus name unavailable')} (completed by then)`);
+        push('focus', hour, () => {
+          const read = sources.focusName?.(entry.token, hour);
+          const name = read ?? names.get(entry.token);
+          return `Focus: ${contentTitle(name, entry.token, 'Focus name unavailable', read === undefined && sources.focusName !== undefined)} (completed by then)`;
+        });
       }
     }
   }

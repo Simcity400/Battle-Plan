@@ -933,6 +933,67 @@ impl<'a> ScriptedText<'a> {
         self.process(text, 0, &expanded, at, Object::Event)
     }
 
+    /// [`Self::expand_in`] admitting only country names read through the event scopes' links.
+    /// Anything else (a variable, scripted text, another object or property) is refused.
+    pub fn expand_names_in(&self, text: &str, scopes: &EventScopes) -> Result<String, String> {
+        if scopes.scopes.is_empty() {
+            return Err("scripted text needs an event scope".into());
+        }
+        self.names_only(text, 0, &ExpansionScopes::new(scopes))
+    }
+
+    /// [`Self::process`] for [`Self::expand_names_in`]: a name's own brackets pass the same gate.
+    fn names_only(
+        &self,
+        text: &str,
+        depth: i32,
+        scopes: &ExpansionScopes<'_, 'a>,
+    ) -> Result<String, String> {
+        if depth >= self.content.recursion {
+            return Ok(text.to_owned());
+        }
+        let mut out = String::new();
+        let mut rest = text;
+        loop {
+            let Some(open) = rest.find('[') else {
+                out.push_str(rest);
+                return Ok(out);
+            };
+            let Some(length) = rest[open + 1..].find(']') else {
+                return Ok(out);
+            };
+            let inner = &rest[open + 1..open + 1 + length];
+            out.push_str(&rest[..open]);
+            let refused = || format!("[{inner}] reads more than an event scope's country name");
+            let segments: Vec<&str> = inner.split('.').collect();
+            let (property, links) = segments.split_last().unwrap_or((&"", &[]));
+            // Bare, a missed property falls back to scripted text of that name.
+            if links.is_empty()
+                || !links
+                    .iter()
+                    .all(|segment| SCOPE_LINKS.iter().any(|link| named(segment, link)))
+                || !COUNTRY_NAMES.iter().any(|name| named(property, name))
+            {
+                return Err(refused());
+            }
+            let (mut object, mut active, mut event_active) = (Object::Event, 0, true);
+            for segment in links {
+                object = self
+                    .promote(object, segment, scopes, &mut active, &mut event_active)
+                    .map_err(|reason| format!("[{inner}]: {reason}"))?;
+            }
+            let Object::Country(slot) = object else {
+                return Err(refused());
+            };
+            let name = self
+                .country_property(slot, property, scopes)
+                .map_err(|reason| format!("[{inner}]: {reason}"))?
+                .ok_or_else(refused)?;
+            out.push_str(&self.names_only(&name, depth + 1, scopes)?);
+            rest = &rest[open + 1 + length + 1..];
+        }
+    }
+
     /// Scripted entries inside effect descriptions share their active variable context.
     pub fn expand_in_session(
         &self,
@@ -994,10 +1055,10 @@ impl<'a> ScriptedText<'a> {
         (result, session)
     }
 
-    pub(crate) fn recorded(&self) -> &RecordedScopes {
+    pub fn recorded(&self) -> &RecordedScopes {
         &self.scopes
     }
-    pub(crate) fn frame(&self) -> &'a dyn replay_frame::frame::DecodedSource {
+    pub fn frame(&self) -> &'a dyn replay_frame::frame::DecodedSource {
         self.frame
     }
 
@@ -1052,7 +1113,7 @@ impl<'a> ScriptedText<'a> {
     }
 
     /// Tag lookup uses database slot zero for raw zero.
-    pub(crate) fn country_tag(&self, country: u32) -> Result<&str, String> {
+    pub fn country_tag(&self, country: u32) -> Result<&str, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::CountryTag(country)),
             || self.country_tag_unrecorded(country),
@@ -2252,6 +2313,18 @@ impl<'a> ScriptedText<'a> {
 
 /// The key GetFactionName localises without a faction.
 const NO_FACTION: &str = "NO_FACTION";
+
+const SCOPE_LINKS: [&str; 4] = ["THIS", "Root", "From", "Prev"];
+const COUNTRY_NAMES: [&str; 8] = [
+    "GetName",
+    "GetNameDef",
+    "GetNameDefCap",
+    "GetAdjective",
+    "GetAdjectiveCap",
+    "GetTag",
+    "GetFlag",
+    "GetNameWithFlag",
+];
 
 /// The ten pronoun properties shared by countries and characters.
 const PRONOUNS: [&str; 10] = [

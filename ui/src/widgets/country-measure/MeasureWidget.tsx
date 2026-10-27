@@ -509,8 +509,9 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
             const raw = last == null ? null : item.valueAt(last);
             if (raw == null) return [];
             // One country: its value and unit; several: each named.
-            const text = series.length === 1 ? `${formatBalance(raw, decimals, digits)} ${config.unit}` : `${labels.labelAt(last!)(item.tag).name} ${formatBalance(raw, decimals, digits)}`;
-            return [{ id: item.tag, y: frame.toY(Number(raw) / 10 ** decimals), text, color: item.hex }];
+            const text = series.length === 1 ? { text: `${formatBalance(raw, decimals, digits)} ${config.unit}` }
+              : { text: labels.labelAt(last!)(item.tag).name, suffix: formatBalance(raw, decimals, digits) };
+            return [{ id: item.tag, y: frame.toY(Number(raw) / 10 ** decimals), ...text, color: item.hex }];
           });
           placeEndLabels(ctx, frame, chartTokens, ends);
         }}

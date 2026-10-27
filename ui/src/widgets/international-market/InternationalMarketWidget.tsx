@@ -29,7 +29,7 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { HolderTag, MarketHistoryReply } from '../../generated/dashboard';
 import { DETAILS, OPTIONS, SORTS, VIEWS } from './definition';
-import { cic, contractRows, firstWithMore, levelText, offerRows, units } from './marketData';
+import { cic, cicLabel, contractRows, firstWithMore, levelText, offerRows, units, unitsLabel } from './marketData';
 import type { ContractRow, MarketTab, OfferRow } from './marketData';
 import '../equipment-stockpile/equipmentStockpile.css';
 import './internationalMarket.css';
@@ -97,12 +97,12 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
       value: row => row.equipment[0]?.name ?? null, text: row => row.equipment.map(item => item.name ?? EQUIPMENT_UNNAMED).join(', '),
       render: row => <EquipmentCell name={row.equipment[0]?.name ?? null} icon={row.equipment[0] ? art.get(row.equipment[0].variant) : null} detail={firstWithMore(row.equipment)} /> },
     { key: 'price', header: 'Price', label: 'Agreed price', numeric: true, width: 'max-content', priority: 1, renderMissing: true,
-      value: row => row.prices[0]?.amount ?? null, text: row => row.prices.map(item => cic(item.amount)).join(', ') || '—', render: row => cic(row.prices[0]?.amount ?? null) },
+      value: row => row.prices[0]?.amount ?? null, text: row => row.prices.map(item => cic(item.amount)).join(', ') || '—', render: row => cicLabel(row.prices[0]?.amount ?? null) },
     { key: 'convoys', header: 'Convoys', label: 'Convoys assigned', numeric: true, width: 'max-content', priority: 3, renderMissing: true,
       value: row => row.assigned, text: row => row.assigned === null ? '—' : `${row.assigned} / ${row.convoys ?? '—'}`,
       render: row => row.assigned === null ? '—' : `${row.assigned} / ${row.convoys ?? '—'}` },
     { key: 'collected', header: 'Collected', label: 'Payment collected', numeric: true, width: 'max-content', renderMissing: true,
-      value: row => row.collected, text: row => cic(row.collected), render: row => cic(row.collected) },
+      value: row => row.collected, text: row => cic(row.collected), render: row => cicLabel(row.collected) },
     { key: 'deliveries', header: 'Deliveries', label: 'Completed deliveries', numeric: true, width: 'max-content', priority: 4, renderMissing: true,
       value: row => row.deliveries, render: row => row.deliveries === null ? '—' : row.deliveries.toString() },
   ] : [
@@ -111,7 +111,7 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
       value: row => row.equipment[0]?.name ?? null, text: row => row.equipment.map(item => item.name ?? EQUIPMENT_UNNAMED).join(', '),
       render: row => <EquipmentCell name={row.equipment[0]?.name ?? null} icon={row.equipment[0] ? art.get(row.equipment[0].variant) : null} detail={firstWithMore(row.equipment)} /> },
     { key: 'amount', header: 'Amount', label: 'Amount', numeric: true, width: 'max-content', renderMissing: true,
-      value: row => row.equipment[0]?.amount ?? null, render: row => units(row.equipment[0]?.amount ?? null) },
+      value: row => row.equipment[0]?.amount ?? null, render: row => unitsLabel(row.equipment[0]?.amount ?? null) },
     { key: 'level', header: 'Price offered', label: 'Price offered', width: 'max-content', priority: 1, renderMissing: true,
       value: row => row.levels[0]?.level ?? null, text: row => levelText(row.levels[0]?.level ?? null), render: row => levelText(row.levels[0]?.level ?? null) },
   ], [view, country, art]);
@@ -120,7 +120,7 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     { key: 'equipment', header: 'Equipment', label: 'Equipment', width: 'minmax(var(--table-name-min), 1.4fr)', renderMissing: true,
       value: row => row.name, text: row => row.name ?? EQUIPMENT_UNNAMED, render: row => <EquipmentCell name={row.name} icon={art.get(row.variant)} /> },
     { key: 'amount', header: 'On market', label: 'On market', numeric: true, bar: 'visible', width: 'minmax(90px, max-content)',
-      value: row => row.amount, render: row => <CellBar value={row.amount} maximum={offers.reduce((most, item) => item.amount > most ? item.amount : most, 1n)}>{units(row.amount)}</CellBar> },
+      value: row => row.amount, render: row => <CellBar value={row.amount} maximum={offers.reduce((most, item) => item.amount > most ? item.amount : most, 1n)}>{unitsLabel(row.amount)}</CellBar> },
     { key: 'level', header: 'Price level', label: 'Price level', width: 'max-content', priority: 1, renderMissing: true,
       value: row => row.level, text: row => levelText(row.level), render: row => levelText(row.level) },
   ], [country, art, offers]);

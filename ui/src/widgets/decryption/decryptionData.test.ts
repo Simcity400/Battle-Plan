@@ -306,6 +306,29 @@ test('a new break after unknown inputs or a recording gap is an upper-bound obse
   assert.match(observationDate(row.broken, row.hour), /^by /);
 });
 
+test('a day window keeps whole runs and the break before it, and its histories agree within it', () => {
+  // As a prepared day query answers: the run covering the day started a week before
+  // it, the identity run earlier still, and the last break belongs to an earlier attempt.
+  const data = reply([run(100, 300)]);
+  data.coverage = [{ firstHour: 50, lastHour: 300, complete: true, reason: null }];
+  data.pairs[0].tagRuns = [{ firstHour: 60, lastHour: 300, ownerTag: 'A', targetTag: 'B' }];
+  data.pairs[0].breaks = [{ hour: 80, upperBound: false }];
+  const day = { firstHour: 268, lastHour: 291 };
+  assert.throws(() => validateDecryptionReply(data), /malformed/);
+  validateDecryptionReply(data, day);
+  assert.equal(raceRows(data, 280, 'progress')[0].tags.ownerTag, 'A');
+  for (const mutate of [
+    (copy: DecryptionReply) => { copy.pairs[0].tagRuns[0].lastHour = 280; },
+    (copy: DecryptionReply) => { copy.pairs[0].tagRuns = [{ firstHour: 60, lastHour: 279, ownerTag: 'A', targetTag: 'B' }, { firstHour: 281, lastHour: 300, ownerTag: 'A', targetTag: 'C' }]; },
+    (copy: DecryptionReply) => { copy.pairs[0].breaks = [{ hour: 270, upperBound: false }, { hour: 290, upperBound: false }]; copy.pairs[0].runs[0].lastHour = 285; copy.pairs[0].tagRuns[0].lastHour = 285; },
+    (copy: DecryptionReply) => { copy.coverage[0].firstHour = 275; },
+  ]) {
+    const copy = structuredClone(data);
+    mutate(copy);
+    assert.throws(() => validateDecryptionReply(copy, day), /malformed/);
+  }
+});
+
 test('tag history can change inside one numeric run and must preserve every gap', () => {
   const data = reply();
   data.pairs[0].tagRuns = [

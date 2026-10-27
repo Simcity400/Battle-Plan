@@ -4,14 +4,15 @@ import { TABLE_OPTIONS, tableSortOf, tableSortOptions } from '../../charts/table
 import { DATE_OVERLAY_OPTION } from '../../charts/race/options.ts';
 import { choiceVariants } from '../../dashboard/options.ts';
 
-export const DEFAULT_SORT = { column: 'land', direction: 'descending' } as const;
+// Total, as the race ranks: the table's rank column and the race agree.
+export const DEFAULT_SORT = { column: 'total', direction: 'descending' } as const;
 export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'table',
     choices: [{ value: 'table', label: 'Table' }, { value: 'race', label: 'Race' }] },
   { key: 'factions', section: 'options', label: 'Sort by faction', kind: 'toggle', default: false,
     hint: 'Group countries by faction.',
     visibleWhen: options => options.view === 'table' },
-  { key: 'topMeasure', section: 'countries', label: 'Top N by', kind: 'content-choice', default: '', automatic: 'Land',
+  { key: 'topMeasure', section: 'countries', label: 'Top N by', kind: 'content-choice', default: '', automatic: 'Total score',
     hint: 'Selects the table’s top countries.',
     visibleWhen: (options, countries) => options.view === 'table' && countries?.kind === 'group' && countries.group.type === 'top' },
   { key: 'split', section: 'options', label: 'Show score parts', kind: 'toggle', default: true,

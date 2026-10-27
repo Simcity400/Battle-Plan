@@ -3,7 +3,7 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { selectedTags } from '../../dashboard/countrySelection';
-import { validateAirStatistics } from './airStatisticsData';
+import { statisticName, validateAirStatistics } from './airStatisticsData';
 import { airStatisticsChannel, airStatisticsRequest } from '../../dashboard/widgetRequests';
 import type { AirStatisticsReply } from './airStatisticsData';
 import { OPTIONS } from './definition';
@@ -28,7 +28,7 @@ export function useAirStatisticsChoices(widget: WidgetSpec, runtime: WidgetRunti
   const theatres = useAirTheatres(runtime, track, 'air-statistics', params, track?.branch.lastHour ?? null, true);
   const picked = new Set(contentSet(options.regions).map(contentKey));
   return {
-    channel: (data?.channels ?? []).map(channel => ({ value: setToken(channel.id), label: `${channel.ours} / ${channel.enemy}` })),
+    channel: (data?.channels ?? []).map(channel => ({ value: setToken(channel.id), label: `${statisticName(channel.ours)} / ${statisticName(channel.enemy)}` })),
     regions: [...(data?.regions ?? []).map(region => ({ value: setToken(region.id), label: region.name })),
       ...[...picked].filter(id => !data?.regions.some(region => region.id === id)).map(id => ({ value: setToken(id), label: `${id} · not in this recording` }))],
     theatres: (theatres ?? []).map(theatre => ({ value: setToken(theatre.id), label: theatre.name })),

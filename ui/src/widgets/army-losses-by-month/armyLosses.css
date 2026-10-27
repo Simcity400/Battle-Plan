@@ -8,3 +8,5 @@
 .army-losses-drill .chart-table { flex: 1; }
 @container (max-width: 420px) { .army-losses-caption > .segmented { display: none; } }
 .army-losses-body { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; padding-bottom: var(--space-2); }
+.army-losses-key { display: flex; align-items: center; gap: .4rem; margin: 0; padding: 0 var(--space-3); font-size: var(--type-xs); color: var(--muted); }
+.army-losses-key i { flex: none; width: 1rem; height: .75rem; border: 1px solid var(--border); }

@@ -67,8 +67,8 @@ export interface CountryRaceLine {
   id?: string; measure?: string;
   /** Fixed measure looks bypass country names and colours (for a level and ceiling). */
   color?: string; area?: boolean; dash?: readonly number[]; endDot?: boolean; muted?: boolean;
-  /** Exact recorded text, independent of the plotting number. */
-  endLabel?: (hour: number, name: string) => string;
+  /** Exact recorded text, independent of the plotting number; a suffix (its value) is never shortened. */
+  endLabel?: (hour: number, name: string) => string | { text: string; suffix: string };
 }
 
 /** A supplied read dates country looks and Jump to; picks keep the displayed hour. */
@@ -109,17 +109,22 @@ export function countryRaceHours(lines: readonly CountryRaceLine[]): number[] {
   return [...new Set(lines.flatMap(line => line.runs.map(run => run.firstHour)))].sort((a, b) => a - b);
 }
 
+export interface CountryRaceEnd { id: string; color: string; value: number; text: string; suffix?: string; muted?: boolean }
+
 /** End labels stay on the last recorded point, including a view ending in a gap. */
 export function countryRaceEnds(lines: readonly CountryRaceLine[], from: number, to: number, until: number | null,
   name: (tag: string, hour?: number) => string, colour: (tag: string, hour?: number) => string,
-  format: (value: number) => string) {
+  format: (value: number) => string): CountryRaceEnd[] {
   return lines.flatMap(line => {
     const hour = lineEndHour(line.runs, from, Math.min(to, until ?? to));
     if (hour === null) return [];
     const run = runAt(line.runs, hour);
-    return run ? [{ id: line.id ?? line.tag, color: line.color ?? colour(line.tag, hour), value: run.value,
-      text: line.endLabel?.(hour, name(line.tag, hour)) ?? `${name(line.tag, hour)}${line.measure ? ` · ${line.measure}` : ''} ${format(run.value)}`,
-      ...(line.muted !== undefined ? { muted: line.muted } : {}) }] : [];
+    if (!run) return [];
+    const label = line.endLabel?.(hour, name(line.tag, hour))
+      ?? { text: `${name(line.tag, hour)}${line.measure ? ` · ${line.measure}` : ''}`, suffix: format(run.value) };
+    return [{ id: line.id ?? line.tag, color: line.color ?? colour(line.tag, hour), value: run.value,
+      ...(typeof label === 'string' ? { text: label } : label),
+      ...(line.muted !== undefined ? { muted: line.muted } : {}) }];
   });
 }
 

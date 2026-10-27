@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { UnitLeadersData } from './generalsData';
-import { battleHistoryComplete, battleTotals, attributeNames, careerEmptyEntry, recordedSince, careerCountryFacts, careerLanes, leaderAt, leadersAt, leaderName, leaderTooltip, pinnedCareer, leaderRequestSelection, validateUnitLeadersReply } from './generalsData.ts';
+import type { LeaderRow, UnitLeadersData } from './generalsData';
+import { battleHistoryComplete, battleTotals, attributeNames, careerEmptyEntry, recordedSince, careerCountryFacts, careerLanes, leaderAt, leadersAt, leaderName, leaderTooltip, pinnedCareer, leaderRequestSelection, topLeader, validateUnitLeadersReply } from './generalsData.ts';
 import { leaderChoices } from '../general-career/choicesData.ts';
 import { createWidget, resolveWindow } from '../../dashboard/model.ts';
 import type { BoundTrack } from '../../dashboard/model';
@@ -443,4 +443,11 @@ test('current leader facts never turn preparing battle counts into zero', () => 
   for (const field of ['fought', 'won', 'lost', 'unresolved', 'winRate'] as const) assert.equal(leader[field], null);
   const tooltip = leaderTooltip(leader, { name: 'Country' });
   assert.equal(tooltip.rows?.find(row => row.label === 'Battles won / fought')?.value, 'Still being prepared');
+});
+
+test('the automatic career follows the leaderboard’s first row at its default sort', () => {
+  const row = (key: string, skill: number | null) => ({ key, value: { skill } }) as unknown as LeaderRow;
+  assert.equal(topLeader([row('9', 2), row('12', 3), row('10', 3)])?.key, '10', 'highest skill first, ties by reference as the table breaks them');
+  assert.equal(topLeader([row('1', null), row('2', null)]), null, 'an unrecorded skill never makes a top general');
+  assert.equal(topLeader([]), null);
 });

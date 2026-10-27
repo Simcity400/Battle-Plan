@@ -6,6 +6,7 @@ import { definition, OPTIONS } from './definition.ts';
 import type { CountrySelection } from '../../dashboard/model';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import type { ResourceInfo, TradeFlow, TradeFlowsReply } from '../../generated/dashboard';
+import type { PreparedTradeReply } from './tradeData';
 import { buildDiagram, campaignScale, coverageNote, decodeTrade, emptyMessage, flowValue, knownSpanAt, leftOutAt, measureAmount, measureRows, OTHER, resourceColours, selectFlows, selectionMessage,
   sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply, resourceName, measureNote, mergePreparedTrade, exactSums } from './tradeData.ts';
 import { countryTotal } from './tradeCountry.ts';
@@ -380,6 +381,11 @@ test('identity lookup does not fill an unrecorded interval from a future rename'
   assert.deepEqual(identityCountryAt(data, '[7,11]', 22), { identity: '[7,11]', tag: 'X', hour: 20, firstHour: 0, lastHour: 20 });
   assert.equal(identityCountryAt(data, '[7,11]', 24)?.tag, 'Y');
   assert.throws(() => validateTradeFlowsReply(item)); // Numeric run cannot span that missing identity evidence.
+  // A prefix still being prepared may hold runs ahead of its identity history: pending, not malformed.
+  const prefix = validateTradeFlowsReply({ ...item, coverage: { firstHour: 0, lastHour: 10, complete: false } } as PreparedTradeReply) as PreparedTradeReply;
+  assert.equal(prefix.holdersPending, true);
+  assert.throws(() => validateTradeFlowsReply({ ...item, coverage: { firstHour: 0, lastHour: 30, complete: true } } as PreparedTradeReply));
+  assert.equal((validateTradeFlowsReply({ ...renamedReply(), coverage: { firstHour: 0, lastHour: 10, complete: false } } as PreparedTradeReply) as PreparedTradeReply).holdersPending, undefined);
 });
 
 test('five thousand native holders retain distinct histories and selected end-group identity', () => {

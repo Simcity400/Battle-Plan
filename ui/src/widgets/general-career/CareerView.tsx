@@ -26,8 +26,8 @@ import '../generals/generals.css';
 import { experienceText, experienceFactorText } from '../generals/experience';
 
 /** One view for the leaderboard drill and the standalone career widget. */
-export default function CareerView({ reference, hour, onPick, widget, runtime, active, onDiagnostics }: WidgetProps & {
-  reference: string; hour: number; onPick?: (hour: number) => void;
+export default function CareerView({ reference, hour, onPick, caption, widget, runtime, active, onDiagnostics }: WidgetProps & {
+  reference: string; hour: number; onPick?: (hour: number) => void; caption?: string;
 }) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
@@ -80,6 +80,7 @@ export default function CareerView({ reference, hour, onPick, widget, runtime, a
   if (!leader) return <WidgetState kind="unavailable" message="Career unavailable for this leader." />;
   const country = row?.value.owner ? labelAt(hour)(row.value.owner) : { name: 'Owner not recorded' };
   return <div className="general-career" ref={parityRoot}>
+    {caption && <p className="career-subject">{caption}</p>}
     {row ? <div className="career-top"><LeaderIdentity art={portraits.at(row)} row={row} country={country} showCountry />
       <div className="career-stats">
         <span><strong>{row.preparing ? 'Still being prepared' : row.fought}</strong>fought</span>

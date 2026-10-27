@@ -18,7 +18,7 @@ import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
-import { activeTracks, dailyText, doctrineIcons, doctrineSprite, doctrinesAt, masteryText, requirementMet, rewardKey, rewardName, rewardUnlocked, trackMarks, trackName, folderName, trackRatio, trackScale, unlockedRewards } from './doctrineMasteryData';
+import { activeTracks, dailyText, doctrineIcons, doctrineSprite, doctrinesAt, masteryText, requirementMet, rewardKey, rewardName, rewardUnlocked, trackMarks, trackName, folderName, trackRatio, trackScale, unlockedRewards, unlockMastery, rateText } from './doctrineMasteryData';
 import type { TrackState } from './doctrineMasteryData';
 import type { MeterMark } from '../../charts/meter/ProgressMeter';
 import { useDoctrineMastery, useRewardDescriptions } from './useDoctrineMastery';
@@ -54,11 +54,12 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
       const reward = item.subdoctrine?.rewards?.[index];
       if (!reward || !item.subdoctrine) return null;
       const description = described?.get(rewardKey(item.folder, item.track.id, item.subdoctrine.id, index)) ?? reward.description;
-      const unlocked = rewardUnlocked(item, index), met = requirementMet(item, reward);
-      const missing = item.mastery === null || reward.threshold === null ? null : BigInt(reward.threshold) - BigInt(item.mastery);
-      return { title: rewardName(reward), rows: [{ label: 'Mastery required', value: reward.threshold === null ? 'Not recorded' : masteryText(reward.threshold) },
+      const needed = unlockMastery(item)[index];
+      const unlocked = rewardUnlocked(item, index), met = requirementMet(item, index);
+      const missing = item.mastery === null || needed == null ? null : needed - BigInt(item.mastery);
+      return { title: rewardName(reward), rows: [{ label: 'Mastery required', value: needed == null ? 'Not recorded' : masteryText(needed) },
         { label: 'Unlocked', value: unlocked === null ? 'Not recorded' : unlocked ? 'Yes' : 'No' },
-        { label: 'Mastery', value: met === null || missing === null ? 'Not recorded' : met ? 'Requirement met' : `${masteryText(missing.toString())} to go` }],
+        { label: 'Mastery', value: met === null || missing === null ? 'Not recorded' : met ? 'Requirement met' : `${masteryText(missing)} to go` }],
         ...description ? { description } : {} };
     }
     return trackTooltip(item, readDate);
@@ -125,10 +126,10 @@ function trackTooltip(item: TrackState, readDate: string | null): TooltipContent
     title: item.subdoctrine?.name ?? trackName(item.track),
     rows: [
       { label: 'Track', value: trackName(item.track) },
-      { label: 'Mastery', value: item.mastery === null ? 'Not recorded' : `${masteryText(item.mastery)}${scale === null ? '' : ` of ${masteryText(scale.toString())}`}` },
+      { label: 'Mastery', value: item.mastery === null ? 'Not recorded' : `${masteryText(item.mastery)}${scale === null ? '' : ` of ${masteryText(scale)}`}` },
       { label: 'Banked mastery', value: item.bank === null ? 'Not recorded' : masteryText(item.bank) },
-      { label: 'Daily gain', value: item.effective === null ? 'Not recorded' : masteryText(item.effective) },
-      { label: 'Units’ daily gain', value: item.daily === null ? 'Not recorded' : masteryText(item.daily) },
+      { label: 'Daily gain', value: item.effective === null ? 'Not recorded' : rateText(item.effective) },
+      { label: 'Units’ daily gain', value: item.daily === null ? 'Not recorded' : rateText(item.daily) },
       { label: 'Rewards unlocked', value: item.rewards ?? 'Not recorded' },
       ...unlocked.map(reward => ({ label: rewardName(reward), indent: true })),
       ...item.completed.length ? [{ label: 'Completed subdoctrines' }, ...item.completed.map(sub => ({ label: sub.name ?? 'Subdoctrine name unavailable', indent: true }))] : [],

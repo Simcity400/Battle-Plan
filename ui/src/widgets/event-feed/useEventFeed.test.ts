@@ -14,7 +14,7 @@ test('actual feed hook isolates filtered counts and wanted pages across identica
   let cursor = 0;
   const same = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
   const hooks = {
-    inputs, wanted: [] as readonly number[], requests: [] as unknown[],
+    inputs, wanted: [] as readonly number[], requests: [] as unknown[], first: undefined as unknown,
     useState(initial: unknown) {
       const index = cursor++;
       if (!slots.has(index)) slots.set(index, initial);
@@ -56,6 +56,7 @@ test('actual feed hook isolates filtered counts and wanted pages across identica
         export const useContentRevision = () => 0;
         // The first page answers the hour it was asked for at once.
         export const useFollowedProduct = (client, request, moving, active, validate) => {
+          globalThis.__eventFeedHooks.first = request;
           const data = globalThis.__eventFeedHooks.inputs.get(client)?.manifest;
           return { data: data && validate(data), moment: data && request ? JSON.stringify(moving.map(name => request.params[name])) : undefined, retry() {} };
         };
@@ -88,7 +89,7 @@ test('actual feed hook isolates filtered counts and wanted pages across identica
     feed.onWantedPages(['1']); render(a);
     assert.deepEqual(hooks.wanted, [1]);
     assert.deepEqual((hooks.requests[0] as { params: unknown }).params, { branchId: '7', firstHour: null, lastHour: 400,
-      categories: ['milestones'], cursor: 'keeps-live-400-native-350', pageSize: 256 });
+      categories: ['milestones'], observations: false, cursor: 'keeps-live-400-native-350', pageSize: 256 });
     const previousWanted = feed.onWantedPages;
     assert.deepEqual(render(b).pages, [], 'loading another client masks all held rows');
     inputs.set(b, { manifest: first, chunks: new Map() });
@@ -179,5 +180,7 @@ test('actual feed hook isolates filtered counts and wanted pages across identica
     assert.equal(render(a, filter, true).error, undefined, 'a progressed reply clears the refusal');
     inputs.set(b, { manifest: undefined, chunks: new Map() });
     assert.deepEqual(render(b, filter, false, 399).pages, [], 'a changed Live bound starts a fresh cursor owner');
+    render(b, { ...filter, observations: true }, false, 399);
+    assert.equal((hooks.first as { params: { observations: boolean } }).params.observations, true, 'shown recorder observations are asked for');
   } finally { delete host.__eventFeedHooks; await vite.close(); }
 });

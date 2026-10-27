@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { CountryGroupReply } from '../../generated/dashboard';
-import { opinionDomain, opinionIndex, opinionText, orderCountries, pairHolders, pairLine, pairOf, pairToken } from './relationsData.ts';
+import { opinionDomain, opinionIndex, opinionText, orderCountries, pairHolders, pairLine, pairOf, pairToken, topTags } from './relationsData.ts';
+import type { ScoreboardPreparedReply, ScoreboardSeries } from '../../generated/dashboard';
 import type { DiplomacyOpinionsReply } from '../../generated/dashboard';
 
 const reply = { hour: 10, unresolved: 0, warnings: [], owners: [
@@ -42,4 +43,17 @@ test('pair lines keep known values, break at unknown stretches, and a saved pair
   assert.equal(pairOf('not json'), null); assert.equal(pairOf(null), null);
   assert.deepEqual(pairHolders({ first: 'A', second: 'A', hour: 48 }).map(holder => [holder.key, holder.hour]), [['first', 48], ['second', 48]],
     'both holders are read at the chosen hour itself, never a sample before a reuse of the tag');
+});
+
+test('a top N ranks only once its hour and measure are prepared', () => {
+  const factories = { key: 'factories', label: 'Factories', unit: 'factories', decimals: 0, available: true, reason: null } as const;
+  const entry = (tag: string, slot: number, amount: string): ScoreboardSeries => ({ tag, segments: [{ firstHour: 10, lastHour: 10 }],
+    identities: [{ firstHour: 10, lastHour: 10, slot, countryId: slot + 10 }], membership: null,
+    columns: [{ key: 'factories', runs: [{ firstHour: 10, lastHour: 10, amount, startsSegment: false }], readRuns: [{ firstHour: 10, lastHour: 10, readHour: 10, hourly: true }] }] });
+  const reply = (series: ScoreboardSeries[], prefix = {}): ScoreboardPreparedReply => ({ hour: 10, maxima: { factories: '9' }, ...prefix,
+    data: { branchId: '1', defaultColumns: ['factories'], defaultSort: 'factories', columns: [factories], series, warnings: [] } }) as ScoreboardPreparedReply;
+  const pending = { coverage: { firstHour: 10, lastHour: 9, complete: false }, pending: [{ firstHour: 10, lastHour: 10 }] };
+  assert.equal(topTags(reply([], pending), 10, 'factories'), null, 'an empty pending index is not an empty ranking');
+  assert.equal(topTags(reply([entry('A', 1, '3')], { preparing: ['factories'] }), 10, 'factories'), null);
+  assert.deepEqual(topTags(reply([entry('A', 1, '3'), entry('B', 2, '9')]), 10, 'factories'), ['B', 'A'], 'the prepared index ranks highest first');
 });

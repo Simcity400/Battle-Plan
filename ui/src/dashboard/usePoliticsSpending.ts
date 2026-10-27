@@ -49,8 +49,11 @@ export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, 
     product: 'politics-ledger', params: prepared ? { branchId: track.branch.id, tag, view: 'spending', from, hour, totals,
       within: selection.membership?.get(tag) } : { branchId: track.branch.id, tag, view: 'balance' } }))) : [];
   const ledger = useProducts<PoliticsLedgerReply>(runtime.client, requests, active, validatePowerBalance);
-  return { track, tags, ...ledger, data: ledger.data?.slice(0, tags.length),
-    finalData: ledger.data?.slice(hours.length > 1 ? tags.length : 0, hours.length > 1 ? tags.length * 2 : tags.length),
+  // Stable while the replies are: row motion commits a new history for every new array.
+  const data = useMemo(() => ledger.data?.slice(0, tags.length), [ledger.data, tags.length]);
+  const finalData = useMemo(() => hours.length > 1 ? ledger.data?.slice(tags.length, tags.length * 2) : data,
+    [ledger.data, tags.length, hours.length, data]);
+  return { track, tags, ...ledger, data, finalData,
     prepared, selection, ready: match.ready, reason: resolved.reason ?? match.reason, known: match.known,
     groupWarnings: groups.data?.warnings ?? NO_WARNINGS,
     error: ledger.error ?? (groups.data ? undefined : groups.error),

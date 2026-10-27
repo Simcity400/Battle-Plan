@@ -14,6 +14,7 @@ import type { ChartTokens } from '../tokens';
 import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { formatAxisValue } from '../valueAxis';
+import { ellipsise } from '../labels';
 import { drawDateOverlay, drawRaceBar, drawRaceGrid, FLAG, MIN_LABEL, NAME_PAD, NAME_X, VALUE_GAP, VALUE_PAD } from './draw';
 import { keyedEntry, paintOrder, raceHeight, raceLayout, raceMoving, raceText, rowAt, rowCentre, rowInView, rowSeen, selectRaceRow, stepRace } from './race';
 import type { RaceItem, RaceLayout, RaceRow, RaceState } from './race';
@@ -225,7 +226,7 @@ export default function RaceChart(props: RaceChartProps) {
         context.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT);
         context.textAlign = 'left';
         context.textBaseline = 'middle';
-        context.fillText(p.name(row.key, row.item), NAME_X, centre, Math.max(1, layout.left - NAME_X - NAME_PAD));
+        context.fillText(ellipsise(p.name(row.key, row.item), layout.left - NAME_X - NAME_PAD, text => context.measureText(text).width), NAME_X, centre);
         const tip = drawRaceBar(context, layout, tokens, row, min, max);
         context.fillStyle = tokens.text;
         context.font = font(tokens, tokens.fontSize.body, VALUE_WEIGHT);

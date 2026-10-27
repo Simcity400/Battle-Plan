@@ -417,6 +417,13 @@ pub(crate) fn query(
             None
         }
     };
+    let texts = ScopedTexts::new(source, branch, cancelled);
+    if catalogue.is_some() {
+        texts.prefetch(held.iter().filter_map(|(_, fact)| {
+            (fact.row.item.is_some() && fact.script.is_some() && super::super::names_decision(fact.row.kind))
+                .then_some(fact.row.name_hour)
+        }));
+    }
     let present = |builder: &mut Builder, fact: Fact| -> io::Result<ScriptEdge> {
         let (option, lifecycle, days, costs) = edge(&fact);
         let mut row = fact.row;
@@ -434,6 +441,7 @@ pub(crate) fn query(
                     row.kind,
                     &mut item,
                     fact.script.as_ref(),
+                    Some((&texts, row.name_hour)),
                 )?;
             }
             row.item = Some(builder.item(item)?);

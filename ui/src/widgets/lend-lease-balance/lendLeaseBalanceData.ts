@@ -2,6 +2,7 @@ import type { CountryGroupReply, LendLeaseBalanceReply, LendLeaseHistory } from 
 import type { CountrySelection } from '../../dashboard/model';
 import { groupMembers, groupRuns, groupUnobserved } from '../../dashboard/groups.ts';
 import { object } from '../../dashboard/validation.ts';
+import { formatAmount, rescale } from '../../charts/valueAxis.ts';
 import { bigAt, fixedText, isEconomyRuns, isHolderTags, runAt, tagAt, validateEconomyReply } from '../../dashboard/economyHistory.ts';
 
 export const LEND_LEASE_BALANCE = 'lend-lease-balance';
@@ -93,6 +94,12 @@ export function emptyBalance(reply: LendLeaseBalanceReply, measure: BalanceMeasu
 /** Bars draw positive amounts only; the written values stay exact and signed. */
 export const barValue = (value: bigint | null) => value === null ? null : Number(value > 0n ? value : 0n) / 100000;
 export const amountText = (value: bigint | null, scale: number) => value === null ? '—' : fixedText(value, BigInt(scale));
+/** A bar label: two decimals at most, and the exact amount when that would read 0. */
+export function amountLabel(value: bigint | null, scale: number): string {
+  if (value === null) return '—';
+  const hundredths = rescale(value, scale, 2);
+  return hundredths === 0n && value !== 0n ? amountText(value, scale) : formatAmount(hundredths, 2);
+}
 
 /** The first hour any measure of the history was recorded. */
 export const firstRecorded = (history: LendLeaseHistory): number | null => {

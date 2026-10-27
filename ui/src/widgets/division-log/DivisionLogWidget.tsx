@@ -187,8 +187,8 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
           const next = toggleContentSet(templatesValue, value, Number.MAX_SAFE_INTEGER); if (next !== null) setOption?.('templates', next);
         }} />}</div>}
     {(earlier || shownHour !== hour) && <div className="division-log-navigation">
-      {earlier && <button type="button" onClick={() => { setBrowse({ identity, hour: manifest.data!.windows[oldest - 1].lastHour }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Earlier divisions</button>}
-      {shownHour !== hour && <button type="button" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest divisions</button>}
+      {earlier && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: manifest.data!.windows[oldest - 1].lastHour }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Earlier divisions</button>}
+      {shownHour !== hour && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest divisions</button>}
     </div>}
     <LogList rows={rows} label="Division log" density={log.density} months={log.months} animate={log.animate && live && shownHour === hour}
       {...import.meta.env.MODE === 'parity' ? { parityHistoryComplete, paritySemantic } : {}}

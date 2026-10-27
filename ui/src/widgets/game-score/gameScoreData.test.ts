@@ -181,15 +181,15 @@ test('table row keys follow native countries through tag changes and distinguish
   assert.equal(rewind.rows.find(row => row.key === before.key)!.item.tag, 'original');
 });
 
-test('Land is the default exact sort and every country is eligible, including 5,000 synthetic rows', () => {
+test('Total is the default exact sort and every country is eligible, including 5,000 synthetic rows', () => {
   const data = reply();
   data.countries = Array.from({ length: 5000 }, (_, index) => {
     const item = country(`slot-${String(index).padStart(4, '0')}`);
     item.identity[0].value.canonicalSlot = index;
-    item.scores.land[0].raw = (9007199254740992n + BigInt(index)).toString();
+    item.scores.total[0].raw = (9007199254740992n + BigInt(index)).toString();
     return item;
   });
-  data.countries[4].scores.land = [{ firstHour: 1, lastHour: 3, missing: 0, readEachHour: true }];
+  data.countries[4].scores.total = [{ firstHour: 1, lastHour: 3, missing: 0, readEachHour: true }];
   const model = gameScoreModel(validateGameScoreReply(data));
   const rows = gameScoreRows(model, model.tags, 2, DEFAULT_SORT);
   assert.equal(rows.length, 5000);

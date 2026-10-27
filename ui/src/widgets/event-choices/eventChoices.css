@@ -1,10 +1,15 @@
-/* Cards are Peace deals' cards; only the option list and the countries line are added. */
-.event-choice .peace-heading .log-art { flex: none; align-self: center; }
-.event-choice-countries { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+/* Cards are Peace deals' cards; the heading, countries line and option list are Event choices' own. */
+.event-choice-heading { display: flex; align-items: baseline; gap: 8px; }
+.event-choice-heading .log-art { flex: none; align-self: center; }
+.event-choice-heading b { flex: 1; min-width: 0; font-size: 0.8125rem; font-weight: 600; overflow-wrap: anywhere; }
+.event-choice-heading b.peace-muted { font-weight: 400; }
+.event-choice-heading small { color: var(--muted); font-size: 0.6875rem; font-variant-numeric: tabular-nums; text-align: right; }
+.event-choice-countries { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 5px; color: var(--muted); font-size: 0.6875rem; overflow-wrap: anywhere; }
 .event-choice-countries b { font-weight: 600; color: var(--text); }
 .event-choice-options { display: grid; gap: 2px; margin: 6px 0 0; padding: 0; list-style: none; font-size: 0.75rem; }
 .event-choice-option { display: flex; align-items: baseline; gap: 6px; min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
 .event-choice-option > svg, .event-choice-option > i { flex: none; width: 12px; height: 12px; align-self: center; }
 .event-choice-option.is-chosen { color: var(--text); font-weight: 500; }
 .event-choice-option.is-chosen.is-missing { color: var(--muted); }
+.event-choices .log.is-compact .event-choice-heading b { font-size: 0.75rem; }
 .event-choices .log.is-compact .event-choice-options { font-size: 0.6875rem; }

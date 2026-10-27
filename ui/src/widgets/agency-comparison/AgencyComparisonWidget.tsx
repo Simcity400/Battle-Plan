@@ -112,5 +112,7 @@ function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: Widg
 }
 
 export default function AgencyComparisonWidget(props: WidgetProps) {
- return <div className="agency-comparison-product"><div className="agency-table-section"><AgencyTable {...props} /></div><IntelSection {...props} /></div>;
+  // The raw intel records are diagnostic; they show only when asked for.
+  if (resolveOptions(OPTIONS, props.widget.options).intelRecords !== true) return <AgencyTable {...props} />;
+  return <div className="agency-comparison-product"><div className="agency-table-section"><AgencyTable {...props} /></div><IntelSection {...props} /></div>;
 }

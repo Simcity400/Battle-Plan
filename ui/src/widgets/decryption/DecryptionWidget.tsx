@@ -41,10 +41,10 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour ?? 0;
   const first = track ? track.branch.firstHour + Math.floor((hour - track.branch.firstHour) / 24) * 24 : hour;
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'decryption', params: runtime.client.preparedQuery
-    ? { branchId: track.branch.id, firstHour: first, lastHour: Math.min(first + 23, track.branch.lastHour) }
-    : { branchId: track.branch.id } } : null;
-  const { data, error, retry } = useProduct<DecryptionReply>(runtime.client, request, active, validateDecryptionReply, track?.source);
+  const day = track && runtime.client.preparedQuery ? { firstHour: first, lastHour: Math.min(first + 23, track.branch.lastHour) } : null;
+  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'decryption',
+    params: { branchId: track.branch.id, ...day } } : null;
+  const { data, error, retry } = useProduct<DecryptionReply>(runtime.client, request, active, value => validateDecryptionReply(value, day), track?.source);
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind !== 'all');
   const selection = useMemo(() => {
     return countryMatch(widget.countries, selectedTags(widget.countries, track), groups.data, track?.branch.lastHour ?? hour);

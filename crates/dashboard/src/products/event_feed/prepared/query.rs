@@ -16,6 +16,9 @@ pub(crate) struct Params {
     pub cursor: Option<String>,
     pub page_size: u32,
     pub categories: BTreeSet<EventFeedCategory>,
+    /// Also list the recording's own observations: decision roster rebuilds and retained script state.
+    #[serde(default)]
+    pub observations: bool,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +67,8 @@ struct Cursor {
     live: i32,
     first: i32,
     categories: BTreeSet<EventFeedCategory>,
+    #[serde(default)]
+    observations: bool,
     before: Position,
 }
 
@@ -267,7 +272,7 @@ fn event(reader: &mut Reader<'_>, key: u64, ordinal: u64) -> io::Result<DatedRow
         .ok_or_else(|| crate::invalid("Prepared feed event reference is missing"))
 }
 
-fn keys(source: usize, categories: &BTreeSet<EventFeedCategory>) -> Vec<u64> {
+fn keys(source: usize, categories: &BTreeSet<EventFeedCategory>, observations: bool) -> Vec<u64> {
     let pairs: Vec<(u64, EventFeedCategory)> = match source {
         0 => vec![
             (0, EventFeedCategory::Diplomacy),
@@ -291,6 +296,14 @@ fn keys(source: usize, categories: &BTreeSet<EventFeedCategory>) -> Vec<u64> {
             .iter()
             .copied()
             .filter(|key| key & (1 << 63) == 0)
+            // Roster rebuilds and retained script state are recording inputs, not moments in the game.
+            .filter(|&key| {
+                observations
+                    || !matches!(
+                        EventFeedKind::from_key(key),
+                        Some(EventFeedKind::DecisionRosterRebuilt | EventFeedKind::ScriptStateObserved)
+                    )
+            })
             // Each fact stream filters by its own kind's category.
             .map(|key| {
                 (
@@ -318,6 +331,7 @@ fn candidates(
     bounds: (i32, i32),
     before: Option<&Position>,
     categories: &BTreeSet<EventFeedCategory>,
+    observations: bool,
     limit: usize,
     cancelled: &AtomicBool,
 ) -> io::Result<(BTreeMap<Position, SourceRow>, BTreeMap<i32, WarEnds>, bool)> {
@@ -362,7 +376,7 @@ fn candidates(
     for source in (0..readers.len()).rev() {
         let reader = &mut readers[source];
         let late = metadata.late(source);
-        for key in keys(source, categories) {
+        for key in keys(source, categories, observations) {
             check_cancel(cancelled)?;
             let mut to = native_to;
             let mut remaining = limit;
@@ -456,7 +470,7 @@ fn candidates(
                 to = previous;
             }
         }
-        let ordinary = keys(source, categories);
+        let ordinary = keys(source, categories, observations);
         if let Some(late) = late {
             for &(native, _, key, ordinal) in late.between(first, native_to, live).rev() {
                 check_cancel(cancelled)?;
@@ -544,6 +558,7 @@ fn project(
     catalogue: Option<&Catalogue>,
     nuclear_art: &Result<Option<String>, String>,
     focus_art: Option<&artwork::ResolvedArt>,
+    texts: &ScopedTexts<'_>,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
     let from = builder.feed.rows.len();
@@ -631,6 +646,7 @@ fn project(
                         fact.row.kind,
                         &mut item,
                         fact.script.as_ref(),
+                        Some((texts, fact.row.name_hour)),
                     )?;
                 }
                 fact.row.item = Some(builder.item(item)?);
@@ -746,6 +762,7 @@ pub(crate) fn query(
         cursor.live != live
             || cursor.first != first
             || cursor.categories != params.categories
+            || cursor.observations != params.observations
             || cursor.before.native < first
             || cursor.before.native > live
             || cursor.before.read > live
@@ -769,6 +786,7 @@ pub(crate) fn query(
         (first, live),
         cursor.as_ref().map(|cursor| &cursor.before),
         &params.categories,
+        params.observations,
         params.page_size as usize + 1,
         cancelled,
     )?;
@@ -790,6 +808,7 @@ pub(crate) fn query(
             live,
             first,
             categories: params.categories.clone(),
+            observations: params.observations,
             before: rows.first_key_value().unwrap().0.clone(),
         })?)
     } else {
@@ -824,6 +843,7 @@ pub(crate) fn query(
         _ => true,
     });
     let mut builder = Builder::new(first, live);
+    let texts = ScopedTexts::new(source, branch, cancelled);
     diagnostics(&mut builder, &metadata, live)?;
     let mut project_refusals = catalogue::Refusals::default();
     for row in rows.values() {
@@ -868,6 +888,18 @@ pub(crate) fn query(
             None
         }
     };
+    if catalogue.is_some() {
+        texts.prefetch(rows.values().filter_map(|row| match row {
+            SourceRow::Fact(fact)
+                if fact.row.item.is_some()
+                    && fact.script.is_some()
+                    && super::super::names_decision(fact.row.kind) =>
+            {
+                Some(fact.row.name_hour)
+            }
+            _ => None,
+        }));
+    }
     let politics = match context
         .content()
         .and_then(|content| politics_content::politics_content(source, content))
@@ -969,6 +1001,7 @@ pub(crate) fn query(
             catalogue.as_deref(),
             &nuclear_art,
             art.as_ref(),
+            &texts,
             cancelled,
         )?;
     }

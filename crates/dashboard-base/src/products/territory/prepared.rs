@@ -540,31 +540,39 @@ pub fn query(
     } else {
         None
     };
-    let (mut tags, metadata) = if accepted.is_some() {
+    let catalogue = if accepted.is_some() {
         series::read_catalogue::<TerritoryReply>(&store, &key, "territory", branch)?
     } else {
         None
-    }
-    .unwrap_or_else(|| {
-        (
-            BTreeMap::new(),
-            TerritoryReply {
-                branch_id: params.branch_id.clone(),
-                world_totals: Vec::new(),
-                series: Vec::new(),
-                area_unit: inputs.as_ref().and_then(|inputs| {
-                    inputs
+    };
+    let (mut tags, metadata) = match catalogue {
+        Some(catalogue) => catalogue,
+        None => {
+            // Until the family publishes, its area unit or reason comes from the same read.
+            let read;
+            let areas = match &inputs {
+                Some(inputs) => inputs,
+                None => {
+                    read = area_data(source, context, cancelled)?;
+                    &read
+                }
+            };
+            (
+                BTreeMap::new(),
+                TerritoryReply {
+                    branch_id: params.branch_id.clone(),
+                    world_totals: Vec::new(),
+                    series: Vec::new(),
+                    area_unit: areas
                         .areas
                         .as_ref()
-                        .map(|_| ProvinceAreas::UNIT.to_owned())
-                }),
-                area_reason: inputs.as_ref().and_then(|inputs| inputs.reason.clone()),
-                warnings: inputs
-                    .as_ref()
-                    .map_or_else(Vec::new, |inputs| inputs.warnings.clone()),
-            },
-        )
-    });
+                        .map(|_| ProvinceAreas::UNIT.to_owned()),
+                    area_reason: areas.reason.clone(),
+                    warnings: areas.warnings.clone(),
+                },
+            )
+        }
+    };
     let warnings = metadata.warnings;
     if params.family.metadata {
         return Ok(serde_json::to_value(TerritoryReply {

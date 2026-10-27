@@ -103,12 +103,12 @@ export default function EventChoicesWidget({ widget, runtime, active, onDiagnost
     const { card } = choice;
     const lines = optionLines(choice);
     return <article className="peace-deal event-choice">
-      <div className="peace-heading">
+      <div className="event-choice-heading">
         {artwork && <span className="log-art" aria-hidden="true">{card.item?.icon ? <img src={card.item.icon} alt="" /> : <ArtFallback icon="ballot" />}</span>}
         <b className={card.item?.name ? undefined : 'peace-muted'}>{choiceTitle(card)}</b>
         <small>{choiceDates(choice)}</small>
       </div>
-      <div className="peace-observation event-choice-countries">{country(nameHour(row), card.country)}
+      <div className="event-choice-countries">{country(nameHour(row), card.country)}
         {card.sender && <><span>from</span>{country(nameHour(row), card.sender)}</>}
         {isOpen(choice) && <span className="pill accent">{live && <i className="live-dot" aria-hidden="true" />}<span>{awaitingText(choice)}</span></span>}</div>
       <ol className="event-choice-options">

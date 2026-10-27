@@ -1,5 +1,6 @@
 import type { ContractHistory, MarketHistoryReply, OfferHistory } from '../../generated/dashboard';
 import { fixedText, valueAt } from '../../dashboard/economyHistory.ts';
+import { formatAmount } from '../../charts/valueAxis.ts';
 import { FIXED5, holderTagAt, poolAt, readHourOf, variantAt } from '../../dashboard/marketHistory.ts';
 import { priceLevel } from '../trade-flows/marketData.ts';
 
@@ -67,5 +68,8 @@ export function offerRows(reply: MarketHistoryReply, hour: number, matches: (tag
 
 export const units = (raw: bigint | null) => raw === null ? '—' : fixedText(raw, FIXED5);
 export const cic = (raw: bigint | null) => raw === null ? '—' : `${fixedText(raw, FIXED5)} CIC`;
+/** Table cells round to two decimals; tooltips keep `units` and `cic` exact. */
+export const unitsLabel = (raw: bigint | null) => raw === null ? '—' : formatAmount(raw, 5);
+export const cicLabel = (raw: bigint | null) => raw === null ? '—' : `${formatAmount(raw, 5)} CIC`;
 export const levelText = (level: number | null) => level === null ? '—' : priceLevel(level);
 export const firstWithMore = (items: readonly MarketItemAt[]) => items.length > 1 ? `+${items.length - 1}` : null;

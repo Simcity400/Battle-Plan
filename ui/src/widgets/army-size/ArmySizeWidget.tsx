@@ -214,7 +214,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     const runs = countryValueLines(model, tag, cutTo(tag), range);
     return runs.length || prepared.summaries.has(tag) ? [{ tag, runs, endLabel: (hour: number, name: string) => {
       const at = countryValueAt(model, tag, hour);
-      return `${name} ${at?.rawTotal !== undefined ? formatArmyRaw(at.rawTotal, measure) : at?.total == null ? '—' : formatArmyValue(at.total)}`;
+      return { text: name, suffix: at?.rawTotal !== undefined ? formatArmyRaw(at.rawTotal, measure) : at?.total == null ? '—' : formatArmyValue(at.total) };
     } }] : [];
   }), [model, view, lineTags, resolved.membership, range, measure, prepared.summaries]); // eslint-disable-line react-hooks/exhaustive-deps
   const badges = useMemo(() => {

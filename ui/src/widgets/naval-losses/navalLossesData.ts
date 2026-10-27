@@ -77,7 +77,8 @@ export function navalSegmentAt(model: NavalModel | null, tag: string, hour: numb
   return runAt(series?.identities ?? series?.segments ?? [], Math.floor(hour))?.firstHour ?? null;
 }
 
-export function rankNaval(model: NavalModel, candidates: readonly string[], hour: number, kind: NavalKind, limit: number): CountryRaceEntry[] {
+/** `top` ranks only countries with losses: a top N of zeros would list countries in tag order. */
+export function rankNaval(model: NavalModel, candidates: readonly string[], hour: number, kind: NavalKind, limit: number, top = false): CountryRaceEntry[] {
   return candidates.flatMap(tag => {
     const series = model.series.get(tag);
     const index = runIndexAt(series?.runs ?? [], Math.floor(hour));
@@ -85,7 +86,22 @@ export function rankNaval(model: NavalModel, candidates: readonly string[], hour
     const value = navalValue(series.runs[index], kind);
     return value === null ? [] : [{ tag, value, label: formatNavalCount(value), stretch: series.starts[index],
       ...(kind === 'both' ? { parts: [{ id: 'ships', value: series.runs[index].ships! }, { id: 'convoys', value: series.runs[index].convoys! }] } : {}) }];
-  }).sort((a, b) => (b.value - a.value || compareTags(a.tag, b.tag))).slice(0, limit);
+  }).filter(entry => !top || entry.value > 0).sort((a, b) => (b.value - a.value || compareTags(a.tag, b.tag))).slice(0, limit);
+}
+
+/** Whether every country the reply lists at the hour has a known tally of zero. An unknown
+ * tally is not a zero; a Top N reply lists only known tallies, so this speaks for those alone. */
+export function navalAllZero(model: NavalModel, candidates: readonly string[], hour: number, kind: NavalKind): boolean {
+  let known = false;
+  for (const tag of candidates) {
+    const series = model.series.get(tag);
+    const index = runIndexAt(series?.runs ?? [], Math.floor(hour));
+    if (!series || index < 0 || navalSegmentAt(model, tag, hour) === null) continue;
+    const value = navalValue(series.runs[index], kind);
+    if (value !== 0) return false;
+    known = true;
+  }
+  return known;
 }
 
 export function navalLines(model: NavalModel, tags: readonly string[], kind: NavalKind, range: Span,

@@ -115,8 +115,8 @@ export type CountryLabel = (tag: string) => { name: string; flag?: string; known
 
 /** Countries named and flagged as the recording showed them at their hours (such as
  * a trade partner at the read behind a tooltip), never a later identity. Only the
- * countries `wanted` are asked for; until their names arrive, or where the
- * recording has none, its title says unavailable. Callers with
+ * countries `wanted` are asked for; until their names arrive the title says it is
+ * loading, and where the recording has none it says unavailable. Callers with
  * more distinct drawn hours can pass their own `maxHours`. `revision`
  * changes as names and flags arrive, for a chart to redraw. */
 export function useCountryLabelsAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
@@ -126,7 +126,7 @@ export function useCountryLabelsAt(client: DashboardClient, track: Pick<BoundTra
   const labelAt = useCallback((hour: number): CountryLabel => tag => {
     const name = names.get(nameKey(hour, tag));
     const flag = flags.get(nameKey(hour, tag));
-    return { name: typeof name === 'string' ? name : 'Country name unavailable', ...flagReadMetadata(flag),
+    return { name: typeof name === 'string' ? name : name === undefined ? 'Loading name…' : 'Country name unavailable', ...flagReadMetadata(flag),
       known: name === undefined ? undefined : typeof name === 'string', nameFailed: name === FAILED_FACT };
   }, [names, flags]);
   return { labelAt, revision: names.size + flags.size };

@@ -52,6 +52,18 @@ fn politics(frame: &mut DecodedFrame, rows: Vec<PoliticsRow>) {
     set(frame, TableId::Politics, TableRows::Politics(rows));
 }
 
+fn owned_states(frame: &mut DecodedFrame, owned: &[(u32, i32)]) {
+    let rows = owned
+        .iter()
+        .map(|&(country, owned_state_count)| CountryCounterInputRow {
+            country,
+            owned_state_count,
+            ..Default::default()
+        })
+        .collect();
+    set(frame, TableId::CountryCounterInputs, TableRows::CountryCounterInputs(rows));
+}
+
 fn run(first: i32, last: i32, value: &str) -> PoliticsRun {
     PoliticsRun {
         first_hour: first,
@@ -81,6 +93,7 @@ fn election_runs_change_only_with_the_schedule_and_never_cross_a_gap() {
     ] {
         let mut at = frame(hour);
         countries(&mut at, &[(1, 1, "ELA")], &[]);
+        owned_states(&mut at, &[(1, 3)]);
         politics(&mut at, vec![row]);
         state.step(&at);
     }
@@ -109,6 +122,39 @@ fn election_runs_change_only_with_the_schedule_and_never_cross_a_gap() {
             .warnings
             .iter()
             .any(|warning| warning.contains("eligibility not recorded"))
+    );
+}
+
+#[test]
+fn elections_are_held_only_by_countries_owning_states() {
+    let fixture = Fixture::new();
+    let mut state = Prepared::default();
+    let row = PoliticsRow {
+        country: 1,
+        last_election: engine_native::cdate::HOUR_EPOCH + 1936 * 365 * 24,
+        has_elections: true.into(),
+        election_interval: 0.into(),
+        ..Default::default()
+    };
+    // The schedule never changes; only the states owned do (none recorded at 102).
+    for (hour, owned) in [(100, &[(1, 2)][..]), (101, &[(1, 0)]), (102, &[]), (103, &[(1, 4)])] {
+        let mut at = frame(hour);
+        countries(&mut at, &[(1, 1, "ELA")], &[]);
+        owned_states(&mut at, owned);
+        politics(&mut at, vec![row.clone()]);
+        state.step(&at);
+    }
+    publish(&mut state, &fixture);
+    let reply = ask(&fixture, params(PoliticsHistoryMode::Elections, None), 103);
+    assert_eq!(
+        reply.elections[0].held,
+        vec![run(100, 100, "1"), run(101, 101, "0"), run(103, 103, "1")]
+    );
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("country existence not recorded"))
     );
 }
 

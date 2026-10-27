@@ -398,6 +398,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const none = measure === 'current' && resolved ? noMembersAt(widget.countries, resolved, groups.data, moment, lastHour) : null;
   if (none && !pinnedView && !drill.breakdown) return <>{groupFailure}{pinnedHeader}<NoMembersState reason={none.reason} icon="flows" /></>;
   if (!data || !trade || (widget.countries.kind === 'group' && !groups.data)) return <>{groupFailure}{pinnedHeader}<WidgetState kind="loading" label="Loading trade…" /></>;
+  if ((data as PreparedTradeReply).holdersPending) return <>{groupFailure}{pinnedHeader}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   if (!data.reads.length) return <>{groupFailure}{pinnedHeader}<WidgetState kind="unavailable" message="Trade was not recorded." /></>;
   if (resourceIds && !resourceIds.size) return <>{groupFailure}{pinnedHeader}<WidgetState kind="empty" message="None of the chosen resources is in this campaign. Choose others in the widget settings." /></>;
   if (pinnedView && options.tradeSelection && (!savedSelection || savedSelection.kind === 'market')) return <>{groupFailure}{pinnedHeader}<WidgetState kind="unavailable" message="This trade selection is unavailable. Select trades again." /></>;

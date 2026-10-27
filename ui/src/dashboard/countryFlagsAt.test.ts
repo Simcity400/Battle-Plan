@@ -42,7 +42,7 @@ test('dated labels forward the hour limit to both reads and distinguish pending,
       calls.length = 0;
       function Labels() {
         const { labelAt } = useCountryLabelsAt(client, undefined, wanted, true, limit);
-        assert.deepEqual(labelAt(10)('pending'), { name: 'Country name unavailable', flag: undefined, known: undefined, nameFailed: false, flagPending: true, flagReason: undefined });
+        assert.deepEqual(labelAt(10)('pending'), { name: 'Loading name…', flag: undefined, known: undefined, nameFailed: false, flagPending: true, flagReason: undefined });
         assert.deepEqual(labelAt(10)('missing'), { name: 'Country name unavailable', flag: undefined, known: false, nameFailed: false, flagPending: true, flagReason: undefined });
         assert.deepEqual(labelAt(10)('failed'), { name: 'Country name unavailable', flag: undefined, known: false, nameFailed: true, flagPending: true, flagReason: undefined });
         assert.deepEqual(labelAt(10)('named'), { name: 'Recorded name', flag: 'recorded-flag', known: true, nameFailed: false, flagPending: false, flagReason: undefined });

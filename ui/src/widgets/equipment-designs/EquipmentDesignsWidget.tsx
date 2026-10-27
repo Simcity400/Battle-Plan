@@ -126,7 +126,7 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   return <div ref={anchor} className="equipment-designs">
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
-      title={picked?.name ?? EQUIPMENT_UNNAMED} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
+      title={picked ? picked.name ?? EQUIPMENT_UNNAMED : SHEET.label} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
       {picked && <DesignSheet runtime={runtime} track={track} hour={drill.follow ? hour : at} variant={variantDecimal(picked.key)} active={active} />}
     </DrillHost>

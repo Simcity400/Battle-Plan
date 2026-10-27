@@ -46,6 +46,14 @@ pub fn finite_fixed64(raw: i64) -> bool {
     (raw as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
 }
 
+/// The engine's saturated fixed5 value, which also marks a fixed5 cache it never computed.
+pub const FIXED5_MAX: i64 = 0x53e2_d61f_d320;
+
+/// A goal's progress cache as a percentage; the game leaves [`FIXED5_MAX`] in goals without ratio progress.
+pub fn faction_goal_progress_percent(raw: i64) -> Option<f64> {
+    (finite_fixed64(raw) && raw != FIXED5_MAX).then_some(raw as f64 / 1000.0)
+}
+
 /// All product replies carry content diagnostics at the shared serialization boundary.
 pub trait ReplyWarnings {
     fn warnings_mut(&mut self) -> &mut Vec<String>;

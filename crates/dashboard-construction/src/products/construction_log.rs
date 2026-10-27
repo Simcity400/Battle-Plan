@@ -2516,12 +2516,22 @@ impl NameSource {
         let names = match &self.catalogue {
             Ok(catalogue) => {
                 let catalogue: &Arc<Catalogue> = catalogue;
+                let states = project_states(log);
+                // The scan grows between progressive flushes; earlier names may lack its newer types.
+                let covers = |named: &Named| {
+                    log.types.iter().all(|(id, _)| named.types.contains_key(id))
+                        && states.iter().all(|id| named.states.contains_key(id))
+                };
                 let cached = {
                     let cache = state.lock().unwrap_or_else(|error| error.into_inner());
                     cache
                         .named
                         .iter()
-                        .find(|(cached, from, _)| *cached == branch && Arc::ptr_eq(from, catalogue))
+                        .find(|(cached, from, named)| {
+                            *cached == branch
+                                && Arc::ptr_eq(from, catalogue)
+                                && covers(named.get().as_ref())
+                        })
                         .map(|(_, _, named)| Arc::clone(named.get()))
                 };
                 let named = match cached {
@@ -2536,7 +2546,7 @@ impl NameSource {
                             localise: &localise,
                         };
                         let drawn = catalogue::Drawn::try_new(|| {
-                            named(&view, &log.types, &project_states(log), cancelled).map(Arc::new)
+                            named(&view, &log.types, &states, cancelled).map(Arc::new)
                         })?;
                         let named = Arc::clone(drawn.get());
                         let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());

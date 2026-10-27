@@ -33,15 +33,15 @@ export default function BombingBreakdown({ data, runtime, track, tag, identity, 
   const menu = useContextMenu('Bombing damage breakdown actions');
   const index = useMemo(() => militaryAirIndex(data, NO_FILTERS), [data]);
   const row = useMemo(() => ledgerCountryAt(index, tag, from, hour, identity), [index, from, hour, tag, identity]);
-  const headerRow = countrySlot && headerSelection && headerSelection.identity === identity && row
+  // Without a pinned holder the header names the country shown: the dashboard's or the one chosen.
+  const headerRow = countrySlot && row && (!headerSelection || headerSelection.identity === identity
     && index.byTag.get(headerSelection.tag)?.some(series => series.country.identity === identity)
-    && index.series.filter(series => series.country.identity === identity && runAt(series.country.present, hour)).length === 1
+    && index.series.filter(series => series.country.identity === identity && runAt(series.country.present, hour)).length === 1)
     && index.byTag.get(row.tag)?.filter(series => runAt(series.country.present, hour)).length === 1 ? row : null;
   const wanted = useMemo(() => countrySlot && headerRow ? [{ tag: headerRow.tag, hour }] : [], [countrySlot, headerRow?.tag, hour]);
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active && !!countrySlot);
   const header = countrySlot && createPortal(<DatedCountryChip label={headerRow ? labels.labelAt(hour)(headerRow.tag) : null} hour={hour}
-    reason={!headerSelection ? 'Saved country unavailable.'
-      : !headerRow ? 'Country unavailable at this time.' : null} />, countrySlot);
+    reason={!headerRow ? 'Country unavailable at this time.' : null} />, countrySlot);
   const leaves = row?.series.leaves.filter(leaf => leaf.dealt === dealt) ?? [];
   const stateIds = [...new Set(leaves.flatMap(leaf => leaf.state ? [leaf.state] : []))].sort((a, b) => a - b);
   const request = stateIds.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'place-names',
@@ -69,7 +69,7 @@ export default function BombingBreakdown({ data, runtime, track, tag, identity, 
       unknown: item.unknownValue, finalUnknown: item.finalUnknown })),
     totalRaw: row ? (dealt ? row.dealt : row.taken).toString() : null,
   }));
-  if (!row) return <>{header}<WidgetState kind="unavailable" message="Bombing damage or this country was not recorded at this moment." /></>;
+  if (!row) return <>{header}<WidgetState kind="unavailable" message="This country’s bombing damage was not recorded at this moment." /></>;
   const complete = ledgerComplete(data.observed, from, hour, data.incomplete);
   const exact = dealt ? row.dealt : row.taken;
   const finalRow = ledgerCountryAt(index, tag, from, end, identity);

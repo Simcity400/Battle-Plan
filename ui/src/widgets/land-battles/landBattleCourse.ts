@@ -1,7 +1,7 @@
 import { formatDateTime, isEngineHour } from '../../dashboard/calendar.ts';
 import { int, object } from '../../dashboard/validation.ts';
 import { dayLabel } from '../../charts/draw.ts';
-import { formatFixed } from '../../charts/valueAxis.ts';
+import { formatAmount, formatFixed } from '../../charts/valueAxis.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
 import type { Run } from '../../charts/series';
 import { battleDate, battleValueText } from '../battles/battleRows.ts';
@@ -155,7 +155,7 @@ export function courseEquipment(course: LandCourse, at: number): { hour: number;
 
 /** Whole equipment, as the game counts it; the exact fixed5 amount stays in the hover. */
 export const wholeEquipment = (raw: bigint) => formatFixed(raw, 5, 0);
-export const exactEquipment = (raw: bigint) => formatFixed(raw, 5, 5);
+export const exactEquipment = (raw: bigint) => formatAmount(raw, 5, 5);
 
 /** "116 days" in a row, "116 days 8 hours" in a tooltip; a minimum says so. */
 export function lengthText(hours: number, atLeast: boolean, long: boolean): string {

@@ -97,8 +97,9 @@ export interface WidgetMeta {
    * `all`: the widget shows the whole world by default (every faction, every
    * overlord, every country's construction), and chosen countries or a group
    * narrow it. `factions`: offers the shared faction-totals selection. `fixed`:
-   * a single picked country stays explicit even when it matches the dashboard. */
-  countries?: { max: number; ranked?: boolean; aggregate?: boolean; all?: boolean; factions?: boolean; fixed?: boolean };
+   * a single picked country stays explicit even when it matches the dashboard. `rankedBy`:
+   * what a top N ranks by when it is not the widget's own value. */
+  countries?: { max: number; ranked?: boolean; rankedBy?: string; aggregate?: boolean; all?: boolean; factions?: boolean; fixed?: boolean };
   /** The countries a new or reset widget shows (the dashboard's country when absent),
    * such as a race's top 10 of all countries. */
   defaultCountries?: CountrySelection;

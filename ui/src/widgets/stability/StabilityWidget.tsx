@@ -49,7 +49,7 @@ import type { CountryGroupReply, CountryStabilityReply } from '../../generated/d
 import { parseColor, toHex } from '../../shell/appearance/color';
 import { STABILITY_BREAKDOWNS, STABILITY_OPTIONS } from './definition';
 import { stabilityMarkers } from './markers';
-import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
+import { nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
 import type { NameAt } from '../../dashboard/countryNamesAt';
 import type { MarkerKind } from './markers';
 import type { FocusReply, PartyHistoryReply } from '../../generated/dashboard';
@@ -237,13 +237,17 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     }, kinds);
     return { countries, focuses };
   }, [markerSources, kinds]);
-  const namesAt = useCountryNamesAt(runtime.client, track, markerReads.countries, active);
+  const namesAt = useCountryNamesRead(runtime.client, track, markerReads.countries, active);
   const focusText = useFocusText(runtime.client, track, markerTag ?? undefined, markerReads.focuses, active);
   const badges = useMemo(() => !track || !markerSources ? [] : stabilityMarkers({ ...markerSources,
-    countryName: (other, hour) => namesAt.get(nameKey(hour, other)) ?? track.source.metadata.countries.find(country => country.tag === other)?.name ?? 'Country name unavailable',
+    countryName: (other, hour) => {
+      const read = namesAt.get(nameKey(hour, other));
+      return typeof read === 'string' ? read : track.source.metadata.countries.find(country => country.tag === other)?.name
+        ?? (read === undefined ? 'Loading name…' : 'Country name unavailable');
+    },
     focusName: (token, hour) => {
       const item = focusText.read.get(nameKey(hour, token));
-      return item && item !== FAILED_FACT ? item.artwork.name : undefined;
+      return item === undefined ? undefined : item && item !== FAILED_FACT ? item.artwork.name ?? null : null;
     },
   }, kinds), [track, markerSources, namesAt, focusText.read, kinds]);
   // The marker sources shown report their notes and failures, so a missing kind of event is never silent.

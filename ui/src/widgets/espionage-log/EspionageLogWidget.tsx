@@ -170,9 +170,9 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const preceding = wantedWindows.filter(index => index <= browseIndex);
   const oldest = preceding.length ? Math.min(...preceding) : 0;
   const earlier = oldest > 0 && data.windows[oldest - 1].lastHour >= (from ?? -Infinity);
-  const navigation = <div className="espionage-navigation">
-    {earlier && <button type="button" onClick={() => { setBrowse({ identity, hour: data.windows[oldest - 1].lastHour }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Earlier operations</button>}
-    {shownHour !== hour && <button type="button" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest operations</button>}
+  const navigation = <div className="log-navigation">
+    {earlier && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: data.windows[oldest - 1].lastHour }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Earlier operations</button>}
+    {shownHour !== hour && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest operations</button>}
   </div>;
   const unread = !runAt(data.available, shownHour ?? hour) && !runAt(data.completionsAvailable, shownHour ?? hour);
   const chosen = contentSet(types);

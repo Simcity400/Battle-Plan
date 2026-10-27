@@ -186,6 +186,97 @@ impl Inputs {
     }
 }
 
+/// An event text key expanded in the occurrence's recorded scopes, countries as `frame` holds them.
+/// Only their names expand: the hour's end does not prove what else the occurrence read.
+pub(super) fn scoped_text(
+    catalogue: &Catalogue,
+    inputs: &Inputs,
+    frame: &dyn replay_frame::frame::DecodedSource,
+    key: &str,
+) -> Result<String, String> {
+    let scopes = inputs.graph(false)?;
+    let scripted = catalogue.scripted_content()?;
+    let text = catalogue
+        .localisation
+        .localise(key.as_bytes())
+        .map_err(|why| why.to_string())?;
+    let expander = ScriptedText::new(
+        frame,
+        &catalogue.localisation,
+        scripted,
+        inputs.actor_slot.unwrap_or(0),
+    );
+    catalogue::plain_text(&expander.expand_names_in(&text, &scopes)?)
+}
+
+/// A decision's title key and text for its owner, and whether the recorded title scope can expand it.
+pub(super) fn decision_name(
+    catalogue: &Catalogue,
+    inputs: &Inputs,
+    frame: &dyn replay_frame::frame::DecodedSource,
+    token: &str,
+) -> Result<(String, String, bool), String> {
+    let content = catalogue.scripted_content()?;
+    let effects = content.effects()?;
+    let decisions = effects
+        .view(None)
+        .decisions
+        .ok_or("decision database is unavailable from the recorded content stack")?;
+    let definition = decisions
+        .decision(token.as_bytes())?
+        .ok_or_else(|| format!("decision {token} is absent from recorded content"))?;
+    if let Some(reason) = &definition.refused {
+        return Err(reason.clone());
+    }
+    let owner = inputs
+        .actor_slot
+        .ok_or("decision owner has no exact occurrence-hour canonical slot")?;
+    let text = ScriptedText::new(frame, &catalogue.localisation, content, owner);
+    let key = crate::effect_description::decision_name_key_at(
+        frame,
+        text.recorded(),
+        &catalogue.localisation,
+        definition,
+        owner,
+        text.country_tag(owner)?,
+    )?;
+    let name = catalogue
+        .localised(&key, catalogue::View::Plain)
+        .ok_or_else(|| format!("decision title {key} is absent from recorded content"))?;
+    // A highlighted state would join the title scope; the recording does not hold it.
+    let scoped = !definition.has_state_targets && definition.highlight_conditions.is_empty();
+    Ok((key, name, scoped))
+}
+
+/// A decision title key expanded in the game's title scope: the owner, its FROM the recorded target.
+pub(super) fn decision_title_text(
+    catalogue: &Catalogue,
+    inputs: &Inputs,
+    frame: &dyn replay_frame::frame::DecodedSource,
+    key: &str,
+) -> Result<String, String> {
+    let mut scopes = inputs.graph(true)?;
+    for scope in &mut scopes.scopes {
+        scope.random_seed_refusal = Some("decision title random seed was not recorded");
+    }
+    // The title's target scope links to itself, unlike the execution scope.
+    if let Some(target) = scopes.scopes.get_mut(1) {
+        target.from = Link::Itself;
+    }
+    let text = catalogue
+        .localisation
+        .localise(key.as_bytes())
+        .map_err(|why| why.to_string())?;
+    let owner = inputs.actor_slot.unwrap_or(0);
+    let expander = ScriptedText::new(
+        frame,
+        &catalogue.localisation,
+        catalogue.scripted_content()?,
+        owner,
+    );
+    catalogue::plain_text(&expander.expand_names_in(&text, &scopes)?)
+}
+
 fn render(
     catalogue: &Catalogue,
     inputs: &Inputs,

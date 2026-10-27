@@ -11,8 +11,11 @@ export interface AgreementRow {
   /** The hour its values are read at: the shown hour, or its last read when ended. */
   at: number;
   ended: boolean;
+  /** The chosen country's side (`from`) and the other side, by the direction asked for. */
   from: string | null;
   partner: string | null;
+  giver: string | null;
+  receiver: string | null;
   fuel: boolean;
   /** The schedule's items: variant (or null for fuel), name and written amounts. */
   items: { variant: string | null; name: string | null; schedule: string; delivered: bigint | null; lost: bigint | null }[];
@@ -47,7 +50,7 @@ export function agreementRows(reply: MarketHistoryReply, direction: Direction, m
     const receiver = holderTagAt(reply, valueAt(agreement.receiver, at), at);
     const own = direction === 'sent' ? giver : receiver;
     if (own === null || !matches(own, at)) continue;
-    const base = { agreement, at, ended, from: own, partner: direction === 'sent' ? receiver : giver,
+    const base = { agreement, at, ended, from: own, partner: direction === 'sent' ? receiver : giver, giver, receiver,
       since: numberAt(agreement.since, at), last: numberAt(agreement.last, at) };
     const scheduled = schedules(agreement, at);
     const delivered = new Map(poolAt(agreement.items, 3, at).map(item => [item.variant, item.amount]));

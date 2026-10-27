@@ -8,6 +8,7 @@ import type { CountryIdentityIndex } from '../../dashboard/countryIdentity';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { HourSpan, WarCasualtyRun, WarContributionGroup, WarObservation, WarParticipantRun, WarSide, WarTimeline, WarsAtHour, WarsReply } from '../../generated/dashboard';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
+import { dayLabel } from '../../charts/draw.ts';
 
 export type WarsView = 'gantt' | 'countries';
 export type WarsColour = 'war' | 'side';
@@ -138,6 +139,18 @@ export function warsReplyState(reply: Pick<WarsReply, 'available'> | null | unde
 const casualtyIndexes = new WeakMap<WarTimeline, { firstHour: number; lastHour: number; run: WarCasualtyRun }[]>();
 
 /** Exact, separate dated casualty series; there is no interpolation or cross-war sum. */
+/** A war's start, telling apart wars the game names alike. */
+const startNote = (war: WarTimeline) => ` (${war.startedBy ? 'by' : 'from'} ${dayLabel(war.firstHour)})`;
+
+/** Each war's name at `at`; started wars sharing a recorded name are told apart by their start. */
+export function warNamesAt(wars: readonly WarTimeline[], at: number): Map<WarTimeline, string> {
+  const names = new Map(wars.map(war => [war, labelObservationAt(war, at)?.name.text ?? NAME_WORDS.missing]));
+  const counts = new Map<string, number>();
+  for (const [war, name] of names) if (war.firstHour <= at && name !== NAME_WORDS.missing) counts.set(name, (counts.get(name) ?? 0) + 1);
+  for (const [war, name] of names) if ((counts.get(name) ?? 0) > 1) names.set(war, name + startNote(war));
+  return names;
+}
+
 export function casualtiesAt(war: WarTimeline, at: number): WarCasualtyRun | null {
   let indexed = casualtyIndexes.get(war);
   if (!indexed) {
@@ -332,7 +345,8 @@ export function prepareWars(reply: WarsReply, lineage = new Lineage([]), identit
   const countries = [...byCountry].map(([key, pieces]) => countryView(key, pieces, order, lineage, identities))
     .sort((a, b) => a.firstHour - b.firstHour || compareTags(a.tag, b.tag) || compareTags(a.key, b.key));
   const labelCatalogue = [
-    ...[...new Set([NAME_WORDS.missing, NAME_WORDS.pending, ...wars.flatMap(view => view.war.observations.map(observation => observation.name.text))])]
+    ...[...new Set([NAME_WORDS.missing, NAME_WORDS.pending, ...wars.flatMap(view => view.war.observations.flatMap(observation =>
+      [observation.name.text, observation.name.text + startNote(view.war)]))])]
       .map(text => ({ text, space: 38, weight: 600 })),
     ...[...new Set([NAME_WORDS.missing, NAME_WORDS.pending, ...countryNames])]
       .map(text => ({ text, space: 64, weight: 500 })),
@@ -421,7 +435,7 @@ export function warsLanes(data: PreparedWars, at: number, options: WarsLaneOptio
     if (!look) { look = options.named.has(tag) ? options.country(tag) : { name: NAME_WORDS.pending, flagPending: true }; looks.set(tag, look); }
     return look;
   };
-  const names = new Map(data.wars.map(view => [view.war, labelObservationAt(view.war, at)?.name.text ?? NAME_WORDS.missing]));
+  const names = warNamesAt(data.wars.map(view => view.war), at);
   if (options.view === 'countries') {
     for (const view of data.countries) {
       if (view.firstHour > at) continue;

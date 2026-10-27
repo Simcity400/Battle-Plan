@@ -14,6 +14,7 @@ import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { jumpItem } from '../../charts/jump';
 import { formatDateTime } from '../../dashboard/calendar';
+import { contentTitleHint } from '../../dashboard/contentTitles';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -81,7 +82,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   useEffect(() => setDrill(null), [subject, view]);
   const typeColumns = useMemo<readonly TableColumn<EquipmentType>[]>(() => [
     { key: 'type', header: 'Equipment', label: 'Equipment', width: 'minmax(var(--table-name-min), 2fr)', value: typeName,
-      render: row => <span className="division-equipment-name" data-tooltip={row.archetype ?? undefined}><ArtFallback icon="hammer" /><span>{typeName(row)}</span></span> },
+      render: row => <span className="division-equipment-name" data-tooltip={contentTitleHint(row.archetype)}><ArtFallback icon="hammer" /><span>{typeName(row)}</span></span> },
     { key: 'held', header: 'In divisions', label: 'In divisions', numeric: true, width: 'max-content', priority: 3, value: row => BigInt(row.heldRaw), render: row => items(row.heldRaw) },
     { key: 'needed', header: 'Needed', label: 'Needed', numeric: true, width: 'max-content', priority: 2, value: row => big(row.neededRaw), renderMissing: true,
       text: row => items(row.neededRaw) ?? 'Not recorded', render: row => items(row.neededRaw) ?? <span className="division-equipment-missing" data-tooltip="Not recorded">—</span> },
@@ -94,7 +95,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   ], [bars]);
   const templateColumns = useMemo<readonly TableColumn<EquipmentTemplate>[]>(() => [
     { key: 'template', header: 'Template', label: 'Template', width: 'minmax(var(--table-name-min), 2fr)', value: templateName,
-      render: row => <span className="division-equipment-name" data-tooltip={row.template}>{row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon="helmet" />}<span>{templateName(row)}</span></span> },
+      render: row => <span className="division-equipment-name" title={templateName(row)}>{row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon="helmet" />}<span>{templateName(row)}</span></span> },
     { key: 'divisions', header: 'Divisions', label: 'Divisions', numeric: true, width: 'max-content', priority: 3, value: row => row.divisions },
     { key: 'manpower', header: 'Manpower', label: 'Manpower', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 2, value: row => share(row.manpower, row.manpowerRequired), renderMissing: true,
       text: row => row.manpower === null ? 'Not recorded' : usNumber.format(Number(row.manpower)), render: row => <Ratio ratio={share(row.manpower, row.manpowerRequired)} label="Manpower" bars={bars} /> },
@@ -106,7 +107,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   ], [bars]);
   const divisionColumns = useMemo<readonly TableColumn<EquipmentDivision>[]>(() => [
     { key: 'division', header: 'Division', label: 'Division', width: 'minmax(var(--table-name-min), 2fr)', value: divisionName,
-      render: row => <span className="division-equipment-name" data-tooltip={row.division}><span>{divisionName(row)}</span></span> },
+      render: row => <span className="division-equipment-name" title={divisionName(row)}><span>{divisionName(row)}</span></span> },
     { key: 'manpower', header: 'Manpower', label: 'Manpower', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 2, value: row => share(row.manpower, row.manpowerRequired), renderMissing: true,
       render: row => <Ratio ratio={share(row.manpower, row.manpowerRequired)} label="Manpower" bars={bars} /> },
     { key: 'strength', header: 'Strength', label: 'Strength', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', priority: 3, value: row => share(row.hpRaw, row.hpMaxRaw), renderMissing: true,

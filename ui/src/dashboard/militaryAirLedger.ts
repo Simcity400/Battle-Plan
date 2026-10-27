@@ -1,7 +1,7 @@
 import type { MilitaryAirCountry, MilitaryAirLeaf, MilitaryAirPoint, MilitaryAirReply } from '../generated/dashboard';
 import { clipToSpans, isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Run, Span } from '../charts/series';
-import { formatFixed } from '../charts/valueAxis.ts';
+import { formatAmount, formatFixed, formatRate } from '../charts/valueAxis.ts';
 import { object, opaqueTag, signed32, unsigned32 } from './validation.ts';
 import { compareTags } from './tagOrder.ts';
 import { worldFilter } from './groups.ts';
@@ -206,7 +206,16 @@ export function ledgerCountries(rows: readonly LedgerRow[], selection: CountrySe
 
 export const ledgerShare = (raw: bigint, total: bigint) => total === 0n ? '—' : `${formatFixed(raw * 1000n / total, 1, 1)}%`;
 export const ledgerScale = (family: MilitaryAirReply['family']) => family === 'airLosses' ? 100_000 : 10_000_000;
-export const ledgerFormat = (raw: bigint | null, family: MilitaryAirReply['family']) => raw === null ? 'Not recorded' : formatFixed(raw, family === 'airLosses' ? 5 : 7, family === 'airLosses' ? 5 : 7);
+const ledgerDigits = (family: MilitaryAirReply['family']) => family === 'airLosses' ? 5 : 7;
+/** The exact recorded amount, without trailing zeros; for tooltips and breakdowns. */
+export const ledgerFormat = (raw: bigint | null, family: MilitaryAirReply['family']) => raw === null ? 'Not recorded'
+  : formatAmount(raw, ledgerDigits(family), ledgerDigits(family));
+/** The amount as a chart label: at most two decimals, and never 0 when it is not. */
+export function ledgerLabel(raw: bigint | null, family: MilitaryAirReply['family']): string {
+  if (raw === null) return 'Not recorded';
+  const text = formatAmount(raw, ledgerDigits(family));
+  return text === '0' && raw !== 0n ? formatRate(raw, ledgerDigits(family)) : text;
+}
 export const AIR_LEDGER_NOTE = 'Loss totals include corrections.';
 export const LEDGER_GAP_NOTE = 'Some losses may be missing.';
 export const BOMBING_GAP_NOTE = 'Some damage may be missing.';

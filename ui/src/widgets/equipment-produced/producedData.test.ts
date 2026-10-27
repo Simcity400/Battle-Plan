@@ -148,7 +148,7 @@ test('production tooltips name the hovered hour and lines name their own drawn e
       export default props => createElement('p', null, props.items.map(item => props.tooltip(item.key)?.title).join('|'));`,
     '/charts/TimeChart.tsx': `import { createElement } from 'react';
       export default props => { const ctx = {}; props.overlay(ctx, { x: props.extent, toY: value => value }, {});
-        return createElement('p', null, ctx.labels.map(label => label.text).join('|')); }`,
+        return createElement('p', null, ctx.labels.map(label => [label.text, label.suffix].join(' ')).join('|')); }`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null },
     plugins: [{ name: 'production-chart-leaves', enforce: 'pre', transform: (_source, id) => {

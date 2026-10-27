@@ -90,8 +90,8 @@ export function occupationLines(model: OccupationModel, tags: readonly string[],
     return runs.length || summary?.buckets.some(Boolean) ? [{ tag, id: JSON.stringify([tag, key]), runs, ...(measure === 'both' && key === 'compliance' ? { dash: SECONDARY_DASH } : {}),
       endLabel: (hour: number, name: string) => {
         const at = occupationAt(model, tag, hour);
-        const shown = measure === 'both' ? `${name} ${measureName(key)}` : name;
-        return `${shown} ${at ? occupationPercent(measureRaw(at.run, key), digits) : 'Not recorded'}`;
+        return { text: measure === 'both' ? `${name} ${measureName(key)}` : name,
+          suffix: at ? occupationPercent(measureRaw(at.run, key), digits) : 'Not recorded' };
       },
     }] : [];
   }));

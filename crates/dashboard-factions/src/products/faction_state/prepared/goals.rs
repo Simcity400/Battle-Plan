@@ -376,8 +376,9 @@ pub(super) fn query(
                         first_hour: run.first_hour,
                         last_hour: run.last_hour,
                         progress_raw: raw.to_string(),
-                        progress_percent: dashboard_base::products::finite_fixed64(raw)
-                            .then_some(raw as f64 / 1000.0),
+                        progress_percent: dashboard_base::products::faction_goal_progress_percent(
+                            raw,
+                        ),
                         starts_segment: run.break_before,
                     };
                     budget.add(&run)?;

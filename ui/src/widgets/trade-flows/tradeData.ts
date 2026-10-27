@@ -28,6 +28,8 @@ export interface PreparedTradeReply extends TradeFlowsReply {
   basis?: number;
   scoped?: boolean;
   coverage?: { firstHour: number; lastHour: number; complete: boolean };
+  /** Prepared runs ahead of the identity history naming their holders; the next prefix catches up. */
+  holdersPending?: boolean;
   cumulativePending?: boolean;
 }
 
@@ -74,14 +76,14 @@ export function validateTradeFlowsReply(data: unknown): TradeFlowsReply {
   // Indexing also refuses contradictory holder aliases. Every numeric run must
   // name the same exact native holder in the shared census at its supplying read.
   const trade = decodeTrade(reply);
-  for (const flow of trade.flows) for (const run of flow.runs) {
-    for (const side of ['seller', 'buyer'] as const) {
-      const fact = runAt(flow[side === 'seller' ? 'sellerFacts' : 'buyerFacts'], run.firstHour);
-      if (!fact || fact.tag !== run[side === 'seller' ? 'sellerTag' : 'buyerTag'] || fact.lastHour < run.lastHour)
-        throw new Error('The trade flow names a holder outside its recorded identity.');
-    }
-  }
-  return reply;
+  const outrun = trade.flows.some(flow => flow.runs.some(run => (['seller', 'buyer'] as const).some(side => {
+    const fact = runAt(flow[side === 'seller' ? 'sellerFacts' : 'buyerFacts'], run.firstHour);
+    return !fact || fact.tag !== run[side === 'seller' ? 'sellerTag' : 'buyerTag'] || fact.lastHour < run.lastHour;
+  })));
+  if (!outrun) return reply;
+  // A prefix can hold runs ahead of the identity history that names their holders.
+  if ((reply as PreparedTradeReply).coverage?.complete === false) return { ...reply, holdersPending: true } as PreparedTradeReply;
+  throw new Error('The trade flow names a holder outside its recorded identity.');
 }
 
 /** One stretch of a flow's recorded terms. */
@@ -783,7 +785,7 @@ export function mergePreparedTrade(a: PreparedTradeReply, b: PreparedTradeReply)
   }
   const pages = <T>(first: Record<string, Record<string, T>> | undefined, second: Record<string, Record<string, T>> | undefined) =>
     Object.fromEntries([...new Set([...Object.keys(first ?? {}), ...Object.keys(second ?? {})])].map(key => [key, { ...first?.[key], ...second?.[key] }]));
-  return { ...a, flows, countries, resources: [...new Map([...a.resources, ...b.resources].map(resource => [resource.id, resource])).values()].sort((a, b) => a.id - b.id),
+  return { ...a, ...(a.holdersPending || b.holdersPending ? { holdersPending: true } : {}), flows, countries, resources: [...new Map([...a.resources, ...b.resources].map(resource => [resource.id, resource])).values()].sort((a, b) => a.id - b.id),
     countryIdentities: [...aliases].sort((a, b) => compareTags(a[0], b[0])).map(([tag, runs]) => ({ tag, runs: runs.sort((a, b) => a.firstHour - b.firstHour) })),
     reads: [...new Set([...a.reads, ...b.reads])].sort((a, b) => a - b),
     known: joinTradeSpans(a.known, b.known, () => true), partial: joinTradeSpans(a.partial, b.partial, (x, y) => x.deals === y.deals),

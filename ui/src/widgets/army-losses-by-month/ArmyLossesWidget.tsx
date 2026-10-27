@@ -13,6 +13,7 @@ import { narrowTableOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import TimeChart from '../../charts/TimeChart';
 import { useChartTokens } from '../../charts/useChartTokens';
+import { hatchStyle } from '../../charts/hatch';
 import { jumpItem } from '../../charts/jump';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
@@ -78,7 +79,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
         .reduce((sum, design) => sum + BigInt(design.amountRaw), 0n), render: row => designAmount(String(row.designs.filter(design => kinds.includes(design.ledger))
         .reduce((sum, design) => sum + BigInt(design.amountRaw), 0n))) } satisfies TableColumn<MonthArmy>]),
   ], [measure, caption, kinds]);
-  let main;
+  let main, charted = false;
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see army losses." />;
   else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   else if (!country.chosen) main = <WidgetState kind="empty" message="Choose a country to see its army losses." />;
@@ -94,17 +95,22 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
     main = <WidgetState kind="unavailable" message="The combat log wasn’t recorded at this time." />;
   else if (!bars.periods.some(period => !period.unknown))
     main = <WidgetState kind="empty" message={`${countryName} has no recorded army losses${widget.time.mode === 'follow' ? ' yet' : ''}.`} />;
-  else main = <div className="army-losses-chart">
-    <TimeChart label={`${caption} per month`} extent={[first, widget.time.mode === 'range' ? Math.floor(window.lastHour) : track.branch.lastHour]}
-      branchStart={track.branch.firstHour} playhead={following ? hour : null} playback="cursor"
-      axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} keyHours={columnStops(bars.periods)}
-      fitValues={shown => shown ? [Math.min(0, shown[0]), Math.max(0, shown[1])] : null}
-      active={active} revision={`${data.hour}:${measure}:${stack}:${ledger}:${tokens.categories.join()}`}
-      tooltip={at => { const period = monthAt(at); return period ? monthTooltip(period, bars.parts, measure, caption, following ? hour : null, colour) : null; }}
-      onPick={at => { const period = monthAt(at); if (period && !period.unknown) pick(Math.floor(at)); }}
-      onContextMenu={(_at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, Math.min(hour, data.hour))])} />
-  </div>;
+  else {
+    charted = true;
+    main = <div className="army-losses-chart">
+      <TimeChart label={`${caption} per month`} extent={[first, widget.time.mode === 'range' ? Math.floor(window.lastHour) : track.branch.lastHour]}
+        branchStart={track.branch.firstHour} playhead={following ? hour : null} playback="cursor"
+        axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} keyHours={columnStops(bars.periods)}
+        fitValues={shown => shown ? [Math.min(0, shown[0]), Math.max(0, shown[1])] : null}
+        active={active} revision={`${data.hour}:${measure}:${stack}:${ledger}:${tokens.categories.join()}`}
+        tooltip={at => { const period = monthAt(at); return period ? monthTooltip(period, bars.parts, measure, caption, following ? hour : null, colour) : null; }}
+        onPick={at => { const period = monthAt(at); if (period && !period.unknown) pick(Math.floor(at)); }}
+        onContextMenu={(_at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, Math.min(hour, data.hour))])} />
+    </div>;
+  }
   const legend = bars && bars.parts.length > 1 ? bars.parts.map(part => ({ id: part.key, label: part.label, color: colour(part.key) })) : [];
+  // Hatched months need saying what they are.
+  const unrecorded = charted && !!bars?.periods.some(period => period.unknown);
   return <div ref={anchor} className="army-losses">{menu.menu}
     {setOption && <div className="army-losses-caption"><span>{caption} per month</span>
       <Segmented value={measure} options={MEASURES} label="Measure" onChange={value => setOption('measure', value)} />
@@ -114,7 +120,8 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
     {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" detail={country.error} onRetry={country.retry} /> : null}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={month !== null} title={month === null ? 'Month' : monthLabel(month)}
       day={month === null ? '' : monthLabel(month)} following={false} canFollow={false} anchor={anchor}
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => {}} main={<div className="army-losses-body">{main}{legend.length > 0 && <Legend label={caption} items={legend} />}</div>}>
+      onClose={() => dispatch({ type: 'close' })} onFollow={() => {}} main={<div className="army-losses-body">{main}{legend.length > 0 && <Legend label={caption} items={legend} />}
+        {unrecorded && <p className="army-losses-key"><i aria-hidden="true" style={hatchStyle(tokens)} />Not recorded: these months’ totals are unknown</p>}</div>}>
       {month !== null && data && track && <div className="army-losses-drill">
         {drillRows.length ? <Table label={`${caption} in ${monthLabel(month)}`} rows={drillRows} columns={columns} rowKey={armyKey} sort={SORT}
           cellBars={false} rankMarkers={false} narrow={narrowTableOf(options)}

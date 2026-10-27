@@ -297,8 +297,9 @@ export function drawSelection(ctx: CanvasRenderingContext2D, tokens: ChartTokens
 }
 
 /** Text labels at the right of the plot, already placed apart by `layoutEndLabels`;
- * a `muted` label names a secondary line, such as a ceiling. */
-export function drawEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, labels: readonly { text: string; y: number; from: number; color: string; muted?: boolean }[]): void {
+ * a `muted` label names a secondary line, such as a ceiling. A label too long for the
+ * room ends in an ellipsis before its `suffix` (a value), which stays whole. */
+export function drawEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, labels: readonly { text: string; suffix?: string; y: number; from: number; color: string; muted?: boolean }[]): void {
   ctx.save();
   ctx.font = font(tokens, tokens.fontSize.small, 600);
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
@@ -309,15 +310,16 @@ export function drawEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, t
       ctx.beginPath(); ctx.moveTo(x - 8, label.from); ctx.lineTo(x - 2, label.y); ctx.stroke(); ctx.globalAlpha = 1;
     }
     ctx.fillStyle = label.muted ? tokens.muted : tokens.text;
-    // A max width of zero or less draws nothing, so only limit it when there is room.
-    const room = frame.padding.right - 14;
-    if (room > 0) ctx.fillText(label.text, x, label.y, room); else ctx.fillText(label.text, x, label.y);
+    const room = frame.padding.right - 14, suffix = label.suffix ? ` ${label.suffix}` : '';
+    const measure = (text: string) => ctx.measureText(text).width;
+    const text = room > 0 ? ellipsise(label.text, room - measure(suffix), measure) : label.text;
+    ctx.fillText(`${text}${suffix}`.trimStart(), x, label.y);
   }
   ctx.restore();
 }
 
 /** One line's end label: where its line ends (`y`, in pixels), its text and colour. */
-export interface LineEnd { id: string; y: number; text: string; color: string; muted?: boolean }
+export interface LineEnd { id: string; y: number; text: string; suffix?: string; color: string; muted?: boolean }
 /** An end label's height, and the least gap kept between two. */
 export const END_LABEL_HEIGHT = 14;
 
@@ -325,7 +327,7 @@ export const END_LABEL_HEIGHT = 14;
  * and drawn with a leader line where a label had to move from its line's end. */
 export function placeEndLabels(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, ends: readonly LineEnd[], gap = 2): void {
   const placed = layoutEndLabels(ends.map(end => ({ ...end, height: END_LABEL_HEIGHT })), frame.plotTop, frame.plotTop + frame.plotHeight, gap);
-  drawEndLabels(ctx, frame, tokens, ends.map(end => ({ text: end.text, y: placed.get(end.id)!, from: end.y, color: end.color, muted: end.muted })));
+  drawEndLabels(ctx, frame, tokens, ends.map(end => ({ text: end.text, suffix: end.suffix, y: placed.get(end.id)!, from: end.y, color: end.color, muted: end.muted })));
 }
 
 /** A day label for tooltips and menus, from the recording's own calendar. */

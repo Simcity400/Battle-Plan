@@ -506,6 +506,50 @@ fn token_spelling_does_not_guess_an_action_naming_key() {
 }
 
 #[test]
+fn state_taking_actions_take_the_interface_label_not_their_cached_type_token() {
+    let scratch = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.cargo-target")
+        .canonicalize()
+        .unwrap();
+    let root = scratch.join(format!(
+        "peace-take-label-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let file = root.join("localisation/base_l_english.yml");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        "\u{feff}l_english:\n PEACE_TAKE_STATES_DEMAND:0 \"Take State\"\n",
+    )
+    .unwrap();
+    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let localisation = installed_content_localisation::localisation::read(&layers, "english").unwrap();
+    let mut row = settled_row();
+    row.actions[0].cached_name = Some(b"take_states".to_vec());
+    let mut after = with_settlement(frame(101, 3, true, &[]), row);
+    *after.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 991,
+            literal: b"take_states".to_vec(),
+        }]));
+    let mut result = scan(vec![after]);
+    name_actions(&mut result, &localisation, "english");
+    let deal = &result.deals[0];
+    assert_eq!(
+        deal.captured.as_ref().unwrap().actions[0].name.as_deref(),
+        Some("Take State")
+    );
+    assert!(
+        deal.items
+            .iter()
+            .filter(|item| item.action.kind == PeaceActionKind::StateTransfer)
+            .all(|item| item.action.name.as_deref() == Some("Take State"))
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn cached_native_type_name_keeps_saved_override_and_recording_language() {
     let mut row = settled_row();
     row.actions[0].cached_name = Some(b"Saved custom type".to_vec());
@@ -1473,12 +1517,12 @@ fn mod_localisation_renames_the_discovered_state_action_and_refuses_unsupported_
         (
             &vanilla,
             "localisation/base_l_english.yml",
-            "\u{feff}l_english:\n take_states:0 \"Take state\"\n",
+            "\u{feff}l_english:\n PEACE_TAKE_STATES_DEMAND:0 \"Take state\"\n",
         ),
         (
             &modded,
             "localisation/replace/rename_l_english.yml",
-            "\u{feff}l_english:\n take_states:0 \"Claim territory by treaty\"\n",
+            "\u{feff}l_english:\n PEACE_TAKE_STATES_DEMAND:0 \"Claim territory by treaty\"\n",
         ),
     ] {
         let file = folder.join(relative);
@@ -1502,7 +1546,7 @@ fn mod_localisation_renames_the_discovered_state_action_and_refuses_unsupported_
     let file = modded.join("localisation/replace/rename_l_english.yml");
     std::fs::write(
         &file,
-        "\u{feff}l_english:\n take_states:0 \"[ROOT.GetName]\"\n",
+        "\u{feff}l_english:\n PEACE_TAKE_STATES_DEMAND:0 \"[ROOT.GetName]\"\n",
     )
     .unwrap();
     let layers =
@@ -1514,7 +1558,7 @@ fn mod_localisation_renames_the_discovered_state_action_and_refuses_unsupported_
         result
             .warnings
             .iter()
-            .any(|line| line.contains("take_states") && line.contains("ROOT.GetName"))
+            .any(|line| line.contains("PEACE_TAKE_STATES_DEMAND") && line.contains("ROOT.GetName"))
     );
     assert!(root.canonicalize().unwrap().starts_with(&scratch));
     std::fs::remove_dir_all(&root).unwrap();
@@ -1561,7 +1605,8 @@ fn missing_conflicting_or_unsupported_action_names_stay_neutral() {
     assert!(result.deals[0].items[0].action.name.is_none());
     assert!(
         result.warnings.iter().any(
-            |line| line.contains("take_states") && line.contains("not in the recorded content")
+            |line| line.contains("PEACE_TAKE_STATES_DEMAND")
+                && line.contains("not in the recorded content")
         )
     );
 }

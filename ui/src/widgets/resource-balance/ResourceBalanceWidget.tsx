@@ -287,9 +287,9 @@ function BalanceBars({ data, tokens, hour, order, scale, hideEmpty, owner, break
   // Hover and focus follow playback: the row shown is re-described whenever the hour changes (the kit's row tooltips).
   const content = useCallback((id: number) => described.get(id)?.content ?? null, [described]);
   const rowTips = useRowTooltips<number>({ owner, active, content, revision: `${hour}:${data.branchId}`, onMenu: (_, x, y) => onMenu(hour, x, y) });
-  // Only the shown resource's fitted rows ask for partner names and flags.
-  const tipHour = rowTips.hovered != null && active ? hour : null;
-  const tipContent = rowTips.hovered != null ? described.get(rowTips.hovered)?.content : null;
+  // Every row's spoken breakdown names its partners, so all of them are asked for at the shown hour.
+  const tipHour = active ? hour : null;
+  const tipContent = useMemo<TooltipContent>(() => ({ title: '', rows: [...described.values()].flatMap(item => item.content?.rows ?? []) }), [described]);
   useEffect(() => onPartners(tipHour, tipContent), [tipHour, tipContent, onPartners]);
   useEffect(() => () => onPartners(null), [onPartners]);
   const any = (pick: (balance: Balance) => bigint) => rows.some(row => row.balance && pick(row.balance) !== 0n);

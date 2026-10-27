@@ -157,7 +157,8 @@ export async function preparedSeriesQuery(client: DashboardClient, source: Dashb
       const before = now();
       await wait(signal);
       if (signal.aborted) break;
-      if (!changed && now() - before < POLL_MS) throw new Error('Campaign preparation made no progress.');
+      // A real wait can measure a fraction of a millisecond short of its delay.
+      if (!changed && now() - before < POLL_MS / 2) throw new Error('Campaign preparation made no progress.');
     }
   } catch (error) {
     // Deliver progress held by the interval before a status/wait failure stops

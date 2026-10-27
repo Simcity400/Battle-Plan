@@ -18,10 +18,11 @@
 //! ongoing: a stale listing naming a country that no longer exists keeps a
 //! side's span but not the war, and an hour not read is unknown.
 //!
-//! The winner is shown only when every other side was annexed by a side
-//! through a civil war's resolution (the route recorded with the annexation).
-//! An annexation by a country that was not a side, a later split, a gap or a
-//! capitulation decides nothing. Annexations still name how a side left.
+//! The winner is shown only when every other side was annexed by a side,
+//! through a civil war's resolution or another route such as a peace
+//! conference. An annexation by a country that was not a side, a later split,
+//! a gap or a capitulation decides nothing. Annexations still name how a side
+//! left, and by which route.
 
 use super::history::{self, Field, HolderTag, Metadata, Part, tag_at};
 use dashboard_base::{
@@ -92,8 +93,8 @@ pub struct CivilWarSide {
     pub exit: Option<SideExit>,
 }
 
-/// A proven outcome: the side left after every other was annexed by a side
-/// through a civil war's resolution, dated by the last such annexation.
+/// A proven outcome: the side left after every other was annexed by a side,
+/// dated by the last such annexation.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CivilWarOutcome {
@@ -356,12 +357,15 @@ fn war(
             .as_deref()
             .and_then(|tag| side_at(tag, annexation.hour));
         let kind = match by {
-            Some(by) if by != annexed && annexation.civil_war => {
+            Some(by) if by != annexed => {
                 proven.insert(annexed);
                 proven_at = proven_at.max(Some((annexation.hour, annexation.read_hour)));
-                SideExitKind::AnnexedBySide
+                if annexation.civil_war {
+                    SideExitKind::AnnexedBySide
+                } else {
+                    SideExitKind::AnnexedBySideOtherwise
+                }
             }
-            Some(by) if by != annexed => SideExitKind::AnnexedBySideOtherwise,
             Some(_) => continue,
             None => SideExitKind::AnnexedByOther,
         };

@@ -31,7 +31,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   if (!air.track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see its air superiority." />;
   if (!air.window || air.beforeBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (air.error) return <WidgetState kind="error" detail={air.error} onRetry={air.retry} />;
-  if (!air.data || !air.projectedTimeline || !air.labelCatalogue) return <WidgetState kind="loading" label="Loading air superiority…" />;
+  if (!air.data || !air.projectedTimeline || !air.labelCatalogue || air.timelineBehind) return <WidgetState kind="loading" label="Loading air superiority…" />;
   if (!air.data.available) return air.data.view === 'timeline' && air.data.rowsApproximate
     ? <WidgetState kind="loading" label="Air superiority is still being prepared." /> : <WidgetState kind="unavailable" />;
   if (!air.projectedTimeline.rows.length) return <div>{air.data.view === 'timeline' && <PreparedKey approximate={air.data.approximate} pending={air.data.pending} />}

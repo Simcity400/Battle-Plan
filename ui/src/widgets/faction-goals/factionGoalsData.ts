@@ -95,6 +95,14 @@ export function goalRows(data: GoalView): GoalRow[] {
   ];
 }
 
+/** The game's saturated fixed5 value, which stays in the progress cache of goals without ratio progress. */
+const FIXED5_MAX = '92233720124192';
+/** A goal the game measures no progress for; any other cache without a percentage is unrecorded. */
+export const unmeasured = (row: GoalRow) => row.progress == null && row.progressRaw === FIXED5_MAX;
+
+/** Why a goal shows no percentage. */
+export const missingProgress = (row: GoalRow) => unmeasured(row) ? 'No progress measure' : 'Not recorded';
+
 /** In progress hides finished goals; Completed shows only completed ones; cancelled goals show under All. */
 export function filterGoals(rows: readonly GoalRow[], filter: GoalFilter): GoalRow[] {
   return filter === 'all' ? [...rows] : rows.filter(row => filter === 'completed' ? row.state === 'completed' : row.state === 'inProgress' || row.state === 'other');

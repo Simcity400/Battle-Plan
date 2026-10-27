@@ -30,7 +30,7 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { readAt } from '../../dashboard/reads';
 import type { ProductionLineDetailReply, ProductionLinesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
-import { bandScale, wantedDetailWindows, breakdownItems, breakdownTooltip, emptyHistoryState, firstViewLineReason, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalTooltip, gapTooltip, historyLanes, iconImage, lineTooltip, linesAt, linesKnown,
+import { approximateWithin, bandScale, wantedDetailWindows, breakdownItems, breakdownTooltip, emptyHistoryState, firstViewLineReason, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalTooltip, gapTooltip, historyLanes, iconImage, lineTooltip, linesAt, linesKnown,
   organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, productionLineLabel, stepTooltip, totalText, unreadNote, variantAt, variantName, weeklyOutput, weeklyText, windowOf } from './productionData';
 import type { LineAt, LineOrder, TooltipForms } from './productionData';
 import { useLineDetail, useProductionLines, useLineBreakdown, useProductionCountry } from './useProductionLines';
@@ -162,7 +162,10 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
     const window = windowOf(data, hour);
     const detail = windows.data.get(window);
     const failed = windows.errors.get(window);
-    if (!detail) return failed ? <WidgetState kind="error" detail={failed} onRetry={windows.retry} /> : <WidgetState kind="loading" label="Loading production lines…" />;
+    // A window is answered once the published history reaches its last hour.
+    if (!detail) return failed ? <WidgetState kind="error" detail={failed} onRetry={windows.retry} />
+      : <WidgetState kind="loading" label={approximateWithin(data, window * data.detailHours, (window + 1) * data.detailHours - 1)
+        ? 'This range is still being prepared.' : 'Loading production lines…'} />;
     return <LiveTable data={data} detail={detail} hour={hour} order={options.order as LineOrder} more={options.columns === 'more'} owner={`production-lines:${widget.id}`}
       windows={{ client: runtime.client, source: { sourceId: track.source.id, revision: track.source.revision }, branchId: track.branch.id, onDiagnostics: setWindowNotes }}
       active={active} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onMenu={jump} onBreakdown={openBreakdown} />;

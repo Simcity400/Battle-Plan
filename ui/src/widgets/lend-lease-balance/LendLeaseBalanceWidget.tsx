@@ -31,7 +31,7 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { LendLeaseBalanceReply } from '../../generated/dashboard';
 import { MEASURES, OPTIONS, PARTNERS } from './definition';
-import { amountText, balanceAt, barValue, emptyBalance, firstRecorded, LEND_LEASE_BALANCE, rankedAt, validateLendLeaseBalance } from './lendLeaseBalanceData';
+import { amountLabel, amountText, balanceAt, barValue, emptyBalance, firstRecorded, LEND_LEASE_BALANCE, rankedAt, validateLendLeaseBalance } from './lendLeaseBalanceData';
 import type { BalanceMeasure, BalanceRow } from './lendLeaseBalanceData';
 import '../equipment-stockpile/equipmentStockpile.css';
 import './lendLeaseBalance.css';
@@ -71,7 +71,7 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
     id: row.holder, label: looks.name(row.tag, hour), flag: looks.flag(row.tag, hour),
     countryFlag: { flag: looks.flag(row.tag, hour), flagReason: looks.flagReason?.(row.tag, hour), flagPending: looks.flagPending?.(row.tag, hour) },
     color: colour(row.tag, hour), left: barValue(row.received), right: barValue(row.sent),
-    leftText: amountText(row.received, scale), rightText: amountText(row.sent, scale), ratioText: '', segment: row.holder, row,
+    leftText: amountLabel(row.received, scale), rightText: amountLabel(row.sent, scale), ratioText: '', segment: row.holder, row,
   })), [rows, looks, colour, hour, scale]);
   const histories = useMemo(() => new Map(data?.histories.map(history => [history.holder, history]) ?? []), [data]);
   const slots = widget.countries.kind === 'group' && widget.countries.group.type === 'top' ? widget.countries.group.count : items.length;
@@ -79,7 +79,7 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
     const history = histories.get(item.row.holder);
     const first = history ? firstRecorded(history) : null;
     return { title: item.label, subtitle: dayLabel(hour), rows: [
-      { label: 'Sent', value: item.rightText }, { label: 'Received', value: item.leftText },
+      { label: 'Sent', value: amountText(item.row.sent, scale) }, { label: 'Received', value: amountText(item.row.received, scale) },
       ...first !== null ? [{ label: `Not recorded before ${dayLabel(first)}`, tone: 'muted' as const }] : [],
     ] };
   };
@@ -152,7 +152,7 @@ function Partners({ widget, runtime, active, holder, tag, measure, hour, onPick 
   const scale = data?.scale ?? 100000;
   const items = useMemo(() => rows.sort((a, b) => { const x = (a.sent ?? 0n) + (a.received ?? 0n), y = (b.sent ?? 0n) + (b.received ?? 0n); return x === y ? 0 : x > y ? -1 : 1; })
     .map(row => ({ id: row.holder, label: looks.name(row.tag, hour), flag: looks.flag(row.tag, hour), color: colour(row.tag, hour),
-      left: barValue(row.received), right: barValue(row.sent), leftText: amountText(row.received, scale), rightText: amountText(row.sent, scale),
+      left: barValue(row.received), right: barValue(row.sent), leftText: amountLabel(row.received, scale), rightText: amountLabel(row.sent, scale),
       ratioText: '', segment: row.holder })), [rows, looks, colour, hour, scale]);
   const own = totals.data?.histories.find(history => history.holder === holder);
   const offset = measure === 'industry' ? 0 : 1;
@@ -171,7 +171,8 @@ function Partners({ widget, runtime, active, holder, tag, measure, hour, onPick 
     {!items.length ? <p className="drill-empty">No partner was recorded for {tag} at this date.</p>
       : <div className="lend-lease-partner-bars"><ButterflyChart label={`Lend-lease partners of ${tag}`} items={items} leftLabel="◀ Received" rightLabel="Sent ▶" ratioLabel=""
         active={active} hoursPerSecond={hoursPerSecond} showRatio={false}
-        tooltip={item => fitTooltip([{ title: item.label, subtitle: dayLabel(hour), rows: [{ label: 'Sent', value: item.rightText }, { label: 'Received', value: item.leftText }] }], viewport)} /></div>}
+        tooltip={item => { const row = rows.find(each => each.holder === item.id);
+          return fitTooltip([{ title: item.label, subtitle: dayLabel(hour), rows: [{ label: 'Sent', value: amountText(row?.sent ?? null, scale) }, { label: 'Received', value: amountText(row?.received ?? null, scale) }] }], viewport); }} /></div>}
     {own && <>
       <Legend label="Totals" items={lines.map(line => ({ id: line.label, label: line.label, color: line.color }))} />
       <div className="lend-lease-partner-time">

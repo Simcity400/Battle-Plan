@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { FactionDetailReply, FactionGoalDefinition, FactionGoalsReply } from '../../generated/dashboard';
-import { asksDetails, filterGoals, goalRows, goalsAt } from './factionGoalsData.ts';
+import { asksDetails, filterGoals, goalRows, goalsAt, missingProgress } from './factionGoalsData.ts';
 import { currentParts, partAt, splitPart, WHOLE } from './goalParts.ts';
 
 const definition = (token: string, extra: Partial<FactionGoalDefinition> = {}): FactionGoalDefinition => ({ progress: [], sections: [], bands: [], conditions: [], rewards: [],
@@ -35,10 +35,14 @@ test('each playback hour reads the goal history locally, as that hour\'s faction
   assert.deepEqual(early.map(row => [row.key, row.name, row.statusText, row.progress, row.progressRaw]),
     [['goal:0', 'Mod mod_a', 'In progress', 0.25, '25000'], ['goal:1', 'Mod mod_b', 'Cancelling', null, '-9223372036854775808']]);
   assert.equal(goalRows(at(115))[0].progress, 0.5);
+  // Only the game's saturated value marks a goal without a progress measure; an invalid cache is unrecorded.
+  assert.equal(missingProgress(early[1]), 'Not recorded');
+  assert.equal(missingProgress({ ...early[1], progressRaw: '92233720124192' }), 'No progress measure');
   const later = goalRows(at(125));
   assert.deepEqual(later.map(row => [row.key, row.name, row.state, row.history]),
     [['goal:0', 'Mod mod_b', 'inProgress', false], ['completed:0', 'Mod mod_a', 'completed', true], ['cancelled:0', 'Goal name unavailable', 'cancelled', true]]);
   assert.deepEqual(filterGoals(later, 'completed').map(row => row.key), ['completed:0']);
+  assert.equal(missingProgress(later[1]), 'Not recorded');
   // Goal-text refusals are counted per hour, artwork refusals named as faction details name them.
   assert.deepEqual(at(125).warnings, ['1 faction goal texts: Faction goal "mod_c" is absent from recorded content', `1 faction goal texts: ${ARTWORK}`, 'mod content warning']);
   assert.deepEqual(at(125).refusals, [{ fact: 'goal artwork', count: 1, reason: ARTWORK }]);

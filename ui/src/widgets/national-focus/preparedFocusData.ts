@@ -139,7 +139,7 @@ export async function waitForFocusPreparation(client: FocusPreparedClient, sourc
       const before = Date.now();
       await wait(signal);
       if (signal.aborted) break;
-      if (!changed && Date.now() - before < POLL_MS) throw new Error('Focus preparation made no progress.');
+      if (!changed && Date.now() - before < POLL_MS / 2) throw new Error('Focus preparation made no progress.');
     } else throw new Error(reply.error ?? (reply.state === 'paused' ? 'Focus preparation is paused and resumes automatically. Prepare this recording to continue now.' : reply.state === 'idle' ? (reply.backgroundEnabled ? 'Prepare this recording from Preparation and storage.' : 'Background preparation is off. Prepare this recording or enable it in Settings.') : reply.state === 'cancelled' ? 'Focus preparation cancelled.' : 'Focus preparation failed.'));
   }
   throw new DOMException('Focus preparation cancelled', 'AbortError');
@@ -172,7 +172,7 @@ export async function loadPreparedFocusHour(client: FocusPreparedClient, source:
       const before = Date.now();
       await wait(signal);
       if (signal.aborted) break;
-      if (!changed && Date.now() - before < POLL_MS) throw new Error('Focus preparation made no progress.');
+      if (!changed && Date.now() - before < POLL_MS / 2) throw new Error('Focus preparation made no progress.');
       continue;
     }
     throw new Error(status.error ?? (status.state === 'cancelled' ? 'Focus preparation cancelled.' : 'Focus preparation failed.'));

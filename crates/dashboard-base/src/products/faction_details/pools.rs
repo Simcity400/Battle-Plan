@@ -66,6 +66,10 @@ pub(super) fn attach(
             if row.ordinal as usize != index {
                 return Err("Faction resource slots are not contiguous".to_owned());
             }
+            // The engine's empty resource slot is no resource; the game lists none for it.
+            if row.ordinal == 0 && row.raw == 0 {
+                continue;
+            }
             let mut detail = FactionResourceDetail {
                 ordinal: row.ordinal,
                 token: None,
@@ -75,10 +79,6 @@ pub(super) fn attach(
                 reason: None,
             };
             let result = (|| -> Result<(), String> {
-                if row.ordinal == 0 && row.raw == 0 {
-                    detail.name = Some("Null resource".into());
-                    return Ok(());
-                }
                 let definition = definitions
                     .as_ref()
                     .map_err(ToString::to_string)?

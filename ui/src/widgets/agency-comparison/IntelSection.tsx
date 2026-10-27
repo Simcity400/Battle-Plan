@@ -8,6 +8,7 @@ import { useContentRevision } from '../../dashboard/contentRevision';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import WidgetState from '../../components/WidgetState';
+import { Select } from '../../components/Select';
 import type { IntelDetail, IntelDetailsReply } from '../../generated/dashboard';
 import { intelTooltip, intelValues, validateIntelDetails } from './intelData';
 
@@ -46,6 +47,7 @@ export default function IntelSection({ widget, runtime, active }: WidgetProps) {
   const current = state?.client === runtime.client && state.key === key ? state : undefined;
   const data = current?.data;
   const labels = useMemo(() => new Map(data?.countries.map(country => [country.id, country.tag])), [data]);
+  const countryOptions = useMemo(() => data?.countries.map(country => ({ value: String(country.id), label: country.tag })) ?? [], [data]);
   const rows = useMemo(() => data?.entries.filter(entry => group === 'All intel' || entry.group === group) ?? [], [data, group]);
   const groups = useMemo(() => ['All intel', ...new Set([...(data?.entries.map(entry => entry.group) ?? []), ...(group === 'All intel' ? [] : [group])])], [data, group]);
   const columns = useMemo<readonly TableColumn<IntelDetail>[]>(() => [
@@ -56,12 +58,12 @@ export default function IntelSection({ widget, runtime, active }: WidgetProps) {
   ], [labels]);
   if (!track || !window) return null;
   return <section className="agency-intel-section" aria-label="Country intel">
-    <div className="agency-intel-controls"><strong>Country intel</strong>
-      {data && <><label>Viewing country <select aria-label="Intel viewing country" value={data.viewer ?? ''} onChange={event => setViewerChoice({ source: selectionSource, country: Number(event.target.value) })}>
-        {data.countries.map(country => <option key={country.id} value={country.id}>{country.tag}</option>)}
-      </select></label><label>Country <select aria-label="Intel country" value={data.country ?? ''} onChange={event => setChoice({ source: selectionSource, country: Number(event.target.value) })}>
-        {data.countries.map(country => <option key={country.id} value={country.id}>{country.tag}</option>)}
-      </select></label><label>Show <select aria-label="Intel entries" value={group} onChange={event => setGroup(event.target.value)}>{groups.map(group => <option key={group}>{group}</option>)}</select></label></>}
+    <div className="agency-intel-controls"><h3>Recorded intel records</h3>
+      {data && <><label>Viewing country <Select label="Intel viewing country" value={String(data.viewer ?? '')} options={countryOptions}
+        onChange={value => setViewerChoice({ source: selectionSource, country: Number(value) })} /></label>
+      <label>Country <Select label="Intel country" value={String(data.country ?? '')} options={countryOptions}
+        onChange={value => setChoice({ source: selectionSource, country: Number(value) })} /></label>
+      <label>Show <Select label="Intel entries" value={group} options={groups.map(group => ({ value: group, label: group }))} onChange={setGroup} /></label></>}
     </div>
     {current?.error ? <WidgetState kind="error" detail={current.error} onRetry={() => retry(value => value + 1)} /> : !data ? <WidgetState kind="loading" label="Loading country intel…" /> : <>
       {data.warnings.length > 0 && <details className="agency-unknown"><summary>Unavailable intel inputs ({data.warnings.length})</summary>{data.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</details>}

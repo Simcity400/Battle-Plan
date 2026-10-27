@@ -86,6 +86,8 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
     params: { branchId: track.branch.id, view: 'timeline', firstHour, lastHour: timelineLast, ...params, ...(mode.regions.length ? {} : { top: Number(options.regionCount) }) } } : null;
   const timeline = useProduct<AirTimeline>(runtime.client, timelineRequest, active, timelineReply, track?.source);
   const timelineData = timeline.data ?? (follow ? previousTimeline : undefined);
+  // The first follow reply only learns the day cadence; drawn, it would read as no activity at all.
+  const timelineBehind = follow && !!timelineData && timelineData.lastHour < timelineRequestLast(lastHour, timelineData.dayHours) - timelineData.dayHours;
   const windowChoicesRequest = track && moment ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority', params: { branchId: track.branch.id, view: 'choices', windowsOnly: true } } : null;
   const windowChoices = useProduct<AirChoices>(runtime.client, windowChoicesRequest, active, choicesReply, track?.source);
   const recordedWindows = windowChoices.data?.windows;
@@ -239,5 +241,5 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
   const glideStyle = { '--air-glide': `${glides ? Math.round(3 * easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion)) : 0}ms` } as CSSProperties;
   return { data, error, needsViewpoint, retry: moment ? () => { windows.retry(); choices.retry(); windowChoices.retry(); } : () => { timeline.retry(); catalogue.retry(); if (follow) day.retry(); }, track, window, beforeBranch, playhead, hour,
     readHour, extent: [firstHour, widget.time.mode === 'range' ? lastHour : track?.branch.lastHour ?? lastHour] as [number, number], mode, tokens, projectedTimeline, projectedMoment, tooltip,
-    legend: orderedLegend, labelCatalogue, hoverRevision, choices: choices.data, country: names.country, factionNames, glides, glideStyle, hoursPerSecond };
+    legend: orderedLegend, labelCatalogue, hoverRevision, choices: choices.data, country: names.country, factionNames, glides, glideStyle, hoursPerSecond, timelineBehind };
 }

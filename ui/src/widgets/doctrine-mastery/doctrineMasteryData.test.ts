@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activeTracks, chosen, dailyText, doctrineIcons, doctrinesAt, requirementMet, rewardDescriptions, rewardKey, rewardUnlocked, trackMarks, trackRatio, unlockedRewards, validateDoctrineMastery } from './doctrineMasteryData.ts';
+import { activeTracks, chosen, dailyText, doctrineIcons, doctrinesAt, masteryText, requirementMet, rewardDescriptions, rewardKey, rewardUnlocked, trackMarks, trackRatio, unlockedRewards, unlockMastery, validateDoctrineMastery } from './doctrineMasteryData.ts';
 
 const reply = validateDoctrineMastery({
   window: { firstHour: 0, lastHour: 10, known: [{ firstHour: 0, lastHour: 10 }], reads: [[0, 10, 0]], series: [
@@ -19,7 +19,7 @@ const reply = validateDoctrineMastery({
     { id: 't1', name: 'Infantry', subdoctrines: [{ id: 'sub_a', tokenId: '1', name: 'Sub A', icon: null, rewards: [
       { id: 'r1', name: 'First', description: null, threshold: '5000000' },
       { id: 'r2', name: 'Second', description: 'More', threshold: '25000000' },
-      { id: 'r3', name: 'Last', description: null, threshold: '40000000' }] }] },
+      { id: 'r3', name: 'Last', description: null, threshold: '10000000' }] }] },
     { id: 't2', name: 'Armour', subdoctrines: [] },
     { id: 't3', name: 'Unused', subdoctrines: [] }] },
     { id: 'mod', name: 'Mod folder', icon: null, grand: [], tracks: [] }],
@@ -37,12 +37,24 @@ test('tracks resolve their subdoctrine and keep a track with none apart from one
   assert.deepEqual(land.tracks[0].completed.map(sub => sub.id), ['sub_a']);
 });
 
-test('marks sit at each authored threshold on the last threshold scale, reached by the recorded reward count', () => {
+test('each threshold is its own step: marks sit at the running sum on the whole track’s scale, reached by the recorded reward count', () => {
   const [track] = doctrinesAt(reply, 'GER', 5)!.folders[0].tracks;
+  assert.deepEqual(unlockMastery(track), [5000000n, 30000000n, 40000000n]);
   assert.equal(trackRatio(track), 0.375);
-  assert.deepEqual(trackMarks(track, false).map(mark => [mark.at, mark.reached]), [[0.125, true], [0.625, false], [1, false]]);
+  assert.deepEqual(trackMarks(track, false).map(mark => [mark.at, mark.reached]), [[0.125, true], [0.75, false], [1, false]]);
+  const unknown = { ...track, subdoctrine: { ...track.subdoctrine!, rewards: track.subdoctrine!.rewards!.map((reward, index) => index === 1 ? { ...reward, threshold: null } : reward) } };
+  assert.deepEqual(unlockMastery(unknown), [5000000n, null, null]);
+  assert.equal(trackRatio(unknown), null);
+  assert.deepEqual(trackMarks(unknown, false), []);
+});
+
+test('mastery reads with at most two decimals and rates with the shared rate format', () => {
+  const [track] = doctrinesAt(reply, 'GER', 5)!.folders[0].tracks;
   assert.equal(dailyText(track.effective), '+2.5 a day');
+  assert.equal(dailyText('-32447'), '−0.32 a day');
   assert.equal(dailyText(null), null);
+  assert.equal(masteryText('50103115'), '501.03');
+  assert.equal(masteryText(30000000n), '300');
 });
 
 test('a track without thresholds has no scale and unrecorded hours are unknown', () => {
@@ -85,14 +97,15 @@ test('unlocks follow the recorded reward count even where mastery and requiremen
   const [track] = doctrinesAt(reply, 'GER', 5)!.folders[0].tracks;
   const rewards = track.subdoctrine!.rewards!;
   // Mastery 150 meets the first requirement (50) and the count unlocks it.
-  assert.deepEqual([rewardUnlocked(track, 0), requirementMet(track, rewards[0])], [true, true]);
+  assert.deepEqual([rewardUnlocked(track, 0), requirementMet(track, 0)], [true, true]);
   // The count says nothing was unlocked although the requirement is met: not unlocked.
   const none = { ...track, rewards: '0' };
-  assert.deepEqual([rewardUnlocked(none, 0), requirementMet(none, rewards[0])], [false, true]);
+  assert.deepEqual([rewardUnlocked(none, 0), requirementMet(none, 0)], [false, true]);
   assert.deepEqual(trackMarks(none, false).map(mark => mark.reached), [false, false, false]);
-  // The count unlocks a reward whose requirement mastery does not meet: unlocked.
+  // The count unlocks a reward whose requirement (50 + 250) mastery does not meet: unlocked.
   const ahead = { ...track, rewards: '2' };
-  assert.deepEqual([rewardUnlocked(ahead, 1), requirementMet(ahead, rewards[1])], [true, false]);
+  assert.deepEqual([rewardUnlocked(ahead, 1), requirementMet(ahead, 1)], [true, false]);
+  assert.equal(rewards.length, 3);
   assert.deepEqual(unlockedRewards(ahead).map(reward => reward.id), ['r1', 'r2']);
   // Without a recorded count, no unlock is certified.
   const unknown = { ...track, rewards: null };

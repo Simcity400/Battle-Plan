@@ -3,7 +3,7 @@ import type { CountrySelection } from '../../dashboard/model';
 import { countryMatchFilter, groupMembers, groupRuns, groupUnobserved, membersKnown } from '../../dashboard/groups.ts';
 import type { MembershipKnown } from '../../dashboard/groups';
 import { withoutHours } from '../../charts/timeline/runState.ts';
-import type { LogRow } from '../../charts/log/logData';
+import type { LogPage, LogRow } from '../../charts/log/logData';
 import { object } from '../../dashboard/validation.ts';
 import { fixedText, isEconomyRuns, isHolderMap, isVariantNames, preparedAt, tagAt, validateEconomyReply, variantNameAt } from '../../dashboard/economyHistory.ts';
 
@@ -101,6 +101,23 @@ export function ledgerRows(reply: MarketLedgerReply, page: number): LogRow<Ledge
 export function ledgerCursors(first: MarketLedgerReply, next: readonly string[]): (string | undefined)[] {
   if (first.next === null) return [undefined];
   return [undefined, first.next, ...next];
+}
+
+/** The log's page for each cursor: its loaded rows, or a window to wait for. A page
+ * not loaded ends where the loaded page before it starts, so it never sorts above it. */
+export function ledgerPages(first: MarketLedgerReply, length: number, page: (index: number) => MarketLedgerReply | undefined,
+  errors: ReadonlyMap<number, string>, hour: number | null, branchStart: number): LogPage<LedgerItem>[] {
+  const total = first.total == null ? null : Number(first.total);
+  let bound = hour ?? branchStart;
+  return Array.from({ length }, (_, index) => {
+    const reply = index === 0 ? first : page(index);
+    const rows = reply ? ledgerRows(reply, index) : undefined;
+    const count = rows?.length ?? (total === null ? PAGE_SIZE : Math.max(1, Math.min(PAGE_SIZE, total - index * PAGE_SIZE)));
+    const start = rows?.length ? rows.at(-1)!.hour : branchStart;
+    const end = rows?.length ? rows[0].hour : bound;
+    if (rows?.length) bound = start;
+    return { key: String(index), start, end, count, rows, error: errors.get(index) };
+  });
 }
 
 /** `next` grown by the loaded pages' own cursors; the same array when no

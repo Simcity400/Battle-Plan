@@ -166,8 +166,8 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
         else { const next = toggleContentSet(classes, value, Number.MAX_SAFE_INTEGER); if (next !== null) setOption?.('classes', next); }
       }} /></div>}
     {(earlier || shownHour !== coveredHour) && <div className="log-navigation">
-      {earlier && <button type="button" onClick={() => { setBrowse({ identity, hour: manifest.data!.windows[oldest - 1].lastHour }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Earlier sinkings</button>}
-      {shownHour !== coveredHour && <button type="button" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest sinkings</button>}
+      {earlier && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: manifest.data!.windows[oldest - 1].lastHour }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Earlier sinkings</button>}
+      {shownHour !== coveredHour && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest sinkings</button>}
     </div>}
     <LogList rows={rows} label="Ships sunk" density={log.density} months={log.months} animate={log.animate && widget.time.mode === 'follow' && shownHour === hour}
       {...(import.meta.env.MODE === 'parity' ? { paritySemantic } : {})}

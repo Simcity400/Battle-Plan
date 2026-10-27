@@ -55,7 +55,7 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
   const resolved = useMemo(() => resolveCountries(widget.countries, [...fallback], groups.data, track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallbackKey, groups.data, track?.branch.lastHour]);
   const ranking = useMemo(() => ({ column: view === 'race' ? 'total' : SCORE_PARTS.includes(contentKey(String(options.topMeasure)) as typeof SCORE_PARTS[number])
-    ? contentKey(String(options.topMeasure)) : 'land', direction: 'descending' as const }), [view, options.topMeasure]);
+    ? contentKey(String(options.topMeasure)) : DEFAULT_SORT.column, direction: 'descending' as const }), [view, options.topMeasure]);
   const rows = useMemo(() => {
     if (!model || (grouped && !groups.data)) return NO_ROWS;
     const candidates = widget.countries.kind === 'all' ? model.tags : resolved.top == null && resolved.membership === null
@@ -73,7 +73,7 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
     .map(row => ({ hour: row.hour, tag: row.tag })), [view, raceRows, visible]);
   const flagReads = useCountryFactsRead(runtime.client, track, wanted, active, flagReadSpec('panel'));
   const columns = useMemo<readonly TableColumn<ScoreRow>[]>(() => data ? [
-    { key: 'country', header: gameScoreLabel(data.labels, 'country'), label: gameScoreLabel(data.labels, 'country'), width: 'minmax(var(--table-name-min), 2fr)',
+    { key: 'country', header: gameScoreLabel(data.labels, 'country'), label: gameScoreLabel(data.labels, 'country'), width: 'minmax(var(--table-country-min), 2fr)',
       hint: data.hints.country,
       value: row => row.identity.name, renderMissing: true,
       render: row => {

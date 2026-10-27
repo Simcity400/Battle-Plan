@@ -517,6 +517,52 @@ fn brackets_evaluate_for_the_country_the_text_is_shown_for() {
     }
 }
 
+/// Occurrence text names its scopes' countries and nothing the hour's end may have changed.
+#[test]
+fn names_only_expansion_reads_country_names_through_scope_links() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    // A mod's scripted text named like a property, reading a variable.
+    let (catalogue, _folder) = catalogue(
+        "defined_text = { name = GetName text = { localization_key = READS_VARIABLE } }",
+        " READS_VARIABLE:0 \"[?amount]\"
+",
+    );
+    let content = catalogue.scripted_content().unwrap();
+    let mut frame = with_party(frame());
+    if let TableView::Complete(TableRows::Politics(rows)) =
+        &mut *frame.tables[TableId::Politics.index()]
+    {
+        rows[0].ruling_party = Some(3);
+        rows.push(replay_data::rows::PoliticsRow {
+            country: 200,
+            ..Default::default()
+        });
+    }
+    let text = ScriptedText::new(&frame, &catalogue.localisation, content, 1);
+    let country = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
+    let state = EventScopes::new(vec![EventScope::of(EventObject::State(64))]);
+    assert_eq!(
+        text.expand_names_in("[ROOT.GetNameDefCap] ([THIS.GetTag])", &country)
+            .as_deref(),
+        Ok("The German Reich (GER)")
+    );
+    for (expression, scopes) in [
+        ("[GetName]", &country),
+        ("[ROOT.GetName]", &state),
+        ("[?amount]", &country),
+        ("[ROOT.Capital.GetName]", &country),
+        ("[ROOT.GetRulingParty]", &country),
+        ("[(ROOT.GetName?a:b)]", &country),
+    ] {
+        let error = text.expand_names_in(expression, scopes).unwrap_err();
+        assert!(
+            error.contains("reads more than an event scope's country name"),
+            "{expression}: {error}"
+        );
+    }
+}
+
 #[test]
 fn numeric_brackets_use_the_country_the_text_is_shown_for() {
     engine_executable::executable_tables::initialize_for_tests()

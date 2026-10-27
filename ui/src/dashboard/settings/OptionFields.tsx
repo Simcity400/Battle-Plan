@@ -57,8 +57,9 @@ function OptionRow({ field, value, choices, onChange }: {
       const chips = [...listed, ...kept].map(chip => ({ ...chip, unavailable: storableToken(chip.value) ? undefined : UNSTORABLE }));
       return <div className="setting-row setting-row-stacked">
         <SettingLabel label={field.label} hint={chosen.length ? field.hint : `${field.automatic}${field.hint ? ` · ${field.hint}` : ''}`} />
-        <ChipSet label={field.label} chips={chips} selected={chosen} max={Number.MAX_SAFE_INTEGER}
+        {chips.length ? <ChipSet label={field.label} chips={chips} selected={chosen} max={Number.MAX_SAFE_INTEGER}
           onToggle={token => { const next = toggleContentSet(value, token, Number.MAX_SAFE_INTEGER); if (next != null) onChange(next); }} />
+          : <p className="field-hint">Nothing to choose from yet.</p>}
       </div>;
     }
     case 'number':

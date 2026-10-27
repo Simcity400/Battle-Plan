@@ -158,7 +158,8 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       endLabel: (hour, name) => {
         const read = runAt(view.reads, hour);
         if (!read) return single ? (of === 'fuel' ? 'Fuel' : 'Capacity') : name;
-        return `${single ? '' : `${name} · `}${of === 'fuel' ? 'Fuel' : 'Capacity'} ${formatFuel(of === 'fuel' ? read.fuelRaw : read.capacityRaw, reply.quantityScale, digits)}`;
+        return { text: `${single ? '' : `${name} · `}${of === 'fuel' ? 'Fuel' : 'Capacity'}`,
+          suffix: formatFuel(of === 'fuel' ? read.fuelRaw : read.capacityRaw, reply.quantityScale, digits) };
       },
     });
     return [...(options.capacity !== false ? [line('capacity')] : []), line('fuel')];

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { LendLeaseBalanceReply } from '../../generated/dashboard';
-import { amountText, emptyBalance, rankedAt, validateLendLeaseBalance } from './lendLeaseBalanceData.ts';
+import { amountLabel, amountText, emptyBalance, rankedAt, validateLendLeaseBalance } from './lendLeaseBalanceData.ts';
 
 const history = (holder: string, tag: string, sent: string, received: string, from = 0) => ({
   holder, tags: [{ hour: from, tag }], values: [[[from, 50, sent]], [], [[from, 50, received]], []],
@@ -30,6 +30,14 @@ test('ranking uses sent plus received, ties by holder, and countries with neithe
 test('amounts stay exact', () => {
   assert.equal(amountText(123456789n, 100000), '1,234.56789');
   assert.equal(amountText(null, 100000), '—');
+});
+
+test('bar labels round to two decimals but never read 0 when they are not', () => {
+  assert.equal(amountLabel(635892500n, 100000), '6,358.93');
+  assert.equal(amountLabel(500000000n, 100000), '5,000');
+  assert.equal(amountLabel(100n, 100000), '0.001');
+  assert.equal(amountLabel(0n, 100000), '0');
+  assert.equal(amountLabel(null, 100000), '—');
 });
 
 test('no lend-lease is said only for recorded zero; unread or unrostered is unavailable', () => {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { CareerFacts, DivisionRecordReply, RecordEntry } from '../../generated/dashboard';
-import { experienceRatio, headerDetail, recordRows, validateDivisionRecord } from './careersData.ts';
+import type { CareerFacts, CareerRow, DivisionRecordReply, RecordEntry } from '../../generated/dashboard';
+import { experienceRatio, headerDetail, recordRows, topDivision, validateDivisionRecord } from './careersData.ts';
 
 const facts = (extra: Partial<CareerFacts> = {}): CareerFacts => ({ medals: 3, awards: [], historyMissing: null, experienceRaw: '60000', level: 2, levelName: 'Veteran', kills: 1234, ...extra });
 const entry = (award: boolean, ordinal: number, hour: number): RecordEntry => ({ award, ordinal, hour, description: `E${ordinal}`, descriptionMissing: null, provinces: [], medal: award ? 0 : null });
@@ -26,4 +26,11 @@ test('experience shows only as a share of the full scale', () => {
   assert.equal(experienceRatio(facts()), 0.6);
   assert.equal(experienceRatio(facts({ experienceRaw: null })), null);
   assert.equal(experienceRatio(facts({ experienceRaw: '4294967295' })), null, 'the arithmetic sentinel is not drawn');
+});
+
+test('the automatic record follows Most decorated divisions’ first row, only when it holds a medal', () => {
+  const row = (division: string, medals: number | null): CareerRow => ({ division, tag: 'GER', template: '1', name: division, nameMissing: null, facts: facts({ medals }) });
+  assert.equal(topDivision([row('9', 1), row('12', 2), row('10', 2)])?.division, '10', 'most medals first, ties by division as the table breaks them');
+  assert.equal(topDivision([row('1', 0), row('2', null)]), null, 'no medal, or medals not recorded, is never most decorated');
+  assert.equal(topDivision([]), null);
 });

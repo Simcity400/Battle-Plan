@@ -124,7 +124,7 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
     {group.type === 'war' && <CountryPicker key={source?.id ?? 'unbound'} field source={source} client={runtime.client}
       countries={source?.metadata.countries ?? []} playerCountryId={source?.metadata.playerCountryId ?? null} selectedTag={group.tag}
       onChange={tag => { if (tag) set({ group: { type: 'war', tag } }); }} />}
-    {group.type === 'top' && <label className="setting-row"><SettingLabel label="How many" hint="Ranked by this widget's value each hour" />
+    {group.type === 'top' && <label className="setting-row"><SettingLabel label="How many" hint={`Ranked by ${limits.rankedBy ?? "this widget's value"} each hour`} />
       <span className="option-number"><input type="number" min={1} max={limits.max} value={group.count}
         onChange={event => { const count = Math.round(Number(event.currentTarget.value)); if (count >= 1 && count <= limits.max) set({ group: { type: 'top', count } }); }} /></span></label>}
     {group.type !== 'top' && <div className="setting-row setting-row-stacked"><span>Members</span>

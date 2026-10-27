@@ -106,6 +106,8 @@ export function validateEventFeedPage(value: unknown): PreparedFeedPage {
 export interface FeedEvent { event: EventFeedRow; item: EventFeedItem | null; reply: EventFeedReply }
 export interface FeedFilter {
   categories: ReadonlySet<string>;
+  /** Whether the recording's own observations are listed too. */
+  observations?: boolean;
   country: (tag: string, hour: number) => boolean;
   firstHour: number | null;
   allCountries?: boolean;

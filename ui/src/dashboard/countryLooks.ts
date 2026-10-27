@@ -60,6 +60,8 @@ const STYLES: FactSpec<CountryStyle & { warnings?: readonly string[] }> = {
   },
 };
 const FLAGS = flagReadSpec('panel');
+/** What a country's name reads while its read is still answering, as other name reads say it. */
+export const NAME_LOADING = 'Loading name…';
 
 export interface CountryLooks {
   /** Native diagnostics from current completed style reads. */
@@ -136,9 +138,12 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
       return key === flagKeys.get(tag) ? key : undefined;
     };
     const warningReplies = new Set([...styles.values()].flatMap(style => style && style !== FAILED_FACT && style.warnings ? [style.warnings] : []));
+    const sampleKeys = new Map(samples.map(sample => [sample.tag, nameKey(sample.hour, sample.tag)]));
+    // A name whose read has not answered yet is loading, not unavailable.
+    const reading = (tag: string, at?: number) => (at === undefined || matches(tag, at)) && sampleKeys.has(tag) && !styles.has(sampleKeys.get(tag)!);
     return {
       warnings: [...new Set([...warningReplies].flat())],
-      name: (tag, at) => look(tag, at)?.name ?? 'Country name unavailable',
+      name: (tag, at) => look(tag, at)?.name ?? (reading(tag, at) ? NAME_LOADING : 'Country name unavailable'),
       color: (tag, at) => look(tag, at)?.color ?? null,
       flag: (tag, at) => look(tag, at)?.flag ?? undefined,
       flagPending: (tag, at) => { const key = flagKeyAt(tag, at); return key !== undefined && flagReadMetadata(flags.get(key)).flagPending; },

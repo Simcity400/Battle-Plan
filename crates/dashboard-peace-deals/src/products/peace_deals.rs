@@ -895,6 +895,18 @@ impl SnapshotInputs {
     }
 }
 
+/// Whether a recorded spelling is the native state-taking keyword.
+fn takes_states(spelling: &str) -> bool {
+    installed_content_core::parser::native::Token {
+        kind: installed_content_core::parser::native::Kind::Bare,
+        text: spelling.as_bytes().to_vec(),
+        line: 0,
+        quoted: false,
+        byte_end: 0,
+    }
+    .is_keyword("take_states")
+}
+
 /// The state-action keyword selects the semantic binding; the recording
 /// supplies its spelling, and content supplies its display name.
 /// See engine_peace::peace_conference.
@@ -902,16 +914,9 @@ fn state_action_key(frame: &DecodedFrame) -> Result<String, String> {
     let rows = frame
         .complete::<tables::LexicalTokens>()
         .map_err(|error| format!("LexicalTokens: {error}"))?;
-    let mut found = rows.iter().filter(|row| {
-        installed_content_core::parser::native::Token {
-            kind: installed_content_core::parser::native::Kind::Bare,
-            text: row.literal.clone(),
-            line: 0,
-            quoted: false,
-            byte_end: 0,
-        }
-        .is_keyword("take_states")
-    });
+    let mut found = rows
+        .iter()
+        .filter(|row| std::str::from_utf8(&row.literal).is_ok_and(takes_states));
     let row = found
         .next()
         .ok_or("LexicalTokens does not record the native state-taking keyword")?;
@@ -923,6 +928,9 @@ fn state_action_key(frame: &DecodedFrame) -> Result<String, String> {
         .map_err(|error| format!("State-taking keyword is not UTF-8: {error}"))
 }
 
+/// The game's interface names state taking by this key, not by its keyword or cached type name.
+const TAKE_STATES_LABEL: &str = "PEACE_TAKE_STATES_DEMAND";
+
 fn name_actions(
     reply: &mut PeaceDealsReply,
     localisation: &installed_content_localisation::localisation::Localisation,
@@ -930,10 +938,26 @@ fn name_actions(
 ) {
     let mut names: HashMap<String, Option<String>> = HashMap::new();
     let mut refused = catalogue::Refusals::default();
+    let mut localise = |key: &str, refused: &mut catalogue::Refusals| {
+        names
+            .entry(key.to_owned())
+            .or_insert_with(|| {
+                if localisation.get(key).is_none() {
+                    refused.note("localisation key is not in the recorded content", key);
+                    return None;
+                }
+                catalogue::localised(localisation, key, catalogue::View::Scripted)
+                    .inspect_err(|reason| refused.note(reason.clone(), key))
+                    .ok()
+            })
+            .clone()
+    };
     for deal in &mut reply.deals {
         if let Some(captured) = &mut deal.captured {
             for action in &mut captured.actions {
-                if let Some(bytes) = action.cached_name.as_ref() {
+                if action.token_name.as_deref().is_some_and(takes_states) {
+                    action.name = localise(TAKE_STATES_LABEL, &mut refused);
+                } else if let Some(bytes) = action.cached_name.as_ref() {
                     action.name = dashboard_text::scripted_text::stored_text(
                         localisation,
                         recorded_language,
@@ -944,19 +968,7 @@ fn name_actions(
                     .inspect_err(|reason| refused.note(reason.clone(), action.token.to_string()))
                     .ok();
                 } else if let Some(key) = action.name_key.as_ref() {
-                    action.name = names
-                        .entry(key.clone())
-                        .or_insert_with(|| {
-                            if localisation.get(key).is_none() {
-                                refused
-                                    .note("localisation key is not in the recorded content", key);
-                                return None;
-                            }
-                            catalogue::localised(localisation, key, catalogue::View::Scripted)
-                                .inspect_err(|reason| refused.note(reason.clone(), key))
-                                .ok()
-                        })
-                        .clone();
+                    action.name = localise(key, &mut refused);
                 } else {
                     reply.warnings.push(format!("Captured peace-action token {} has no proven native naming operand; its name is not recorded.", action.token));
                 }
@@ -966,18 +978,11 @@ fn name_actions(
             let Some(key) = item.action.key.as_ref() else {
                 continue;
             };
-            item.action.name = names
-                .entry(key.clone())
-                .or_insert_with(|| {
-                    if localisation.get(key).is_none() {
-                        refused.note("localisation key is not in the recorded content", key);
-                        return None;
-                    }
-                    catalogue::localised(localisation, key, catalogue::View::Scripted)
-                        .inspect_err(|reason| refused.note(reason.clone(), key))
-                        .ok()
-                })
-                .clone();
+            item.action.name = if item.action.kind == PeaceActionKind::StateTransfer {
+                localise(TAKE_STATES_LABEL, &mut refused)
+            } else {
+                localise(key, &mut refused)
+            };
         }
     }
     reply.warnings.extend(refused.lines("peace action names"));

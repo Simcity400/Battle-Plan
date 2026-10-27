@@ -62,9 +62,9 @@ test('a winner only with a recorded civil-war outcome; otherwise Outcome unknown
   assert.deepEqual(lanes.slice(1).map(lane => lane.muted), [false, true, true]);
   const tip = warTooltip(won, 500, tipText);
   assert.equal(tip.rows.find(row => row.label === 'Outcome')?.value,
-    'Winner: Modland@351 — Free Modland@300 and People’s Modland@350 annexed by day 351 (civil-war annexation)');
+    'Winner: Modland@351 — Free Modland@300 and People’s Modland@350 annexed by a side by day 351');
 
-  // The same sides with no proven outcome: an outside annexation and a plain one decide nothing.
+  // The same sides with no proven outcome: a side annexed by an outsider leaves it undecided.
   const unproven = validateCivilWarsReply(reply([war('w2', 100, 400, [
     side(tags([0, 'MOD']), 100, 400, null, true),
     side(tags([100, 'D01']), 100, 300, 0, false, { kind: 'annexedByOther', hour: 301, readHour: 301, by: 'REU' }),
@@ -76,13 +76,13 @@ test('a winner only with a recorded civil-war outcome; otherwise Outcome unknown
   assert.ok(lanesUnknown.every(lane => !lane.muted && !lane.pill));
   const unknownTip = warTooltip(unknown, 500, tipText);
   assert.equal(unknownTip.rows.find(row => row.label === 'Outcome')?.value, 'Unknown');
-  assert.equal(unknownTip.note, 'No side annexed the others through the civil war.');
+  assert.equal(unknownTip.note, 'No side was left after the others were annexed by a side.');
   // How each side left, as its annexation was recorded.
   const left = sideTooltip(unknown, unknown.sides[1], 320, { name: 'Free Modland' }, 'D01', tipText);
   assert.equal(left.rows.find(row => row.label === 'Annexed by')?.value, 'Reused@301, which was not a side');
   assert.equal(left.rows.find(row => row.label === 'Broke from')?.value, 'Modland@100 on day 100');
   assert.equal(left.rows.find(row => row.label === 'Tag')?.value, 'D01');
-  assert.equal(exitText({ kind: 'annexedBySideOtherwise', hour: 1, readHour: 1, by: 'MOD' }, 'Modland'), 'Modland, not through the civil war');
+  assert.equal(exitText({ kind: 'annexedBySideOtherwise', hour: 1, readHour: 1, by: 'MOD' }, 'Modland'), 'Modland, not by the civil war’s own annexation');
   assert.equal(exitText({ kind: 'annexedBySide', hour: 1, readHour: 1, by: 'MOD' }, 'Modland'), 'Modland');
   // Still going: neither a winner nor an unknown outcome.
   const ongoing = civilWarsAt(reply([war('w3', 100, 1000, [side(tags([0, 'MOD']), 100, 1000, null, true), side(tags([100, 'D01']), 100, 1000, 0)])]), 1000, all()).wars[0];
