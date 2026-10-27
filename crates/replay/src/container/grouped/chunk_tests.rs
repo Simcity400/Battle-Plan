@@ -192,7 +192,7 @@ fn chosen_column_slices_join_to_the_prechunk_writer_bytes() {
     let differences = later.columns.1[FIELDS].clone().unwrap();
     assert_ne!(later.columns.0[FIELDS], differences);
     let alternate_ends: Vec<_> = later.alternate_cuts.iter().map(|cut| cut[FIELDS]).collect();
-    later.compress().unwrap();
+    later.compress(Compression::Low).unwrap();
     assert_eq!(later.columns.0[FIELDS], differences);
     assert_eq!(
         later.cuts.iter().map(|cut| cut[FIELDS]).collect::<Vec<_>>(),
@@ -388,7 +388,7 @@ fn real_table_row_coders_end_each_chunk_at_the_decoder_column_cursors() {
                         .map(|alternate| (column, alternate.clone()))
                 })
                 .collect();
-            later.compress().unwrap();
+            later.compress(Compression::Low).unwrap();
             let chosen: Vec<_> = variants
                 .iter()
                 .filter(|(column, alternate)| later.columns.0[*column] == *alternate)

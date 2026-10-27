@@ -100,6 +100,18 @@ pub async fn recorder_settings() -> Result<RecorderSettings, String> {
 }
 
 #[tauri::command]
+pub async fn set_recording_compression(
+    compression: replay::compression::Compression,
+) -> Result<RecorderSettings, String> {
+    blocking(move || {
+        RecorderSettings::update(|settings| settings.choose_compression(compression))
+            .map(|(settings, ())| settings)
+            .map_err(|error| error.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn recording_preferences() -> Result<RecordingPreferences, String> {
     blocking(|| {
         RecorderSettings::load()

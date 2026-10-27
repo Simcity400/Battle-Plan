@@ -196,6 +196,10 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
           onChange={recordEveryCampaign => actions.settings({ recordEveryCampaign })} />
         <Toggle label="Auto save" description="Saves when you load another campaign or close the game." checked={settings.autoSave}
           onChange={autoSave => actions.settings({ autoSave })} />
+        <div className="recorder-row"><span>Recording compression</span>
+          <Select label="Recording compression" value={settings.compression ?? 'low'} options={[{ value: 'low', label: 'Low' }, { value: 'high', label: 'High' }]}
+            onChange={compression => actions.settings({ compression: compression === 'high' ? 'high' : 'low' })} /></div>
+        <p className="recorder-note">Low makes slightly larger files. High uses more background CPU and makes the save after Stop slower, especially with few cores. Changes apply to the next block.</p>
       </section>
       <section className="recorder-section">
         <div className="recorder-row"><span>Save to</span>

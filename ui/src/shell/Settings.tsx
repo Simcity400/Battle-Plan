@@ -9,6 +9,7 @@ import MapAppearance, { MAP_OPTION_LABELS } from '../components/MapAppearance';
 import { VIDEO_OPTION_LABELS } from './VideoSettings';
 import GameFolderSettings from './GameFolderSettings';
 import PreparationSetting from './PreparationSetting';
+import RecordingCompressionSetting from './RecordingCompressionSetting';
 import HistoryCacheSetting from './HistoryCacheSetting';
 import type { ContentFolders, DesktopState, ReplayMetadata } from './api';
 import AppearanceSettings, { newThemeId, SettingsBlock } from './appearance/AppearanceSettings';
@@ -31,6 +32,7 @@ import type { SettingsSection, SettingsTarget } from './settingsMetadata';
 
 const searchItems: SettingsTarget[] = [
   { section: 'preparation', title: 'Prepare recordings in the background', id: 'preparation-background', keywords: 'automatic cache background preparation enable disable stop' },
+  { section: 'recording', title: 'Recording compression', id: 'recording-compression', keywords: 'low high live compression cpu stop save size' },
   { section: 'folders', title: 'Game installation', keywords: 'game folder install steam path' },
   { section: 'folders', title: 'Paradox user folder', keywords: 'documents mods user path' },
   { section: 'folders', title: 'Replay folder', keywords: 'recordings library replays path' },
@@ -214,6 +216,7 @@ export default function Settings({ section, target, onTargetShown, appearance, l
           </div>
         </SettingsBlock>}
         {section === 'preparation' && client.preparationPreferences && <SettingsBlock id="preparation-background" title="Background preparation"><PreparationSetting client={client} /></SettingsBlock>}
+        {section === 'recording' && <SettingsBlock id="recording-compression" title="Recording compression"><RecordingCompressionSetting client={client} /></SettingsBlock>}
         {section === 'diagnostics' && <MapDiagnostics native={native} metadata={metadata} branch={branch} />}
       </div>
     </div>

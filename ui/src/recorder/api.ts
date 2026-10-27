@@ -3,8 +3,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import type { CaptureMode, NextLoad, RecorderSettings, Recordings, RecordingsView, Snapshot } from './status';
+import type { Compression } from './compression';
 
 export interface SettingsPatch {
+  compression?: Compression;
   recordEveryCampaign?: boolean;
   autoSave?: boolean;
   startWithWindows?: boolean;

@@ -2,6 +2,7 @@
 // of the approved design is checked without a running recorder.
 import { formatDate, gameDate, monthNames } from '../dashboard/calendar.ts';
 import { formatMegabytes } from '../charts/numberFormat.ts';
+import type { Compression } from './compression';
 
 export type Phase = 'waiting' | 'notRecording' | 'recording' | 'saving' | 'saved' | 'discarded' | 'unsaved';
 export interface Problem { text: string; detail: string }
@@ -43,6 +44,7 @@ export type NextLoad = 'continue' | 'newFile';
 export type CaptureMode = 'full' | 'map';
 export interface CampaignChoice { record?: boolean; next?: NextLoad; folder?: string; flag?: string }
 export interface RecorderSettings {
+  compression?: Compression;
   /** Auto record. */
   recordEveryCampaign: boolean;
   autoSave: boolean;

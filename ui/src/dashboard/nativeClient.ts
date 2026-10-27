@@ -11,6 +11,7 @@ import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEven
 import { replyLengths } from './products.ts';
 import { contentRevision } from './contentRevision.ts';
 import { forgetReplySizes } from './replySizes.ts';
+import type { Compression } from '../recorder/compression';
 
 function cancelled(): DOMException {
   return new DOMException('Request cancelled', 'AbortError');
@@ -81,6 +82,7 @@ export const nativeDashboardClient: DashboardClient = {
     renameRecording: (path: string, name: string) => invoke<string>('rename_recording', { path, name }),
     locateRecordings: (recordings: { path: string; campaignKey: string }[]) => invoke<(string | null)[]>('locate_recordings', { recordings }),
     recorderSettings: () => invoke<RecorderSettings>('recorder_settings'),
+    setRecordingCompression: (compression: Compression) => invoke<RecorderSettings>('set_recording_compression', { compression }),
     // The host owns the content folders and sends them to its native viewer.
     contentFolders: () => invoke<ContentFolders>('content_folders'),
     chooseContentFolder: (kind: 'game' | 'user', initial: string) => invoke<string | null>('choose_content_folder', { kind, initial }),

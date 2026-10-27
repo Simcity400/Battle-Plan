@@ -80,6 +80,7 @@ pub(crate) use prefix_fixture::trailing_control;
 use crate::frame::recorded::Updates;
 use std::sync::{Arc, OnceLock};
 
+use crate::compression::Compression;
 use keyed::{KeyChanges, KeyReader, KeySet, KeyWriter, MaskList, RowCoding, RowRun};
 use modelled::Model;
 
@@ -456,14 +457,14 @@ impl Columns {
         Ok(())
     }
     /// Keep each byte field column's smaller form, compressed alone.
-    fn choose(&mut self) -> io::Result<Vec<usize>> {
+    fn choose(&mut self, level: i32) -> io::Result<Vec<usize>> {
         let mut chosen = Vec::new();
         for (at, (column, differences)) in
             self.0.iter_mut().zip(&mut self.1).enumerate().skip(FIELDS)
         {
             if let Some(differences) = differences.take()
                 && differences != *column
-                && compress(&differences)?.len() < compress(column)?.len()
+                && compress_at(&differences, level)?.len() < compress_at(column, level)?.len()
             {
                 *column = differences;
                 chosen.push(at);
@@ -1416,18 +1417,17 @@ impl Later {
             model.finish(&mut self.columns.0[MASKS]);
         }
     }
-    /// Choose field variants once, then compare the two whole row codings
-    /// at LEVEL before the table chooses residual or plain entries.
-    fn compress(&mut self) -> io::Result<(usize, Option<Vec<u8>>)> {
+    /// Select fields and row codings at the block's compression level.
+    fn compress(&mut self, compression: Compression) -> io::Result<(usize, Option<Vec<u8>>)> {
         self.finish();
-        for column in self.columns.choose()? {
+        for column in self.columns.choose(compression.selection_level())? {
             for (cut, alternate) in self.cuts.iter_mut().zip(&self.alternate_cuts) {
                 cut[column] = alternate[column];
             }
         }
         let mut best = {
             let raw = self.columns.raw();
-            (raw.len(), compress_later(&raw, self.entries)?)
+            (raw.len(), compress_later(&raw, self.entries, compression)?)
         };
         if let (Some(keys), Some(masks)) =
             (self.columns.1[KEYS].take(), self.columns.1[MASKS].take())
@@ -1435,7 +1435,7 @@ impl Later {
             let modelled_keys = std::mem::replace(&mut self.columns.0[KEYS], keys);
             let modelled_masks = std::mem::replace(&mut self.columns.0[MASKS], masks);
             let raw = self.columns.raw();
-            let compressed = compress_later(&raw, self.entries)?;
+            let compressed = compress_later(&raw, self.entries, compression)?;
             // Modelled wins ties, independently of worker scheduling.
             if compressed.as_ref().map_or(0, Vec::len) < best.1.as_ref().map_or(0, Vec::len) {
                 best = (raw.len(), compressed);
@@ -1496,26 +1496,18 @@ pub(crate) struct BlockWriter {
     gaps: Vec<u128>,
     /// The block's column encoding.
     layout: Layout,
+    compression: Compression,
     /// Tests keep every predicting table's residual entries, whichever is
     /// smaller ([`FORCE_RESIDUAL`]).
     force_residual: bool,
 }
 
-/// The zstd level the writer chooses between encodings with: level 9 stores
-/// about 7% fewer bytes than level 3 for a few milliseconds of finalization
-/// per recorded hour.
-const LEVEL: i32 = 9;
-
-/// The zstd level every chosen section is stored at ([`store_sections`]):
-/// level 19 stores about 11% fewer bytes than level 9 (the 1936 and 1943
-/// in-run recordings, `recorder sizes --levels`) for about 25 ms of
-/// single-threaded finalization per recorded hour of a 1943 game; level 22
-/// saves another 0.2% at four times the time. Readers inflate it as fast and
-/// its window (at most 2^23) stays within their `window_log_max`.
-pub const STORED_LEVEL: i32 = 19;
+pub const STORED_LEVEL: i32 = 3;
+#[cfg(test)]
+const LEVEL: i32 = STORED_LEVEL;
 
 pub(crate) fn compress(raw: &[u8]) -> io::Result<Vec<u8>> {
-    compress_at(raw, LEVEL)
+    compress_at(raw, STORED_LEVEL)
 }
 
 /// The window readers accept (`window_log_max`), which every level is held
@@ -1628,25 +1620,31 @@ pub(crate) fn fresh_and_failed_reuse(raw: &[u8], level: i32) -> io::Result<(Vec<
     Ok((fresh, failed))
 }
 
-/// `compressed`, a frame of `raw` plain bytes, at [`STORED_LEVEL`]; none when
-/// that is not smaller.
-fn store(compressed: &[u8], raw: usize) -> io::Result<Option<Vec<u8>>> {
+/// Recompress the selected bytes at the requested stored level when smaller.
+fn store(compressed: &[u8], raw: usize, compression: Compression) -> io::Result<Option<Vec<u8>>> {
+    if compression.level() == compression.selection_level() {
+        return Ok(None);
+    }
     let mut plain = Vec::with_capacity(raw);
     crate::progress::Reader(zstd::stream::read::Decoder::with_buffer(compressed)?.single_frame())
         .read_to_end(&mut plain)?;
     if plain.len() != raw {
         return Err(invalid_static("chosen section raw length mismatch"));
     }
-    let stored = compress_at(&plain, STORED_LEVEL)?;
+    let stored = compress_at(&plain, compression.level())?;
     Ok((stored.len() < compressed.len()).then_some(stored))
 }
 
 /// A table's later entries compressed, or none without entries.
-fn compress_later(raw: &[u8], entries: usize) -> io::Result<Option<Vec<u8>>> {
+fn compress_later(
+    raw: &[u8],
+    entries: usize,
+    compression: Compression,
+) -> io::Result<Option<Vec<u8>>> {
     if entries == 0 {
         return Ok(None);
     }
-    compress(raw).map(Some)
+    compress_at(raw, compression.selection_level()).map(Some)
 }
 
 #[cfg(test)]
@@ -1697,6 +1695,7 @@ fn put_keyframe(
     first_hour: Hour,
     position: usize,
     marks: &[u8],
+    compression: Compression,
 ) -> io::Result<()> {
     let table = writer.table;
     let format = FormatVersion::CURRENT.version();
@@ -1712,7 +1711,7 @@ fn put_keyframe(
     )?;
     whole.marks(table, marks)?;
     let raw = whole.raw();
-    let snapshot_bytes = compress(&raw)?;
+    let snapshot_bytes = compress_at(&raw, compression.selection_level())?;
     // A change against an older snapshot is kept while it
     // compresses to at most half the snapshot; in an anchored
     // block, one against the table's latest keyframe whenever it
@@ -1770,7 +1769,7 @@ fn put_keyframe(
             if layout.anchors_back() && charge.is_none() {
                 continue;
             }
-            let compressed = compress(&raw)?;
+            let compressed = compress_at(&raw, compression.selection_level())?;
             // Keep the smallest; its plain bytes never exceed the
             // snapshot's, so readers keep the writer's plain bound.
             let limit = if Some(anchor.block) == latest_block {
@@ -1875,6 +1874,7 @@ impl BlockWriter {
             tables,
             gaps: Vec::new(),
             layout,
+            compression: pack::compression(),
             #[cfg(test)]
             force_residual: FORCE_RESIDUAL.get(),
             #[cfg(not(test))]
@@ -1992,6 +1992,7 @@ impl BlockWriter {
             ));
         }
         let layout = self.layout();
+        let compression = self.compression;
         let format = FormatVersion::CURRENT.version();
         let previous = self.last_hour;
         let first_hour = self.first_hour;
@@ -2032,7 +2033,16 @@ impl BlockWriter {
                 let view = &decoded.tables[writer.table.index()];
                 let column = marks.column(writer.table, true);
                 put_keyframe(
-                    writer, plain, view, snapshot, latest, layout, first_hour, position, column,
+                    writer,
+                    plain,
+                    view,
+                    snapshot,
+                    latest,
+                    layout,
+                    first_hour,
+                    position,
+                    column,
+                    compression,
                 )
             })?;
         } else {
@@ -2276,10 +2286,10 @@ impl Compressing {
                 if stop() {
                     return Ok(());
                 }
-                let mut best = writer.plain.compress()?;
+                let mut best = writer.plain.compress(self.block.compression)?;
                 let mut predicted = false;
                 if let Some(later) = &mut writer.predicted {
-                    let candidate = later.compress()?;
+                    let candidate = later.compress(self.block.compression)?;
                     if force_residual
                         || candidate.1.as_ref().map_or(0, Vec::len)
                             < best.1.as_ref().map_or(0, Vec::len)
@@ -2310,7 +2320,7 @@ impl Compressing {
                 return Ok((at, None, false));
             }
             let (_, raw, bytes) = &sections[at];
-            Ok((at, store(bytes, *raw)?, true))
+            Ok((at, store(bytes, *raw, self.block.compression)?, true))
         })?;
         for (at, bytes, done) in stored {
             match (bytes, done) {
@@ -2356,12 +2366,16 @@ impl Compressing {
         block.header = header;
         let mut sections: Vec<(usize, usize, Vec<u8>)> = Vec::new();
         if !block.header.is_empty() {
-            sections.push((HEADER, block.header.len(), compress(&block.header)?));
+            sections.push((
+                HEADER,
+                block.header.len(),
+                compress_at(&block.header, block.compression.selection_level())?,
+            ));
         }
         sections.push((
             DIAGNOSTICS,
             block.diagnostics.len(),
-            compress(&block.diagnostics)?,
+            compress_at(&block.diagnostics, block.compression.selection_level())?,
         ));
         // Each table's entries are released once its sections are taken.
         for (writer, chosen) in std::mem::take(&mut block.tables)
@@ -2375,7 +2389,11 @@ impl Compressing {
             ));
             if let Some((_, Some(_))) = chosen.take() {
                 let later = writer.predicted.as_ref().unwrap_or(&writer.plain);
-                sections.extend(chunked::split(later_section(writer.table), later)?);
+                sections.extend(chunked::split_at(
+                    later_section(writer.table),
+                    later,
+                    block.compression.selection_level(),
+                )?);
             }
         }
         Ok(sections)

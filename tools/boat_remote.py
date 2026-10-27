@@ -216,7 +216,7 @@ elif mode in {'check', 'build', 'ui'}:
         result = None
         launched = False
         try:
-            if mode == 'ui':
+            if mode == 'ui' or (mode == 'build' and any('custom-protocol' in arg for arg in args)):
                 package_hash = hashlib.sha256((SRC / 'package-lock.json').read_bytes()).hexdigest()
                 stamp = ROOT / 'node-lock.sha256'
                 modules = ROOT / 'npm' / 'node_modules'
@@ -238,7 +238,9 @@ elif mode in {'check', 'build', 'ui'}:
                 if not (SRC / 'node_modules').exists():
                     (SRC / 'node_modules').symlink_to(modules, target_is_directory=True)
                 command = ['npm', 'run', 'check:ui']
-            else:
+                if mode == 'build':
+                    subprocess.run(['npm', 'run', 'build:ui'], cwd=SRC, check=True)
+            if mode != 'ui':
                 prune_incremental()
                 command = ['cargo', 'xwin', *args, '--target', TARGET]
                 if mode == 'build':

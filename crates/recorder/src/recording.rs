@@ -11,7 +11,7 @@ use engine_executable::{build::PINNED_BUILD, build::hash_executable};
 use installed_content_core::{content::GatherOptions, content::GatheredContent, content::gather};
 use installed_content_localisation::localisation::Localisation;
 use history_requests::HistoryRequest;
-use replay::recorder_settings::RecorderSettings;
+use replay::{compression::Compression, recorder_settings::RecorderSettings};
 use replay_data::identity::IdentityCodec;
 use replay_data::{identity::SessionStart, scope::CaptureMode};
 use replay_data::{witness::TerminalWitness, witness::WITNESS_FILE_NAME};
@@ -631,6 +631,7 @@ impl FinalizingAhead {
         target: &Path,
         content: &GatheredContent,
         settling: Option<Arc<Settling>>,
+        compression: Option<Compression>,
     ) -> Self {
         let stop = settling
             .as_ref()
@@ -641,8 +642,23 @@ impl FinalizingAhead {
         let names = Arc::<Mutex<BTreeMap<String, String>>>::default();
         let (published, asked) = (Arc::clone(&names), Arc::new(AtomicBool::new(false)));
         let asking = Arc::clone(&asked);
+        let initial_settings = RecorderSettings::load().unwrap_or_default();
         let packing = replay::container::Packing::new()
-            .map(Arc::new)
+            .map(|packing| {
+                packing
+                    .set_compression(compression.unwrap_or_else(|| initial_settings.compression));
+                let initial_revision = initial_settings.compression_revision;
+                packing.set_compression_source(move || {
+                    RecorderSettings::load().ok().map(|current| {
+                        if current.compression_revision == initial_revision {
+                            compression.unwrap_or(current.compression)
+                        } else {
+                            current.compression
+                        }
+                    })
+                });
+                Arc::new(packing)
+            })
             .inspect_err(|error| {
                 eprintln!("Continuous packing could not start; spool retained: {error}");
             })
@@ -1030,6 +1046,7 @@ struct Options {
     operation_outcomes: bool,
     politics_capture: bool,
     capture_mode: CaptureMode,
+    compression: Option<Compression>,
     #[cfg(feature = "alloc-fault-injection")]
     alloc_fault: Option<AllocationFault>,
 }
@@ -1100,7 +1117,7 @@ fn usage() -> String {
     #[cfg(not(feature = "alloc-fault-injection"))]
     let fault_option = "";
     format!(
-        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once] [--capture-mode full|map] [--no-game-score] [--disable-operation-outcomes] [--disable-politics-capture]{fault_option}
+        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once] [--capture-mode full|map] [--compression low|high] [--no-game-score] [--disable-operation-outcomes] [--disable-politics-capture]{fault_option}
 recorder detach [--out <directory>]
 recorder refresh [--out <directory>]
 recorder finalize <session-directory> [--out <directory>]
@@ -1146,6 +1163,7 @@ fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> 
         operation_outcomes: true,
         politics_capture: true,
         capture_mode: CaptureMode::Full,
+        compression: None,
         #[cfg(feature = "alloc-fault-injection")]
         alloc_fault: None,
     };
@@ -1157,6 +1175,14 @@ fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> 
                 options.user = Some(PathBuf::from(args.next().ok_or_else(usage)?))
             }
             Some("--once") if command == "record" => options.once = true,
+            Some("--compression") if command == "record" => {
+                let name = args.next().ok_or_else(usage)?;
+                options.compression = Some(
+                    name.to_str()
+                        .and_then(Compression::from_name)
+                        .ok_or_else(|| "--compression must be low or high".to_owned())?,
+                );
+            }
             Some("--capture-mode") if command == "record" => {
                 let name = args.next().ok_or_else(usage)?;
                 options.capture_mode = name
@@ -1276,53 +1302,56 @@ fn finalize_cli_session(
     mut terminal: TerminalOutcome,
     refresh: impl FnOnce() -> CollectorPresence,
 ) -> Result<(), String> {
+    // Installed first, so the packing workers inherit the pass progress.
     let _pass_progress = progress_io::passes(session);
-    if !terminal.recovery_allowed {
-        return Err(terminal.issues.join("; "));
-    }
-    if let Some(witness) = &terminal.witness {
-        publish_failure_status(session, witness)?;
-    }
-    let finalized = match replay_io::finalize_session_outcome(session, output) {
-        Ok(finalized) => finalized,
-        Err(error) => {
-            terminal
-                .issues
-                .push(format!("replay finalization failed: {error}"));
-            replay_io::Finalized::default()
+    replay_io::with_compression(&RecorderSettings::path(), || {
+        if !terminal.recovery_allowed {
+            return Err(terminal.issues.join("; "));
         }
-    };
-    terminal.issues.extend(
-        finalized
-            .errors
-            .iter()
-            .map(|error| format!("replay finalization failed: {error}")),
-    );
-    complete_cli_finalization(
-        session,
-        output,
-        &finalized,
-        json!({
-            "detach_requested": terminal.witness.is_some(),
-            "drain_complete": terminal.drain_complete,
-            "capture_failed": terminal.capture_failed,
-            "failure_code": terminal.witness.as_ref().map(|_| "allocation_failed"),
-            "failed_hour": terminal.witness.as_ref().and_then(|witness| witness.failed_hour),
-            "partial": !terminal.issues.is_empty(), "issues": terminal.issues,
-            "warnings": terminal.warnings,
-            "omitted": finalized.omitted.iter().map(Omission::to_json).collect::<Vec<_>>(),
-        }),
-        refresh,
-    )?;
-    if terminal.issues.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "recording completion is partial: {}; spool retained at {}",
-            terminal.issues.join("; "),
-            session.display()
-        ))
-    }
+        if let Some(witness) = &terminal.witness {
+            publish_failure_status(session, witness)?;
+        }
+        let finalized = match replay_io::finalize_session_outcome(session, output) {
+            Ok(finalized) => finalized,
+            Err(error) => {
+                terminal
+                    .issues
+                    .push(format!("replay finalization failed: {error}"));
+                replay_io::Finalized::default()
+            }
+        };
+        terminal.issues.extend(
+            finalized
+                .errors
+                .iter()
+                .map(|error| format!("replay finalization failed: {error}")),
+        );
+        complete_cli_finalization(
+            session,
+            output,
+            &finalized,
+            json!({
+                "detach_requested": terminal.witness.is_some(),
+                "drain_complete": terminal.drain_complete,
+                "capture_failed": terminal.capture_failed,
+                "failure_code": terminal.witness.as_ref().map(|_| "allocation_failed"),
+                "failed_hour": terminal.witness.as_ref().and_then(|witness| witness.failed_hour),
+                "partial": !terminal.issues.is_empty(), "issues": terminal.issues,
+                "warnings": terminal.warnings,
+                "omitted": finalized.omitted.iter().map(Omission::to_json).collect::<Vec<_>>(),
+            }),
+            refresh,
+        )?;
+        if terminal.issues.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "recording completion is partial: {}; spool retained at {}",
+                terminal.issues.join("; "),
+                session.display()
+            ))
+        }
+    })
 }
 
 fn complete_cli_finalization(
@@ -1485,6 +1514,7 @@ pub(crate) struct CaptureOptions<'a> {
     pub politics_capture: bool,
     /// Which tables the session records; one mode per recording file.
     pub capture_mode: CaptureMode,
+    pub compression: Option<Compression>,
     /// A session that reached no spool (the game closed at its menu, say) ends
     /// quietly instead of as a failed finalization.
     pub nothing_recorded_is_ok: bool,
@@ -1525,6 +1555,7 @@ fn cli_capture<'a>(options: &'a Options, user: &'a Path) -> CaptureOptions<'a> {
         operation_outcomes: options.operation_outcomes,
         politics_capture: options.politics_capture,
         capture_mode: options.capture_mode,
+        compression: options.compression,
         nothing_recorded_is_ok: false,
         live_status: false,
         admit: None,
@@ -1698,6 +1729,7 @@ pub(crate) fn capture(
         operation_outcomes,
         politics_capture,
         capture_mode,
+        compression,
         nothing_recorded_is_ok,
         live_status,
         admit,
@@ -1954,7 +1986,7 @@ pub(crate) fn capture(
         settling.save.store(auto_save(), Ordering::Release);
         settling
     });
-    let ahead = FinalizingAhead::start(&directory, target, &content, settling.clone());
+    let ahead = FinalizingAhead::start(&directory, target, &content, settling.clone(), compression);
     let status_path = directory.join("status.json");
     stage(Stage::Recording {
         session: &directory,
@@ -3983,31 +4015,33 @@ fn save_recording_except(
     naming: replay_io::Naming<'_>,
     current: Option<&Path>,
 ) -> Result<Option<PathBuf>, String> {
-    let mut saved = match current {
-        Some(session) => replay_io::publish_checkpointed(session, target, campaign, naming)?,
-        None => None,
-    };
-    // Each session's spool, in order: hours already staged are matched, any not staged are added.
-    for session in waiting_sessions(root, target, campaign)
-        .into_iter()
-        .filter(|session| Some(session.as_path()) != current)
-    {
-        let (replay, _) = replay_io::save_campaign(
-            &session,
-            target,
-            campaign,
-            false,
-            &|| Ok(()),
-            &mut replay_io::Ahead::default(),
-            naming,
-        )
-        .map_err(|error| format!("{error}; spool retained"))?;
-        saved = replay.or(saved);
-        unlist_waiting(&session, campaign)?;
-        replay_io::reconcile_session_checkpoints(&session, target)?;
-    }
-    // Staged by a session that ended before listing it.
-    Ok(replay_io::publish_unsaved(target, campaign, naming)?.or(saved))
+    replay_io::with_compression(naming.settings, || {
+        let mut saved = match current {
+            Some(session) => replay_io::publish_checkpointed(session, target, campaign, naming)?,
+            None => None,
+        };
+        // Each session's spool, in order: hours already staged are matched, any not staged are added.
+        for session in waiting_sessions(root, target, campaign)
+            .into_iter()
+            .filter(|session| Some(session.as_path()) != current)
+        {
+            let (replay, _) = replay_io::save_campaign(
+                &session,
+                target,
+                campaign,
+                false,
+                &|| Ok(()),
+                &mut replay_io::Ahead::default(),
+                naming,
+            )
+            .map_err(|error| format!("{error}; spool retained"))?;
+            saved = replay.or(saved);
+            unlist_waiting(&session, campaign)?;
+            replay_io::reconcile_session_checkpoints(&session, target)?;
+        }
+        // Staged by a session that ended before listing it.
+        Ok(replay_io::publish_unsaved(target, campaign, naming)?.or(saved))
+    })
 }
 
 /// Whether a session publishes hours of a campaign: one it admitted a load of. `admitted` is
@@ -4053,48 +4087,50 @@ fn save_continued(
 /// each campaign that could not be staged, with why: its loads are left out, since a capture of it
 /// would continue a history without those hours, and the others record.
 fn stage_waiting(root: &Path, target: &Path) -> Result<BTreeMap<String, String>, String> {
-    fs::create_dir_all(target).map_err(|error| failure_text(target, error))?;
-    let mut refused = BTreeMap::new();
-    let _lock = finalization_lock(target)?;
-    for session in session_folders(root) {
-        replay_io::reconcile_session_checkpoints(&session, target)?;
-    }
-    let campaigns: BTreeSet<_> = session_folders(root)
-        .iter()
-        .flat_map(|session| waiting_campaigns(session))
-        .filter(|waiting| waiting.target == target)
-        .map(|waiting| waiting.campaign)
-        .collect();
-    if campaigns.is_empty() {
-        return Ok(refused);
-    }
-    // Staging names no recording.
-    let settings = RecorderSettings::path();
-    let naming = replay_io::Naming {
-        localisation: None,
-        settings: &settings,
-        report: None,
-    };
-    for campaign in campaigns {
-        for session in waiting_sessions(root, target, &campaign) {
-            if let Err(error) = replay_io::save_campaign(
-                &session,
-                target,
-                &campaign,
-                true,
-                &|| Ok(()),
-                &mut replay_io::Ahead::default(),
-                naming,
-            ) {
-                refused.insert(
-                    campaign.clone(),
-                    format!("{error}; save or discard them in Recordings"),
-                );
-                break;
+    replay_io::with_compression(&RecorderSettings::path(), || {
+        fs::create_dir_all(target).map_err(|error| failure_text(target, error))?;
+        let mut refused = BTreeMap::new();
+        let _lock = finalization_lock(target)?;
+        for session in session_folders(root) {
+            replay_io::reconcile_session_checkpoints(&session, target)?;
+        }
+        let campaigns: BTreeSet<_> = session_folders(root)
+            .iter()
+            .flat_map(|session| waiting_campaigns(session))
+            .filter(|waiting| waiting.target == target)
+            .map(|waiting| waiting.campaign)
+            .collect();
+        if campaigns.is_empty() {
+            return Ok(refused);
+        }
+        // Staging names no recording.
+        let settings = RecorderSettings::path();
+        let naming = replay_io::Naming {
+            localisation: None,
+            settings: &settings,
+            report: None,
+        };
+        for campaign in campaigns {
+            for session in waiting_sessions(root, target, &campaign) {
+                if let Err(error) = replay_io::save_campaign(
+                    &session,
+                    target,
+                    &campaign,
+                    true,
+                    &|| Ok(()),
+                    &mut replay_io::Ahead::default(),
+                    naming,
+                ) {
+                    refused.insert(
+                        campaign.clone(),
+                        format!("{error}; save or discard them in Recordings"),
+                    );
+                    break;
+                }
             }
         }
-    }
-    Ok(refused)
+        Ok(refused)
+    })
 }
 
 /// Drop a recording's hours waiting from ended sessions, keeping what it saved.
@@ -4372,33 +4408,35 @@ fn save_waiting_with(
     campaign: &str,
     names: &mut WaitingNames,
 ) -> Result<SavedWaiting, String> {
-    let target = waiting_target(session, campaign)?;
-    let localisation = names.localisation(session);
-    if let Err(why) = &localisation {
-        eprintln!("Countries are named by tag: {why}");
-    }
-    fs::create_dir_all(&target).map_err(|error| failure_text(&target, error))?;
-    let _lock = finalization_lock(&target)?;
-    let settings = RecorderSettings::path();
-    let refusal = Mutex::new(None::<String>);
-    let report = |why: Option<&str>| {
-        *refusal
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = why.map(str::to_owned);
-    };
-    let naming = replay_io::Naming {
-        localisation: localisation.as_ref().ok().copied(),
-        settings: &settings,
-        report: Some(&report),
-    };
-    let recording = save_recording(root_of(session)?, &target, campaign, naming)?;
-    let by_tag = localisation.err().or_else(|| {
-        refusal
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    });
-    Ok(SavedWaiting { recording, by_tag })
+    replay_io::with_compression(&RecorderSettings::path(), || {
+        let target = waiting_target(session, campaign)?;
+        let localisation = names.localisation(session);
+        if let Err(why) = &localisation {
+            eprintln!("Countries are named by tag: {why}");
+        }
+        fs::create_dir_all(&target).map_err(|error| failure_text(&target, error))?;
+        let _lock = finalization_lock(&target)?;
+        let settings = RecorderSettings::path();
+        let refusal = Mutex::new(None::<String>);
+        let report = |why: Option<&str>| {
+            *refusal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = why.map(str::to_owned);
+        };
+        let naming = replay_io::Naming {
+            localisation: localisation.as_ref().ok().copied(),
+            settings: &settings,
+            report: Some(&report),
+        };
+        let recording = save_recording(root_of(session)?, &target, campaign, naming)?;
+        let by_tag = localisation.err().or_else(|| {
+            refusal
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        });
+        Ok(SavedWaiting { recording, by_tag })
+    })
 }
 
 /// Discard a recording's waiting hours from every ended session; what it saved stays.

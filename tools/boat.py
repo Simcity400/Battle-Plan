@@ -14,6 +14,7 @@ passes through (101 for compile errors); exit 75 means Boat failed: run it again
 `build` downloads the named exe/dll/pdb outputs, checks their SHA-256 and records them with the
 source digest in `<dir>/boat-artifacts.json`; `--refresh-image` then re-saves `hoi4-check` from
 a clean worktree.
+GUI builds with `custom-protocol` build and embed the current UI on the VM.
 
 Worktrees share VMs, locks and `logs/timings.jsonl` under the main checkout's `captures/boat`
 (BOAT_STATE_DIR overrides). A run keeps its VM alive with a short lease it renews, and leaves
@@ -758,6 +759,9 @@ def run(argv):
 
 
 def main(argv):
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     os.environ["BOAT_NO_UPDATE"] = "1"
     try:
         return run(argv)

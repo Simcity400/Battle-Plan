@@ -212,6 +212,7 @@ fn main() {
             replay_library::choose_replay_folder,
             replay_library::choose_recording,
             recorder::recorder_settings,
+            recorder::set_recording_compression,
             recorder::recording_preferences,
             recorder::rename_recording,
             recorder::locate_recordings,

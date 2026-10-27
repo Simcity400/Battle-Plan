@@ -171,6 +171,17 @@ fn json_temporary(path: &Path) -> Result<(PathBuf, fs::File)> {
 
 type Result<T> = std::result::Result<T, String>;
 
+/// Run `work` packing at the persisted compression, unless a packing job already chose it.
+pub fn with_compression<T>(settings: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
+    if replay::container::Packing::active() {
+        return work();
+    }
+    let packing = replay::container::Packing::from_settings(settings)
+        .map_err(|error| failure(settings, error))?;
+    packing.promote();
+    packing.run(work)
+}
+
 /// What finalizing one campaign published and left out.
 #[derive(Debug, Default)]
 struct CampaignOutcome {
@@ -555,78 +566,80 @@ impl Ahead {
         replay_dir: &Path,
         stop: &(dyn Fn() -> bool + Sync),
     ) -> Result<()> {
-        let admissions = session_admissions(session_dir)?;
-        for (campaign_dir, campaign) in &mut self.campaigns {
-            let Some(name) = campaign_dir.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            let name = name.to_owned();
-            if campaign.stopped || stop() {
-                continue;
-            }
-            let admitted = admissions
-                .as_ref()
-                .map(|admissions| admissions.loads.get(&name).cloned().unwrap_or_default());
-            let segments = admitted_prefix(&campaign.tails, admitted.as_ref());
-            let Ok(id) = campaign_id(segments.iter().map(|(_, records)| *records)) else {
-                continue;
-            };
-            if campaign_filename(&id).ok() != Some(name.as_str()) {
-                campaign.stopped = true;
-                continue;
-            }
-            if campaign.written.is_none() {
-                let sessions = spooled_sessions(segments.iter().flat_map(|(_, records)| *records));
-                let existing = match save_base(session_dir, replay_dir, &name, &sessions) {
-                    Ok(None) => None,
-                    Ok(Some(destination)) => match held_recording(&destination) {
-                        Ok(previous)
-                            if previous.require_undamaged().is_ok()
-                                && previous.campaign_id == id =>
-                        {
-                            Some(previous)
-                        }
-                        _ => {
+        with_compression(&RecorderSettings::path(), || {
+            let admissions = session_admissions(session_dir)?;
+            for (campaign_dir, campaign) in &mut self.campaigns {
+                let Some(name) = campaign_dir.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                let name = name.to_owned();
+                if campaign.stopped || stop() {
+                    continue;
+                }
+                let admitted = admissions
+                    .as_ref()
+                    .map(|admissions| admissions.loads.get(&name).cloned().unwrap_or_default());
+                let segments = admitted_prefix(&campaign.tails, admitted.as_ref());
+                let Ok(id) = campaign_id(segments.iter().map(|(_, records)| *records)) else {
+                    continue;
+                };
+                if campaign_filename(&id).ok() != Some(name.as_str()) {
+                    campaign.stopped = true;
+                    continue;
+                }
+                if campaign.written.is_none() {
+                    let sessions = spooled_sessions(segments.iter().flat_map(|(_, records)| *records));
+                    let existing = match save_base(session_dir, replay_dir, &name, &sessions) {
+                        Ok(None) => None,
+                        Ok(Some(destination)) => match held_recording(&destination) {
+                            Ok(previous)
+                                if previous.require_undamaged().is_ok()
+                                    && previous.campaign_id == id =>
+                            {
+                                Some(previous)
+                            }
+                            _ => {
+                                campaign.stopped = true;
+                                continue;
+                            }
+                        },
+                        Err(_) => {
                             campaign.stopped = true;
                             continue;
                         }
-                    },
-                    Err(_) => {
-                        campaign.stopped = true;
-                        continue;
-                    }
+                    };
+                    let ahead = replay::container::Ahead::new(existing)
+                        .map_err(|error| failure(replay_dir, error))?;
+                    campaign.written = Some((ahead, Box::default()));
+                }
+                let frames = FinalizationFrames {
+                    segments: campaign
+                        .tails
+                        .iter()
+                        .map(|(number, (path, tail))| {
+                            (
+                                *number,
+                                (Segment::Growing(path.clone()), tail.valid_bytes()),
+                            )
+                        })
+                        .collect(),
                 };
-                let ahead = replay::container::Ahead::new(existing)
-                    .map_err(|error| failure(replay_dir, error))?;
-                campaign.written = Some((ahead, Box::default()));
+                let (ahead, summary) = campaign.written.as_mut().unwrap();
+                let _phase = replay::container::Packing::phase(replay::container::Phase::Pack);
+                let advanced = ahead.advance(
+                    &id,
+                    &segments,
+                    |number, frame| frames.read(number, frame),
+                    |hour| summary.observe_hour(hour).map_err(std::io::Error::other),
+                    stop,
+                );
+                if !matches!(advanced, Ok(true)) {
+                    campaign.written = None;
+                    campaign.stopped = true;
+                }
             }
-            let frames = FinalizationFrames {
-                segments: campaign
-                    .tails
-                    .iter()
-                    .map(|(number, (path, tail))| {
-                        (
-                            *number,
-                            (Segment::Growing(path.clone()), tail.valid_bytes()),
-                        )
-                    })
-                    .collect(),
-            };
-            let (ahead, summary) = campaign.written.as_mut().unwrap();
-            let _phase = replay::container::Packing::phase(replay::container::Phase::Pack);
-            let advanced = ahead.advance(
-                &id,
-                &segments,
-                |number, frame| frames.read(number, frame),
-                |hour| summary.observe_hour(hour).map_err(std::io::Error::other),
-                stop,
-            );
-            if !matches!(advanced, Ok(true)) {
-                campaign.written = None;
-                campaign.stopped = true;
-            }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// All recovered debt, including work background packing cannot admit.
@@ -1861,138 +1874,140 @@ pub fn finalize_session_ahead(
     naming: Naming<'_>,
     destination: &dyn Fn(&str) -> Destination,
 ) -> Result<Finalized> {
-    progress().map_err(|error| failure(session_dir, error))?;
-    reconcile_session_checkpoints(session_dir, replay_dir)?;
-    let admissions = session_admissions(session_dir)?;
-    let mut finalized = Finalized::default();
-    let witness = session_witness(session_dir)?;
-    fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
-    let mut campaigns = Vec::new();
-    let mut campaign_names = spooled_campaigns(session_dir)?;
-    if session_ended(session_dir) {
-        for entry in fs::read_dir(session_dir).map_err(|error| failure(session_dir, error))? {
-            let entry = entry.map_err(|error| failure(session_dir, error))?;
-            if entry
-                .file_type()
-                .map_err(|error| failure(&entry.path(), error))?
-                .is_dir()
-                && read_saved(&entry.path()).is_some()
-                && let Some(name) = entry.file_name().to_str()
-                && !campaign_names.iter().any(|known| known == name)
-            {
-                campaign_names.push(name.to_owned());
+    with_compression(naming.settings, || {
+        progress().map_err(|error| failure(session_dir, error))?;
+        reconcile_session_checkpoints(session_dir, replay_dir)?;
+        let admissions = session_admissions(session_dir)?;
+        let mut finalized = Finalized::default();
+        let witness = session_witness(session_dir)?;
+        fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
+        let mut campaigns = Vec::new();
+        let mut campaign_names = spooled_campaigns(session_dir)?;
+        if session_ended(session_dir) {
+            for entry in fs::read_dir(session_dir).map_err(|error| failure(session_dir, error))? {
+                let entry = entry.map_err(|error| failure(session_dir, error))?;
+                if entry
+                    .file_type()
+                    .map_err(|error| failure(&entry.path(), error))?
+                    .is_dir()
+                    && read_saved(&entry.path()).is_some()
+                    && let Some(name) = entry.file_name().to_str()
+                    && !campaign_names.iter().any(|known| known == name)
+                {
+                    campaign_names.push(name.to_owned());
+                }
             }
         }
-    }
-    for campaign in campaign_names {
-        let campaign_dir = session_dir.join(&campaign);
-        fs::create_dir_all(&campaign_dir).map_err(|error| failure(&campaign_dir, error))?;
-        let segments = segment_paths(&campaign_dir)?;
-        let name = Some(campaign);
-        let unsaved = match name.as_deref().map_or(Destination::Recording, destination) {
-            Destination::Recording => false,
-            Destination::Unsaved => true,
-            Destination::Neither => continue,
-        };
-        // A Battle Plan Recorder session publishes nothing of a campaign without
-        // an admitted load; its hours are reported as left out.
-        let admitted = match &admissions {
-            None => None,
-            Some(admissions) => match name.as_deref().and_then(|name| admissions.loads.get(name)) {
-                Some(loads) => Some(loads),
-                None => {
-                    if let Some(name) = &name {
-                        match spool_loads(&campaign_dir) {
-                            Ok(loads) => finalized.omitted.extend(
-                                loads
-                                    .into_iter()
-                                    .map(|(load, hours)| admissions.omission(name, load, hours)),
-                            ),
-                            Err(error) => {
-                                finalized.failed_campaigns.insert(name.clone());
-                                finalized.errors.push(error);
+        for campaign in campaign_names {
+            let campaign_dir = session_dir.join(&campaign);
+            fs::create_dir_all(&campaign_dir).map_err(|error| failure(&campaign_dir, error))?;
+            let segments = segment_paths(&campaign_dir)?;
+            let name = Some(campaign);
+            let unsaved = match name.as_deref().map_or(Destination::Recording, destination) {
+                Destination::Recording => false,
+                Destination::Unsaved => true,
+                Destination::Neither => continue,
+            };
+            // A Battle Plan Recorder session publishes nothing of a campaign without
+            // an admitted load; its hours are reported as left out.
+            let admitted = match &admissions {
+                None => None,
+                Some(admissions) => match name.as_deref().and_then(|name| admissions.loads.get(name)) {
+                    Some(loads) => Some(loads),
+                    None => {
+                        if let Some(name) = &name {
+                            match spool_loads(&campaign_dir) {
+                                Ok(loads) => finalized.omitted.extend(
+                                    loads
+                                        .into_iter()
+                                        .map(|(load, hours)| admissions.omission(name, load, hours)),
+                                ),
+                                Err(error) => {
+                                    finalized.failed_campaigns.insert(name.clone());
+                                    finalized.errors.push(error);
+                                }
                             }
                         }
+                        continue;
                     }
-                    continue;
-                }
-            },
-        };
-        campaigns.push((campaign_dir, name, segments, admitted, unsaved));
-    }
-    campaigns.sort_by(|left, right| left.0.cmp(&right.0));
-    if campaigns.is_empty() && admissions.is_none() {
-        return Err(failure(session_dir, "no campaign spool segments found"));
-    }
-    let mut process_context = None;
-    let mut committed = ahead.committed.take();
-    for (campaign_dir, name, paths, admitted, unsaved) in campaigns {
-        let campaign_ahead = ahead.campaigns.remove(&campaign_dir);
-        match finalize_campaign(
-            &campaign_dir,
-            &paths,
-            replay_dir,
-            unsaved,
-            &mut process_context,
-            witness.as_ref(),
-            admitted,
-            progress,
-            campaign_ahead,
-            ahead.checkpoint_reports.remove(&campaign_dir),
-            naming,
-            &mut committed,
-        ) {
-            Ok(outcome) => {
-                if unsaved {
-                    finalized.unsaved.extend(outcome.replay);
-                } else {
-                    if outcome.replay.is_some() {
-                        finalized.saved_campaigns.extend(name.clone());
+                },
+            };
+            campaigns.push((campaign_dir, name, segments, admitted, unsaved));
+        }
+        campaigns.sort_by(|left, right| left.0.cmp(&right.0));
+        if campaigns.is_empty() && admissions.is_none() {
+            return Err(failure(session_dir, "no campaign spool segments found"));
+        }
+        let mut process_context = None;
+        let mut committed = ahead.committed.take();
+        for (campaign_dir, name, paths, admitted, unsaved) in campaigns {
+            let campaign_ahead = ahead.campaigns.remove(&campaign_dir);
+            match finalize_campaign(
+                &campaign_dir,
+                &paths,
+                replay_dir,
+                unsaved,
+                &mut process_context,
+                witness.as_ref(),
+                admitted,
+                progress,
+                campaign_ahead,
+                ahead.checkpoint_reports.remove(&campaign_dir),
+                naming,
+                &mut committed,
+            ) {
+                Ok(outcome) => {
+                    if unsaved {
+                        finalized.unsaved.extend(outcome.replay);
+                    } else {
+                        if outcome.replay.is_some() {
+                            finalized.saved_campaigns.extend(name.clone());
+                        }
+                        finalized.replays.extend(outcome.replay);
                     }
-                    finalized.replays.extend(outcome.replay);
+                    finalized.unrenamed.extend(outcome.unrenamed);
+                    if let (Some(admissions), Some(name)) = (&admissions, &name) {
+                        finalized.omitted.extend(
+                            outcome
+                                .omitted
+                                .into_iter()
+                                .map(|(load, hours)| admissions.omission(name, load, hours)),
+                        );
+                    }
                 }
-                finalized.unrenamed.extend(outcome.unrenamed);
-                if let (Some(admissions), Some(name)) = (&admissions, &name) {
-                    finalized.omitted.extend(
-                        outcome
-                            .omitted
-                            .into_iter()
-                            .map(|(load, hours)| admissions.omission(name, load, hours)),
-                    );
+                Err(error) => {
+                    finalized.failed_campaigns.extend(name);
+                    finalized.errors.push(error);
                 }
-            }
-            Err(error) => {
-                finalized.failed_campaigns.extend(name);
-                finalized.errors.push(error);
             }
         }
-    }
-    if admissions.is_some()
-        && finalized.replays.is_empty()
-        && finalized.unsaved.is_empty()
-        && finalized.errors.is_empty()
-    {
-        println!("No admitted load recorded an hour; nothing published.");
-    }
-    // By campaign; each campaign's loads stay in spool order.
-    finalized
-        .omitted
-        .sort_by(|left, right| left.campaign.cmp(&right.campaign));
-    for omission in &finalized.omitted {
-        println!(
-            "{}: {} hours of load {} left out ({}); kept in the session folder",
-            omission.campaign,
-            omission.hours,
-            omission
-                .load
-                .map_or_else(|| "unidentified".to_owned(), |load| load.to_string()),
-            omission.refusal.map_or("not admitted", Refusal::as_str)
-        );
-    }
-    for unrenamed in &finalized.unrenamed {
-        println!("{unrenamed}");
-    }
-    Ok(finalized)
+        if admissions.is_some()
+            && finalized.replays.is_empty()
+            && finalized.unsaved.is_empty()
+            && finalized.errors.is_empty()
+        {
+            println!("No admitted load recorded an hour; nothing published.");
+        }
+        // By campaign; each campaign's loads stay in spool order.
+        finalized
+            .omitted
+            .sort_by(|left, right| left.campaign.cmp(&right.campaign));
+        for omission in &finalized.omitted {
+            println!(
+                "{}: {} hours of load {} left out ({}); kept in the session folder",
+                omission.campaign,
+                omission.hours,
+                omission
+                    .load
+                    .map_or_else(|| "unidentified".to_owned(), |load| load.to_string()),
+                omission.refusal.map_or("not admitted", Refusal::as_str)
+            );
+        }
+        for unrenamed in &finalized.unrenamed {
+            println!("{unrenamed}");
+        }
+        Ok(finalized)
+    })
 }
 
 /// Save (or with `unsaved`, stage) a campaign's closed segments; its loads must be decided.
@@ -2005,39 +2020,41 @@ pub fn save_campaign(
     ahead: &mut Ahead,
     naming: Naming<'_>,
 ) -> Result<(Option<PathBuf>, Vec<Omission>)> {
-    reconcile_session_checkpoints(session_dir, replay_dir)?;
-    let admissions = session_admissions(session_dir)?;
-    let witness = session_witness(session_dir)?;
-    fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
-    let campaign_dir = session_dir.join(campaign);
-    let admitted = admissions
-        .as_ref()
-        .map(|admissions| admissions.loads.get(campaign).cloned().unwrap_or_default());
-    let outcome = finalize_campaign(
-        &campaign_dir,
-        &segment_paths(&campaign_dir)?,
-        replay_dir,
-        unsaved,
-        &mut None,
-        witness.as_ref(),
-        admitted.as_ref(),
-        progress,
-        ahead.campaigns.remove(&campaign_dir),
-        ahead.checkpoint_reports.remove(&campaign_dir),
-        naming,
-        &mut ahead.committed,
-    )?;
-    if let Some(unrenamed) = &outcome.unrenamed {
-        println!("{unrenamed}");
-    }
-    let omitted = admissions.map_or_else(Vec::new, |admissions| {
-        outcome
-            .omitted
-            .into_iter()
-            .map(|(load, hours)| admissions.omission(campaign, load, hours))
-            .collect()
-    });
-    Ok((outcome.replay, omitted))
+    with_compression(naming.settings, || {
+        reconcile_session_checkpoints(session_dir, replay_dir)?;
+        let admissions = session_admissions(session_dir)?;
+        let witness = session_witness(session_dir)?;
+        fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
+        let campaign_dir = session_dir.join(campaign);
+        let admitted = admissions
+            .as_ref()
+            .map(|admissions| admissions.loads.get(campaign).cloned().unwrap_or_default());
+        let outcome = finalize_campaign(
+            &campaign_dir,
+            &segment_paths(&campaign_dir)?,
+            replay_dir,
+            unsaved,
+            &mut None,
+            witness.as_ref(),
+            admitted.as_ref(),
+            progress,
+            ahead.campaigns.remove(&campaign_dir),
+            ahead.checkpoint_reports.remove(&campaign_dir),
+            naming,
+            &mut ahead.committed,
+        )?;
+        if let Some(unrenamed) = &outcome.unrenamed {
+            println!("{unrenamed}");
+        }
+        let omitted = admissions.map_or_else(Vec::new, |admissions| {
+            outcome
+                .omitted
+                .into_iter()
+                .map(|(load, hours)| admissions.omission(campaign, load, hours))
+                .collect()
+        });
+        Ok((outcome.replay, omitted))
+    })
 }
 
 /// What one checkpoint saved.
@@ -2517,150 +2534,152 @@ pub fn checkpoint_campaign(
     naming: Naming<'_>,
     progress: &dyn Fn() -> std::io::Result<()>,
 ) -> Result<Option<Checkpoint>> {
-    reconcile_session_checkpoints(session_dir, replay_dir)?;
-    if session_witness(session_dir)?.is_some() {
-        return Err(failure(
-            session_dir,
-            "the capture failed; nothing checkpointed",
-        ));
-    }
-    let campaign_dir = session_dir.join(campaign);
-    let admissions = session_admissions(session_dir)?;
-    let admitted = admissions
-        .as_ref()
-        .map(|admissions| admissions.loads.get(campaign).cloned().unwrap_or_default());
-    let paths: Vec<_> = segment_paths(&campaign_dir)?
-        .into_iter()
-        .filter(|(number, _)| *number <= through)
-        .collect();
-    if paths.is_empty() {
-        return Ok(None);
-    }
-    fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
-    let unsaved = !auto_save;
-    let mut retained = None;
-    let taken = match ahead.campaigns.remove(&campaign_dir) {
-        Some(mut campaign)
-            if campaign.written.is_some()
-                && campaign.tails.keys().any(|number| *number > through) =>
-        {
-            let prefix = campaign
-                .written
-                .as_mut()
-                .map(|(written, _)| written.take_completed(through))
-                .transpose()
-                .map_err(|error| failure(&campaign_dir, error))?
-                .flatten();
-            let Some(prefix) = prefix else {
-                ahead.campaigns.insert(campaign_dir.clone(), campaign);
-                return Ok(None);
-            };
-            let tails = campaign
-                .tails
-                .range(..=through)
-                .map(|(number, tail)| (*number, tail.clone()))
-                .collect();
-            let mut summary = Box::<Summary>::default();
-            summary.multiplayer = prefix.multiplayer();
-            let taken = Box::new(CampaignAhead {
-                saved: campaign.saved.clone(),
-                tails,
-                written: Some((prefix, summary)),
-                ..Default::default()
-            });
-            retained = Some(campaign);
-            Some(taken)
+    with_compression(naming.settings, || {
+        reconcile_session_checkpoints(session_dir, replay_dir)?;
+        if session_witness(session_dir)?.is_some() {
+            return Err(failure(
+                session_dir,
+                "the capture failed; nothing checkpointed",
+            ));
         }
-        taken => taken,
-    };
-    let committed = &mut ahead.committed;
-    let mut hand = |recording: &Path, replay: &Replay, blocks: &[BlockIndex]| {
-        if let Some(committed) = committed {
-            committed(recording, replay, blocks);
-        }
-    };
-    let result = finalize_campaign_with_publisher(
-        &campaign_dir,
-        &paths,
-        replay_dir,
-        unsaved,
-        &mut None,
-        None,
-        admitted.as_ref(),
-        progress,
-        taken,
-        naming,
-        true,
-        |replay, destination| replay.write_atomic_with(destination, |_| progress()),
-        // The collector holds the recording until the session ends; the save then names it.
-        |recording, _| Ok(recording.to_owned()),
-        &mut hand,
-    );
-    if let Some(mut campaign) = retained {
-        let must_adopt = result
+        let campaign_dir = session_dir.join(campaign);
+        let admissions = session_admissions(session_dir)?;
+        let admitted = admissions
             .as_ref()
-            .is_ok_and(|outcome| outcome.replay.is_some());
-        let recording = result
-            .as_ref()
-            .ok()
-            .and_then(|outcome| outcome.replay.clone())
-            .or_else(|| read_saved(&campaign_dir).map(|saved| saved.replay));
-        let adopted = (|| {
-            let recording = recording
-                .ok_or_else(|| failure(&campaign_dir, "commit has no durable spool watermark"))?;
-            let replay = held_recording(&recording)?;
-            let saved = read_saved(&campaign_dir).ok_or_else(|| {
-                failure(
-                    &campaign_dir,
-                    "verified commit has no durable spool watermark",
-                )
-            })?;
-            if saved.revision != replay.revision() {
-                return Err(failure(
-                    &campaign_dir,
-                    "spool watermark differs from verified revision",
-                ));
-            }
-            if let Some((written, _)) = &mut campaign.written {
-                written
-                    .committed(replay, saved.revision)
-                    .map_err(|error| failure(&campaign_dir, error))?;
-            }
-            campaign.saved.extend(saved.segments.keys().copied());
-            campaign.tails.retain(|number, _| *number > through);
-            campaign.through = None;
-            Ok(())
-        })();
-        if adopted.is_err()
-            && let Some((written, _)) = &mut campaign.written
-        {
-            written.abort_commit();
+            .map(|admissions| admissions.loads.get(campaign).cloned().unwrap_or_default());
+        let paths: Vec<_> = segment_paths(&campaign_dir)?
+            .into_iter()
+            .filter(|(number, _)| *number <= through)
+            .collect();
+        if paths.is_empty() {
+            return Ok(None);
         }
-        ahead.campaigns.insert(campaign_dir.clone(), campaign);
-        if must_adopt {
-            adopted?;
+        fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
+        let unsaved = !auto_save;
+        let mut retained = None;
+        let taken = match ahead.campaigns.remove(&campaign_dir) {
+            Some(mut campaign)
+                if campaign.written.is_some()
+                    && campaign.tails.keys().any(|number| *number > through) =>
+            {
+                let prefix = campaign
+                    .written
+                    .as_mut()
+                    .map(|(written, _)| written.take_completed(through))
+                    .transpose()
+                    .map_err(|error| failure(&campaign_dir, error))?
+                    .flatten();
+                let Some(prefix) = prefix else {
+                    ahead.campaigns.insert(campaign_dir.clone(), campaign);
+                    return Ok(None);
+                };
+                let tails = campaign
+                    .tails
+                    .range(..=through)
+                    .map(|(number, tail)| (*number, tail.clone()))
+                    .collect();
+                let mut summary = Box::<Summary>::default();
+                summary.multiplayer = prefix.multiplayer();
+                let taken = Box::new(CampaignAhead {
+                    saved: campaign.saved.clone(),
+                    tails,
+                    written: Some((prefix, summary)),
+                    ..Default::default()
+                });
+                retained = Some(campaign);
+                Some(taken)
+            }
+            taken => taken,
+        };
+        let committed = &mut ahead.committed;
+        let mut hand = |recording: &Path, replay: &Replay, blocks: &[BlockIndex]| {
+            if let Some(committed) = committed {
+                committed(recording, replay, blocks);
+            }
+        };
+        let result = finalize_campaign_with_publisher(
+            &campaign_dir,
+            &paths,
+            replay_dir,
+            unsaved,
+            &mut None,
+            None,
+            admitted.as_ref(),
+            progress,
+            taken,
+            naming,
+            true,
+            |replay, destination| replay.write_atomic_with(destination, |_| progress()),
+            // The collector holds the recording until the session ends; the save then names it.
+            |recording, _| Ok(recording.to_owned()),
+            &mut hand,
+        );
+        if let Some(mut campaign) = retained {
+            let must_adopt = result
+                .as_ref()
+                .is_ok_and(|outcome| outcome.replay.is_some());
+            let recording = result
+                .as_ref()
+                .ok()
+                .and_then(|outcome| outcome.replay.clone())
+                .or_else(|| read_saved(&campaign_dir).map(|saved| saved.replay));
+            let adopted = (|| {
+                let recording = recording
+                    .ok_or_else(|| failure(&campaign_dir, "commit has no durable spool watermark"))?;
+                let replay = held_recording(&recording)?;
+                let saved = read_saved(&campaign_dir).ok_or_else(|| {
+                    failure(
+                        &campaign_dir,
+                        "verified commit has no durable spool watermark",
+                    )
+                })?;
+                if saved.revision != replay.revision() {
+                    return Err(failure(
+                        &campaign_dir,
+                        "spool watermark differs from verified revision",
+                    ));
+                }
+                if let Some((written, _)) = &mut campaign.written {
+                    written
+                        .committed(replay, saved.revision)
+                        .map_err(|error| failure(&campaign_dir, error))?;
+                }
+                campaign.saved.extend(saved.segments.keys().copied());
+                campaign.tails.retain(|number, _| *number > through);
+                campaign.through = None;
+                Ok(())
+            })();
+            if adopted.is_err()
+                && let Some((written, _)) = &mut campaign.written
+            {
+                written.abort_commit();
+            }
+            ahead.campaigns.insert(campaign_dir.clone(), campaign);
+            if must_adopt {
+                adopted?;
+            }
         }
-    }
-    let mut outcome = result?;
-    let Some(recording) = outcome.replay else {
-        return Ok(None);
-    };
-    let hours = outcome.covered.values().map(|(_, hours, _)| hours).sum();
-    if let Some(report) = merge_reports(
-        ahead.checkpoint_reports.remove(&campaign_dir),
-        outcome.report.take(),
-        &held_recording(&recording)?,
-    )? {
-        ahead
-            .checkpoint_reports
-            .insert(campaign_dir.clone(), report);
-    }
-    let deleted = drop_checkpointed(&campaign_dir)?;
-    Ok(Some(Checkpoint {
-        recording,
-        hours,
-        deleted,
-    }))
+        let mut outcome = result?;
+        let Some(recording) = outcome.replay else {
+            return Ok(None);
+        };
+        let hours = outcome.covered.values().map(|(_, hours, _)| hours).sum();
+        if let Some(report) = merge_reports(
+            ahead.checkpoint_reports.remove(&campaign_dir),
+            outcome.report.take(),
+            &held_recording(&recording)?,
+        )? {
+            ahead
+                .checkpoint_reports
+                .insert(campaign_dir.clone(), report);
+        }
+        let deleted = drop_checkpointed(&campaign_dir)?;
+        Ok(Some(Checkpoint {
+            recording,
+            hours,
+            deleted,
+        }))
+    })
 }
 
 /// Delete verified saved segments, keeping the newest while live and every waiting segment once ended.

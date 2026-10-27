@@ -69,6 +69,7 @@ pub fn record(
         operation_outcomes: recording.operation_outcomes,
         politics_capture: recording.politics_capture,
         capture_mode: recording.capture_mode,
+        compression: None,
         nothing_recorded_is_ok: true,
         live_status: true,
         admit: Some(recording.admit),

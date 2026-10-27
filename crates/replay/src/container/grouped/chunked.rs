@@ -42,7 +42,16 @@ pub(super) fn frame(columns: &[impl AsRef<[u8]>]) -> io::Result<Vec<u8>> {
     Ok(raw)
 }
 
+#[cfg(test)]
 pub(super) fn split(id: usize, later: &Later) -> io::Result<Vec<(usize, usize, Vec<u8>)>> {
+    split_at(id, later, STORED_LEVEL)
+}
+
+pub(super) fn split_at(
+    id: usize,
+    later: &Later,
+    level: i32,
+) -> io::Result<Vec<(usize, usize, Vec<u8>)>> {
     let mut previous = vec![0; later.columns.0.len()];
     let mut sections = Vec::new();
     for end in &later.cuts {
@@ -62,7 +71,7 @@ pub(super) fn split(id: usize, later: &Later) -> io::Result<Vec<(usize, usize, V
         let compressed = if raw.is_empty() {
             Vec::new()
         } else {
-            compress(&raw)?
+            compress_at(&raw, level)?
         };
         sections.push((id, raw.len(), compressed));
         previous.clone_from(end);

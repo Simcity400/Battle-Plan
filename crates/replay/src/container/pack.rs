@@ -12,7 +12,11 @@ use std::{
     thread,
 };
 
+type CompressionSource = dyn Fn() -> Option<crate::compression::Compression> + Send + Sync;
+
 struct Budget {
+    compression: AtomicUsize,
+    compression_source: Mutex<Option<std::sync::Arc<CompressionSource>>>,
     progress: Mutex<Option<crate::progress::Progress>>,
     // Playing limits remain active even after catch-up leaves OS background mode.
     background: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -55,9 +59,26 @@ impl Packing {
         Self::with_workers(foreground)
     }
 
+    /// Packing at the compression `path`'s recorder settings choose, re-read for each block.
+    pub fn from_settings(path: &std::path::Path) -> io::Result<Self> {
+        use crate::recorder_settings::RecorderSettings;
+        let settings = RecorderSettings::load_from(path)?;
+        let packing = Self::new()?;
+        packing.set_compression(settings.compression);
+        let path = path.to_owned();
+        packing.set_compression_source(move || {
+            RecorderSettings::load_from(&path)
+                .ok()
+                .map(|current| current.compression)
+        });
+        Ok(packing)
+    }
+
     fn with_workers(foreground: usize) -> io::Result<Self> {
         let foreground = foreground.max(1);
         let budget = std::sync::Arc::new(Budget {
+            compression: AtomicUsize::new(0),
+            compression_source: Mutex::new(None),
             progress: Mutex::new(None),
             background: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             io: Mutex::new(std::time::Instant::now()),
@@ -147,6 +168,20 @@ impl Packing {
         drop(promoted);
         self.budget.background.store(false, Ordering::Release);
         self.pool.spawn_broadcast(|_| refresh());
+    }
+
+    pub fn set_compression(&self, compression: crate::compression::Compression) {
+        self.budget.compression.store(
+            usize::from(compression == crate::compression::Compression::High),
+            Ordering::Release,
+        );
+    }
+
+    pub fn set_compression_source(
+        &self,
+        source: impl Fn() -> Option<crate::compression::Compression> + Send + Sync + 'static,
+    ) {
+        *lock(&self.budget.compression_source) = Some(std::sync::Arc::new(source));
     }
 
     /// Leave OS background mode while catching up, retaining the playing CPU and logical I/O limits.
@@ -239,6 +274,25 @@ impl Packing {
 
     pub fn active() -> bool {
         BUDGET.with_borrow(|budget| budget.is_some())
+    }
+}
+
+pub(crate) fn compression() -> crate::compression::Compression {
+    use crate::compression::Compression;
+    let budget = BUDGET.with_borrow(Clone::clone);
+    let Some(budget) = budget else {
+        return Compression::Low;
+    };
+    let source = lock(&budget.compression_source).clone();
+    if let Some(current) = source.and_then(|source| source()) {
+        budget
+            .compression
+            .store(usize::from(current == Compression::High), Ordering::Release);
+    }
+    if budget.compression.load(Ordering::Acquire) == 0 {
+        Compression::Low
+    } else {
+        Compression::High
     }
 }
 

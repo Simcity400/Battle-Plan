@@ -7,6 +7,7 @@ export const SIDEBAR_ICONS = {
   folders: { label: 'Folders', dark: '#fbbf24', light: '#a16207' },
   appearance: { label: 'Appearance', dark: '#f472b6', light: '#be185d' },
   graphics: { label: 'Map graphics', dark: '#38bdf8', light: '#0369a1' },
+  recording: { label: 'Recording', dark: '#94a3b8', light: '#475569' },
   diagnostics: { label: 'Diagnostics', dark: '#fb923c', light: '#c2410c' },
   overview: { label: 'Overview', dark: '#a78bfa', light: '#7c3aed' },
   politics: { label: 'Politics', dark: '#f472b6', light: '#be185d' },

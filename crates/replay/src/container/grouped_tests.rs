@@ -171,7 +171,12 @@ fn grouped_frame_headers_cost_bytes_not_a_word_per_table_and_keep_read_hours() {
             frame
         })
         .collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[session_records(&frames)]).unwrap();
+    let packing = Packing::new().unwrap();
+    packing.set_compression(crate::compression::Compression::High);
+    packing.promote();
+    let replay = packing
+        .run(|| Replay::from_records(CAMPAIGN.into(), &[session_records(&frames)]))
+        .unwrap();
     assert_eq!(replay.index.len(), 1);
     let header = size(&replay, 0, Section::Header).unwrap();
     let diagnostics = size(&replay, 0, Section::Diagnostics).unwrap();
@@ -340,7 +345,12 @@ fn keyframes_store_unchanged_tables_at_constant_cost_against_their_anchor() {
         frames.push(frame);
     }
     let records = session_records(&frames);
-    let replay = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records)).unwrap();
+    let packing = Packing::new().unwrap();
+    packing.set_compression(crate::compression::Compression::High);
+    packing.promote();
+    let replay = packing
+        .run(|| Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records)))
+        .unwrap();
     assert_eq!(replay.index.len(), 4);
     let first_countries = size(&replay, 0, Section::Keyframe(TableId::Countries)).unwrap();
     let first_provinces = size(&replay, 0, Section::Keyframe(TableId::Provinces)).unwrap();
@@ -1234,9 +1244,8 @@ fn reused_compression_contexts_write_the_bytes_of_fresh_ones_at_every_level() {
         })
         .collect();
     assert!(sections.len() > 1);
-    // Levels the writer uses (3, 9 and the stored level) and the windowed
-    // high level the size survey compares.
-    for level in [3, 9, grouped::STORED_LEVEL, 22] {
+    // Low and High levels, plus the windowed level the size survey compares.
+    for level in [3, 9, 19, 22] {
         for raw in &sections {
             // The first call creates the context; later calls reuse it.
             let (fresh, failed) = grouped::fresh_and_failed_reuse(raw, level).unwrap();
@@ -1260,12 +1269,17 @@ fn sections_are_stored_at_the_stored_level_where_that_is_smaller() {
     let (_, frames) = drifting_frames(1);
     let mut frames = frames;
     frames.extend(moving_frames(2..=240));
-    let replay = Replay::from_records(CAMPAIGN.into(), &[session_records(&frames)]).unwrap();
+    let packing = Packing::new().unwrap();
+    packing.set_compression(crate::compression::Compression::High);
+    packing.promote();
+    let replay = packing
+        .run(|| Replay::from_records(CAMPAIGN.into(), &[session_records(&frames)]))
+        .unwrap();
     let mut smaller = 0;
     for section in replay.block_sections(&replay.index[0]).unwrap().unwrap() {
         for (bytes, raw) in stored_chunks(&replay, 0, section.section) {
-            let choosing = grouped::compress(&raw).unwrap();
-            let level = grouped::compress_at(&raw, grouped::STORED_LEVEL).unwrap();
+            let choosing = grouped::compress_at(&raw, 9).unwrap();
+            let level = grouped::compress_at(&raw, 19).unwrap();
             // The smaller of two whole frames of the same plain bytes.
             let at_stored_level = level.len() < choosing.len();
             smaller += usize::from(at_stored_level);
@@ -1289,6 +1303,27 @@ fn sections_are_stored_at_the_stored_level_where_that_is_smaller() {
     );
     let expected: Vec<DecodedFrame> = frames.into_iter().map(stored).collect();
     assert_eq!(decoded_hours(&replay), expected);
+}
+
+#[test]
+fn low_sections_are_stored_directly_at_level_three() {
+    let (_, mut frames) = drifting_frames(1);
+    frames.extend(moving_frames(2..=240));
+    let packing = Packing::new().unwrap();
+    packing.set_compression(crate::compression::Compression::Low);
+    packing.promote();
+    let replay = packing
+        .run(|| Replay::from_records(CAMPAIGN.into(), &[session_records(&frames)]))
+        .unwrap();
+    for section in replay.block_sections(&replay.index[0]).unwrap().unwrap() {
+        for (bytes, raw) in stored_chunks(&replay, 0, section.section) {
+            assert_eq!(bytes, grouped::compress_at(&raw, 3).unwrap(), "{section:?}");
+        }
+    }
+    assert_eq!(
+        decoded_hours(&replay),
+        frames.into_iter().map(stored).collect::<Vec<_>>()
+    );
 }
 
 fn tokens(count: u32) -> TableRows {

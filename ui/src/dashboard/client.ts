@@ -1,5 +1,6 @@
 import type { PreparationRequest, PreparationReply, PreparationPreferences } from '../shell/preparation/contract';
 import type { RecorderSettings as PanelRecorderSettings } from '../recorder/status';
+import type { Compression } from '../recorder/compression';
 import type { ContentFolders, MapBounds, MapOptions, ReplayMetadata } from '../shell/api';
 import type { CampaignMapSettings, HistoryCacheReply, MapSettingsReply } from '../generated/dashboard';
 
@@ -131,6 +132,7 @@ export interface DashboardClient {
   /** Where each recording is now, by its folder and campaign; null when not found alone. */
   locateRecordings?(recordings: { path: string; campaignKey: string }[]): Promise<(string | null)[]>;
   recorderSettings?(): Promise<RecorderSettings>;
+  setRecordingCompression?(compression: Compression): Promise<RecorderSettings>;
   setMapViews(views: DashboardMapView[]): Promise<void>;
   onMapStates(callback: (states: DashboardMapState[]) => void): Promise<() => void>;
   /** The native map picker changed a view's options; later layouts must carry them. */

@@ -77,6 +77,10 @@ mod capture_mode {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecorderSettings {
+    #[serde(default)]
+    pub compression: crate::compression::Compression,
+    #[serde(default)]
+    pub compression_revision: u64,
     /// Auto record: campaigns record when they load, unless their own choice says otherwise.
     #[serde(default = "enabled")]
     pub record_every_campaign: bool,
@@ -139,6 +143,8 @@ pub fn same_path(first: &Path, second: &Path) -> bool {
 impl Default for RecorderSettings {
     fn default() -> Self {
         Self {
+            compression: crate::compression::Compression::Low,
+            compression_revision: 0,
             record_every_campaign: true,
             auto_save: true,
             save_folder: None,
@@ -173,6 +179,11 @@ pub fn default_save_folder() -> PathBuf {
 }
 
 impl RecorderSettings {
+    pub fn choose_compression(&mut self, compression: crate::compression::Compression) {
+        self.compression = compression;
+        self.compression_revision = self.compression_revision.wrapping_add(1);
+    }
+
     pub fn path() -> PathBuf {
         directory().join("settings.json")
     }

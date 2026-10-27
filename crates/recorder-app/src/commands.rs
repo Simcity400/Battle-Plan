@@ -127,6 +127,7 @@ pub struct SettingsPatch {
     operation_outcomes: Option<bool>,
     politics: Option<bool>,
     capture_mode: Option<String>,
+    compression: Option<replay::compression::Compression>,
 }
 
 /// Held while Start with Windows and its saved setting change together.
@@ -175,6 +176,9 @@ pub async fn update_recorder_settings(
             set(&mut settings.game_score, patch.game_score);
             set(&mut settings.operation_outcomes, patch.operation_outcomes);
             set(&mut settings.politics, patch.politics);
+            if let Some(compression) = patch.compression {
+                settings.choose_compression(compression);
+            }
             if let Some(mode) = capture_mode {
                 settings.capture_mode = mode;
             }
