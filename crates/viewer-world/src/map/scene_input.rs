@@ -88,7 +88,7 @@ pub enum SceneInput<'a> {
         continuity: Continuity,
     },
     SetFogOfWar {
-        texels: &'a [u8],
+        texels: &'a map_display_data::Paged<u8>,
         fog: bool,
     },
     PresentHours {

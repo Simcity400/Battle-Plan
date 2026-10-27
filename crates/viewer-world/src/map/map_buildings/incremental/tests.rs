@@ -678,26 +678,6 @@ fn cached_plan_inputs_match_expected_sites_and_changes() {
         vec![false, false]
     );
     assert_eq!(*assets.city_bits(&terrain(true)).unwrap(), vec![true, true]);
-    let old = BTreeMap::from([(1, 1), (2, 2), (4, 4), (6, 6), (9, 9)]);
-    let new = BTreeMap::from([(2, 2), (3, 3), (4, 5), (7, 7), (9, 9)]);
-    let changes = |old: &BTreeMap<u32, i32>, new: &BTreeMap<u32, i32>| {
-        let mut keys = Vec::new();
-        changed_entries(
-            old,
-            new,
-            |a, b| a == b,
-            |key| {
-                keys.push(key);
-                Ok(())
-            },
-        )
-        .unwrap();
-        keys
-    };
-    assert_eq!(changes(&old, &new), vec![1, 3, 4, 6, 7]);
-    assert_eq!(changes(&new, &new), Vec::<u32>::new());
-    assert_eq!(changes(&BTreeMap::new(), &new), vec![2, 3, 4, 7, 9]);
-    assert_eq!(changes(&old, &BTreeMap::new()), vec![1, 2, 4, 6, 9]);
     assert_eq!(assets.sites().slots.len(), WIDE as usize + 6);
     assert_eq!(assets.slot_count(), WIDE as usize + 7);
 }
@@ -865,7 +845,7 @@ fn a_building_base_keeps_closed_operands_without_source_pins() {
     );
     assert_eq!(base.vision.ours, vision.ours());
     assert_eq!(base.vision.fog, vision.fog());
-    assert_eq!(base.vision.provinces.as_deref(), vision.province_fog());
+    assert_eq!(base.vision.provinces.as_deref().map(|v| v.flat()), vision.province_fog());
     drop(vision);
     for view in frame.tables {
         assert!(
@@ -1390,7 +1370,12 @@ fn fog_changes_preserve_unknowns_and_only_dirty_native_visibility_boundaries() {
         (6, u8::MAX),
         (7, 0),
     ]);
-    base.vision.provinces = Some(Arc::new(previous.clone()));
+    base.vision.provinces = Some(Arc::new(
+        viewer_foundation::map::perspective::values::Values::from_iter(
+            previous.iter().map(|(&key, &value)| (key, value)),
+            map_display_data::credit::display_products(),
+        ).unwrap(),
+    ));
     let mut next = (*vision).clone();
     previous.remove(&7);
     previous.insert(1, MAP_OBJECT_VISIBILITY - 1);

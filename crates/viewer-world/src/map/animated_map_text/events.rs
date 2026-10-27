@@ -829,6 +829,70 @@ impl Prepared {
         }
     }
 
+    pub fn into_display(self) -> map_display_data::MapText {
+        use map_display_data as d;
+        let impact = |v: Impact| d::Impact {
+            id: v.id,
+            province: v.province,
+            effect: v.effect as u8,
+            position: v.position,
+            bounds: v.bounds,
+        };
+        let popup = |v: Popup| d::Popup {
+            sequence: v.sequence,
+            family: v.family as u8,
+            province: v.province,
+            style: match v.style {
+                Style::CombatLoss => 0,
+                Style::SiegeInfo => 1,
+            },
+            text: v.text,
+        };
+        d::MapText {
+            view: self.view,
+            interval: match self.interval {
+                Err(reason) => d::MapTextResult::Unavailable {
+                    reason,
+                },
+                Ok(i) => d::MapTextResult::Value {
+                    interval: d::Interval {
+                        branch: i.boundary.branch,
+                        epoch: i.boundary.epoch,
+                        from_hour: i.boundary.from_hour,
+                        to_hour: i.boundary.to_hour,
+                        first: i.boundary.first,
+                        next: i.boundary.next,
+                        in_flight: i.in_flight,
+                        coverage: i.coverage.to_vec(),
+                        coverage_refusals: i.coverage_refusals,
+                        events: i
+                            .events
+                            .into_iter()
+                            .map(|e| d::MapEvent {
+                                sequence: e.sequence,
+                                family: e.family as u8,
+                                popup: match e.popup {
+                                    Ok(v) => d::PopupResult::Value {
+                                        popup: v.map(popup),
+                                    },
+                                    Err(reason) => d::PopupResult::Refused {
+                                        reason,
+                                    },
+                                },
+                                explosion: e.explosion.map(|e| match e {
+                                    Ok(v) => d::ImpactResult::Value { impact: impact(v) },
+                                    Err(reason) => d::ImpactResult::Refused {
+                                        reason,
+                                    },
+                                }),
+                            })
+                            .collect(),
+                    },
+                },
+            },
+        }
+    }
+
     pub fn from_display(value: map_display_data::MapText) -> std::io::Result<Self> {
         use map_display_data as d;
         let invalid = || {

@@ -99,7 +99,7 @@ fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_it
     let field = Field {
         branch: 1,
         hour: 20,
-        kinds: BTreeMap::from([(7, 0)]),
+        kinds: BTreeMap::from([(7, 0)]).into(),
     };
     let mut presentation = Presentation::default();
     presentation.transition(&Field::default(), &field, Continuity::Continue);
@@ -149,7 +149,7 @@ fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_it
     // A region without weather presents nothing.
     let clear = Field {
         hour: 21,
-        kinds: BTreeMap::new(),
+        kinds: BTreeMap::new().into(),
         ..field
     };
     assert!(collect(800.0, 18.0, &clear, &presentation).is_empty());
@@ -223,14 +223,14 @@ fn viewer_history_updates_only_changed_regions() {
     let first = Field {
         branch: 1,
         hour: 20,
-        kinds: BTreeMap::from([(1, 0), (2, 2)]),
+        kinds: BTreeMap::from([(1, 0), (2, 2)]).into(),
     };
     let mut presentation = Presentation::default();
     presentation.transition(&Field::default(), &first, Continuity::Continue);
     let next = Field {
         branch: 1,
         hour: 21,
-        kinds: BTreeMap::from([(1, 0), (2, 3)]),
+        kinds: BTreeMap::from([(1, 0), (2, 3)]).into(),
     };
     let retained = presentation.transition(&first, &next, Continuity::Continue);
     assert_eq!(retained, BTreeSet::from([1]));
@@ -238,7 +238,7 @@ fn viewer_history_updates_only_changed_regions() {
     assert_eq!(presentation.0[&2].seed_hour, 21);
     let seek = Field {
         hour: 20,
-        kinds: first.kinds.clone(),
+        kinds: first.kinds.clone().into(),
         ..first
     };
     assert!(
@@ -249,7 +249,7 @@ fn viewer_history_updates_only_changed_regions() {
     let branch = Field {
         branch: 2,
         hour: 21,
-        kinds: seek.kinds.clone(),
+        kinds: seek.kinds.clone().into(),
     };
     assert!(
         presentation
@@ -263,11 +263,11 @@ fn playback_skips_keep_live_rain_and_snow_runtimes_advancing() {
     let first = Field {
         branch: 1,
         hour: 20,
-        kinds: BTreeMap::from([(1, 0), (2, 2)]),
+        kinds: BTreeMap::from([(1, 0), (2, 2)]).into(),
     };
     let next = Field {
         hour: 200,
-        kinds: first.kinds.clone(),
+        kinds: first.kinds.clone().into(),
         ..first
     };
     let mut presentation = Presentation::default();

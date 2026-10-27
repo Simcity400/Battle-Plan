@@ -9,21 +9,112 @@ use std::{
 };
 use viewer_foundation::map::tables::Limitations;
 
+fn weather_kind(row: &replay_data::rows::WeatherRegionRow) -> Option<usize> {
+    [
+        row.light_rain,
+        row.heavy_rain,
+        row.snow,
+        row.blizzard,
+        row.sandstorm,
+    ]
+    .iter()
+    .position(|&flag| flag != 0)
+}
+
 pub fn weather_field(frame: &DecodedFrame) -> io::Result<data::WeatherField> {
-    let mut out = data::WeatherField {
-        branch: frame.branch,
-        hour: frame.hour,
-        ..Default::default()
-    };
-    for r in viewer_foundation::table_access::rows::<tables::WeatherRegions>(frame)?.rows() {
-        if let Some(kind) = [r.light_rain, r.heavy_rain, r.snow, r.blizzard, r.sandstorm]
-            .iter()
-            .position(|v| *v != 0)
-        {
-            out.kinds.insert(r.id, kind);
+    let mut kinds = data::copy_index::CopyIndex::default();
+    for row in viewer_foundation::table_access::rows::<tables::WeatherRegions>(frame)?.rows() {
+        if let Some(kind) = weather_kind(row) {
+            kinds = kinds.inserted(row.id, kind)?;
         }
     }
-    Ok(out)
+    Ok(data::WeatherField {
+        branch: frame.branch,
+        hour: frame.hour,
+        kinds,
+    })
+}
+
+#[derive(Default)]
+pub(crate) struct WeatherMemo {
+    source: Option<replay_frame::frame::ViewIdentity>,
+    kinds: data::copy_index::CopyIndex<u32, usize>,
+}
+impl WeatherMemo {
+    pub fn project(&mut self, frame: &DecodedFrame) -> io::Result<data::WeatherField> {
+        let view = &frame.tables[TableId::WeatherRegions.index()];
+        let changes = replay_frame::frame::HourInput::new(frame).changes().since(
+            TableId::WeatherRegions,
+            self.source.as_ref(),
+            weather_fields(),
+        );
+        let kinds = if matches!(changes, replay_frame::frame::TableChanges::Unchanged) {
+            self.kinds.clone()
+        } else if let replay_frame::frame::TableChanges::Rows(changes) = changes {
+            let rows = frame.complete::<tables::WeatherRegions>()?;
+            let mut kinds = self.kinds.clone();
+            for change in changes.changed() {
+                let key = change.key;
+                if !change.inserted && change.fields & weather_fields() == 0 {
+                    continue;
+                }
+                let id = u32::try_from(key).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "weather region key exceeds u32")
+                })?;
+                let index = rows.binary_search_by_key(&id, |row| row.id).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "weather delta key absent from its certified result",
+                    )
+                })?;
+                let kind = weather_kind(&rows[index]);
+                if kinds.get(&id).copied() != kind {
+                    if let Some(kind) = kind {
+                        kinds = kinds.inserted(id, kind)?;
+                    } else {
+                        kinds = kinds.removed(&id)?;
+                    }
+                }
+            }
+            for &key in changes.deleted() {
+                if let Ok(id) = u32::try_from(key) {
+                    if kinds.contains_key(&id) {
+                        kinds = kinds.removed(&id)?;
+                    }
+                }
+            }
+            kinds
+        } else {
+            let kinds = weather_field(frame)?.kinds;
+            if kinds == self.kinds {
+                self.kinds.clone()
+            } else {
+                kinds
+            }
+        };
+        self.source = Some(view.identity());
+        self.kinds = kinds.clone();
+        Ok(data::WeatherField {
+            branch: frame.branch,
+            hour: frame.hour,
+            kinds,
+        })
+    }
+}
+pub(crate) fn weather_fields() -> u64 {
+    static FIELDS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *FIELDS.get_or_init(|| {
+        (0..TableId::WeatherRegions.schema().len())
+            .filter(|&field| {
+                TableId::WeatherRegions
+                    .field_name(field)
+                    .is_some_and(|name| {
+                        ["light_rain", "heavy_rain", "snow", "blizzard", "sandstorm"]
+                            .contains(&name)
+                    })
+            })
+            .fold(0, |mask, field| mask | (1u64 << field))
+    })
 }
 
 impl FogProduct {
@@ -63,14 +154,20 @@ impl SnowMemo {
         }
     }
     fn intern(&self, snow: map_snow::SnowMud) -> Arc<map_snow::SnowMud> {
+        self.intern_shared(Arc::new(snow))
+    }
+    fn intern_shared(&self, snow: Arc<map_snow::SnowMud>) -> Arc<map_snow::SnowMud> {
         let mut values = self
             .values
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(value) = values.iter().find(|v| ***v == snow) {
+        if let Some(value) = values
+            .iter()
+            .rev()
+            .find(|v| Arc::ptr_eq(v, &snow) || ***v == *snow)
+        {
             return Arc::clone(value);
         }
-        let snow = Arc::new(snow);
         if self.capacity != 0 {
             values.push_back(Arc::clone(&snow));
         }
@@ -187,16 +284,30 @@ pub fn evidence(frame: &DecodedFrame, tables: &[TableId]) -> Vec<data::Evidence>
 }
 
 pub struct SnowContent {
+    fold: Mutex<map_snow::fold::Fold>,
     pub cells: map_snow::SnowCells,
     pub winter: map_snow::winter::Winter,
 }
 impl SnowContent {
+    pub fn project(
+        &self,
+        frame: &DecodedFrame,
+        memo: &SnowMemo,
+    ) -> io::Result<Arc<map_snow::SnowMud>> {
+        let projected = self
+            .fold
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .project(&self.cells, frame, &self.winter)?;
+        Ok(memo.intern_shared(projected))
+    }
     pub fn new(
         map: &installed_content_core::map::MapData,
         permanent: &[bool],
         winter: map_snow::winter::Winter,
     ) -> io::Result<Self> {
         Ok(Self {
+            fold: Mutex::new(Default::default()),
             cells: map_snow::SnowCells::new(map, permanent)?,
             winter,
         })
@@ -219,52 +330,68 @@ impl crate::ProductContent {
         self
     }
     fn record_snow_content(&self, snow: &SnowContent) -> io::Result<()> {
-        use std::io::Write;
-        self.reads.operand_stream(b"snow-cells-and-winter/v1", |mut out| {
-            snow.cells.write_identity(&mut out)?;
-            for value in snow
-                .winter
-                .defines
-                .per_province
-                .into_iter()
-                .chain(snow.winter.defines.total)
-            {
-                out.write_all(&value.to_bits().to_le_bytes())?;
-            }
-            out.write_all(&(snow.winter.records.len() as u64).to_le_bytes())?;
-            for records in &snow.winter.records {
-                out.write_all(&(records.len() as u64).to_le_bytes())?;
-                for record in records {
-                    out.write_all(&record.province.to_le_bytes())?;
-                    out.write_all(&record.weight.to_bits().to_le_bytes())?;
+        self.reads.operand_write(
+            b"snow-cells-and-winter/v1",
+            self.visions.budget(),
+            |mut bytes| {
+                snow.cells.write_identity(&mut bytes)?;
+                for value in snow
+                    .winter
+                    .defines
+                    .per_province
+                    .into_iter()
+                    .chain(snow.winter.defines.total)
+                {
+                    bytes.write_all(&value.to_bits().to_le_bytes())?;
                 }
-            }
-            Ok(())
-        })?;
-        Ok(())
+                bytes.write_all(&(snow.winter.records.len() as u64).to_le_bytes())?;
+                for records in &snow.winter.records {
+                    bytes.write_all(&(records.len() as u64).to_le_bytes())?;
+                    for record in records {
+                        bytes.write_all(&record.province.to_le_bytes())?;
+                        bytes.write_all(&record.weight.to_bits().to_le_bytes())?;
+                    }
+                }
+                Ok(())
+            },
+        )
     }
     pub fn snow_content(&self) -> io::Result<&SnowContent> {
-        self.snow
-            .get_or_init(|| {
+        if self.snow.get().is_none() {
+            let _building = self
+                .snow_building
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.snow.get().is_none() {
                 let result = self
                     .snow_loader
                     .as_ref()
                     .ok_or_else(|| io::Error::other("snow content not configured"))
                     .and_then(|loader| loader.snow(&self.map));
-                result
-                    .and_then(|snow| {
-                        self.record_snow_content(&snow)?;
-                        Ok(snow)
-                    })
-                    .map_err(|e| (e.kind(), e.to_string()))
-            })
+                let result = result.and_then(|snow| {
+                    self.record_snow_content(&snow)?;
+                    Ok(snow)
+                });
+                if let Err(error) = &result {
+                    if error.kind() == io::ErrorKind::WouldBlock
+                        || error.kind() == io::ErrorKind::OutOfMemory
+                    {
+                        return Err(io::Error::new(error.kind(), error.to_string()));
+                    }
+                }
+                let _ = self.snow.set(result.map_err(|e| (e.kind(), e.to_string())));
+            }
+        }
+        self.snow
+            .get()
+            .expect("completed snow content")
             .as_ref()
             .map_err(|(kind, reason)| io::Error::new(*kind, reason.clone()))
     }
 }
 impl crate::loader::Loader {
     pub fn snow(&self, map: &installed_content_core::map::MapData) -> io::Result<SnowContent> {
-        self.reads.load(|layers| {
+        self.reads.load_retryable(|layers| {
             let (definitions, defaults) = installed_content_core::terrain::read(layers)?;
             let terrain = installed_content_image::bmp::decode_indexed(
                 &layers.read(&format!("map/{}", defaults.terrain))?,
@@ -280,7 +407,11 @@ impl crate::loader::Loader {
             let defines = installed_content_core::defines::read(layers)?;
             let regions = installed_content_regions::regions::read(layers)?.regions;
             let winter = map_snow::winter::Winter::load(layers, &defines, map, &regions)?;
-            Ok(SnowContent { cells, winter })
+            Ok(SnowContent {
+                cells,
+                winter,
+                fold: Mutex::new(Default::default()),
+            })
         })
     }
 }

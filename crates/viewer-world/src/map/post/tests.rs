@@ -337,7 +337,9 @@ fn a_volume_records_regions_against_world_z_rows() {
             weight: 1.0
         }]
     );
-    volumes.set_snow(&[Some(0), Some(0), Some(0), Some(20_000)]);
+    volumes
+        .set_snow(&[Some(0), Some(0), Some(0), Some(20_000)])
+        .unwrap();
     assert_eq!(&*volumes.snow, &[Some(1.0)]);
 }
 
@@ -392,10 +394,10 @@ fn the_first_box_around_the_eye_wins_and_unknown_snow_keeps_the_height_grade() {
     let unknown = volumes.select(reference, day);
     assert_eq!(unknown.selection.region, Some(0));
     assert_eq!(unknown.values, resolved(0, 0.2));
-    Arc::make_mut(&mut volumes.snow)[0] = Some(1.0);
+    volumes.snow[0] = Some(1.0);
     assert_eq!(volumes.select(reference, day).values.middle_grey, 0.8);
     // No snow takes the summer path: the box's own day values (0.4).
-    Arc::make_mut(&mut volumes.snow)[0] = Some(0.0);
+    volumes.snow[0] = Some(0.0);
     assert_eq!(volumes.select(reference, day).values.middle_grey, 0.4);
     // The look-at is inside, but the eye 30 units south is outside.
     let south = volumes.select(camera([3010.0, 1370.0], 290.0), day);
@@ -509,10 +511,10 @@ fn prepared_snow_factors_preserve_record_order_and_unknown_representatives() {
             [Some(0x3f47_acf8), Some(0), Some(0)],
         ),
     ] {
-        let before = Arc::clone(&volumes.snow);
-        let prepared = volumes.snow_factors(&snow);
+        let before = volumes.snow.clone();
+        let prepared = volumes.snow_factors(&snow).unwrap();
         assert!(
-            Arc::ptr_eq(&before, &volumes.snow),
+            before.ptr_eq(&volumes.snow),
             "preparation cannot mutate the shown factors"
         );
         assert_eq!(
@@ -522,7 +524,7 @@ fn prepared_snow_factors_preserve_record_order_and_unknown_representatives() {
                 .collect::<Vec<_>>(),
             expected_bits
         );
-        volumes.set_snow(&snow);
+        volumes.set_snow(&snow).unwrap();
         assert_eq!(&*prepared, &*volumes.snow);
     }
 }

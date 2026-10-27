@@ -446,6 +446,7 @@ pub struct Assets {
     max_particles: usize,
     graphics: CameraDefines,
     anchors: Vec<Anchor>,
+    anchors_by_region: BTreeMap<u32, Vec<usize>>,
     systems: BTreeMap<(usize, bool), Vec<WeatherPair>>,
     pages: Vec<dds::Texture>,
     entities: BTreeMap<String, (f32, Vec<Emitter>)>,
@@ -467,6 +468,7 @@ impl Assets {
             max_particles: catalog.max_particles(),
             graphics: CameraDefines::load(defines)?,
             anchors: Vec::new(),
+            anchors_by_region: BTreeMap::new(),
             systems: BTreeMap::new(),
             pages: Vec::new(),
             entities: BTreeMap::new(),
@@ -482,8 +484,13 @@ impl Assets {
             if f.len() != 5 {
                 return Err(invalid("weatherpositions: expected region;x;y;z;size"));
             }
+            let region = f[0].parse().map_err(|_| invalid("weather region id"))?;
+            out.anchors_by_region
+                .entry(region)
+                .or_default()
+                .push(out.anchors.len());
             out.anchors.push(Anchor {
-                region: f[0].parse().map_err(|_| invalid("weather region id"))?,
+                region,
                 position: [f[1], f[2], f[3]].map(|s| s.parse::<f32>().unwrap_or(f32::NAN)),
                 small: f[4].trim() == "small",
             });
@@ -701,7 +708,7 @@ impl Presentation {
             })
             .collect::<BTreeSet<_>>();
         self.0.retain(|region, _| retained.contains(region));
-        for (&region, &kind) in &next.kinds {
+        for (&region, &kind) in next.kinds.iter() {
             self.0.entry(region).or_insert(RegionPresentation {
                 kind,
                 seed_hour: next.hour,
@@ -1181,10 +1188,29 @@ fn visible_emitters<'a>(
     camera: Camera,
     views: &[ParentView],
 ) -> Vec<Visible<'a>> {
+    visible_emitters_at(
+        assets,
+        field,
+        presentation,
+        camera,
+        views,
+        0..assets.anchors.len(),
+    )
+}
+
+fn visible_emitters_at<'a>(
+    assets: &'a Assets,
+    field: &Field,
+    presentation: &Presentation,
+    camera: Camera,
+    views: &[ParentView],
+    indices: impl IntoIterator<Item = usize>,
+) -> Vec<Visible<'a>> {
     let (entity_alpha, fading_alpha, _) = gates(camera.height, &assets.graphics);
     let mut out = Vec::new();
     let mut selectors = BTreeMap::new();
-    for (index, a) in assets.anchors.iter().enumerate() {
+    for index in indices {
+        let a = &assets.anchors[index];
         let Some(&kind) = field.kinds.get(&a.region) else {
             continue;
         };
@@ -1322,16 +1348,15 @@ fn sound_events(
     });
 }
 
-/// New, empty weather emitters prepared off the frame path for this hour.
+/// Camera admission operands; presentation alone knows which region runtimes survive.
 #[derive(Clone)]
 pub struct Prepared {
     field: Field,
-    simulations: Simulations,
+    camera: Camera,
+    size: [u32; 2],
 }
 
-/// Particle runtimes an hour change let go of: the regions whose weather
-/// changed, and the prepared runtimes of regions that kept theirs. Handed back
-/// so the window frees them off the frame path.
+/// Replaced region runtimes, freed off the frame path.
 pub struct Retired(
     #[expect(
         dead_code,
@@ -1365,12 +1390,38 @@ fn merge_runtimes<K: Ord + Copy, T>(
     retired
 }
 
-/// Construct visible native-style particle runtimes without inventing births.
-pub fn prepare(assets: &Assets, field: Field, camera: Camera, size: [u32; 2]) -> Prepared {
-    let mut presentation = Presentation::default();
-    presentation.transition(&Field::default(), &field, Continuity::Reset);
+/// A kept region also keeps absent emitters; later camera admission creates them.
+pub fn prepare(_assets: &Assets, field: Field, camera: Camera, size: [u32; 2]) -> Prepared {
+    Prepared {
+        field,
+        camera,
+        size,
+    }
+}
+
+fn prepare_changed(
+    assets: &Assets,
+    field: &Field,
+    presentation: &Presentation,
+    camera: Camera,
+    size: [u32; 2],
+    retained: &BTreeSet<u32>,
+) -> Simulations {
+    let indices: BTreeSet<_> = field
+        .kinds
+        .keys()
+        .filter(|region| !retained.contains(region))
+        .flat_map(|region| {
+            assets
+                .anchors_by_region
+                .get(region)
+                .into_iter()
+                .flatten()
+                .copied()
+        })
+        .collect();
     let views = parent_views(&province_admission_views(camera, size), size);
-    let simulations = visible_emitters(assets, &field, &presentation, camera, &views)
+    visible_emitters_at(assets, field, presentation, camera, &views, indices)
         .into_iter()
         .map(|visible| {
             let mut simulation =
@@ -1378,8 +1429,7 @@ pub fn prepare(assets: &Assets, field: Field, camera: Camera, size: [u32; 2]) ->
             simulation.prepared = true;
             (visible.key, simulation)
         })
-        .collect();
-    Prepared { field, simulations }
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1563,15 +1613,34 @@ impl Pass {
     fn adopt_field(
         &mut self,
         field: Field,
-        prepared: Simulations,
+        preparation: Option<(Camera, [u32; 2])>,
         continuity: Continuity,
     ) -> Vec<Simulation> {
+        let _cpu = replay_frame::cpu::scope("viewer", Some("weather"));
+        if continuity.keeps(
+            (self.field.branch, self.field.hour),
+            (field.branch, field.hour),
+        ) && self.field.kinds == field.kinds
+        {
+            self.field = field;
+            return Vec::new();
+        }
         if continuity == Continuity::Reset {
             self.entity_simulations.clear();
         }
         let retained = self
             .presentation
             .transition(&self.field, &field, continuity);
+        let prepared = preparation.map_or_else(Simulations::new, |(camera, size)| {
+            prepare_changed(
+                &self.assets,
+                &field,
+                &self.presentation,
+                camera,
+                size,
+                &retained,
+            )
+        });
         let anchors = &self.assets.anchors;
         let retired = merge_runtimes(&mut self.simulations, prepared, |(anchor, _, _)| {
             retained.contains(&anchors[*anchor].region)
@@ -1581,14 +1650,18 @@ impl Pass {
     }
 
     pub fn set(&mut self, field: Field) {
-        self.adopt_field(field, Simulations::new(), Continuity::Reset);
+        self.adopt_field(field, None, Continuity::Reset);
     }
 
     /// Adopt new weather regions' empty runtimes while preserving an
     /// unchanged region's own particles, descriptor choice and retained alpha.
     /// Returns what it let go of, for the caller to free off the frame path.
     pub fn set_prepared(&mut self, prepared: Prepared, continuity: Continuity) -> Retired {
-        Retired(self.adopt_field(prepared.field, prepared.simulations, continuity))
+        Retired(self.adopt_field(
+            prepared.field,
+            Some((prepared.camera, prepared.size)),
+            continuity,
+        ))
     }
     /// Appends the shown weather entities' sound events at presentation
     /// time `time` (see [`sound_events`]).
@@ -1760,35 +1833,6 @@ pub(crate) fn advance_entity_effects_with_workers(
     }
     let lights = lights.evaluate(&events);
     Ok((events, lights))
-}
-
-#[cfg(test)]
-#[test]
-fn a_reused_weather_preparation_keeps_an_independent_initial_runtime() {
-    let emitter = tests::activation_test_emitter();
-    let key = (0, false, 0);
-    let mut simulation = Simulation::cold(&emitter, 12345, [10.0, 0.0, 20.0], 0.0);
-    simulation.prepared = true;
-    let prepared_seed = simulation.seed;
-    let prepared = Prepared {
-        field: Field {
-            branch: 1,
-            hour: 10,
-            kinds: BTreeMap::from([(7, 0)]),
-        },
-        simulations: BTreeMap::from([(key, simulation)]),
-    };
-    let mut reused = prepared.clone();
-    assert!(prepared.field == reused.field);
-    let next = reused.simulations.get_mut(&key).unwrap();
-    next.advance(&emitter, 8.0, 1.0);
-    next.advance(&emitter, 8.25, 1.0);
-    assert!(!next.particles.is_empty());
-    let initial = &prepared.simulations[&key];
-    assert!(initial.prepared);
-    assert!(initial.particles.is_empty());
-    assert_eq!(initial.seed, prepared_seed);
-    assert_eq!(initial.time, 0.0);
 }
 
 #[cfg(test)]

@@ -127,6 +127,43 @@ fn fixture(name: &str) -> Stack {
 }
 
 #[test]
+fn display_content_pressure_is_retryable_without_changing_source_evidence() {
+    let stack = fixture("display_content_pressure_evidence");
+    let reads = ContentReads::new(&stack.layers(&[]));
+    let records = || {
+        let mut records = Vec::new();
+        reads
+            .witness()
+            .unwrap()
+            .visit(|_, bytes| {
+                records.push(bytes.to_vec());
+                Ok(())
+            })
+            .unwrap();
+        records
+    };
+    let before = records();
+    for kind in [io::ErrorKind::WouldBlock, io::ErrorKind::OutOfMemory] {
+        let error = reads
+            .load_retryable(|_| Err::<(), _>(io::Error::new(kind, "display allocation pressure")))
+            .unwrap_err();
+        assert_eq!(error.kind(), kind);
+        assert_eq!(before, records());
+    }
+    reads.load_retryable(|_| Ok(())).unwrap();
+    assert_eq!(before, records());
+    reads
+        .load_retryable(|_| {
+            Err::<(), _>(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid content",
+            ))
+        })
+        .unwrap_err();
+    assert_ne!(before, records());
+}
+
+#[test]
 fn building_bank_survives_dependency_binding_changes_and_replacement() {
     use viewer_world::map::map_buildings::{CityTerrain, MapBuildingAssets};
     engine_executable::executable_tables::initialize_for_tests()
@@ -1268,7 +1305,7 @@ fn original_weather_field(frame: &DecodedFrame) -> io::Result<map_display_data::
         .iter()
         .position(|value| *value != 0)
         {
-            out.kinds.insert(row.id, kind);
+            out.kinds = out.kinds.inserted(row.id, kind).unwrap();
         }
     }
     Ok(out)
@@ -1627,6 +1664,36 @@ fn direct_owned_vision_keeps_the_old_keyed_source_census_and_decisions() {
             .vision(&choice)
             .unwrap();
         assert_eq!(*actual, *expected);
+    }
+}
+
+#[test]
+fn vision_core_refusals_keep_the_independent_country_maps_precedence() {
+    let stack = fixture("vision_core_refusal_order");
+    let content = content(&stack);
+    for count in [3, 1500, 5000] {
+        for truncated in [false, true] {
+            let mut frame = frame(count);
+            for table in [TableId::CountryLinks, TableId::Countries] {
+                frame.tables[table.index()] = if truncated {
+                    TableView::Truncated {
+                        rows: TableRows::empty(table),
+                        missing: 1,
+                    }
+                } else {
+                    TableView::Unavailable {
+                        reason: format!("missing {table:?}"),
+                    }
+                }
+                .into();
+            }
+            let hour = ProductHour::new(&content, &frame, 0.0);
+            let expected = hour.country_maps().unwrap_err();
+            let actual = hour.vision(&choice()).unwrap_err();
+            assert_eq!(actual.kind(), expected.kind());
+            assert_eq!(actual.to_string(), expected.to_string());
+            assert!(actual.to_string().contains("CountryLinks"));
+        }
     }
 }
 
@@ -2296,17 +2363,17 @@ fn separate_product_jobs_share_vision_without_retaining_source_tables() {
     let again = ProductHour::new(&content, &frame, 0.0)
         .vision(&choice())
         .unwrap();
-    assert!(Arc::ptr_eq(&first, &again));
+    assert_eq!(*first, *again);
     frame.hour += 1;
     let next = ProductHour::new(&content, &frame, 0.0)
         .vision(&choice())
         .unwrap();
-    assert!(!Arc::ptr_eq(&first, &next));
+    assert!(Arc::ptr_eq(&again, &next));
     put(&mut frame, TableRows::Campaign(vec![]));
     let replaced = ProductHour::new(&content, &frame, 0.0)
         .vision(&choice())
         .unwrap();
-    assert!(!Arc::ptr_eq(&next, &replaced));
+    assert!(Arc::ptr_eq(&next, &replaced));
     drop(frame);
     assert!(roots.iter().all(|identity| !identity.is_alive()));
     assert_eq!(first.ours(), 1);
@@ -2352,26 +2419,1382 @@ fn shared_vision_keeps_the_enforced_census_and_rejects_changed_same_hour_inputs(
     assert_eq!(*replaced, *expected);
 }
 
-
 #[test]
 fn streaming_owned_content_witness_matches_buffered_bytes_and_refuses_partial_writes() {
-    use std::io::Write;
     let stack = fixture("streamed_owned_content_witness");
     let layers = stack.layers(&[]);
     let buffered = crate::witness::ContentReads::new(&layers);
     let streamed = crate::witness::ContentReads::new(&layers);
     let bytes: Vec<_> = (0..70_001).map(|n| (n % 251) as u8).collect();
     buffered.operand_bytes(b"synthetic-owned-content", &bytes);
-    streamed.operand_stream(b"synthetic-owned-content", |out| {
-        for piece in bytes.chunks(7) { out.write_all(piece)?; }
-        Ok(())
-    }).unwrap();
+    streamed
+        .operand_stream(b"synthetic-owned-content", |out| {
+            for piece in bytes.chunks(7) {
+                out.write_all(piece)?;
+            }
+            Ok(())
+        })
+        .unwrap();
     assert_eq!(buffered.entries(), streamed.entries());
     let before = streamed.entries();
-    let error = streamed.operand_stream(b"partial", |out| {
-        out.write_all(b"not a complete operand")?;
-        Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
-    }).unwrap_err();
+    let error = streamed
+        .operand_stream(b"partial", |out| {
+            out.write_all(b"not a complete operand")?;
+            Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+        })
+        .unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
     assert_eq!(before, streamed.entries());
+}
+
+#[test]
+fn display_weather_deltas_skip_unused_fields_and_preserve_priority_and_clears() {
+    use replay_frame::frame::TableUpdate;
+    let mut advance_table = display_decoder();
+    let content = content(&fixture("weather_delta_fold"));
+    let mut frame = frame(2);
+    let table = TableId::WeatherRegions;
+    let mut previous = WeatherRegionRow {
+        id: 7,
+        light_rain: 1,
+        ..Default::default()
+    };
+    let mut view = advance_table(
+        table,
+        &TableUpdate::Snapshot(TableRows::WeatherRegions(vec![previous.clone()])),
+        None,
+        40,
+        true,
+    )
+    .unwrap();
+    let mut prior: Option<map_display_data::WeatherField> = None;
+    for step in 0..9 {
+        if step != 0 {
+            let mut next = previous.clone();
+            match step {
+                1 => next.max_snow = 11,
+                2 => next.heavy_rain = 1,
+                3 => next.light_rain = 0,
+                4 => next.heavy_rain = 0,
+                5 => {
+                    next.snow = 1;
+                    next.blizzard = 1;
+                }
+                6 => next.snow = 0,
+                7 => next.max_snow = 22,
+                _ => next.blizzard = 0,
+            }
+            view = advance_table(
+                table,
+                &TableUpdate::Delta {
+                    baseline: 39 + step,
+                    changed: vec![next.delta(Some(&previous)).unwrap().unwrap()],
+                    deleted: vec![],
+                },
+                Some((39 + step, view)),
+                40 + step,
+                true,
+            )
+            .unwrap();
+            previous = next;
+        }
+        frame.hour = 40 + step;
+        frame.tables[table.index()] = view.clone();
+        let actual = ProductHour::new(&content, &frame, 0.0)
+            .weather_field()
+            .unwrap();
+        assert_eq!(
+            product_codec::encode(&actual).unwrap(),
+            product_codec::encode(&original_weather_field(&frame).unwrap()).unwrap()
+        );
+        if matches!(step, 1 | 2 | 7) {
+            assert!(actual.kinds.ptr_eq(&prior.as_ref().unwrap().kinds));
+        }
+        prior = Some(actual);
+    }
+    let value = ProductHour::new(&content, &frame, 0.0)
+        .weather_field()
+        .unwrap();
+    assert!(value.kinds.is_empty());
+    let old = frame.tables[table.index()].identity();
+    frame.tables[table.index()] = TableView::Unavailable {
+        reason: "synthetic weather gap".into(),
+    }
+    .into();
+    let missing = ProductHour::new(&content, &frame, 0.0)
+        .weather_field()
+        .unwrap();
+    assert_eq!(missing, original_weather_field(&frame).unwrap());
+    assert!(!old.is(&frame.tables[table.index()]));
+}
+
+#[test]
+fn snow_change_fold_matches_frozen_scalar_through_edges_missing_and_recovery() {
+    use replay_frame::frame::TableUpdate;
+    let mut advance_table = display_decoder();
+    let map = MapData {
+        width: 16,
+        height: 16,
+        province_ids: (0..256).map(|at| if at % 4 < 2 { 1 } else { 2 }).collect(),
+        definitions: Default::default(),
+        country_colors: Default::default(),
+    };
+    let mut permanent = vec![false; 256];
+    permanent[117] = true;
+    let cells = map_snow::SnowCells::new(&map, &permanent).unwrap();
+    let winter = map_snow::winter::Winter {
+        defines: map_snow::winter::SnowDefines {
+            per_province: [0.0, 1.0],
+            total: [0.0, 1.0],
+        },
+        records: vec![vec![
+            map_snow::winter::SnowRecord {
+                province: 1,
+                weight: 0.3,
+            },
+            map_snow::winter::SnowRecord {
+                province: 2,
+                weight: 0.7,
+            },
+        ]],
+    };
+    let mut fold = map_snow::fold::Fold::default();
+    let mut frame = frame(2);
+    let mut rows = vec![
+        WeatherProvinceRow {
+            id: 1,
+            snow: 20_000,
+            display_snow: 64,
+            display_mud: 16,
+            ..Default::default()
+        },
+        WeatherProvinceRow {
+            id: 2,
+            snow: 80_000,
+            display_snow: 192,
+            display_mud: 80,
+            ..Default::default()
+        },
+    ];
+    let table = TableId::WeatherProvinces;
+    let mut view = advance_table(
+        table,
+        &TableUpdate::Snapshot(TableRows::WeatherProvinces(rows.clone())),
+        None,
+        40,
+        true,
+    )
+    .unwrap();
+    for step in 0..8 {
+        if step != 0 {
+            let mut next = rows.clone();
+            match step {
+                1 => next[0].snow = -100,
+                2 => next[0].display_snow = 90,
+                3 => next[1].display_mud = 170,
+                4 => {
+                    next[0].display_snow = 0;
+                    next[0].display_mud = 0;
+                }
+                5 => {
+                    next.remove(1);
+                }
+                6 => next.clear(),
+                _ => next.push(WeatherProvinceRow {
+                    id: 2,
+                    display_snow: 17,
+                    ..Default::default()
+                }),
+            };
+            let changed = next
+                .iter()
+                .filter_map(|row| row.delta(rows.iter().find(|old| old.id == row.id)).unwrap())
+                .collect();
+            let deleted = rows
+                .iter()
+                .filter(|row| !next.iter().any(|next| next.id == row.id))
+                .map(|row| u128::from(row.id))
+                .collect();
+            view = advance_table(
+                table,
+                &TableUpdate::Delta {
+                    baseline: 39 + step,
+                    changed,
+                    deleted,
+                },
+                Some((39 + step, view)),
+                40 + step,
+                true,
+            )
+            .unwrap();
+            rows = next;
+        }
+        frame.hour = 40 + step;
+        frame.tables[table.index()] = view.clone();
+        let actual = fold.project(&cells, &frame, &winter).unwrap();
+        let expected = display_oracle::snow(&map, &permanent, &frame, &winter).unwrap();
+        assert_eq!(
+            product_codec::encode(&*actual).unwrap(),
+            product_codec::encode(&expected).unwrap(),
+            "step {step}"
+        );
+    }
+    for view in [
+        TableView::Truncated {
+            rows: TableRows::WeatherProvinces(rows.clone()),
+            missing: 3,
+        },
+        TableView::Unavailable {
+            reason: "synthetic snow gap".into(),
+        },
+        TableView::NotRecorded {
+            mode: replay_data::scope::CaptureMode::Map,
+        },
+        TableView::Complete(TableRows::WeatherProvinces(rows)),
+    ] {
+        frame.hour += 1;
+        frame.tables[table.index()] = view.into();
+        let actual = fold.project(&cells, &frame, &winter).unwrap();
+        assert_eq!(
+            product_codec::encode(&*actual).unwrap(),
+            product_codec::encode(
+                &display_oracle::snow(&map, &permanent, &frame, &winter).unwrap()
+            )
+            .unwrap()
+        );
+    }
+    frame.tables[table.index()] = TableView::Complete(TableRows::Provinces(vec![])).into();
+    assert!(fold.project(&cells, &frame, &winter).is_err());
+    frame.tables[table.index()] = TableView::Complete(TableRows::WeatherProvinces(vec![])).into();
+    assert_eq!(
+        *fold.project(&cells, &frame, &winter).unwrap(),
+        display_oracle::snow(&map, &permanent, &frame, &winter).unwrap()
+    );
+}
+
+#[test]
+fn snow_boundary_deltas_keep_refresh_only_changes_and_recover_after_refusal() {
+    use replay_frame::frame::TableUpdate;
+    let mut advance_table = display_decoder();
+    let map = MapData {
+        width: 16,
+        height: 16,
+        province_ids: vec![1; 256],
+        definitions: Default::default(),
+        country_colors: Default::default(),
+    };
+    let permanent = vec![false; 256];
+    let cells = map_snow::SnowCells::new(&map, &permanent).unwrap();
+    let winter = map_snow::winter::Winter {
+        defines: map_snow::winter::SnowDefines {
+            per_province: [0.0, 1.0],
+            total: [0.0, 1.0],
+        },
+        records: vec![],
+    };
+    let mut fold = map_snow::fold::Fold::default();
+    let mut frame = frame(2);
+    let mut row = WeatherProvinceRow {
+        id: 0,
+        display: Recorded::Value(Some(WeatherDisplay {
+            width: 4,
+            height: 4,
+            refresh_interval: 25_000,
+            refresh_identity: 91,
+            edges: (0..14).map(|value| value * 11).collect(),
+        })),
+        ..Default::default()
+    };
+    let table = TableId::WeatherProvinces;
+    let mut view = advance_table(
+        table,
+        &TableUpdate::Snapshot(TableRows::WeatherProvinces(vec![row.clone()])),
+        None,
+        60,
+        true,
+    )
+    .unwrap();
+    let mut previous: Option<Arc<map_snow::SnowMud>> = None;
+    for step in 0..5 {
+        if step != 0 {
+            let mut next = row.clone();
+            match step {
+                1 => {
+                    if let Recorded::Value(Some(display)) = &mut next.display {
+                        display.refresh_identity += 1;
+                    }
+                }
+                2 => {
+                    if let Recorded::Value(Some(display)) = &mut next.display {
+                        display.edges[3] = 0;
+                    }
+                }
+                3 => next.display = Recorded::Value(None),
+                _ => next.display = Recorded::NotRecorded,
+            }
+            view = advance_table(
+                table,
+                &TableUpdate::Delta {
+                    baseline: 59 + step,
+                    changed: vec![next.delta(Some(&row)).unwrap().unwrap()],
+                    deleted: vec![],
+                },
+                Some((59 + step, view)),
+                60 + step,
+                true,
+            )
+            .unwrap();
+            row = next;
+        }
+        frame.hour = 60 + step;
+        frame.tables[table.index()] = view.clone();
+        let actual = fold.project(&cells, &frame, &winter).unwrap();
+        let expected = display_oracle::snow(&map, &permanent, &frame, &winter).unwrap();
+        assert_eq!(
+            product_codec::encode(&*actual).unwrap(),
+            product_codec::encode(&expected).unwrap()
+        );
+        if step == 1 {
+            assert!(actual.texels.ptr_eq(&previous.as_ref().unwrap().texels));
+            assert_ne!(actual.refresh, previous.as_ref().unwrap().refresh);
+        }
+        previous = Some(actual);
+    }
+    row.display = Recorded::Value(Some(WeatherDisplay {
+        width: 9,
+        ..Default::default()
+    }));
+    frame.tables[table.index()] =
+        TableView::Complete(TableRows::WeatherProvinces(vec![row.clone()])).into();
+    assert!(fold.project(&cells, &frame, &winter).is_err());
+    row.display = Recorded::Value(None);
+    frame.tables[table.index()] =
+        TableView::Complete(TableRows::WeatherProvinces(vec![row])).into();
+    assert_eq!(
+        *fold.project(&cells, &frame, &winter).unwrap(),
+        display_oracle::snow(&map, &permanent, &frame, &winter).unwrap()
+    );
+}
+
+#[test]
+fn the_intel_map_follows_perspective_and_visibility_changes_against_frozen_output() {
+    let stack = fixture("products_fog_delta_install");
+    let content = fog_content(&stack);
+    let memos = FogMemos::new(8);
+    let mut frame = fog_frame(3);
+    let mut previous: Option<Arc<IntelMap>> = None;
+    for step in 0..8 {
+        if step == 5 {
+            put(
+                &mut frame,
+                TableRows::CountryIntel(vec![CountryIntelRow {
+                    owner_country: 101,
+                    target_index: 2,
+                    army: 0,
+                    ..Default::default()
+                }]),
+            );
+        }
+        if step == 6 {
+            put(
+                &mut frame,
+                TableRows::Provinces(
+                    (1..=3)
+                        .map(|id| ProvinceRow {
+                            id,
+                            controller: if id == 2 { 101 } else { id + 100 },
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        if step == 7 {
+            frame.tables[TableId::StateVisibility.index()] = TableView::Unavailable {
+                reason: "synthetic fog gap".into(),
+            }
+            .into();
+        }
+        let choice = perspective::Choice {
+            country: perspective::Country::Tag(if step == 1 { "Z3" } else { "Z1" }.into()),
+            fog: step != 2,
+        };
+        let expected = Original {
+            content: &content,
+            frame: &frame,
+            hour_fraction: 0.5,
+        }
+        .fog_display(&choice)
+        .unwrap();
+        let actual = ProductHour::new(&content, &frame, 0.5)
+            .fog(&choice, &memos, &mut BuilderSpans::new(false))
+            .unwrap();
+        assert_eq!(
+            product_codec::encode(&actual.display()).unwrap(),
+            product_codec::encode(&expected).unwrap(),
+            "step {step}"
+        );
+        if step == 4 {
+            assert!(Arc::ptr_eq(&actual.intel, previous.as_ref().unwrap()));
+        }
+        previous = Some(Arc::clone(&actual.intel));
+        frame.hour += 1;
+    }
+}
+
+fn display_decoder() -> impl FnMut(
+    TableId,
+    &replay_frame::frame::TableUpdate,
+    Option<(i32, replay_frame::frame::SharedView)>,
+    i32,
+    bool,
+) -> io::Result<replay_frame::frame::SharedView> {
+    use replay_frame::frame::{Frame, FrameDecoder, TableUpdate};
+    let mut decoder =
+        FrameDecoder::new().with_change_facts(map_display_data::credit::display_products().clone());
+    move |table, update, _previous, hour, read| {
+        let mut input = Frame {
+            branch: 7,
+            hour,
+            keyframe: decoder.current().is_none(),
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|_| TableUpdate::Unavailable {
+                reason: "not a fixture operand".into(),
+            }),
+        };
+        input.tables[table.index()] = update.clone();
+        input.metrics.table_ns[table.index()] = u64::from(read);
+        Ok(decoder.advance(&input)?.tables[table.index()].clone())
+    }
+}
+
+struct CertifiedFrames {
+    encoder: replay_frame::frame::FrameEncoder,
+    decoder: replay_frame::frame::FrameDecoder,
+}
+impl Default for CertifiedFrames {
+    fn default() -> Self {
+        Self {
+            encoder: replay_frame::frame::FrameEncoder::new(),
+            decoder: replay_frame::frame::FrameDecoder::new()
+                .with_change_facts(map_display_data::credit::display_products().clone()),
+        }
+    }
+}
+impl CertifiedFrames {
+    fn advance(&mut self, frame: &mut DecodedFrame) {
+        // Certify complete operands without normalizing deliberate synthetic gaps.
+        let mut surrogate = frame.clone();
+        let mut complete = Vec::new();
+        for (index, view) in frame.tables.iter().enumerate() {
+            if let TableView::Complete(rows) = &**view
+                && (rows.table().key_bits() != 0 || rows.len() == 1)
+            {
+                complete.push(index);
+            } else {
+                surrogate.tables[index] = TableView::Unavailable {
+                    reason: "synthetic uncertified operand".into(),
+                }
+                .into();
+            }
+        }
+        let encoded = self.encoder.encode(surrogate, false).unwrap();
+        let decoded = self.decoder.apply(&encoded).unwrap();
+        for index in complete {
+            frame.tables[index] = decoded.tables[index].clone();
+        }
+    }
+}
+fn fog_delta<T: TableSchema>(frame: &mut DecodedFrame, next: Vec<T::Row>) {
+    frame.tables[T::ID.index()] = TableView::Complete(TableRows::from_rows::<T>(next)).into();
+}
+
+#[test]
+fn incremental_fog_matches_frozen_bytes_and_knownness_without_population_sized_updates() {
+    let stack = fixture("fog_incremental_changes");
+    for count in [3, 1500, 5000] {
+        let content = fog_content(&stack);
+        let memos = FogMemos::new(8);
+        let choice = perspective::Choice::default();
+        let mut certified = CertifiedFrames::default();
+        let mut frame = fog_frame(count);
+        for step in 0..13 {
+            if step > 0 {
+                frame.hour += 1;
+            }
+            match step {
+                1 => {
+                    let mut rows = frame
+                        .complete::<row_tables::CountryIntel>()
+                        .unwrap()
+                        .to_vec();
+                    rows[0].army = 90_000;
+                    fog_delta::<row_tables::CountryIntel>(&mut frame, rows);
+                }
+                2 => {
+                    let mut rows = frame.complete::<row_tables::Divisions>().unwrap().to_vec();
+                    rows[0].province = 2;
+                    fog_delta::<row_tables::Divisions>(&mut frame, rows);
+                }
+                3 => {
+                    let mut rows = frame.complete::<row_tables::Provinces>().unwrap().to_vec();
+                    rows[1].controller = 101;
+                    fog_delta::<row_tables::Provinces>(&mut frame, rows);
+                }
+                4 => fog_delta::<row_tables::FactionMembers>(
+                    &mut frame,
+                    vec![
+                        FactionMemberRow {
+                            country: 101,
+                            faction: 9,
+                            ordinal: 0,
+                        },
+                        FactionMemberRow {
+                            country: 103,
+                            faction: 9,
+                            ordinal: 1,
+                        },
+                    ],
+                ),
+                5 => fog_delta::<row_tables::WarRelations>(
+                    &mut frame,
+                    vec![WarRelationRow {
+                        first_country: 101,
+                        second_country: 103,
+                        ..Default::default()
+                    }],
+                ),
+                6 => fog_delta::<row_tables::UnitIntel>(&mut frame, vec![]),
+                7 => fog_delta::<row_tables::FactionMembers>(&mut frame, vec![]),
+                8 => fog_delta::<row_tables::RelationLinks>(
+                    &mut frame,
+                    vec![RelationLinkRow {
+                        country: 103,
+                        target_index: 1,
+                        links: RelationLinkRow::ATTACHE,
+                        ..Default::default()
+                    }],
+                ),
+                9 => fog_delta::<row_tables::Divisions>(&mut frame, vec![]),
+                10 => fog_delta::<row_tables::RelationLinks>(&mut frame, vec![]),
+                11 => fog_delta::<row_tables::WarRelations>(&mut frame, vec![]),
+                _ => {}
+            }
+            certified.advance(&mut frame);
+            let old = Original {
+                content: &content,
+                frame: &frame,
+                hour_fraction: 0.5,
+            };
+            let reference = old.fog_vision(&choice).unwrap();
+            let hour = ProductHour::new(&content, &frame, 0.5);
+            let actual = hour
+                .fog(&choice, &memos, &mut BuilderSpans::new(false))
+                .unwrap();
+            let vision = hour.vision(&choice).unwrap();
+            assert_eq!(
+                product_codec::encode(&actual.display()).unwrap(),
+                product_codec::encode(&old.fog_display(&choice).unwrap()).unwrap(),
+                "count {count} step {step}"
+            );
+            assert_eq!(vision.province_fog(), reference.province_fog());
+            for owner in 1..=3 {
+                assert_eq!(
+                    vision.shares_vision_proven(owner),
+                    reference.shares_vision_proven(owner)
+                );
+                for unit in [7, 8] {
+                    for province in 1..=3 {
+                        assert_eq!(
+                            vision.land_byte_known(unit, owner, province),
+                            reference.land_byte_known(unit, owner, province)
+                        );
+                        assert_eq!(
+                            vision.sees_land(unit, owner, province),
+                            reference.sees_land(unit, owner, province)
+                        );
+                    }
+                }
+            }
+            if step > 0 && step < 12 {
+                let work = content.visions.stats().unwrap();
+                assert!(!work.cold);
+                assert!(work.provinces <= 3);
+                assert!(work.jobs < 100, "{count} countries: {work:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn vision_shared_byte_refusal_precedes_allocation_and_retry_is_exact() {
+    use viewer_foundation::map::perspective::incremental::Memory;
+    let stack = fixture("fog_credit_retry");
+    let original = fog_content(&stack);
+    let choice = perspective::Choice::default();
+    let mut certified = CertifiedFrames::default();
+    let mut frame = fog_frame(3);
+    let budget = map_display_data::credit::MemoryBudget::new(8 << 20);
+    let content = ProductContent::from_inputs_with_memory(
+        original.reads,
+        original.inputs,
+        Memory::new(budget.clone()),
+    );
+    certified.advance(&mut frame);
+    let first = ProductHour::new(&content, &frame, 0.5)
+        .vision(&choice)
+        .unwrap();
+    let held = budget.admit(budget.limit() - budget.used()).unwrap();
+    frame.hour += 1;
+    let mut provinces = frame.complete::<row_tables::Provinces>().unwrap().to_vec();
+    provinces[1].controller = 101;
+    fog_delta::<row_tables::Provinces>(&mut frame, provinces);
+    certified.advance(&mut frame);
+    let error = ProductHour::new(&content, &frame, 0.5)
+        .vision(&choice)
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert!(error.to_string().contains("memory credit unavailable"));
+    drop(held);
+    let recovered = ProductHour::new(&content, &frame, 0.5)
+        .vision(&choice)
+        .unwrap();
+    let expected = Original {
+        content: &content,
+        frame: &frame,
+        hour_fraction: 0.5,
+    }
+    .fog_vision(&choice)
+    .unwrap();
+    assert_eq!(recovered.province_fog(), expected.province_fog());
+    assert_ne!(first.province_fog(), recovered.province_fog());
+    drop(first);
+    drop(recovered);
+    drop(content);
+    assert_eq!(budget.used(), 0);
+}
+
+fn assert_incremental_vision(
+    content: &ProductContent,
+    frame: &DecodedFrame,
+    memos: &FogMemos,
+    label: &str,
+) {
+    let choice = perspective::Choice::default();
+    let old = Original {
+        content,
+        frame,
+        hour_fraction: 0.5,
+    };
+    let expected = old.fog_vision(&choice).unwrap();
+    let hour = ProductHour::new(content, frame, 0.5);
+    let actual = hour.vision(&choice).unwrap();
+    assert_eq!(actual.province_fog(), expected.province_fog(), "{label}");
+    for owner in 0..=3 {
+        assert_eq!(
+            actual.shares_vision_proven(owner),
+            expected.shares_vision_proven(owner),
+            "{label}"
+        );
+        for unit in [7, 8, 20] {
+            for province in 1..=4 {
+                assert_eq!(
+                    actual.land_byte_known(unit, owner, province),
+                    expected.land_byte_known(unit, owner, province),
+                    "{label}"
+                );
+                assert_eq!(
+                    actual.sees_land(unit, owner, province),
+                    expected.sees_land(unit, owner, province),
+                    "{label}"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        actual,
+        old.ancillary_vision(&choice).unwrap(),
+        "supplemental whole Vision: {label}"
+    );
+    let fog = hour
+        .fog(&choice, memos, &mut BuilderSpans::new(false))
+        .unwrap();
+    assert_eq!(
+        product_codec::encode(&fog.display()).unwrap(),
+        product_codec::encode(&old.fog_display(&choice).unwrap()).unwrap(),
+        "{label}"
+    );
+}
+
+#[test]
+fn incremental_vision_keeps_fresh_empty_and_missing_views_change_proportional() {
+    let stack = fixture("fog_fresh_absence_views");
+    for count in [3, 1500, 5000] {
+        let content = fog_content(&stack);
+        let memos = FogMemos::new(8);
+        for kind in 0..4 {
+            let mut certified = CertifiedFrames::default();
+            let mut frame = fog_frame(count);
+            let mut previous = None;
+            for step in 0..4 {
+                frame.hour += 1;
+                frame.tables[TableId::StateVisibility.index()] = match kind {
+                    0 => TableView::Complete(TableRows::StateVisibility(vec![])),
+                    1 => TableView::Truncated {
+                        rows: TableRows::StateVisibility(vec![]),
+                        missing: 2,
+                    },
+                    2 => TableView::Unavailable {
+                        reason: "visibility not acquired".into(),
+                    },
+                    _ => TableView::NotRecorded {
+                        mode: replay_data::scope::CaptureMode::Map,
+                    },
+                }
+                .into();
+                if step == 2 {
+                    let mut rows = frame
+                        .complete::<row_tables::CountryIntel>()
+                        .unwrap()
+                        .to_vec();
+                    rows[0].army = 90_000;
+                    fog_delta::<row_tables::CountryIntel>(&mut frame, rows);
+                }
+                certified.advance(&mut frame);
+                assert_incremental_vision(&content, &frame, &memos, "fresh absent view");
+                let work = content.visions.stats().unwrap();
+                if step > 0 {
+                    assert!(!work.cold, "{count} countries, state {kind}: {work:?}");
+                    assert!(work.jobs < 100);
+                    assert!(work.provinces <= 3);
+                }
+                let value = ProductHour::new(&content, &frame, 0.5)
+                    .vision(&perspective::Choice::default())
+                    .unwrap();
+                if matches!(step, 1 | 3) {
+                    assert!(Arc::ptr_eq(previous.as_ref().unwrap(), &value));
+                }
+                previous = Some(value);
+            }
+        }
+    }
+}
+
+#[test]
+fn incremental_vision_keeps_visibility_roots_when_changed_intel_leaves_province_bytes_equal() {
+    let stack = fixture("fog_equal_visibility_roots");
+    let content = fog_content(&stack);
+    let memos = FogMemos::new(8);
+    let mut certified = CertifiedFrames::default();
+    let mut frame = fog_frame(3);
+    let choice = perspective::Choice::default();
+    certified.advance(&mut frame);
+    let before = ProductHour::new(&content, &frame, 0.5)
+        .vision(&choice)
+        .unwrap();
+    frame.hour += 1;
+    let mut rows = frame
+        .complete::<row_tables::CountryIntel>()
+        .unwrap()
+        .to_vec();
+    rows[0].air += 1;
+    fog_delta::<row_tables::CountryIntel>(&mut frame, rows);
+    certified.advance(&mut frame);
+    assert_incremental_vision(&content, &frame, &memos, "air-only intel change");
+    let after = ProductHour::new(&content, &frame, 0.5)
+        .vision(&choice)
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        before.shared_province_fog().unwrap(),
+        after.shared_province_fog().unwrap()
+    ));
+}
+
+#[test]
+fn incremental_vision_refreshes_empty_descriptors_after_certified_insertions() {
+    let stack = fixture("fog_empty_descriptor_refresh");
+    let content = fog_content(&stack);
+    let memos = FogMemos::new(8);
+    let mut certified = CertifiedFrames::default();
+    let mut frame = fog_frame(3);
+    let rows = frame
+        .complete::<row_tables::CountryIntel>()
+        .unwrap()
+        .to_vec();
+    frame.tables[TableId::CountryIntel.index()] =
+        TableView::Complete(TableRows::CountryIntel(vec![])).into();
+    certified.advance(&mut frame);
+    assert_incremental_vision(&content, &frame, &memos, "initial empty");
+    frame.hour += 1;
+    fog_delta::<row_tables::CountryIntel>(&mut frame, rows);
+    certified.advance(&mut frame);
+    assert_incremental_vision(&content, &frame, &memos, "certified insertion");
+    frame.hour += 1;
+    frame.tables[TableId::CountryIntel.index()] =
+        TableView::Complete(TableRows::CountryIntel(vec![])).into();
+    certified.advance(&mut frame);
+    assert_incremental_vision(&content, &frame, &memos, "fresh empty replacement");
+}
+
+#[test]
+fn incremental_fog_preserves_ordered_radar_network_fleet_volunteer_and_invasion_changes() {
+    let stack = fixture("fog_incremental_ordered_sources");
+    for count in [3, 1500, 5000] {
+        let ProductContent {
+            reads, mut inputs, ..
+        } = fog_content(&stack);
+        let fog = Arc::make_mut(&mut inputs.fog).as_mut().unwrap();
+        fog.topology.sea.insert(4);
+        fog.topology.neighbors.insert(4, vec![2, 3]);
+        fog.defines.radar_effect = -225;
+        fog.defines.map_cutoffs = vec![50_000, -500_000, 100_001, 500_000];
+        let content = ProductContent::from_inputs(reads, inputs);
+        let memos = FogMemos::new(8);
+        let mut certified = CertifiedFrames::default();
+        let mut frame = fog_frame(count);
+        put(
+            &mut frame,
+            TableRows::Provinces(vec![
+                ProvinceRow {
+                    id: 1,
+                    controller: 101,
+                    ..Default::default()
+                },
+                ProvinceRow {
+                    id: 2,
+                    controller: 102,
+                    state: 9,
+                    ..Default::default()
+                },
+                ProvinceRow {
+                    id: 3,
+                    controller: 103,
+                    state: 9,
+                    ..Default::default()
+                },
+                ProvinceRow {
+                    id: 4,
+                    controller: 102,
+                    ..Default::default()
+                },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::States(vec![StateRow {
+                id: 9,
+                owner: 103,
+                controller: 102,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::StateVisibility(vec![StateVisibilityRow {
+                state: 9,
+                network_modifier: -200_000,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::FactionMembers(vec![
+                FactionMemberRow {
+                    country: 101,
+                    faction: 9,
+                    ordinal: 0,
+                },
+                FactionMemberRow {
+                    country: 103,
+                    faction: 9,
+                    ordinal: 1,
+                },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::Divisions(vec![DivisionRow {
+                id: 7,
+                roster_owner: 103,
+                logical_owner: 101,
+                province: 4,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::DivisionMovement(vec![DivisionMovementRow {
+                division: 7,
+                path: vec![2],
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::WarRelations(vec![WarRelationRow {
+                first_country: 101,
+                second_country: 102,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::Fleets(vec![FleetRow {
+                id: 19,
+                owner: 103,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::TaskForces(vec![TaskForceRow {
+                id: 20,
+                fleet: 19,
+                logical_owner: 101,
+                province: 4,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::LandTheatres(vec![
+                LandTheatreRow {
+                    id: 30,
+                    owner: 101,
+                    volunteers_theatre: 103,
+                    ordinal: 0,
+                },
+                LandTheatreRow {
+                    id: 31,
+                    owner: 102,
+                    volunteers_theatre: 101,
+                    ordinal: 0,
+                },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::TheatreAreas(vec![
+                TheatreAreaRow {
+                    theatre: 30,
+                    ordinal: 0,
+                    provinces: vec![3, 3],
+                    ..Default::default()
+                },
+                TheatreAreaRow {
+                    theatre: 30,
+                    ordinal: 1,
+                    provinces: vec![],
+                    ..Default::default()
+                },
+                TheatreAreaRow {
+                    theatre: 30,
+                    ordinal: 2,
+                    provinces: vec![2],
+                    ..Default::default()
+                },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::StationedUnits(vec![StationedUnitRow {
+                theatre: 31,
+                ordinal: 0,
+                unit: 7,
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::VolunteerHosts(vec![VolunteerHostRow {
+                country: 101,
+                position: 0,
+                host: 103,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::RadarCoverage(vec![
+                RadarCoverageRow {
+                    country: 101,
+                    ordinal: 0,
+                    provinces: vec![2, 2, 3],
+                    ..Default::default()
+                },
+                RadarCoverageRow {
+                    country: 103,
+                    ordinal: 0,
+                    provinces: vec![2],
+                    ..Default::default()
+                },
+            ]),
+        );
+        for step in 0..12 {
+            if step > 0 {
+                frame.hour += 1;
+            }
+            match step {
+                1 => fog_delta::<row_tables::StateVisibility>(
+                    &mut frame,
+                    vec![StateVisibilityRow {
+                        state: 9,
+                        network_modifier: 100_000,
+                        ..Default::default()
+                    }],
+                ),
+                2 => fog_delta::<row_tables::Fleets>(
+                    &mut frame,
+                    vec![FleetRow {
+                        id: 19,
+                        owner: 102,
+                        ..Default::default()
+                    }],
+                ),
+                3 => fog_delta::<row_tables::TaskForces>(
+                    &mut frame,
+                    vec![TaskForceRow {
+                        id: 20,
+                        fleet: 19,
+                        logical_owner: 101,
+                        province: 2,
+                        ..Default::default()
+                    }],
+                ),
+                4 => fog_delta::<row_tables::TheatreAreas>(
+                    &mut frame,
+                    vec![
+                        TheatreAreaRow {
+                            theatre: 30,
+                            ordinal: 0,
+                            provinces: vec![],
+                            ..Default::default()
+                        },
+                        TheatreAreaRow {
+                            theatre: 30,
+                            ordinal: 2,
+                            provinces: vec![2],
+                            ..Default::default()
+                        },
+                    ],
+                ),
+                5 => fog_delta::<row_tables::VolunteerHosts>(
+                    &mut frame,
+                    vec![VolunteerHostRow {
+                        country: 101,
+                        host: 102,
+                        ..Default::default()
+                    }],
+                ),
+                6 => fog_delta::<row_tables::StationedUnits>(
+                    &mut frame,
+                    vec![StationedUnitRow {
+                        theatre: 31,
+                        ordinal: 0,
+                        unit: 20,
+                    }],
+                ),
+                7 => fog_delta::<row_tables::DivisionMovement>(
+                    &mut frame,
+                    vec![DivisionMovementRow {
+                        division: 7,
+                        path: vec![3, 2],
+                        ..Default::default()
+                    }],
+                ),
+                8 => {
+                    let mut rows = frame.complete::<row_tables::Provinces>().unwrap().to_vec();
+                    rows[2].controller = 102;
+                    fog_delta::<row_tables::Provinces>(&mut frame, rows);
+                }
+                9 => fog_delta::<row_tables::RadarCoverage>(
+                    &mut frame,
+                    vec![RadarCoverageRow {
+                        country: 103,
+                        ordinal: 0,
+                        provinces: vec![2, 3, 2],
+                        ..Default::default()
+                    }],
+                ),
+                10 => fog_delta::<row_tables::LandTheatres>(
+                    &mut frame,
+                    vec![LandTheatreRow {
+                        id: 31,
+                        owner: 102,
+                        volunteers_theatre: 101,
+                        ordinal: 0,
+                    }],
+                ),
+                _ => {}
+            }
+            certified.advance(&mut frame);
+            assert_incremental_vision(
+                &content,
+                &frame,
+                &memos,
+                &format!("{count} countries source step {step}"),
+            );
+            if step > 0 && step < 11 {
+                let work = content.visions.stats().unwrap();
+                assert!(
+                    !work.cold && work.jobs < 150 && work.provinces <= 4,
+                    "{work:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn incremental_fog_country_zero_packets_clocks_refusals_and_recovery_match_frozen_bytes() {
+    let stack = fixture("fog_incremental_zero_packets");
+    for count in [3, 1500, 5000] {
+        let ProductContent {
+            reads, mut inputs, ..
+        } = fog_content(&stack);
+        let fog = Arc::make_mut(&mut inputs.fog).as_mut().unwrap();
+        fog.topology.neighbors.insert(2, vec![1, 3]);
+        fog.topology.neighbors.insert(3, vec![2]);
+        fog.defines.map_cutoffs = vec![50_000, -500_000, 100_001, 500_000];
+        let content = ProductContent::from_inputs(reads, inputs);
+        let memos = FogMemos::new(8);
+        let mut certified = CertifiedFrames::default();
+        let mut frame = fog_frame(count);
+        let mut links = frame
+            .complete::<row_tables::CountryLinks>()
+            .unwrap()
+            .to_vec();
+        links.extend([
+            CountryLinkRow {
+                id: 0,
+                canonical_slot: 3,
+            },
+            CountryLinkRow {
+                id: 10_000,
+                canonical_slot: 0,
+            },
+        ]);
+        links.sort_by_key(RowCodec::key);
+        put(&mut frame, TableRows::CountryLinks(links));
+        put(
+            &mut frame,
+            TableRows::Provinces(vec![
+                ProvinceRow {
+                    id: 1,
+                    controller: 101,
+                    ..Default::default()
+                },
+                ProvinceRow {
+                    id: 2,
+                    controller: 10_000,
+                    ..Default::default()
+                },
+                ProvinceRow {
+                    id: 3,
+                    controller: 0,
+                    ..Default::default()
+                },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::Divisions(vec![DivisionRow {
+                id: 7,
+                roster_owner: 101,
+                logical_owner: 101,
+                province: 2,
+                ..Default::default()
+            }]),
+        );
+        let cell = |target| {
+            Some(ReverseZeroVisibilityInputs {
+                target: Some(target),
+                war: Some([0, 0]),
+                subject: Some(ZeroSubjectInputs::default()),
+                military_access: None,
+            })
+        };
+        put(
+            &mut frame,
+            TableRows::CountryCounterInputs(vec![CountryCounterInputRow {
+                country: 101,
+                forward_visibility: Recorded::Value(cell(10_000)),
+                ..Default::default()
+            }]),
+        );
+        let sample_hour = frame.hour;
+        put(
+            &mut frame,
+            TableRows::ReservedCountryNaming(vec![ReservedCountryNamingRow {
+                faction: Recorded::Value(Some(0)),
+                country_intel_sample: Recorded::Value(Some(ReservedCountryIntelSample {
+                    sample_hour,
+                    vector_count: 4,
+                })),
+                reverse_visibility: Recorded::Value(Some(ReservedReverseVisibilityInputs {
+                    sample_hour: PacketHour::Stamped(sample_hour),
+                    cells: (0..4).map(cell).collect(),
+                })),
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::CountryIntel(
+                (0..4)
+                    .map(|target_index| CountryIntelRow {
+                        owner_country: 0,
+                        target_index,
+                        army: 75_000,
+                        ..Default::default()
+                    })
+                    .chain([CountryIntelRow {
+                        owner_country: 101,
+                        target_index: 0,
+                        army: 25_000,
+                        ..Default::default()
+                    }])
+                    .collect(),
+            ),
+        );
+        for step in 0..10 {
+            if step > 0 {
+                frame.hour += 1;
+            }
+            match step {
+                2 | 4 | 7 | 9 => {
+                    let mut rows = frame
+                        .complete::<row_tables::ReservedCountryNaming>()
+                        .unwrap()
+                        .to_vec();
+                    rows[0].reverse_visibility =
+                        Recorded::Value(Some(ReservedReverseVisibilityInputs {
+                            sample_hour: PacketHour::Host,
+                            cells: (0..4).map(cell).collect(),
+                        }));
+                    if step == 2 {
+                        rows[0].country_intel_sample =
+                            Recorded::Value(Some(ReservedCountryIntelSample {
+                                sample_hour: frame.hour + 1,
+                                vector_count: 4,
+                            }));
+                    }
+                    fog_delta::<row_tables::ReservedCountryNaming>(&mut frame, rows);
+                }
+                5 => fog_delta::<row_tables::CountryCounterInputs>(
+                    &mut frame,
+                    vec![CountryCounterInputRow {
+                        country: 101,
+                        forward_visibility: Recorded::Value(None),
+                        ..Default::default()
+                    }],
+                ),
+                6 => fog_delta::<row_tables::CountryCounterInputs>(
+                    &mut frame,
+                    vec![CountryCounterInputRow {
+                        country: 101,
+                        forward_visibility: Recorded::Value(cell(10_000)),
+                        ..Default::default()
+                    }],
+                ),
+                8 => {
+                    let mut rows = frame
+                        .complete::<row_tables::CountryIntel>()
+                        .unwrap()
+                        .to_vec();
+                    rows.retain(|r| !(r.owner_country == 0 && r.target_index == 3));
+                    fog_delta::<row_tables::CountryIntel>(&mut frame, rows);
+                }
+                _ => {}
+            }
+            certified.advance(&mut frame);
+            assert_incremental_vision(
+                &content,
+                &frame,
+                &memos,
+                &format!("{count} countries zero step {step}"),
+            );
+            if step > 0 {
+                let work = content.visions.stats().unwrap();
+                assert!(
+                    !work.cold && work.jobs < 100 && work.provinces <= 3,
+                    "{work:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn streamed_content_operand_witness_matches_bytes_and_never_publishes_partial_data() {
+    use map_display_data::credit::MemoryBudget;
+    let stack = fixture("streamed_display_operand");
+    let layers = stack.layers(&[]);
+    let buffered = ContentReads::new(&layers);
+    let streamed = ContentReads::new(&layers);
+    let budget = MemoryBudget::new(1 << 20);
+    let bytes: Vec<_> = (0..200_000).map(|n| (n % 251) as u8).collect();
+    buffered.operand_bytes(b"fixture", &[bytes.as_slice(), bytes.as_slice()].concat());
+    streamed
+        .operand_write(b"fixture", &budget, |out| {
+            for chunk in bytes.chunks(3) {
+                out.write_all(chunk)?;
+            }
+            out.flush()?;
+            out.write_all(&bytes)?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(buffered.entries(), streamed.entries());
+    let previous = streamed.entries();
+    let refused = streamed
+        .operand_write(b"refused", &budget, |out| {
+            out.write_all(b"unfinished")?;
+            Err(io::Error::other("fixture failure"))
+        })
+        .unwrap_err();
+    assert_eq!(refused.to_string(), "fixture failure");
+    assert_eq!(streamed.entries(), previous);
+    assert_eq!(budget.used(), 0);
+    let held = budget.admit(budget.limit()).unwrap();
+    let refused = streamed
+        .operand_write(b"no credit", &budget, |_| {
+            panic!("writer ran without credit")
+        })
+        .unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(streamed.entries(), previous);
+    drop(held);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn incremental_vision_keeps_carried_values_across_decoder_certificate_epochs() {
+    let stack = fixture("fog_carried_epoch");
+    for count in [3, 1500, 5000] {
+        let content = fog_content(&stack);
+        let choice = perspective::Choice::default();
+        let mut certified = CertifiedFrames::default();
+        let mut frame = fog_frame(count);
+        certified.advance(&mut frame);
+        let first = ProductHour::new(&content, &frame, 0.0)
+            .vision(&choice)
+            .unwrap();
+        let prior = frame.tables[TableId::Countries.index()].identity();
+        let allocation = frame.tables[TableId::Countries.index()].as_ptr();
+        frame.hour += 2;
+        certified.advance(&mut frame);
+        assert_eq!(
+            allocation,
+            frame.tables[TableId::Countries.index()].as_ptr()
+        );
+        assert!(!prior.is(&frame.tables[TableId::Countries.index()]));
+        let next = ProductHour::new(&content, &frame, 0.0)
+            .vision(&choice)
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &next));
+        let work = content.visions.stats().unwrap();
+        assert!(!work.cold);
+        assert_eq!((work.jobs, work.provinces), (0, 0));
+        assert_frozen_fog(&content, &frame, &choice);
+    }
 }

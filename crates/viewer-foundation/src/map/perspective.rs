@@ -17,11 +17,13 @@
 //! Counters draw in full from 250 and as a question mark from 150. The province
 //! bytes are rebuilt per viewer by [`super::visibility::derive`].
 
+use map_display_data::credit::MemoryBudget;
 use std::sync::Arc;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt, io,
-};
+pub mod incremental;
+mod members;
+pub mod values;
+use std::{collections::BTreeMap, fmt, io};
+use values::Values;
 
 use replay_data::{rows::RelationLinkRow, rows::TableId, rows::tables, scope, scope::CaptureMode};
 use replay_frame::frame::{DecodedFrame, TableView};
@@ -311,35 +313,35 @@ pub struct Vision {
     /// The first unit-sight input the hour does not hold.
     undecided: Option<&'static str>,
     /// Slots whose units this one sees in full by relation, including itself.
-    shares: BTreeSet<u32>,
+    shares: Values<u32, ()>,
     /// Canonical slots in active wars from WarRelations; empty when relations_gap is set.
-    wars: BTreeSet<u32>,
+    wars: Values<u32, ()>,
     /// The relation input `Relations::read` lacked this hour; `shares` then
     /// holds only the viewer, and no other slot's negative is proven.
     relations_gap: Option<&'static str>,
     /// The first `UnitIntel` entry keyed to this country, per unit.
-    levels: BTreeMap<u64, i8>,
+    levels: Values<u64, i8>,
     /// The viewer's modifier 0x24B.
     unit_modifier: i64,
     /// Rebuilt province bytes for this country (fog on only).
-    visibility: Arc<BTreeMap<u32, u8>>,
+    visibility: Arc<Values<u32, u8>>,
     /// The input the province rebuild lacked, when it failed.
     visibility_gap: Option<&'static str>,
     /// A land unit invading from sea takes intel from its landing province.
-    sight_provinces: BTreeMap<u64, u32>,
+    sight_provinces: Values<u64, u32>,
     /// Tables used in part, named for the limitation lines.
     truncated: Vec<&'static str>,
     /// This country's `CountryIntel` air lane per target slot; `None` unless complete.
-    air_intel: Option<BTreeMap<u32, i64>>,
+    air_intel: Option<Values<u32, i64>>,
     air_defines: Option<AirDefines>,
     /// This country's `CountryIntel` navy lane per target slot; `None` unless complete.
-    navy_intel: Option<BTreeMap<u32, i64>>,
+    navy_intel: Option<Values<u32, i64>>,
     naval_defines: Option<NavalDefines>,
     /// Slots whose relation status grants this country air-base access; `None` unless `RelationLinks`
     /// is complete.
-    air_access: Option<BTreeSet<u32>>,
+    air_access: Option<Values<u32, ()>>,
     /// Province id to its controller's canonical slot.
-    province_controllers: BTreeMap<u32, u32>,
+    province_controllers: Values<u32, u32>,
 }
 
 impl Vision {
@@ -365,6 +367,7 @@ impl Vision {
         (ours, resolution): (u32, Resolution),
         fog: Result<&FogContent, &'static str>,
     ) -> io::Result<Self> {
+        let budget = map_display_data::credit::display_products().clone();
         let unrecorded = FOG_TABLES
             .iter()
             .any(|table| matches!(*frame.tables[table.index()], TableView::NotRecorded { .. }));
@@ -379,7 +382,8 @@ impl Vision {
         vision.relate(
             relations.as_ref().map_err(|reason| *reason),
             tags.keys().copied(),
-        );
+            &budget,
+        )?;
         if let Err(reason) = &relations {
             vision.undecided = Some(reason);
         }
@@ -396,7 +400,9 @@ impl Vision {
         let mut ordered: Vec<_> = intel.rows().iter().filter(|r| r.viewer == ours).collect();
         ordered.sort_by_key(|r| (r.unit, r.ordinal));
         for row in ordered {
-            vision.levels.entry(row.unit).or_insert(row.level);
+            if !vision.levels.contains_key(&row.unit) {
+                vision.levels.insert(row.unit, row.level, &budget)?;
+            }
         }
         match frame.complete::<tables::CountryVisibility>() {
             Ok(rows) => {
@@ -423,8 +429,8 @@ impl Vision {
                     navy.entry(row.target_index).or_insert(row.navy);
                 }
             }
-            vision.air_intel = Some(air);
-            vision.navy_intel = Some(navy);
+            vision.air_intel = Some(Values::from_iter(air, &budget)?);
+            vision.navy_intel = Some(Values::from_iter(navy, &budget)?);
         }
         vision.air_defines = fog
             .ok()
@@ -433,21 +439,23 @@ impl Vision {
             .ok()
             .and_then(|content| NavalDefines::read(frame, &content.defines).ok());
         if let Ok(rows) = frame.complete::<tables::RelationLinks>() {
-            vision.air_access = Some(
+            vision.air_access = Some(Values::from_iter(
                 rows.iter()
                     .filter(|r| {
                         r.links & RelationLinkRow::AIR_BASE_ACCESS != 0
                             && links.get(&r.country) == Some(&ours)
                     })
-                    .map(|r| r.target_index)
-                    .collect(),
-            );
+                    .map(|r| (r.target_index, ())),
+                &budget,
+            )?);
         }
         if let Ok(provinces) = frame.complete::<tables::Provinces>() {
-            vision.province_controllers = provinces
-                .iter()
-                .filter_map(|p| Some((p.id, *links.get(&p.controller)?)))
-                .collect();
+            vision.province_controllers = Values::from_iter(
+                provinces
+                    .iter()
+                    .filter_map(|p| Some((p.id, *links.get(&p.controller)?))),
+                &budget,
+            )?;
         }
 
         if vision.fog {
@@ -459,8 +467,8 @@ impl Vision {
             });
             match rebuilt {
                 Ok((bytes, sight)) => {
-                    vision.visibility = Arc::new(bytes);
-                    vision.sight_provinces = sight;
+                    vision.visibility = Arc::new(Values::from_iter(bytes, &budget)?);
+                    vision.sight_provinces = Values::from_iter(sight, &budget)?;
                 }
                 Err(reason) => vision.visibility_gap = Some(reason),
             }
@@ -474,18 +482,22 @@ impl Vision {
         &mut self,
         relations: Result<&Relations, &'static str>,
         slots: impl Iterator<Item = u32>,
-    ) {
+        budget: &MemoryBudget,
+    ) -> io::Result<()> {
         let ours = self.ours;
-        self.shares.insert(ours);
+        self.shares.insert(ours, (), budget)?;
         match relations {
             Ok(relations) => {
-                self.shares
-                    .extend(slots.filter(|&slot| relations.shared(slot, ours)));
-                self.wars
-                    .extend(relations.enemies(ours).filter(|&slot| slot != ours));
+                for slot in slots.filter(|&slot| relations.shared(slot, ours)) {
+                    self.shares.insert(slot, (), budget)?;
+                }
+                for slot in relations.enemies(ours).filter(|&slot| slot != ours) {
+                    self.wars.insert(slot, (), budget)?;
+                }
             }
             Err(reason) => self.relations_gap = Some(reason),
         }
+        Ok(())
     }
 
     /// The viewing country's canonical slot.
@@ -530,10 +542,10 @@ impl Vision {
 
     /// The province bytes for the intel texture, or `None` when no fog is drawn.
     pub fn province_fog(&self) -> Option<&BTreeMap<u32, u8>> {
-        (self.fog && self.visibility_gap.is_none()).then_some(self.visibility.as_ref())
+        (self.fog && self.visibility_gap.is_none()).then(|| self.visibility.flat())
     }
 
-    pub fn shared_province_fog(&self) -> Option<&Arc<BTreeMap<u32, u8>>> {
+    pub fn shared_province_fog(&self) -> Option<&Arc<Values<u32, u8>>> {
         (self.fog && self.visibility_gap.is_none()).then_some(&self.visibility)
     }
 
@@ -553,10 +565,17 @@ impl Vision {
         let mut vision = Self {
             ours,
             fog: true,
-            shares: shares.into_iter().collect(),
+            shares: Values::from_iter(
+                shares.into_iter().map(|slot| (slot, ())),
+                &map_display_data::credit::display_products().clone(),
+            )
+            .unwrap(),
             ..Self::default()
         };
-        vision.shares.insert(ours);
+        vision
+            .shares
+            .insert(ours, (), &map_display_data::credit::display_products().clone())
+            .unwrap();
         vision
     }
 
@@ -573,14 +592,14 @@ impl Vision {
         mut self,
         levels: impl IntoIterator<Item = (u64, i8)>,
     ) -> Self {
-        self.levels = levels.into_iter().collect();
+        self.levels = Values::from_iter(levels, &map_display_data::credit::display_products().clone()).unwrap();
         self.truncated.push("UnitIntel");
         self
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_visibility(&mut self, bytes: impl IntoIterator<Item = (u32, u8)>) {
-        self.visibility = Arc::new(bytes.into_iter().collect());
+        self.visibility = Arc::new(Values::from_iter(bytes, &map_display_data::credit::display_products().clone()).unwrap());
         self.visibility_gap = None;
     }
 
@@ -596,7 +615,7 @@ impl Vision {
     /// Air-port detail level from authored thresholds and the simulation feature. Also used for
     /// carrier-base summaries.
     pub fn air_port_level(&self, owner: u32) -> Option<u8> {
-        let shared = self.shares.contains(&owner);
+        let shared = self.shares.contains_key(&owner);
         if self.fog && self.undecided.is_some() && !shared {
             return None;
         }
@@ -642,7 +661,7 @@ impl Vision {
         let access = self
             .air_access
             .as_ref()
-            .map(|set| set.contains(&controller));
+            .map(|set| set.contains_key(&controller));
         let raw = self
             .air_intel
             .as_ref()
@@ -650,7 +669,7 @@ impl Vision {
         let intel = self
             .air_defines
             .as_ref()
-            .and_then(|d| d.show_ports(raw, self.shares.contains(&controller), self.fog));
+            .and_then(|d| d.show_ports(raw, self.shares.contains_key(&controller), self.fog));
         let byte = self
             .province_byte(province)
             .map(|byte| byte >= MAP_OBJECT_VISIBILITY);
@@ -675,7 +694,7 @@ impl Vision {
     /// independent of fog. A negative result requires complete relations; otherwise only the viewer
     /// is proven and `Err` names the missing input.
     pub fn shares_vision_proven(&self, slot: u32) -> Result<bool, SharingUnknown> {
-        if self.shares.contains(&slot) {
+        if self.shares.contains_key(&slot) {
             return Ok(true);
         }
         self.relations_gap
@@ -717,8 +736,8 @@ impl Vision {
         }
         if self.undecided.is_some()
             || self.visibility_gap.is_some()
-            || (!self.shares.contains(&owner) && self.relations_gap.is_some())
-            || (!self.shares.contains(&owner)
+            || (!self.shares.contains_key(&owner) && self.relations_gap.is_some())
+            || (!self.shares.contains_key(&owner)
                 && !self.levels.contains_key(&unit)
                 && self.truncated.contains(&"UnitIntel"))
         {
@@ -762,7 +781,7 @@ impl Vision {
     /// hold any level. A unit seen in full, shared vision and a recorded entry decide it.
     pub fn navy_byte_known(&self, unit: u64, owner: u32) -> Option<u16> {
         let decided = self.in_full(owner)
-            || self.shares.contains(&owner)
+            || self.shares.contains_key(&owner)
             || self.levels.contains_key(&unit)
             || !self.truncated.contains(&"UnitIntel");
         decided.then(|| self.navy_byte(unit, owner))
@@ -770,7 +789,7 @@ impl Vision {
 
     /// Port detail level from zero to four; `None` when defines or the intel census are unavailable.
     pub fn naval_port_detail(&self, owner: u32) -> Option<u8> {
-        let shared = self.shares.contains(&owner);
+        let shared = self.shares.contains_key(&owner);
         let raw = self
             .navy_intel
             .as_ref()
@@ -831,7 +850,7 @@ impl Vision {
 
     /// Active war between the viewer and `slot`. A negative result requires complete relations.
     pub fn at_war_proven(&self, slot: u32) -> Result<bool, SharingUnknown> {
-        if self.wars.contains(&slot) {
+        if self.wars.contains_key(&slot) {
             return Ok(true);
         }
         if slot == self.ours {
@@ -843,7 +862,7 @@ impl Vision {
 
     /// Shared vision is detection level 3 and still takes the modifier.
     fn detection(&self, unit: u64, owner: u32) -> i8 {
-        if self.shares.contains(&owner) {
+        if self.shares.contains_key(&owner) {
             3
         } else {
             self.levels.get(&unit).copied().unwrap_or(0)

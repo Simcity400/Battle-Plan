@@ -367,6 +367,7 @@ impl Viewer {
             hour,
             view,
             current,
+            viewing,
             layers,
             laps: built_laps,
             child_laps,
@@ -435,6 +436,7 @@ impl Viewer {
                         at: (branch, hour),
                         playing: self.playing,
                         current: &raid_frame,
+                        viewing: viewing.as_ref(),
                     },
                 );
                 retired.push(self.shown.replace(ShownHour {
@@ -570,6 +572,7 @@ impl Viewer {
                 at: (branch, hour),
                 playing: self.playing,
                 current: &raid_frame,
+                viewing: viewing.as_ref(),
             },
         );
         let same_units = self
@@ -1244,8 +1247,8 @@ mod tests {
         let snow = || SnowMud {
             width: 2,
             height: 1,
-            texels: vec![1, 2, 3, 4, 5, 6, 7, 8],
-            province_snow: vec![None, Some(3)],
+            texels: vec![1, 2, 3, 4, 5, 6, 7, 8].into(),
+            province_snow: vec![None, Some(3)].into(),
             post_factors: None,
             build: Default::default(),
             summary: Default::default(),
@@ -1389,17 +1392,28 @@ mod tests {
     }
     impl PollHistory {
         fn poll(&mut self, playhead: i32, arrivals: &[i32]) {
-            for &hour in arrivals { self.ready.insert((1, hour), hour as u64); }
+            for &hour in arrivals {
+                self.ready.insert((1, hour), hour as u64);
+            }
             let Some(key) = super::super::latest_built_key(&self.ready, (1, playhead), |_| true)
-                .filter(|key| self.shown.is_none_or(|shown| key.1 > shown.1)) else { return };
+                .filter(|key| self.shown.is_none_or(|shown| key.1 > shown.1))
+            else {
+                return;
+            };
             let skipped = super::super::skipped_hours(self.shown, key, true, |hour| {
                 self.ready.get(&(1, hour)).map(|id| Some(*id))
             });
             let events: Vec<_> = skipped.unwrap_or_default().into_iter().map(hour).collect();
             let presented = hour(self.ready[&key]);
-            let continuity = if self.shown.is_some() { Continuity::Continue } else { Continuity::Reset };
+            let continuity = if self.shown.is_some() {
+                Continuity::Continue
+            } else {
+                Continuity::Reset
+            };
             for events in presented_events(events.iter(), &presented, continuity) {
-                for impact in &events.impacts { self.bytes.extend_from_slice(&impact.id.to_le_bytes()); }
+                for impact in &events.impacts {
+                    self.bytes.extend_from_slice(&impact.id.to_le_bytes());
+                }
             }
             self.installed.push(key.1);
             self.shown = Some(key);
@@ -1528,11 +1542,16 @@ mod tests {
         for first in [[10, 11, 12], [12, 10, 11], [11, 12, 10]] {
             for second in [[13, 14, 15], [15, 13, 14], [14, 15, 13]] {
                 let mut state = PollHistory::default();
-                state.poll(10, &first); state.poll(14, &second); state.poll(15, &[]);
+                state.poll(10, &first);
+                state.poll(14, &second);
+                state.poll(15, &[]);
                 assert_eq!(state.installed, [10, 14, 15]);
                 let value = (state.installed, state.bytes);
-                if let Some(baseline) = &baseline { assert_eq!(&value, baseline); }
-                else { baseline = Some(value); }
+                if let Some(baseline) = &baseline {
+                    assert_eq!(&value, baseline);
+                } else {
+                    baseline = Some(value);
+                }
             }
         }
     }
@@ -1540,17 +1559,22 @@ mod tests {
     #[test]
     fn coordinator_different_poll_availability_has_valid_not_identical_sequences() {
         let mut earlier = PollHistory::default();
-        earlier.poll(11, &[10]); earlier.poll(11, &[11]);
+        earlier.poll(11, &[10]);
+        earlier.poll(11, &[11]);
         let mut later = PollHistory::default();
-        later.poll(11, &[11]); later.poll(11, &[10]);
-        assert_eq!(earlier.installed, [10, 11]); assert_eq!(later.installed, [11]);
+        later.poll(11, &[11]);
+        later.poll(11, &[10]);
+        assert_eq!(earlier.installed, [10, 11]);
+        assert_eq!(later.installed, [11]);
         for state in [&earlier, &later] {
             assert!(state.installed.windows(2).all(|w| w[0] < w[1]));
             assert!(state.installed.iter().all(|hour| *hour <= 11));
             // Replay the same installed sequence and same skipped-built inputs
             // through the unchanged old presentation helpers, not arrival order.
             let mut old = PollHistory::default();
-            for &hour in &state.installed { old.poll(11, &[hour]); }
+            for &hour in &state.installed {
+                old.poll(11, &[hour]);
+            }
             assert_eq!(state.bytes, old.bytes);
         }
     }
@@ -1558,17 +1582,32 @@ mod tests {
     #[test]
     fn coordinator_retained_oracle_includes_skipped_built_not_just_installed_sequence() {
         let mut with_skipped = PollHistory::default();
-        with_skipped.poll(10, &[10]); with_skipped.poll(12, &[12, 11]);
+        with_skipped.poll(10, &[10]);
+        with_skipped.poll(12, &[12, 11]);
         let mut without_skipped = PollHistory::default();
-        without_skipped.poll(10, &[10]); without_skipped.poll(12, &[12]);
+        without_skipped.poll(10, &[10]);
+        without_skipped.poll(12, &[12]);
         assert_eq!(with_skipped.installed, without_skipped.installed);
         assert_ne!(with_skipped.bytes, without_skipped.bytes);
-        assert_eq!(with_skipped.bytes, [10_u64, 11, 12].into_iter().flat_map(u64::to_le_bytes).collect::<Vec<_>>());
-        assert_eq!(without_skipped.bytes, [10_u64, 12].into_iter().flat_map(u64::to_le_bytes).collect::<Vec<_>>());
+        assert_eq!(
+            with_skipped.bytes,
+            [10_u64, 11, 12]
+                .into_iter()
+                .flat_map(u64::to_le_bytes)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            without_skipped.bytes,
+            [10_u64, 12]
+                .into_iter()
+                .flat_map(u64::to_le_bytes)
+                .collect::<Vec<_>>()
+        );
         // Matching both installed sequence and skipped-built set is invariant
         // under within-poll delivery permutation, byte for byte.
         let mut old = PollHistory::default();
-        old.poll(10, &[10]); old.poll(12, &[11, 12]);
+        old.poll(10, &[10]);
+        old.poll(12, &[11, 12]);
         assert_eq!(with_skipped.bytes, old.bytes);
     }
 

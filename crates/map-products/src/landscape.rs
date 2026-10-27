@@ -95,7 +95,7 @@ struct BuildingKey {
     fog: bool,
     content: [u8; 32],
     city: Operand<Vec<bool>>,
-    fog_bytes: Option<Operand<BTreeMap<u32, u8>>>,
+    fog_bytes: Option<Operand<perspective::values::Values<u32, u8>>>,
     visibility_gap: Option<&'static str>,
 }
 impl BuildingKey {
@@ -897,7 +897,9 @@ mod identity_tests {
             visibility_gap: None,
         };
         let mut next = old.clone();
-        let fog = Arc::new(BTreeMap::from([(1, 255u8)]));
+        let fog = Arc::new(perspective::values::Values::from_iter(
+            [(1, 255u8)], map_display_data::credit::display_products(),
+        ).unwrap());
         next.fog_bytes = Some(Operand::new(&fog));
         assert!(old != next);
         assert!(old.same_base(&next));

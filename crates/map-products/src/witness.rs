@@ -3,6 +3,7 @@ use installed_content_core::{
     ResolvedLayers,
     content::{ContentRead, ReadOutcome},
 };
+use map_display_data::credit::MemoryBudget;
 use sha2::{Digest, Sha256};
 use std::{io, sync::Arc};
 
@@ -35,6 +36,21 @@ impl ContentReads {
         }
         result
     }
+    pub(crate) fn load_retryable<T>(
+        &self,
+        load: impl FnOnce(&ResolvedLayers) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let result = load(&self.layers);
+        if let Err(error) = &result {
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::OutOfMemory
+            ) {
+                self.session_error(error);
+            }
+        }
+        result
+    }
     pub fn user_bytes(&self, path: &[u8], result: &io::Result<Vec<u8>>) {
         let outcome = match result {
             Ok(bytes) => ReadOutcome::Bytes {
@@ -58,35 +74,37 @@ impl ContentReads {
     pub fn operand_bytes(&self, name: &[u8], bytes: &[u8]) {
         self.operand_digest(name, bytes.len() as u64, Sha256::digest(bytes).into());
     }
+    pub(crate) fn operand_write(
+        &self,
+        name: &[u8],
+        budget: &MemoryBudget,
+        write: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let _credit = budget.admit(OPERAND_BUFFER_BYTES)?;
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(OPERAND_BUFFER_BYTES)
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        let mut output = OperandHash {
+            hash: Sha256::new(),
+            length: 0,
+            buffer,
+        };
+        write(&mut output)?;
+        io::Write::flush(&mut output)?;
+        self.operand_digest(name, output.length, output.hash.finalize().into());
+        Ok(())
+    }
     pub fn operand_stream(
         &self,
         name: &[u8],
         write: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
     ) -> io::Result<()> {
-        use std::io::Write;
-        struct DigestWriter {
-            hash: Sha256,
-            length: u64,
-        }
-        impl io::Write for DigestWriter {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.length = self.length.checked_add(bytes.len() as u64)
-                    .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-                self.hash.update(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
-        }
-        const BUFFER: usize = 8192;
-        let _credit = map_display_data::credit::display_products().admit_item(BUFFER)?;
-        let mut digest = DigestWriter { hash: Sha256::new(), length: 0 };
-        {
-            let mut buffered = io::BufWriter::with_capacity(BUFFER, &mut digest);
-            write(&mut buffered)?;
-            buffered.flush()?;
-        }
-        self.operand_digest(name, digest.length, digest.hash.finalize().into());
-        Ok(())
+        self.operand_write(
+            name,
+            &map_display_data::credit::display_products().clone(),
+            write,
+        )
     }
     fn operand_digest(&self, name: &[u8], length: u64, digest: [u8; 32]) {
         self.recorder.record_read(ContentRead {
@@ -212,5 +230,42 @@ mod operand_tests {
         assert!(payload.upgrade().is_none());
         let replacement = Arc::new(vec![1u8, 2]);
         assert!(old != Operand::new(&replacement));
+    }
+}
+
+const OPERAND_BUFFER_BYTES: usize = 64 * 1024;
+struct OperandHash {
+    hash: Sha256,
+    length: u64,
+    buffer: Vec<u8>,
+}
+impl io::Write for OperandHash {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.length = self
+            .length
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| io::Error::other("display content operand length overflow"))?;
+        let length = bytes.len();
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            if self.buffer.is_empty() && remaining.len() >= OPERAND_BUFFER_BYTES {
+                self.hash.update(remaining);
+                break;
+            }
+            let take = remaining
+                .len()
+                .min(OPERAND_BUFFER_BYTES - self.buffer.len());
+            self.buffer.extend_from_slice(&remaining[..take]);
+            remaining = &remaining[take..];
+            if self.buffer.len() == OPERAND_BUFFER_BYTES {
+                io::Write::flush(self)?;
+            }
+        }
+        Ok(length)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.hash.update(&self.buffer);
+        self.buffer.clear();
+        Ok(())
     }
 }

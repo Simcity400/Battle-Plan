@@ -16,12 +16,19 @@ impl<T> Retained<T> {
         payload_bytes: usize,
         build: impl FnOnce() -> T,
     ) -> io::Result<Self> {
+        Self::try_build_in(owner, payload_bytes, || Ok(build()))
+    }
+    pub fn try_build_in(
+        owner: &MemoryBudget,
+        payload_bytes: usize,
+        build: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<Self> {
         let bytes = payload_bytes
-            .checked_add(size_of::<Owned<T>>() + 2 * size_of::<usize>() + align_of::<Owned<T>>())
+            .checked_add(Self::overhead())
             .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
         let credit = owner.admit_item(bytes)?;
         Ok(Self(Arc::new(Owned {
-            value: build(),
+            value: build()?,
             _credit: credit,
         })))
     }
@@ -32,15 +39,43 @@ impl<T> Retained<T> {
         }))
     }
     pub fn overhead() -> usize {
-        size_of::<Owned<T>>() + 2 * size_of::<usize>() + align_of::<Owned<T>>()
+        size_of::<Owned<T>>() + 4 * size_of::<usize>() + align_of::<Owned<T>>() + align_of::<T>()
     }
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        Arc::get_mut(&mut self.0).map(|owned| &mut owned.value)
     }
 }
 impl<T> Clone for Retained<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
+    }
+}
+impl<T> Default for Retained<Vec<T>> {
+    fn default() -> Self {
+        Self::build(0, Vec::new).expect("retained empty fixture admission")
+    }
+}
+impl<T> From<Vec<T>> for Retained<Vec<T>> {
+    fn from(values: Vec<T>) -> Self {
+        Self::build(values.capacity() * size_of::<T>(), || values)
+            .expect("retained fixture admission")
+    }
+}
+impl<T> FromIterator<T> for Retained<Vec<T>> {
+    fn from_iter<I: IntoIterator<Item = T>>(items: I) -> Self {
+        items.into_iter().collect::<Vec<_>>().into()
+    }
+}
+impl<T> From<Arc<[T]>> for Retained<Vec<T>>
+where
+    T: Clone,
+{
+    fn from(values: Arc<[T]>) -> Self {
+        Self::build(values.len() * size_of::<T>(), || values.to_vec())
+            .expect("retained fixture admission")
     }
 }
 impl<T> std::ops::Deref for Retained<T> {

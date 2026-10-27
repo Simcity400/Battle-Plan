@@ -22,12 +22,28 @@ impl<K, V> Default for CopyIndex<K, V> {
         Self(None)
     }
 }
+impl<K: Eq, V: Eq> Eq for CopyIndex<K, V> {}
+impl<K: Ord + Copy, V: Copy + PartialEq> From<std::collections::BTreeMap<K, V>>
+    for CopyIndex<K, V>
+{
+    fn from(values: std::collections::BTreeMap<K, V>) -> Self {
+        values
+            .into_iter()
+            .try_fold(Self::default(), |root, (key, value)| {
+                root.inserted(key, value)
+            })
+            .expect("persistent fixture admission")
+    }
+}
 impl<K, V> CopyIndex<K, V> {
     pub fn len(&self) -> usize {
         self.0.as_ref().map_or(0, |node| node.len)
     }
     pub fn is_empty(&self) -> bool {
         self.0.is_none()
+    }
+    pub fn keys(&self) -> impl Iterator<Item = &K> {
+        self.iter().map(|(key, _)| key)
     }
     fn height(&self) -> u8 {
         self.0.as_ref().map_or(0, |node| node.height)
@@ -89,6 +105,9 @@ impl<K: Ord + Copy, V: Copy + PartialEq> CopyIndex<K, V> {
             }
         }
         None
+    }
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.get(key).is_some()
     }
     fn node(key: K, value: V, left: Self, right: Self) -> io::Result<Self> {
         let credit = display_products()

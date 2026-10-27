@@ -4018,6 +4018,14 @@ impl<'a> Hour<'a> {
         )
     }
 
+    pub(crate) fn seed_vision(
+        &self,
+        choice: &perspective::Choice,
+        vision: Arc<perspective::Vision>,
+    ) {
+        self.product_hour.seed_vision(choice, vision);
+    }
+
     // counters: the viewing country
     /// What this hour's counters can see, for the limitation lines and the viewing tag.
     pub fn vision(
@@ -4780,8 +4788,7 @@ impl<'a> Hour<'a> {
         memo: &map_products::display::SnowMemo,
     ) -> io::Result<Arc<SnowMud>> {
         let content = self.products.snow_content()?;
-        self.product_hour
-            .snow(&content.cells, &content.winter, memo)
+        content.project(self.frame, memo)
     }
 
     /// The map's snow and mud cell composition ([`weather::SnowCells`]),

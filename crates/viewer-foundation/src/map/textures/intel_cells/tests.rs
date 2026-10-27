@@ -341,3 +341,61 @@ fn intel_cells_allocation_failure_is_retryable_but_structural_refusal_is_retaine
     assert_eq!(retained.kind(), expected.kind());
     assert_eq!(retained.to_string(), expected.to_string());
 }
+
+#[test]
+fn intel_cell_patches_match_independent_scalar_across_pages_and_missing_keys() {
+    let page = map_display_data::PAGE_ITEMS as u32;
+    let map = map((2 * page + 7) * FOW_BLOCK, FOW_BLOCK, |x, _| {
+        if x < page * FOW_BLOCK {
+            1
+        } else if x < 2 * page * FOW_BLOCK {
+            2
+        } else {
+            3
+        }
+    });
+    let cells = IntelCells::new(&map).unwrap();
+    let mut visibility = BTreeMap::from([(1, 0), (2, 127)]);
+    let mut previous = cells.intel_map(Some(&visibility));
+    for step in 0..12 {
+        let mut next = visibility.clone();
+        match step {
+            0 => {
+                next.insert(2, 128);
+            }
+            1 => {
+                next.insert(3, 0);
+                next.insert(u32::MAX, 0);
+            }
+            2 => {
+                next.remove(&2);
+            }
+            3 => {
+                next.insert(2, 0);
+            }
+            4 => next.clear(),
+            5 => {
+                next.insert(1, 250);
+            }
+            _ => {
+                next.insert(2, (step * 19) as u8);
+            }
+        }
+        let actual = cells.patch(&previous, &visibility, &next);
+        let (expected, fog) = scalar(&map, Some(&next));
+        assert_eq!(actual.texels, expected, "step {step}");
+        assert_eq!(actual.fog, fog);
+        assert_eq!(
+            actual.fogged_texels(),
+            expected.iter().filter(|&&byte| byte != 0).count()
+        );
+        if step == 0 {
+            assert_eq!(actual.texels.changed_pages(&previous.texels), [1]);
+        }
+        if step == 1 {
+            assert!(actual.texels.ptr_eq(&previous.texels));
+        }
+        previous = actual;
+        visibility = next;
+    }
+}

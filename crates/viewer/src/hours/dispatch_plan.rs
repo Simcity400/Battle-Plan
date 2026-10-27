@@ -24,6 +24,7 @@ pub(super) struct HeldJob {
 pub(super) enum PreparedTarget {
     Parts(Box<Pending>, VecDeque<HeldJob>),
     Ready(Box<Built>),
+    Pressure(Box<DispatchPlan>, Current),
 }
 
 pub(super) type Colour = Option<Arc<viewer_world::map::map_mode::ColourState>>;
@@ -225,6 +226,7 @@ impl CoordinatorState {
         let current = pending.current.clone();
         let started = pending.started;
         let trace = pending.trace.clone();
+        let viewing = Some(Arc::clone(&pending.viewing));
         let layers = pending.layers();
         let built = Built {
             epoch,
@@ -232,6 +234,7 @@ impl CoordinatorState {
             hour,
             view,
             current,
+            viewing,
             wall: started.elapsed().as_secs_f64() * 1000.0,
             laps,
             child_laps,

@@ -2947,3 +2947,269 @@ fn decompressor_workspace_is_admitted_before_allocating_encoded_or_decoded_buffe
     );
     assert_eq!(peak, maximum);
 }
+
+#[test]
+fn missing_endpoints_use_bounded_point_reads_and_recheck_source_and_publications() {
+    let fixture = Fixture::simple();
+    let session = fixture.session();
+    let input = inputs();
+    let snow = input.build(&frame(1, 0)).unwrap();
+    let mut writer = fixture.writer();
+    session.initialise(&mut writer).unwrap();
+    write_endpoint(
+        &mut writer,
+        &session.key,
+        1,
+        0,
+        Ok(&snow),
+        Some(input.limits()),
+    )
+    .unwrap();
+    writer.commit().unwrap();
+    let reader = fixture.reader(&session.key, input.limits());
+    assert!(matches!(reader.restore(1, 9), Restore::Miss(_)));
+    let before = store::counters::now();
+    for hour in [9, 10, 11, 17] {
+        assert!(
+            matches!(reader.restore(1, hour), Restore::Miss(ref reason) if reason == "missing or stale endpoint")
+        );
+    }
+    let work = store::counters::now() - before;
+    assert_eq!(work.manifest_reads, 8);
+    assert!(work.log_opens <= 16, "{work:?}");
+    let expected = product_codec::encode(&snow).unwrap();
+    assert_eq!(
+        product_codec::encode(&*hit(&reader, 1, 0)).unwrap(),
+        expected
+    );
+    let mut writer = fixture.writer();
+    write_endpoint(
+        &mut writer,
+        &session.key,
+        1,
+        9,
+        Ok(&snow),
+        Some(input.limits()),
+    )
+    .unwrap();
+    writer.commit().unwrap();
+    assert_eq!(
+        product_codec::encode(&*hit(&reader, 1, 9)).unwrap(),
+        expected
+    );
+    assert!(matches!(reader.restore(1, 10), Restore::Miss(_)));
+    let source = fs::read_dir(fixture.store.directory())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("source_")
+        })
+        .unwrap();
+    let mut bytes = fs::read(&source).unwrap();
+    bytes.push(b' ');
+    fs::write(&source, bytes).unwrap();
+    let before = store::counters::now();
+    assert!(matches!(reader.restore(1, 10), Restore::Miss(_)));
+    assert!(store::counters::now().manifest_reads > before.manifest_reads);
+    let before = store::counters::now();
+    assert!(matches!(reader.restore(1, 10), Restore::Miss(_)));
+    assert_eq!(
+        store::counters::now().manifest_reads - before.manifest_reads,
+        2
+    );
+}
+
+fn export_headroom() -> Headroom {
+    Headroom {
+        available: Some((u64::MAX, u64::MAX)),
+        low: false,
+    }
+}
+
+#[test]
+fn appended_export_endpoints_keep_scoped_generations_and_refresh_after_scope() {
+    let fixture = Fixture::simple();
+    let session = fixture.session();
+    let input = inputs();
+    let snow = input.build(&frame(1, 0)).unwrap();
+    let expected = product_codec::encode(&snow).unwrap();
+    let mut writer = fixture.writer();
+    session.initialise(&mut writer).unwrap();
+    write_endpoint(
+        &mut writer,
+        &session.key,
+        1,
+        0,
+        Ok(&snow),
+        Some(input.limits()),
+    )
+    .unwrap();
+    writer.commit().unwrap();
+    let reader = fixture.reader(&session.key, input.limits());
+    let scope = fixture.store.scope(&fixture.source).unwrap();
+    let mut writer = fixture.writer();
+    write_endpoint(
+        &mut writer,
+        &session.key,
+        1,
+        9,
+        Ok(&snow),
+        Some(input.limits()),
+    )
+    .unwrap();
+    write_endpoint(
+        &mut writer,
+        &session.key,
+        2,
+        9,
+        Ok(&snow),
+        Some(input.limits()),
+    )
+    .unwrap();
+    writer.commit().unwrap();
+    assert!(reader.manifest(1, 9, export_headroom()).unwrap().is_none());
+    assert!(reader.manifest(2, 9, export_headroom()).unwrap().is_none());
+    assert!(matches!(reader.restore(1, 9), Restore::Miss(_)));
+    assert_eq!(
+        product_codec::encode(&*hit(&reader, 1, 0)).unwrap(),
+        expected
+    );
+    drop(scope);
+    for branch in [1, 2] {
+        assert!(
+            reader
+                .manifest(branch, 9, export_headroom())
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            product_codec::encode(&*hit(&reader, branch, 9)).unwrap(),
+            expected
+        );
+    }
+    assert!(reader.manifest(2, 0, export_headroom()).unwrap().is_none());
+
+    fixture.store.clear().unwrap();
+    assert!(matches!(reader.restore(1, 9), Restore::Miss(_)));
+    let mut writer = fixture.writer();
+    session.initialise(&mut writer).unwrap();
+    write_endpoint(
+        &mut writer,
+        &session.key,
+        2,
+        12,
+        Ok(&snow),
+        Some(input.limits()),
+    )
+    .unwrap();
+    writer.commit().unwrap();
+    assert!(reader.manifest(1, 9, export_headroom()).unwrap().is_none());
+    assert!(reader.manifest(2, 9, export_headroom()).unwrap().is_none());
+    assert_eq!(
+        product_codec::encode(&*hit(&reader, 2, 12)).unwrap(),
+        expected
+    );
+}
+
+struct Counted {
+    snapshot: store::Snapshot,
+    opened: Vec<(String, u64)>,
+}
+impl crate::prepared::facts::ReadPages for Counted {
+    fn open(&mut self, section: &str, range: u64) -> io::Result<Option<store::Range>> {
+        self.opened.push((section.into(), range));
+        self.snapshot.read(section, range)
+    }
+}
+#[test]
+fn publications_preserve_other_branches_and_misses_read_only_the_keyed_path() {
+    let fixture = Fixture::simple();
+    let session = fixture.session();
+    let manifest = Manifest {
+        endpoint: 1,
+        layers: Default::default(),
+        tables: Default::default(),
+    };
+    let mut writer = fixture.writer();
+    session.initialise(&mut writer).unwrap();
+    for branch in [1, 2] {
+        for hour in 0..129 {
+            write_manifest(&mut writer, &session.key, branch, hour * 2, &manifest).unwrap();
+        }
+    }
+    writer.commit().unwrap();
+    let root_id = |branch| {
+        fixture
+            .store
+            .read(
+                &fixture.source,
+                &session.key.section(&format!("endpoint-index/{branch}")),
+                0,
+            )
+            .unwrap()
+            .unwrap()
+            .id()
+    };
+    let roots = [root_id(1), root_id(2)];
+    let reader = fixture.reader(&session.key, inputs().limits());
+    for publication in 0..4 {
+        let mut writer = fixture.writer();
+        writer
+            .write_at("unrelated/prepared-section", 0, [publication].as_slice())
+            .unwrap();
+        writer.commit().unwrap();
+        assert_eq!([root_id(1), root_id(2)], roots);
+        let before = store::counters::now();
+        assert!(reader.manifest(1, 3, export_headroom()).unwrap().is_none());
+        let work = store::counters::now() - before;
+        assert_eq!(work.manifest_reads, 2);
+        assert!(
+            work.log_opens <= 5,
+            "historical reads after publication: {work:?}"
+        );
+        for branch in [1, 2] {
+            let mut source = Counted {
+                snapshot: fixture
+                    .store
+                    .session(&fixture.source)
+                    .unwrap()
+                    .unwrap()
+                    .snapshot(),
+                opened: Vec::new(),
+            };
+            assert_eq!(
+                endpoints::get_in(&mut source, &session.key, branch, 3, 129).unwrap(),
+                None
+            );
+            assert!(source.opened.len() <= 4, "{:?}", source.opened);
+            assert!(
+                source
+                    .opened
+                    .iter()
+                    .all(|(name, _)| name != &session.key.records(branch))
+            );
+            assert_eq!(
+                endpoints::get_in(&mut source, &session.key, branch, 256, 129).unwrap(),
+                Some(128)
+            );
+        }
+    }
+    let mut writer = fixture.writer();
+    write_manifest(&mut writer, &session.key, 1, 258, &manifest).unwrap();
+    writer.commit().unwrap();
+    assert_ne!(root_id(1), roots[0]);
+    assert_eq!(root_id(2), roots[1]);
+    assert_eq!(
+        reader.manifest(1, 258, export_headroom()).unwrap(),
+        Some(manifest)
+    );
+    assert!(
+        reader
+            .manifest(2, 258, export_headroom())
+            .unwrap()
+            .is_none()
+    );
+}

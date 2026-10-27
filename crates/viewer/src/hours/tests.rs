@@ -311,6 +311,10 @@ pub(super) fn test_view() -> View {
 
 pub(super) fn pending(ticket: u64) -> Pending {
     Pending {
+        viewing: Arc::new(ViewingCountry {
+            country: perspective::Country::Recorded,
+            resolved: Ok(0),
+        }),
         ticket,
         trace: Default::default(),
         current: Current::Gap {
@@ -472,38 +476,6 @@ fn a_part_that_never_runs_leaves_its_slot_empty_not_pending() {
     let slot = Slot::<u32>::new();
     drop(Fill(Arc::clone(&slot)));
     assert_eq!(slot.wait(), None);
-}
-
-#[test]
-fn the_intel_map_follows_the_viewing_countrys_province_bytes() {
-    let memos = Memos::new();
-    let built = std::cell::Cell::new(0);
-    let intel = |fog: Option<BTreeMap<u32, u8>>| {
-        memos
-            .fog
-            .intel
-            .get_or_insert_with(fog.clone(), || {
-                built.set(built.get() + 1);
-                Ok::<_, ()>(Arc::new(IntelMap::new(
-                    fog.map_or_else(Vec::new, |fog| fog.into_values().collect()),
-                    true,
-                )))
-            })
-            .unwrap()
-    };
-    let german = intel(Some(BTreeMap::from([(1, 150), (2, 0)])));
-    // Another country, or the same one after its sight changed: rebuilt.
-    let soviet = intel(Some(BTreeMap::from([(1, 0), (2, 150)])));
-    // Fog off draws no fog: a key of its own.
-    let clear = intel(None);
-    assert_eq!(built.get(), 3);
-    assert!(!Arc::ptr_eq(&german, &soviet) && !Arc::ptr_eq(&german, &clear));
-    // Back to the first view: the same grid, nothing uploaded again.
-    assert!(Arc::ptr_eq(
-        &german,
-        &intel(Some(BTreeMap::from([(1, 150), (2, 0)])))
-    ));
-    assert_eq!(built.get(), 3);
 }
 
 pub(super) fn lane_over(replay: &Arc<Replay>) -> DecodeLane {
@@ -848,7 +820,10 @@ fn shrinking_decode_admission_keeps_already_decoded_wanted_hours() {
     for hour in 101..108 {
         state.set_want((hour..hour + 8).map(|hour| (1, hour)).collect(), 0, 8);
         state.evict(None);
-        assert!(state.frames.contains_key(&(1, hour)), "no source rewind at {hour}");
+        assert!(
+            state.frames.contains_key(&(1, hour)),
+            "no source rewind at {hour}"
+        );
         state.served = Some((1, hour));
         state.evict(None);
         assert_eq!(state.frames.frames.len(), (108 - hour) as usize);
@@ -857,13 +832,19 @@ fn shrinking_decode_admission_keeps_already_decoded_wanted_hours() {
     state.set_want(vec![(2, 200)], 0, 8);
     state.served = None;
     state.evict(None);
-    assert!(state.frames.frames.is_empty(), "a branch switch releases old prefetch");
+    assert!(
+        state.frames.frames.is_empty(),
+        "a branch switch releases old prefetch"
+    );
     assert_eq!(state.frames.bytes, 0);
     state.set_want(vec![(1, 107)], 0, 8);
     state.frames.insert((1, 108), sized_frame(108, 1));
     state.decoded = Some((1, 108));
     state.evict(None);
-    assert!(state.frames.frames.is_empty(), "a pause drops no-longer-wanted prefetch");
+    assert!(
+        state.frames.frames.is_empty(),
+        "a pause drops no-longer-wanted prefetch"
+    );
 }
 
 #[test]

@@ -45,8 +45,8 @@ struct State {
     content: Option<Arc<Content>>,
     perspective: Option<perspective::Choice>,
     branch: Option<BranchId>,
-    /// The frames of the built hours; `None` for a recorded gap.
-    frames: BTreeMap<(BranchId, Hour), Option<Arc<DecodedFrame>>>,
+    /// The frames and explicit viewpoints of built hours; `None` for a recorded gap.
+    frames: BTreeMap<(BranchId, Hour), Option<Input>>,
     shown: Option<Hour>,
     playing: bool,
     /// Raised by every reset: the lane's generation.
@@ -118,7 +118,7 @@ impl State {
         perspective: &perspective::Choice,
         (branch, hour): (BranchId, Hour),
         playing: bool,
-        frame: Option<Arc<DecodedFrame>>,
+        frame: Option<Input>,
         reset: bool,
     ) {
         self.frames.insert((branch, hour), frame);
@@ -178,6 +178,22 @@ impl State {
     }
 }
 
+#[derive(Clone, Debug)]
+struct Input {
+    frame: Arc<DecodedFrame>,
+    viewing: Arc<crate::hours::ViewingCountry>,
+}
+
+fn input(current: &Current, viewing: Option<&Arc<crate::hours::ViewingCountry>>) -> Option<Input> {
+    match current {
+        Current::Frame(frame) => viewing.map(|viewing| Input {
+            frame: Arc::clone(frame),
+            viewing: Arc::clone(viewing),
+        }),
+        Current::Gap { .. } => None,
+    }
+}
+
 type Shared = Arc<(Mutex<State>, Condvar)>;
 
 fn lock(shared: &Shared) -> MutexGuard<'_, State> {
@@ -217,7 +233,7 @@ struct Chain {
 struct Plan {
     epoch: u64,
     hour: Hour,
-    frame: Option<Arc<DecodedFrame>>,
+    frame: Option<Input>,
     from: Option<Cycle>,
     paused: bool,
 }
@@ -311,6 +327,14 @@ impl Chain {
         }
         retire_before(&mut state.built, &(shown - 1), retired);
         let frame = state.frames.get(&(branch, hour))?.clone();
+        if let Some(input) = &frame
+            && state
+                .perspective
+                .as_ref()
+                .is_some_and(|choice| choice.country != input.viewing.country)
+        {
+            return None;
+        }
         let predecessor = if hour == start {
             None
         } else {
@@ -385,6 +409,7 @@ pub(crate) struct Presented<'a> {
     pub at: (BranchId, Hour),
     pub playing: bool,
     pub current: &'a Current,
+    pub viewing: Option<&'a Arc<crate::hours::ViewingCountry>>,
 }
 
 /// The raid cycle of one map view, on a thread of its own, started on the
@@ -397,11 +422,14 @@ pub(crate) struct RaidLane {
 
 impl RaidLane {
     /// A built hour's frame, which the lane builds its icons from.
-    pub(crate) fn feed(&self, branch: BranchId, hour: Hour, current: &Current) {
-        let frame = match current {
-            Current::Frame(frame) => Some(Arc::clone(frame)),
-            Current::Gap { .. } => None,
-        };
+    pub(crate) fn feed(
+        &self,
+        branch: BranchId,
+        hour: Hour,
+        current: &Current,
+        viewing: Option<&Arc<crate::hours::ViewingCountry>>,
+    ) {
+        let frame = input(current, viewing);
         lock(&self.shared).frames.insert((branch, hour), frame);
         self.shared.1.notify_all();
     }
@@ -412,10 +440,7 @@ impl RaidLane {
     /// ([`State::present`]). `presented.content` is `None` only in tests,
     /// which have none: the lane keeps what it holds.
     pub(crate) fn present(&self, presented: Presented<'_>, reset: bool) {
-        let frame = match presented.current {
-            Current::Frame(frame) => Some(Arc::clone(frame)),
-            Current::Gap { .. } => None,
-        };
+        let frame = input(presented.current, presented.viewing);
         let mut state = lock(&self.shared);
         let new_content = presented.content.is_some_and(|content| {
             state
@@ -649,15 +674,16 @@ fn build(shared: &Shared, job: Job, icons: &mut IconCache) -> Cycle {
     // window's presentation history resets at the hour it shows after it,
     // which starts the cycle again there ([`RaidLane::reset`]); the lane
     // needs no reset of its own.
-    let Some(frame) = frame else {
+    let Some(input) = frame else {
         let branch = lock(shared).branch.unwrap_or_default();
         return from.unwrap_or_else(|| Cycle::new(branch, 0));
     };
+    let frame = &input.frame;
     let branch = frame.branch;
-    let ours = match crate::document::Hour::new(&content, &frame, 0.0).vision(&perspective) {
-        Ok(vision) => vision.ours(),
+    let ours = match &input.viewing.resolved {
+        Ok(ours) => *ours,
         Err(error) => {
-            publish(hour, RaidIcons::unavailable(&frame, 0, error.to_string()));
+            publish(hour, RaidIcons::unavailable(&frame, 0, error.clone()));
             return from.unwrap_or_else(|| Cycle::new(branch, 0));
         }
     };

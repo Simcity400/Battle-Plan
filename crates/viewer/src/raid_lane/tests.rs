@@ -354,3 +354,56 @@ fn a_new_viewing_country_starts_the_cycle_again() {
     assert!(carried(Some(Cycle::pending(1, 3)), 2, 3).complete());
     assert!(carried(None, 1, 3).complete());
 }
+
+#[test]
+fn delivered_country_survives_fog_changes_but_not_another_viewing_country() {
+    let frame = Arc::new(viewer_foundation::map::test_support::test_frame(10));
+    let viewing = Arc::new(crate::hours::ViewingCountry {
+        country: perspective::Country::Tag("GER".into()),
+        resolved: Ok(17),
+    });
+    let mut state = state(10, true, 10..=10);
+    state.frames.insert(
+        (1, 10),
+        Some(Input {
+            frame,
+            viewing: Arc::clone(&viewing),
+        }),
+    );
+    state.perspective = Some(perspective::Choice {
+        country: perspective::Country::Tag("SOV".into()),
+        fog: true,
+    });
+    assert!(Chain::default().plan(&mut state).is_none());
+    state.perspective = Some(perspective::Choice {
+        country: perspective::Country::Tag("GER".into()),
+        fog: false,
+    });
+    let plan = Chain::default().plan(&mut state).unwrap();
+    let carried = plan.frame.unwrap();
+    assert!(Arc::ptr_eq(&carried.viewing, &viewing));
+    assert_eq!(carried.viewing.resolved, Ok(17));
+}
+
+#[test]
+fn ordered_retirement_matches_retention_without_visiting_live_future_hours() {
+    for count in [3, 1500, 5000] {
+        let original: BTreeMap<_, _> = (0..3)
+            .flat_map(|branch| (0..count).map(move |hour| ((branch, hour * 3), hour)))
+            .collect();
+        for branch in [0, 1, 2, 3] {
+            let floor = count / 2;
+            let mut expected = original.clone();
+            expected.retain(|&(held, hour), _| held == branch && hour >= floor);
+            let mut retired = Retired::default();
+            let mut actual = original.clone();
+            retire_before(&mut actual, &(branch, floor), &mut retired);
+            retire_from(&mut actual, &(branch + 1, i32::MIN), &mut retired);
+            assert_eq!(actual, expected);
+            let before = actual.clone();
+            retire_before(&mut actual, &(branch, floor), &mut retired);
+            retire_from(&mut actual, &(branch + 1, i32::MIN), &mut retired);
+            assert_eq!(actual, before);
+        }
+    }
+}

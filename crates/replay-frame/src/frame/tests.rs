@@ -3985,3 +3985,46 @@ fn an_unread_hour_breaks_even_a_carried_tables_change_span() {
         TableChanges::Discontinuity(_)
     ));
 }
+
+#[test]
+fn historical_delta_facts_keep_recorded_field_masks_and_missing_suffixes() {
+    let budget = allocation::credit::MemoryBudget::new(1 << 20);
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::for_tables(&[TableId::Countries])
+        .with_change_facts(budget);
+    let first = encoder.encode(source(1, 0), true).unwrap();
+    let first = decoder.advance(&first).unwrap();
+    let original = first.tables[TableId::Countries.index()].identity();
+    let mut next = source(1, 1);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *next.tables[TableId::Countries.index()]
+    {
+        rows[0].command_power_raw += 1;
+    } else {
+        panic!("fixture countries");
+    }
+    let mut update = encoder.encode(next, false).unwrap();
+    let changed = if let TableUpdate::Delta { changed, .. } =
+        &mut update.tables[TableId::Countries.index()]
+    {
+        changed
+    } else {
+        panic!("fixture delta");
+    };
+    assert_eq!(changed.len(), 1);
+    changed[0].format = crate::FORMAT_VERSION - 1;
+    let mut suffix = changed[0].clone();
+    suffix.recorded_fields = 4;
+    assert_eq!(
+        decoder::change_fields(TableId::Countries, &suffix),
+        suffix.mask | (TableId::Countries.full_mask() & !15)
+    );
+    suffix.recorded_fields = 64;
+    assert_eq!(decoder::change_fields(TableId::Countries, &suffix), suffix.mask);
+    let second = decoder.advance(&update).unwrap();
+    let view = &second.tables[TableId::Countries.index()];
+    let facts = view.changes_since(&original).unwrap();
+    assert_eq!(facts.row(7).unwrap().fields, 1 << 3);
+    assert!(original.fields_unchanged(view, 1));
+    assert!(!original.fields_unchanged(view, 1 << 3));
+}

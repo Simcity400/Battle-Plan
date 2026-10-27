@@ -4,6 +4,7 @@ pub mod display;
 pub mod landscape;
 pub mod loader;
 pub mod music_inputs;
+mod visions;
 pub mod witness;
 mod zone_projection;
 
@@ -20,7 +21,6 @@ use std::{
 use viewer_counter_products::map::orders;
 use viewer_foundation::{
     map::{
-        memo::Recent,
         perspective,
         tables::{self, Limitations},
         textures::{self, IntelMap},
@@ -48,14 +48,13 @@ pub struct ProductContent {
     pub reads: ContentReads,
     inputs: ProductInputs,
     intel_cells: Arc<textures::IntelCellsCache>,
+    visions: visions::Visions,
+    weather: std::sync::Mutex<display::WeatherMemo>,
     snow: OnceLock<Result<display::SnowContent, (io::ErrorKind, String)>>,
+    snow_building: std::sync::Mutex<()>,
     snow_loader: Option<loader::Loader>,
     landscape: landscape::Projections,
     display_binding: Result<[u8; 32], String>,
-    visions: dependency_index::DependencyIndex<
-        (i32, bool, Option<witness::KeyText>),
-        perspective::Vision,
-    >,
 }
 
 impl std::ops::Deref for ProductContent {
@@ -75,6 +74,14 @@ impl ProductContent {
     }
 
     pub fn from_inputs(reads: ContentReads, inputs: ProductInputs) -> Self {
+        Self::from_inputs_with_memory(reads, inputs, Default::default())
+    }
+
+    pub fn from_inputs_with_memory(
+        reads: ContentReads,
+        inputs: ProductInputs,
+        memory: viewer_foundation::map::perspective::incremental::Memory,
+    ) -> Self {
         let intel_cells = textures::IntelCellsCache::prewarm(Arc::clone(&inputs.map));
         let display_binding = reads
             .witness()
@@ -85,10 +92,12 @@ impl ProductContent {
             display_binding,
             inputs,
             intel_cells,
+            visions: visions::Visions::with_budget(memory),
+            weather: Default::default(),
             snow: OnceLock::new(),
+            snow_building: Default::default(),
             snow_loader: None,
             landscape: Default::default(),
-            visions: Default::default(),
         }
     }
 
@@ -112,7 +121,7 @@ impl ProductContent {
         if visibility.is_none() {
             return textures::clear_intel_map(&self.map);
         }
-        Ok(self.intel_cells.get_or_init()?.intel_map(visibility))
+        self.intel_cells.get_or_init()?.try_intel_map(visibility)
     }
 
     pub fn impact_place(&self, province: u32) -> Option<([f32; 3], [f32; 4])> {
@@ -141,14 +150,19 @@ pub struct FogProduct {
 }
 
 pub struct FogMemos {
-    pub intel: Recent<Option<BTreeMap<u32, u8>>, IntelMap>,
+    intel: std::sync::Mutex<
+        Option<(
+            Option<Arc<viewer_foundation::map::perspective::values::Values<u32, u8>>>,
+            Arc<IntelMap>,
+        )>,
+    >,
     pub music: music_inputs::Memo,
 }
 
 impl FogMemos {
     pub fn new(capacity: usize) -> Self {
         Self {
-            intel: Recent::new(capacity),
+            intel: std::sync::Mutex::new(None),
             music: music_inputs::Memo::new(capacity),
         }
     }
@@ -168,10 +182,18 @@ pub struct ProductHour<'a> {
 
 impl<'a> ProductHour<'a> {
     pub fn new(content: &'a ProductContent, frame: &'a DecodedFrame, hour_fraction: f32) -> Self {
-        Self::from_input(content, replay_frame::frame::HourInput::new(frame), hour_fraction)
+        Self::from_input(
+            content,
+            replay_frame::frame::HourInput::new(frame),
+            hour_fraction,
+        )
     }
 
-    pub fn from_input(content: &'a ProductContent, input: replay_frame::frame::HourInput<'a>, hour_fraction: f32) -> Self {
+    pub fn from_input(
+        content: &'a ProductContent,
+        input: replay_frame::frame::HourInput<'a>,
+        hour_fraction: f32,
+    ) -> Self {
         let frame = input.frame();
         Self {
             content,
@@ -195,7 +217,11 @@ impl<'a> ProductHour<'a> {
     }
 
     pub fn weather_field(&self) -> io::Result<weather_effects::Field> {
-        display::weather_field(self.frame)
+        self.content
+            .weather
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .project(self.frame)
     }
 
     pub fn nuclear_impacts(&self) -> io::Result<strike_effects::Impacts> {
@@ -272,14 +298,12 @@ impl<'a> ProductHour<'a> {
                 out.note_visibility_gap(input);
             }
         }
-        if vision.province_fog().is_some() {
+        if vision.shared_province_fog().is_some() {
             let built;
             let intel = match intel {
                 Some(intel) => intel,
                 None => {
-                    built = self
-                        .content
-                        .intel_map_from_visibility(vision.province_fog())?;
+                    built = self.intel_map(perspective)?;
                     &built
                 }
             };
@@ -328,32 +352,7 @@ impl<'a> ProductHour<'a> {
         {
             return Ok(Arc::clone(vision));
         }
-        let _cost = replay_frame::cpu::scope("viewer", Some("fog"));
-        let vision = (|| {
-            let tag = match &perspective.country {
-                perspective::Country::Recorded => None,
-                perspective::Country::Tag(tag) => Some(witness::KeyText::new(tag)?),
-            };
-            self.content.visions.project(
-                self.frame,
-                (self.frame.hour, perspective.fog, tag),
-                dependency_index::Clock::Hour,
-                || {
-                    let (links, tags) = self.country_maps()?;
-                    perspective::Vision::read(
-                        self.frame,
-                        &links,
-                        &tags,
-                        perspective,
-                        FogContent::loaded(&self.content.fog),
-                    )
-                },
-            )
-        })()
-        .map_err(|error| {
-            map_display_data::credit::display_products()
-                .reclaim_failure(error, || self.content.visions.evict())
-        })?;
+        let vision = self.content.visions.get(self, perspective)?;
         *self.vision_cache.borrow_mut() = Some((perspective.clone(), Arc::clone(&vision)));
         Ok(vision)
     }
@@ -369,8 +368,14 @@ impl<'a> ProductHour<'a> {
 
     pub fn intel_map(&self, perspective: &perspective::Choice) -> io::Result<IntelMap> {
         let vision = self.vision(perspective)?;
-        self.content
-            .intel_map_from_visibility(vision.province_fog())
+        match vision.shared_province_fog() {
+            Some(visibility) => self
+                .content
+                .intel_cells
+                .get_or_init()?
+                .intel_values(visibility, self.content.visions.budget()),
+            None => textures::clear_intel_map(&self.content.map),
+        }
     }
 
     pub fn battle_sounds(&self) -> Option<viewer_audio::Battles> {
@@ -480,14 +485,51 @@ impl<'a> ProductHour<'a> {
         spans: &mut BuilderSpans,
     ) -> io::Result<Arc<FogProduct>> {
         let vision = spans.measure("fog.vision", |_| self.vision(choice))?;
-        let fog = vision.province_fog();
-        let key = spans.measure("fog.intel_key", |_| fog.cloned());
-        let intel = spans.measure("fog.intel_lookup", |spans| {
-            memos.intel.get_or_insert_with(key, || {
-                spans.measure("fog.intel_build", |_| {
-                    self.content.intel_map_from_visibility(fog).map(Arc::new)
-                })
-            })
+        let visibility = vision.shared_province_fog();
+        let intel = spans.measure("fog.intel_patch", |_| -> io::Result<_> {
+            let mut state = memos
+                .intel
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((old, intel)) = &*state {
+                match (old, visibility) {
+                    (None, None) => return Ok(Arc::clone(intel)),
+                    (Some(old), Some(next)) if Arc::ptr_eq(old, next) => {
+                        return Ok(Arc::clone(intel));
+                    }
+                    _ => {}
+                }
+            }
+            let next =
+                match (&*state, visibility) {
+                    (Some((Some(old), intel)), Some(next)) => self
+                        .content
+                        .intel_cells
+                        .get_or_init()?
+                        .patch_values(intel, old, next, self.content.visions.budget())?,
+                    _ => match visibility {
+                        Some(visibility) => self
+                            .content
+                            .intel_cells
+                            .get_or_init()?
+                            .intel_values(visibility, self.content.visions.budget())?,
+                        None => textures::clear_intel_map(&self.content.map)?,
+                    },
+                };
+            let intel = if let Some((_, previous)) = &*state {
+                if previous.fog == next.fog
+                    && previous.fogged_texels == next.fogged_texels
+                    && previous.texels.ptr_eq(&next.texels)
+                {
+                    Arc::clone(previous)
+                } else {
+                    Arc::new(next)
+                }
+            } else {
+                Arc::new(next)
+            };
+            *state = Some((visibility.cloned(), Arc::clone(&intel)));
+            Ok(intel)
         })?;
         let limitations = spans.measure("fog.limitations", |_| {
             self.limitations_with(choice, Some(&intel))
@@ -498,14 +540,14 @@ impl<'a> ProductHour<'a> {
         let battles = spans.measure("fog.battles", |_| self.battle_sounds());
         let product = map_display_data::Fog {
             intel,
-            limitations: limitations.lines(),
+            limitations: limitations.into_lines(),
             header: spans.measure("fog.header", |_| Header {
                 viewing: self
                     .vision(choice)
                     .and_then(|vision| self.viewing_tag(&vision))
                     .ok(),
             }),
-            map_text: spans.measure("fog.map_text", |_| self.map_text(&vision).display()),
+            map_text: spans.measure("fog.map_text", |_| self.map_text(&vision).into_display()),
             music,
             battles,
         };

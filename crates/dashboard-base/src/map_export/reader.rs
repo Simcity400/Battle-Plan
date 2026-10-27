@@ -134,42 +134,45 @@ impl Reader {
         maximum: usize,
         peak: &mut usize,
     ) -> io::Result<Option<Vec<u8>>> {
-        if !Session::ready(&self.store, source, &self.key)? {
+        let Some(session) = self.store.session(source)? else {
+            return Ok(None);
+        };
+        let mut snapshot = session.snapshot();
+        let ready = snapshot
+            .read("map-export-v2/binding", 0)
+            .and_then(|range| range.map(binding::Binding::read).transpose());
+        let ready = match ready {
+            Err(error) if cache_validation(&error) => None,
+            result => result?,
+        };
+        if ready.is_none_or(|binding| binding.key != self.key) {
             return Ok(None);
         }
-        let section = self.key.records(branch);
-        let mut low = 0;
-        let mut high = self.store.range_count(source, &section)?.unwrap_or(0);
-        while low < high {
-            let mid = low + (high - low) / 2;
-            let range = self
-                .store
-                .read(source, &section, mid)?
-                .ok_or_else(|| invalid("map export endpoint index is dangling"))?;
-            let header = codec::header(&range)?;
-            self.validate_manifest_header(&header, branch)?;
-            if header.hour < hour {
-                low = mid + 1;
-            } else if header.hour > hour {
-                high = mid;
-            } else {
-                admit(&header, maximum)?;
-                let body = codec::unpack_for_admitted(
-                    range,
-                    self.key.digest(),
-                    Some((branch, hour)),
-                    0,
-                    0,
-                    maximum,
-                    maximum,
-                    0,
-                    peak,
-                )?;
-                return Ok(Some(body));
-            }
+        let Some(ordinal) = super::endpoints::get(&mut snapshot, &self.key, branch, hour)? else {
+            return Ok(None);
+        };
+        let range = snapshot
+            .read(&self.key.records(branch), ordinal)?
+            .ok_or_else(|| invalid("map export endpoint index is dangling"))?;
+        let header = codec::header(&range)?;
+        self.validate_manifest_header(&header, branch)?;
+        if header.hour != hour {
+            return Err(invalid("map export keyed endpoint hour differs"));
         }
-        Ok(None)
+        admit(&header, maximum)?;
+        Ok(Some(codec::unpack_for_admitted(
+            range,
+            self.key.digest(),
+            Some((branch, hour)),
+            0,
+            0,
+            maximum,
+            maximum,
+            0,
+            peak,
+        )?))
     }
+
     pub fn manifest(
         &self,
         branch: BranchId,

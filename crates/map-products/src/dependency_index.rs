@@ -63,6 +63,7 @@ impl<K, V> DependencyIndex<K, V> {
     }
 }
 impl<K: Ord + Clone, V> DependencyIndex<K, V> {
+    #[cfg(test)]
     pub fn project(
         &self,
         frame: &DecodedFrame,
@@ -80,6 +81,7 @@ impl<K: Ord + Clone, V> DependencyIndex<K, V> {
         )
     }
 
+    #[cfg(test)]
     pub fn project_equal(
         &self,
         frame: &DecodedFrame,

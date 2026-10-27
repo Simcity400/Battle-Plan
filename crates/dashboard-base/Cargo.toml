@@ -16,6 +16,7 @@ test-support = ["dashboard-core/test-support", "dashboard-text/test-support", "i
 [dependencies]
 content-witness.workspace = true
 product-codec.workspace = true
+map-display-data.workspace = true
 map-snow.workspace = true
 engine-projects.workspace = true
 replay.workspace = true

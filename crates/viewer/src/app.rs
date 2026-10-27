@@ -3960,9 +3960,11 @@ impl Viewer {
                             perspective.clone(),
                         );
                         if self.walk.stale(&key) {
-                            let figure = document
-                                .vision(&perspective)
-                                .and_then(|vision| Ok((document.frame()?, vision.ours())))
+                            let figure = document.hour()
+                                .and_then(|now| now.vision_from_overlay(
+                                    &perspective,
+                                    self.overlay_tables.as_ref().map(|(_, _, _, tables)| tables),
+                                ).map(|vision| (now.frame, vision.ours())))
                                 .map_err(|error| error.to_string())
                                 .and_then(|(frame, ours)| {
                                     document.unit_models.infantry_figure(frame, ours)
@@ -5737,6 +5739,7 @@ trait Delivered {
     fn epoch(&self) -> u64;
     fn at(&self) -> (replay_data::BranchId, i32);
     fn current(&self) -> &crate::playback::Current;
+    fn viewing(&self) -> Option<&Arc<hours::ViewingCountry>> { None }
 }
 
 impl Delivered for hours::Built {
@@ -5751,6 +5754,7 @@ impl Delivered for hours::Built {
     fn current(&self) -> &crate::playback::Current {
         &self.current
     }
+    fn viewing(&self) -> Option<&Arc<hours::ViewingCountry>> { self.viewing.as_ref() }
 }
 
 /// Hands a delivered hour's frame to the raid lane. Every path that
@@ -5767,7 +5771,7 @@ fn check_overlay() -> bool {
 
 fn feed_raids(lane: &crate::raid_lane::RaidLane, built: &impl Delivered) {
     let (branch, hour) = built.at();
-    lane.feed(branch, hour, built.current());
+    lane.feed(branch, hour, built.current(), built.viewing());
 }
 
 /// Blocks on `wait` until the hour `target` of `epoch` arrives, feeding
@@ -7106,6 +7110,7 @@ pub(crate) mod tests {
                         at: (branch, hour),
                         playing: false,
                         current: &current,
+                        viewing: None,
                     },
                 );
             }
@@ -7122,6 +7127,7 @@ pub(crate) mod tests {
                     at: next,
                     playing: false,
                     current: &current,
+                    viewing: None,
                 },
             );
             assert!(lane.has_frame(next.0, next.1), "{name}: the hour's frame");

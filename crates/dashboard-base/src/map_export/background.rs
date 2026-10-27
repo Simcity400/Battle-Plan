@@ -90,9 +90,12 @@ impl Background {
         if !state.source.ptr_eq(&Arc::downgrade(replay)) {
             return Err("map export: source epoch differs".into());
         }
-        state
+        let reader = state
             .reader
-            .clone()
-            .unwrap_or_else(|| Err("map export: binding pending".into()))
+            .as_ref()
+            .ok_or_else(|| "map export: binding pending".to_owned())?
+            .as_ref()
+            .map_err(Clone::clone)?;
+        Ok(reader.clone())
     }
 }

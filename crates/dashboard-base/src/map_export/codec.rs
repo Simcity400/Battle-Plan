@@ -58,8 +58,10 @@ impl Limits {
             .pad_to_align()
             .size();
         encoded
-            .checked_add(self.raster()?)
-            .and_then(|n| n.checked_add(self.provinces.checked_mul(size_of::<Option<i64>>())?))
+            .checked_add(SnowMud::decode_storage_bytes(
+                self.raster()?,
+                self.provinces,
+            )?)
             .and_then(|n| n.checked_add(factors.size()))
             .and_then(|n| n.checked_add(factor_arc))
             .and_then(|n| n.checked_add(snow_arc))

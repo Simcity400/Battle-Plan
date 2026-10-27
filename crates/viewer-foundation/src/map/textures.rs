@@ -776,10 +776,15 @@ pub fn clear_intel_map(map: &MapData) -> io::Result<IntelMap> {
         width: map.width,
         height: map.height,
     });
-    Ok(IntelMap::new(
-        vec![0; width as usize * height as usize],
-        false,
-    ))
+    Ok(IntelMap {
+        texels: map_display_data::Paged::try_from_iter_in(
+            map_display_data::credit::display_products(),
+            width as usize * height as usize,
+            std::iter::repeat_n(0, width as usize * height as usize),
+        )?,
+        fog: false,
+        fogged_texels: 0,
+    })
 }
 
 /// One hour's `IntelMap` grid and whether it is a recorded fog or the all-clear

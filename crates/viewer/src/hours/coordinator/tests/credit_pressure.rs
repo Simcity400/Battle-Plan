@@ -1,5 +1,59 @@
 use super::*;
 
+#[test]
+fn ordered_vision_pressure_retains_the_ticket_until_release_and_cancels_without_a_gap() {
+    for cancel in [false, true] {
+        let owner = engine_allocation::credit::MemoryBudget::new(1 << 20);
+        let mut f = RealDriver::over(
+            Arc::new(Pool::new(1).unwrap()),
+            Arc::new(crate::playback::tests::fixture()),
+            SourceMailbox::new(|_| true),
+            &owner,
+        );
+        f.driver.core.vision_pressure = Some(owner.clone());
+        let held = owner.admit(owner.limit() - owner.used()).unwrap();
+        f.plan_and_request();
+        let ticket = f.driver.decode.as_ref().unwrap().ticket;
+        let current = super::super::super::tests::sized_frame(100, 1);
+        let Current::Frame(frame) = &current else {
+            panic!("frame")
+        };
+        let weak = Arc::downgrade(frame);
+        f.reply(current);
+        assert!(f.driver.vision_retry.is_some());
+        assert!(f.driver.targets.is_empty());
+        assert_eq!(f.driver.core.vision_calls, 1);
+        for _ in 0..3 {
+            let _ = f.driver.turn();
+        }
+        assert_eq!(
+            f.driver.core.vision_calls, 1,
+            "own cleanup never spins the stage"
+        );
+        assert!(f.driver.ledger.next_admission().is_none());
+        let error = exact_refusal(&mut f, 0, 100);
+        assert!(error.to_string().contains("ordered fog vision"));
+        if cancel {
+            f.want(1, 200, false);
+            assert!(f.driver.vision_retry.is_none());
+            assert!(weak.upgrade().is_none());
+            assert!(f.driver.ledger.get(ticket).is_none());
+            drop(held);
+        } else {
+            release(&mut f, held);
+            assert!(matches!(f.driver.turn(), Turn::Progress));
+            assert_eq!(f.driver.core.vision_calls, 2);
+            assert!(f.driver.vision_retry.is_none());
+            assert!(matches!(
+                f.driver.targets[&ticket],
+                PreparedTarget::Parts(..)
+            ));
+            assert_eq!(f.driver.ledger.next_admission(), Some((ticket, 0)));
+            assert!(f.driver.core.refusal.for_target(0, (1, 100)).is_ok());
+        }
+    }
+}
+
 fn exact_refusal(f: &mut RealDriver, epoch: u64, target: Hour) -> io::Error {
     let (_, placeholder) = mpsc::channel();
     let results = std::mem::replace(&mut f.results, placeholder);

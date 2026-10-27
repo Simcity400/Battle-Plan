@@ -18,7 +18,23 @@ pub struct SnowDefines {
 }
 
 pub trait Factors {
-    fn snow_factors(&self, snow: &[Option<i64>]) -> SnowFactors;
+    fn snow_factors(&self, snow: &[Option<i64>]) -> io::Result<SnowFactors>;
+    fn snow_records(&self) -> Option<&[Vec<SnowRecord>]> {
+        None
+    }
+    fn snow_factor_at(
+        &self,
+        index: usize,
+        snow: &map_display_data::Paged<Option<i64>>,
+    ) -> io::Result<Option<f32>> {
+        Ok(self.snow_factors_paged(snow)?[index])
+    }
+    fn snow_factors_paged(
+        &self,
+        snow: &map_display_data::Paged<Option<i64>>,
+    ) -> io::Result<SnowFactors> {
+        self.snow_factors(snow.try_as_slice()?)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -27,11 +43,42 @@ pub struct Winter {
     pub records: Vec<Vec<SnowRecord>>,
 }
 impl Factors for Winter {
-    fn snow_factors(&self, snow: &[Option<i64>]) -> SnowFactors {
-        self.records
-            .iter()
-            .map(|records| snow_factor(records, snow, self.defines))
-            .collect()
+    fn snow_records(&self) -> Option<&[Vec<SnowRecord>]> {
+        Some(&self.records)
+    }
+    fn snow_factor_at(
+        &self,
+        index: usize,
+        snow: &map_display_data::Paged<Option<i64>>,
+    ) -> io::Result<Option<f32>> {
+        Ok(snow_factor_with(
+            &self.records[index],
+            |province| snow.get(province as usize).copied().flatten(),
+            self.defines,
+        ))
+    }
+    fn snow_factors_paged(
+        &self,
+        snow: &map_display_data::Paged<Option<i64>>,
+    ) -> io::Result<SnowFactors> {
+        SnowFactors::try_from_iter(
+            self.records.len(),
+            self.records.iter().map(|records| {
+                snow_factor_with(
+                    records,
+                    |province| snow.get(province as usize).copied().flatten(),
+                    self.defines,
+                )
+            }),
+        )
+    }
+    fn snow_factors(&self, snow: &[Option<i64>]) -> io::Result<SnowFactors> {
+        SnowFactors::try_from_iter(
+            self.records.len(),
+            self.records
+                .iter()
+                .map(|records| snow_factor(records, snow, self.defines)),
+        )
     }
 }
 impl Winter {
@@ -242,9 +289,21 @@ pub fn snow_factor(
     snow: &[Option<i64>],
     defines: SnowDefines,
 ) -> Option<f32> {
+    snow_factor_with(
+        records,
+        |province| snow.get(province as usize).copied().flatten(),
+        defines,
+    )
+}
+
+fn snow_factor_with(
+    records: &[SnowRecord],
+    snow: impl Fn(u32) -> Option<i64>,
+    defines: SnowDefines,
+) -> Option<f32> {
     let mut sum = 0.0f32;
     for record in records {
-        let raw = snow.get(record.province as usize).copied().flatten()?;
+        let raw = snow(record.province)?;
         let province = band(
             raw as f32 / SNOW_FIXED_POINT,
             defines.per_province[0],

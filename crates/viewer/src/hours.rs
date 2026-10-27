@@ -631,6 +631,12 @@ impl Drop for MoversLaps {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct ViewingCountry {
+    pub country: perspective::Country,
+    pub resolved: Result<u32, String>,
+}
+
 /// One built hour.
 pub struct Built {
     /// Which [`Want::invalidates`] generation it belongs to.
@@ -640,6 +646,7 @@ pub struct Built {
     /// The view its names and icons were built for.
     pub view: View,
     pub current: Current,
+    pub(crate) viewing: Option<Arc<ViewingCountry>>,
     /// The hour's layers, or why it has none: a recorded gap or a failed part.
     pub layers: Result<Layers, String>,
     /// Elapsed and optional thread CPU milliseconds of each part.
@@ -678,6 +685,7 @@ struct Movers {
 
 /// Mode-independent results of a built hour, retained only inside the wanted window.
 struct Reusable {
+    vision: Arc<perspective::Vision>,
     rails: Arc<Rails>,
     buildings: (Arc<Shared<PreparedBuildings>>, Vec<String>),
     movers: Arc<Movers>,
@@ -914,6 +922,7 @@ impl Resources {
 
 /// An hour dispatched and not yet assembled.
 struct Pending {
+    viewing: Arc<ViewingCountry>,
     ticket: u64,
     trace: trace::TargetTrace,
     current: Current,
@@ -1049,6 +1058,7 @@ impl Pending {
             return None;
         }
         Some(Arc::new(Reusable {
+            vision: Arc::clone(self.overlay.as_ref()?.1.vision()),
             rails: Arc::clone(self.rails.as_ref()?),
             buildings: self.buildings.as_ref()?.clone(),
             movers: Arc::clone(self.movers.as_ref()?),
@@ -1827,6 +1837,7 @@ pub(crate) enum Output {
 enum PressureStage {
     Source,
     Colour,
+    Vision,
     Part(u8),
 }
 struct SourceRefusal {
@@ -2143,6 +2154,24 @@ impl coordinator::BuildTarget for Coordinator {
         current: Current,
     ) -> dispatch_plan::PreparedTarget {
         use dispatch_plan::{DispatchPlan, PreparedTarget};
+        let projected = if let Current::Frame(frame) = &current {
+            let reusable = self.reusable.get(&(plan.want.branch, plan.hour));
+            let projected = if let Some(parts) = reusable {
+                Ok(Arc::clone(&parts.vision))
+            } else {
+                let _cost = replay_frame::cpu::scope("viewer", Some("fog"));
+                HourView::new(&self.content, frame, 0.0).vision(&plan.want.perspective)
+            };
+            if projected
+                .as_ref()
+                .is_err_and(|error| error.kind() == io::ErrorKind::WouldBlock)
+            {
+                return PreparedTarget::Pressure(Box::new(plan), current);
+            }
+            Some(projected)
+        } else {
+            None
+        };
         let DispatchPlan {
             ticket,
             want,
@@ -2168,6 +2197,7 @@ impl coordinator::BuildTarget for Coordinator {
                     hour,
                     view: want.view,
                     current,
+                    viewing: None,
                     layers: Err(reason),
                     laps: Vec::new(),
                     child_laps: Vec::new(),
@@ -2179,7 +2209,35 @@ impl coordinator::BuildTarget for Coordinator {
         let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         let alive = Arc::new(AtomicBool::new(true));
         let reusable = self.reusable.get(&(branch, hour)).cloned();
+        let projected = projected.expect("frame projection");
+        let viewing = Arc::new(ViewingCountry {
+            country: want.perspective.country.clone(),
+            resolved: projected
+                .as_ref()
+                .map(|vision| vision.ours())
+                .map_err(ToString::to_string),
+        });
+        let vision = match projected {
+            Ok(vision) => vision,
+            Err(error) => {
+                trace.assembled();
+                return PreparedTarget::Ready(Box::new(Built {
+                    epoch,
+                    branch,
+                    hour,
+                    view: want.view,
+                    current,
+                    viewing: Some(viewing),
+                    layers: Err(error.to_string()),
+                    laps: Vec::new(),
+                    child_laps: Vec::new(),
+                    wall: 0.0,
+                    trace,
+                }));
+            }
+        };
         let mut pending = Pending {
+            viewing,
             ticket,
             trace: trace.clone(),
             current: current.clone(),
@@ -2239,6 +2297,8 @@ impl coordinator::BuildTarget for Coordinator {
                 events,
                 trace: trace.clone(),
                 worker_etas,
+                vision: Arc::clone(&vision),
+                vision_choice: want.perspective.clone(),
                 work,
             }));
         };
@@ -2507,6 +2567,8 @@ struct PartJob {
     events: Sender<Event>,
     trace: trace::TargetTrace,
     worker_etas: Option<Arc<viewer_foundation::movement_timing::WorkerEtas>>,
+    vision: Arc<perspective::Vision>,
+    vision_choice: perspective::Choice,
     work: PartWork,
 }
 fn part_job(mut job: PartJob) -> dispatch_plan::HeldJob {
@@ -2553,6 +2615,7 @@ fn part_job(mut job: PartJob) -> dispatch_plan::HeldJob {
                     0.0,
                 )
                 .with_worker_etas(job.worker_etas.clone());
+                view.seed_vision(&job.vision_choice, Arc::clone(&job.vision));
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     (job.work)(&view, &mut children)
                 })) {
@@ -3162,6 +3225,10 @@ mod mode_tests {
     #[test]
     fn reused_part_deliveries_preserve_identity_and_wait_for_the_three_mode_parts() {
         let mut pending = Pending {
+            viewing: Arc::new(ViewingCountry {
+                country: perspective::Country::Recorded,
+                resolved: Ok(0),
+            }),
             ticket: 7,
             trace: Default::default(),
             current: Current::Gap {

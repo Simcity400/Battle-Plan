@@ -200,7 +200,7 @@ impl Pilot {
         let (snow, reads) = view_reads::record(|| {
             self.content
                 .snow_content()
-                .and_then(|content| hour.snow(&content.cells, &content.winter, &self.snow))
+                .and_then(|content| content.project(frame, &self.snow))
         });
         let timing = clock.finish();
         self.record(

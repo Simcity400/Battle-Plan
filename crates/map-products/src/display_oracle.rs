@@ -125,15 +125,15 @@ fn grid_with(
             &display.map_or([0; 2], |d| [d.edges[edge], d.edges[edge_cells + edge]]),
         );
     }
-    let texels = cells
+    let texels: Vec<u8> = cells
         .chunks_exact(2)
         .flat_map(|cell| [cell[1], cell[0], cell[0], cell[1]])
         .collect();
     Ok(SnowMud {
         width,
         height,
-        texels,
-        province_snow,
+        texels: texels.into(),
+        province_snow: province_snow.into(),
         post_factors: None,
         build: start.elapsed(),
         summary,

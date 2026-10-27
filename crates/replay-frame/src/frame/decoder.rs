@@ -642,11 +642,7 @@ fn change_facts(
         _credit: credit,
     };
     for row in changed {
-        let fields = if row.format == crate::FORMAT_VERSION {
-            row.mask
-        } else {
-            table.full_mask()
-        };
+        let fields = change_fields(table, row);
         let inserted = !rows.contains_key(row.key);
         facts.fields |= fields;
         facts.membership |= inserted;
@@ -657,6 +653,16 @@ fn change_facts(
         });
     }
     Ok(facts)
+}
+
+pub(super) fn change_fields(table: TableId, row: &crate::rows::DeltaRow) -> u64 {
+    // Historical schemas keep their column positions; omitted suffixes become NotRecorded.
+    let missing = if row.recorded_fields >= u64::BITS as usize {
+        0
+    } else {
+        u64::MAX << row.recorded_fields
+    };
+    row.mask | (table.full_mask() & missing)
 }
 
 pub(super) fn field_stamp(

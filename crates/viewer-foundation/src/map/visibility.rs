@@ -163,11 +163,11 @@ fn complete<'a, T: replay_data::rows::TableSchema>(
     frame.complete::<T>().map_err(|_| name)
 }
 
-fn saturate(current: u8, term: i32) -> u8 {
+pub(super) fn saturate(current: u8, term: i32) -> u8 {
     i32::from(current).wrapping_add(term).clamp(0, 255) as u8
 }
 /// Fixed-point technology rounding.
-fn rounded(value: i64) -> i32 {
+pub(super) fn rounded(value: i64) -> i32 {
     (value.wrapping_add(if value < 0 { -50_000 } else { 50_000 }) / 100_000) as i32
 }
 /// The air-base icon intel gates with the
@@ -299,7 +299,7 @@ impl NavalDefines {
     }
 }
 
-fn network_term(cutoff: i32, modifier: i64) -> i32 {
+pub(super) fn network_term(cutoff: i32, modifier: i64) -> i32 {
     (i64::from(cutoff.wrapping_add(255))
         .wrapping_mul(100_000)
         .wrapping_mul(modifier)

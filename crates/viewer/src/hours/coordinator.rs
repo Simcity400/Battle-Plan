@@ -37,6 +37,9 @@ pub(super) struct Driver<B: BuildTarget = Coordinator> {
     history: Option<History>,
     source: Arc<SourceMailbox>,
     source_retry: Option<SourceRetry>,
+    vision_retry: Option<VisionRetry>,
+    product_owner: engine_allocation::credit::MemoryBudget,
+    _vision_credit: engine_allocation::credit::Credit,
     attempted_retry: Option<(u64, Option<i64>, usize)>,
     pressure_notice: bool,
     targets: BTreeMap<u64, PreparedTarget>,
@@ -55,6 +58,12 @@ struct SourceRetry {
     pressure: DecodePressure,
     // Snapshot after unwinding: its own staging releases cannot trigger a retry loop.
     needs_release: bool,
+}
+
+struct VisionRetry {
+    plan: Box<DispatchPlan>,
+    current: Current,
+    release: engine_allocation::credit::ReleaseToken,
 }
 
 pub(super) fn start(core: Coordinator) -> io::Result<Driver> {
@@ -133,6 +142,9 @@ impl<B: BuildTarget> Driver<B> {
         source: Arc<SourceMailbox>,
         owner: &engine_allocation::credit::MemoryBudget,
     ) -> io::Result<Self> {
+        let vision_credit = owner.admit_item(
+            size_of::<VisionRetry>() + size_of::<DispatchPlan>() + 2 * size_of::<usize>(),
+        )?;
         let events = core.events.clone();
         // Register before admission; callbacks only post nonblocking wakes.
         let capacity = core.pool.listen_capacity(move || {
@@ -152,6 +164,9 @@ impl<B: BuildTarget> Driver<B> {
         Ok(Self {
             product_space: Some(product_space),
             source_retry: None,
+            vision_retry: None,
+            product_owner: owner.clone(),
+            _vision_credit: vision_credit,
             attempted_retry: None,
             pressure_notice: false,
             retries: BTreeMap::new(),
@@ -332,25 +347,7 @@ impl<B: BuildTarget> Driver<B> {
                     plan.trace.decoded(key.0, key.1, reading.requested, sample);
                     assert!(self.ledger.source_finished(ticket));
                     let plan = self.decode.take().expect("endpoint");
-                    let key = (plan.want.branch, plan.hour);
-                    let prepared = self.core.prepare(plan, current);
-                    let reused = match &prepared {
-                        PreparedTarget::Ready(_) => u8::MAX,
-                        PreparedTarget::Parts(pending, _) => {
-                            self.slot_tickets.insert(key, ticket);
-                            if pending.received == 0 {
-                                0
-                            } else {
-                                0b1111_1000
-                            }
-                        }
-                    };
-                    assert!(if reused == u8::MAX {
-                        self.ledger.gap(ticket)
-                    } else {
-                        self.ledger.decoded(ticket, reused)
-                    });
-                    self.targets.insert(ticket, prepared);
+                    self.prepare_target(plan, current);
                 }
             }
             Event::Colour {
@@ -408,6 +405,13 @@ impl<B: BuildTarget> Driver<B> {
             self.core.epoch,
         );
         for ticket in cancelled {
+            if self
+                .vision_retry
+                .as_ref()
+                .is_some_and(|retry| retry.plan.ticket == ticket)
+            {
+                self.vision_retry = None;
+            }
             self.clear_source_pressure(ticket);
             self.clear_pressure(ticket, None);
             let key = self.targets.get(&ticket).map(|target| match target {
@@ -416,6 +420,7 @@ impl<B: BuildTarget> Driver<B> {
                     Current::Gap { branch, hour, .. } => (*branch, *hour),
                 },
                 PreparedTarget::Ready(built) => (built.branch, built.hour),
+                PreparedTarget::Pressure(..) => unreachable!("pressure retains the ordered stage"),
             });
             // Only wholly unaccepted work can reach this branch. Dropping its
             // captured Fill guards terminates slots, never cancels a pool job.
@@ -454,6 +459,7 @@ impl<B: BuildTarget> Driver<B> {
     fn turn(&mut self) -> Turn {
         // Arm releases only while credit is awaited; idle drops stay coalesced.
         let product_generation = if self.source_retry.is_some()
+            || self.vision_retry.is_some()
             || !self.retries.is_empty()
             || self
                 .history
@@ -626,6 +632,15 @@ impl<B: BuildTarget> Driver<B> {
                 }
             }
         }
+        if self
+            .vision_retry
+            .as_ref()
+            .is_some_and(|retry| self.product_owner.released_since(retry.release))
+        {
+            let retry = self.vision_retry.take().unwrap();
+            self.prepare_target(*retry.plan, retry.current);
+            return Turn::Progress;
+        }
         if self.reading.is_none()
             && self.source_retry.as_ref().is_none_or(|retry| {
                 retry.pressure.available()
@@ -654,6 +669,7 @@ impl<B: BuildTarget> Driver<B> {
             return Turn::Progress;
         }
         if self.ledger.can_plan()
+            && self.vision_retry.is_none()
             && let Some(hour) = self.next_hour()
         {
             let plan = self.core.plan(hour);
@@ -672,6 +688,51 @@ impl<B: BuildTarget> Driver<B> {
             return Turn::Progress;
         }
         if progress { Turn::Progress } else { Turn::Park }
+    }
+
+    fn prepare_target(&mut self, plan: DispatchPlan, current: Current) {
+        let ticket = plan.ticket;
+        let key = (plan.want.branch, plan.hour);
+        let (prepared, release) = {
+            let scope = self.product_owner.track_releases();
+            let before = self.product_owner.release_token();
+            let prepared = self.core.prepare(plan, current);
+            let release = self.product_owner.after_cleanup(before);
+            drop(scope);
+            (prepared, release)
+        };
+        if let PreparedTarget::Pressure(plan, current) = prepared {
+            self.vision_retry = Some(VisionRetry {
+                plan,
+                current,
+                release,
+            });
+            self.publish_pressure(
+                ticket,
+                PressureStage::Vision,
+                "ordered fog vision awaits display credit".into(),
+            );
+            return;
+        }
+        self.clear_pressure(ticket, Some(PressureStage::Vision));
+        let reused = match &prepared {
+            PreparedTarget::Ready(_) => u8::MAX,
+            PreparedTarget::Parts(pending, _) => {
+                self.slot_tickets.insert(key, ticket);
+                if pending.received == 0 {
+                    0
+                } else {
+                    0b1111_1000
+                }
+            }
+            PreparedTarget::Pressure(..) => unreachable!(),
+        };
+        assert!(if reused == u8::MAX {
+            self.ledger.gap(ticket)
+        } else {
+            self.ledger.decoded(ticket, reused)
+        });
+        self.targets.insert(ticket, prepared);
     }
 
     fn clear_source_pressure(&mut self, ticket: u64) {

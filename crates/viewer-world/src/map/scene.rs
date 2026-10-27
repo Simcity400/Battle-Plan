@@ -184,6 +184,7 @@ pub struct Scene {
     naval_dominance: Bound,
     // fog of war
     intel_map: Bound,
+    intel_installed: Option<map_display_data::Paged<u8>>,
     fow_noise: Bound,
     /// Whether this hour has a fog-of-war input at all; see
     /// [`Scene::set_fog_of_war`].
@@ -667,6 +668,7 @@ impl Scene {
             )?,
             // fog of war
             intel_map,
+            intel_installed: None,
             fow_noise,
             fog: false,
             visibility: viewer_foundation::map::mode_visibility::Visibility::POLITICAL,
@@ -1591,22 +1593,52 @@ impl Scene {
         snow: &Arc<crate::map::weather::SnowMud>,
         continuity: Continuity,
     ) -> io::Result<()> {
-        if self.snow_presentation.set_shared(snow, continuity) {
-            replace(
+        if self.snow_presentation.set_shared(snow, continuity)? {
+            Self::upload_snow(
                 device,
                 queue,
-                "SnowMudData",
                 &mut self.snow_mud,
-                wgpu::TextureFormat::Rgba8Unorm,
-                self.snow_presentation.size,
-                &self.snow_presentation.texels,
+                &mut self.snow_presentation,
             )?;
         }
         if let Some(factors) = &snow.post_factors {
             self.post.set_snow_factors(factors);
         } else {
-            self.post.set_snow(&snow.province_snow);
+            self.post.set_snow(snow.province_snow.try_as_slice()?)?;
         }
+        Ok(())
+    }
+
+    fn upload_snow(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        snow_mud: &mut Bound,
+        presentation: &mut crate::map::weather::Presentation,
+    ) -> io::Result<()> {
+        let size = presentation.size;
+        let ranges = presentation.uploads();
+        if [snow_mud.texture.width(), snow_mud.texture.height()] != size {
+            replace(
+                device,
+                queue,
+                "SnowMudData",
+                snow_mud,
+                wgpu::TextureFormat::Rgba8Unorm,
+                size,
+                &presentation.texels,
+            )?;
+        } else {
+            for range in ranges {
+                write_range(
+                    queue,
+                    &snow_mud.texture,
+                    size[0],
+                    range.start / 4,
+                    &presentation.texels[range.clone()],
+                );
+            }
+        }
+        presentation.clear_uploads();
         Ok(())
     }
 
@@ -1623,7 +1655,7 @@ impl Scene {
     pub fn set_fog_of_war(
         &mut self,
         queue: &wgpu::Queue,
-        texels: &[u8],
+        texels: &map_display_data::Paged<u8>,
         fog: bool,
     ) -> io::Result<()> {
         let size = self.intel_map.texture.size();
@@ -1636,16 +1668,38 @@ impl Scene {
                 texels.len()
             )));
         }
-        write_data(
-            queue,
-            &self.intel_map.texture,
-            [size.width, size.height],
-            4,
-            &texels
-                .iter()
-                .flat_map(|&alpha| [0, 0, 0, alpha])
-                .collect::<Vec<_>>(),
+        if self
+            .intel_installed
+            .as_ref()
+            .is_some_and(|old| texels.ptr_eq(old))
+        {
+            self.fog = fog;
+            return Ok(());
+        }
+        let _credit = map_display_data::credit::display_products().clone().admit(
+            texels
+                .pages()
+                .len()
+                .checked_mul(2 * size_of::<usize>())
+                .and_then(|bytes| bytes.checked_add(map_display_data::PAGE_ITEMS * 8))
+                .ok_or_else(|| invalid("fog upload byte count overflow"))?,
+        )?;
+        let pages = self.intel_installed.as_ref().map_or_else(
+            || (0..texels.pages().len()).collect(),
+            |old| texels.changed_pages(old),
         );
+        for page in pages {
+            let alpha = texels.page(page);
+            let bytes: Vec<_> = alpha.iter().flat_map(|&alpha| [0, 0, 0, alpha]).collect();
+            write_range(
+                queue,
+                &self.intel_map.texture,
+                size.width,
+                page * map_display_data::PAGE_ITEMS,
+                &bytes,
+            );
+        }
+        self.intel_installed = Some(texels.clone());
         self.fog = fog;
         Ok(())
     }
@@ -1924,16 +1978,13 @@ impl Scene {
         let weather_delta = self.snow_render_delta.advance(animation_time);
         if self
             .snow_presentation
-            .advance(animation_time, weather_delta)
+            .advance(animation_time, weather_delta)?
         {
-            replace(
+            Self::upload_snow(
                 device,
                 queue,
-                "SnowMudData",
                 &mut self.snow_mud,
-                wgpu::TextureFormat::Rgba8Unorm,
-                self.snow_presentation.size,
-                &self.snow_presentation.texels,
+                &mut self.snow_presentation,
             )?;
         }
         let snow_mud_fade = self.snow_presentation.fade();
@@ -3606,6 +3657,49 @@ impl Scene {
 
     pub fn unit_models_drawn(&self) -> u32 {
         self.unit_models.as_ref().map_or(0, ModelPass::drawn)
+    }
+}
+
+fn write_range(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    first: usize,
+    bytes: &[u8],
+) {
+    let mut pixel = first;
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        let x = pixel as u32 % width;
+        let y = pixel as u32 / width;
+        let pixels = remaining.len() / 4;
+        let (columns, rows) = if x == 0 && pixels >= width as usize {
+            (width, (pixels / width as usize) as u32)
+        } else {
+            ((width - x).min(pixels as u32), 1)
+        };
+        let count = columns as usize * rows as usize * 4;
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &remaining[..count],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(columns * 4),
+                rows_per_image: Some(rows),
+            },
+            wgpu::Extent3d {
+                width: columns,
+                height: rows,
+                depth_or_array_layers: 1,
+            },
+        );
+        remaining = &remaining[count..];
+        pixel += count / 4;
     }
 }
 

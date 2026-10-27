@@ -9,6 +9,7 @@ use replay_frame::frame::DecodedFrame;
 use replay_data::rows::TableRows;
 use replay_frame::frame::TableView;
 
+pub mod fold;
 pub mod winter;
 pub const SNOW_MUD_BLOCK: u32 = 4;
 
@@ -48,9 +49,12 @@ pub fn grid(map: &MapData, perm_snow: &[bool], frame: &DecodedFrame) -> io::Resu
         height: map.height,
         ids: &map.province_ids,
     };
-    grid_with(largest_province(map), frame, |bytes| {
-        rasterise(&image, perm_snow, bytes)
-    })
+    grid_with(
+        largest_province(map),
+        grid_size(map.width, map.height),
+        frame,
+        |bytes| rasterise(&image, perm_snow, bytes),
+    )
 }
 
 /// Includes defined provinces absent from the province image.
@@ -62,12 +66,15 @@ fn largest_province(map: &MapData) -> u32 {
 }
 
 pub fn grid_from_cells(cells: &SnowCells, frame: &DecodedFrame) -> io::Result<SnowMud> {
-    grid_with(cells.largest, frame, |bytes| Ok(cells.average(bytes)))
+    grid_with(cells.largest, cells.dimensions(), frame, |bytes| {
+        Ok(cells.average(bytes))
+    })
 }
 
 /// Reads the hour's bytes and turns `average`'s cells into the texture.
 fn grid_with(
     largest: u32,
+    dimensions: [u32; 2],
     frame: &DecodedFrame,
     average: impl FnOnce(&[[u8; 2]]) -> io::Result<(u32, u32, Vec<u8>)>,
 ) -> io::Result<SnowMud> {
@@ -98,6 +105,35 @@ fn grid_with(
     let provinces = largest
         .checked_add(1)
         .ok_or_else(|| invalid("province count overflow"))?;
+    let owner = map_display_data::credit::display_products();
+    let cells = (dimensions[0] as usize)
+        .checked_mul(dimensions[1] as usize)
+        .ok_or_else(|| invalid("snow raster byte count overflow"))?;
+    let texel_len = cells
+        .checked_mul(4)
+        .ok_or_else(|| invalid("snow raster byte count overflow"))?;
+    let scratch_bytes = cells
+        .checked_mul(6)
+        .and_then(|n| n.checked_add(provinces.checked_mul(size_of::<Option<i64>>() + 2)?))
+        .and_then(|n| n.checked_add(512))
+        .ok_or_else(|| invalid("snow raster byte count overflow"))?;
+    let total = scratch_bytes
+        .checked_add(map_display_data::Paged::<u8>::decode_storage_bytes(
+            texel_len,
+        )?)
+        .and_then(|n| {
+            n.checked_add(
+                map_display_data::Paged::<Option<i64>>::decode_storage_bytes(provinces).ok()?,
+            )
+        })
+        .ok_or_else(|| invalid("snow raster byte count overflow"))?;
+    if total > owner.limit() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::OutOfMemory,
+            "snow raster working set exceeds its owner; common paging is required",
+        ));
+    }
+    let _scratch = owner.admit_item(scratch_bytes)?;
     let mut bytes = vec![[0_u8; 2]; provinces];
     let mut province_snow = vec![None; provinces];
     let mut summary = Summary {
@@ -158,15 +194,20 @@ fn grid_with(
             &display.map_or([0; 2], |d| [d.edges[edge], d.edges[edge_cells + edge]]),
         );
     }
-    let texels = cells
-        .chunks_exact(2)
-        .flat_map(|cell| [cell[1], cell[0], cell[0], cell[1]])
-        .collect();
+    let mut texels = Vec::new();
+    texels
+        .try_reserve_exact(texel_len)
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+    texels.extend(
+        cells
+            .chunks_exact(2)
+            .flat_map(|cell| [cell[1], cell[0], cell[0], cell[1]]),
+    );
     Ok(SnowMud {
         width,
         height,
-        texels,
-        province_snow,
+        texels: map_display_data::Paged::try_from_vec_in(owner, texels)?,
+        province_snow: map_display_data::Paged::try_from_vec_in(owner, province_snow)?,
         post_factors: None,
         build: start.elapsed(),
         summary,
@@ -175,7 +216,14 @@ fn grid_with(
 }
 
 #[derive(Clone)]
-pub struct SnowCells {
+pub struct SnowCells(map_display_data::retained::Retained<SnowComposition>);
+impl std::ops::Deref for SnowCells {
+    type Target = SnowComposition;
+    fn deref(&self) -> &SnowComposition {
+        &self.0
+    }
+}
+pub struct SnowComposition {
     /// The map's largest province id ([`largest_province`]).
     largest: u32,
     width: u32,
@@ -186,6 +234,7 @@ pub struct SnowCells {
     entries: Vec<(u32, u8, u8)>,
     /// How many of the cell's pixels are `perm_snow`.
     perm: Vec<u8>,
+    province_cells: std::collections::BTreeMap<u32, Vec<usize>>,
 }
 
 impl SnowCells {
@@ -230,9 +279,15 @@ impl SnowCells {
         count
             .checked_mul(16)
             .ok_or_else(|| invalid("snow composition count overflow"))?;
-        let mut offsets = Vec::with_capacity(count + 1);
-        let mut entries: Vec<(u32, u8, u8)> = Vec::with_capacity(count * 2);
-        let mut perm = Vec::with_capacity(count);
+        let mut allocations = map_display_data::admission::Accounting::new(
+            map_display_data::credit::display_products(),
+            map_display_data::retained::Retained::<SnowComposition>::overhead(),
+        )?;
+        let mut offsets = Vec::new();
+        allocations.reserve(&mut offsets, count + 1)?;
+        let mut entries: Vec<(u32, u8, u8)> = Vec::new();
+        let mut perm = Vec::new();
+        allocations.reserve(&mut perm, count)?;
         offsets.push(0);
         for cell_z in 0..height {
             for cell_x in 0..width {
@@ -255,7 +310,10 @@ impl SnowCells {
                                 entry.1 += snow;
                                 entry.2 += 1;
                             }
-                            None => entries.push((province, snow, 1)),
+                            None => {
+                                allocations.reserve(&mut entries, 1)?;
+                                entries.push((province, snow, 1));
+                            }
                         }
                     }
                 }
@@ -263,14 +321,21 @@ impl SnowCells {
                 offsets.push(entries.len());
             }
         }
-        Ok(Self {
+        let mut province_cells: std::collections::BTreeMap<u32, Vec<usize>> = Default::default();
+        for cell in 0..count {
+            for &(province, _, _) in &entries[offsets[cell]..offsets[cell + 1]] {
+                allocations.push_index(&mut province_cells, province, cell)?;
+            }
+        }
+        Ok(Self(allocations.finish(SnowComposition {
+            province_cells,
             largest: largest_province(map),
             width,
             height,
             offsets,
             entries,
             perm,
-        })
+        })))
     }
 
     /// `rasterise`'s cells for these per-province bytes.
@@ -627,7 +692,7 @@ pub fn build(
     winter: &impl winter::Factors,
 ) -> io::Result<SnowMud> {
     let mut snow = grid_from_cells(cells, frame)?;
-    snow.post_factors = Some(winter.snow_factors(&snow.province_snow));
+    snow.post_factors = Some(winter.snow_factors_paged(&snow.province_snow)?);
     Ok(snow)
 }
 
@@ -655,9 +720,9 @@ mod equality_tests {
         let snapshot = || SnowMud {
             width: 2,
             height: 1,
-            texels: vec![1, 2, 3, 4, 5, 6, 7, 8],
-            province_snow: vec![None, Some(7)],
-            post_factors: Some(std::sync::Arc::from([Some(0.0f32), None])),
+            texels: vec![1, 2, 3, 4, 5, 6, 7, 8].into(),
+            province_snow: vec![None, Some(7)].into(),
+            post_factors: Some(vec![Some(0.0f32), None].into()),
             build: Duration::from_millis(3),
             summary: Summary::default(),
             refresh: Some(Refresh {
@@ -681,7 +746,7 @@ mod equality_tests {
             |snow| snow.province_snow[1] = Some(8),
             |snow| snow.post_factors = None,
             // Bitwise, so negative zero is a different factor.
-            |snow| snow.post_factors = Some(std::sync::Arc::from([Some(-0.0f32), None])),
+            |snow| snow.post_factors = Some(vec![Some(-0.0f32), None].into()),
             |snow| snow.summary.with_snow = 1,
             |snow| snow.refresh = None,
         ];
@@ -692,19 +757,10 @@ mod equality_tests {
         }
         let mut left = snapshot();
         let mut right = snapshot();
-        left.post_factors = Some(std::sync::Arc::from([
-            Some(f32::from_bits(0x7fc0_1234)),
-            None,
-        ]));
-        right.post_factors = Some(std::sync::Arc::from([
-            Some(f32::from_bits(0x7fc0_1234)),
-            None,
-        ]));
+        left.post_factors = Some(vec![Some(f32::from_bits(0x7fc0_1234)), None].into());
+        right.post_factors = Some(vec![Some(f32::from_bits(0x7fc0_1234)), None].into());
         assert!(left == right, "equal NaN payloads settle together");
-        right.post_factors = Some(std::sync::Arc::from([
-            Some(f32::from_bits(0x7fc0_4321)),
-            None,
-        ]));
+        right.post_factors = Some(vec![Some(f32::from_bits(0x7fc0_4321)), None].into());
         assert!(left != right, "different NaN payloads must not share");
     }
 
@@ -712,8 +768,8 @@ mod equality_tests {
         SnowMud {
             width: 1,
             height: 1,
-            texels: vec![0; 4],
-            province_snow: vec![None],
+            texels: vec![0; 4].into(),
+            province_snow: vec![None].into(),
             post_factors: Some(vec![Some(f32::from_bits(0x7fc0_0123)), None, Some(0.0)].into()),
             build: Duration::ZERO,
             summary: Summary::default(),
@@ -843,4 +899,15 @@ mod table_contract_tests {
             }
         }
     }
+}
+
+pub fn display_fields() -> u64 {
+    let table = TableId::WeatherProvinces;
+    (0..table.schema().len())
+        .filter(|&field| {
+            table.field_name(field).is_some_and(|name| {
+                ["snow", "display_snow", "display_mud", "display"].contains(&name)
+            })
+        })
+        .fold(0, |mask, field| mask | (1u64 << field))
 }

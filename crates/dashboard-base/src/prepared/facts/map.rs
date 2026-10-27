@@ -10,6 +10,36 @@ pub struct MapCheckpoint {
     root: IndexRoot,
     pub cursor: u64,
 }
+impl Resident for MapCheckpoint {
+    fn heap_bytes(&self) -> usize {
+        self.namespace.family.capacity() + self.namespace.column.capacity()
+    }
+    fn decode_budget() -> DecodeBudget {
+        DecodeBudget {
+            fixed_bytes: size_of::<Self>(),
+            bytes_per_encoded_byte: 4,
+        }
+    }
+}
+impl MapCheckpoint {
+    pub fn namespace(&self) -> &Namespace {
+        &self.namespace
+    }
+    pub fn write(
+        &self,
+        writer: &mut store::Writer,
+        section: &str,
+        budget: &MemoryBudget,
+    ) -> io::Result<()> {
+        let bytes = pages::encode(budget, self)?;
+        writer.write_at(section, 0, bytes.as_slice())
+    }
+    pub fn read<R: ReadPages>(phase: &ReadPhase<'_, R>, section: &str) -> io::Result<MapRef<Self>> {
+        Ok(MapRef {
+            page: phase.cache.borrow_mut().read(section, 0)?,
+        })
+    }
+}
 pub struct PagedMap<K, V> {
     namespace: Namespace,
     root: IndexRoot,

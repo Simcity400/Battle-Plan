@@ -10,6 +10,7 @@ use store::{SourceKey, Store, Writer};
 mod background;
 mod binding;
 mod codec;
+mod endpoints;
 mod index;
 mod reader;
 mod records;
@@ -652,7 +653,8 @@ pub fn write_manifest(
     }
     let body = product_codec::encode(manifest)?;
     let packet = codec::pack_for(key.digest(), branch, hour, 0, 0, &body)?;
-    writer.write(&key.records(branch), packet.as_slice())?;
+    let ordinal = writer.write(&key.records(branch), packet.as_slice())?;
+    endpoints::put(writer, key, branch, hour, ordinal)?;
     let cursor = Cursor { hour, block: None }.encode(key, branch)?;
     writer.write_at(
         &key.section(&format!("cursor/{branch}")),

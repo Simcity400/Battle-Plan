@@ -375,6 +375,7 @@ impl Fixture {
         Self {
             store: Store {
                 directory: root.join("prepared"),
+                source: Mutex::default(),
             },
             root,
             recording,
@@ -3198,4 +3199,67 @@ fn a_repeated_flat_section_name_keeps_selecting_its_first_section() {
     assert_eq!(index.get("x"), Some(&0));
     assert_eq!(index.get("y"), Some(&1));
     assert_eq!(index.len(), 2);
+}
+
+#[test]
+fn saved_source_is_parsed_once_per_open_and_exact_stamp() {
+    let fixture = Fixture::new();
+    let key = fixture.save(b"first");
+    KEY_READS.set(0);
+    let first = fixture.store.saved_key().unwrap().unwrap();
+    for _ in 0..20 {
+        let saved = fixture.store.saved_key().unwrap().unwrap();
+        assert_eq!(saved, key);
+        assert!(Arc::ptr_eq(&first.content, &saved.content));
+        assert!(!Arc::ptr_eq(&first.binding, &saved.binding));
+        assert!(!Arc::ptr_eq(&first.rejected, &saved.rejected));
+    }
+    assert_eq!(KEY_READS.get(), 1);
+    let reopened = Store {
+        directory: fixture.store.directory.clone(),
+        source: Mutex::default(),
+    };
+    assert_eq!(reopened.saved_key().unwrap().unwrap(), key);
+    assert_eq!(KEY_READS.get(), 2);
+    let catalog = fixture.store.catalog().unwrap().unwrap();
+    let path = fixture
+        .store
+        .directory
+        .join(source_name(catalog.header.source));
+    let original = fs::read(&path).unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, vec![b'x'; original.len()]).unwrap();
+    File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(FileTimes::new().set_modified(modified + Duration::from_secs(2)))
+        .unwrap();
+    assert!(fixture.store.saved_key().is_err());
+    assert_eq!(KEY_READS.get(), 3);
+    fs::write(&path, &original).unwrap();
+    assert_eq!(fixture.store.saved_key().unwrap().unwrap(), key);
+    assert_eq!(KEY_READS.get(), 4);
+    fs::remove_file(&path).unwrap();
+    assert!(fixture.store.saved_key().is_err());
+}
+
+#[test]
+fn saved_source_follows_new_publication_and_does_not_cache_rejections() {
+    let fixture = Fixture::new();
+    fixture.save(b"first");
+    let previous = fixture.store.saved_key().unwrap().unwrap();
+    previous.rejected.store(true, Ordering::Release);
+    previous.binding.lock().unwrap().as_mut().unwrap().2 = false;
+    let saved = fixture.store.saved_key().unwrap().unwrap();
+    assert!(!saved.rejected.load(Ordering::Acquire));
+    assert!(fixture.store.is_reusable(&saved).unwrap());
+    fs::write(&fixture.content[0], b"changed input").unwrap();
+    let changed = fixture.save(b"second");
+    let saved = fixture.store.saved_key().unwrap().unwrap();
+    assert_eq!(saved, changed);
+    assert_ne!(saved, previous);
+    assert!(fixture.store.is_reusable(&saved).unwrap());
+    fixture.store.clear().unwrap();
+    assert!(fixture.store.saved_key().unwrap().is_none());
 }

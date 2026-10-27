@@ -407,7 +407,7 @@ struct VisionOperands {
     ours: u32,
     fog: bool,
     visibility_gap: bool,
-    provinces: Option<Arc<BTreeMap<u32, u8>>>,
+    provinces: Option<Arc<viewer_foundation::map::perspective::values::Values<u32, u8>>>,
 }
 
 impl VisionOperands {
@@ -447,15 +447,18 @@ pub(super) fn fog_changes(
     match (&base.vision.provinces, vision.shared_province_fog()) {
         (None, None) => {}
         (Some(old), Some(new)) if Arc::ptr_eq(old, new) => {}
-        (Some(old), Some(new)) => changed_entries(
-            old,
-            new,
-            |old, new| fog_decisions(*old) == fog_decisions(*new),
-            |province| {
-                changes = changes.inserted(province, ())?;
-                Ok(())
-            },
-        )?,
+        (Some(old), Some(new)) => {
+            let mut result = Ok(());
+            new.changed(old, |province| {
+                if result.is_ok()
+                    && old.get(&province).map(|byte| fog_decisions(*byte))
+                        != new.get(&province).map(|byte| fog_decisions(*byte))
+                {
+                    result = changes.inserted(province, ()).map(|next| changes = next);
+                }
+            });
+            result?;
+        }
         _ => return Ok(None),
     }
     Ok(Some(changes))
@@ -749,46 +752,6 @@ fn fog_decisions(byte: u8) -> (bool, bool) {
         byte >= MAP_OBJECT_VISIBILITY,
         byte >= FLOATING_HARBOR_VISIBILITY,
     )
-}
-
-fn changed_entries<K: Ord + Copy, V>(
-    old: &BTreeMap<K, V>,
-    new: &BTreeMap<K, V>,
-    equal: impl Fn(&V, &V) -> bool,
-    mut visit: impl FnMut(K) -> io::Result<()>,
-) -> io::Result<()> {
-    let (mut olds, mut news) = (old.iter(), new.iter());
-    let (mut a, mut b) = (olds.next(), news.next());
-    loop {
-        match (a, b) {
-            (Some((x, old)), Some((y, new))) => match x.cmp(y) {
-                std::cmp::Ordering::Less => {
-                    visit(*x)?;
-                    a = olds.next();
-                }
-                std::cmp::Ordering::Greater => {
-                    visit(*y)?;
-                    b = news.next();
-                }
-                std::cmp::Ordering::Equal => {
-                    if !equal(old, new) {
-                        visit(*x)?;
-                    }
-                    a = olds.next();
-                    b = news.next();
-                }
-            },
-            (Some((x, _)), None) => {
-                visit(*x)?;
-                a = olds.next();
-            }
-            (None, Some((y, _))) => {
-                visit(*y)?;
-                b = news.next();
-            }
-            (None, None) => return Ok(()),
-        }
-    }
 }
 
 fn named(types: &TokenTypes, token: u32) -> Option<usize> {

@@ -1,7 +1,8 @@
 //! Viewer-local native snow/mud graphics refresh, independent of replay hours.
 
 use super::{Refresh, SnowMud};
-use std::sync::Arc;
+use map_display_data::{Paged, admission::Accounting, credit::display_products};
+use std::{io, ops::Range, sync::Arc};
 use viewer_foundation::map::presentation::Continuity;
 
 #[derive(Default)]
@@ -9,6 +10,10 @@ pub struct Presentation {
     pub size: [u32; 2],
     pub texels: Vec<u8>,
     shared_pending: Option<Arc<SnowMud>>,
+    target: Paged<u8>,
+    mismatched: Vec<usize>,
+    uploads: Vec<Range<usize>>,
+    allocation: Option<Accounting>,
     dirty: bool,
     refresh: Option<Refresh>,
     last_time: Option<f32>,
@@ -16,10 +21,71 @@ pub struct Presentation {
     fade: f32,
 }
 
+fn dirty_pages(
+    pending: &Paged<u8>,
+    target: &Paged<u8>,
+    mismatched: &[usize],
+) -> io::Result<map_display_data::retained::Retained<Vec<usize>>> {
+    let count = pending
+        .changed_page_indices(target)
+        .count()
+        .checked_add(mismatched.len())
+        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
+    map_display_data::retained::Retained::try_build_in(
+        display_products(),
+        count
+            .checked_mul(size_of::<usize>())
+            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
+        || {
+            let mut dirty = Vec::new();
+            dirty
+                .try_reserve_exact(count)
+                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+            dirty.extend(pending.changed_page_indices(target));
+            dirty.extend_from_slice(mismatched);
+            dirty.sort_unstable();
+            dirty.dedup();
+            Ok(dirty)
+        },
+    )
+}
+
 impl Presentation {
-    /// Keeps the producer's immutable grid until the graphics clock admits it.
-    /// Only the pending ownership changes; refreshes still copy the actual shown planes.
-    pub fn set_shared(&mut self, snow: &Arc<SnowMud>, continuity: Continuity) -> bool {
+    fn reserve(&mut self, snow: &SnowMud) -> io::Result<()> {
+        if self.allocation.is_none() {
+            self.allocation = Some(Accounting::new(
+                display_products(),
+                size_of::<Accounting>(),
+            )?);
+        }
+        let allocation = self.allocation.as_mut().unwrap();
+        let additional = snow.texels.len().saturating_sub(self.texels.len());
+        allocation.reserve(&mut self.texels, additional)?;
+        let pages = snow.texels.pages().len();
+        let additional = pages.saturating_sub(self.mismatched.len());
+        allocation.reserve(&mut self.mismatched, additional)?;
+        let additional = pages.max(1).saturating_sub(self.uploads.len());
+        allocation.reserve(&mut self.uploads, additional)?;
+        Ok(())
+    }
+
+    fn upload(&mut self, mut range: Range<usize>) {
+        let start = self.uploads.partition_point(|old| old.end < range.start);
+        let mut end = start;
+        while end < self.uploads.len() && self.uploads[end].start <= range.end {
+            range.start = range.start.min(self.uploads[end].start);
+            range.end = range.end.max(self.uploads[end].end);
+            end += 1;
+        }
+        if start == end {
+            self.uploads.insert(start, range);
+        } else {
+            self.uploads[start] = range;
+            self.uploads.drain(start + 1..end);
+        }
+    }
+
+    pub fn set_shared(&mut self, snow: &Arc<SnowMud>, continuity: Continuity) -> io::Result<bool> {
         let size = [snow.width, snow.height];
         let reset = continuity == Continuity::Reset || self.size != size || self.texels.is_empty();
         let changed = reset
@@ -28,27 +94,68 @@ impl Presentation {
                 .shared_pending
                 .as_ref()
                 .is_some_and(|had| Arc::ptr_eq(had, snow))
-                || self.pending_texels() == snow.texels);
+                || self
+                    .shared_pending
+                    .as_ref()
+                    .is_some_and(|had| had.texels == snow.texels));
         if !reset && !changed {
-            return false;
+            return Ok(false);
         }
+        self.reserve(snow)?;
+        let dirty = if !reset && snow.refresh.is_none() {
+            Some(dirty_pages(&snow.texels, &self.target, &self.mismatched)?)
+        } else {
+            None
+        };
         self.size = size;
         self.shared_pending = Some(Arc::clone(snow));
         self.refresh = snow.refresh;
         if reset || self.refresh.is_none() {
-            self.texels.clone_from(&snow.texels);
+            self.mismatched.clear();
+            if reset {
+                self.texels.clear();
+                self.texels.extend(snow.texels.iter().copied());
+                self.uploads.clear();
+                self.uploads.push(0..self.texels.len());
+                for (page, bytes) in snow.texels.pages().enumerate() {
+                    if bytes
+                        .chunks_exact(4)
+                        .any(|cell| cell[0] != cell[3] || cell[2] != cell[1])
+                    {
+                        self.mismatched.push(page);
+                    }
+                }
+            } else {
+                for &page in dirty.as_ref().unwrap().iter() {
+                    let start = page * map_display_data::PAGE_ITEMS;
+                    let bytes = snow.texels.page(page);
+                    let end = start + bytes.len();
+                    if self.texels[start..end] != *bytes {
+                        self.texels[start..end].copy_from_slice(bytes);
+                        self.upload(start..end);
+                    }
+                    if bytes
+                        .chunks_exact(4)
+                        .any(|cell| cell[0] != cell[3] || cell[2] != cell[1])
+                    {
+                        self.mismatched.push(page);
+                    }
+                }
+            }
+            self.target = snow.texels.clone();
             self.dirty = false;
             self.fade = 0.0;
             if reset {
                 self.last_time = None;
                 self.last_refresh = 0.0;
             }
-            return true;
+            return Ok(true);
         }
         self.dirty = true;
-        false
+        Ok(false)
     }
 
+    #[cfg(test)]
     fn pending_texels(&self) -> &[u8] {
         self.shared_pending
             .as_ref()
@@ -56,47 +163,94 @@ impl Presentation {
             .unwrap_or_default()
     }
 
-    /// Refresh only with dirty work and sufficient elapsed graphics time, narrowing the fixed-five
-    /// interval to f32. Copy current to previous before updates. Equality identifies refreshes even
-    /// when averaged cells agree. Each successful refresh resets the fade, then independently admitted
-    /// graphics deltas advance it over one second, including interrupted fades. `now` controls
-    /// eligibility; `render_delta` is independent of refresh timestamps.
-    pub fn advance(&mut self, now: f32, render_delta: f32) -> bool {
-        // Preserve the viewer's first-frame/reset epoch: both planes were just
-        // bound to one snapshot, so the new phase starts at zero on this frame.
+    pub fn advance(&mut self, now: f32, render_delta: f32) -> io::Result<bool> {
         let dt = if self.last_time.is_some() {
             render_delta
         } else {
             0.0
         };
-        if self.last_time.is_none() {
-            self.last_refresh = f64::from(now);
-        }
-        self.last_time = Some(now);
+        let last_refresh = if self.last_time.is_none() {
+            f64::from(now)
+        } else {
+            self.last_refresh
+        };
         let refreshed = self.dirty
             && self.refresh.is_some_and(|refresh| {
-                f64::from(refresh.interval as f32 / 100_000.0) <= f64::from(now) - self.last_refresh
+                f64::from(refresh.interval as f32 / 100_000.0) <= f64::from(now) - last_refresh
             });
+        let dirty = if refreshed {
+            Some(dirty_pages(
+                &self.shared_pending.as_ref().expect("pending snow").texels,
+                &self.target,
+                &self.mismatched,
+            )?)
+        } else {
+            None
+        };
+        self.last_refresh = last_refresh;
+        self.last_time = Some(now);
         if refreshed {
             self.last_refresh = f64::from(now);
             let pending = self
                 .shared_pending
                 .as_ref()
-                .map(|snow| snow.texels.as_slice())
-                .unwrap_or_default();
-            for (cell, target) in self.texels.chunks_exact_mut(4).zip(pending.chunks_exact(4)) {
-                // Logical RGBA: previous mud, current snow,
-                // previous snow, current mud. Copy raw current, not its fade.
-                cell[0] = cell[3];
-                cell[2] = cell[1];
-                cell[1] = target[1];
-                cell[3] = target[3];
+                .expect("pending snow")
+                .texels
+                .clone();
+            self.mismatched.clear();
+            for &page in dirty.as_ref().unwrap().iter() {
+                let start = page * map_display_data::PAGE_ITEMS;
+                let target = pending.page(page);
+                let end = start + target.len();
+                let mut mismatch = false;
+                let mut changed = false;
+                for (cell, target) in self.texels[start..end]
+                    .chunks_exact_mut(4)
+                    .zip(target.chunks_exact(4))
+                {
+                    let next = [cell[3], target[1], cell[1], target[3]];
+                    mismatch |= next[0] != next[3] || next[2] != next[1];
+                    changed |= *cell != next;
+                    cell.copy_from_slice(&next);
+                }
+                if changed {
+                    self.upload(start..end);
+                }
+                if mismatch {
+                    self.mismatched.push(page);
+                }
             }
+            self.target = pending;
             self.dirty = false;
             self.fade = 0.0;
         }
         self.fade = (self.fade + dt).clamp(0.0, 1.0);
-        refreshed
+        Ok(refreshed)
+    }
+
+    pub fn uploads(&self) -> &[Range<usize>] {
+        &self.uploads
+    }
+    pub fn clear_uploads(&mut self) {
+        self.uploads.clear();
+    }
+
+    #[cfg(test)]
+    pub fn take_uploads(&mut self) -> Vec<Range<usize>> {
+        let mut ranges = std::mem::take(&mut self.uploads);
+        ranges.sort_unstable_by_key(|range| range.start);
+        let mut written = 0;
+        for read in 0..ranges.len() {
+            let range = ranges[read].clone();
+            if written > 0 && range.start <= ranges[written - 1].end {
+                ranges[written - 1].end = ranges[written - 1].end.max(range.end);
+            } else {
+                ranges[written] = range;
+                written += 1;
+            }
+        }
+        ranges.truncate(written);
+        ranges
     }
 
     pub fn fade(&self) -> f32 {
@@ -116,8 +270,8 @@ mod tests {
         Arc::new(SnowMud {
             width: 1,
             height: 1,
-            texels: vec![mud, snow, snow, mud],
-            province_snow: vec![],
+            texels: vec![mud, snow, snow, mud].into(),
+            province_snow: vec![].into(),
             post_factors: None,
             build: Default::default(),
             summary: Default::default(),
@@ -129,35 +283,65 @@ mod tests {
     }
 
     #[test]
+    fn pending_upload_ranges_merge_only_touched_bytes_without_new_storage() {
+        for count in [3, 1500, 5000] {
+            let mut presentation = Presentation::default();
+            let mut expected = std::collections::BTreeSet::new();
+            for key in (0..count).rev() {
+                let start = key * 12;
+                for range in [start..start + 4, start + 4..start + 8, start..start + 4] {
+                    expected.extend(range.clone());
+                    presentation.uploads.push(range);
+                }
+            }
+            let pointer = presentation.uploads.as_ptr();
+            let capacity = presentation.uploads.capacity();
+            let ranges = presentation.take_uploads();
+            assert_eq!(ranges.as_ptr(), pointer);
+            assert_eq!(ranges.capacity(), capacity);
+            assert_eq!(ranges.len(), count);
+            assert!(ranges.windows(2).all(|pair| pair[0].end < pair[1].start));
+            assert_eq!(
+                ranges
+                    .into_iter()
+                    .flatten()
+                    .collect::<std::collections::BTreeSet<_>>(),
+                expected
+            );
+            assert!(presentation.take_uploads().is_empty());
+        }
+    }
+
+    #[test]
     fn snow_mud_refresh_uses_graphics_clock_and_native_interrupted_planes() {
         let mut player = Presentation::default();
-        player.set_shared(&snapshot(10, 20, 1), Reset);
-        assert!(!player.advance(0.0, 0.0));
-        player.advance(0.5, 0.5);
-        player.advance(1.0, 0.5);
+        player.set_shared(&snapshot(10, 20, 1), Reset).unwrap();
+        assert!(!player.advance(0.0, 0.0).unwrap());
+        player.advance(0.5, 0.5).unwrap();
+        player.advance(1.0, 0.5).unwrap();
         assert_eq!(player.fade(), 1.0);
-        player.set_shared(&snapshot(90, 100, 2), Continue);
+        player.set_shared(&snapshot(90, 100, 2), Continue).unwrap();
         assert_eq!(
             player.texels,
             [20, 10, 10, 20],
             "hour application only queues work"
         );
-        assert!(player.advance(1.125, 0.125));
+        assert!(player.advance(1.125, 0.125).unwrap());
         assert_eq!(player.texels, [20, 90, 10, 100]);
         assert_eq!(
             player.fade(),
             0.125,
             "reset then add this frame's graphics delta"
         );
-        player.set_shared(&snapshot(110, 120, 3), Continue);
+        player.set_shared(&snapshot(110, 120, 3), Continue).unwrap();
         assert!(
-            !player.advance(1.25, 0.125),
+            !player.advance(1.25, 0.125).unwrap(),
             "dirty work waits for the native interval"
         );
         assert_eq!(player.fade(), 0.25);
-        player.set_shared(&snapshot(130, 140, 4), Continue);
+        player.set_shared(&snapshot(130, 140, 4), Continue).unwrap();
         assert!(
-            player.advance(1.375, 0.125),
+            player.advance(1.375, 0.125).unwrap(),
             "lower-inclusive interval boundary"
         );
         assert_eq!(
@@ -167,16 +351,16 @@ mod tests {
         );
         assert_eq!(player.fade(), 0.125);
         // Freeze the replay entirely: frames alone finish the one-second fade.
-        player.advance(1.625, 0.25);
+        player.advance(1.625, 0.25).unwrap();
         assert_eq!(player.fade(), 0.375);
-        player.advance(2.5, 0.5);
+        player.advance(2.5, 0.5).unwrap();
         assert_eq!(player.fade(), 0.875, "admitted delta caps a stalled frame");
-        assert!(!player.set_shared(&snapshot(130, 140, 4), Continue));
-        assert!(!player.advance(2.625, 0.125));
+        assert!(!player.set_shared(&snapshot(130, 140, 4), Continue).unwrap());
+        assert!(!player.advance(2.625, 0.125).unwrap());
         assert_eq!(player.fade(), 1.0, "unchanged hour does not restart");
         // A full rebuild can publish equal bytes; the native identity catches it.
-        player.set_shared(&snapshot(130, 140, 5), Continue);
-        assert!(player.advance(2.75, 0.125));
+        player.set_shared(&snapshot(130, 140, 5), Continue).unwrap();
+        assert!(player.advance(2.75, 0.125).unwrap());
         assert_eq!(player.fade(), 0.125);
     }
 
@@ -190,20 +374,20 @@ mod tests {
             ((1, 21, Some("BBB")), false),
         ] {
             let mut player = Presentation::default();
-            player.set_shared(&snapshot(10, 20, 1), Reset);
-            player.advance(10.0, 0.0);
-            player.set_shared(&snapshot(90, 100, 2), Continue); // Queued old-hour work.
+            player.set_shared(&snapshot(10, 20, 1), Reset).unwrap();
+            player.advance(10.0, 0.0).unwrap();
+            player.set_shared(&snapshot(90, 100, 2), Continue).unwrap(); // Queued old-hour work.
             let mode = continuity(previous, next, sought, &[]);
             assert_eq!(mode, Reset);
-            assert!(player.set_shared(&snapshot(30, 40, 3), mode));
+            assert!(player.set_shared(&snapshot(30, 40, 3), mode).unwrap());
             assert_eq!(player.texels, [40, 30, 30, 40]);
             assert_eq!(player.fade(), 0.0);
             assert!(
-                !player.advance(300.0, 0.5),
+                !player.advance(300.0, 0.5).unwrap(),
                 "old pending refresh was cancelled"
             );
             assert_eq!(player.fade(), 0.0, "reset has its own clock epoch");
-            player.advance(300.5, 0.5);
+            player.advance(300.5, 0.5).unwrap();
             assert_eq!(player.fade(), 0.5);
         }
         assert_eq!(
@@ -222,47 +406,47 @@ mod tests {
         for cycle in 0..24 {
             let base = cycle as f32 * 4.0;
             let first = snapshot(10, 20, 1);
-            assert!(player.set_shared(&first, Reset));
+            assert!(player.set_shared(&first, Reset).unwrap());
             assert!(Arc::ptr_eq(player.shared_pending.as_ref().unwrap(), &first));
             assert_eq!(player.texels, [20, 10, 10, 20]);
-            assert!(!player.advance(base, 0.5));
+            assert!(!player.advance(base, 0.5).unwrap());
             assert_eq!(player.fade().to_bits(), 0.0f32.to_bits());
-            assert!(!player.set_shared(&snapshot(10, 20, 1), Continue));
+            assert!(!player.set_shared(&snapshot(10, 20, 1), Continue).unwrap());
             let next = snapshot(90, 100, 2);
-            assert!(!player.set_shared(&next, Continue));
+            assert!(!player.set_shared(&next, Continue).unwrap());
             assert!(Arc::ptr_eq(player.shared_pending.as_ref().unwrap(), &next));
-            assert!(!player.advance(base + 0.125, 0.125));
+            assert!(!player.advance(base + 0.125, 0.125).unwrap());
             assert_eq!(player.texels, [20, 10, 10, 20]);
             assert_eq!(player.fade(), 0.125);
             // Replacing pending skipped hours never changes the shown planes.
-            assert!(!player.set_shared(&snapshot(110, 120, 3), Continue));
-            assert!(!player.set_shared(&snapshot(130, 140, 4), Continue));
-            assert!(player.advance(base + 0.25, 0.125));
+            assert!(!player.set_shared(&snapshot(110, 120, 3), Continue).unwrap());
+            assert!(!player.set_shared(&snapshot(130, 140, 4), Continue).unwrap());
+            assert!(player.advance(base + 0.25, 0.125).unwrap());
             assert_eq!(player.texels, [20, 130, 10, 140]);
             assert_eq!(player.fade(), 0.125);
-            assert!(!player.advance(base + 0.375, 0.125));
+            assert!(!player.advance(base + 0.375, 0.125).unwrap());
             assert_eq!(player.fade(), 0.25);
             // Equal bytes with a new refresh identity still copy actual current
             // planes, not the partially blended result.
-            assert!(!player.set_shared(&snapshot(130, 140, 5), Continue));
-            assert!(player.advance(base + 0.5, 0.125));
+            assert!(!player.set_shared(&snapshot(130, 140, 5), Continue).unwrap());
+            assert!(player.advance(base + 0.5, 0.125).unwrap());
             assert_eq!(player.texels, [140, 130, 130, 140]);
             assert_eq!(player.fade(), 0.125);
             let mut immediate = snapshot(200, 201, 6);
             Arc::get_mut(&mut immediate).unwrap().refresh = None;
-            assert!(player.set_shared(&immediate, Continue));
+            assert!(player.set_shared(&immediate, Continue).unwrap());
             assert_eq!(player.texels, [201, 200, 200, 201]);
-            assert!(!player.advance(base + 0.625, 0.125));
+            assert!(!player.advance(base + 0.625, 0.125).unwrap());
             assert_eq!(player.fade(), 0.125);
             let mut resized = snapshot(30, 40, 7);
             let grid = Arc::get_mut(&mut resized).unwrap();
             grid.width = 2;
             grid.texels.extend_from_within(..);
-            assert!(player.set_shared(&resized, Continue));
+            assert!(player.set_shared(&resized, Continue).unwrap());
             assert_eq!(player.size, [2, 1]);
             assert_eq!(player.texels, [40, 30, 30, 40, 40, 30, 30, 40]);
             assert_eq!(player.pending_texels(), resized.texels);
-            assert!(!player.advance(base + 0.75, 0.5));
+            assert!(!player.advance(base + 0.75, 0.5).unwrap());
             assert_eq!(player.fade().to_bits(), 0.0f32.to_bits());
         }
     }
@@ -289,7 +473,7 @@ mod tests {
         player.shared_pending = Some(Arc::clone(snow));
         player.refresh = snow.refresh;
         if reset || player.refresh.is_none() {
-            player.texels.clone_from(&snow.texels);
+            player.texels = snow.texels.to_vec();
             player.dirty = false;
             player.fade = 0.0;
             if reset {
@@ -302,17 +486,54 @@ mod tests {
         false
     }
 
+    fn advance_reference(player: &mut Presentation, now: f32, delta: f32) -> bool {
+        let dt = if player.last_time.is_some() {
+            delta
+        } else {
+            0.0
+        };
+        if player.last_time.is_none() {
+            player.last_refresh = f64::from(now);
+        }
+        player.last_time = Some(now);
+        let refreshed = player.dirty
+            && player.refresh.is_some_and(|refresh| {
+                f64::from(refresh.interval as f32 / 100_000.0)
+                    <= f64::from(now) - player.last_refresh
+            });
+        if refreshed {
+            player.last_refresh = f64::from(now);
+            let pending = player.pending_texels().to_vec();
+            for (cell, target) in player
+                .texels
+                .chunks_exact_mut(4)
+                .zip(pending.chunks_exact(4))
+            {
+                cell[0] = cell[3];
+                cell[2] = cell[1];
+                cell[1] = target[1];
+                cell[3] = target[3];
+            }
+            player.dirty = false;
+            player.fade = 0.0;
+        }
+        player.fade = (player.fade + dt).clamp(0.0, 1.0);
+        refreshed
+    }
+
     #[test]
     fn shared_snapshots_and_refresh_first_keep_every_hour_and_frame_equal() {
         let snapshot = |hour: u32, branch: u32| {
-            let width = 1 + branch;
+            let width = 1 + branch + map_display_data::PAGE_ITEMS as u32 / 4;
             let bytes = (hour / 3 % 4) as u8 * 30;
-            let texels = (0..width * 4).map(|index| bytes + index as u8).collect();
+            let texels: Vec<u8> = (0..width * 4)
+                .map(|index| bytes.wrapping_add(index as u8))
+                .collect();
             SnowMud {
                 width,
                 height: 1,
-                texels,
-                province_snow: vec![],
+                texels: texels.into(),
+                province_snow: vec![].into(),
                 post_factors: None,
                 build: std::time::Duration::from_micros(u64::from(hour)),
                 summary: Default::default(),
@@ -347,13 +568,16 @@ mod tests {
             };
             let installed = [
                 set_reference(&mut arms[0], &fresh, continuity),
-                arms[1].set_shared(&held, continuity),
+                arms[1].set_shared(&held, continuity).unwrap(),
             ];
             assert_eq!(installed[0], installed[1], "hour {hour}");
             for frame in 0..1 + hour % 3 {
                 time += [0.125, 0.0, 0.5][(hour + frame) as usize % 3];
                 let delta = [0.125, 0.0, 0.25][(hour + frame) as usize % 3];
-                let refreshed = arms.each_mut().map(|arm| arm.advance(time, delta));
+                let refreshed = [
+                    advance_reference(&mut arms[0], time, delta),
+                    arms[1].advance(time, delta).unwrap(),
+                ];
                 assert_eq!(refreshed[0], refreshed[1], "hour {hour} frame {frame}");
                 let [old, new] = &arms;
                 assert_eq!(old.size, new.size);
@@ -385,13 +609,13 @@ mod tests {
     fn snow_mud_refresh_stall_uses_admitted_delta_and_renders_halfway_snow() {
         let mut delta = steady_render_delta();
         let mut player = Presentation::default();
-        player.set_shared(&snapshot(10, 20, 1), Reset);
-        player.advance(32.0, delta.advance(32.0));
-        player.set_shared(&snapshot(90, 100, 2), Continue);
+        player.set_shared(&snapshot(10, 20, 1), Reset).unwrap();
+        player.advance(32.0, delta.advance(32.0)).unwrap();
+        player.set_shared(&snapshot(90, 100, 2), Continue).unwrap();
         let admitted = delta.advance(34.0);
         assert_eq!(admitted, 0.5);
         assert!(
-            player.advance(34.0, admitted),
+            player.advance(34.0, admitted).unwrap(),
             "raw two-second clock admits refresh"
         );
         assert_eq!(player.texels, [20, 90, 10, 100]);
@@ -412,20 +636,20 @@ mod tests {
     fn snow_mud_refresh_irregular_frames_keep_refresh_clock_separate_from_fade() {
         let mut delta = steady_render_delta();
         let mut player = Presentation::default();
-        player.set_shared(&snapshot(10, 20, 1), Reset);
-        player.advance(32.0, delta.advance(32.0));
-        player.set_shared(&snapshot(90, 100, 2), Continue);
-        assert!(player.advance(32.25, delta.advance(32.25)));
+        player.set_shared(&snapshot(10, 20, 1), Reset).unwrap();
+        player.advance(32.0, delta.advance(32.0)).unwrap();
+        player.set_shared(&snapshot(90, 100, 2), Continue).unwrap();
+        assert!(player.advance(32.25, delta.advance(32.25)).unwrap());
         assert_eq!(
             player.fade(),
             0.1875,
             "half trimmed mean plus half current frame"
         );
-        player.set_shared(&snapshot(110, 120, 3), Continue);
-        assert!(!player.advance(32.375, delta.advance(32.375)));
+        player.set_shared(&snapshot(110, 120, 3), Continue).unwrap();
+        assert!(!player.advance(32.375, delta.advance(32.375)).unwrap());
         assert_eq!(player.fade(), 0.3125);
         assert!(
-            player.advance(32.5, delta.advance(32.5)),
+            player.advance(32.5, delta.advance(32.5)).unwrap(),
             "raw clock reaches 0.25 interval"
         );
         assert_eq!(
@@ -434,7 +658,7 @@ mod tests {
             "interrupted fade copies raw current planes"
         );
         assert_eq!(player.fade(), 0.125);
-        assert!(!player.advance(32.5, delta.advance(32.5)));
+        assert!(!player.advance(32.5, delta.advance(32.5)).unwrap());
         assert_eq!(
             player.fade(),
             0.125,

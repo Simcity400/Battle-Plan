@@ -164,6 +164,10 @@ impl Limitations {
         self.lines.clone()
     }
 
+    pub fn into_lines(self) -> Vec<String> {
+        self.lines
+    }
+
     // orders: the recorded player's battle plan
     /// Records what the drawn battle plan cannot take from the recording.
     ///

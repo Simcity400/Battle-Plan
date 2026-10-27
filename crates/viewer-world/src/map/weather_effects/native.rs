@@ -1441,6 +1441,7 @@ mod tests {
         let assets = Assets {
             effect: Effect::from_compiled(Arc::new(Default::default()), Vec::new(), Vec::new()),
             max_particles: 100,
+            anchors_by_region: BTreeMap::from([(7, (0..20).collect())]),
             graphics: super::super::tests::reference_defines(),
             anchors: (0..20)
                 .map(|index| Anchor {
@@ -1465,10 +1466,54 @@ mod tests {
         let field = Field {
             branch: 1,
             hour: 20,
-            kinds: BTreeMap::from([(7, 0)]),
+            kinds: BTreeMap::from([(7, 0)]).into(),
         };
         let mut presentation = Presentation::default();
         presentation.transition(&Field::default(), &field, Continuity::Reset);
+        let camera = Camera {
+            center: [40., 30.],
+            height: 300.,
+            map: MapSize::TEST,
+            defines: MapDefines::test(),
+            pose: Pose::Map,
+        };
+        for retained in [BTreeSet::new(), BTreeSet::from([7])] {
+            let views = super::super::parent_views(
+                &super::super::province_admission_views(camera, [1280, 720]),
+                [1280, 720],
+            );
+            let expected: BTreeMap<_, _> =
+                visible_emitters(&assets, &field, &presentation, camera, &views)
+                    .into_iter()
+                    .filter(|visible| !retained.contains(&assets.anchors[visible.key.0].region))
+                    .map(|visible| {
+                        let mut simulation =
+                            Simulation::cold(visible.emitter, visible.seed, visible.anchor, 0.0);
+                        simulation.prepared = true;
+                        (visible.key, simulation)
+                    })
+                    .collect();
+            let actual = super::super::prepare_changed(
+                &assets,
+                &field,
+                &presentation,
+                camera,
+                [1280, 720],
+                &retained,
+            );
+            assert_eq!(
+                actual.keys().collect::<Vec<_>>(),
+                expected.keys().collect::<Vec<_>>()
+            );
+            for (key, value) in actual {
+                let reference = &expected[&key];
+                assert_eq!(value.seed, reference.seed);
+                assert_eq!(value.age.to_bits(), reference.age.to_bits());
+                assert_eq!(value.anchor, reference.anchor);
+                assert_eq!(value.prepared, reference.prepared);
+                assert!(value.particles.is_empty());
+            }
+        }
         let (mut serial, mut borrowed) = (Simulations::new(), Simulations::new());
         let workers = workers();
         for (frame, time) in [0., 0.13, 0.4, 0.4, 1.3, 4., 0.2, 0.5]

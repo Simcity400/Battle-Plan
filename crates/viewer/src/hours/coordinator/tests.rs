@@ -352,6 +352,8 @@ fn scripted_refusals_and_child_prefixes_keep_fixed_part_priority() {
 // Driver::event/turn, its real bounded Pool, mailboxes, ledger and output.
 struct TestBuilder {
     state: CoordinatorState,
+    vision_pressure: Option<engine_allocation::credit::MemoryBudget>,
+    vision_calls: usize,
     fill: fn(
         &replay_frame::frame::DecodedFrame,
         Option<&viewer_world::map::map_mode::ColourState>,
@@ -396,6 +398,7 @@ fn gap_built(hour: Hour, reason: &str) -> Built {
         hour,
         current: fixed_gap(hour, reason),
         layers: Err(reason.into()),
+        viewing: None,
         laps: Vec::new(),
         child_laps: Vec::new(),
         view: super::super::tests::test_view(),
@@ -408,6 +411,12 @@ impl BuildTarget for TestBuilder {
         plan.colour_work(current, self.events.clone(), self.fill)
     }
     fn prepare(&mut self, plan: DispatchPlan, current: Current) -> PreparedTarget {
+        if let Some(owner) = &self.vision_pressure {
+            self.vision_calls += 1;
+            if owner.admit_item(1).is_err() {
+                return PreparedTarget::Pressure(Box::new(plan), current);
+            }
+        }
         if let Current::Gap { reason, .. } = &current {
             let mut built = gap_built(plan.hour, reason);
             built.epoch = plan.epoch;
@@ -485,6 +494,8 @@ impl RealDriver {
         let (events, inbox) = mpsc::channel();
         let (outbox, results) = mpsc::sync_channel(1);
         let core = TestBuilder {
+            vision_pressure: None,
+            vision_calls: 0,
             fill: colour_fill,
             colours: Default::default(),
             state: CoordinatorState {

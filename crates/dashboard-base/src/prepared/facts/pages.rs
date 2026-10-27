@@ -19,6 +19,11 @@ impl ReadPages for store::Session {
         self.read(section, range)
     }
 }
+impl ReadPages for store::Snapshot {
+    fn open(&mut self, section: &str, range: u64) -> io::Result<Option<store::Range>> {
+        self.read(section, range)
+    }
+}
 
 pub(crate) struct Admitted<T> {
     pub value: T,

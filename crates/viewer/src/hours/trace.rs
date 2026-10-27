@@ -167,7 +167,10 @@ impl TargetTrace {
     fn update(&self, work: impl FnOnce(&mut Record, Stamp)) {
         if let Some(inner) = &self.0 {
             let at = now(true).expect("enabled");
-            work(&mut inner.record.lock().unwrap_or_else(|p| p.into_inner()), at);
+            work(
+                &mut inner.record.lock().unwrap_or_else(|p| p.into_inner()),
+                at,
+            );
         }
     }
     pub(super) fn enabled(&self) -> bool {

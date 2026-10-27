@@ -308,6 +308,7 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
                 },
                 current,
                 layers: Err(reason.into()),
+                viewing: None,
                 laps: Vec::new(),
                 child_laps: Vec::new(),
                 wall: 0.,

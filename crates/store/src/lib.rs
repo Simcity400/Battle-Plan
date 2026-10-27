@@ -351,6 +351,14 @@ impl SourceKey {
 /// Range readers are independent of this object and keep their bytes until closed.
 pub struct Store {
     directory: PathBuf,
+    source: Mutex<Option<SavedSource>>,
+}
+
+struct SavedSource {
+    id: Uuid,
+    stamp: Stamp,
+    created: SystemTime,
+    key: SourceKey,
 }
 
 /// Pack handles one lookup has opened, shared by the ranges it returns.
@@ -366,6 +374,7 @@ impl Store {
     pub fn local(campaign: Uuid) -> io::Result<Self> {
         Ok(Self {
             directory: local_root()?.join(campaign.to_string()),
+            source: Mutex::default(),
         })
     }
 
@@ -554,14 +563,45 @@ impl Store {
     }
 
     fn source_key(&self, catalog: &Catalog) -> io::Result<SourceKey> {
-        #[cfg(test)]
-        tests::KEY_READS.set(tests::KEY_READS.get() + 1);
-        let mut bytes = Vec::new();
-        read_file(&self.directory.join(source_name(catalog.header.source)))?
-            .read_to_end(&mut bytes)?;
-        let key: SourceKey = serde_json::from_slice(&bytes)?;
-        *key.binding.lock().unwrap() = Some((self.directory.clone(), catalog.header.source, true));
-        Ok(key)
+        let id = catalog.header.source;
+        let path = self.directory.join(source_name(id));
+        let mut source = self.source.lock().unwrap();
+        let metadata = fs::metadata(&path)?;
+        let stamp = Stamp {
+            path: path.clone(),
+            size: metadata.len(),
+            modified: metadata.modified()?,
+        };
+        let created = metadata.created()?;
+        if !source
+            .as_ref()
+            .is_some_and(|saved| saved.id == id && saved.stamp == stamp && saved.created == created)
+        {
+            *source = None;
+            #[cfg(test)]
+            tests::KEY_READS.set(tests::KEY_READS.get() + 1);
+            let mut bytes = Vec::new();
+            read_file(&path)?.read_to_end(&mut bytes)?;
+            let key = serde_json::from_slice(&bytes)?;
+            if !stamp.current()? || fs::metadata(&path)?.created()? != created {
+                return Err(invalid("prepared source changed while it was read"));
+            }
+            *source = Some(SavedSource {
+                id,
+                stamp,
+                created,
+                key,
+            });
+        }
+        let saved = &source.as_ref().unwrap().key;
+        // Only immutable operands are shared; callers own rejection and binding state.
+        Ok(SourceKey {
+            recording: saved.recording.clone(),
+            content: Arc::clone(&saved.content),
+            binding: Arc::new(Mutex::new(Some((self.directory.clone(), id, true)))),
+            rejected: Arc::default(),
+            checked: Arc::default(),
+        })
     }
 
     fn matches(&self, catalog: &Catalog, key: &SourceKey) -> io::Result<bool> {
@@ -735,6 +775,7 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             result => result?,
         }
+        *self.source.lock().unwrap() = None;
         self.cleanup(None)
     }
 
@@ -872,6 +913,12 @@ struct SessionState {
 }
 
 impl Session {
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            session: self.clone(),
+            catalog: Arc::clone(&self.0.catalog.lock().unwrap()),
+        }
+    }
     pub fn range_count(&self, section: &str) -> Option<u64> {
         self.0
             .catalog
@@ -899,6 +946,7 @@ impl Session {
                     drop(opened);
                     let store = Store {
                         directory: state.directory.clone(),
+                        source: Mutex::default(),
                     };
                     let Some(current) = store.catalog()? else {
                         return Ok((0, None));
@@ -912,6 +960,33 @@ impl Session {
             }
         }
         Ok((0, None))
+    }
+}
+
+/// One immutable publication; disappearing packs fail without switching its catalogue.
+pub struct Snapshot {
+    session: Session,
+    catalog: Arc<Catalog>,
+}
+impl Snapshot {
+    pub fn range_count(&self, section: &str) -> Option<u64> {
+        self.catalog
+            .header
+            .sections
+            .iter()
+            .find(|entry| entry.name == section)
+            .map(|entry| entry.count)
+    }
+    pub fn read(&self, section: &str, range: u64) -> io::Result<Option<Range>> {
+        let state = &self.session.0;
+        Ok(lookup(
+            &state.directory,
+            &self.catalog,
+            section,
+            range,
+            &mut state.opened.lock().unwrap(),
+        )?
+        .1)
     }
 }
 
@@ -3060,6 +3135,7 @@ impl Writer {
         let key = self.key.clone();
         let store = Store {
             directory: self.directory.clone(),
+            source: Mutex::default(),
         };
         self.commit_with_scratch(scratch)?;
         if !key.recording_current()? {
