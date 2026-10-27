@@ -1,5 +1,7 @@
 use super::*;
 
+mod retirement;
+
 /// A lane state showing `hour` of branch 1 with the frames of `hours`
 /// (recorded gaps: whether a frame exists is all a plan reads).
 fn state(hour: Hour, playing: bool, hours: std::ops::RangeInclusive<Hour>) -> State {

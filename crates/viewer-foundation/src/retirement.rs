@@ -47,6 +47,7 @@ impl Dropper {
         thread::Builder::new()
             .name("hour dropper".into())
             .spawn(move || {
+                let _cost = replay_frame::cpu::scope("display.retire", Some("other"));
                 background_priority();
                 while inbox.recv().is_ok() {}
             })?;

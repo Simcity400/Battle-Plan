@@ -41,6 +41,7 @@ impl Pool {
                 thread::Builder::new()
                     .name(format!("hour builder {index}"))
                     .spawn(move || {
+                        let _cost = replay_frame::cpu::scope("jobs.dispatch", Some("other"));
                         background_priority();
                         loop {
                             let job = match inbox.lock() {

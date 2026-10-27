@@ -3354,6 +3354,7 @@ impl Viewer {
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
     ) -> Result<(), String> {
+        let _other_cost = replay_frame::cpu::scope("frame.refresh", Some("other"));
         let map_timer = Instant::now();
         self.drew_frame = false;
         let mut laps = self
@@ -3451,6 +3452,8 @@ impl Viewer {
             self.counter_view.set_mode(mode);
         }
         laps.lap("hour_misc");
+        drop(_other_cost);
+        let _other_cost = replay_frame::cpu::scope("frame.camera", Some("other"));
         // The screen-space interface's scale. A capture keeps the dump's, 1.0
         // unless `--ui-scale` names one, so a `--window-dump` and a `--dump` of
         // the same state stay the same frame.
@@ -3992,6 +3995,8 @@ impl Viewer {
         };
         self.grab_pointer(ui.ctx());
         laps.lap("panel_camera");
+        drop(_other_cost);
+        let _other_cost = replay_frame::cpu::scope("frame.movers", Some("other"));
         let scene = self.scene.as_mut().expect("created above");
         // A `--window-dump` settles unit models for its camera, as `--dump`
         // does; a host export keeps the live history.
@@ -4075,6 +4080,8 @@ impl Viewer {
             self.convoys_sailing = sailing;
         }
         laps.lap("movers_place");
+        drop(_other_cost);
+        let _other_cost = replay_frame::cpu::scope("frame.selection", Some("other"));
         // names: the engine integrates the layer cross-fade by the frame delta
         // and clamps to [0, 1], so it takes one second whatever the zoom speed.
         // It has to start from a settled value, and only this frame knows which:
@@ -4119,6 +4126,8 @@ impl Viewer {
         );
         self.counter_view.fleets_selected = Arc::clone(self.fleet_selection.fleets());
         laps.lap("fleet_selection");
+        drop(_other_cost);
+        let _other_cost = replay_frame::cpu::scope("frame.name-hover", Some("other"));
         // A free mode's pointer reaches the map's interface while it is shown and the pointer is
         // not held for looking around.
         let point = point.filter(|_| !free_mode || (interface && !self.input.captured()));
@@ -4170,6 +4179,7 @@ impl Viewer {
         self.fade = Some(name_fade);
         self.hovered_name_region = hovered_name_region;
         laps.lap("names_pick");
+        drop(_other_cost);
         let overlay_prepare_cpu = viewer_foundation::profiling::thread_span("overlay_prepare");
         // counters: one batch carries the bases, the labels, the counters and
         // the combat icons in the map mode's `<table>_PRIORITY_*` order.
@@ -4191,6 +4201,7 @@ impl Viewer {
             visibility: self.counter_view.visibility,
         };
         let (overlay_ms, additions) = {
+            let _other_cost = replay_frame::cpu::scope("frame.overlay.prepare", Some("other"));
             let overlay_timer = Instant::now();
             // capture: the animation clock is the one input a live window cannot
             // share with a headless frame, so a capture frame renders at 0, the
@@ -4377,6 +4388,8 @@ impl Viewer {
             }
             overlay_prepare_cpu.finish();
             laps.lap("overlay_prepare");
+            drop(_other_cost);
+            let _other_cost = replay_frame::cpu::scope("frame.overlay.draw", Some("other"));
             let overlay_draw_cpu = viewer_foundation::profiling::thread_span("overlay_draw");
             // Display choices only change what the next overlay draw keeps.
             let ours = self.overlay_tables.as_ref().expect("parsed above").3.ours();
@@ -4666,6 +4679,8 @@ impl Viewer {
             let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
             overlay_draw_cpu.finish();
             laps.lap("overlay_draw");
+            drop(_other_cost);
+            let _other_cost = replay_frame::cpu::scope("frame.interface", Some("other"));
             let engaged = self
                 .hours
                 .as_ref()
@@ -4815,6 +4830,7 @@ impl Viewer {
             laps.lap("combat_hover");
             (overlay_ms, additions)
         };
+        let _other_cost = replay_frame::cpu::scope("frame.scene-inputs", Some("other"));
         // Overlay and hover diagnostics belong to this frame.
         let warnings = if build_warnings {
             self.collect_warnings(document)
@@ -5050,6 +5066,8 @@ impl Viewer {
                 },
             )
             .map_err(|e| e.to_string())?;
+        drop(_other_cost);
+        let _other_cost = replay_frame::cpu::scope("frame.after-render", Some("other"));
         // Both coordinator paths stamp the same submitted scene, before audio,
         // capture/readback and asynchronous PROFILE output can delay observation.
         let shown_stamp = presentation::shown_stamp(profiling(), || {

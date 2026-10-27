@@ -27,6 +27,7 @@ use std::{
     sync::{Arc, Condvar, Mutex, MutexGuard},
 };
 use viewer_foundation::parallel::Workers;
+use viewer_foundation::retirement::Retired;
 
 use replay_data::{BranchId, Hour};
 use replay_frame::frame::DecodedFrame;
@@ -221,10 +222,37 @@ struct Plan {
     paused: bool,
 }
 
+struct Planned {
+    plan: Plan,
+    predecessor: Option<Hour>,
+    shown: Hour,
+}
+
+fn retire_before<K: Ord + Send + 'static, V: Send + 'static>(
+    values: &mut BTreeMap<K, V>,
+    first: &K,
+    retired: &mut Retired,
+) {
+    if values.first_key_value().is_some_and(|(key, _)| key < first) {
+        let keep = values.split_off(first);
+        retired.push(std::mem::replace(values, keep));
+    }
+}
+
+fn retire_from<K: Ord + Send + 'static, V: Send + 'static>(
+    values: &mut BTreeMap<K, V>,
+    first: &K,
+    retired: &mut Retired,
+) {
+    if values.last_key_value().is_some_and(|(key, _)| key >= first) {
+        retired.push(values.split_off(first));
+    }
+}
+
 impl Chain {
     /// The next hour the view needs built, if its frame has arrived. Frames
-    /// and icons the view no longer needs are dropped.
-    fn plan(&mut self, state: &mut State) -> Option<Plan> {
+    /// and icons the view no longer needs retire after the state unlocks.
+    fn prepare(&mut self, state: &mut State, retired: &mut Retired) -> Option<Planned> {
         let (shown, branch) = (state.shown?, state.branch?);
         if self.failed == Some(state.epoch) {
             return None;
@@ -246,7 +274,7 @@ impl Chain {
                 .next_back()
                 .map_or(bound, |(hour, _)| *hour)
         });
-        self.after.retain(|hour, _| *hour >= keep);
+        retire_before(&mut self.after, &keep, retired);
         let hour = if state.playing {
             last.map_or(start, |last| {
                 next_hour(state, branch, last, shown, Hour::MAX)
@@ -254,15 +282,19 @@ impl Chain {
         } else {
             // Paused, the shown hour is built again with its own sweep, unless
             // it is complete; later hours are the chain's no longer.
-            self.after.retain(|hour, _| *hour <= shown);
+            if let Some(later) = shown.checked_add(1) {
+                retire_from(&mut self.after, &later, retired);
+            }
             match self.after.get(&shown) {
                 Some(cycle) if cycle.complete() => return None,
                 Some(_) => {
-                    self.after.remove(&shown);
+                    retired.push(self.after.remove(&shown).expect("incomplete shown cycle"));
                     if shown != start && self.after.range(..shown).next_back().is_none() {
                         // Nothing to build it from: the cycle starts again.
                         self.start = Some(shown);
-                        self.after.clear();
+                        if !self.after.is_empty() {
+                            retired.push(std::mem::take(&mut self.after));
+                        }
                     }
                     shown
                 }
@@ -273,23 +305,57 @@ impl Chain {
         };
         let start = self.start.expect("set above");
         let floor = hour.min(shown) - 1;
-        state
-            .frames
-            .retain(|(built_branch, built), _| *built_branch == branch && *built >= floor);
-        state.built.retain(|built, _| *built >= shown - 1);
+        retire_before(&mut state.frames, &(branch, floor), retired);
+        if let Some(later_branch) = branch.checked_add(1) {
+            retire_from(&mut state.frames, &(later_branch, Hour::MIN), retired);
+        }
+        retire_before(&mut state.built, &(shown - 1), retired);
         let frame = state.frames.get(&(branch, hour))?.clone();
-        let from = if hour == start {
+        let predecessor = if hour == start {
             None
         } else {
-            Some(self.after.range(..hour).next_back()?.1.clone())
+            Some(*self.after.range(..hour).next_back()?.0)
         };
-        Some(Plan {
-            epoch: self.epoch,
-            hour,
-            frame,
-            from,
-            paused: !state.playing && hour == shown,
+        Some(Planned {
+            plan: Plan {
+                epoch: self.epoch,
+                hour,
+                frame,
+                from: None,
+                paused: !state.playing && hour == shown,
+            },
+            predecessor,
+            shown,
         })
+    }
+
+    fn snapshot(&self, planned: Planned) -> Plan {
+        let Planned {
+            mut plan,
+            predecessor,
+            shown,
+        } = planned;
+        let _cost = replay_frame::cpu::scope(
+            if plan.hour < shown {
+                "raids.plan.snapshot.behind"
+            } else if plan.hour == shown {
+                "raids.plan.snapshot.shown"
+            } else {
+                "raids.plan.snapshot.ahead"
+            },
+            Some("other"),
+        );
+        plan.from =
+            predecessor.map(|hour| self.after.get(&hour).expect("planned predecessor").clone());
+        plan
+    }
+
+    #[cfg(test)]
+    fn plan(&mut self, state: &mut State) -> Option<Plan> {
+        let mut retired = Retired::default();
+        let planned = self.prepare(state, &mut retired);
+        drop(retired);
+        planned.map(|planned| self.snapshot(planned))
     }
 }
 
@@ -439,30 +505,62 @@ impl Drop for RaidLane {
     }
 }
 
-fn serve(shared: &Shared) {
-    let mut chain = Chain::default();
+fn wait_for_plan<T, R>(
+    shared: &Shared,
+    chain: &mut Chain,
+    mut capture: impl FnMut(&mut Chain, &mut State, &mut Retired) -> Option<T>,
+    finish: impl FnOnce(&Chain, T) -> R,
+) -> Option<R> {
     loop {
-        let job = {
+        let (planned, retired) = {
+            let _other_cost = replay_frame::cpu::scope("raids.plan", Some("other"));
             let mut state = lock(shared);
+            let mut retired = Retired::default();
             loop {
                 if state.stop {
-                    return;
+                    return None;
                 }
-                let sources = (state.content.clone(), state.perspective.clone());
-                if let (Some(content), Some(perspective)) = sources
-                    && let Some(plan) = chain.plan(&mut state)
-                {
-                    break Job {
-                        content,
-                        perspective,
-                        plan,
-                    };
+                let planned = capture(chain, &mut state, &mut retired);
+                if planned.is_some() || !retired.is_empty() {
+                    break (planned, retired);
                 }
                 state = shared
                     .1
                     .wait(state)
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
             }
+        };
+        // Release expired credit before a new snapshot, even when no job is ready.
+        {
+            let _cost = replay_frame::cpu::scope("raids.plan.retire", Some("other"));
+            drop(retired);
+        }
+        if let Some(planned) = planned {
+            return Some(finish(chain, planned));
+        }
+    }
+}
+
+fn serve(shared: &Shared) {
+    let _other_cost = replay_frame::cpu::scope("raids.lane", Some("other"));
+    let mut chain = Chain::default();
+    loop {
+        let Some(job) = wait_for_plan(
+            shared,
+            &mut chain,
+            |chain, state, retired| {
+                let content = state.content.clone()?;
+                let perspective = state.perspective.clone()?;
+                let plan = chain.prepare(state, retired)?;
+                Some((content, perspective, plan))
+            },
+            |chain, (content, perspective, planned)| Job {
+                content,
+                perspective,
+                plan: chain.snapshot(planned),
+            },
+        ) else {
+            return;
         };
         let (epoch, hour) = (job.plan.epoch, job.plan.hour);
         let stamp = job.stamp();
@@ -471,6 +569,7 @@ fn serve(shared: &Shared) {
         let icons = &mut chain.icons;
         let built =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(shared, job, icons)));
+        let _settle_cost = replay_frame::cpu::scope("raids.settle", Some("other"));
         match built {
             Ok(cycle) => settle(&mut chain, &lock(shared), &stamp, hour, cycle),
             Err(_) => {

@@ -244,6 +244,7 @@ pub(crate) fn measure(
         let thread_before = viewer_foundation::profiling::current_thread_cpu_time();
         let frame_start = Instant::now();
         let mut result = Ok(());
+        let _other_cost = cpu::scope("frame.harness", Some("other"));
         let _ = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
