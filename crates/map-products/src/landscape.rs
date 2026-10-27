@@ -546,7 +546,7 @@ impl ProductHour<'_> {
                 )?;
                 let prepared = Arc::new(assets.display(
                     &prepared,
-                    binding,
+                    self.content.display_binding()?,
                     vision.ours(),
                     vision.fog(),
                     summary.warnings(),

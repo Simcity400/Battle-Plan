@@ -127,6 +127,143 @@ fn fixture(name: &str) -> Stack {
 }
 
 #[test]
+fn building_bank_survives_dependency_binding_changes_and_replacement() {
+    use viewer_world::map::map_buildings::{CityTerrain, MapBuildingAssets};
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime reader metadata");
+    let stack = fixture("building_bank_immutable_binding");
+    stack.write(
+        &stack.base(),
+        "common/buildings/synthetic.txt",
+        "buildings = { }",
+    );
+    stack.write(
+        &stack.base(),
+        "common/defines/buildings.lua",
+        r#"
+        NDefines = {
+            NBuildings = { MAX_BUILDING_LEVELS = 10 },
+            NGraphics = { MAP_BUILDINGS_SHRINK_DISTANCE = 180,
+                MESH_POPUP_SCALE_UP_SPEED = 5, MAP_BUILDINGS_DESTROYED_STATUS = 60,
+                MAP_BUILDINGS_DESTROYED_DEAD_ZONE = 80, MAP_BUILDINGS_DAMAGED_THRESHOLD = 0.8 }
+        }
+    "#,
+    );
+    let content = content(&stack);
+    let layers = stack.layers(&[]);
+    let defines = installed_content_core::defines::read(&layers).unwrap();
+    let load_bank = || {
+        MapBuildingAssets::load(
+            &layers,
+            installed_content_image::native::Decode::default(),
+            &content.map,
+            &defines,
+            &mut Vec::new(),
+        )
+        .unwrap()
+    };
+    let assets = load_bank();
+    let mut frame = frame(1);
+    put(
+        &mut frame,
+        TableRows::Provinces(vec![ProvinceRow {
+            id: 1,
+            owner: 101,
+            controller: 101,
+            ..Default::default()
+        }]),
+    );
+    let city = Arc::new(vec![false; 72]);
+    let dependencies = || {
+        content
+            .reads
+            .dependent_binding(
+                "buildings",
+                &[
+                    "map",
+                    "defines",
+                    "trigger",
+                    "heightmap",
+                    "display/buildings",
+                    "session-error",
+                ],
+            )
+            .unwrap()
+    };
+    let before = dependencies();
+    let first = ProductHour::new(&content, &frame, 0.0)
+        .buildings(
+            &assets,
+            &choice(),
+            &city,
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+        .unwrap()
+        .0;
+    content.reads.session_error(&std::io::Error::other(
+        "late unrelated optional content refusal",
+    ));
+    assert_ne!(before, dependencies());
+    frame.hour += 1;
+    let next = ProductHour::new(&content, &frame, 0.0)
+        .buildings(
+            &assets,
+            &choice(),
+            &city,
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+        .unwrap()
+        .0;
+    assert_eq!(first.bank, content.display_binding().unwrap());
+    assert_eq!(first.bank, next.bank);
+    let replacement = load_bank();
+    assert_ne!(assets.projection_id(), replacement.projection_id());
+    let replaced = ProductHour::new(&content, &frame, 0.0)
+        .buildings(
+            &replacement,
+            &choice(),
+            &city,
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+        .unwrap()
+        .0;
+    assert_eq!(replaced.bank, first.bank);
+    assert_eq!(
+        replacement.display_binding().unwrap(),
+        content.display_binding().unwrap()
+    );
+    let hour = ProductHour::new(&content, &frame, 0.0);
+    let vision = hour.vision(&choice()).unwrap();
+    let (prepared, _) = assets
+        .field(
+            &frame,
+            &vision,
+            &CityTerrain {
+                width: 12,
+                height: 6,
+                spawn_city: &city,
+            },
+        )
+        .unwrap();
+    let mut wrong = first.bank;
+    wrong[0] ^= 1;
+    let error = assets
+        .display(
+            &prepared,
+            wrong,
+            vision.ours(),
+            vision.fog(),
+            Vec::new(),
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "building bank was replaced without rebinding its content"
+    );
+}
+
+#[test]
 fn content_loads_and_builds_the_clear_intel_image_without_a_device() {
     let stack = fixture("products_without_device");
     let content = content(&stack);
