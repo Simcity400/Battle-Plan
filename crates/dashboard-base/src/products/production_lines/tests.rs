@@ -2179,16 +2179,16 @@ fn a_saved_scan_restores_the_scan_it_saved() {
     assert!(localised.restore(None, Arc::from("english")).is_err());
 }
 
-/// A kept scan's icon choices hold only while what they were made with holds outside the
+/// Prepared icon choices hold only while what they were made with holds outside the
 /// recorded content's hash: its graphic pools (and geography and DLC). Which sprites are
-/// declared and which texture files exist do not refuse it: a choice leaves those questions
+/// declared and which texture files exist do not refuse them: a choice leaves those questions
 /// open, the same whatever the answers, and each reply answers them (a deleted texture is
 /// then another icon).
 #[test]
-fn a_kept_scans_choices_hold_only_while_their_inputs_do() {
+fn prepared_choices_hold_only_while_their_inputs_do() {
     use crate::products::{
         equipment_icon::{Icon, IconContent, IconHour, icon_choice},
-        production_lines::{SavedLines, SavedScan, pictures_hold},
+        production_lines::pictures_hold_with,
     };
     use installed_content_equipment_graphics::equipment_graphics;
     use replay_data::rows::VariantDefinitionRow;
@@ -2228,21 +2228,16 @@ fn a_kept_scans_choices_hold_only_while_their_inputs_do() {
         choice.walk(|probe| with.answer(probe)),
         Ok(Some(Icon::Path(TEXTURE.into())))
     );
-    let saved = SavedScan {
-        branch: 1,
-        tag: "GER".into(),
-        pictured: true,
-        visual: Some(with.visual_inputs().to_owned()),
-        executable: false,
-        last_block: None,
-        scan: SavedLines::save(&ScannedLines::default(), &AtomicBool::new(false)).unwrap(),
-    };
-    assert!(pictures_hold(
-        Some(&content(&[TEXTURE], &["GFX_fallback"], &[])),
-        &saved
-    ));
+    let visual = with.visual_inputs().to_owned();
+    let pictures_hold =
+        |icons: Option<&IconContent>| pictures_hold_with(icons, true, Some(&visual));
+    assert!(pictures_hold(Some(&content(
+        &[TEXTURE],
+        &["GFX_fallback"],
+        &[]
+    ))));
     // The texture deleted, or sprites declared otherwise: the same choice, which the reply
-    // answers with another icon; the kept scan holds.
+    // answers with another icon; the prepared choices hold.
     let deleted = content(&[], &["GFX_other"], &[]);
     assert_eq!(
         icon_choice(&deleted, &hour, &definition, "infantry_equipment_1"),
@@ -2252,22 +2247,17 @@ fn a_kept_scans_choices_hold_only_while_their_inputs_do() {
         choice.walk(|probe| deleted.answer(probe)),
         Ok(Some(Icon::Path(TEXTURE.into())))
     );
-    assert!(pictures_hold(Some(&deleted), &saved));
+    assert!(pictures_hold(Some(&deleted)));
     // Other graphic pools, or no icon content, refuse it.
     let pooled = content(
         &[TEXTURE],
         &["GFX_fallback"],
         &[br#"default = { infantry_equipment_1 = { pool = { icons = { GFX_fallback } } } }"#],
     );
-    assert!(!pictures_hold(Some(&pooled), &saved));
-    assert!(!pictures_hold(None, &saved));
-    let unpictured = SavedScan {
-        pictured: false,
-        visual: None,
-        ..saved
-    };
-    assert!(pictures_hold(None, &unpictured));
-    assert!(!pictures_hold(Some(&with), &unpictured));
+    assert!(!pictures_hold(Some(&pooled)));
+    assert!(!pictures_hold(None));
+    assert!(pictures_hold_with(None, false, None));
+    assert!(!pictures_hold_with(Some(&with), false, None));
 }
 
 /// Saving a scan looks up each modifier run's country row once, by the

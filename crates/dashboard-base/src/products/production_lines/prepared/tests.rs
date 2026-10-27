@@ -50,6 +50,31 @@ fn restore_branch(pages: &mut fixtures::FixturePages, replay: &Replay, branch: u
         .unwrap()
         .expect("real resume binding")
 }
+/// A whole scan as its pages hold it, to compare scans byte for byte.
+fn saved_bytes(scan: &ScannedLines) -> Vec<u8> {
+    serde_json::to_vec(&SavedLines::save(scan, &AtomicBool::new(false)).unwrap()).unwrap()
+}
+
+/// The tag's scan as a query assembles it from the prepared pages.
+fn served(
+    directory: &Directory,
+    replay: &Replay,
+    tag: &str,
+    read: impl FnMut(&str, u64) -> io::Result<Option<Vec<u8>>>,
+) -> Vec<u8> {
+    saved_bytes(
+        &assemble(
+            directory,
+            &tag_key(tag),
+            None,
+            recorded_language(replay),
+            &AtomicBool::new(false),
+            read,
+        )
+        .unwrap(),
+    )
+}
+
 fn known(prepared: &Prepared, pages: &mut fixtures::FixturePages) -> BTreeSet<String> {
     let mut keys: BTreeSet<_> = prepared.native.keys().map(native_key).collect();
     private::Store::new(pages, 1)
@@ -71,21 +96,24 @@ fn empty_countries_and_unrequested_countries_publish_the_same_coverage() {
         prepared
             .advance_block(&mut pages, &replay, position, None, &flag)
             .unwrap();
-        prepared
-            .publish(&mut pages, &replay, block, None, &flag)
-            .unwrap();
+        prepared.publish(&mut pages, &replay, block, &flag).unwrap();
     }
+    assert_eq!(prepared.directory.last_block, last_block(&replay, 1));
     for tag in ["GER", "ITA"] {
-        let (scan, meta) = saved_sections(1, tag);
-        let saved: SavedScan =
-            pages::read_json(&pages.read_at(&scan, 0).unwrap().unwrap()).unwrap();
-        assert_eq!(saved.last_block, last_block(&replay, 1));
-        assert!(pages.read_at(&meta, 0).unwrap().is_some());
+        let scan = assemble(
+            &prepared.directory,
+            &tag_key(tag),
+            None,
+            recorded_language(&replay),
+            &flag,
+            |section, range| pages.read_at(section, range),
+        )
+        .unwrap();
         if tag == "ITA" {
-            assert!(saved.scan.lines.is_empty());
-            assert_eq!(saved.scan.reads, vec![FIRST, FIRST + 1, FIRST + 2]);
+            assert!(scan.lines.is_empty());
+            assert_eq!(scan.reads, vec![FIRST, FIRST + 1, FIRST + 2]);
             assert_eq!(
-                saved.scan.line_hours,
+                scan.line_hours,
                 vec![crate::products::country_groups::HourSpan {
                     first_hour: FIRST,
                     last_hour: FIRST + 2
@@ -111,7 +139,7 @@ fn invalid_block_cursors_cannot_publish_coverage_or_completed_scans() {
     );
     assert!(
         prepared
-            .publish(&mut pages, &replay, &replay.index[1], None, &flag)
+            .publish(&mut pages, &replay, &replay.index[1], &flag)
             .is_err()
     );
     assert!(pages.pages.is_empty());
@@ -121,7 +149,7 @@ fn invalid_block_cursors_cannot_publish_coverage_or_completed_scans() {
         .advance_block(&mut pages, &replay, 0, None, &flag)
         .unwrap();
     prepared
-        .publish(&mut pages, &replay, &replay.index[0], None, &flag)
+        .publish(&mut pages, &replay, &replay.index[0], &flag)
         .unwrap();
     let prefix = pages.pages.clone();
     let previous = prepared.processed.clone();
@@ -134,13 +162,7 @@ fn invalid_block_cursors_cannot_publish_coverage_or_completed_scans() {
     );
     assert!(
         prepared
-            .publish(
-                &mut pages,
-                &replay,
-                replay.index.last().unwrap(),
-                None,
-                &flag
-            )
+            .publish(&mut pages, &replay, replay.index.last().unwrap(), &flag)
             .is_err()
     );
     prepared.processed = previous;
@@ -153,13 +175,7 @@ fn invalid_block_cursors_cannot_publish_coverage_or_completed_scans() {
     }
     assert!(
         prepared
-            .publish(
-                &mut pages,
-                &replay,
-                replay.index.last().unwrap(),
-                None,
-                &flag
-            )
+            .publish(&mut pages, &replay, replay.index.last().unwrap(), &flag)
             .is_err()
     );
     assert_eq!(pages.pages, prefix);
@@ -171,9 +187,6 @@ fn invalid_block_cursors_cannot_publish_coverage_or_completed_scans() {
         prepared.directory.last_block,
         Some((FIRST, FIRST, replay.index[0].offset))
     );
-    for section in [saved_sections(1, "GER").0, saved_sections(1, "GER").1] {
-        assert!(pages.read_at(&section, 0).unwrap().is_none());
-    }
     let scan = assemble(
         &prepared.directory,
         &tag_key("GER"),
@@ -215,7 +228,7 @@ fn an_observer_failure_cannot_publish_or_checkpoint_a_partial_block() {
         .advance_block(&mut pages, &replay, 0, None, &flag)
         .unwrap();
     prepared
-        .publish(&mut pages, &replay, &replay.index[0], None, &flag)
+        .publish(&mut pages, &replay, &replay.index[0], &flag)
         .unwrap();
     let prefix = pages.pages.clone();
     let _budget = Budget(crate::prepared::pages::TEST_BATCH_BYTES.replace(1));
@@ -226,7 +239,7 @@ fn an_observer_failure_cannot_publish_or_checkpoint_a_partial_block() {
     assert!(prepared.block_failed);
     assert!(
         prepared
-            .publish(&mut pages, &replay, &replay.index[1], None, &flag)
+            .publish(&mut pages, &replay, &replay.index[1], &flag)
             .is_err()
     );
     assert!(prepared.save(&mut pages, &flag).is_err());
@@ -238,9 +251,6 @@ fn an_observer_failure_cannot_publish_or_checkpoint_a_partial_block() {
     assert_eq!(pages.pages, prefix);
     assert_eq!(prepared.directory.coverage.last_hour, FIRST);
     assert!(!prepared.directory.coverage.complete);
-    for section in [saved_sections(1, "GER").0, saved_sections(1, "GER").1] {
-        assert!(pages.read_at(&section, 0).unwrap().is_none());
-    }
 }
 
 #[test]
@@ -278,7 +288,7 @@ fn an_interleaved_branch_start_and_appended_resume_read_every_block() {
         .advance_block(&mut pages, &first, 1, None, &flag)
         .unwrap();
     prepared
-        .publish(&mut pages, &first, &first.index[1], None, &flag)
+        .publish(&mut pages, &first, &first.index[1], &flag)
         .unwrap();
     assert!(prepared.directory.coverage.complete);
     let segments: Vec<_> = (FIRST + 1..=FIRST + 2)
@@ -302,12 +312,9 @@ fn an_interleaved_branch_start_and_appended_resume_read_every_block() {
         prepared
             .advance_block(&mut pages, &grown, position, None, &flag)
             .unwrap();
-        prepared
-            .publish(&mut pages, &grown, block, None, &flag)
-            .unwrap();
+        prepared.publish(&mut pages, &grown, block, &flag).unwrap();
         prepared = restore_branch(&mut pages, &grown, 2);
     }
-    let mut expected_pages = fixtures::FixturePages::default();
     for tag in ["GER", "ITA"] {
         let scan = super::super::reference::scan(
             &grown,
@@ -319,26 +326,12 @@ fn an_interleaved_branch_start_and_appended_resume_read_every_block() {
         )
         .unwrap();
         assert_eq!(scan.reads, vec![FIRST, FIRST + 1, FIRST + 2]);
-        write_saved(
-            &mut expected_pages,
-            &SavedScan {
-                branch: 2,
-                tag: tag.into(),
-                pictured: false,
-                visual: None,
-                executable: engine_executable::executable_tables::is_initialized(),
-                last_block: last_block(&grown, 2),
-                scan: SavedLines::save(&scan, &flag).unwrap(),
-            },
-        )
-        .unwrap();
-        for section in [saved_sections(2, tag).0, saved_sections(2, tag).1] {
-            assert_eq!(
-                pages.read_at(&section, 0).unwrap(),
-                expected_pages.read_at(&section, 0).unwrap(),
-                "{section}"
-            );
-        }
+        assert_eq!(
+            served(&prepared.directory, &grown, tag, |section, range| pages
+                .read_at(section, range)),
+            saved_bytes(&scan),
+            "{tag}"
+        );
         let actual = assemble(
             &prepared.directory,
             &tag_key(tag),
@@ -368,14 +361,12 @@ fn internal_boundary_resume_preserves_assembled_and_public_compatibility_payload
             .advance_block(&mut left, &replay, position, None, &flag)
             .unwrap();
         uninterrupted
-            .publish(&mut left, &replay, block, None, &flag)
+            .publish(&mut left, &replay, block, &flag)
             .unwrap();
         resumed
             .advance_block(&mut right, &replay, position, None, &flag)
             .unwrap();
-        resumed
-            .publish(&mut right, &replay, block, None, &flag)
-            .unwrap();
+        resumed.publish(&mut right, &replay, block, &flag).unwrap();
         assert_equivalent(&uninterrupted, &resumed, &replay, &mut left, &mut right);
         resumed = restore(&mut right, &replay);
         assert_eq!(resumed.next_block(&replay).unwrap(), position + 1);
@@ -392,15 +383,9 @@ fn a_prefix_stays_readable_and_missing_pages_are_refused() {
         .advance_block(&mut pages, &replay, 0, None, &flag)
         .unwrap();
     prepared
-        .publish(&mut pages, &replay, &replay.index[0], None, &flag)
+        .publish(&mut pages, &replay, &replay.index[0], &flag)
         .unwrap();
     assert!(!prepared.directory.coverage.complete);
-    assert!(
-        pages
-            .read_at(&saved_sections(1, "GER").0, 0)
-            .unwrap()
-            .is_none()
-    );
     let result = assemble(
         &prepared.directory,
         &tag_key("GER"),
@@ -514,9 +499,7 @@ fn completed_runs_leave_only_active_tails_and_latest_line_indexes() {
         prepared
             .advance_block(&mut pages, &replay, position, None, &flag)
             .unwrap();
-        prepared
-            .publish(&mut pages, &replay, block, None, &flag)
-            .unwrap();
+        prepared.publish(&mut pages, &replay, block, &flag).unwrap();
         for country in prepared
             .native
             .values()
@@ -609,7 +592,7 @@ fn renamed_and_reused_aliases_resume_with_the_literal_tag_fold_bytes() {
             .advance_block(&mut pages, &replay, position, None, &flag)
             .unwrap();
         prepared
-            .publish(&mut pages, &replay, &replay.index[position], None, &flag)
+            .publish(&mut pages, &replay, &replay.index[position], &flag)
             .unwrap();
         prepared = restore(&mut pages, &replay);
     }
@@ -636,16 +619,10 @@ fn renamed_and_reused_aliases_resume_with_the_literal_tag_fold_bytes() {
         &flag,
     )
     .unwrap();
-    let saved: SavedScan = pages::read_json(
-        &pages
-            .read_at(&saved_sections(1, "GER").0, 0)
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
     assert_eq!(
-        serde_json::to_vec(&saved.scan).unwrap(),
-        serde_json::to_vec(&SavedLines::save(&literal, &flag).unwrap()).unwrap()
+        served(&prepared.directory, &replay, "GER", |section, range| pages
+            .read_at(section, range)),
+        saved_bytes(&literal)
     );
 }
 
@@ -775,7 +752,7 @@ fn private_spills_preserve_completed_bytes_and_page_alias_history() {
                 assert!(pages.read_at(&coverage_section(1), 0).unwrap().is_none());
             }
             prepared
-                .publish(&mut pages, &replay, block, None, &cancelled)
+                .publish(&mut pages, &replay, block, &cancelled)
                 .unwrap();
             assert!(prepared.directory.aliases.len() <= 2);
         }
@@ -785,14 +762,13 @@ fn private_spills_preserve_completed_bytes_and_page_alias_history() {
     let (spilled, mut right) = prepare(1);
     assert!(spilled.directory.pages > ordinary.directory.pages);
     for tag in ["GER", "ITA"] {
-        let (scan, meta) = saved_sections(1, tag);
-        for section in [scan, meta] {
-            assert_eq!(
-                left.read_at(&section, 0).unwrap(),
-                right.read_at(&section, 0).unwrap(),
-                "{section}"
-            );
-        }
+        assert_eq!(
+            served(&ordinary.directory, &replay, tag, |section, range| left
+                .read_at(section, range)),
+            served(&spilled.directory, &replay, tag, |section, range| right
+                .read_at(section, range)),
+            "{tag}"
+        );
         for hour in FIRST..=FIRST + 2 {
             assert_eq!(
                 read_country_at(&ordinary.directory, tag, hour, |section, range| left
@@ -837,11 +813,9 @@ fn non_flushing_continuation_keeps_pending_records_before_observing_more() {
     }
     let block = replay.index.last().unwrap();
     uninterrupted
-        .publish(&mut left, &replay, block, None, &flag)
+        .publish(&mut left, &replay, block, &flag)
         .unwrap();
-    resumed
-        .publish(&mut right, &replay, block, None, &flag)
-        .unwrap();
+    resumed.publish(&mut right, &replay, block, &flag).unwrap();
     assert_equivalent(&uninterrupted, &resumed, &replay, &mut left, &mut right);
 }
 
@@ -1060,20 +1034,7 @@ fn independent_v5_and_public_payloads_keep_same_hour_organisation_versions_delay
         assert!(expected.organisations[&id][0].state.is_none());
         assert!(expected.organisations[&id][1].state.is_some());
     }
-    let mut baseline = fixtures::FixturePages::default();
-    write_saved(
-        &mut baseline,
-        &SavedScan {
-            branch: 1,
-            tag: "GER".into(),
-            pictured: false,
-            visual: None,
-            executable: engine_executable::executable_tables::is_initialized(),
-            last_block: last_block(&replay, 1),
-            scan: SavedLines::save(&expected, &flag).unwrap(),
-        },
-    )
-    .unwrap();
+    let baseline = saved_bytes(&expected);
     for (spill, checkpoint) in [(false, false), (true, false), (false, true)] {
         let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
         let mut pages = fixtures::FixturePages::default();
@@ -1092,21 +1053,14 @@ fn independent_v5_and_public_payloads_keep_same_hour_organisation_versions_delay
             }
         }
         prepared
-            .publish(
-                &mut pages,
-                &replay,
-                replay.index.last().unwrap(),
-                None,
-                &flag,
-            )
+            .publish(&mut pages, &replay, replay.index.last().unwrap(), &flag)
             .unwrap();
-        for section in [saved_sections(1, "GER").0, saved_sections(1, "GER").1] {
-            assert_eq!(
-                pages.read_at(&section, 0).unwrap(),
-                baseline.read_at(&section, 0).unwrap(),
-                "{section}: spill={spill}, checkpoint={checkpoint}"
-            );
-        }
+        assert_eq!(
+            served(&prepared.directory, &replay, "GER", |section, range| pages
+                .read_at(section, range)),
+            baseline,
+            "spill={spill}, checkpoint={checkpoint}"
+        );
         let source = Source::from_replay(
             crate::SourceKey {
                 source_id: "independent-production".into(),
@@ -1132,20 +1086,7 @@ fn assert_reference_publication_modes(replay: &Replay, verify: impl Fn(&ScannedL
         super::super::reference::scan(replay, &branch_blocks(replay, 1), "GER", None, None, &flag)
             .unwrap();
     verify(&expected);
-    let mut baseline = fixtures::FixturePages::default();
-    write_saved(
-        &mut baseline,
-        &SavedScan {
-            branch: 1,
-            tag: "GER".into(),
-            pictured: false,
-            visual: None,
-            executable: engine_executable::executable_tables::is_initialized(),
-            last_block: last_block(replay, 1),
-            scan: SavedLines::save(&expected, &flag).unwrap(),
-        },
-    )
-    .unwrap();
+    let baseline = saved_bytes(&expected);
     for (spill, checkpoint) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut prepared = Prepared::new(replay, 1, ["GER".into()], None);
         let mut pages = fixtures::FixturePages::default();
@@ -1157,12 +1098,6 @@ fn assert_reference_publication_modes(replay: &Replay, verify: impl Fn(&ScannedL
                 prepared.flush(&mut pages, &flag).unwrap();
             }
             if checkpoint && position + 1 < replay.index.len() {
-                assert!(
-                    pages
-                        .read_at(&saved_sections(1, "GER").0, 0)
-                        .unwrap()
-                        .is_none()
-                );
                 if !spill {
                     assert!(
                         prepared.native.values().any(|country| !country
@@ -1180,13 +1115,7 @@ fn assert_reference_publication_modes(replay: &Replay, verify: impl Fn(&ScannedL
             }
         }
         prepared
-            .publish(
-                &mut pages,
-                replay,
-                replay.index.last().unwrap(),
-                None,
-                &flag,
-            )
+            .publish(&mut pages, replay, replay.index.last().unwrap(), &flag)
             .unwrap();
         let actual = assemble(
             &prepared.directory,
@@ -1198,13 +1127,11 @@ fn assert_reference_publication_modes(replay: &Replay, verify: impl Fn(&ScannedL
         )
         .unwrap();
         verify(&actual);
-        for section in [saved_sections(1, "GER").0, saved_sections(1, "GER").1] {
-            assert_eq!(
-                pages.read_at(&section, 0).unwrap(),
-                baseline.read_at(&section, 0).unwrap(),
-                "{section}: spill={spill}, checkpoint={checkpoint}"
-            );
-        }
+        assert_eq!(
+            saved_bytes(&actual),
+            baseline,
+            "spill={spill}, checkpoint={checkpoint}"
+        );
         let source = fixture_source(replay, pages);
         for origin in [
             None,
@@ -1592,9 +1519,7 @@ fn an_unresolved_link_is_unknown_and_recovers_the_same_origin_lifetime_after_rea
         prepared
             .advance_block(&mut pages, &replay, position, None, &flag)
             .unwrap();
-        prepared
-            .publish(&mut pages, &replay, block, None, &flag)
-            .unwrap();
+        prepared.publish(&mut pages, &replay, block, &flag).unwrap();
         prepared = restore(&mut pages, &replay);
     }
     let before = read_country_at(&prepared.directory, "GER", FIRST, |section, range| {
@@ -2020,9 +1945,7 @@ fn unchanged_censuses_and_independent_read_dates_stitch_exactly_across_spill_and
         prepared
             .advance_block(&mut pages, &replay, position, None, &flag)
             .unwrap();
-        prepared
-            .publish(&mut pages, &replay, block, None, &flag)
-            .unwrap();
+        prepared.publish(&mut pages, &replay, block, &flag).unwrap();
         prepared = restore(&mut pages, &replay);
     }
     let actual = assemble(
@@ -2227,13 +2150,6 @@ fn assert_equivalent(
             serde_json::to_vec(&SavedLines::save(&x, &flag).unwrap()).unwrap(),
             serde_json::to_vec(&SavedLines::save(&y, &flag).unwrap()).unwrap()
         );
-        for section in [saved_sections(1, tag).0, saved_sections(1, tag).1] {
-            assert_eq!(
-                left.read_at(&section, 0).unwrap(),
-                right.read_at(&section, 0).unwrap(),
-                "{section}"
-            );
-        }
     }
     if a.directory.coverage.complete {
         let left = fixture_source(
@@ -2253,7 +2169,7 @@ fn assert_equivalent(
 }
 
 #[test]
-fn independent_full_v5_meta_and_all_public_routes_cover_gaps_refusals_and_native_tag_reuse() {
+fn independent_full_scan_and_all_public_routes_cover_gaps_refusals_and_native_tag_reuse() {
     let replay = super::super::tests::quiet_production_replay(32);
     let flag = AtomicBool::new(false);
     let blocks = branch_blocks(&replay, 1);
@@ -2262,38 +2178,21 @@ fn independent_full_v5_meta_and_all_public_routes_cover_gaps_refusals_and_native
     let native =
         super::super::reference::scan(&replay, &blocks, "GER", None, Some((7, 9001)), &flag)
             .unwrap();
-    let mut baseline = fixtures::FixturePages::default();
-    write_saved(
-        &mut baseline,
-        &SavedScan {
-            branch: 1,
-            tag: "GER".into(),
-            pictured: false,
-            visual: None,
-            executable: engine_executable::executable_tables::is_initialized(),
-            last_block: last_block(&replay, 1),
-            scan: SavedLines::save(&expected, &flag).unwrap(),
-        },
-    )
-    .unwrap();
+    let baseline = saved_bytes(&expected);
     let mut pages = fixtures::FixturePages::default();
     let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
     for (position, block) in replay.index.iter().enumerate() {
         prepared
             .advance_block(&mut pages, &replay, position, None, &flag)
             .unwrap();
-        prepared
-            .publish(&mut pages, &replay, block, None, &flag)
-            .unwrap();
+        prepared.publish(&mut pages, &replay, block, &flag).unwrap();
         prepared = restore(&mut pages, &replay);
     }
-    for section in [saved_sections(1, "GER").0, saved_sections(1, "GER").1] {
-        assert_eq!(
-            pages.read_at(&section, 0).unwrap(),
-            baseline.read_at(&section, 0).unwrap(),
-            "{section}"
-        );
-    }
+    assert_eq!(
+        served(&prepared.directory, &replay, "GER", |section, range| pages
+            .read_at(section, range)),
+        baseline
+    );
     let source = fixture_source(&replay, pages);
     for origin in [None, Some(FIRST)] {
         let actual = public_payloads(&source, origin);
@@ -2599,7 +2498,7 @@ fn unreadable_initial_blocks_keep_the_seeded_publication_roster_after_committed_
                 .unwrap();
             assert_eq!(hours, vec![FIRST + 1]);
         }
-        let mut expected = fixtures::FixturePages::default();
+        let mut expected = BTreeMap::new();
         for tag in ["GER", "ITA"] {
             let scan = super::super::reference::scan(
                 &replay,
@@ -2624,19 +2523,7 @@ fn unreadable_initial_blocks_keep_the_seeded_publication_roster_after_committed_
             if tag == "ITA" || !readable_later {
                 assert!(scan.lines.is_empty());
             }
-            write_saved(
-                &mut expected,
-                &SavedScan {
-                    branch: 1,
-                    tag: tag.into(),
-                    pictured: false,
-                    visual: None,
-                    executable: engine_executable::executable_tables::is_initialized(),
-                    last_block: last_block(&replay, 1),
-                    scan: SavedLines::save(&scan, &flag).unwrap(),
-                },
-            )
-            .unwrap();
+            expected.insert(tag, saved_bytes(&scan));
         }
         for (resume, publish_prefix) in [(false, false), (true, false), (true, true)] {
             let mut prepared = Prepared::new(&replay, 1, ["GER".into(), "ITA".into()], None);
@@ -2649,7 +2536,7 @@ fn unreadable_initial_blocks_keep_the_seeded_publication_roster_after_committed_
                     assert!(prepared.initial_tags.contains("ITA"));
                     if publish_prefix {
                         prepared
-                            .publish(&mut stored, &replay, block, None, &flag)
+                            .publish(&mut stored, &replay, block, &flag)
                             .unwrap();
                     } else {
                         prepared.directory.last_block =
@@ -2661,25 +2548,23 @@ fn unreadable_initial_blocks_keep_the_seeded_publication_roster_after_committed_
                 }
             }
             prepared
-                .publish(
-                    &mut stored,
-                    &replay,
-                    replay.index.last().unwrap(),
-                    None,
-                    &flag,
-                )
+                .publish(&mut stored, &replay, replay.index.last().unwrap(), &flag)
                 .unwrap();
             assert!(prepared.directory.coverage.complete);
-            let completed: BTreeMap<_, _> = stored
-                .pages
-                .iter()
-                .filter(|((section, _), _)| section.starts_with("production-lines-scan-"))
-                .map(|(key, bytes)| (key.clone(), bytes.clone()))
-                .collect();
-            assert_eq!(
-                completed, expected.pages,
-                "readable_later={readable_later}, resume={resume}, publish_prefix={publish_prefix}"
-            );
+            for (tag, expected) in &expected {
+                assert!(
+                    private::Store::new(&mut stored, 1)
+                        .get(prepared.directory.index, &format!("tagname-{tag}"))
+                        .unwrap()
+                        .is_some()
+                );
+                assert_eq!(
+                    &served(&prepared.directory, &replay, tag, |section, range| stored
+                        .read_at(section, range)),
+                    expected,
+                    "{tag}: readable_later={readable_later}, resume={resume}, publish_prefix={publish_prefix}"
+                );
+            }
         }
     }
 }
@@ -2746,14 +2631,6 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
     use replay_data::rows::{CountryLinkRow, CountryRow, TableRows};
     use replay_frame::frame::TableView;
     let flag = AtomicBool::new(false);
-    let completed = |stored: &fixtures::FixturePages| -> BTreeMap<_, _> {
-        stored
-            .pages
-            .iter()
-            .filter(|((section, _), _)| section.starts_with("production-lines-scan-"))
-            .map(|(key, bytes)| (key.clone(), bytes.clone()))
-            .collect()
-    };
     for unreadable in [false, true] {
         let prefix = if unreadable {
             unreadable_initial_recording(false)
@@ -2815,7 +2692,7 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
                     )])
                     .unwrap();
             }
-            let mut expected = fixtures::FixturePages::default();
+            let mut expected = BTreeMap::new();
             let mut fresh = fixtures::FixturePages::default();
             for branch in [1, 2] {
                 let mut prepared = Prepared::new(
@@ -2833,9 +2710,7 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
                     prepared
                         .advance_block(&mut fresh, &grown, position, None, &flag)
                         .unwrap();
-                    prepared
-                        .publish(&mut fresh, &grown, block, None, &flag)
-                        .unwrap();
+                    prepared.publish(&mut fresh, &grown, block, &flag).unwrap();
                 }
                 for tag in ["GER", "ITA", "NEW"] {
                     let scan = super::super::reference::scan(
@@ -2852,22 +2727,15 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
                         assert_eq!(scan.unreadable_stretches, usize::from(unreadable));
                         assert!(scan.reads.is_empty());
                     }
-                    write_saved(
-                        &mut expected,
-                        &SavedScan {
-                            branch,
-                            tag: tag.into(),
-                            pictured: false,
-                            visual: None,
-                            executable: engine_executable::executable_tables::is_initialized(),
-                            last_block: last_block(&grown, branch),
-                            scan: SavedLines::save(&scan, &flag).unwrap(),
-                        },
-                    )
-                    .unwrap();
+                    assert_eq!(
+                        served(&prepared.directory, &grown, tag, |section, range| fresh
+                            .read_at(section, range)),
+                        saved_bytes(&scan),
+                        "{branch} {tag}"
+                    );
+                    expected.insert((branch, tag), saved_bytes(&scan));
                 }
             }
-            assert_eq!(completed(&fresh), expected.pages);
             for publish_prefix in [false, true] {
                 let mut stored = fixtures::FixturePages::default();
                 let mut prepared = Prepared::new(&prefix, 1, ["GER".into(), "ITA".into()], None);
@@ -2876,7 +2744,7 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
                     .unwrap();
                 if publish_prefix {
                     prepared
-                        .publish(&mut stored, &prefix, &prefix.index[0], None, &flag)
+                        .publish(&mut stored, &prefix, &prefix.index[0], &flag)
                         .unwrap();
                 } else {
                     prepared.directory.last_block = last_block(&prefix, 1);
@@ -2892,7 +2760,7 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
                 );
                 let pages = prepared.directory.pages;
                 prepared
-                    .reconcile_tags(&mut stored, &grown, ["GER", "ITA", "NEW"], None, &flag)
+                    .reconcile_tags(&mut stored, &grown, ["GER", "ITA", "NEW"], &flag)
                     .unwrap();
                 if publish_prefix && !extend_old {
                     assert_eq!(prepared.directory.pages, pages);
@@ -2905,7 +2773,6 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
                         if key.0.starts_with("production-lines-history-")
                             || key.0.starts_with("production-lines-variants-")
                             || key.0.starts_with("production-lines-aliases-")
-                            || key.0.starts_with("production-lines-scan-")
                             || key.0.starts_with("production-lines-state-")
                         {
                             assert_eq!(stored.pages.get(key), Some(bytes), "rewrote {key:?}");
@@ -2913,7 +2780,7 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
                     }
                     let reconciled = stored.pages.clone();
                     prepared
-                        .reconcile_tags(&mut stored, &grown, ["NEW", "ITA", "GER"], None, &flag)
+                        .reconcile_tags(&mut stored, &grown, ["NEW", "ITA", "GER"], &flag)
                         .unwrap();
                     assert_eq!(
                         stored.pages, reconciled,
@@ -2931,9 +2798,7 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
                     prepared
                         .advance_block(&mut stored, &grown, position, None, &flag)
                         .unwrap();
-                    prepared
-                        .publish(&mut stored, &grown, block, None, &flag)
-                        .unwrap();
+                    prepared.publish(&mut stored, &grown, block, &flag).unwrap();
                 }
                 assert!(prepared.directory.coverage.complete);
                 let mut second =
@@ -2947,16 +2812,21 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
                     second
                         .advance_block(&mut stored, &grown, position, None, &flag)
                         .unwrap();
-                    second
-                        .publish(&mut stored, &grown, block, None, &flag)
-                        .unwrap();
+                    second.publish(&mut stored, &grown, block, &flag).unwrap();
                 }
-                assert_eq!(
-                    completed(&stored),
-                    expected.pages,
-                    "unreadable={unreadable}, extend_old={extend_old}, publish_prefix={publish_prefix}"
-                );
-                assert_eq!(completed(&stored), completed(&fresh));
+                for ((branch, tag), expected) in &expected {
+                    let directory = if *branch == 1 {
+                        &prepared.directory
+                    } else {
+                        &second.directory
+                    };
+                    assert_eq!(
+                        &served(directory, &grown, tag, |section, range| stored
+                            .read_at(section, range)),
+                        expected,
+                        "{branch} {tag}: unreadable={unreadable}, extend_old={extend_old}, publish_prefix={publish_prefix}"
+                    );
+                }
                 let source = fixture_source(&grown, fixtures::FixturePages::default());
                 let committed = crate::prepared::series::tests::Fixture::new();
                 let mut writer = committed.writer();
@@ -2970,19 +2840,6 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
                         current(&committed.store, &committed.key, &source, &context, branch)
                             .unwrap()
                     );
-                    for tag in ["GER", "ITA", "NEW"] {
-                        assert!(
-                            saved_current(
-                                &committed.store,
-                                &committed.key,
-                                &source,
-                                &context,
-                                branch,
-                                tag,
-                            )
-                            .unwrap()
-                        );
-                    }
                 }
             }
         }
@@ -2990,12 +2847,12 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
 }
 
 #[test]
-fn failed_seed_publication_keeps_the_committed_roster_and_compatibility_sections_atomic() {
-    struct FailedMeta<'a>(&'a mut store::Writer);
-    impl Pages for FailedMeta<'_> {
+fn failed_seed_reconciliation_keeps_the_committed_roster_atomic() {
+    struct FailedDirectory<'a>(&'a mut store::Writer);
+    impl Pages for FailedDirectory<'_> {
         fn write_at(&mut self, section: &str, range: u64, bytes: &[u8]) -> io::Result<()> {
-            if section == saved_sections(1, "NEW").1 {
-                return Err(io::Error::other("fixture seed metadata write failed"));
+            if section == directory_section(1) {
+                return Err(io::Error::other("fixture directory write failed"));
             }
             Pages::write_at(self.0, section, range, bytes)
         }
@@ -3016,7 +2873,7 @@ fn failed_seed_publication_keeps_the_committed_roster_and_compatibility_sections
             .advance_block(&mut writer, &replay, position, None, &flag)
             .unwrap();
         prepared
-            .publish(&mut writer, &replay, block, None, &flag)
+            .publish(&mut writer, &replay, block, &flag)
             .unwrap();
     }
     writer.commit().unwrap();
@@ -3025,14 +2882,13 @@ fn failed_seed_publication_keeps_the_committed_roster_and_compatibility_sections
     let mut writer = fixture.writer();
     let error = prepared
         .reconcile_tags(
-            &mut FailedMeta(&mut writer),
+            &mut FailedDirectory(&mut writer),
             &replay,
             ["GER", "ITA", "NEW"],
-            None,
             &flag,
         )
         .unwrap_err();
-    assert_eq!(error.to_string(), "fixture seed metadata write failed");
+    assert_eq!(error.to_string(), "fixture directory write failed");
     assert!(prepared.next_block(&replay).is_err());
     assert!(prepared.save(&mut writer, &flag).is_err());
     drop(writer);
@@ -3044,21 +2900,12 @@ fn failed_seed_publication_keeps_the_committed_roster_and_compatibility_sections
             .index,
         accepted_index
     );
-    for section in [saved_sections(1, "NEW").0, saved_sections(1, "NEW").1] {
-        assert!(
-            fixture
-                .store
-                .read(&fixture.key, &section, 0)
-                .unwrap()
-                .is_none()
-        );
-    }
     let mut prepared = Prepared::resume(&fixture.store, &fixture.key, &replay, 1, None)
         .unwrap()
         .unwrap();
     let mut writer = fixture.writer();
     prepared
-        .reconcile_tags(&mut writer, &replay, ["NEW"], None, &flag)
+        .reconcile_tags(&mut writer, &replay, ["NEW"], &flag)
         .unwrap();
     writer.commit().unwrap();
     let scan = super::super::reference::scan(
@@ -3070,28 +2917,25 @@ fn failed_seed_publication_keeps_the_committed_roster_and_compatibility_sections
         &flag,
     )
     .unwrap();
-    let mut expected = fixtures::FixturePages::default();
-    write_saved(
-        &mut expected,
-        &SavedScan {
-            branch: 1,
-            tag: "NEW".into(),
-            pictured: false,
-            visual: None,
-            executable: engine_executable::executable_tables::is_initialized(),
-            last_block: last_block(&replay, 1),
-            scan: SavedLines::save(&scan, &flag).unwrap(),
-        },
-    )
-    .unwrap();
-    let actual = fixture.payloads();
-    for (key, bytes) in expected.pages {
-        assert_eq!(actual.get(&key), Some(&bytes));
-    }
+    let directory = directory(&fixture.store, &fixture.key, 1).unwrap().unwrap();
+    assert_eq!(directory.index, prepared.directory.index);
+    let actual = served(&directory, &replay, "NEW", |section, range| {
+        use std::io::Read;
+        fixture
+            .store
+            .read(&fixture.key, section, range)?
+            .map(|mut file| {
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                Ok(bytes)
+            })
+            .transpose()
+    });
+    assert_eq!(actual, saved_bytes(&scan));
 }
 
 #[test]
-fn an_old_private_section_identity_forces_repreparation_with_current_public_scans() {
+fn an_old_private_section_identity_forces_repreparation() {
     let replay = recording();
     let cancelled = AtomicBool::new(false);
     let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
@@ -3101,7 +2945,7 @@ fn an_old_private_section_identity_forces_repreparation_with_current_public_scan
             .advance_block(&mut pages, &replay, position, None, &cancelled)
             .unwrap();
         prepared
-            .publish(&mut pages, &replay, block, None, &cancelled)
+            .publish(&mut pages, &replay, block, &cancelled)
             .unwrap();
     }
     let state = pages.pages.remove(&(state_section(1, "world"), 0)).unwrap();
@@ -3109,7 +2953,6 @@ fn an_old_private_section_identity_forces_repreparation_with_current_public_scan
         .pages
         .insert(("production-lines-state-v1-1-world".into(), 0), state);
     assert!(pages.pages.contains_key(&(directory_section(1), 0)));
-    assert!(pages.pages.contains_key(&(saved_sections(1, "GER").0, 0)));
     let fixture = crate::prepared::series::tests::Fixture::new();
     let mut writer = fixture.writer();
     for ((section, range), bytes) in &pages.pages {

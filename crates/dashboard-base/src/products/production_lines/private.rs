@@ -8,12 +8,6 @@ pub(super) struct Root(Option<u64>);
 pub(super) trait Facts {
     fn get(&mut self, root: Root, key: &str) -> io::Result<Option<Vec<u8>>>;
     fn put(&mut self, root: &mut Root, key: &str, value: Vec<u8>) -> io::Result<()>;
-    fn next(
-        &mut self,
-        root: Root,
-        after: &str,
-        prefix: &str,
-    ) -> io::Result<Option<(String, Vec<u8>)>>;
     #[cfg(test)]
     fn visit(
         &mut self,
@@ -151,23 +145,6 @@ impl<W: Pages + ?Sized> Facts for Store<'_, W> {
             *root = changed;
         }
         Ok(())
-    }
-    fn next(
-        &mut self,
-        mut root: Root,
-        after: &str,
-        prefix: &str,
-    ) -> io::Result<Option<(String, Vec<u8>)>> {
-        let mut found = None;
-        while let Some(node) = self.read(root)? {
-            if node.key.as_str() > after && node.key.as_str() >= prefix {
-                root = node.left;
-                found = Some((node.key, node.value));
-            } else {
-                root = node.right;
-            }
-        }
-        Ok(found.filter(|(key, _)| key.starts_with(prefix)))
     }
     #[cfg(test)]
     fn visit(

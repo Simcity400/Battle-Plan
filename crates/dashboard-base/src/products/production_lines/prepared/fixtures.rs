@@ -62,13 +62,7 @@ pub fn prepare(source: &Source, context: &LoadContext) -> io::Result<()> {
                 icons.as_deref(),
                 &AtomicBool::new(false),
             )?;
-            prepared.publish(
-                &mut pages,
-                replay,
-                block,
-                icons.as_deref(),
-                &AtomicBool::new(false),
-            )?;
+            prepared.publish(&mut pages, replay, block, &AtomicBool::new(false))?;
         }
     }
     *source.state::<FixturePages>().lock().unwrap() = pages;
@@ -99,7 +93,7 @@ pub fn scan(
             cancelled,
         )?;
         if page_each_block || at + 1 == blocks.len() {
-            prepared.publish(&mut pages, replay, block, icons, cancelled)?;
+            prepared.publish(&mut pages, replay, block, cancelled)?;
         }
     }
     let selected = match holder {

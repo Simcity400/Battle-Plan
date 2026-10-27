@@ -96,7 +96,6 @@ pub(super) fn jobs<'a>(
                                 writer,
                                 phase.replay,
                                 countries.iter().map(|country| country.tag.as_str()),
-                                icons.as_deref(),
                                 phase.cancelled,
                             )
                         })?;
@@ -121,7 +120,6 @@ pub(super) fn jobs<'a>(
                                     writer,
                                     phase.replay,
                                     countries.iter().map(|country| country.tag.as_str()),
-                                    icons.as_deref(),
                                     phase.cancelled,
                                 )?;
                                 reconcile = false;
@@ -133,13 +131,7 @@ pub(super) fn jobs<'a>(
                                 icons.as_deref(),
                                 phase.cancelled,
                             )?;
-                            prepared.publish(
-                                writer,
-                                phase.replay,
-                                block,
-                                icons.as_deref(),
-                                phase.cancelled,
-                            )
+                            prepared.publish(writer, phase.replay, block, phase.cancelled)
                         })?;
                     }
                 }

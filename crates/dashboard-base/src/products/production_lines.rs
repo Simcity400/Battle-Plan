@@ -1500,36 +1500,10 @@ pub fn preparation_icons(source: &Source, context: &LoadContext) -> Option<Arc<I
     scan_content(source, context, &mut Vec::new()).1
 }
 
-/// A country's whole-branch scan as the application keeps it between sessions,
-/// with what it was read with: it is held again only where it is the scan a
-/// request would make.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SavedScan {
-    pub branch: u64,
-    pub tag: String,
-    /// Icon content was loaded: the scan pictured variants.
-    pub pictured: bool,
-    /// The digest of what the scan's icon choices were made with outside the recorded
-    /// content's hash ([`IconContent::visual_inputs`]); none without icon content.
-    pub visual: Option<String>,
-    /// The game's executable metadata was configured, so modifier runs were
-    /// read where their layout authenticated.
-    pub executable: bool,
-    /// The branch's last block when it was read: its first and last hour and
-    /// its offset.
-    pub last_block: Option<(i32, i32, u64)>,
-    pub scan: SavedLines,
-}
-
-/// Whether a kept scan's icon choices are those the icon content would make now: icon
+/// Whether the prepared icon choices are those the icon content would make now: icon
 /// content loaded alike, with the same inputs outside the recorded content's hash.
-/// Otherwise its choices may differ from a new scan's, and it is not held. Which sprites
-/// and files exist is not among them: each reply answers that ([`IconChoice::shown`]).
-pub fn pictures_hold(icons: Option<&IconContent>, saved: &SavedScan) -> bool {
-    pictures_hold_with(icons, saved.pictured, saved.visual.as_deref())
-}
-
-/// [`pictures_hold`] of what a kept scan's meta records.
+/// Which sprites and files exist is not among them: each reply answers that
+/// ([`IconChoice::shown`]).
 fn pictures_hold_with(icons: Option<&IconContent>, pictured: bool, visual: Option<&str>) -> bool {
     match icons {
         None => !pictured,
@@ -1537,81 +1511,11 @@ fn pictures_hold_with(icons: Option<&IconContent>, pictured: bool, visual: Optio
     }
 }
 
-/// A branch's last block as a saved scan names it.
+/// A branch's last block: its first and last hour and its offset.
 fn last_block(replay: &Replay, branch: u64) -> Option<(i32, i32, u64)> {
     branch_blocks(replay, branch)
         .last()
         .map(|block| (block.first_hour, block.last_hour, block.offset))
-}
-
-/// The store sections a country's kept scan is held under: its scan and its
-/// meta, by branch and tag (in hex, since a mod's tags may hold any character).
-fn saved_sections(branch: u64, tag: &str) -> (String, String) {
-    let tag: String = tag.bytes().map(|byte| format!("{byte:02x}")).collect();
-    let schema = saved::SCHEMA;
-    (
-        format!("production-lines-scan-v{schema}-{branch}-{tag}"),
-        format!("production-lines-scan-meta-v{schema}-{branch}-{tag}"),
-    )
-}
-
-/// What a kept scan was read with, read before the scan itself.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-struct SavedMeta {
-    pictured: bool,
-    executable: bool,
-    last_block: Option<(i32, i32, u64)>,
-    visual: Option<String>,
-}
-
-/// Writes the completed compatibility payload and its binding.
-pub fn write_saved<W: crate::prepared::pages::Pages + ?Sized>(
-    writer: &mut W,
-    saved: &SavedScan,
-) -> io::Result<()> {
-    let (scan, meta) = saved_sections(saved.branch, &saved.tag);
-    crate::prepared::series::write_reply(writer, &scan, 0, saved)?;
-    crate::prepared::series::write_reply(
-        writer,
-        &meta,
-        0,
-        &SavedMeta {
-            pictured: saved.pictured,
-            executable: saved.executable,
-            last_block: saved.last_block,
-            visual: saved.visual.clone(),
-        },
-    )
-}
-
-/// Whether the store holds a scan of the country kept for the branch's current
-/// last block.
-pub fn saved_current(
-    store: &store::Store,
-    key: &store::SourceKey,
-    source: &Source,
-    context: &LoadContext,
-    branch: u64,
-    tag: &str,
-) -> io::Result<bool> {
-    let (_, meta) = saved_sections(branch, tag);
-    if !prepared::binary_current(store, key, branch)? {
-        return Ok(false);
-    }
-    let Some(meta) = crate::prepared::series::read_reply::<SavedMeta>(store, key, &meta, 0)? else {
-        return Ok(false);
-    };
-    if meta.last_block != last_block(source.replay_ref(), branch)
-        || meta.executable != engine_executable::executable_tables::is_initialized()
-    {
-        return Ok(false);
-    }
-    let (_, icons) = scan_content(source, context, &mut Vec::new());
-    Ok(pictures_hold_with(
-        icons.as_deref(),
-        meta.pictured,
-        meta.visual.as_deref(),
-    ))
 }
 
 fn scanned_lines(

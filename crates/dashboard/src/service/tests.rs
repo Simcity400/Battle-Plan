@@ -1893,13 +1893,12 @@ fn request_exact(
 
 fn germany_kept(source: &Source) -> bool {
     let (store, key) = crate::prepared::files(source, None).unwrap();
-    crate::products::production_lines::saved_current(
+    crate::products::production_lines::prepared::current(
         &store,
         &key,
         source,
         &crate::products::LoadContext { content: None },
         1,
-        "GER",
     )
     .unwrap()
 }
@@ -2033,7 +2032,7 @@ fn production_detail_and_breakdown_routes_keep_unprepared_history_pending() {
             .advance_block(&mut writer, source.replay_ref(), position, None, &flag)
             .unwrap();
         prepared
-            .publish(&mut writer, source.replay_ref(), block, None, &flag)
+            .publish(&mut writer, source.replay_ref(), block, &flag)
             .unwrap();
         writer.commit().unwrap();
         if position < 2 {

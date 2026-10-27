@@ -215,10 +215,7 @@ fn air_ledger_refusal_stops_only_its_branch_family_and_its_queries_answer_the_or
                 .into_iter()
                 .filter(|((name, _), _)| !differs(name))
                 .map(|((name, range), bytes)| {
-                    let bytes = if name.starts_with("production-lines-directory-")
-                        || name.starts_with("production-lines-scan-")
-                        || name.starts_with("production-lines-scan-meta-")
-                    {
+                    let bytes = if name.starts_with("production-lines-directory-") {
                         let mut value: serde_json::Value = serde_json::from_slice(
                             &super::super::super::series::decompress(&bytes).unwrap(),
                         )

@@ -57,37 +57,20 @@ fn all_recorded_countries_are_prepared_before_requests_and_answer_the_next_open(
         .unwrap();
     let read = exact(&reference);
     let (store, key) = crate::prepared::files(&source, None).unwrap();
+    let context = LoadContext { content: None };
     assert!(
-        !production_lines::saved_current(
-            &store,
-            &key,
-            &source,
-            &LoadContext { content: None },
-            1,
-            "GER"
-        )
-        .unwrap(),
+        !production_lines::prepared::current(&store, &key, &source, &context, 1).unwrap(),
         "the request keeps nothing"
     );
     run(&source, None, &flag, |_| {}).unwrap();
-    assert!(
-        production_lines::saved_current(
-            &store,
-            &key,
-            &source,
-            &LoadContext { content: None },
-            1,
-            "GER"
-        )
-        .unwrap()
-    );
-    // The next open answers from the kept scan without reading the recording.
+    assert!(production_lines::prepared::current(&store, &key, &source, &context, 1).unwrap());
+    // The next open answers from the kept pages without reading the recording.
     let again = fixture.source("production-kept-again");
     crate::blocks::SCANNED_BLOCKS.with_borrow_mut(Vec::clear);
     let reply = exact(&again);
     assert!(
         crate::blocks::SCANNED_BLOCKS.with_borrow(Vec::is_empty),
-        "the kept scan answers"
+        "the kept pages answer"
     );
     assert_eq!(reply.lines, read.lines);
     assert_eq!(reply.reads, read.reads);
@@ -159,9 +142,7 @@ fn cancelled_side_scans_resume_after_every_forward_publisher_finished() {
     let (saved, _) = checkpoint(&store, &key, None).unwrap().unwrap();
     assert!(saved.forward_complete(replay.index.len()));
     flag.store(false, Ordering::Release);
-    for tag in ["GER", "ITA"] {
-        assert!(!production_lines::saved_current(&store, &key, &source, &context, 1, tag).unwrap());
-    }
+    assert!(!production_lines::prepared::current(&store, &key, &source, &context, 1).unwrap());
     assert!(restore(&source, None, &flag).unwrap().is_none());
     let reopened = fixture.source("production-resumed");
     assert!(restore(&reopened, None, &flag).unwrap().is_none());
@@ -179,12 +160,10 @@ fn cancelled_side_scans_resume_after_every_forward_publisher_finished() {
     .unwrap();
     assert!(walked.is_empty(), "only unfinished side work resumes");
     assert!(restore(&reopened, None, &flag).unwrap().is_some());
-    for tag in ["GER", "ITA"] {
-        assert!(
-            production_lines::saved_current(&store, &key, &reopened, &context, 1, tag).unwrap(),
-            "{tag}: outstanding scan was scheduled and persisted"
-        );
-    }
+    assert!(
+        production_lines::prepared::current(&store, &key, &reopened, &context, 1).unwrap(),
+        "outstanding pages were scheduled and persisted"
+    );
     let again = fixture.source("production-resumed-again");
     crate::blocks::SCANNED_BLOCKS.with_borrow_mut(Vec::clear);
     for (tag, expected) in ["GER", "ITA"].into_iter().zip(expected) {
@@ -203,11 +182,25 @@ fn new_branch_seed_tags_reschedule_completed_and_resumed_production_branches() {
     use replay_data::rows::{CountryLinkRow, CountryRow};
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
-    let scans = |source: &Source| -> BTreeMap<_, _> {
-        super::family_lanes::payloads(source, None)
-            .into_iter()
-            .filter(|((section, _), _)| section.starts_with("production-lines-scan-"))
-            .collect()
+    let scans = |source: &Source| -> Vec<_> {
+        let mut replies = Vec::new();
+        for branch in ["1", "2"] {
+            for tag in ["GER", "ITA", "NEW"] {
+                let reply = ProductionLines::load(
+                    source,
+                    &ProductionLinesParams {
+                        branch_id: branch.into(),
+                        tag: tag.into(),
+                        exact: Some(true),
+                    },
+                    &context,
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+                replies.push((branch, tag, serde_json::to_vec(&reply).unwrap()));
+            }
+        }
+        replies
     };
     for extend_old in [false, true] {
         let prefix = Replay::from_records(
@@ -279,17 +272,14 @@ fn new_branch_seed_tags_reschedule_completed_and_resumed_production_branches() {
         assert!(reopened.is_append_of(&first));
         assert!(
             reopened
-                .metadata().unwrap()
+                .metadata()
+                .unwrap()
                 .countries
                 .iter()
                 .any(|country| country.tag == "NEW")
         );
         assert!(
             !production_lines::prepared::current(&store, &old_key, &reopened, &context, 1).unwrap()
-        );
-        assert!(
-            !production_lines::saved_current(&store, &old_key, &reopened, &context, 1, "NEW")
-                .unwrap()
         );
         assert!(
             super::super::production_scans::missing(&reopened, &store, &old_key, &context)
@@ -308,12 +298,6 @@ fn new_branch_seed_tags_reschedule_completed_and_resumed_production_branches() {
                 production_lines::prepared::current(&store, &key, &reopened, &context, branch)
                     .unwrap()
             );
-            for tag in ["GER", "ITA", "NEW"] {
-                assert!(
-                    production_lines::saved_current(&store, &key, &reopened, &context, branch, tag)
-                        .unwrap()
-                );
-            }
         }
         if !extend_old {
             let reconciled = production_lines::prepared::directory(&store, &key, 1)
@@ -330,11 +314,6 @@ fn new_branch_seed_tags_reschedule_completed_and_resumed_production_branches() {
         let full = fresh.source("seed-fresh");
         run(&full, None, &flag, |_| {}).unwrap();
         let expected = scans(&full);
-        assert_eq!(
-            expected.len(),
-            12,
-            "three countries, two branches, scan plus meta"
-        );
         assert_eq!(scans(&reopened), expected, "extend_old={extend_old}");
         run(&reopened, None, &flag, |_| {}).unwrap();
         assert_eq!(scans(&reopened), expected);

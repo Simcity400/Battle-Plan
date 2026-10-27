@@ -836,7 +836,6 @@ impl Prepared {
         writer: &mut W,
         replay: &Replay,
         tags: impl IntoIterator<Item = &'a str>,
-        icons: Option<&IconContent>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.next_block(replay)?;
@@ -859,9 +858,6 @@ impl Prepared {
                     &tag.to_owned(),
                 )?;
                 changed = true;
-                if self.directory.coverage.complete {
-                    self.publish_tag(writer, replay, tag, icons, cancelled)?;
-                }
             }
             crate::metadata::check_cancel(cancelled)?;
             if !self.directory.coverage.complete
@@ -870,7 +866,7 @@ impl Prepared {
                         == last_block(replay, self.directory.branch)
                 })
             {
-                self.publish(writer, replay, &block, icons, cancelled)?;
+                self.publish(writer, replay, &block, cancelled)?;
             } else if changed {
                 pages::write_json(
                     writer,
@@ -1264,7 +1260,6 @@ impl Prepared {
         writer: &mut W,
         replay: &Replay,
         block: &BlockIndex,
-        icons: Option<&IconContent>,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.next_block(replay)?;
@@ -1285,55 +1280,7 @@ impl Prepared {
             0,
             &serde_json::to_vec(&self.directory.coverage)?,
         )?;
-        self.save(writer, cancelled)?;
-        if self.directory.coverage.complete {
-            let mut cursor = String::new();
-            loop {
-                let Some((next, bytes)) = private::Store::new(writer, branch).next(
-                    self.directory.index,
-                    &cursor,
-                    "tagname-",
-                )?
-                else {
-                    break;
-                };
-                cursor = next;
-                let tag: String = product_codec::decode(&bytes)?;
-                crate::metadata::check_cancel(cancelled)?;
-                self.publish_tag(writer, replay, &tag, icons, cancelled)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn publish_tag<W: Pages + ?Sized>(
-        &self,
-        writer: &mut W,
-        replay: &Replay,
-        tag: &str,
-        icons: Option<&IconContent>,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        let scanned = assemble(
-            &self.directory,
-            &tag_key(tag),
-            icons,
-            recorded_language(replay),
-            cancelled,
-            |section, range| writer.read_at(section, range),
-        )?;
-        write_saved(
-            writer,
-            &SavedScan {
-                branch: self.directory.branch,
-                tag: tag.into(),
-                pictured: self.directory.pictured,
-                visual: self.directory.visual.clone(),
-                executable: self.directory.executable,
-                last_block: self.directory.last_block,
-                scan: SavedLines::save(&scanned, cancelled)?,
-            },
-        )
+        self.save(writer, cancelled)
     }
 }
 
