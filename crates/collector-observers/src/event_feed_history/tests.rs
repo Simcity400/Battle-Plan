@@ -3117,7 +3117,25 @@ fn published_removals_and_refusals_read_the_current_recipient_not_the_baseline_m
     image.q(TARGET_STATUS, BASE + 1);
     let world = native::provenance::World::new(&image, BASE).unwrap();
     store
+        .script_known(
+            &image,
+            BASE,
+            7,
+            2,
+            delayed::step(&world, &image, TARGET, 1, false).unwrap(),
+        )
+        .unwrap();
+    store
         .delayed_removed(&world, &image, BASE, 7, 0xd0000, Some((TARGET, 7)), true)
+        .unwrap();
+    store
+        .script_known(
+            &image,
+            BASE,
+            7,
+            2,
+            delayed::step(&world, &image, TARGET, 0, true).unwrap(),
+        )
         .unwrap();
     delayed_queue(&mut image, &[]);
     store.decisions.revoke();

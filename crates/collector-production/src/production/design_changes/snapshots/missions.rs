@@ -5,6 +5,8 @@ pub(super) struct Proof {
     invariant: Vec<usize>,
     root: usize,
     width: usize,
+    #[cfg(test)]
+    pub(super) key_reads: std::cell::Cell<usize>,
 }
 fn overlaps(regions: &[Range<usize>], address: usize, len: usize) -> bool {
     let first = regions.partition_point(|region| region.end <= address);
@@ -60,11 +62,22 @@ fn same_missions(
     }
     Some(true)
 }
-pub(super) fn model_key(memory: &impl Memory, pointer: usize) -> Option<u64> {
+pub(super) fn model_key(
+    memory: &impl Memory,
+    pointer: usize,
+    spans: &[collector_raw::raw::Span],
+) -> Option<u64> {
     let missions = Array::read(memory, pointer.checked_add(native::MISSION_GROUP_DATA)?, 40)?;
     if missions.count == 0 {
         return None;
     }
+    let mut regions = engine_allocation::vec(missions.count as usize + 1).ok()?;
+    regions.push(
+        missions.data
+            ..missions
+                .data
+                .checked_add((missions.count as usize).checked_mul(40)?)?,
+    );
     let mut hash = DefaultHasher::new();
     pointer.hash(&mut hash);
     engine_native::read::<[u8; 16]>(memory, pointer.checked_add(native::BONUS_SOURCES)?)?
@@ -75,11 +88,37 @@ pub(super) fn model_key(memory: &impl Memory, pointer: usize) -> Option<u64> {
         engine_native::read::<u32>(memory, mission)?.hash(&mut hash);
         let stats = Array::read(memory, mission.checked_add(16)?, 16)?;
         stats.count.hash(&mut hash);
+        if stats.count != 0 {
+            regions.push(
+                stats.data
+                    ..stats
+                        .data
+                        .checked_add((stats.count as usize).checked_mul(16)?)?,
+            );
+        }
         for ordinal in 0..stats.count {
             let bytes = engine_native::read::<[u8; 16]>(memory, stats.element(ordinal, 16)?)?;
             hash.write(&bytes[..4]);
             hash.write(&bytes[8..]);
         }
+    }
+    regions.sort_unstable_by_key(|region| region.start);
+    if regions.windows(2).any(|pair| pair[0].end > pair[1].start) {
+        return None;
+    }
+    for span in spans {
+        let first = regions.partition_point(|region| region.end <= span.addr);
+        if regions.get(first).is_some_and(|region| {
+            region.start <= span.addr
+                && span
+                    .addr
+                    .checked_add(span.len as usize)
+                    .is_some_and(|end| end <= region.end)
+        }) {
+            continue;
+        }
+        // Only mission storage may relocate within one invariant read layout.
+        (span.addr, span.len, span.ok, span.bulk).hash(&mut hash);
     }
     Some(hash.finish())
 }
@@ -150,7 +189,26 @@ impl Proof {
             invariant,
             root: root?,
             width,
+            #[cfg(test)]
+            key_reads: std::cell::Cell::new(0),
         })
+    }
+    pub fn same_reads(
+        &self,
+        witness: &witness::Witness,
+        other: &Self,
+        other_witness: &witness::Witness,
+    ) -> bool {
+        self.invariant
+            .iter()
+            .map(|&index| {
+                let request = &witness.requests[index];
+                (request.address, request.bytes.len(), index == self.root)
+            })
+            .eq(other.invariant.iter().map(|&index| {
+                let request = &other_witness.requests[index];
+                (request.address, request.bytes.len(), index == other.root)
+            }))
     }
     fn invariant_bytes<'a>(&self, index: usize, bytes: &'a [u8]) -> &'a [u8] {
         if index == self.root {
@@ -175,6 +233,8 @@ impl Proof {
             let request = &witness.requests[index];
             (request.address, request.bytes.len(), index == self.root).hash(&mut hash);
             let actual = &mut buffer[..request.bytes.len()];
+            #[cfg(test)]
+            self.key_reads.set(self.key_reads.get() + 1);
             if !memory.copy(request.address, actual) {
                 return None;
             }

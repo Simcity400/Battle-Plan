@@ -44,8 +44,10 @@ fn pending(
             value: Arc::clone(&value),
             witness: Some(witness),
             witness_next: None,
+            shape_next: None,
             missions: None,
             mission_next: None,
+            mission_model_next: None,
         },
         heads,
     )

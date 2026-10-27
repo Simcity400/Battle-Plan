@@ -1252,28 +1252,47 @@ fn distinct_nonmission_states_keep_every_candidate_chain_and_mission_read_count_
             let mut cache = Cache::default();
             let mut shared = Shared::default();
             let mut originals = Vec::new();
-            let mut model_key = None;
-            let mut miss_reads = None;
-            let mut hit_reads = None;
+            let mut model_keys = [None; 4];
+            let mut miss_reads = [None; 4];
+            let mut hit_reads = [None; 4];
             for (index, event) in batch.events.iter().enumerate() {
                 let recorded =
                     crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+                let original = snapshot(&recorded, 0, 7, event.pointer, false).unwrap();
                 if missions {
-                    let current_key = missions::model_key(&recorded, event.pointer).unwrap();
-                    assert_eq!(*model_key.get_or_insert(current_key), current_key);
+                    let current_key = missions::model_key(
+                        &recorded,
+                        event.pointer,
+                        &batch.log.spans[event.start..event.end],
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        *model_keys[index % 4].get_or_insert(current_key),
+                        current_key
+                    );
                     let counted = Counted {
                         source: &recorded,
                         reads: Cell::new(0),
                     };
                     let probes = cache.probes;
                     let found = engine_allocation::advisory(|| {
-                        cache.mission_candidate(&counted, event.pointer)
+                        cache.mission_candidate(
+                            &counted,
+                            event.pointer,
+                            &batch.log.spans[event.start..event.end],
+                        )
                     });
                     let hit = index >= STATES;
                     assert_eq!(found, hit.then_some(index % STATES));
                     assert_eq!(cache.probes[2] - probes[2], usize::from(hit));
-                    if index != 0 {
-                        let reads = if hit { &mut hit_reads } else { &mut miss_reads };
+                    if index < 4 {
+                        assert_eq!(counted.reads.get(), 6);
+                    } else {
+                        let reads = if hit {
+                            &mut hit_reads[index % 4]
+                        } else {
+                            &mut miss_reads[index % 4]
+                        };
                         assert_eq!(
                             *reads.get_or_insert(counted.reads.get()),
                             counted.reads.get()
@@ -1285,7 +1304,6 @@ fn distinct_nonmission_states_keep_every_candidate_chain_and_mission_read_count_
                 for (before, after) in probes.into_iter().zip(cache.probes) {
                     assert!(after - before <= 1, "candidate chain grew at state {index}");
                 }
-                let original = snapshot(&recorded, 0, 7, event.pointer, false).unwrap();
                 assert_eq!(value.value, original);
                 if index < STATES {
                     originals.push(value);
@@ -1304,10 +1322,245 @@ fn distinct_nonmission_states_keep_every_candidate_chain_and_mission_read_count_
                 STATES as u64
             );
             if missions {
-                assert_eq!(cache.mission_models.len(), 1);
+                assert_eq!(cache.mission_models.len(), 4);
                 assert_eq!(cache.mission_heads.len(), STATES);
-                assert!(hit_reads.unwrap() > miss_reads.unwrap());
+                for (hit, miss) in hit_reads.into_iter().zip(miss_reads) {
+                    assert!(hit.unwrap() > miss.unwrap());
+                }
             }
+        }
+    }
+}
+
+#[test]
+fn relocated_nonmission_buffers_select_only_their_own_mission_read_plans() {
+    fn key_reads(cache: &Cache<'_>) -> usize {
+        cache
+            .entries
+            .iter()
+            .filter_map(|entry| entry.missions.as_ref())
+            .map(|proof| proof.key_reads.get())
+            .sum()
+    }
+    const STATES: usize = 128;
+    let mut source = relocated_mission_shapes(STATES * 2);
+    let mut batch = Batch::empty();
+    batch.prepare(STATES * 2, STATES * 2 * 160, STATES * 2 * ROOT_BYTES * 6);
+    for index in 0..source.events.len() {
+        let event = source.events[index];
+        let resources = 0x200_0000 + (index % STATES) * 0x1000;
+        let mut header = [0; 16];
+        header[..8].copy_from_slice(&(resources as u64).to_le_bytes());
+        header[8..12].copy_from_slice(&1_u32.to_le_bytes());
+        header[12..].copy_from_slice(&1_u32.to_le_bytes());
+        replace_copied_bytes(
+            &mut source,
+            &event,
+            event.pointer + native::BUILD_RESOURCES,
+            &header,
+        );
+        replace_copied_bytes(
+            &mut source,
+            &event,
+            event.pointer + native::BONUS_SOURCES + 12,
+            &0_u32.to_le_bytes(),
+        );
+        let recorded =
+            crate::raw::Recorded::build_range(&source.log, event.start..event.end).unwrap();
+        let mut log = RawLog::<1>::new(160, ROOT_BYTES * 6);
+        for span in &source.log.spans[event.start..event.end] {
+            log.take_bulk(&recorded, span.addr, span.len as usize, 1)
+                .unwrap();
+        }
+        let mut bytes = [0; 16];
+        bytes[..8].copy_from_slice(&17_i64.to_le_bytes());
+        bytes[8..12].copy_from_slice(&9_u32.to_le_bytes());
+        let memory = engine_native::memory::SliceMemory {
+            base: resources,
+            bytes: &bytes,
+        };
+        log.take_bulk(&memory, resources, bytes.len(), 1).unwrap();
+        let (start, end) = storage::append(&mut batch.log, &log).unwrap();
+        batch.events.push(Event {
+            start,
+            end,
+            ..event
+        });
+    }
+    let mut cache = Cache::default();
+    let mut shared = Shared::default();
+    let mut originals = Vec::new();
+    let mut reads_per_key = Vec::new();
+    for (index, event) in batch.events.iter().enumerate() {
+        let recorded =
+            crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+        let state = index % STATES;
+        let hit = index >= STATES;
+        let visits = cache.mission_model_visits;
+        let reads = key_reads(&cache);
+        let candidate = cache.mission_candidate(
+            &recorded,
+            event.pointer,
+            &batch.log.spans[event.start..event.end],
+        );
+        assert_eq!(candidate, hit.then_some(state));
+        assert_eq!(cache.mission_model_visits[0] - visits[0], usize::from(hit));
+        assert_eq!(cache.mission_model_visits[1], visits[1]);
+        assert_eq!(
+            key_reads(&cache) - reads,
+            if hit { reads_per_key[state] } else { 0 },
+        );
+        let visits = cache.mission_model_visits;
+        let reads = key_reads(&cache);
+        let value = cache.decode(&batch, event, 0, 7, &mut shared).unwrap();
+        assert_eq!(cache.mission_model_visits[0] - visits[0], usize::from(hit));
+        assert_eq!(cache.mission_model_visits[1], visits[1]);
+        let original = snapshot(&recorded, 0, 7, event.pointer, false).unwrap();
+        assert_eq!(value.value, original);
+        assert_eq!(value.definition.design.build_resources[0].value, 17);
+        if hit {
+            assert_eq!(key_reads(&cache) - reads, reads_per_key[state]);
+            assert!(Arc::ptr_eq(&value, &originals[state]));
+            assert_eq!(cache.entries.len(), STATES);
+        } else {
+            let reads = key_reads(&cache) - reads;
+            assert_ne!(reads, 0);
+            reads_per_key.push(reads);
+            assert!(originals.iter().all(|other| !Arc::ptr_eq(&value, other)));
+            originals.push(value);
+            assert_eq!(cache.entries.len(), index + 1);
+        }
+    }
+    assert_eq!(cache.mission_models.len(), STATES);
+    assert_eq!(cache.mission_heads.len(), STATES);
+    for &head in cache.mission_models.values() {
+        assert!(cache.entries[head].mission_model_next.is_none());
+    }
+    assert_eq!(
+        cache.counts[CacheOutcome::FullDecode as usize],
+        STATES as u64
+    );
+    assert_eq!(
+        cache.counts[CacheOutcome::ReadWitnessHit as usize],
+        STATES as u64
+    );
+}
+
+#[test]
+fn cold_context_read_plans_keep_their_original_states_after_warm_models_arrive() {
+    const STATES: usize = 8;
+    for missions in [false, true] {
+        let mut batch = if missions {
+            relocated_mission_shapes(STATES * 2)
+        } else {
+            changing_source_shapes(STATES * 2)
+        };
+        for index in 0..batch.events.len() {
+            let event = batch.events[index];
+            replace_copied_bytes(
+                &mut batch,
+                &event,
+                event.pointer + native::BONUS_SOURCES + 12,
+                &0_u32.to_le_bytes(),
+            );
+            replace_copied_bytes(
+                &mut batch,
+                &event,
+                event.pointer + native::MAP_RANGE_STAT,
+                &((index % STATES) as i64).to_le_bytes(),
+            );
+        }
+        let event = &batch.events[0];
+        let range = event.start..event.end;
+        let recorded = crate::raw::Recorded::build_range(&batch.log, range.clone()).unwrap();
+        snapshot(&recorded, 0, 7, event.pointer, false).unwrap();
+        let observed = witness::Observed::new(&recorded, range.len());
+        let first = Arc::new(decode_snapshot(&observed, 0, 7, event.pointer, false).unwrap());
+        // Make the cold-only lookup explicit, independent of the shared content cache's warmth.
+        assert!(observed.copy(
+            kit::EQUIPMENT_TYPE + engine_native::cequipment_type::DESIGN_COST_MODIFIER,
+            &mut [0; 4],
+        ));
+        let mut cache = Cache::default();
+        assert!(cache.consistent(&batch.log, range.clone()).unwrap());
+        let witness = observed
+            .finish(&batch.log, range.clone(), &cache.order, true)
+            .unwrap();
+        let proof = missions::Proof::build(
+            &recorded,
+            &witness,
+            event.pointer,
+            &first.definition.design.mission_stats,
+        );
+        assert!(cache.insert(
+            &batch.log,
+            range.clone(),
+            event.pointer,
+            fingerprint(&batch.log, range, event.pointer),
+            &first,
+            Some(witness),
+        ));
+        cache.index_missions(
+            &recorded,
+            event.pointer,
+            proof,
+            &batch.log.spans[event.start..event.end],
+        );
+        let mut originals = vec![first];
+        let mut shared = Shared::default();
+        for (index, event) in batch.events.iter().enumerate().skip(1) {
+            if missions && index >= STATES {
+                let recorded =
+                    crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
+                assert_eq!(
+                    cache.mission_candidate(
+                        &recorded,
+                        event.pointer,
+                        &batch.log.spans[event.start..event.end],
+                    ),
+                    Some(index % STATES)
+                );
+            }
+            let probes = cache.probes;
+            let value = cache.decode(&batch, event, 0, 7, &mut shared).unwrap();
+            for (before, after) in probes.into_iter().zip(cache.probes) {
+                assert!(after - before <= 1);
+            }
+            if index < STATES {
+                originals.push(value);
+            } else {
+                assert!(Arc::ptr_eq(&value, &originals[index % STATES]));
+            }
+        }
+        assert_eq!(cache.entries.len(), STATES);
+        assert_eq!(
+            cache.counts[CacheOutcome::FullDecode as usize],
+            (STATES - 1) as u64
+        );
+        assert_eq!(
+            cache.counts[CacheOutcome::ReadWitnessHit as usize],
+            STATES as u64
+        );
+        for &head in cache.shape_heads.values() {
+            assert!(
+                std::iter::successors(Some(head), |&index| cache.entries[index].shape_next).count()
+                    <= 2
+            );
+        }
+        if missions {
+            assert_eq!(cache.mission_models.len(), 4);
+            let mut plans = cache
+                .mission_models
+                .values()
+                .map(|&head| {
+                    std::iter::successors(Some(head), |&index| {
+                        cache.entries[index].mission_model_next
+                    })
+                    .count()
+                })
+                .collect::<Vec<_>>();
+            plans.sort_unstable();
+            assert_eq!(plans, [1, 1, 1, 2]);
         }
     }
 }
@@ -1496,7 +1749,12 @@ fn mission_key_collisions_still_check_invariant_bytes_and_pointer_identity() {
     }
     let event = batch.events[4];
     let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end).unwrap();
-    let model_key = missions::model_key(&memory, event.pointer).unwrap();
+    let model_key = missions::model_key(
+        &memory,
+        event.pointer,
+        &batch.log.spans[event.start..event.end],
+    )
+    .unwrap();
     let model = &cache.entries[cache.mission_models[&model_key]];
     let key = model
         .missions

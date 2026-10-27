@@ -497,6 +497,7 @@ fn a_trimmed_spool_continues_only_its_saved_ancestry_in_the_selected_folder() {
     let selection = fs::read(session.join(RECORDINGS_FILE)).unwrap();
     let published = fixture.save(&session).replays[0].clone();
     let bytes = fs::read(&published).unwrap();
+    write_session_end(&session, &fixture.output, "completed.json", &json!({})).unwrap();
     let campaign = session.join(std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap());
     for (_, path) in segment_paths(&campaign).unwrap() {
         fs::remove_file(path).unwrap();

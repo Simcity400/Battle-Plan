@@ -202,8 +202,10 @@ struct Entry {
     value: Arc<Decoded>,
     witness: Option<witness::Witness>,
     witness_next: Option<usize>,
+    shape_next: Option<usize>,
     missions: Option<missions::Proof>,
     mission_next: Option<usize>,
+    mission_model_next: Option<usize>,
 }
 struct Verified {
     range: std::ops::Range<usize>,
@@ -228,6 +230,8 @@ pub(super) struct Cache<'a> {
     mission_models: HashMap<u64, usize>,
     #[cfg(test)]
     probes: [usize; 3],
+    #[cfg(test)]
+    mission_model_visits: [usize; 2],
     comparison: Vec<u8>,
     entries: Vec<Entry>,
     recent: HashMap<usize, (usize, Option<usize>)>,
@@ -629,19 +633,26 @@ impl<'a> Cache<'a> {
             .get(&shape_key(&batch.log, range.clone(), event.pointer))
             .copied();
         let recent = self.recent.get(&event.pointer).copied();
-        for index in shaped
-            .into_iter()
-            .chain(recent.into_iter().flat_map(|(latest, previous)| {
-                std::iter::once(latest)
-                    .chain(previous)
-                    .filter(move |index| Some(*index) != shaped)
-            }))
-        {
+        let mut recent = recent.into_iter().flat_map(|(latest, previous)| {
+            std::iter::once(latest)
+                .chain(previous)
+                .filter(move |index| Some(*index) != shaped)
+        });
+        let mut model = shaped;
+        loop {
+            let (index, shaped) = if let Some(index) = model {
+                model = self.entries[index].shape_next;
+                (index, true)
+            } else if let Some(index) = recent.next() {
+                (index, false)
+            } else {
+                break;
+            };
             let entry = &self.entries[index];
             let Some(witness) = entry.witness.as_ref() else {
                 continue;
             };
-            if Some(index) == shaped
+            if shaped
                 && entry.pointer == event.pointer
                 && witness.equal(&batch.log, entry.range.clone(), range.clone())
             {
@@ -685,7 +696,8 @@ impl<'a> Cache<'a> {
                 }
                 let order = std::mem::take(&mut self.order);
                 let memory = copied::MemoryView::new(&batch.log, range.clone(), &order);
-                let candidate = self.mission_candidate(&memory, event.pointer);
+                let candidate =
+                    self.mission_candidate(&memory, event.pointer, &batch.log.spans[range.clone()]);
                 self.order = order;
                 candidate
             });
@@ -699,35 +711,49 @@ impl<'a> Cache<'a> {
         let key = fingerprint(&batch.log, range.clone(), event.pointer);
         self.decode_key(batch, event, base, hour, shared, key)
     }
-    fn mission_candidate(&mut self, memory: &impl Memory, pointer: usize) -> Option<usize> {
-        let model_key = missions::model_key(memory, pointer)?;
-        // A single model selects the invariant reads; only the complete key selects candidates.
-        let model = &self.entries[*self.mission_models.get(&model_key)?];
-        let key = model.missions.as_ref()?.key(
-            memory,
-            model.witness.as_ref()?,
-            model_key,
-            &mut self.comparison,
-        )?;
-        let mut next = self.mission_heads.get(&key).copied();
-        while let Some(index) = next {
+    fn mission_candidate(
+        &mut self,
+        memory: &impl Memory,
+        pointer: usize,
+        spans: &[collector_raw::raw::Span],
+    ) -> Option<usize> {
+        let model_key = missions::model_key(memory, pointer, spans)?;
+        let mut model = self.mission_models.get(&model_key).copied();
+        while let Some(index) = model {
             #[cfg(test)]
             {
-                self.probes[2] += 1;
+                self.mission_model_visits[0] += 1;
             }
             let entry = &self.entries[index];
-            if entry.pointer == pointer
-                && entry.missions.as_ref()?.equal(
-                    memory,
-                    entry.witness.as_ref()?,
-                    pointer,
-                    &entry.value.definition.design.mission_stats,
-                    &mut self.comparison,
-                )?
-            {
-                return Some(index);
+            model = entry.mission_model_next;
+            let Some(key) = entry.missions.as_ref()?.key(
+                memory,
+                entry.witness.as_ref()?,
+                model_key,
+                &mut self.comparison,
+            ) else {
+                continue;
+            };
+            let mut next = self.mission_heads.get(&key).copied();
+            while let Some(index) = next {
+                #[cfg(test)]
+                {
+                    self.probes[2] += 1;
+                }
+                let entry = &self.entries[index];
+                if entry.pointer == pointer
+                    && entry.missions.as_ref()?.equal(
+                        memory,
+                        entry.witness.as_ref()?,
+                        pointer,
+                        &entry.value.definition.design.mission_stats,
+                        &mut self.comparison,
+                    )?
+                {
+                    return Some(index);
+                }
+                next = entry.mission_next;
             }
-            next = entry.mission_next;
         }
         None
     }
@@ -818,7 +844,12 @@ impl<'a> Cache<'a> {
                 })
             });
             if self.insert(&batch.log, range, event.pointer, key, &value, witness) {
-                self.index_missions(&recorded, event.pointer, proof);
+                self.index_missions(
+                    &recorded,
+                    event.pointer,
+                    proof,
+                    &batch.log.spans[event.start..event.end],
+                );
             }
             Ok(value)
         })();
@@ -830,13 +861,14 @@ impl<'a> Cache<'a> {
         memory: &impl Memory,
         pointer: usize,
         proof: Option<missions::Proof>,
+        spans: &[collector_raw::raw::Span],
     ) {
         let Some(proof) = proof else {
             return;
         };
         let indexed = engine_allocation::advisory(|| {
             let witness = self.entries.last()?.witness.as_ref()?;
-            let model_key = missions::model_key(memory, pointer)?;
+            let model_key = missions::model_key(memory, pointer, spans)?;
             let mission_key = proof.key(memory, witness, model_key, &mut self.comparison)?;
             engine_allocation::reserve_map(&mut self.mission_heads, 1).ok()?;
             engine_allocation::reserve_map(&mut self.mission_models, 1).ok()?;
@@ -844,7 +876,29 @@ impl<'a> Cache<'a> {
         });
         if let Some((model_key, mission_key)) = indexed {
             let index = self.entries.len() - 1;
-            self.mission_models.insert(model_key, index);
+            let witness = self.entries[index].witness.as_ref().unwrap();
+            let mut model = self.mission_models.get(&model_key).copied();
+            let mut known = false;
+            while let Some(candidate) = model {
+                #[cfg(test)]
+                {
+                    self.mission_model_visits[1] += 1;
+                }
+                let entry = &self.entries[candidate];
+                if proof.same_reads(
+                    witness,
+                    entry.missions.as_ref().unwrap(),
+                    entry.witness.as_ref().unwrap(),
+                ) {
+                    known = true;
+                    break;
+                }
+                model = entry.mission_model_next;
+            }
+            if !known {
+                self.entries[index].mission_model_next =
+                    self.mission_models.insert(model_key, index);
+            }
             self.entries[index].missions = Some(proof);
             self.entries[index].mission_next = self.mission_heads.insert(mission_key, index);
         } else {
@@ -882,9 +936,33 @@ impl<'a> Cache<'a> {
             .as_ref()
             .and_then(|witness| witness.key(log, range.clone(), range.clone(), pointer));
         let index = self.entries.len();
-        if witness_key.is_some() {
-            self.shape_heads
-                .insert(shape_key(log, range.clone(), pointer), index);
+        let mut shape_next = None;
+        if let Some(witness) = witness.as_ref().filter(|_| witness_key.is_some()) {
+            let key = shape_key(log, range.clone(), pointer);
+            let mut model = self.shape_heads.get(&key).copied();
+            let mut known = false;
+            while let Some(candidate) = model {
+                let entry = &self.entries[candidate];
+                if entry.pointer == pointer
+                    && witness::shape_miss(
+                        &log.spans[entry.range.clone()],
+                        &log.spans[range.clone()],
+                    )
+                    .is_none()
+                    && entry
+                        .witness
+                        .as_ref()
+                        .is_some_and(|other| witness.same_reads(other))
+                {
+                    known = true;
+                    break;
+                }
+                model = entry.shape_next;
+            }
+            // Cold context lookups can add a read plan, but design revisions cannot grow this chain.
+            if !known {
+                shape_next = self.shape_heads.insert(key, index);
+            }
         }
         self.entries.push(Entry {
             range: range.clone(),
@@ -893,8 +971,10 @@ impl<'a> Cache<'a> {
             value: Arc::clone(value),
             witness,
             witness_next: witness_key.and_then(|key| self.witness_heads.insert(key, index)),
+            shape_next,
             missions: None,
             mission_next: None,
+            mission_model_next: None,
         });
         self.remember(pointer, index, range);
         true

@@ -184,6 +184,9 @@ pub(super) struct Witness {
     overlaps: Vec<Overlap>,
 }
 impl Witness {
+    pub fn same_reads(&self, other: &Self) -> bool {
+        self.pieces == other.pieces
+    }
     pub fn matches(&self, memory: &impl Memory, buffer: &mut Vec<u8>) -> Option<bool> {
         if self.requests.is_empty() {
             return None;

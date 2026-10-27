@@ -1575,7 +1575,9 @@ mod tests {
                 & (PoliticsCaptureCoverageRow::PP
                     | PoliticsCaptureCoverageRow::CP
                     | PoliticsCaptureCoverageRow::GOVERNMENT),
-            7
+            PoliticsCaptureCoverageRow::PP
+                | PoliticsCaptureCoverageRow::CP
+                | PoliticsCaptureCoverageRow::GOVERNMENT
         );
     }
 }
