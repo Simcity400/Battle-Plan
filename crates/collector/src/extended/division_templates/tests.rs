@@ -317,8 +317,11 @@ fn failed_template_observer_preserves_fresh_template_and_country_values() {
         let settings = row.settings.require("settings").unwrap().as_ref().unwrap();
         assert_eq!(settings.priority, priority);
         assert!(row.layout.require("layout").unwrap().is_some());
-        let TableInput::Sampled(TableView::Complete(rows)) = &input.tables[TABLES[2].index()] else {
-            panic!("readable country configuration was discarded");
+        // Complete country rows are published shared with the census snapshot.
+        let rows = match &input.tables[TABLES[2].index()] {
+            TableInput::Sampled(TableView::Complete(rows)) => rows,
+            TableInput::SharedComplete(rows) => rows.as_ref(),
+            _ => panic!("readable country configuration was discarded"),
         };
         let row = &rows.rows::<tables::CountryTemplateState>().unwrap()[0];
         assert_eq!(row.next_hq_order, priority);

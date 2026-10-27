@@ -890,7 +890,7 @@ fn every_hook_capture_producer_table_has_an_explicit_classification() {
     use std::collections::BTreeSet;
     let dependent: BTreeSet<_> = Family::ALL
         .into_iter()
-        .flat_map(|f| expected_tables(f).iter().map(|t| t.index()))
+        .flat_map(|f| f.tables().iter().map(|t| t.index()))
         .collect();
     let mut covered = BTreeSet::new();
     let mut unclassified = Vec::new();

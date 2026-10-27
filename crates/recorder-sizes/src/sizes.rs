@@ -890,9 +890,8 @@ mod tests {
                 .as_f64()
                 .unwrap()
         };
-        // The writer keeps each section at its stored level, or at the
-        // choosing level where that is smaller.
-        assert!(written <= at(1) && written <= at(0), "{report}");
+        // The default writer stores each section at the stored level.
+        assert!(written <= at(1), "{report}");
         assert!(at(2) > 0.0);
         let tables: f64 = report["tables"]
             .as_array()

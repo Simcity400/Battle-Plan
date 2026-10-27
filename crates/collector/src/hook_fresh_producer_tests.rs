@@ -16,12 +16,15 @@ impl<M: Memory> Memory for Reads<'_, M> {
     }
 }
 
+/// A loaded game module: identity reads compare object vtables with module addresses.
+const SHIP_BASE: usize = 0x1000_0000;
+
 struct ShipWorld(Native);
 impl Memory for ShipWorld {
     fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-        let pointer = if at == engine_native::cgame_state::SINGLETON_RVA {
+        let pointer = if at == SHIP_BASE + engine_native::cgame_state::SINGLETON_RVA {
             Some(0x10000_u64)
-        } else if at == engine_native::cequipment_database::SINGLETON_RVA {
+        } else if at == SHIP_BASE + engine_native::cequipment_database::SINGLETON_RVA {
             Some(0x15000_u64)
         } else {
             None
@@ -71,15 +74,15 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
     memory.array(state + cgame_state::COUNTRY_LINKS, 0x11100, 2);
     memory.word(0x11008, country);
     memory.put(0x11104, &1_u32.to_le_bytes());
-    memory.word(country, ccountry::VTABLE_RVA);
+    memory.word(country, SHIP_BASE + ccountry::VTABLE_RVA);
     memory.put(country + ccountry::ID, &1_u32.to_le_bytes());
-    memory.word(task, ctask_force::VTABLE_RVA);
+    memory.word(task, SHIP_BASE + ctask_force::VTABLE_RVA);
     memory.put(task + cunit::HANDLE, &census.task_force.to_le_bytes());
     memory.put(task + cunit::ROSTER_OWNER, &1_u32.to_le_bytes());
     memory.word(task + 0x640, doctrine);
     memory.word(doctrine, doctrine);
     memory.put(doctrine + 0x19, &[1]);
-    memory.word(variant, cequipment_variant::VTABLE_RVA);
+    memory.word(variant, SHIP_BASE + cequipment_variant::VTABLE_RVA);
     memory.word(
         variant + cequipment_variant::TYPE,
         (1_usize << 32) | cequipment_variant::REFERENCE_TYPE as usize,
@@ -90,7 +93,7 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
     );
     memory.word(variant + cequipment_variant::DEFINITION, definition);
     memory.word(variant + cequipment_variant::CLASSIFIER_FLAGS, 1 << 6);
-    memory.word(definition, cequipment_type::VTABLE_RVA);
+    memory.word(definition, SHIP_BASE + cequipment_type::VTABLE_RVA);
     memory.put(definition + cequipment_type::TOKEN, &11_u32.to_le_bytes());
     memory.put(
         definition + cequipment_type::ARCHETYPE_ID,
@@ -100,15 +103,15 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
         definition + cequipment_type::HULL_SPRITE + msvc_string::CAPACITY,
         msvc_string::INLINE_CAPACITY as usize,
     );
-    memory.word(database, cequipment_database::VTABLE_RVA);
+    memory.word(database, SHIP_BASE + cequipment_database::VTABLE_RVA);
     memory.array(database + 0x68, 0x15100, 2);
     memory.word(0x15108, definition);
-    memory.word(ship, cship::VTABLE_RVA);
+    memory.word(ship, SHIP_BASE + cship::VTABLE_RVA);
     memory.put(ship + cship::HANDLE, &census.id.to_le_bytes());
     memory.word(ship + cship::TASK_FORCE, task);
     memory.word(
         ship + cship::EQUIPMENT_POOL,
-        cequipment_variant_pool::VTABLE_RVA,
+        SHIP_BASE + cequipment_variant_pool::VTABLE_RVA,
     );
     memory.array(
         ship + cship::EQUIPMENT_POOL + cequipment_variant_pool::ITEMS,
@@ -119,7 +122,7 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
     memory.word(ship + 0x988, 5);
     memory.word(
         ship + cship::SUBUNIT_DEFINITION,
-        csub_unit_definition::VTABLE_RVA,
+        SHIP_BASE + csub_unit_definition::VTABLE_RVA,
     );
     memory.put(
         ship + cship::CLASS_DATABASE_ID,
@@ -148,7 +151,7 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
         capture.begin_sources();
         capture.visit_source_growing(ship, &census);
         capture.finish_sources(Outcome::Rows { len: 1 });
-        capture.capture_owned(&reads, CaptureContext::new(0));
+        capture.capture_owned(&reads, CaptureContext::new(SHIP_BASE));
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: 1 }]);
         assert!(
             reads
@@ -174,7 +177,7 @@ fn failed_ship_observer_rejects_carry_and_publishes_changed_native_models() {
     capture.begin_sources();
     capture.visit_source_growing(ship, &census);
     capture.finish_sources(Outcome::Rows { len: 1 });
-    capture.capture_owned(&world, CaptureContext::new(0));
+    capture.capture_owned(&world, CaptureContext::new(SHIP_BASE));
     let mut frame = source(12);
     frame.tables[TableId::ShipModels.index()] =
         capture.table_inputs(None).into_iter().next().unwrap();
