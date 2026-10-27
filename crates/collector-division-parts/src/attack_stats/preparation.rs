@@ -245,9 +245,6 @@ mod tests {
         fn register(&self, _: usize) -> bool {
             panic!("range must not admit stat receivers")
         }
-        fn mismatch(&self) {
-            panic!("range must not decide verification")
-        }
     }
 
     #[test]
@@ -367,7 +364,6 @@ impl AttackPart {
         }
         self.rows
             .resize_with(self.rows.len().max(seeds.len()), AttackEntry::default);
-        let check = crate::sampled_verify::current_burned_in(army_stat_changes::VERIFY);
         for (offset, seed) in seeds.iter().enumerate() {
             let index = self.range.start + offset;
             let row = &mut self.rows[offset];
@@ -385,9 +381,7 @@ impl AttackPart {
                         .and_then(|at| store.held.get(at as usize))
                 })
                 .filter(|held| Some(held.stat_block) == seed.stat_block);
-            let carried = held.is_some()
-                && !check.covers(seed.division >> 32)
-                && !witnessed(hour, seed.division >> 32);
+            let carried = held.is_some() && !witnessed(hour, seed.division >> 32);
             row.pointer = seed.stat_block.filter(|_| seed.division != 0 && !carried);
             row.maxima = maxima(index);
         }

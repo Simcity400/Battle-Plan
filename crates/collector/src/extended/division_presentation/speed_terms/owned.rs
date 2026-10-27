@@ -114,7 +114,6 @@ pub(super) struct Country {
     pub owner: u32,
     pub country: Result<ccountry::Country, &'static str>,
     pub held: Option<HeldCountry>,
-    pub compared: bool,
     pub start: usize,
     pub end: usize,
     /// Fresh values in the same demanded-key order; a carried group is empty.
@@ -280,8 +279,8 @@ impl SpeedTerms {
         }
     }
 
-    /// Comparisons, replay rows, observer accounting and next-hour baseline
-    /// construction consume only the earlier ordered native observations.
+    /// Replay rows, observer accounting and next-hour baseline construction
+    /// consume only the earlier ordered native observations.
     pub(super) fn settle_entries(&mut self) -> Outcome {
         let observed = &mut self.observed_entries;
         if !std::mem::take(&mut observed.pending) {
@@ -302,13 +301,7 @@ impl SpeedTerms {
                 let held = group.held;
                 let wanted = &observed.wanted[group.start..group.end];
                 let read = group.read.map(|start| {
-                    &observed.values[start
-                        ..start
-                            + if held.is_some() && !group.compared {
-                                0
-                            } else {
-                                wanted.len()
-                            }]
+                    &observed.values[start..start + if held.is_some() { 0 } else { wanted.len() }]
                 });
                 let held_value = |held: HeldCountry, key: u32| {
                     let keys = &self.held.keys[held.start..held.start + held.len];
@@ -316,35 +309,14 @@ impl SpeedTerms {
                         .ok()
                         .map(|at| self.held.values[held.start + at])
                 };
-                let carried = held.filter(|_| !group.compared);
-                if carried.is_some() {
+                if held.is_some() {
                     carried_countries += 1;
                 } else {
                     counts.read += 1;
                 }
-                if let (Some(held), true, Ok(fresh), Ok(country)) =
-                    (held, group.compared, &read, country)
-                {
-                    counts.verified += u64::from(fresh.iter().all(Result::is_ok));
-                    let differs = wanted.iter().zip(fresh.iter()).any(|(&(_, key), value)| {
-                        value.is_ok_and(|value| {
-                            held_value(held, key) != Some(value.present.then_some(value.raw))
-                        })
-                    });
-                    if differs {
-                        counts.mismatches += 1;
-                        self.changes.mismatch(
-                            Table::UnitSpeeds,
-                            Mismatch {
-                                country: country.id,
-                                field: "unit_speed_entries",
-                            },
-                        );
-                    }
-                }
                 let start = next.keys.len();
                 for (index, &(_, key)) in wanted.iter().enumerate() {
-                    let entry = match (carried, &read) {
+                    let entry = match (held, &read) {
                         (Some(held), _) => {
                             Some(held_value(held, key).ok_or("held unit speed entry missing")?)
                         }
@@ -355,7 +327,7 @@ impl SpeedTerms {
                     };
                     self.counts[2][if entry.is_none() {
                         2
-                    } else if carried.is_some() {
+                    } else if held.is_some() {
                         1
                     } else {
                         0

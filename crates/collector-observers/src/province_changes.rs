@@ -1,7 +1,7 @@
 //! The Provinces rows carried between hours ([`engine_native::cprovince::carry`]):
 //! the Provinces job reads only the provinces a native writer may have
-//! changed, the provinces in a border conflict, the `fort_bunker` operand of
-//! every fortified province and its sampled slice.
+//! changed, the provinces in a border conflict and the `fort_bunker` operand
+//! of every fortified province.
 //!
 //! The job first drains the territory family's province marks
 //! ([`crate::territory_changes`]) once for the hour: the marked province ids
@@ -13,30 +13,17 @@
 //! row carry expands a state mark through the provinces its held rows link
 //! to the state, the membership before a reset emptied the state's list,
 //! and the [area family](crate::area_changes) takes the same province marks.
-//!
-//! Each hour reads the carryable provinces of its slice
-//! ([`crate::sampled_verify::current`], by province id) afresh and compares
-//! them with the held rows; the first difference poisons the carry and every
-//! later hour reads every province. `province_verify`, on by default during
-//! the family's burn-in, reads every province every hour and compares each
-//! carryable one.
-use crate::{sampled_verify::Sampled, territory_changes::Changes};
+use crate::territory_changes::Changes;
 use engine_native::{cprovince::Capture, cprovince::carry::Counts, walk::Outcome};
 use std::{
     cell::Cell,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
-/// Every province is read and every carryable one compared every hour
-/// (`province_verify`).
-pub const VERIFY: bool = cfg!(feature = "province_verify");
-
-static POISONED: AtomicBool = AtomicBool::new(false);
 /// Full, quiet and marked hours.
 static HOURS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 /// Carried rows, read rows and refreshed `fort_bunker` operands.
 static ROWS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
-static SAMPLED: Sampled = Sampled::burned_in(&["carried Provinces rows differ from a fresh read"]);
 
 /// The Provinces job: one drain of the hour's province marks, the walk
 /// carrying unmarked provinces, and the area step over the same marks.
@@ -47,20 +34,7 @@ pub fn walk(
     game_state: usize,
 ) -> Outcome {
     let take = take(&crate::territory_changes::Observer, capture);
-    if POISONED.load(Ordering::Relaxed)
-        && let Some(store) = capture.province_store.as_mut()
-    {
-        store.poison();
-    }
-    let check = crate::sampled_verify::current_burned_in(VERIFY);
-    let outcome = capture.walk_carrying(
-        memory,
-        base,
-        game_state,
-        take,
-        &|id| check.covers(id),
-        VERIFY,
-    );
+    let outcome = capture.walk_carrying(memory, base, game_state, take);
     if let Outcome::Rows { len } = outcome {
         if let Some(store) = capture.province_store.as_ref() {
             record(store.counts());
@@ -147,9 +121,6 @@ fn record(counts: Counts) {
     {
         total.fetch_add(value, Ordering::Relaxed);
     }
-    if !counts.full && SAMPLED.record(counts.verified, counts.mismatches, 0) {
-        POISONED.store(true, Ordering::Relaxed);
-    }
 }
 
 pub fn status() -> impl serde::Serialize {
@@ -157,19 +128,13 @@ pub fn status() -> impl serde::Serialize {
     let rows = ROWS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "province_changes"),
-        "verify": VERIFY,
-        "poisoned": POISONED.load(Ordering::Relaxed),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "full_hours": hours[0],
         "quiet_hours": hours[1],
         "marked_hours": hours[2],
         "carried_rows": rows[0],
         "read_rows": rows[1],
         "refreshed_fort_bunkers": rows[2],
-        "scope": "cumulative since attach; the Provinces job carries a province's row when the hour's take of the territory family's province marks returned the epochs of the held complete walk, the province table header and the province's slot pointer are the held ones, neither the province nor its held state is marked and its held row is in no border conflict; carried rows read only fort_bunker again (positive fort sum and controller), every other province is read as a full walk reads it; every hour also reads its slice of carryable provinces (by id) afresh and compares it with the held rows (one in rotation_hours; every one in verify mode) and the first difference makes every later hour read every province (sampled_*)"
+        "scope": "cumulative since attach; the Provinces job carries a province's row when the hour's take of the territory family's province marks returned the epochs of the held complete walk, the province table header and the province's slot pointer are the held ones, neither the province nor its held state is marked and its held row is in no border conflict; carried rows read only fort_bunker again (positive fort sum and controller), every other province is read as a full walk reads it"
     })
 }
 

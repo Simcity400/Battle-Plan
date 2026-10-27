@@ -5,12 +5,9 @@
 //! reads the batches of every province on the held and current cooldown
 //! lists; a write naming no info, an invalidation or a lost forwarder reads
 //! every batch; a batch whose last read held some info only partly is read
-//! again; a sampled or unmarked difference poisons reuse.
+//! again; an unmarked difference reads the rest of the hour afresh.
 use super::*;
-use crate::{
-    rail_changes::{Changes, Counts, Target, Watches},
-    sampled_verify::{Check, ROTATION},
-};
+use crate::rail_changes::{Changes, Counts, Target, Watches};
 use engine_mutations::railway_mutations;
 use engine_native::{cbuilding, memory::SliceMemory, province_definition};
 use engine_railways::{
@@ -370,9 +367,9 @@ fn fresh(bytes: &[u8]) -> Rows {
 }
 
 /// One walk as the Late job makes it.
-fn walk(bytes: &[u8], store: &mut RailStore, changes: &dyn Changes, check: Check) -> Hour {
+fn walk(bytes: &[u8], store: &mut RailStore, changes: &dyn Changes) -> Hour {
     let memory = Calls::new(bytes);
-    let mut reuse = RailReuse::begin(store, changes, check, |list| {
+    let mut reuse = RailReuse::begin(store, changes, |list| {
         manager::cooldown_list(&memory, 0, GAME_STATE, list)
     });
     let rows = run(&memory, &mut reuse);
@@ -428,7 +425,7 @@ fn a_quiet_hour_reads_no_slot_and_publishes_a_fresh_walks_rows() {
             .all(|row| row.building.is_ok() && row.selection.unwrap().building_level.is_ok())
     );
 
-    let first = walk(&bytes, &mut store, &rails, Check::Nothing);
+    let first = walk(&bytes, &mut store, &rails);
     assert_eq!(first.rows, expected);
     assert_eq!(split(first.counts), (0, RAILS.len() as u64));
     assert_eq!(first.counts.read_batches, BATCHES);
@@ -440,7 +437,7 @@ fn a_quiet_hour_reads_no_slot_and_publishes_a_fresh_walks_rows() {
 
     for _ in 0..3 {
         rails.boundary(false);
-        let hour = walk(&bytes, &mut store, &rails, Check::Nothing);
+        let hour = walk(&bytes, &mut store, &rails);
         assert_eq!(hour.rows, expected);
         assert_eq!(slot_reads(&hour.reads), 0, "a quiet hour reads no slot");
         assert_eq!(split(hour.counts), (RAILS.len() as u64, 0));
@@ -461,10 +458,10 @@ fn a_hooked_write_reads_only_its_batch() {
     let mut bytes = world();
     let rails = domain();
     let mut store = RailStore::new();
-    walk(&bytes, &mut store, &rails, Check::Nothing);
+    walk(&bytes, &mut store, &rails);
     let hour = |bytes: &[u8], store: &mut RailStore| {
         rails.boundary(false);
-        let hour = walk(bytes, store, &rails, Check::Nothing);
+        let hour = walk(bytes, store, &rails);
         assert_eq!(hour.rows, fresh(bytes));
         hour
     };
@@ -536,15 +533,15 @@ fn the_daily_countdown_reads_every_listed_province_including_duplicates() {
         set_on_cooldown(&mut bytes, province, ticks);
     }
     assert_eq!(list(&bytes), vec![2, 7, 7, 130]);
-    walk(&bytes, &mut store, &rails, Check::Nothing);
-    let quiet = walk(&bytes, &mut store, &rails, Check::Nothing);
+    walk(&bytes, &mut store, &rails);
+    let quiet = walk(&bytes, &mut store, &rails);
     assert_eq!(quiet.counts.carried_batches, BATCHES);
 
     drop(rails.notify(site("update_cooldowns"), Target::Countdown));
     countdown(&mut bytes);
     assert_eq!(list(&bytes), vec![2, 130]);
     assert_eq!(cooldown(&bytes, 7), -2);
-    let day = walk(&bytes, &mut store, &rails, Check::Nothing);
+    let day = walk(&bytes, &mut store, &rails);
     assert_eq!(day.rows, fresh(&bytes));
     assert!(day.counts.countdown);
     assert_eq!(batches_read(&day.reads), vec![0, 2]);
@@ -556,37 +553,35 @@ fn the_daily_countdown_reads_every_listed_province_including_duplicates() {
     // Province 7 left the list: the next countdown reads 2's and 130's.
     drop(rails.notify(site("update_cooldowns"), Target::Countdown));
     countdown(&mut bytes);
-    let day = walk(&bytes, &mut store, &rails, Check::Nothing);
+    let day = walk(&bytes, &mut store, &rails);
     assert_eq!(day.rows, fresh(&bytes));
     assert_eq!(batches_read(&day.reads), vec![0, 2]);
     assert_eq!(
         [2, 7, 130].map(|province| day.rows.cooldown(province)),
         [3, -2, 1]
     );
-    let quiet = walk(&bytes, &mut store, &rails, Check::Nothing);
+    let quiet = walk(&bytes, &mut store, &rails);
     assert_eq!(slot_reads(&quiet.reads), 0);
     assert!(!rails.poisoned());
 }
 
 /// A duplicate cooldown entry no hook saw (a mod-style non-positive
 /// cooldown pushed unobserved) changes the list read every hour: it is an
-/// unmarked change, counted as a mismatch, the hour reads every batch and
-/// reuse is poisoned.
+/// unmarked change and the hour reads every batch, which the next hour
+/// carries.
 #[test]
-fn an_unobserved_cooldown_list_entry_is_caught_and_poisons() {
+fn an_unobserved_cooldown_list_entry_reads_every_batch() {
     let mut bytes = world();
     let rails = domain();
     let mut store = RailStore::new();
-    walk(&bytes, &mut store, &rails, Check::Nothing);
+    walk(&bytes, &mut store, &rails);
     set_list(&mut bytes, &[2, 2]);
-    let caught = walk(&bytes, &mut store, &rails, Check::Nothing);
+    let caught = walk(&bytes, &mut store, &rails);
     assert_eq!(caught.rows, fresh(&bytes));
-    assert!(caught.counts.unmarked);
-    assert_eq!(caught.counts.mismatches, 1);
     assert_eq!(caught.counts.read_batches, BATCHES);
-    assert!(rails.poisoned());
-    let after = walk(&bytes, &mut store, &rails, Check::Nothing);
-    assert_eq!(after.counts.read_batches, BATCHES);
+    let after = walk(&bytes, &mut store, &rails);
+    assert_eq!(after.rows, fresh(&bytes));
+    assert_eq!(after.counts.carried_batches, BATCHES);
 }
 
 /// The save readers and the manager's lifetime sites name no info, and an
@@ -599,16 +594,16 @@ fn a_write_naming_no_info_an_invalidation_or_a_lost_forwarder_reads_every_batch(
     let bytes = world();
     let rails = domain();
     let mut store = RailStore::new();
-    walk(&bytes, &mut store, &rails, Check::Nothing);
+    walk(&bytes, &mut store, &rails);
     let full_then_quiet = |store: &mut RailStore, what: &str| {
-        let hour = walk(&bytes, store, &rails, Check::Nothing);
+        let hour = walk(&bytes, store, &rails);
         assert_eq!(
             (hour.counts.carried_batches, hour.counts.read_batches),
             (0, BATCHES),
             "{what}"
         );
         assert_eq!(hour.rows, fresh(&bytes), "{what}");
-        let quiet = walk(&bytes, store, &rails, Check::Nothing);
+        let quiet = walk(&bytes, store, &rails);
         assert_eq!(quiet.counts.carried_batches, BATCHES, "{what}");
     };
     for name in [
@@ -623,90 +618,40 @@ fn a_write_naming_no_info_an_invalidation_or_a_lost_forwarder_reads_every_batch(
     rails.boundary(true);
     full_then_quiet(&mut store, "invalidation");
     rails.set_forwarder(false);
-    let unobserved = walk(&bytes, &mut store, &rails, Check::Nothing);
+    let unobserved = walk(&bytes, &mut store, &rails);
     assert_eq!(unobserved.counts.read_batches, BATCHES);
     rails.set_forwarder(true);
     full_then_quiet(&mut store, "forwarder");
     assert!(!rails.poisoned());
 }
 
-/// A write no hook saw is caught when the hour's slice covers its batch:
-/// the fresh rows are published, the difference is counted and poisons
-/// reuse, and every later hour reads every batch.
-#[test]
-fn a_sampled_batch_is_read_and_a_difference_poisons() {
-    let mut bytes = world();
-    let rails = domain();
-    let mut store = RailStore::new();
-    walk(&bytes, &mut store, &rails, Check::Nothing);
-    // An unobserved level change on province 70, in batch 1.
-    set_pairs(&mut bytes, 70, &[(69, 2), (71, 9)]);
-    let other = Check::Slice { hour: 2 };
-    let missed = walk(&bytes, &mut store, &rails, other);
-    assert_eq!(batches_read(&missed.reads), vec![2]);
-    assert_eq!((missed.counts.verified, missed.counts.mismatches), (1, 0));
-    assert!(!rails.poisoned());
-
-    let covering = Check::Slice {
-        hour: 1 + ROTATION as i32,
-    };
-    let caught = walk(&bytes, &mut store, &rails, covering);
-    assert_eq!(caught.rows, fresh(&bytes));
-    // The difference in batch 1 leaves the rest of the hour to read afresh.
-    assert_eq!(batches_read(&caught.reads), vec![1, 2, 3]);
-    assert_eq!((caught.counts.verified, caught.counts.mismatches), (1, 1));
-    assert!(rails.poisoned());
-    let after = walk(&bytes, &mut store, &rails, Check::Nothing);
-    assert_eq!(after.counts.read_batches, BATCHES);
-
-    // Verify mode reads every batch and compares every carryable info.
-    let rails = domain();
-    let mut store = RailStore::new();
-    walk(&bytes, &mut store, &rails, Check::Nothing);
-    let every = walk(&bytes, &mut store, &rails, Check::Every);
-    assert_eq!(
-        (every.counts.carried_batches, every.counts.read_batches),
-        (0, BATCHES)
-    );
-    assert_eq!(split(every.counts), (0, RAILS.len() as u64));
-    assert_eq!(
-        (every.counts.verified, every.counts.mismatches),
-        (RAILS.len() as u64, 0)
-    );
-    assert!(!rails.poisoned());
-}
-
 /// In a batch read for a marked province, an unmarked info that changed or
-/// vanished is a write no hook saw: it is counted, poisons reuse and the
-/// rest of the hour reads afresh.
+/// vanished is a write no hook saw: the rest of the hour reads afresh.
 #[test]
 fn an_unmarked_change_in_a_read_batch_is_caught() {
     let mut bytes = world();
     let rails = domain();
     let mut store = RailStore::new();
-    walk(&bytes, &mut store, &rails, Check::Nothing);
+    walk(&bytes, &mut store, &rails);
     drop(rails.notify(site("set_railway"), Target::Province(Some(1))));
     set_pairs(&mut bytes, 7, &[(6, 2), (8, 3), (9, 1)]);
-    let hour = walk(&bytes, &mut store, &rails, Check::Nothing);
+    let hour = walk(&bytes, &mut store, &rails);
     assert_eq!(hour.rows, fresh(&bytes));
-    assert!(hour.counts.unmarked);
-    assert!(rails.poisoned());
+    assert_eq!(hour.counts.read_batches, BATCHES);
 
     // Province 199's slot cleared without its destructor: found when a
     // mark on province 198 reads batch 3.
     let mut bytes = world();
     let rails = domain();
     let mut store = RailStore::new();
-    walk(&bytes, &mut store, &rails, Check::Nothing);
+    walk(&bytes, &mut store, &rails);
     put(&mut bytes, RAIL_TABLE + 199 * 8, &0_u64.to_le_bytes());
     drop(rails.notify(
         site("set_province_on_cooldown"),
         Target::Province(Some(198)),
     ));
-    let hour = walk(&bytes, &mut store, &rails, Check::Nothing);
+    let hour = walk(&bytes, &mut store, &rails);
     assert_eq!(hour.rows, fresh(&bytes));
-    assert!(hour.counts.unmarked);
-    assert!(rails.poisoned());
 }
 
 /// A batch is published from held outputs only when its last read held
@@ -723,9 +668,9 @@ fn a_quiet_batch_needs_its_held_read_whole_and_an_incomplete_walk_holds_nothing(
     );
     let rails = domain();
     let mut store = RailStore::new();
-    walk(&bytes, &mut store, &rails, Check::Nothing);
+    walk(&bytes, &mut store, &rails);
     for _ in 0..2 {
-        let hour = walk(&bytes, &mut store, &rails, Check::Nothing);
+        let hour = walk(&bytes, &mut store, &rails);
         assert_eq!(batches_read(&hour.reads), vec![0]);
         assert_eq!(split(hour.counts), (7, 1));
         assert!(hour.rows.buildings[2].building.is_err());
@@ -738,7 +683,7 @@ fn a_quiet_batch_needs_its_held_read_whole_and_an_incomplete_walk_holds_nothing(
     let mut bytes = world();
     let rails = domain();
     let mut store = RailStore::new();
-    walk(&bytes, &mut store, &rails, Check::Nothing);
+    walk(&bytes, &mut store, &rails);
     header(
         &mut bytes,
         info(2) + cprovince_railway_info::NEIGHBOR_PAIRS,
@@ -746,14 +691,14 @@ fn a_quiet_batch_needs_its_held_read_whole_and_an_incomplete_walk_holds_nothing(
         2,
     );
     drop(rails.notify(site("set_railway"), Target::Province(Some(2))));
-    let failed = walk(&bytes, &mut store, &rails, Check::Nothing);
+    let failed = walk(&bytes, &mut store, &rails);
     assert!(matches!(
         failed.rows.outcomes.rows.edges,
         Outcome::Unavailable { .. }
     ));
     assert_eq!(failed.rows, fresh(&bytes));
     let restored = world();
-    let after = walk(&restored, &mut store, &rails, Check::Nothing);
+    let after = walk(&restored, &mut store, &rails);
     assert_eq!(after.counts.read_batches, BATCHES);
     assert_eq!(after.rows, fresh(&restored));
 }
@@ -765,10 +710,10 @@ fn a_forgotten_store_reads_every_batch() {
     let bytes = world();
     let rails = domain();
     let mut store = RailStore::new();
-    walk(&bytes, &mut store, &rails, Check::Nothing);
+    walk(&bytes, &mut store, &rails);
     store.forget();
-    let hour = walk(&bytes, &mut store, &rails, Check::Nothing);
+    let hour = walk(&bytes, &mut store, &rails);
     assert_eq!(hour.counts.read_batches, BATCHES);
-    let hour = walk(&bytes, &mut store, &rails, Check::Nothing);
+    let hour = walk(&bytes, &mut store, &rails);
     assert_eq!(hour.counts.carried_batches, BATCHES);
 }

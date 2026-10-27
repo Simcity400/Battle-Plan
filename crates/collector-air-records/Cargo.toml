@@ -10,10 +10,9 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["collector-certificates/test-support", "collector-extended-support/test-support", "collector-hooks/test-support", "collector-lifetime/test-support", "collector-memory/test-support", "collector-primitives/test-support", "collector-timing/test-support"]
+test-support = ["collector-extended-support/test-support", "collector-hooks/test-support", "collector-lifetime/test-support", "collector-memory/test-support", "collector-primitives/test-support", "collector-timing/test-support"]
 default = ["air_record_changes"]
 air_record_changes = []
-air_record_verify = ["air_record_changes"]
 
 [dependencies]
 engine-air-history.workspace = true
@@ -23,7 +22,6 @@ replay-data.workspace = true
 replay-derive.workspace = true
 replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }
-collector-certificates.workspace = true
 collector-extended-support.workspace = true
 collector-hooks.workspace = true
 collector-lifetime.workspace = true

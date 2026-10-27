@@ -413,9 +413,7 @@ impl CharactersJob {
                     .role_census
                     .as_ref()
                     .map_or(0, |census| census.allocated_bytes() as u64)
-                + crate::raw_memory::vector_bytes(&self.census_visited)
-                + self.roster.allocated_bytes()
-                + self.census_carry.allocated_bytes() as u64,
+                + crate::raw_memory::vector_bytes(&self.census_visited),
             ..Default::default()
         });
     }
@@ -2358,7 +2356,6 @@ pub(super) fn copy_pass(
         job.carry.begin_hour(
             context.active[0] && !context.force_full && cfg!(feature = "character_changes"),
         );
-        job.carry.sample(memory, context.base);
     }
     // Which templates and names the program reads depends on the identities
     // this job already holds and the characters it carries, so their
@@ -2696,13 +2693,8 @@ pub(super) fn gather_role_census(
             job.worker_growing,
         );
         job.role_census_current = admitted;
-        if admitted {
-            let gathered = if counts.gathered {
-                rows.len()
-            } else {
-                counts.compared as usize
-            };
-            job.log.raw_bytes[0] += (gathered * (census::ROW - 4)) as u64;
+        if admitted && counts.gathered {
+            job.log.raw_bytes[0] += (rows.len() * (census::ROW - 4)) as u64;
         }
         crate::census_changes::record(&counts);
     }

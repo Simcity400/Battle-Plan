@@ -804,9 +804,7 @@ impl Literal {
 mod tests;
 
 mod portraits;
-pub use portraits::{
-    PortraitRow, PortraitWalk, sample_reused_portraits, walk_portraits, walk_portraits_growing,
-};
+pub use portraits::{PortraitRow, PortraitWalk, walk_portraits, walk_portraits_growing};
 
 fn portrait_header(memory: &impl Memory, pointer: usize) -> Result<[u8; 16], &'static str> {
     let country_at = at(pointer, COUNTRY)?;

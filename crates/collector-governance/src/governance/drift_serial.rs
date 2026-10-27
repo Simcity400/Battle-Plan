@@ -12,8 +12,7 @@
 //! progress of the technologies assigned to its slots, and nothing else. A slot's assignment is
 //! itself certified (`technology assignment` and `research slot synchronization` mark their
 //! country), so the assigned rows are held with the roster, taken from the same pass's
-//! ResearchSlots rows. Every other recorded field is the one its last read held, which the family's
-//! sampled comparisons check ([`crate::sampled_verify::Check::covers`]).
+//! ResearchSlots rows. Every other recorded field is the one its last read held.
 //!
 //! A carry reads only operands the full walk reads first, in the full
 //! walk's order, and a failed read gives the full walk's reason: the

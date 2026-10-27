@@ -1322,9 +1322,8 @@ fn project_hour(
 
 /// Projects and ProjectHistory are read for every country at the hour after
 /// the daily tick and, in between, for the countries a project writer marked,
-/// within the hour. A country's alias raw id is read and kept with it. Lifecycle
-/// changes no hook saw disable reuse at the boundary; the daily pass's
-/// history and progress do not.
+/// within the hour. A country's alias raw id is read and kept with it. A
+/// lifecycle change no hook saw is read at the next boundary.
 #[test]
 fn projects_are_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
     use super::projects_test_kit as kit;
@@ -1365,10 +1364,9 @@ fn projects_are_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write(
     );
     assert_eq!(captured.projects.rows[0].owner, 3);
     assert_eq!(captured.history.rows[0].owner, 3);
-    assert!(!changes.poisoned(Table::Projects));
     assert!(project_hour(&mut captured, &bytes, 10, &mut store, &changes).is_empty());
     // A writer marks the country, not the alias its project names: the
-    // alias's rows are read and compared as the country's.
+    // alias's rows are read as the country's.
     bytes[kit::PROJ1 + nproject_cproject::STARTED] = 0;
     changes.write(Table::Projects, 1);
     assert_eq!(
@@ -1376,9 +1374,8 @@ fn projects_are_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write(
         [1, 3]
     );
     assert_eq!(captured.projects.rows[0].started, 0);
-    assert!(!changes.poisoned(Table::Projects));
     // The daily pass appends history: every country is read at the
-    // boundary, and the unmarked history compares equal.
+    // boundary.
     let date = kit::HIST1 + nproject_sproject_history::DATE;
     bytes[date..date + 4].copy_from_slice(&444_i32.to_le_bytes());
     assert_eq!(
@@ -1386,20 +1383,15 @@ fn projects_are_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write(
         [1, 2, 3]
     );
     assert_eq!(captured.history.rows[0].date, 444);
-    assert!(!changes.poisoned(Table::Projects));
-    // A completion no hook marked waits for the boundary, whose comparison
-    // disables reuse; every country is read from then on.
+    // A completion no hook marked waits for the boundary.
     bytes[kit::PROJ1 + nproject_cproject::COMPLETED] = 0;
     assert!(project_hour(&mut captured, &bytes, 25, &mut store, &changes).is_empty());
     assert_eq!(
         project_hour(&mut captured, &bytes, 48, &mut store, &changes),
         [1, 2, 3]
     );
-    assert!(changes.poisoned(Table::Projects));
-    assert_eq!(
-        project_hour(&mut captured, &bytes, 49, &mut store, &changes),
-        [1, 2, 3]
-    );
+    assert_eq!(captured.projects.rows[0].completed, 0);
+    assert!(project_hour(&mut captured, &bytes, 49, &mut store, &changes).is_empty());
 }
 
 #[test]

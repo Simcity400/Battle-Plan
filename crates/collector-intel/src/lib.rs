@@ -1,6 +1,5 @@
 //! Intel capture: country intel, agencies, operations and operatives, script flags and variables, the shared daily CountryIntel buffer and the flag and variable writer observers. The host owns dispatch, loans, the spool conversion caches and table assembly.
 
-use collector_certificates::sampled_verify;
 use collector_certificates::slicing;
 use collector_certificates::watch_registry;
 use collector_hooks::hook;

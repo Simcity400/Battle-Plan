@@ -2,13 +2,10 @@
 //! ([`super::AdvisorStore`], [`crate::advisor_pool_changes`]): quiet hours
 //! read no advisor, character, idea or bucket and publish the same rows; a
 //! hooked pool or character write re-reads only its pool; an invalidation
-//! re-reads everything; verify catches a write no hook saw and poisons reuse.
+//! re-reads everything.
 use super::advisor_store::{PoolReuse, TokenReuse};
 use super::*;
-use crate::{
-    advisor_pool_changes::{Counts, Pair, Watches},
-    sampled_verify::{Check, ROTATION},
-};
+use crate::advisor_pool_changes::{Counts, Pair, Watches};
 use engine_characters::advisor_tokens as tokens;
 use engine_native::{
     cadvisor, ccharacter, ccharacter_manager, ccountry, cgame_state, memory::SliceMemory,
@@ -23,6 +20,8 @@ const DETAIL: usize = 0x8000;
 const POOLS: [usize; 2] = [0x5000, 0x5400];
 const MANAGER: usize = 0x6000;
 const BUCKETS: usize = 0xe000;
+/// Hours in a day: each country's pool is read at one of them.
+const DAY: i32 = replay_data::cadence::STAGGER_PERIOD;
 
 fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
     bytes[at..at + value.len()].copy_from_slice(value);
@@ -158,8 +157,8 @@ struct Hour {
 }
 
 /// A walk of every pool, always at hour 0 of the day.
-fn hour(bytes: &[u8], store: &mut AdvisorStore, changes: &Pair<'_>, check: Check) -> Hour {
-    hour_at(bytes, store, changes, check, 0, &|_| true)
+fn hour(bytes: &[u8], store: &mut AdvisorStore, changes: &Pair<'_>) -> Hour {
+    hour_at(bytes, store, changes, 0, &|_| true)
 }
 
 /// A walk at `at` of the pools of the countries `select` admits.
@@ -167,7 +166,6 @@ fn hour_at(
     bytes: &[u8],
     store: &mut AdvisorStore,
     changes: &Pair<'_>,
-    check: Check,
     at: i32,
     select: &dyn Fn(u32) -> bool,
 ) -> Hour {
@@ -176,7 +174,7 @@ fn hour_at(
         calls: RefCell::default(),
     };
     let (mut rows, mut text) = (Vec::new(), Vec::new());
-    let mut carry = PoolReuse::begin(store, changes, check, at);
+    let mut carry = PoolReuse::begin(store, changes, at);
     let walk = native::walk_available_carried(
         &memory, BASE, GAME, &mut rows, &mut text, &mut carry, select,
     );
@@ -184,7 +182,7 @@ fn hour_at(
     rows.truncate(walk.outcome.len());
     text.truncate(walk.bytes_len);
     let (mut keys, mut key_bytes) = (Vec::new(), Vec::new());
-    let mut carry = TokenReuse::begin(store, changes, check);
+    let mut carry = TokenReuse::begin(store, changes);
     let token_walk =
         tokens::walk_carried(&memory, BASE, GAME, &mut keys, &mut key_bytes, &mut carry);
     carry.finish(matches!(token_walk.outcome, Outcome::Rows { .. }));
@@ -230,7 +228,7 @@ impl Domains {
 }
 
 fn first_hour(bytes: &[u8], store: &mut AdvisorStore, domains: &Domains) -> Hour {
-    let first = hour(bytes, store, &domains.pair(), Check::Nothing);
+    let first = hour(bytes, store, &domains.pair());
     assert_eq!(first.available.0, Outcome::Rows { len: 4 });
     assert_eq!(first.tokens.0, Outcome::Rows { len: 3 });
     assert_eq!((first.pools.read, first.pools.reused), (2, 0));
@@ -247,7 +245,7 @@ fn quiet_hours_read_no_advisor_or_bucket_and_publish_identical_rows() {
     let mut store = AdvisorStore::new();
     let first = first_hour(&bytes, &mut store, &domains);
     for _ in 0..3 {
-        let quiet = hour(&bytes, &mut store, &domains.pair(), Check::Nothing);
+        let quiet = hour(&bytes, &mut store, &domains.pair());
         assert_eq!(quiet.available, first.available);
         assert_eq!(quiet.tokens, first.tokens);
         assert_eq!((quiet.pools.read, quiet.pools.reused), (0, 2));
@@ -272,7 +270,7 @@ fn a_hooked_pool_write_rereads_only_its_pool() {
     );
     drop(notification);
     domains.boundary(false);
-    let changed = hour(&bytes, &mut store, &domains.pair(), Check::Nothing);
+    let changed = hour(&bytes, &mut store, &domains.pair());
     assert_eq!((changed.pools.read, changed.pools.reused), (1, 1));
     assert_eq!(changed.available.0, Outcome::Rows { len: 3 });
     assert_eq!(changed.available.1[..2], first.available.1[..2]);
@@ -292,12 +290,12 @@ fn a_character_write_rereads_only_the_pool_listing_it() {
     string(&mut bytes, role + cadvisor::IDEA_TOKEN, b"changed");
     drop(notification);
     domains.boundary(false);
-    let changed = hour(&bytes, &mut store, &domains.pair(), Check::Nothing);
+    let changed = hour(&bytes, &mut store, &domains.pair());
     assert_eq!((changed.pools.read, changed.pools.reused), (1, 1));
     let (_, rows, text) = &changed.available;
     assert_eq!(&text[rows[0].idea_start..][..rows[0].idea_len], b"changed");
     domains.boundary(false);
-    let quiet = hour(&bytes, &mut store, &domains.pair(), Check::Nothing);
+    let quiet = hour(&bytes, &mut store, &domains.pair());
     assert_eq!((quiet.pools.read, quiet.pools.reused), (0, 2));
     assert_eq!(quiet.available, changed.available);
 }
@@ -316,64 +314,24 @@ fn a_hooked_token_write_or_an_invalidation_rereads_the_table() {
     );
     drop(notification);
     domains.boundary(false);
-    let changed = hour(&bytes, &mut store, &domains.pair(), Check::Nothing);
+    let changed = hour(&bytes, &mut store, &domains.pair());
     assert_eq!((changed.table.read, changed.table.reused), (1, 0));
     assert_eq!((changed.pools.read, changed.pools.reused), (0, 2));
     assert!(changed.tokens.2.windows(6).any(|key| key == b"d_idea"));
     // A load, gap or recovery re-reads every pool and the table.
     domains.boundary(true);
-    let reloaded = hour(&bytes, &mut store, &domains.pair(), Check::Nothing);
+    let reloaded = hour(&bytes, &mut store, &domains.pair());
     assert_eq!((reloaded.pools.read, reloaded.table.read), (2, 1));
     // remove_advisor_role names no pool and revokes every certificate.
     domains.boundary(false);
     drop(domains.pools.notify(None, 5));
-    let unnamed = hour(&bytes, &mut store, &domains.pair(), Check::Nothing);
+    let unnamed = hour(&bytes, &mut store, &domains.pair());
     assert_eq!((unnamed.pools.read, unnamed.table.read), (2, 1));
     // A forgotten store (a failed Slow job) carries nothing.
     domains.boundary(false);
     store.forget();
-    let forgotten = hour(&bytes, &mut store, &domains.pair(), Check::Nothing);
+    let forgotten = hour(&bytes, &mut store, &domains.pair());
     assert_eq!((forgotten.pools.read, forgotten.table.read), (2, 1));
-}
-
-#[test]
-fn the_table_verifies_once_a_day_and_each_pool_once_per_daily_rotation() {
-    let bytes = world();
-    let domains = Domains::new();
-    let mut store = AdvisorStore::new();
-    first_hour(&bytes, &mut store, &domains);
-    // The token table is read every hour: its rotation runs over the day.
-    let mut tables = 0;
-    for at in 0..ROTATION as i32 {
-        let sampled = hour(
-            &bytes,
-            &mut store,
-            &domains.pair(),
-            Check::Slice { hour: at },
-        );
-        assert_eq!(sampled.table.verified + sampled.table.reused, 1);
-        assert_eq!(sampled.table.mismatches, 0);
-        tables += sampled.table.verified;
-        domains.boundary(false);
-    }
-    // A pool is read once a day, at its country's slice hour: its rotation
-    // runs over days, so each pool is compared once in ROTATION days.
-    let mut pools = 0;
-    for day in 0..ROTATION as i32 {
-        let sampled = hour(
-            &bytes,
-            &mut store,
-            &domains.pair(),
-            Check::Slice {
-                hour: day * ROTATION as i32,
-            },
-        );
-        assert_eq!(sampled.pools.verified + sampled.pools.reused, 2);
-        assert_eq!(sampled.pools.mismatches, 0);
-        pools += sampled.pools.verified;
-        domains.boundary(false);
-    }
-    assert_eq!((pools, tables), (2, 1));
 }
 
 /// Each hour of the day holds its own walk: a pool read at its country's
@@ -385,17 +343,10 @@ fn a_pool_read_at_its_slice_is_carried_a_day_later() {
     let bytes = world();
     let domains = Domains::new();
     let mut store = AdvisorStore::new();
-    let slice = |at: i32| move |country: u32| country % ROTATION as u32 == at as u32;
+    let slice = |at: i32| move |country: u32| country % DAY as u32 == at as u32;
     let mut day = Vec::new();
-    for at in 0..ROTATION as i32 {
-        let walked = hour_at(
-            &bytes,
-            &mut store,
-            &domains.pair(),
-            Check::Nothing,
-            at,
-            &slice(at),
-        );
+    for at in 0..DAY {
+        let walked = hour_at(&bytes, &mut store, &domains.pair(), at, &slice(at));
         // Countries 1 and 2 are read at hours 1 and 2, nobody else's pool.
         let read = usize::from(at == 1 || at == 2);
         assert_eq!(walked.available.0, Outcome::Rows { len: 2 * read });
@@ -403,42 +354,11 @@ fn a_pool_read_at_its_slice_is_carried_a_day_later() {
         day.push(walked.available);
         domains.boundary(false);
     }
-    for at in 0..ROTATION as i32 {
-        let next = hour_at(
-            &bytes,
-            &mut store,
-            &domains.pair(),
-            Check::Nothing,
-            at + ROTATION as i32,
-            &slice(at),
-        );
+    for at in 0..DAY {
+        let next = hour_at(&bytes, &mut store, &domains.pair(), at + DAY, &slice(at));
         let read = u64::from(at == 1 || at == 2);
         assert_eq!((next.pools.read, next.pools.reused), (0, read), "hour {at}");
         assert_eq!(next.available, day[at as usize]);
         domains.boundary(false);
     }
-}
-
-#[test]
-fn verify_catches_an_unobserved_write_and_poisons_reuse() {
-    let mut bytes = world();
-    let domains = Domains::new();
-    let mut store = AdvisorStore::new();
-    first_hour(&bytes, &mut store, &domains);
-    let agreed = hour(&bytes, &mut store, &domains.pair(), Check::Every);
-    assert_eq!((agreed.pools.verified, agreed.pools.mismatches), (2, 0));
-    assert_eq!((agreed.table.verified, agreed.table.mismatches), (1, 0));
-    assert!(!domains.pools.poisoned());
-    domains.boundary(false);
-    // An idea change no hook observed.
-    let (role, _) = advisor(1, 1);
-    string(&mut bytes, role + cadvisor::IDEA_TOKEN, b"unseen");
-    let caught = hour(&bytes, &mut store, &domains.pair(), Check::Every);
-    assert_eq!(caught.pools.mismatches, 1);
-    assert!(domains.pools.poisoned());
-    let (_, rows, text) = &caught.available;
-    assert_eq!(&text[rows[3].idea_start..][..rows[3].idea_len], b"unseen");
-    domains.boundary(false);
-    let after = hour(&bytes, &mut store, &domains.pair(), Check::Nothing);
-    assert_eq!((after.pools.reused, after.table.reused), (0, 0));
 }

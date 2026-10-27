@@ -147,7 +147,6 @@ fn capture(
     store: &mut Store,
     world: &World,
     domain: &Domain,
-    check: Check,
 ) -> (Vec<native::CountryRow>, Counts, u64, u64) {
     let memory = Counted::new(world);
     let mut rows = Vec::new();
@@ -157,7 +156,6 @@ fn capture(
         STATE,
         Buffer::Growing(&mut rows),
         domain,
-        check,
         false,
     );
     assert!(matches!(outcome, Outcome::Rows { .. }), "{outcome:?}");
@@ -177,9 +175,9 @@ fn quiet_certified_hour_reads_no_accumulator_and_equals_full_read() {
     let world = World::new(5);
     let domain = Domain::enabled(6);
     let mut store = Store::new();
-    assert_eq!(capture(&mut store, &world, &domain, Check::Nothing).3, 5);
+    assert_eq!(capture(&mut store, &world, &domain).3, 5);
     domain.boundary(false);
-    let (rows, counts, carried, reads) = capture(&mut store, &world, &domain, Check::Nothing);
+    let (rows, counts, carried, reads) = capture(&mut store, &world, &domain);
     assert_eq!(rows, full(&world));
     assert_eq!(reads, 0);
     assert_eq!(counts.read, 0);
@@ -192,47 +190,13 @@ fn a_marked_country_reads_its_accumulator_and_publishes_its_new_value() {
     let mut world = World::new(3);
     let domain = Domain::enabled(4);
     let mut store = Store::new();
-    capture(&mut store, &world, &domain, Check::Nothing);
+    capture(&mut store, &world, &domain);
     world.raw(2, Some(-700));
     domain.write(Table::Visibility, 2);
     domain.boundary(false);
-    let (rows, counts, carried, reads) = capture(&mut store, &world, &domain, Check::Nothing);
-    assert_eq!(
-        (reads, counts.read, counts.marked, counts.verified, carried),
-        (1, 1, 1, 0, 2)
-    );
+    let (rows, counts, carried, reads) = capture(&mut store, &world, &domain);
+    assert_eq!((reads, counts.read, counts.marked, carried), (1, 1, 1, 2));
     assert_eq!(rows, full(&world));
-}
-
-#[test]
-fn sampled_unmarked_raw_and_presence_changes_poison_even_when_effective_values_match() {
-    for (initial, changed) in [(Some(200_000), Some(300_000)), (None, Some(0))] {
-        let mut world = World::new(1);
-        world.raw(1, initial);
-        world.flags(definition::CLAMP_MAXIMUM, 0);
-        let domain = Domain::enabled(2);
-        let mut store = Store::new();
-        capture(&mut store, &world, &domain, Check::Nothing);
-        world.raw(1, changed);
-        domain.boundary(false);
-        let (rows, counts, carried, reads) =
-            capture(&mut store, &world, &domain, Check::burned_in(1, false));
-        assert_eq!(rows, full(&world));
-        assert_eq!(
-            (reads, carried, counts.verified, counts.mismatches),
-            (1, 0, 1, 1)
-        );
-        assert!(domain.poisoned(Table::Visibility));
-        assert_eq!(
-            domain.mismatches(Table::Visibility).first.unwrap().country,
-            1
-        );
-        assert!(store.epoch.is_none());
-        domain.boundary(false);
-        let (_, counts, _, reads) = capture(&mut store, &world, &domain, Check::Nothing);
-        assert!(counts.full);
-        assert_eq!(reads, 1);
-    }
 }
 
 #[test]
@@ -240,22 +204,20 @@ fn moved_epoch_and_uncertified_takes_read_every_country() {
     let world = World::new(3);
     let domain = Domain::enabled(4);
     let mut store = Store::new();
-    capture(&mut store, &world, &domain, Check::Nothing);
+    capture(&mut store, &world, &domain);
     domain.boundary(true);
-    let (_, counts, carried, reads) = capture(&mut store, &world, &domain, Check::Nothing);
+    let (_, counts, carried, reads) = capture(&mut store, &world, &domain);
     assert_eq!((counts.full, carried, reads), (true, 0, 3));
-    domain.mismatch(
-        Table::Visibility,
-        Mismatch {
-            country: 1,
-            field: "test",
-        },
-    );
+    // A writer that names no country moves the epoch.
+    domain.write_every(Table::Visibility);
     domain.boundary(false);
-    let (rows, counts, carried, reads) = capture(&mut store, &world, &domain, Check::Nothing);
+    let (rows, counts, carried, reads) = capture(&mut store, &world, &domain);
     assert_eq!(rows, full(&world));
     assert_eq!((counts.full, carried, reads), (true, 0, 3));
-    assert!(store.epoch.is_none());
+    domain.boundary(false);
+    let (rows, counts, carried, reads) = capture(&mut store, &world, &domain);
+    assert_eq!(rows, full(&world));
+    assert_eq!((counts.full, carried, reads), (false, 3, 0));
 }
 
 #[test]
@@ -264,7 +226,7 @@ fn effective_definition_changes_apply_without_an_accumulator_mark_or_read() {
     world.raw(1, Some(200_000));
     let domain = Domain::enabled(2);
     let mut store = Store::new();
-    capture(&mut store, &world, &domain, Check::Nothing);
+    capture(&mut store, &world, &domain);
     for (flags, selector, expected) in [
         (definition::CLAMP_MAXIMUM, 0, Some(100_000)),
         (0, 0, Some(200_000)),
@@ -274,26 +236,11 @@ fn effective_definition_changes_apply_without_an_accumulator_mark_or_read() {
         // Authenticated null eligibility callback supplies no feature bits.
         world.put(definition::ELIGIBILITY_CALLBACK_RVA, &0_u64.to_le_bytes());
         domain.boundary(false);
-        let (rows, counts, carried, reads) = capture(&mut store, &world, &domain, Check::Nothing);
+        let (rows, counts, carried, reads) = capture(&mut store, &world, &domain);
         assert_eq!(rows, full(&world));
-        assert_eq!((reads, carried, counts.mismatches), (0, 1, 0));
+        assert_eq!((reads, carried, counts.read), (0, 1, 0));
         assert_eq!(rows.first().map(|row| row.unit_modifier), expected);
     }
-}
-
-#[test]
-fn verify_compares_every_unmarked_held_country() {
-    let world = World::new(3);
-    let domain = Domain::enabled(4);
-    let mut store = Store::new();
-    capture(&mut store, &world, &domain, Check::Nothing);
-    domain.boundary(false);
-    let (rows, counts, carried, reads) = capture(&mut store, &world, &domain, Check::Every);
-    assert_eq!(rows, full(&world));
-    assert_eq!(
-        (reads, carried, counts.verified, counts.mismatches),
-        (3, 0, 3, 0)
-    );
 }
 
 #[test]
@@ -301,7 +248,7 @@ fn failed_definition_and_incomplete_output_forget_every_held_country() {
     let world = World::new(3);
     let domain = Domain::enabled(4);
     let mut store = Store::new();
-    capture(&mut store, &world, &domain, Check::Nothing);
+    capture(&mut store, &world, &domain);
     domain.boundary(false);
     let memory = Counted::new(&world);
     memory
@@ -314,13 +261,12 @@ fn failed_definition_and_incomplete_output_forget_every_held_country() {
         STATE,
         Buffer::Growing(&mut rows),
         &domain,
-        Check::Nothing,
         false,
     );
     assert!(matches!(outcome, Outcome::Unavailable { .. }));
     assert!(store.epoch.is_none());
     domain.boundary(false);
-    assert_eq!(capture(&mut store, &world, &domain, Check::Nothing).3, 3);
+    assert_eq!(capture(&mut store, &world, &domain).3, 3);
     domain.boundary(false);
     let ((outcome, _), _, _) = store.capture(
         &world,
@@ -328,13 +274,12 @@ fn failed_definition_and_incomplete_output_forget_every_held_country() {
         STATE,
         Buffer::Fixed(&mut []),
         &domain,
-        Check::Nothing,
         false,
     );
     assert!(matches!(outcome, Outcome::Truncated { .. }));
     assert!(store.epoch.is_none());
     domain.boundary(false);
-    assert_eq!(capture(&mut store, &world, &domain, Check::Nothing).3, 3);
+    assert_eq!(capture(&mut store, &world, &domain).3, 3);
 }
 
 #[test]
@@ -342,7 +287,7 @@ fn a_replaced_census_object_and_forced_refresh_read_again() {
     let mut world = World::new(1);
     let domain = Domain::enabled(2);
     let mut store = Store::new();
-    capture(&mut store, &world, &domain, Check::Nothing);
+    capture(&mut store, &world, &domain);
     // Same native id and canonical slot, a different census object.
     let replaced = object(20);
     for offset in [0, ccountry::ID, ccountry::MODIFIER_ACCUMULATOR] {
@@ -352,7 +297,7 @@ fn a_replaced_census_object_and_forced_refresh_read_again() {
     world.spans.get_mut(&COUNTRIES).unwrap()[8..16]
         .copy_from_slice(&(replaced as u64).to_le_bytes());
     domain.boundary(false);
-    let (rows, counts, carried, reads) = capture(&mut store, &world, &domain, Check::Nothing);
+    let (rows, counts, carried, reads) = capture(&mut store, &world, &domain);
     assert_eq!(rows, full(&world));
     assert_eq!((counts.read, carried), (1, 0));
     assert_eq!(reads, 1);
@@ -364,7 +309,6 @@ fn a_replaced_census_object_and_forced_refresh_read_again() {
         STATE,
         Buffer::Growing(&mut rows),
         &domain,
-        Check::Nothing,
         true,
     );
     assert_eq!((counts.full, counts.read, carried), (true, 1, 0));
@@ -383,7 +327,6 @@ fn a_full_read_keeps_metadata_before_the_next_country_and_does_not_retry_a_one_s
         STATE,
         Buffer::Growing(&mut rows),
         &domain,
-        Check::Nothing,
         false,
     );
     let trace = memory.trace.borrow();
@@ -411,7 +354,6 @@ fn a_full_read_keeps_metadata_before_the_next_country_and_does_not_retry_a_one_s
         STATE,
         Buffer::Growing(&mut rows),
         &domain,
-        Check::Nothing,
         false,
     );
     let (expected, _) = native::countries_growing(
@@ -448,7 +390,7 @@ fn advisory_store_allocation_failure_publishes_exact_rows_and_forgets_consumed_m
     let world = World::new(3);
     let domain = Domain::enabled(4);
     let mut store = Store::new();
-    capture(&mut store, &world, &domain, Check::Nothing);
+    capture(&mut store, &world, &domain);
     store.fresh = Vec::new();
     domain.write(Table::Visibility, 2);
     domain.boundary(false);
@@ -460,7 +402,6 @@ fn advisory_store_allocation_failure_publishes_exact_rows_and_forgets_consumed_m
             STATE,
             Buffer::Fixed(&mut rows),
             &domain,
-            Check::Nothing,
             false,
         )
     });
@@ -468,5 +409,5 @@ fn advisory_store_allocation_failure_publishes_exact_rows_and_forgets_consumed_m
     assert_eq!(rows[..2], full(&world));
     assert!(store.epoch.is_none());
     domain.boundary(false);
-    assert_eq!(capture(&mut store, &world, &domain, Check::Nothing).3, 3);
+    assert_eq!(capture(&mut store, &world, &domain).3, 3);
 }

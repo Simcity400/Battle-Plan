@@ -223,9 +223,8 @@ struct TacticRow {
     token_start: usize,
 }
 
-pub const ACQUISITION_PHASE_NAMES: [&str; 9] = [
+pub const ACQUISITION_PHASE_NAMES: [&str; 8] = [
     "technology_native",
-    "technology_fingerprint",
     "technology_carry",
     "technology_hold",
     "politics_finish",
@@ -237,7 +236,7 @@ pub const ACQUISITION_PHASE_NAMES: [&str; 9] = [
 
 pub struct Captured {
     profile_acquisition: bool,
-    acquisition_phases: [u64; 9],
+    acquisition_phases: [u64; 8],
     /// The tables the capture mode leaves out ([`Self::leave_out`]).
     left_out: [bool; N],
     nested_bytes: OnceLock<usize>,
@@ -299,12 +298,12 @@ pub struct Captured {
     /// Which countries the technology rows cover: the `technologies` sliced
     /// family, read in this family's country walk.
     technology_selection: SliceSelection,
-    /// This hour's technology marks and comparisons.
+    /// This hour's technology marks.
     technology_changed: crate::slicing::Changed,
     /// Which countries the focus rows cover: the `focus` sliced family, every
     /// country after the daily tick and the marked ones in between.
     focus_selection: SliceSelection,
-    /// This hour's focus marks and comparisons.
+    /// This hour's focus marks.
     focus_changed: crate::slicing::Changed,
 }
 
@@ -329,7 +328,7 @@ pub struct ResearchPart {
     bonuses: CaptureRows<engine_research::research_inputs::BonusRow>,
     modifiers: CaptureRows<engine_research::research_modifiers::Row>,
     selection: SliceSelection,
-    /// This hour's marked countries and comparisons.
+    /// This hour's marked countries.
     changed: crate::slicing::Changed,
 }
 
@@ -390,8 +389,6 @@ impl ResearchPart {
         let mut read = 0_u64;
         let mut carried = 0_u64;
         let mut ids = None;
-        // The countries this hour's sampled comparisons read whole.
-        let check = crate::sampled_verify::current_burned_in(changes.every(Table::Research));
         if enabled[0] {
             let _reads = read_accounting::table(TABLES[RESEARCH[0]]);
             let started = qpc();
@@ -451,7 +448,6 @@ impl ResearchPart {
                             epoch
                         },
                         research_digest_context(&research_context, &modifier_context),
-                        changes.every(Table::Research),
                     );
                     self.selection.scan_ticks = elapsed(scan);
                     for slot in 1..countries.count() {
@@ -475,7 +471,6 @@ impl ResearchPart {
                         let held = if enabled[2]
                             && !self.selection.force_full
                             && self.changed.carries(country.id)
-                            && !check.covers(u64::from(country.id))
                         {
                             fingerprints.drift.carry_research(
                                 memory,
@@ -512,7 +507,7 @@ impl ResearchPart {
                                     },
                                 );
                                 read += 1;
-                                self.changed.unread(fingerprints, country.id);
+                                fingerprints.drift.forget(country.id);
                                 continue;
                             }
                             drift::Carried::Miss => {}
@@ -570,12 +565,12 @@ impl ResearchPart {
                         append(&mut outcomes[0], inputs);
                         append(&mut outcomes[1], bonuses);
                         read += 1;
-                        // An incomplete read holds nothing to compare with.
+                        // An incomplete read holds nothing.
                         if [inputs, bonuses, modifiers]
                             .iter()
                             .any(|outcome| !matches!(outcome, Outcome::Rows { .. }))
                         {
-                            self.changed.unread(fingerprints, country.id);
+                            fingerprints.drift.forget(country.id);
                             continue;
                         }
                         let rows = (
@@ -583,7 +578,6 @@ impl ResearchPart {
                             written(&self.bonuses.rows, bonus_start, bonuses),
                             written(&self.modifiers.rows, modifier_start, modifiers),
                         );
-                        let groups = research_digest(rows.0, rows.1, rows.2);
                         if enabled[2] && changes_family::drifts(memory, country.pointer) {
                             fingerprints.drift.hold_research(
                                 memory,
@@ -595,30 +589,6 @@ impl ResearchPart {
                         } else {
                             fingerprints.drift.forget(country.id);
                         }
-                        let certified = self.changed.certified;
-                        if let Some((field, detail)) = self.changed.read_groups_with(
-                            fingerprints,
-                            country.id,
-                            &groups,
-                            |held| {
-                                research_mismatch(
-                                    held,
-                                    &groups,
-                                    take_available,
-                                    certified,
-                                    context.force_full,
-                                    self.selection.force_full,
-                                )
-                            },
-                        ) {
-                            changes.research_mismatch(
-                                changes_family::Mismatch {
-                                    country: country.id,
-                                    field,
-                                },
-                                detail,
-                            );
-                        }
                     }
                 }
             }
@@ -628,8 +598,6 @@ impl ResearchPart {
                 &changes_family::Counts {
                     marked: self.changed.marked() as u64,
                     read: read + carried,
-                    verified: self.changed.verified,
-                    mismatches: self.changed.mismatches,
                     full: !self.changed.certified,
                 },
                 ids,
@@ -771,7 +739,7 @@ impl Captured {
             definitions: CaptureRows::new(capacity.rows[4]),
             definitions_pending: false,
             profile_acquisition: false,
-            acquisition_phases: [0; 9],
+            acquisition_phases: [0; 8],
             politics: CaptureRows::new(capacity.rows[5]),
             parties: CaptureRows::new(capacity.rows[6]),
             party_leaders: CaptureRows::new(capacity.rows[21]),
@@ -910,16 +878,12 @@ impl Captured {
         defer_definitions: bool,
         dispatch: Option<TechnologyDispatch<'_>>,
     ) -> CaptureReport {
-        let burned_in = |every| crate::sampled_verify::Check::burned_in(context.hour, every);
         let politics = PoliticsWalk {
             leaders,
             parties,
             leader_changes: &crate::party_leader_changes::Observer,
             party_changes: &crate::party_changes::Observer,
             status: &crate::political_status_changes::Observer,
-            leader_check: burned_in(crate::party_leader_changes::VERIFY),
-            party_check: burned_in(crate::party_changes::VERIFY),
-            check: burned_in(crate::political_status_changes::VERIFY),
             force_full: context.force_full,
         };
         let ticks = self.capture_sliced_impl(
@@ -948,7 +912,7 @@ impl Captured {
         self.technology_changed.certified
     }
 
-    pub fn acquisition_phases(&self) -> Option<[u64; 9]> {
+    pub fn acquisition_phases(&self) -> Option<[u64; 8]> {
         self.profile_acquisition.then_some(self.acquisition_phases)
     }
 
@@ -1025,7 +989,7 @@ impl Captured {
 
     pub fn reset(&mut self) {
         self.definitions_pending = false;
-        self.acquisition_phases = [0; 9];
+        self.acquisition_phases = [0; 8];
         self.nested_bytes.take();
         self.focus.reset();
         self.completed.reset();
@@ -1484,7 +1448,7 @@ impl Captured {
             ticks[index] = elapsed(started);
         }
         if let Some(started) = capture_started {
-            self.acquisition_phases[6] = elapsed(started);
+            self.acquisition_phases[5] = elapsed(started);
         }
         ticks
     }
@@ -1492,10 +1456,11 @@ impl Captured {
     /// from which playback derives the cached description trees
     /// ([`replay_derive::power_balance_derive`]); no accumulator, child or getter
     /// is read. A `breakdown_witness` build also reads the native trees of
-    /// the records in this hour's sampled slice ([`BREAKDOWN_WITNESS`]).
+    /// the records in this hour's slice ([`BREAKDOWN_WITNESS`]).
     fn capture_breakdowns(&mut self, memory: &impl Memory, base: usize, state: usize, hour: i32) {
         self.nested_bytes.take();
-        let witness = crate::sampled_verify::Check::hourly(hour, false);
+        let period = replay_data::cadence::STAGGER_PERIOD;
+        let witness = |record: u32| record % period as u32 == hour.rem_euclid(period) as u32;
         let result = (|| {
             if !matches!(self.balances.outcome, Outcome::Rows { .. }) {
                 return Err("power balance modifier breakdown record census incomplete");
@@ -1522,7 +1487,7 @@ impl Captured {
                 let address = roster
                     .element(record, power_balance_record::STRIDE)
                     .ok_or("power balance modifier breakdown record address overflow")?;
-                let row = if BREAKDOWN_WITNESS && witness.covers(u64::from(record)) {
+                let row = if BREAKDOWN_WITNESS && witness(record) {
                     let tree = engine_native::modifier_breakdown::balance(memory, base, address)?;
                     rows::PowerBalanceModifierBreakdownRow {
                         record,
@@ -1555,10 +1520,9 @@ impl Captured {
 
 /// Diagnostic oracle (`breakdown_witness`, off by default): besides the
 /// sources, read the native cached power-balance trees of the records whose
-/// ordinal falls in the hour's sampled slice
-/// ([`crate::sampled_verify::Check::covers`], one in
-/// [`crate::sampled_verify::ROTATION`]), for `recorder derived` to compare
-/// with playback's derivation.
+/// ordinal falls in the hour's slice (one in
+/// [`replay_data::cadence::STAGGER_PERIOD`]), for `recorder derived` to
+/// compare with playback's derivation.
 pub const BREAKDOWN_WITNESS: bool = cfg!(feature = "breakdown_witness");
 
 fn elapsed(start: i64) -> u64 {
@@ -1601,221 +1565,6 @@ fn research_digest_context(
         };
     }
     digest.finish()
-}
-
-/// The digest of one country's complete focus read that its hooked writers
-/// certify ([`crate::slicing::Changed::read`]): the tree, selections and
-/// completed roster, without the progress and paused flag the daily tick
-/// (daily focus update) rewrites for every
-/// country.
-fn focus_digest(
-    rows: &[cnational_focus_progress::Row],
-    completed: &[cnational_focus_progress::CompletedRow],
-    text: &[u8],
-) -> u64 {
-    let mut digest = crate::slicing::Digest::new();
-    let token = |digest: &mut crate::slicing::Digest,
-                 span: Option<cnational_focus_progress::TokenSpan>| {
-        match span {
-            Some(span) => digest.u64(1).text(&text[span.start..span.start + span.len]),
-            None => digest.u64(0),
-        };
-    };
-    digest.u64(rows.len() as u64).u64(completed.len() as u64);
-    for row in rows {
-        digest
-            .u64(u64::from(row.country))
-            .i64(i64::from(row.completed_count));
-        for span in [row.tree, row.current, row.continuous] {
-            token(&mut digest, span);
-        }
-    }
-    for row in completed {
-        digest
-            .u64(u64::from(row.country))
-            .u64(u64::from(row.ordinal));
-        token(&mut digest, Some(row.token));
-    }
-    digest.finish()
-}
-
-/// The digest of one country's complete technology roster read that its
-/// hooked writers certify ([`crate::slicing::Changed::read`]): every field but
-/// the daily research slot progress advances.
-fn technology_digest(rows: &[ctechnology::Row]) -> u64 {
-    let mut digest = crate::slicing::Digest::new();
-    digest.u64(rows.len() as u64);
-    for row in rows {
-        digest
-            .u64(u64::from(row.country))
-            .u64(u64::from(row.technology_handle))
-            .i64(i64::from(row.database_index))
-            .i64(i64::from(row.applied_bonus_count))
-            .u64(u64::from(row.classifier))
-            .i64(i64::from(row.level))
-            .u64(u64::from(row.researched))
-            .i64(row.ahead_reduction_years_raw);
-    }
-    digest.finish()
-}
-
-/// The digest of one country's complete research read that its hooked
-/// writers certify ([`crate::slicing::Changed::read`]): every input but the
-/// daily drift (technology progress, advanced daily by
-/// daily research slot progress, and an idle slot's banked days)
-/// and the acquisition-only pointers, every applied bonus and every
-/// modifier row.
-fn research_digest(
-    inputs: &[engine_research::research_inputs::Row],
-    bonuses: &[engine_research::research_inputs::BonusRow],
-    modifiers: &[engine_research::research_modifiers::Row],
-) -> [u64; crate::slicing::GROUPS] {
-    use crate::slicing::Digest;
-    let mut groups: [Digest; crate::slicing::GROUPS] = std::array::from_fn(|_| Digest::new());
-    let mut counts = [0_u64; MODIFIER_KINDS];
-    for row in inputs {
-        let slot = &row.slot;
-        groups[3]
-            .i64(i64::from(row.template_year))
-            .i64(i64::from(row.template_index))
-            .i64(i64::from(row.template_max_level))
-            .text(row.token.as_bytes());
-        groups[4]
-            .u64(u64::from(slot.country))
-            .u64(u64::from(slot.index))
-            .u64(u64::from(slot.technology_handle))
-            .i64(i64::from(slot.database_index))
-            .u64(u64::from(slot.technology_present));
-        groups[5].i64(slot.research_speed_raw);
-        groups[6].i64(slot.applied_days_raw);
-        groups[7]
-            .u64(u64::from(row.classifier))
-            .i64(i64::from(row.level));
-        groups[8]
-            .i64(row.cost_raw)
-            .i64(row.cost_scale_raw)
-            .u64(u64::from(row.cost_debug));
-        groups[9].i64(row.ahead_reduction_raw);
-        groups[10].i64(row.speed_bonus_raw);
-        groups[11].u64(u64::from(row.bonus_count));
-    }
-    for row in bonuses {
-        groups[12]
-            .u64(u64::from(row.country))
-            .u64(u64::from(row.index))
-            .u64(u64::from(row.ordinal))
-            .u64(u64::from(row.technology_handle))
-            .u64(u64::from(row.resolved))
-            .i64(i64::from(row.value.id))
-            .text(row.value.name.as_bytes());
-        groups[13]
-            .i64(row.value.ahead_reduction_raw)
-            .i64(row.value.speed_bonus_raw);
-        match row.cost_reduction_raw {
-            Some(value) => groups[13].u64(1).i64(value),
-            None => groups[13].u64(0),
-        };
-    }
-    for row in modifiers {
-        let kind = row.kind as usize;
-        counts[kind] += 1;
-        groups[MODIFIER_GROUPS + kind * 3 + 1]
-            .u64(u64::from(row.country))
-            .u64(u64::from(row.index))
-            .u64(u64::from(row.ordinal))
-            .u64(u64::from(row.technology_handle))
-            .u64(kind as u64)
-            .u64(u64::from(row.source_id))
-            .text(row.name.as_bytes());
-        groups[MODIFIER_GROUPS + kind * 3 + 2]
-            .i64(row.raw)
-            .i64(row.auxiliary)
-            .u64(u64::from(row.count));
-    }
-    let mut digests = groups.map(|group| group.finish());
-    digests[..3].copy_from_slice(&[
-        inputs.len() as u64,
-        bonuses.len() as u64,
-        modifiers.len() as u64,
-    ]);
-    for (kind, count) in counts.into_iter().enumerate() {
-        digests[MODIFIER_GROUPS + kind * 3] = count;
-    }
-    digests
-}
-
-const RESEARCH_FIELDS: [&str; MODIFIER_GROUPS] = [
-    "ResearchInputs row count",
-    "ResearchAppliedBonuses row count",
-    "ResearchModifiers row count",
-    "ResearchInputs template (year, index, max level, token)",
-    "ResearchInputs slot identity (slot, technology, database index, presence)",
-    "ResearchInputs slot research_speed_raw",
-    "ResearchInputs slot applied_days_raw",
-    "ResearchInputs classifier and level",
-    "ResearchInputs cost (cost_raw, cost_scale_raw, cost_debug)",
-    "ResearchInputs ahead_reduction_raw",
-    "ResearchInputs speed_bonus_raw",
-    "ResearchInputs bonus_count",
-    "ResearchAppliedBonuses identity (slot, ordinal, technology, bonus id and name)",
-    "ResearchAppliedBonuses values (ahead reduction, speed bonus, cost reduction)",
-];
-const MODIFIER_GROUPS: usize = 14;
-const MODIFIER_KINDS: usize = crate::country_input_changes::RESEARCH_MODIFIER_KINDS;
-const _: () = assert!(MODIFIER_GROUPS + MODIFIER_KINDS * 3 == crate::slicing::GROUPS);
-const _: () =
-    assert!((engine_research::research_modifiers::Kind::GrantUses as usize) < MODIFIER_KINDS);
-
-fn research_mismatch(
-    previous: Option<&[u64; crate::slicing::GROUPS]>,
-    current: &[u64; crate::slicing::GROUPS],
-    take_available: bool,
-    certified: bool,
-    force_full: bool,
-    selection_force_full: bool,
-) -> (&'static str, crate::country_input_changes::ResearchMismatch) {
-    let first = previous.and_then(|held| held.iter().zip(current).position(|(a, b)| a != b));
-    let field = first.map_or("research rows (no held field groups)", |group| {
-        if group < MODIFIER_GROUPS {
-            RESEARCH_FIELDS[group]
-        } else {
-            match (group - MODIFIER_GROUPS) % 3 {
-                0 => "ResearchModifiers per-kind row count",
-                1 => "ResearchModifiers per-kind identity",
-                _ => "ResearchModifiers per-kind values",
-            }
-        }
-    });
-    let counts = |groups: &[u64; crate::slicing::GROUPS]| {
-        std::array::from_fn(|kind| groups[MODIFIER_GROUPS + kind * 3])
-    };
-    let mut identity = 0;
-    let mut values = 0;
-    if let Some(held) = previous {
-        for kind in 0..MODIFIER_KINDS {
-            identity |= u32::from(
-                held[MODIFIER_GROUPS + kind * 3 + 1] != current[MODIFIER_GROUPS + kind * 3 + 1],
-            ) << kind;
-            values |= u32::from(
-                held[MODIFIER_GROUPS + kind * 3 + 2] != current[MODIFIER_GROUPS + kind * 3 + 2],
-            ) << kind;
-        }
-    }
-    (
-        field,
-        crate::country_input_changes::ResearchMismatch {
-            previous_counts: previous.map(|held| held[..3].try_into().unwrap()),
-            current_counts: current[..3].try_into().unwrap(),
-            previous_modifier_counts: previous.map(counts),
-            current_modifier_counts: counts(current),
-            modifier_identity_differences: identity,
-            modifier_value_differences: values,
-            take_available,
-            certified,
-            force_full,
-            selection_force_full,
-        },
-    )
 }
 
 fn append(total: &mut Outcome, next: Outcome) {
@@ -1903,7 +1652,7 @@ struct Buffers<'a> {
     focus_changed: &'a mut crate::slicing::Changed,
 }
 struct Observation {
-    phases: [u64; 9],
+    phases: [u64; 8],
     outcomes: [Outcome; N],
     ticks: [u64; N],
     lens: [usize; 12],
@@ -1914,7 +1663,7 @@ impl Observation {
     fn new() -> Self {
         Self {
             outcomes: [Outcome::Rows { len: 0 }; N],
-            phases: [0; 9],
+            phases: [0; 8],
             ticks: [0; N],
             lens: [0; 12],
             required: [0; 12],
@@ -1994,7 +1743,7 @@ fn acquire_partitioned(
     let mut hour = politics.map(|walk| politics_hour::Hour::start(walk, base, game_state, enabled));
     let mut o = Observation::new();
     if let Some(started) = acquisition_started {
-        o.phases[7] = elapsed(started);
+        o.phases[6] = elapsed(started);
     }
     // The Daily(6) slot's census, and between slots while an owner
     // certificate waits for recovery: this walk visits every country hourly.
@@ -2089,9 +1838,6 @@ fn acquire_partitioned(
     );
     let mut technology_reads = 0_u64;
     let mut technology_carried = 0_u64;
-    // The countries this hour's sampled comparisons read whole.
-    let technology_check =
-        crate::sampled_verify::current_burned_in(changes.every(Table::Technologies));
     if enabled[2] {
         // The hooks' marks join the hour's read before any country is
         // scanned; an uncertified take reads every country.
@@ -2101,7 +1847,6 @@ fn acquire_partitioned(
             &mut *b.technology_changed,
             |visit| changes.take(Table::Technologies, visit),
             0,
-            changes.every(Table::Technologies),
         );
         o.ticks[2] += elapsed(started);
     }
@@ -2114,7 +1859,6 @@ fn acquire_partitioned(
             &mut *b.focus_changed,
             |visit| changes.take(Table::Focus, visit),
             0,
-            changes.every(Table::Focus),
         );
         o.ticks[0] += elapsed(started);
     }
@@ -2143,7 +1887,7 @@ fn acquire_partitioned(
         (Some(hour), Some(Ok(countries))) => {
             let _reads = read_accounting::table(TABLES[5]);
             let started = qpc();
-            let quiet = hour.quiet(memory, base, countries, &mut politics_tables!(b), &mut o);
+            let quiet = hour.quiet(memory, countries, &mut politics_tables!(b), &mut o);
             o.ticks[5] += elapsed(started);
             quiet
         }
@@ -2165,7 +1909,7 @@ fn acquire_partitioned(
         None
     };
     let (mut prepared, technology_roster) = preparation.map_or((None, None), |preparation| {
-        o.phases[8] = preparation.definition_ticks;
+        o.phases[7] = preparation.definition_ticks;
         (preparation.prepared, Some(preparation.roster))
     });
     let election_cache_observed = hour.as_ref().map_or(
@@ -2282,26 +2026,6 @@ fn acquire_partitioned(
                             row.token.start += text;
                         }
                         focus_reads += 1;
-                        // An incomplete read holds nothing to compare with.
-                        match (result.outcome, result.completed_outcome) {
-                            (Outcome::Rows { len }, Outcome::Rows { len: done }) => {
-                                let digest = focus_digest(
-                                    &b.focus[first..first + len],
-                                    &b.completed[completed..completed + done],
-                                    &b.focus_text[..],
-                                );
-                                if b.focus_changed.read(focus_fingerprints, country.id, digest) {
-                                    changes.mismatch(
-                                        Table::Focus,
-                                        crate::country_input_changes::Mismatch {
-                                            country: country.id,
-                                            field: "Focus and CompletedFocuses",
-                                        },
-                                    );
-                                }
-                            }
-                            _ => b.focus_changed.unread(focus_fingerprints, country.id),
-                        }
                         append(&mut o.outcomes[0], result.outcome);
                         append(&mut o.outcomes[1], result.completed_outcome);
                         o.arena(0, result.bytes_len, result.required_bytes);
@@ -2329,7 +2053,6 @@ fn acquire_partitioned(
                         let carry_started = b.profile.then(qpc);
                         let held = if !b.technology_selection.force_full
                             && b.technology_changed.carries(country.id)
-                            && !technology_check.covers(u64::from(country.id))
                         {
                             technology_fingerprints.drift.carry_technologies(
                                 memory,
@@ -2344,7 +2067,7 @@ fn acquire_partitioned(
                             drift::Carried::Miss
                         };
                         if let Some(started) = carry_started {
-                            o.phases[2] += elapsed(started);
+                            o.phases[1] += elapsed(started);
                         }
                         let result = match held {
                             drift::Carried::Rows(len) => {
@@ -2355,8 +2078,7 @@ fn acquire_partitioned(
                             // read not repeated.
                             drift::Carried::Failed(reason) => {
                                 technology_reads += 1;
-                                b.technology_changed
-                                    .unread(technology_fingerprints, country.id);
+                                technology_fingerprints.drift.forget(country.id);
                                 Outcome::Unavailable { reason }
                             }
                             drift::Carried::Miss => {
@@ -2383,37 +2105,12 @@ fn acquire_partitioned(
                                     o.phases[0] += elapsed(started);
                                 }
                                 technology_reads += 1;
-                                // An incomplete read holds nothing to compare with.
+                                // An incomplete read holds nothing.
                                 match result {
-                                    Outcome::Rows { len } => {
-                                        let rows = &b.technologies[first..first + len];
-                                        let digest_started = b.profile.then(qpc);
-                                        let digest = technology_digest(rows);
-                                        if let Some(started) = digest_started {
-                                            o.phases[1] += elapsed(started);
-                                        }
-                                        if b.technology_changed.read(
-                                            technology_fingerprints,
-                                            country.id,
-                                            digest,
-                                        ) {
-                                            changes.mismatch(
-                                                Table::Technologies,
-                                                crate::country_input_changes::Mismatch {
-                                                    country: country.id,
-                                                    field: "ResearchTechnologies",
-                                                },
-                                            );
-                                        }
-                                        if drifts() {
-                                            technology_hold = Some((first, len));
-                                        } else {
-                                            technology_fingerprints.drift.forget(country.id);
-                                        }
+                                    Outcome::Rows { len } if drifts() => {
+                                        technology_hold = Some((first, len));
                                     }
-                                    _ => b
-                                        .technology_changed
-                                        .unread(technology_fingerprints, country.id),
+                                    _ => technology_fingerprints.drift.forget(country.id),
                                 }
                                 result
                             }
@@ -2448,7 +2145,7 @@ fn acquire_partitioned(
                                 slots,
                             );
                             if let Some(started) = hold_started {
-                                o.phases[3] += elapsed(started);
+                                o.phases[2] += elapsed(started);
                             }
                         }
                         append(&mut o.outcomes[3], result);
@@ -2777,8 +2474,6 @@ fn acquire_partitioned(
             &crate::country_input_changes::Counts {
                 marked: b.focus_changed.marked() as u64,
                 read: focus_reads,
-                verified: b.focus_changed.verified,
-                mismatches: b.focus_changed.mismatches,
                 full: !b.focus_changed.certified,
             },
             None,
@@ -2796,8 +2491,6 @@ fn acquire_partitioned(
             &crate::country_input_changes::Counts {
                 marked: b.technology_changed.marked() as u64,
                 read: technology_reads + technology_carried,
-                verified: b.technology_changed.verified,
-                mismatches: b.technology_changed.mismatches,
                 full: !b.technology_changed.certified,
             },
             None,
@@ -2897,11 +2590,11 @@ fn acquire_partitioned(
         let finish_started = b.profile.then(qpc);
         hour.finish(&politics_tables!(b), &o, census);
         if let Some(started) = finish_started {
-            o.phases[4] += elapsed(started);
+            o.phases[3] += elapsed(started);
         }
     }
     if let Some(started) = acquisition_started {
-        o.phases[5] = elapsed(started);
+        o.phases[4] = elapsed(started);
     }
     o
 }

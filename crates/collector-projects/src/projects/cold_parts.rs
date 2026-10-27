@@ -310,7 +310,7 @@ mod tests {
         memory: &(impl Memory + Sync),
         state: usize,
         lanes: usize,
-    ) -> Vec<([TableView; 2], Vec<(bool, bool)>, bool, u64, u64)> {
+    ) -> Vec<([TableView; 2], Vec<(bool, bool)>, bool)> {
         let mut captured = Captured::vacant();
         let mut store = SliceFingerprints::new();
         let changes = crate::country_input_changes::Domain::enabled(100_000);
@@ -360,8 +360,6 @@ mod tests {
                     })
                     .collect(),
                 captured.project_changed.certified,
-                captured.project_changed.verified,
-                captured.project_changed.mismatches,
             ));
         }
         output

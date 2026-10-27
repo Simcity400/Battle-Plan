@@ -32,11 +32,8 @@ static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
 static PATCHED: AtomicBool = AtomicBool::new(false);
 /// The naval tree family's leader lifetime patches are enabled.
 static FORWARDED: AtomicBool = AtomicBool::new(false);
-/// Reused, read, verified and mismatched leaders, and quiet hours.
-static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried UnitLeaders rows differ from a fresh read",
-]);
+/// Reused and read leaders, and quiet hours.
+static READS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 /// Leaders the latest quiet hour visited, for off-thread sizing.
 static LEADERS: AtomicUsize = AtomicUsize::new(0);
 
@@ -112,9 +109,6 @@ pub trait Changes: Sync {
     /// cannot be observed. Equal values across hours prove that no observed
     /// writer touched it.
     fn sequence(&self, leader: usize) -> Option<(u64, u64)>;
-    /// A fresh read disagreed with a carried row: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
 }
 
 impl Changes for Watches {
@@ -123,9 +117,6 @@ impl Changes for Watches {
     }
     fn sequence(&self, leader: usize) -> Option<(u64, u64)> {
         self.registry.sequence(leader)
-    }
-    fn mismatch(&self) {
-        self.registry.poison();
     }
 }
 
@@ -138,14 +129,7 @@ impl Changes for Observer {
     fn sequence(&self, leader: usize) -> Option<(u64, u64)> {
         WATCHES.sequence(leader)
     }
-    fn mismatch(&self) {
-        WATCHES.mismatch();
-    }
 }
-
-/// Whether quiet hours read every carryable leader afresh and compare,
-/// rather than the hour's sampled slice ([`crate::sampled_verify`]).
-pub const VERIFY: bool = cfg!(feature = "unit_leader_verify");
 
 /// Notifications running now.
 pub fn active() -> usize {
@@ -178,23 +162,14 @@ pub fn collect() {
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
 }
 
 /// The decode worker publishes one quiet hour's counts and the leaders it
 /// visited.
 pub fn record(counts: &Counts, leaders: usize) {
-    for (target, value) in READS.iter().zip([
-        counts.reused,
-        counts.read,
-        counts.verified,
-        counts.mismatches,
-        1,
-    ]) {
+    for (target, value) in READS.iter().zip([counts.reused, counts.read, 1]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
     LEADERS.store(leaders, Ordering::Relaxed);
 }
 
@@ -210,20 +185,13 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "unit_leader_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_leaders": reads[0],
         "read_leaders": reads[1],
-        "verified_leaders": reads[2],
-        "mismatches": reads[3],
-        "quiet_hours": reads[4],
+        "quiet_hours": reads[2],
         "events": events,
         "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; on a quiet roster hour a leader's UnitLeaders row is carried, without reading the leader, while the role census names it at the held address for the held character and no hooked writer touched it since the held read (events: each patched site's calls, and the naval tree family's forwarded construct, copy_construct and destroy calls); every other leader is read and its row held; every quiet hour also reads the carryable leaders of its slice afresh (one in rotation_hours by leader id; every one in verify mode), publishes the fresh rows and disables reuse at the first mismatch (sampled_*); hours that read the whole roster read every leader"
+        "scope": "cumulative since attach; on a quiet roster hour a leader's UnitLeaders row is carried, without reading the leader, while the role census names it at the held address for the held character and no hooked writer touched it since the held read (events: each patched site's calls, and the naval tree family's forwarded construct, copy_construct and destroy calls); every other leader is read and its row held; hours that read the whole roster read every leader"
     })
 }
 
@@ -473,7 +441,7 @@ mod tests {
 
     /// A writer moves only the leader it names, a forwarded lifetime site
     /// too, and an exile site every leader; each counts its calls; a running
-    /// writer certifies nothing, and a mismatch poisons the domain.
+    /// writer certifies nothing.
     #[test]
     fn writers_move_their_leaders_certificates() {
         let watches = Watches::new();
@@ -500,8 +468,5 @@ mod tests {
         let running = watches.notify(0x1000, 1);
         assert!(Changes::sequence(&watches, 0x1000).is_none());
         drop(running);
-        Changes::mismatch(&watches);
-        assert!(watches.poisoned());
-        assert!(Changes::sequence(&watches, 0x1000).is_none());
     }
 }

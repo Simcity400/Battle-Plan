@@ -19,7 +19,6 @@ use crate::{
 };
 use engine_mutations::{air_base_mutations::MUTATIONS, air_base_mutations::Receiver};
 use engine_native::Memory;
-use registration::Difference;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -28,19 +27,13 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Carried, read, verified and mismatched bases.
-static READS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-/// The family's sampled comparisons.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "a carried air base's registration subtree differs from a fresh read",
-]);
+/// Carried and read bases.
+static READS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 /// State bases the latest complete pass visited, for off-thread sizing.
 static BASES: AtomicUsize = AtomicUsize::new(0);
 /// State bases whose decoded rows the decode worker appended from a walk of
 /// the same segment, and those it walked and kept.
 static DECODED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
-/// The first compared base that differed from its held subtree.
-static FIRST_MISMATCH: std::sync::OnceLock<(u64, i32, Difference)> = std::sync::OnceLock::new();
 /// [`Work`] summed over every pass: bases and QPC ticks by kind, then the
 /// spliced spans and bytes.
 static WORK: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
@@ -112,7 +105,7 @@ fn work_status() -> impl serde::Serialize {
         "fresh_state_ns": ns(work[5]),
         "spliced_spans": work[6],
         "spliced_bytes": work[7],
-        "scope": "cumulative since attach: AirBaseRegistrations acquisition by base, each base's time from the start of its registrations to its log: uncarried are host bases and every base without a store, read afresh with their carrier observer work; carried are state bases spliced from the store, with their certificate, link checks and splice (spliced_spans, spliced_bytes); fresh_state are state bases read afresh and held, sampled comparisons included",
+        "scope": "cumulative since attach: AirBaseRegistrations acquisition by base, each base's time from the start of its registrations to its log: uncarried are host bases and every base without a store, read afresh with their carrier observer work; carried are state bases spliced from the store, with their certificate, link checks and splice (spliced_spans, spliced_bytes); fresh_state are state bases read afresh and held",
     })
 }
 
@@ -249,17 +242,11 @@ pub trait Changes: Sync {
     /// cannot be observed. Equal values across hours prove that no observed
     /// writer touched the base.
     fn sequence(&self, handle: u64) -> Option<(u64, u64)>;
-    /// A fresh read disagreed with a carried subtree: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
 }
 
 impl Changes for Watches {
     fn sequence(&self, handle: u64) -> Option<(u64, u64)> {
         self.registry.sequence(usize::try_from(handle).ok()?)
-    }
-    fn mismatch(&self) {
-        self.registry.poison();
     }
 }
 
@@ -269,14 +256,7 @@ impl Changes for Observer {
     fn sequence(&self, handle: u64) -> Option<(u64, u64)> {
         WATCHES.sequence(handle)
     }
-    fn mismatch(&self) {
-        WATCHES.mismatch();
-    }
 }
-
-/// Whether captures read every carryable base afresh and compare, rather
-/// than the hour's sampled slice ([`crate::sampled_verify`]).
-pub const VERIFY: bool = cfg!(feature = "air_base_carry_verify");
 
 /// Hook path, allocation-free: `country air pool capacity setter(base, ..)`
 /// is about to change a container capacity of `base` (or its held value did
@@ -325,25 +305,13 @@ pub fn collect() {
     WATCHES.registry.collect();
 }
 
-/// A compared base `handle` differed from its held subtree at `hour`; the
-/// first one is kept for the status.
-pub fn note_mismatch(handle: u64, hour: i32, difference: Difference) {
-    let _ = FIRST_MISMATCH.set((handle, hour, difference));
-}
-
 /// A worker publishes one pass's counts and, when it completed, the state
 /// bases it visited for sizing.
 #[cfg_attr(any(test, feature = "test-support"), allow(dead_code))]
 pub fn record(counts: &registration::Counts, bases: Option<usize>) {
-    for (target, value) in READS.iter().zip([
-        counts.carried,
-        counts.read,
-        counts.verified,
-        counts.mismatches,
-    ]) {
+    for (target, value) in READS.iter().zip([counts.carried, counts.read]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
     if let Some(bases) = bases {
         BASES.store(bases, Ordering::Relaxed);
     }
@@ -365,34 +333,17 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "air_base_carry_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "carried_bases": reads[0],
         "read_bases": reads[1],
-        "verified_bases": reads[2],
-        "mismatches": reads[3],
         "decoded_reused_bases": DECODED[0].load(Ordering::Relaxed),
         "decoded_walked_bases": DECODED[1].load(Ordering::Relaxed),
         "registration_work": work_status(),
-        "first_mismatch": FIRST_MISMATCH.get().map(|(handle, hour, difference)| {
-            crate::status::status!({
-                "base": handle,
-                "hour": hour,
-                "what": difference.what,
-                "address": difference.address,
-                "length": difference.len,
-                "byte": difference.byte,
-            })
-        }),
         "events": events,
         "forwarded_capacities": WATCHES.capacities.load(Ordering::Relaxed),
         "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
         "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a state air base's AirBaseRegistrations subtree (slot vector, dense list, containers, pools, wings) is carried (carried_bases) by splicing the log spans its latest fresh read took into the hour's air bases log, when the base is at the same address, no hooked writer touched its handle since that read registered it and the hour takes its slots as that read did; its container countries' links are resolved afresh and must still name the held slots; host bases and every other base are read afresh (read_bases); every hour also reads the carryable bases of its slice afresh (one in rotation_hours by base handle; every one in verify mode) and compares them with the held subtree, disabling reuse at the first mismatch (sampled_*); the decode worker appends a base's rows from its walk of the same held segment in an earlier hour (decoded_reused_bases) and keeps the rows of each reported base it walks (decoded_walked_bases)"
+        "scope": "cumulative since attach; a state air base's AirBaseRegistrations subtree (slot vector, dense list, containers, pools, wings) is carried (carried_bases) by splicing the log spans its latest fresh read took into the hour's air bases log, when the base is at the same address, no hooked writer touched its handle since that read registered it and the hour takes its slots as that read did; its container countries' links are resolved afresh and must still name the held slots; host bases and every other base are read afresh (read_bases); the decode worker appends a base's rows from its walk of the same held segment in an earlier hour (decoded_reused_bases) and keeps the rows of each reported base it walks (decoded_walked_bases)"
     })
 }
 

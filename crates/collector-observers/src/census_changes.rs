@@ -33,11 +33,8 @@ static ENABLED: [AtomicBool; 1 + Forwarder::ALL.len()] =
     [const { AtomicBool::new(false) }; 1 + Forwarder::ALL.len()];
 static CALLS: [AtomicU64; SITES] = [const { AtomicU64::new(0) }; SITES];
 static FORWARDED: [AtomicU64; Site::ALL.len()] = [const { AtomicU64::new(0) }; Site::ALL.len()];
-/// Carried and gathered censuses, and compared rows.
-static READS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "a carried role census row differs from a fresh gather",
-]);
+/// Carried and gathered censuses.
+static READS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
 /// The families whose patches forward here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,18 +91,11 @@ impl Site {
     }
 }
 
-/// Whether the roster job gathers the whole census every hour and compares
-/// it with what it would carry, rather than the hour's slice.
-pub const VERIFY: bool = cfg!(feature = "census_verify");
-
 /// What the roster job sees of the domain.
 pub trait Changes: Sync {
     /// The domain's token: `(epoch, revision)` while observed and no writer
     /// runs.
     fn quiet(&self) -> Option<(u64, u64)>;
-    /// A carried census row differed from a fresh gather: nothing is carried
-    /// for the rest of the attachment.
-    fn mismatch(&self);
 }
 
 /// The hooks' domain.
@@ -114,18 +104,12 @@ impl Changes for Observer {
     fn quiet(&self) -> Option<(u64, u64)> {
         CENSUS.quiet()
     }
-    fn mismatch(&self) {
-        CENSUS.poison();
-    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl Changes for WatchRegistry {
     fn quiet(&self) -> Option<(u64, u64)> {
         WatchRegistry::quiet(self)
-    }
-    fn mismatch(&self) {
-        self.poison();
     }
 }
 
@@ -171,25 +155,19 @@ pub fn boundary(invalidate: bool) {
 /// One role census acquisition.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// The held census was kept, gathering only the slice.
+    /// The held census was kept without a gather.
     pub carried: bool,
     /// The whole census was gathered.
     pub gathered: bool,
-    /// Held rows compared with fresh ones, and those that differed.
-    pub compared: u64,
-    pub mismatches: u64,
 }
 
-/// The roster job already called [`Changes::mismatch`] at a difference.
 pub fn record(counts: &Counts) {
-    for (target, value) in READS.iter().zip([
-        u64::from(counts.carried),
-        u64::from(counts.gathered),
-        counts.compared,
-    ]) {
+    for (target, value) in READS
+        .iter()
+        .zip([u64::from(counts.carried), u64::from(counts.gathered)])
+    {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.compared, counts.mismatches, 0);
 }
 
 pub fn status() -> impl serde::Serialize {
@@ -204,18 +182,12 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "census_changes"),
-        "verify": VERIFY,
         "observed": CENSUS.quiet().is_some() || CENSUS.active() != 0,
         "poisoned": CENSUS.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "carried_hours": reads[0],
         "gathered_hours": reads[1],
-        "compared_rows": reads[2],
         "events": events,
-        "scope": "cumulative since attach; the roster job keeps its role census (country and role span of every rostered character) without gathering it when the census domain's token (this family's writers and the forwarded advisor-family map, parser, merge and destructor sites and roster-family scientist sites; events counts each one's calls) equals the one taken before the latest complete gather and the hour's occurrences, ids, scope and historical length are the held census's (carried_hours); it then gathers only its slice (one in rotation_hours by character id; every row in verify mode) and compares it with the held rows (compared_rows), gathering the whole census and disabling the carry at the first difference (sampled_*); other hours gather the whole census (gathered_hours)"
+        "scope": "cumulative since attach; the roster job keeps its role census (country and role span of every rostered character) without gathering it when the census domain's token (this family's writers and the forwarded advisor-family map, parser, merge and destructor sites and roster-family scientist sites; events counts each one's calls) equals the one taken before the latest complete gather and the hour's occurrences, ids, scope and historical length are the held census's (carried_hours); other hours gather the whole census (gathered_hours)"
     })
 }
 

@@ -799,13 +799,7 @@ fn visibility_waits_only_for_the_country_reset_forwarder_and_poisoning_is_local(
     domain.forwarders[Forwarder::Politics as usize].store(true, Ordering::SeqCst);
     domain.apply();
     assert!(take(&domain, Table::Visibility).0.is_some());
-    domain.mismatch(
-        Table::Visibility,
-        Mismatch {
-            country: 4,
-            field: "unit modifier raw presence/value",
-        },
-    );
+    domain.set(Table::Visibility).poison();
     assert!(domain.poisoned(Table::Visibility));
     assert!(!domain.poisoned(Table::Counters));
     assert_eq!(take(&domain, Table::Visibility).0, None);
@@ -898,51 +892,8 @@ fn faction_accumulator_certificates_cover_recalculation_and_reset_without_consum
 }
 
 #[test]
-fn research_mismatch_keeps_numeric_diagnostics_in_first_last_and_status() {
-    let domain = Domain::enabled(64);
-    let detail = ResearchMismatch {
-        previous_counts: Some([4, 2, 10]),
-        current_counts: [4, 2, 11],
-        previous_modifier_counts: Some([0; RESEARCH_MODIFIER_KINDS]),
-        current_modifier_counts: std::array::from_fn(|kind| u64::from(kind == 31)),
-        modifier_identity_differences: (1 << 25) | (1 << 31),
-        modifier_value_differences: (1 << 30) | (1 << 31),
-        take_available: true,
-        certified: true,
-        force_full: false,
-        selection_force_full: true,
-    };
-    collector_test_support::with_allocations_denied(|| {
-        domain.research_mismatch(
-            Mismatch {
-                country: 40,
-                field: "ResearchModifiers row count",
-            },
-            detail,
-        );
-    });
-    let held = domain.mismatches(Table::Research);
-    assert_eq!(held.first.unwrap().research, Some(detail));
-    assert_eq!(held.last, held.first);
-    let json = serde_json::to_value(held.first.unwrap()).unwrap();
-    assert_eq!(json["research"]["current_modifier_counts"][31], 1);
-    assert_eq!(
-        json["research"]["previous_counts"],
-        serde_json::json!([4, 2, 10])
-    );
-    assert_eq!(
-        json["research"]["modifier_value_differences"],
-        (1_u32 << 30) | (1_u32 << 31)
-    );
-    assert!(domain.poisoned(Table::Research));
-}
-
-#[test]
 fn startup_country_offer_keeps_the_seed_epoch_and_observes_writes_at_scale() {
-    let domain = Domain {
-        every: [false; SETS],
-        ..Domain::new()
-    };
+    let domain = Domain::new();
     domain.hooks.store(true, Ordering::SeqCst);
     for forwarder in &domain.forwarders {
         forwarder.store(true, Ordering::SeqCst);
@@ -971,7 +922,6 @@ fn startup_country_offer_keeps_the_seed_epoch_and_observes_writes_at_scale() {
             &mut changed,
             |visit| domain.take(table, visit),
             0,
-            false,
         );
         assert!(!changed.certified && selection.force_full);
         domain.boundary(false);
@@ -983,7 +933,6 @@ fn startup_country_offer_keeps_the_seed_epoch_and_observes_writes_at_scale() {
             &mut changed,
             |visit| domain.take(table, visit),
             0,
-            false,
         );
         assert!(changed.certified && !selection.force_full);
         assert_eq!(changed.marked(), 1);
@@ -1016,10 +965,7 @@ fn denied_startup_country_offer_stays_uncertified_and_retries_without_stopping()
     fn stopped() -> bool {
         TERMINAL.load(Ordering::SeqCst)
     }
-    let domain = Domain {
-        every: [false; SETS],
-        ..Domain::new()
-    };
+    let domain = Domain::new();
     domain.hooks.store(true, Ordering::SeqCst);
     for forwarder in &domain.forwarders {
         forwarder.store(true, Ordering::SeqCst);

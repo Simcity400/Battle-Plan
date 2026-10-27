@@ -7,12 +7,9 @@
 //! ship modifier sources) and walks each distinct accumulator once, except a
 //! country's or commander's tree whose receiver's certificate still holds
 //! ([`crate::naval_tree_changes`]): that tree is copied from the held read.
-//! The hour's sampled slice, and every carryable tree under
-//! `naval_tree_verify`, is read afresh, published and compared. Projection
-//! (per key pruning and row assembly) runs on the spool thread.
+//! Projection (per key pruning and row assembly) runs on the spool thread.
 use crate::{
     naval_tree_changes::{self, Changes, Counts, Held, Store},
-    sampled_verify::Check,
     table_conversion::unavailable,
 };
 use engine_native::{
@@ -141,7 +138,6 @@ impl Trees {
             };
             return;
         };
-        let check = crate::sampled_verify::current_burned_in(naval_tree_changes::VERIFY);
         let mut store = naval_tree_changes::take_store();
         let mut counts = Counts::default();
         match self.read(
@@ -155,7 +151,6 @@ impl Trees {
             &mut store,
             &mut counts,
             &naval_tree_changes::Observer,
-            check,
         ) {
             Ok(()) => {
                 naval_tree_changes::record(&counts);
@@ -188,7 +183,6 @@ impl Trees {
         store: &mut Box<Store>,
         counts: &mut Counts,
         changes: &impl Changes,
-        check: Check,
     ) -> Result<(), &'static str> {
         let requests = &mut self.requests;
         trees::enumerate(
@@ -239,17 +233,16 @@ impl Trees {
                     counts.receivers += 1;
                     // The certificate precedes the read it certifies.
                     let certificate = changes.sequence(request.receiver);
-                    let sampled = check.covers(request.owner);
                     let previous = held
                         .remove(&request.receiver)
                         .filter(|previous| previous.certified(certificate, accumulator));
                     match previous {
-                        Some(previous) if !sampled => {
+                        Some(previous) => {
                             self.copy_held(&previous)?;
                             counts.reused += 1;
                             store.held.insert(request.receiver, previous);
                         }
-                        previous => {
+                        None => {
                             trees::capture_tree(
                                 memory,
                                 accumulator,
@@ -259,14 +252,7 @@ impl Trees {
                                 &mut self.stack,
                             )?;
                             counts.read += 1;
-                            let fresh = self.held_copy(first, accumulator, certificate)?;
-                            if let Some(previous) = previous {
-                                counts.verified += 1;
-                                if !same_tree(&previous, &fresh) {
-                                    counts.mismatches += 1;
-                                }
-                            }
-                            if let Some(fresh) = fresh {
+                            if let Some(fresh) = self.held_copy(first, accumulator, certificate)? {
                                 store.held.insert(request.receiver, fresh);
                             }
                         }
@@ -453,21 +439,6 @@ fn range<T>(items: &[T], span: [usize; 2]) -> &[T] {
     &items[span[0]..span[0] + span[1]]
 }
 
-/// Equal preorders, values and display bytes.
-fn same_tree(held: &Held, fresh: &Option<Held>) -> bool {
-    let Some(fresh) = fresh else {
-        // Without a certificate the fresh read is not held; compare nothing.
-        return true;
-    };
-    held.nodes.len() == fresh.nodes.len()
-        && held.nodes.iter().zip(&fresh.nodes).all(|(a, b)| {
-            a.children == b.children
-                && a.values == b.values
-                && held.text.get(a.name[0]..a.name[0] + a.name[1])
-                    == fresh.text.get(b.name[0]..b.name[0] + b.name[1])
-        })
-}
-
 /// Each key's printed tree ([`rows::NavalModifierKeyTree`]): the root, every nonzero leaf with its
 /// display bytes and the interior nodes above them. A root whose native children all pruned keeps
 /// one zero child so it stays Interior  (modifier tree display prints only children once its child
@@ -649,7 +620,7 @@ mod tests {
     }
 
     /// A held tree under an unchanged certificate is copied without a read;
-    /// a moved certificate, or the sampled slice, reads it afresh.
+    /// a moved certificate reads it afresh.
     #[test]
     fn a_certified_country_tree_is_copied_and_a_moved_one_is_read() {
         let mut trees = Trees::default();
@@ -671,7 +642,7 @@ mod tests {
             },
         );
         // The certified path needs no memory: copy the held tree.
-        let roots = trees.copy_certified(&mut store, &Fixed(Some((1, 4))), Check::Nothing);
+        let roots = trees.copy_certified(&mut store, &Fixed(Some((1, 4))));
         assert_eq!(roots, Some(1));
         let projected = project(range(&trees.nodes, trees.roots[0].nodes), &trees.text).unwrap();
         assert_eq!(projected[0].nodes[0].name, b"Ideas");
@@ -685,32 +656,16 @@ mod tests {
             owner: 7,
             ..Default::default()
         });
-        assert_eq!(
-            trees.copy_certified(&mut store, &Fixed(Some((1, 6))), Check::Nothing),
-            None
-        );
-        // The sampled slice reads afresh too.
-        assert_eq!(
-            trees.copy_certified(&mut store, &Fixed(Some((1, 4))), Check::Every),
-            None
-        );
+        assert_eq!(trees.copy_certified(&mut store, &Fixed(Some((1, 6)))), None);
     }
 
     impl Trees {
         /// Test seam: the carried path of [`Trees::read`] for requests that
         /// are all certified; `None` when any would need a read.
-        fn copy_certified(
-            &mut self,
-            store: &mut Store,
-            changes: &impl Changes,
-            check: Check,
-        ) -> Option<usize> {
+        fn copy_certified(&mut self, store: &mut Store, changes: &impl Changes) -> Option<usize> {
             let requests = self.requests.clone();
             for request in requests {
                 let certificate = changes.sequence(request.receiver)?;
-                if check.covers(request.owner) {
-                    return None;
-                }
                 let held = store.held.remove(&request.receiver)?;
                 if held.certificate != certificate || held.accumulator != request.accumulator {
                     store.held.insert(request.receiver, held);

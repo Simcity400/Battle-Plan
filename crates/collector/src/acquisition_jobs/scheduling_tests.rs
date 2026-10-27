@@ -1,5 +1,5 @@
 use super::*;
-use crate::country_input_changes::{Changes, Mismatch, Table};
+use crate::country_input_changes::{Changes, Table};
 use engine_native::{Memory, walk::Outcome};
 use std::sync::{Condvar, atomic::AtomicUsize, mpsc};
 
@@ -42,12 +42,6 @@ impl Changes for Marks {
         self.0.fetch_add(1, Ordering::Relaxed);
         visit(1);
         Some(0)
-    }
-    fn mismatch(&self, _: Table, _: Mismatch) {
-        panic!("no published baseline in this fixture")
-    }
-    fn every(&self, _: Table) -> bool {
-        false
     }
 }
 fn gated(hour: i32, full: bool, raw: bool, mode: replay_data::scope::CaptureMode) -> GatedRequest {

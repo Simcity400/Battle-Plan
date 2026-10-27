@@ -1,6 +1,5 @@
 //! Local sub-unit capture: each country's local sub-unit clones and requirements, and the writer observer that lets a quiet country carry them. The host owns dispatch, loans and table assembly.
 
-use collector_certificates::sampled_verify;
 use collector_certificates::watch_registry;
 use collector_extended_support::outcomes::failed_capture;
 use collector_hooks::hook;

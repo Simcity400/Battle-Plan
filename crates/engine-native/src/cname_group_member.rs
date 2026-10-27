@@ -209,26 +209,6 @@ impl Names<'_> {
     }
 }
 
-/// The parts of a member span its recorded naming depends on, as `(offset,
-/// len)`: the vtable, type, first-name key header and hash, template
-/// reference, name cache header, order, override header and both flags.
-/// Two spans equal over these give the same inputs and cache.
-pub const RECORDED_FIELDS: [(usize, usize); 6] = [
-    (0, 12),
-    (FIRST_NAME_TEXT, 0x24),
-    (TEMPLATE_REFERENCE, 8),
-    (CACHED_NAME, 0x24),
-    (OVERRIDE_NAME, 0x20),
-    (FLAG_A, 2),
-];
-
-/// Whether two member spans are equal over [`RECORDED_FIELDS`].
-pub fn same_recorded_fields(left: &[u8; INPUT_SPAN], right: &[u8; INPUT_SPAN]) -> bool {
-    RECORDED_FIELDS
-        .iter()
-        .all(|&(at, len)| left[at..at + len] == right[at..at + len])
-}
-
 /// Every field [`inputs`] reads lies in `[vtable, FLAG_B]`, so one guarded copy acquires them.
 /// `inputs` ignores the `CACHED_NAME` cache inside that span; [`cached_name`] independently
 /// publishes its exact retained bytes.

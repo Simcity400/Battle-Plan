@@ -1066,11 +1066,11 @@ fn roots_are_the_two_location_table_headers() {
     assert_eq!(roots(&blocked, 0x1000), None);
 }
 
-/// A held status reads its rows afresh from the status alone, equal to the
+/// A touched status reads its rows afresh from the status alone, equal to the
 /// walk's rows and in the order asked, without reading a location, slot or
 /// location table.
 #[test]
-fn a_held_status_rereads_its_rows_from_the_status_alone() {
+fn a_touched_status_refreshes_its_rows_from_the_status_alone() {
     let mut bytes = fixture();
     let memory = traced(&bytes, None);
     let mut states = Vec::new();
@@ -1094,10 +1094,18 @@ fn a_held_status_rereads_its_rows_from_the_status_alone() {
     memory.spans.take();
     memory.calls.set(0);
     let mut output = vec![cbuilding::Row::default(); 1];
+    let mut fresh = [state; 3];
     assert_eq!(
-        reread(&memory, 0x1000, &[second, state, first], &mut output),
+        refresh(
+            &memory,
+            0x1000,
+            &[second, state, first],
+            &mut fresh,
+            &mut output
+        ),
         Ok(3)
     );
+    assert_eq!(fresh, [second, state, first]);
     assert_eq!(output, [provinces[1], states[0], provinces[0]]);
     // One status gather and the four building stages of the walk's batch.
     assert_eq!(memory.calls.get(), 5);
@@ -1116,43 +1124,52 @@ fn a_held_status_rereads_its_rows_from_the_status_alone() {
         );
     }
     // Nothing held: nothing read.
-    assert_eq!(reread(&memory, 0x1000, &[], &mut output), Ok(0));
+    assert_eq!(refresh(&memory, 0x1000, &[], &mut [], &mut output), Ok(0));
     assert!(memory.spans.take().is_empty());
     drop(memory);
 
     // A building write the status does not show is read as written.
     put(&mut bytes, 0x1c00 + cbuilding::LEVEL, 3_i16.to_le_bytes());
     let memory = traced(&bytes, None);
-    assert_eq!(reread(&memory, 0x1000, &[second], &mut output), Ok(1));
+    assert_eq!(
+        refresh(&memory, 0x1000, &[second], &mut fresh[..1], &mut output),
+        Ok(1)
+    );
     assert_eq!(output[0].level, 3);
     assert_ne!(output[0], provinces[1]);
     // An unreadable building fails the whole call.
     let blocked = traced(&bytes, Some(0x1000 + 0x1c00 + cbuilding::LEVEL));
     assert_eq!(
-        reread(&blocked, 0x1000, &[state, second], &mut output),
+        refresh(
+            &blocked,
+            0x1000,
+            &[state, second],
+            &mut fresh[..2],
+            &mut output
+        ),
         Err("building fields unreadable")
     );
     drop(memory);
 
-    // A status whose identity or vector headers changed is not its held read.
-    for (at, value) in [
-        (0x1490 + COUNTRY, 7_u32.to_le_bytes()),
-        (0x1490 + BUILDINGS + 12, 0_u32.to_le_bytes()),
-        (0x1490 + ACTIVE_BUILDINGS + 8, 1_u32.to_le_bytes()),
-    ] {
-        let mut changed = bytes.clone();
-        put(&mut changed, at, value);
-        let memory = traced(&changed, None);
-        assert_eq!(
-            reread(&memory, 0x1000, &[state, second], &mut output),
-            Err("held building status differs from its held read")
-        );
-    }
+    // A status whose identity changed is not its held read.
+    let mut changed = bytes.clone();
+    put(&mut changed, 0x1490 + COUNTRY, 7_u32.to_le_bytes());
+    let memory = traced(&changed, None);
+    assert_eq!(
+        refresh(
+            &memory,
+            0x1000,
+            &[state, second],
+            &mut fresh[..2],
+            &mut output
+        ),
+        Err("held building status differs from its held read")
+    );
     let mut replaced = bytes.clone();
     put(&mut replaced, 0x1490, 0_u64.to_le_bytes());
     let memory = traced(&replaced, None);
     assert_eq!(
-        reread(&memory, 0x1000, &[second], &mut output),
+        refresh(&memory, 0x1000, &[second], &mut fresh[..1], &mut output),
         Err("held building status vtable unreadable or changed")
     );
 }

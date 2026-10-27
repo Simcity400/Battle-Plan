@@ -1,6 +1,5 @@
 //! Naval combat capture: live naval combat details, their modifier trees, result details and combat sources, read in the ordinary naval part. The host owns the part's dispatch, loans and table assembly.
 
-use collector_certificates::sampled_verify;
 use collector_combat::combat_details;
 use collector_memory::read_accounting;
 use collector_memory::terminal as allocation;

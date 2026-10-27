@@ -790,7 +790,6 @@ impl Captured {
         // The slots this pass's acquisition took ([`crate::air_base_changes`]).
         let slots = cair_base::SlotMode {
             dense: job.slot_run.dense,
-            full: &job.slot_full,
         };
         let original_buffers = cair_base::RegistrationBuffers {
             registrations: &mut self.registrations.rows,

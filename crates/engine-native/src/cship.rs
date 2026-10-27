@@ -949,12 +949,6 @@ impl OrganisationMemo {
         self.country = Some((country, terms));
     }
 
-    /// Forget the held or read country terms, so the next ship or task force
-    /// reads its country's accumulator (a sampled comparison).
-    pub fn forget_country(&mut self) {
-        self.country = None;
-    }
-
     /// The latest country this capture observed and its modifier-tree terms.
     pub fn country_terms(&self) -> Option<(usize, [i64; 4])> {
         self.country
@@ -1141,12 +1135,6 @@ impl OrganisationWeather {
     /// The task force it was read for.
     pub fn task(&self) -> usize {
         self.sources[1]
-    }
-
-    /// Whether `other` was read from the same game, task force, country,
-    /// location and province definition.
-    pub fn same_sources(&self, other: &Self) -> bool {
-        self.sources == other.sources
     }
 
     /// The weather region record (an element of the weather manager's region array), whose

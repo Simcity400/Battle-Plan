@@ -11,9 +11,7 @@
 //! parent links and trait arrays is a hooked site ([`engine_mutations::character_role_mutations`],
 //! [`engine_mutations::advisor_mutations`]), and trait definitions (token and ordinal) are database objects
 //! nothing rewrites, so the fresh read would return the held rows. Scientist rows and operative
-//! links are read every hour. Every hour also reads the carryable characters of its
-//! sampled-verification slice afresh ([`crate::sampled_verify`], keyed by character id;
-//! `character_verify` takes every one), publishes the fresh rows and poisons reuse on a difference.
+//! links are read every hour.
 //!
 //! A quiet hour carries every country-leader and advisor row without a
 //! lookup: when the latest full walk held every occupant, the character
@@ -23,9 +21,7 @@
 //! identity and map header is the one read then, so every held certificate
 //! still matches. The held rows are appended in runs between the occupants
 //! with a scientist or operative, whose operative links are read as every
-//! hour; only the sampled slice of carried characters is read and compared
-//! first. A difference poisons reuse and the hour walks every occupant
-//! afresh; a slice read that fails walks every occupant too.
+//! hour.
 //!
 //! A quiet hour also carries the scientist rows that walk held when the
 //! scientist domain's token ([`Changes::scientists`],
@@ -33,10 +29,7 @@
 //! scientist pointers are that walk's (same generation), and every writer of
 //! A scientist role or its trait array  (scientist build, scientist attach,
 //! scientist clear, scientist trait add, scientist trait remove, scientist trait reset) moves that token.
-//! Scientists whose character falls in the hour's slice are read afresh and
-//! compared; under `roster_verify` every one is. A difference poisons the
-//! scientist domain and publishes the fresh row. Otherwise the scientist rows
-//! are read as every hour.
+//! Otherwise the scientist rows are read as every hour.
 //!
 //! The store follows the Gated job's loan and holds only the characters of
 //! the latest complete census walk, so its size follows the live roster.
@@ -45,13 +38,12 @@
 use crate::{
     character_changes::{Changes, Counts},
     extended::characters::census::Admitted,
-    sampled_verify::Check,
 };
 use engine_allocation as allocation;
 use engine_characters::{
-    character_inputs::CENSUS_PAGE, character_inputs::CensusWalk, character_inputs::GrowingBuffers,
-    character_inputs::MAP_SENTINEL, character_inputs::Occupant, character_inputs::OperativeRow,
-    character_inputs::Trait, character_inputs::TraitRow,
+    character_inputs::CENSUS_PAGE, character_inputs::CensusWalk, character_inputs::MAP_SENTINEL,
+    character_inputs::Occupant, character_inputs::OperativeRow, character_inputs::Trait,
+    character_inputs::TraitRow,
 };
 use engine_native::Memory;
 use std::ops::Range;
@@ -157,8 +149,6 @@ pub(crate) struct RoleStore {
     /// `scientist_rows` once complete.
     fresh_rows: Vec<TraitRow>,
     fresh_values: Vec<Trait>,
-    /// A sampled character's fresh read.
-    scratch: Scratch,
     /// Names the CharacterRoleTraits table a quiet hour publishes from the
     /// held rows and scientist rows: a fresh value whenever either changes;
     /// zero for none.
@@ -184,8 +174,6 @@ pub(crate) trait LeaderChanges: Sync {
     /// Both certificates of `leader`, registering it; `None` when either
     /// domain cannot observe it.
     fn certificate(&self, leader: usize) -> Option<[(u64, u64); 2]>;
-    /// A slice read differs from a carried row: neither domain carries.
-    fn mismatch(&self);
 }
 
 /// The hooks' domains.
@@ -198,11 +186,6 @@ impl LeaderChanges for LeaderObserver {
             crate::unit_leader_trait_changes::Observer.sequence(leader)?,
         ])
     }
-    fn mismatch(&self) {
-        use crate::unit_leader_changes::Changes;
-        crate::unit_leader_changes::Observer.mismatch();
-        crate::unit_leader_trait_changes::Observer.mismatch();
-    }
 }
 
 /// Tests: one domain stands in for both.
@@ -212,9 +195,6 @@ impl LeaderChanges for crate::unit_leader_changes::Watches {
         use crate::unit_leader_changes::Changes;
         let sequence = self.sequence(leader)?;
         Some([sequence; 2])
-    }
-    fn mismatch(&self) {
-        crate::unit_leader_changes::Changes::mismatch(self);
     }
 }
 
@@ -253,8 +233,6 @@ struct Operatives {
 pub(crate) struct OperativeCounts {
     pub carried: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
 }
 
 impl Operatives {
@@ -301,11 +279,8 @@ impl Operatives {
     }
 
     /// The census occurrence `index`'s operative link: carried from its held
-    /// read while the leader's certificates hold and `check` does not cover
-    /// the character, read afresh (and compared, when it was carryable)
-    /// otherwise; held again either way when it can be certified and its
-    /// read refused no name.
-    #[allow(clippy::too_many_arguments)]
+    /// read while the leader's certificates hold, read afresh otherwise; held
+    /// again either way when it can be certified and its read refused no name.
     fn visit(
         &mut self,
         memory: &impl Memory,
@@ -314,7 +289,6 @@ impl Operatives {
         occupant: &Occupant,
         walk: &mut CensusWalk<'_>,
         leaders: &dyn LeaderChanges,
-        check: Check,
     ) {
         if occupant.operative == 0 {
             return;
@@ -327,9 +301,7 @@ impl Operatives {
         let carryable = held
             .as_ref()
             .is_some_and(|held| held_certificate == Some(held.certificate));
-        if let Some(held) = held.as_ref().filter(|_| carryable)
-            && !check.covers(u64::from(occupant.character))
-        {
+        if let Some(held) = held.as_ref().filter(|_| carryable) {
             walk.carry_operative(
                 &held.row,
                 &self.definitions[held.definitions.clone()],
@@ -359,20 +331,9 @@ impl Operatives {
             self.scratch = text;
             return;
         };
-        // A refused name is not the leader's: the row is neither compared
-        // nor held, and the next walk reads it afresh as an uncarried walk
-        // would.
+        // A refused name is not the leader's: the row is not held, and the
+        // next walk reads it afresh as an uncarried walk would.
         let whole = row.name_reason.is_none() && row.codename_reason.is_none();
-        if let Some(held) = held.as_ref().filter(|_| carryable && whole) {
-            self.counts.verified += 1;
-            let same = held.row == row
-                && self.definitions[held.definitions.clone()] == *definitions
-                && self.text[held.text.clone()] == text[..];
-            if !same {
-                self.counts.mismatches += 1;
-                leaders.mismatch();
-            }
-        }
         if let (Some(object), Some(certificate), true) = (object, certificate, whole) {
             self.keep(
                 HeldOperative {
@@ -419,32 +380,10 @@ impl Operatives {
     }
 }
 
-/// Storage of a sampled character's fresh read.
-#[derive(Default)]
-struct Scratch {
-    rows: Vec<TraitRow>,
-    values: Vec<Trait>,
-    operatives: Vec<OperativeRow>,
-    definitions: Vec<u32>,
-    bytes: Vec<u8>,
-}
-
-impl Scratch {
-    fn measure(&self) -> usize {
-        self.rows.capacity() * size_of::<TraitRow>()
-            + self.values.capacity() * size_of::<Trait>()
-            + self.operatives.capacity() * size_of::<OperativeRow>()
-            + self.definitions.capacity() * size_of::<u32>()
-            + self.bytes.capacity()
-    }
-}
-
 /// One walk's view of the store and the observation that certifies reuse.
 pub(crate) struct RoleReuse<'a> {
     pub store: &'a mut RoleStore,
     pub changes: &'a dyn Changes,
-    /// The carryable characters this walk reads afresh and compares.
-    pub check: Check,
     /// The store content whose CharacterRoleTraits table the frame's buffers
     /// hold; a quiet hour publishing that table leaves them as they are.
     pub held: Option<u64>,
@@ -475,12 +414,7 @@ impl RoleStore {
     pub(crate) fn finish_operatives(&mut self, complete: bool) {
         self.operatives.finish(complete);
         let counts = self.operatives.counts;
-        crate::character_changes::record_operatives(
-            counts.carried,
-            counts.read,
-            counts.verified,
-            counts.mismatches,
-        );
+        crate::character_changes::record_operatives(counts.carried, counts.read);
     }
 
     #[cfg(test)]
@@ -528,7 +462,6 @@ impl RoleStore {
             + self.scientist_values.capacity() * size_of::<Trait>()
             + self.fresh_rows.capacity() * size_of::<TraitRow>()
             + self.fresh_values.capacity() * size_of::<Trait>()
-            + self.scratch.measure()
             + self.operatives.measure();
     }
 
@@ -558,11 +491,9 @@ impl RoleStore {
         scope: (usize, usize),
         token: Option<(u64, u64)>,
         census: &Admitted<'_>,
-        check: Check,
     ) -> bool {
         !self.forgotten
             && self.scope == scope
-            && check != Check::Every
             && census.generation != 0
             && token.is_some_and(|token| self.quiet == Some((token, census.generation)))
     }
@@ -587,86 +518,13 @@ impl RoleStore {
         );
     }
 
-    /// A quiet hour's slice: each carried character `check` covers is read
-    /// afresh from the census, as a full walk reads it, and compared with
-    /// its held rows.
-    fn sample(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        census: &Admitted<'_>,
-        check: Check,
-    ) -> Slice {
-        if !check.any() {
-            return Slice::Same(0);
-        }
-        let Self {
-            current, scratch, ..
-        } = self;
-        let mut walk = CensusWalk::growing(GrowingBuffers {
-            traits: &mut scratch.rows,
-            trait_values: &mut scratch.values,
-            operatives: &mut scratch.operatives,
-            definitions: &mut scratch.definitions,
-            bytes: &mut scratch.bytes,
-        });
-        let mut compared = 0;
-        let mut page = [(0_usize, Occupant::default()); CENSUS_PAGE];
-        let mut headers = [[0_u8; 16]; CENSUS_PAGE * 2];
-        let mut sentinels = [0_u8; CENSUS_PAGE * 2 * MAP_SENTINEL];
-        let mut covered = census.covered(check);
-        loop {
-            let mut len = 0;
-            for next in covered.by_ref().take(CENSUS_PAGE) {
-                let occupant = census.occurrence(next).occupant();
-                page[len] = (next, occupant);
-                headers[len * 2] = occupant.leaders;
-                headers[len * 2 + 1] = occupant.advisors;
-                len += 1;
-            }
-            if len == 0 {
-                break;
-            }
-            walk.sentinels(
-                memory,
-                &headers[..len * 2],
-                &mut sentinels[..len * 2 * MAP_SENTINEL],
-            );
-            for (slot, (_, occupant)) in page[..len].iter().enumerate() {
-                let Some(held) = current.position(occupant.pointer) else {
-                    return Slice::Failed;
-                };
-                let at = slot * 2 * MAP_SENTINEL;
-                let sentinel = |map: usize| -> [u8; MAP_SENTINEL] {
-                    sentinels[at + map * MAP_SENTINEL..][..MAP_SENTINEL]
-                        .try_into()
-                        .unwrap()
-                };
-                let from = walk.stored();
-                walk.roles(memory, base, occupant, [sentinel(0), sentinel(1)]);
-                if !walk.traits_complete() {
-                    return Slice::Failed;
-                }
-                compared += 1;
-                let (rows, values) = walk.stored_since(from);
-                let old = &current.rows[current.entries[held].rows.clone()];
-                if !same(rows, values, old, &current.values) {
-                    return Slice::Differs(compared);
-                }
-            }
-        }
-        Slice::Same(compared)
-    }
-
     /// A quiet hour's rows: every held row in runs, with the scientist row
     /// and operative link of each occupant that has one after its own rows,
     /// in roster order as a full walk appends them. The operative link is
     /// carried or read afresh ([`Operatives::visit`]); the scientist rows are carried when `scientists` (the
-    /// scientist token matched), except those `check` covers and every one
-    /// when `verify`, which are read afresh and compared. The scientist rows
+    /// scientist token matched) and read afresh otherwise. The scientist rows
     /// published are held again, so a quiet hour after a scientist write
     /// carries the rows it read.
-    #[allow(clippy::too_many_arguments)]
     fn carry_all(
         &mut self,
         memory: &impl Memory,
@@ -674,8 +532,6 @@ impl RoleStore {
         census: &Admitted<'_>,
         walk: &mut CensusWalk<'_>,
         scientists: bool,
-        verify: bool,
-        check: Check,
         leaders: &dyn LeaderChanges,
     ) -> ScientistCounts {
         let Self {
@@ -700,18 +556,11 @@ impl RoleStore {
             let occupant = census.occurrence(brk.index).occupant();
             let rows = &scientist_rows[brk.scientist.clone()];
             let from = walk.stored();
-            if scientists && !verify && !check.covers(u64::from(occupant.character)) {
+            if scientists {
                 walk.carry(rows, scientist_values);
                 counts.carried += 1;
             } else {
                 walk.scientist(memory, base, &occupant);
-                if scientists && walk.traits_complete() {
-                    counts.verified += 1;
-                    let (fresh, values) = walk.stored_since(from);
-                    if !same(fresh, values, rows, scientist_values) {
-                        counts.mismatches += 1;
-                    }
-                }
             }
             // Held again as published.
             let (published, values) = walk.stored_since(from);
@@ -733,7 +582,7 @@ impl RoleStore {
             } else {
                 counts.held = false;
             }
-            operatives.visit(memory, base, brk.index, &occupant, walk, leaders, check);
+            operatives.visit(memory, base, brk.index, &occupant, walk, leaders);
             at = brk.end;
         }
         walk.carry(&held.rows[at..], &held.values);
@@ -749,32 +598,23 @@ impl RoleStore {
     }
 
     /// A quiet hour whose CharacterRoleTraits table is the held content's
-    /// and already in the frame: whether every scientist row would be
-    /// carried, and if so the operative link of each break, carried or read
-    /// afresh ([`Operatives::visit`]).
+    /// and already in the frame: the operative link of each break, carried
+    /// or read afresh ([`Operatives::visit`]).
     fn operatives_only(
         &mut self,
         memory: &impl Memory,
         base: usize,
         census: &Admitted<'_>,
         walk: &mut CensusWalk<'_>,
-        check: Check,
         leaders: &dyn LeaderChanges,
-    ) -> bool {
+    ) {
         let Self {
             breaks, operatives, ..
         } = self;
-        if breaks
-            .iter()
-            .any(|brk| check.covers(u64::from(census.occurrence(brk.index).occupant().character)))
-        {
-            return false;
-        }
         for brk in breaks.iter() {
             let occupant = census.occurrence(brk.index).occupant();
-            operatives.visit(memory, base, brk.index, &occupant, walk, leaders, check);
+            operatives.visit(memory, base, brk.index, &occupant, walk, leaders);
         }
-        true
     }
 }
 
@@ -792,20 +632,8 @@ struct Break {
 #[derive(Clone, Copy, Debug, Default)]
 struct ScientistCounts {
     carried: u64,
-    verified: u64,
-    mismatches: u64,
     /// Every break's published scientist rows are held again.
     held: bool,
-}
-
-/// What a quiet hour's sampled slice found.
-enum Slice {
-    /// Every sampled character read as held; how many were compared.
-    Same(u64),
-    /// A sampled character differs from its held rows.
-    Differs(u64),
-    /// A sampled read did not complete; the hour walks afresh.
-    Failed,
 }
 
 /// What [`visit`] wrote into the walk.
@@ -832,111 +660,67 @@ pub(crate) fn visit(
     // Taken before any registration or read this walk certifies.
     let token = reuse.as_ref().and_then(|reuse| reuse.changes.quiet());
     let scientist_token = reuse.as_ref().and_then(|reuse| reuse.changes.scientists());
-    let mut sampled = Counts::default();
     if let Some(reuse) = reuse.as_mut()
-        && reuse
-            .store
-            .quiet_hour((base, game_state), token, &census, reuse.check)
+        && reuse.store.quiet_hour((base, game_state), token, &census)
     {
-        match reuse.store.sample(memory, base, &census, reuse.check) {
-            Slice::Same(compared) => {
-                let scientists =
-                    scientist_token.is_some() && reuse.store.scientists == scientist_token;
-                let verify = reuse.changes.scientist_verify();
-                if scientists
-                    && !verify
-                    && reuse.store.content != 0
-                    && reuse.held == Some(reuse.store.content)
-                    && reuse.store.operatives_only(
-                        memory,
-                        base,
-                        &census,
-                        walk,
-                        reuse.check,
-                        reuse.leaders,
-                    )
-                {
-                    crate::roster_changes::record(
-                        crate::roster_changes::Table::CharacterRoleTraits,
-                        &crate::roster_changes::Counts {
-                            quiet: true,
-                            ..Default::default()
-                        },
-                    );
-                    let store = &mut *reuse.store;
-                    store.counts = Counts {
-                        reused: census.len() as u64 - compared,
-                        read: compared,
-                        verified: compared,
-                        mismatches: 0,
-                        quiet: true,
-                    };
-                    store.measure();
-                    crate::character_changes::record(
-                        crate::character_changes::Table::CharacterRoleTraits,
-                        &store.counts,
-                    );
-                    return Visited::Held;
-                }
-                let counts = reuse.store.carry_all(
-                    memory,
-                    base,
-                    &census,
-                    walk,
-                    scientists,
-                    verify,
-                    reuse.check,
-                    reuse.leaders,
-                );
-                if counts.mismatches != 0 {
-                    // A scientist write no hook saw: the fresh rows are
-                    // published, and scientists are read afresh from now on.
-                    reuse.changes.scientist_mismatch();
-                }
-                // The published scientist rows were read or carried after
-                // this hour's token was taken.
-                reuse.store.scientists = scientist_token.filter(|_| counts.held);
-                crate::roster_changes::record(
-                    crate::roster_changes::Table::CharacterRoleTraits,
-                    &crate::roster_changes::Counts {
-                        quiet: scientists && !verify,
-                        read: !scientists || verify,
-                        verified: counts.verified,
-                        mismatches: counts.mismatches,
-                    },
-                );
-                if walk.traits_complete() {
-                    let store = &mut *reuse.store;
-                    store.counts = Counts {
-                        reused: census.len() as u64 - compared,
-                        read: compared,
-                        verified: compared,
-                        mismatches: 0,
-                        quiet: true,
-                    };
-                    store.measure();
-                    crate::character_changes::record(
-                        crate::character_changes::Table::CharacterRoleTraits,
-                        &store.counts,
-                    );
-                    return Visited::Walked;
-                }
-                // A scientist row failed or the rows did not fit: the
-                // table publishes that outcome, and nothing is held.
-                reuse.store.forget();
-                reuse.store.begin((base, game_state));
-                reuse.store.finish(false);
-                return Visited::Walked;
-            }
-            Slice::Differs(compared) => {
-                // A missed write: nothing certifies reuse any more, and this
-                // hour reads and publishes every character afresh.
-                sampled.verified = compared;
-                sampled.mismatches = 1;
-                reuse.changes.mismatch();
-            }
-            Slice::Failed => {}
+        let scientists = scientist_token.is_some() && reuse.store.scientists == scientist_token;
+        if scientists && reuse.store.content != 0 && reuse.held == Some(reuse.store.content) {
+            reuse
+                .store
+                .operatives_only(memory, base, &census, walk, reuse.leaders);
+            crate::roster_changes::record(
+                crate::roster_changes::Table::CharacterRoleTraits,
+                &crate::roster_changes::Counts {
+                    quiet: true,
+                    ..Default::default()
+                },
+            );
+            let store = &mut *reuse.store;
+            store.counts = Counts {
+                reused: census.len() as u64,
+                quiet: true,
+                ..Default::default()
+            };
+            store.measure();
+            crate::character_changes::record(
+                crate::character_changes::Table::CharacterRoleTraits,
+                &store.counts,
+            );
+            return Visited::Held;
         }
+        let counts = reuse
+            .store
+            .carry_all(memory, base, &census, walk, scientists, reuse.leaders);
+        // The published scientist rows were read or carried after
+        // this hour's token was taken.
+        reuse.store.scientists = scientist_token.filter(|_| counts.held);
+        crate::roster_changes::record(
+            crate::roster_changes::Table::CharacterRoleTraits,
+            &crate::roster_changes::Counts {
+                quiet: scientists,
+                read: !scientists,
+            },
+        );
+        if walk.traits_complete() {
+            let store = &mut *reuse.store;
+            store.counts = Counts {
+                reused: census.len() as u64,
+                quiet: true,
+                ..Default::default()
+            };
+            store.measure();
+            crate::character_changes::record(
+                crate::character_changes::Table::CharacterRoleTraits,
+                &store.counts,
+            );
+            return Visited::Walked;
+        }
+        // A scientist row failed or the rows did not fit: the
+        // table publishes that outcome, and nothing is held.
+        reuse.store.forget();
+        reuse.store.begin((base, game_state));
+        reuse.store.finish(false);
+        return Visited::Walked;
     }
     if let Some(reuse) = reuse.as_mut() {
         reuse.store.begin((base, game_state));
@@ -960,7 +744,7 @@ pub(crate) fn visit(
             let plan = reuse
                 .as_ref()
                 .map_or_else(Plan::default, |reuse| plan(reuse, &occupant));
-            if !plan.carry {
+            if plan.held.is_none() {
                 headers[fresh * 2] = occupant.leaders;
                 headers[fresh * 2 + 1] = occupant.advisors;
                 fresh += 1;
@@ -977,13 +761,13 @@ pub(crate) fn visit(
         for (occupant, plan) in page[..len].iter().zip(&plans[..len]) {
             let from = walk.stored();
             match (reuse.as_mut(), plan.held) {
-                (Some(reuse), Some(index)) if plan.carry => {
+                (Some(reuse), Some(index)) => {
                     let previous = &reuse.store.previous;
                     let rows = previous.entries[index].rows.clone();
                     walk.carry(&previous.rows[rows], &previous.values);
                     reuse.store.counts.reused += 1;
                 }
-                (reuse, held) => {
+                (reuse, _) => {
                     let at = next * 2 * MAP_SENTINEL;
                     let sentinel = |map: usize| -> [u8; MAP_SENTINEL] {
                         sentinels[at + map * MAP_SENTINEL..][..MAP_SENTINEL]
@@ -994,17 +778,6 @@ pub(crate) fn visit(
                     next += 1;
                     if let Some(reuse) = reuse {
                         reuse.store.counts.read += 1;
-                        // A failed fresh read fails the table and holds nothing.
-                        if let Some(index) = held.filter(|_| walk.traits_complete()) {
-                            reuse.store.counts.verified += 1;
-                            let previous = &reuse.store.previous;
-                            let (rows, values) = walk.stored_since(from);
-                            let old = &previous.rows[previous.entries[index].rows.clone()];
-                            if !same(rows, values, old, &previous.values) {
-                                reuse.store.counts.mismatches += 1;
-                                reuse.changes.mismatch();
-                            }
-                        }
                     }
                 }
             }
@@ -1043,15 +816,12 @@ pub(crate) fn visit(
                 }
             }
             match reuse.as_mut() {
-                Some(reuse) => reuse.store.operatives.visit(
-                    memory,
-                    base,
-                    index,
-                    occupant,
-                    walk,
-                    reuse.leaders,
-                    reuse.check,
-                ),
+                Some(reuse) => {
+                    reuse
+                        .store
+                        .operatives
+                        .visit(memory, base, index, occupant, walk, reuse.leaders)
+                }
                 None => walk.operative(memory, base, occupant),
             }
             index += 1;
@@ -1060,19 +830,15 @@ pub(crate) fn visit(
     if let Some(reuse) = reuse {
         let store = reuse.store;
         let complete = walk.traits_complete();
-        store.counts.verified += sampled.verified;
-        store.counts.mismatches += sampled.mismatches;
         store.finish(complete);
         // Every occupant held under one certificate each (a duplicated
         // pointer dropped its entries and is read afresh), with this walk's
-        // census and no mismatch: a quiet hour carries the whole table.
+        // census: a quiet hour carries the whole table.
         store.quiet = token
             .filter(|_| {
                 complete
                     && held_all
                     && census.generation != 0
-                    && reuse.check != Check::Every
-                    && store.counts.mismatches == 0
                     && store.current.entries.len() == census.len()
             })
             .map(|token| (token, census.generation));
@@ -1098,10 +864,9 @@ pub(crate) fn visit(
 #[derive(Clone, Copy, Default)]
 struct Plan {
     certificate: Option<Certificate>,
-    /// The previous walk's entry this certificate matches.
+    /// The previous walk's entry this certificate matches, carried instead
+    /// of reading.
     held: Option<usize>,
-    /// Carry that entry instead of reading.
-    carry: bool,
 }
 
 fn plan(reuse: &RoleReuse<'_>, occupant: &Occupant) -> Plan {
@@ -1121,19 +886,5 @@ fn plan(reuse: &RoleReuse<'_>, occupant: &Occupant) -> Plan {
         let index = previous.position(certificate.pointer)?;
         (previous.entries[index].certificate == certificate).then_some(index)
     });
-    Plan {
-        certificate,
-        held,
-        carry: held.is_some() && !reuse.check.covers(u64::from(occupant.character)),
-    }
-}
-
-/// Fresh rows equal held ones, positions aside.
-fn same(rows: &[TraitRow], values: &[Trait], held: &[TraitRow], held_values: &[Trait]) -> bool {
-    rows.len() == held.len()
-        && rows.iter().zip(held).all(|(row, old)| {
-            (row.character, row.role, row.len) == (old.character, old.role, old.len)
-                && values[row.start..row.start + row.len]
-                    == held_values[old.start..old.start + old.len]
-        })
+    Plan { certificate, held }
 }

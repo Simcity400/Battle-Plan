@@ -6,16 +6,14 @@
 //! site list writer marked since the previous hour ([`crate::raid_changes`],
 //! [`SliceSelection::mark`]), so it equals the game's at every hour. A take
 //! that does not certify the previous hour's read reads every country
-//! ([`SliceSelection::certify`]), and every country read and not marked
-//! compares its RaidAirSites rows with its previous read
-//! ([`SliceSelection::compare`]): a difference disables the marks.
+//! ([`SliceSelection::certify`]).
 //! RaidCountryInputs, AceRangeInputs, StockpileArchetypes (the essential
 //! stock, capped) and CountryCommandPower, which the stability dashboard
 //! also reads, are read for every country each hour in the same walk.
 use crate::{
     clock::qpc,
     raid_changes::{Changes, Counts, Family},
-    slicing::{Digest, SliceFingerprints, SliceSelection},
+    slicing::{SliceFingerprints, SliceSelection},
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, unavailable},
 };
@@ -111,8 +109,6 @@ pub struct Captured {
     /// The raid types' essential archetypes, read each walk; the storage is
     /// kept.
     essentials: Vec<native::Essential>,
-    /// Each read country's RaidAirSites digest, ascending.
-    hashes: Vec<(u32, u64)>,
     /// Modifier metadata, read once per walk; its storage is kept.
     memo: engine_native::modifier_definition::DefinitionMemo,
     volunteer_air: native::VolunteerAir,
@@ -151,7 +147,6 @@ impl Captured {
             reservations: Arena::new(capacity.reservations),
             command_power: CaptureRows::new(capacity.command_power),
             selection: SliceSelection::new(capacity.rows[0] != 0),
-            hashes: Vec::new(),
             essentials: Vec::new(),
             memo: Default::default(),
             volunteer_air: Default::default(),
@@ -173,7 +168,6 @@ impl Captured {
             + self.aces.allocated_bytes()
             + self.reservations.allocated_bytes()
             + self.command_power.allocated_bytes()
-            + self.hashes.capacity() * size_of::<(u32, u64)>()
             + self.essentials.capacity() * size_of::<native::Essential>()
             + self.memo.allocated_bytes()
     }
@@ -278,11 +272,7 @@ impl Captured {
                 Some(Ok(country)) => selection.mark(country.canonical_slot),
                 _ => resolved = false,
             });
-            selection.certify(
-                store,
-                epoch.filter(|_| resolved),
-                crate::raid_changes::VERIFY,
-            );
+            selection.certify(store, epoch.filter(|_| resolved));
             self.selection.scan_ticks = qpc().saturating_sub(scan).max(0) as u64;
         }
         // The launch keys are fixed built-ins, checked by the fixed layout
@@ -332,25 +322,16 @@ impl Captured {
         self.aces.outcome = walk.aces;
         self.reservations.len = walk.reservations_len;
         self.reservations.required = walk.required_reservations;
-        if let Some(owners) = owners {
-            self.compare_sites(owners, links);
+        if owners.is_some() {
+            self.record_sites(links);
         }
         let mut ticks = [0; N];
         ticks[0] = qpc().saturating_sub(started).max(0) as u64;
         ticks
     }
 
-    /// Compare every country this hour read and no site list writer marked
-    /// with its previous read, disable the marks at a difference, and record
-    /// the hour's counts.
-    fn compare_sites(&mut self, owners: Owners<'_>, links: Option<usize>) {
-        let complete = matches!(self.sites.outcome, Outcome::Rows { .. }) && self.site_hashes();
-        let (verified, mismatches) = self
-            .selection
-            .compare(owners.store, complete.then_some(&self.hashes[..]));
-        if mismatches != 0 {
-            owners.changes.mismatch(Family::Sites);
-        }
+    /// Record the hour's counts.
+    fn record_sites(&self, links: Option<usize>) {
         crate::raid_changes::record(
             Family::Sites,
             &Counts {
@@ -358,40 +339,11 @@ impl Captured {
                 read: self.selection.read_owners().count() as u64,
                 early: u64::from(self.selection.marked_early()),
                 full: self.selection.force_full,
-                verified,
-                mismatches,
             },
             links,
         );
     }
 
-    /// The RaidAirSites digest of every country this hour read, rows or
-    /// none, ascending; `false` when they do not fit.
-    fn site_hashes(&mut self) -> bool {
-        self.hashes.clear();
-        let rows = &self.sites.rows[..self.sites.outcome.len()];
-        let mut at = 0;
-        for owner in self.selection.read_owners() {
-            while rows.get(at).is_some_and(|row| row.canonical_slot < owner) {
-                at += 1;
-            }
-            let mut digest = Digest::new();
-            while let Some(row) = rows.get(at).filter(|row| row.canonical_slot == owner) {
-                digest
-                    .u64(u64::from(row.ordinal))
-                    .u64(u64::from(row.list))
-                    .u64(row.base)
-                    .u64(u64::from(row.container_capacity_raw.is_some()))
-                    .i64(row.container_capacity_raw.unwrap_or(0));
-                at += 1;
-            }
-            if engine_allocation::reserve(&mut self.hashes, 1).is_err() {
-                return false;
-            }
-            self.hashes.push((owner, digest.finish()));
-        }
-        true
-    }
     pub fn outcomes(&self) -> [Outcome; N] {
         [
             self.countries.outcome,
@@ -581,65 +533,5 @@ mod tests {
         selection.reset(8, false);
         scan(&mut selection, &mut store, 49);
         assert_eq!(selection.early_count, 0);
-    }
-
-    /// No writer runs; a mismatch is reported.
-    struct Quiet(std::sync::atomic::AtomicBool);
-    impl Changes for Quiet {
-        fn take(&self, _: Family, _: &mut dyn FnMut(usize)) -> Option<u64> {
-            Some(1)
-        }
-        fn mismatch(&self, family: Family) {
-            assert_eq!(family, Family::Sites);
-            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
-
-    /// Each read country's RaidAirSites rows are compared with its previous
-    /// read in the same epoch: a site that changed without a mark, or a
-    /// capacity, is a write no hook saw and disables the marks; an unchanged
-    /// country, or one with no sites, compares equal.
-    #[test]
-    fn an_unmarked_country_whose_sites_changed_disables_the_marks() {
-        let mut captured = Captured::with_capacities(&Capacities {
-            rows: [0, 0, 2, 0],
-            reservations: 0,
-            command_power: 0,
-        });
-        let mut store = SliceFingerprints::new();
-        let site = |slot, base, capacity| native::SiteRow {
-            canonical_slot: slot,
-            ordinal: 0,
-            list: 0,
-            base,
-            container_capacity_raw: capacity,
-        };
-        let changes = Quiet(std::sync::atomic::AtomicBool::new(false));
-        let mut hour = |captured: &mut Captured, rows: &[native::SiteRow]| {
-            captured.selection = SliceSelection::for_test(0, true, &[]).with_census(&[3, 5, 7]);
-            captured.selection.certify(&mut store, Some(1), false);
-            captured.sites.rows[..rows.len()].copy_from_slice(rows);
-            captured.sites.outcome = Outcome::Rows { len: rows.len() };
-            captured.compare_sites(
-                Owners {
-                    store: &mut store,
-                    changes: &changes,
-                },
-                None,
-            );
-            changes.0.load(std::sync::atomic::Ordering::Relaxed)
-        };
-        assert!(!hour(
-            &mut captured,
-            &[site(3, 0x41, Some(100_000)), site(5, 0x42, None)]
-        ));
-        assert!(!hour(
-            &mut captured,
-            &[site(3, 0x41, Some(100_000)), site(5, 0x42, None)]
-        ));
-        assert!(hour(
-            &mut captured,
-            &[site(3, 0x41, Some(0)), site(5, 0x42, None)]
-        ));
     }
 }

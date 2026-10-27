@@ -5,7 +5,7 @@
 //! new to the census or whose last read was not published, and every country
 //! a hooked writer marked since the previous hour
 //! ([`crate::country_input_changes`]); a quiet country costs no read until
-//! its slice, which compares it with its last read. It runs in its own pool
+//! its slice. It runs in its own pool
 //! job of the first burst, the Stability job, beside Slow; the family's store
 //! is loaned with that job.
 use crate::{
@@ -86,7 +86,7 @@ pub struct Captured {
     memo: native::Memo,
     /// Which countries this hour's rows cover.
     selection: SliceSelection,
-    /// This hour's marked countries and comparisons.
+    /// This hour's marked countries.
     changed: Changed,
     /// Tracked keys, resolved once per modifier definition table header.
     keys: Option<native::Keys>,
@@ -299,7 +299,6 @@ impl Captured {
                     epoch
                 },
                 context.digest(),
-                changes.every(Table::Stability),
             );
             self.selection.scan_ticks = qpc().saturating_sub(started).max(0) as u64;
         }
@@ -346,27 +345,10 @@ impl Captured {
             self.bytes.len += walk.bytes_len;
             lines = combine(lines, walk.lines)?;
             read += 1;
-            if let Some(fingerprints) = fingerprints.as_deref_mut() {
-                // A truncated read holds nothing to compare with.
-                if !matches!(walk.lines, Outcome::Rows { .. }) {
-                    self.changed.unread(fingerprints, country.id);
-                } else if self.changed.read(
-                    fingerprints,
-                    country.id,
-                    digest(
-                        &input,
-                        self.lines.rows.get(start..lines.len()).unwrap_or(&[]),
-                        self.bytes.first.get(..self.bytes.len).unwrap_or(&[]),
-                    ),
-                ) {
-                    changes.mismatch(
-                        Table::Stability,
-                        crate::country_input_changes::Mismatch {
-                            country: country.id,
-                            field: "CountryStabilityInputs and CountryStabilityLines",
-                        },
-                    );
-                }
+            if let Some(fingerprints) = fingerprints.as_deref_mut()
+                && !matches!(walk.lines, Outcome::Rows { .. })
+            {
+                self.changed.unread(fingerprints, country.id);
             }
             if self.inputs.rows.len() <= inputs {
                 engine_allocation::resize_default(
@@ -389,8 +371,6 @@ impl Captured {
                 &changes::Counts {
                     marked: self.changed.marked() as u64,
                     read,
-                    verified: self.changed.verified,
-                    mismatches: self.changed.mismatches,
                     full: !self.changed.certified,
                 },
                 ids,
@@ -502,62 +482,6 @@ impl Captured {
         });
         [inputs, lines]
     }
-}
-
-/// The digest of one country's rows that its hooked writers certify
-/// ([`slicing::Changed::read`]): every input but the daily drift (ruling
-/// party popularity, rewritten by the daily politics update; the
-/// coastal term, stored once a day; the interception window,
-/// advanced daily by history cursor advance), and every tree line with the bytes of its
-/// identity and display text (`bytes`, the read's arena).
-fn digest(input: &native::InputRow, lines: &[native::LineRow], bytes: &[u8]) -> u64 {
-    let mut digest = slicing::Digest::new();
-    digest
-        .u64(u64::from(input.country))
-        .i64(input.stability_raw)
-        .i64(input.war_support_raw)
-        .u64(u64::from(input.at_war))
-        .u64(u64::from(input.offensive_war))
-        .u64(u64::from(input.defensive_war))
-        .i64(input.propaganda_stability_q15)
-        .i64(input.bombing_q15)
-        .i64(input.heroes_q15)
-        .i64(input.convoys_q15)
-        .i64(input.propaganda_war_support_q15)
-        .u64(u64::from(input.children));
-    match input.manpower.host {
-        Some(host) => digest.u64(1).i64(i64::from(host)),
-        None => digest.u64(0),
-    };
-    for total in input.totals {
-        match total {
-            Some(value) => digest.u64(1).i64(value),
-            None => digest.u64(0),
-        };
-    }
-    let text = |span: native::Span| {
-        span.start
-            .checked_add(span.len)
-            .and_then(|end| bytes.get(span.start..end))
-    };
-    digest.u64(lines.len() as u64);
-    for line in lines {
-        digest
-            .u64(u64::from(line.country))
-            .u64(u64::from(line.line))
-            .u64(u64::from(line.key))
-            .u64(u64::from(kind(line.kind)))
-            .u64(u64::from(line.identity_id))
-            .i64(line.secondary)
-            .i64(line.value);
-        for span in [line.identity, line.text] {
-            match text(span) {
-                Some(text) => digest.u64(1).text(text),
-                None => digest.u64(0),
-            };
-        }
-    }
-    digest.finish()
 }
 
 fn kind(kind: native::Kind) -> u8 {
@@ -840,79 +764,5 @@ mod tests {
             })
         );
         let _ = TableRows::empty(TableId::CountryStabilityLines);
-    }
-
-    /// The digest a slice read compares covers every certified input and
-    /// every line with its text bytes, and leaves out only the daily drift.
-    #[test]
-    fn the_digest_leaves_out_only_the_daily_drift() {
-        let input = native::InputRow {
-            country: 7,
-            stability_raw: 500,
-            ..Default::default()
-        };
-        let bytes = b"idea_aDec".to_vec();
-        let lines = [native::LineRow {
-            country: 7,
-            line: 0,
-            key: 0x8d,
-            kind: native::Kind::Idea,
-            identity: native::Span { start: 0, len: 6 },
-            value: 10_000,
-            ..Default::default()
-        }];
-        let base = digest(&input, &lines, &bytes);
-        assert_eq!(digest(&input, &lines, &bytes), base);
-        for drift in [
-            native::InputRow {
-                ruling_party_popularity_raw: 1,
-                ..input
-            },
-            native::InputRow {
-                coastal_protection_stability_raw: 1,
-                ..input
-            },
-            native::InputRow {
-                interception_sum_raw: 1,
-                ..input
-            },
-        ] {
-            assert_eq!(digest(&drift, &lines, &bytes), base);
-        }
-        for changed in [
-            native::InputRow {
-                stability_raw: 501,
-                ..input
-            },
-            native::InputRow {
-                at_war: true,
-                ..input
-            },
-            native::InputRow {
-                bombing_q15: 1,
-                ..input
-            },
-            native::InputRow {
-                children: 1,
-                ..input
-            },
-            native::InputRow {
-                totals: [Some(0); native::TOTALS],
-                ..input
-            },
-        ] {
-            assert_ne!(digest(&changed, &lines, &bytes), base);
-        }
-        let mut line = lines[0];
-        line.value = 10_001;
-        assert_ne!(digest(&input, &[line], &bytes), base);
-        assert_ne!(digest(&input, &lines, b"idea_bDec"), base);
-        assert_ne!(digest(&input, &[], &bytes), base);
-        // The same text at another arena offset is the same row.
-        let moved = native::LineRow {
-            identity: native::Span { start: 3, len: 6 },
-            ..lines[0]
-        };
-        assert_eq!(digest(&input, &[moved], b"xxxidea_a"), base);
     }
 }

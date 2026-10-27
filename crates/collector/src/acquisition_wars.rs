@@ -8,18 +8,13 @@
 //! since, so that walk's rows and war pointers still stand, and the hour
 //! publishes them with each war's casualty counters read afresh
 //! ([`cwar_relation::read_casualties`]), one guarded copy per batch of wars,
-//! without validating any war. The domain's hour of the rotation
-//! ([`crate::sampled_verify`], keyed by the table; every quiet hour under
-//! `war_verify`) walks instead and compares the walk with what it would
-//! carry; a difference poisons the domain. A walk is held only when it
-//! completed, recorded every row's war and the token stood still across it;
-//! a failed job forgets the store, and a casualty read that fails walks.
-//! Allocation is advisory: a store that cannot grow holds nothing.
+//! without validating any war. A walk is held only when it completed,
+//! recorded every row's war and the token stood still across it; a failed
+//! job forgets the store, and a casualty read that fails walks. Allocation is
+//! advisory: a store that cannot grow holds nothing.
 
 use crate::{
-    acquisition_gather,
-    sampled_verify::Check,
-    sampling,
+    acquisition_gather, sampling,
     war_changes::{Changes, Counts},
 };
 use engine_allocation as allocation;
@@ -34,9 +29,6 @@ pub(crate) struct Request {
     /// Held rows ([`WarStore`]); absent walks every hour and holds nothing.
     pub store: Option<Box<WarStore>>,
 }
-
-/// The rotation key of the domain's daily comparison.
-const ROTATION_KEY: u64 = replay_data::rows::TableId::WarRelations as u64;
 
 /// What a quiet hour must find unchanged since the held walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,10 +47,9 @@ pub(crate) struct WarStore {
     countries: Vec<(usize, u32, u32)>,
     /// The key taken before it; `None` holds nothing.
     key: Option<Key>,
-    /// The hour's census, walked wars and carried rows.
+    /// The hour's census and walked wars.
     census: Vec<(usize, u32, u32)>,
     walked: Vec<usize>,
-    carried: Vec<cwar_relation::Row>,
 }
 
 impl WarStore {
@@ -68,7 +59,7 @@ impl WarStore {
     }
 
     pub(crate) fn allocated_bytes(&self) -> usize {
-        (self.rows.capacity() + self.carried.capacity()) * size_of::<cwar_relation::Row>()
+        self.rows.capacity() * size_of::<cwar_relation::Row>()
             + (self.wars.capacity() + self.walked.capacity()) * size_of::<usize>()
             + (self.countries.capacity() + self.census.capacity()) * size_of::<(usize, u32, u32)>()
     }
@@ -135,7 +126,6 @@ impl WarStore {
         rows: &mut Vec<cwar_relation::Row>,
         snapshot: &mut cwar_relation::OwnedSnapshotScratch,
         changes: &dyn Changes,
-        check: Check,
     ) -> (Outcome, Counts) {
         let key = changes.quiet().map(|token| Key {
             token,
@@ -143,8 +133,7 @@ impl WarStore {
         });
         let census = self.take_census(countries, base, game_state);
         let matched = key.is_some() && self.key == key && census && self.census == self.countries;
-        let compare = matched && check.covers(ROTATION_KEY);
-        if matched && !compare && self.carry(memory, rows) {
+        if matched && self.carry(memory, rows) {
             let len = rows.len();
             let counts = Counts {
                 quiet: true,
@@ -152,8 +141,6 @@ impl WarStore {
             };
             return (Outcome::Rows { len }, counts);
         }
-        let mut carried = std::mem::take(&mut self.carried);
-        let compare = compare && self.carry(memory, &mut carried);
         let outcome = cwar_relation::walk_owned_growing(
             memory,
             countries,
@@ -163,28 +150,13 @@ impl WarStore {
             snapshot,
             Some(&mut self.walked),
         );
-        let mut counts = Counts {
+        let counts = Counts {
             read: true,
-            compared: compare,
-            compared_wars: if compare { carried.len() as u64 } else { 0 },
             ..Counts::default()
         };
-        // A quiet hour the walk does not reproduce is a write no hook saw.
-        if compare
-            && (outcome != (Outcome::Rows { len: carried.len() })
-                || rows[..carried.len()] != carried[..]
-                || self.walked != self.wars)
-        {
-            counts.mismatches = 1;
-            changes.mismatch();
-        }
-        self.carried = carried;
         match (key, outcome) {
             (Some(key), Outcome::Rows { len })
-                if census
-                    && self.walked.len() == len
-                    && counts.mismatches == 0
-                    && changes.quiet() == Some(key.token) =>
+                if census && self.walked.len() == len && changes.quiet() == Some(key.token) =>
             {
                 self.hold(&rows[..len], key);
             }
@@ -242,7 +214,6 @@ impl Request {
                     rows,
                     snapshot,
                     &crate::war_changes::Observer,
-                    crate::sampled_verify::current_burned_in(crate::war_changes::VERIFY),
                 );
                 crate::war_changes::record(&counts);
                 outcome
@@ -425,20 +396,14 @@ mod tests {
         }
     }
 
-    /// The war domain for a store test: a token the test moves and the
-    /// mismatches the store reported.
+    /// The war domain for a store test: a token the test moves.
     #[derive(Default)]
     struct Domain {
         revision: std::sync::atomic::AtomicU64,
-        mismatches: std::sync::atomic::AtomicU64,
     }
     impl Changes for Domain {
         fn quiet(&self) -> Option<(u64, u64)> {
             Some((1, self.revision.load(std::sync::atomic::Ordering::SeqCst)))
-        }
-        fn mismatch(&self) {
-            self.mismatches
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
     impl Domain {
@@ -453,7 +418,6 @@ mod tests {
         request: &mut Request,
         memory: &impl Memory,
         domain: &Domain,
-        check: Check,
     ) -> (Outcome, Counts, Vec<cwar_relation::Row>) {
         let cached = request.countries.view(memory);
         let mut rows = Vec::new();
@@ -465,7 +429,6 @@ mod tests {
             &mut rows,
             &mut request.snapshot,
             domain,
-            check,
         );
         (outcome, counts, rows)
     }
@@ -479,13 +442,7 @@ mod tests {
         let domain = Domain::default();
         let mut request = request(&bytes, 0);
         let mut store = WarStore::default();
-        let (outcome, counts, _) = capture(
-            &mut store,
-            &mut request,
-            &kit::memory(&bytes),
-            &domain,
-            Check::Nothing,
-        );
+        let (outcome, counts, _) = capture(&mut store, &mut request, &kit::memory(&bytes), &domain);
         assert_eq!(outcome, Outcome::Rows { len: 2 });
         assert!(counts.read && !counts.quiet);
         for war in [kit::WAR1, kit::WAR2] {
@@ -497,8 +454,7 @@ mod tests {
             calls: RefCell::default(),
             fault: None,
         };
-        let (outcome, counts, rows) =
-            capture(&mut store, &mut request, &memory, &domain, Check::Nothing);
+        let (outcome, counts, rows) = capture(&mut store, &mut request, &memory, &domain);
         assert_eq!(outcome, Outcome::Rows { len: 2 });
         assert!(counts.quiet && !counts.read);
         let expected = kit::direct(&kit::memory(&bytes), 2);
@@ -530,13 +486,8 @@ mod tests {
         let mut request = request(&bytes, 0);
         let mut store = WarStore::default();
         let mut hour = |bytes: &[u8]| {
-            let (outcome, counts, rows) = capture(
-                &mut store,
-                &mut request,
-                &kit::memory(bytes),
-                &domain,
-                Check::Nothing,
-            );
+            let (outcome, counts, rows) =
+                capture(&mut store, &mut request, &kit::memory(bytes), &domain);
             (outcome, counts.quiet, rows)
         };
         assert!(!hour(&bytes).1);
@@ -555,64 +506,11 @@ mod tests {
             calls: RefCell::default(),
             fault: Some(kit::WAR1 + cwar_relation::FIRST_CASUALTIES),
         };
-        let (outcome, counts, _) =
-            capture(&mut store, &mut request, &memory, &domain, Check::Nothing);
+        let (outcome, counts, _) = capture(&mut store, &mut request, &memory, &domain);
         assert!(counts.read && !counts.quiet);
         assert!(matches!(outcome, Outcome::Unavailable { .. }));
-        assert_eq!(
-            domain.mismatches.load(std::sync::atomic::Ordering::SeqCst),
-            0
-        );
         // A failed walk holds nothing.
-        let (_, counts, _) = capture(
-            &mut store,
-            &mut request,
-            &kit::memory(&bytes),
-            &domain,
-            Check::Nothing,
-        );
+        let (_, counts, _) = capture(&mut store, &mut request, &kit::memory(&bytes), &domain);
         assert!(counts.read);
-    }
-
-    /// The domain's hour of the rotation walks a quiet hour and compares it
-    /// with what it would carry: an equal walk is held, a write no hook saw
-    /// is a mismatch that publishes the walk and holds nothing.
-    #[test]
-    fn the_rotation_hour_compares_and_a_missed_write_poisons() {
-        let mut bytes = kit::fixture();
-        let domain = Domain::default();
-        let mut request = request(&bytes, 0);
-        let mut store = WarStore::default();
-        let hour = (0..24)
-            .find(|&hour| Check::Slice { hour }.covers(ROTATION_KEY))
-            .unwrap();
-        let rotation = Check::Slice { hour };
-        let other = Check::Slice { hour: hour + 1 };
-        let mut run = |bytes: &[u8], check| {
-            capture(
-                &mut store,
-                &mut request,
-                &kit::memory(bytes),
-                &domain,
-                check,
-            )
-        };
-        run(&bytes, other);
-        let (outcome, counts, _) = run(&bytes, rotation);
-        assert_eq!(outcome, Outcome::Rows { len: 2 });
-        assert!(counts.read && counts.compared && !counts.quiet);
-        assert_eq!((counts.compared_wars, counts.mismatches), (2, 0));
-        assert!(run(&bytes, other).1.quiet);
-        // An unobserved write of a fixed field.
-        bytes[kit::WAR2 + engine_native::crelation::CANCEL] = 9;
-        let (outcome, counts, rows) = run(&bytes, Check::Every);
-        assert_eq!(outcome, Outcome::Rows { len: 2 });
-        assert_eq!(rows[1].cancel, 9);
-        assert_eq!(counts.mismatches, 1);
-        assert!(!run(&bytes, other).1.quiet);
-        assert_eq!(
-            domain.mismatches.load(std::sync::atomic::Ordering::SeqCst),
-            1
-        );
     }
 }

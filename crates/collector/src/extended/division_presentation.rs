@@ -1363,8 +1363,6 @@ impl Captured {
     /// override are still read). The hour's take ([`super::attack_stats`])
     /// precedes the member's reads, and a member not carried is registered
     /// before them.
-    /// The sampled slice reads its carryable members afresh and compares them
-    /// with the held ones; a difference poisons the family.
     fn capture_naming_holding(
         &mut self,
         memory: &impl Memory,
@@ -1384,23 +1382,18 @@ impl Captured {
         if !grow_vec(&mut self.naming.first, seeds.len()) {
             return;
         }
-        let check = crate::sampled_verify::current_burned_in(crate::army_stat_changes::VERIFY);
         let mut batch = cname_group_member::MemberBatch::default();
         let mut held_indices = [None; 64];
-        let mut carries = [false; 64];
         for (index, (seed, row)) in seeds.iter().zip(&mut self.naming.first).enumerate() {
             if index.is_multiple_of(64) {
                 held_indices.fill(None);
-                carries.fill(false);
                 let mut pointers = [0_usize; 64];
                 let end = (index + 64).min(seeds.len());
                 for (slot, pending) in seeds[index..end].iter().enumerate() {
                     let Some(pointer) = pending.name_member.filter(|&at| at != 0) else {
                         continue;
                     };
-                    // Decide eligibility once, including sampled entries whose
-                    // held record is needed later for verification. Retain only
-                    // its index; the store keeps the member span and text.
+                    // Decide eligibility once; the store keeps the member span and text.
                     let held = match store.as_deref_mut() {
                         Some(store) if self.attack.carryable => store
                             .held_name(index + slot, pending.division)
@@ -1411,8 +1404,7 @@ impl Captured {
                         _ => None,
                     };
                     held_indices[slot] = held;
-                    carries[slot] = held.is_some() && !check.covers(pending.division >> 32);
-                    if !carries[slot] {
+                    if held.is_none() {
                         pointers[slot] = pointer;
                     }
                 }
@@ -1439,13 +1431,12 @@ impl Captured {
             // read.
             let held = held_indices[index % 64]
                 .and_then(|at| store.as_deref().map(|store| store.held_name_record(at)));
-            let carried = held.filter(|_| carries[index % 64]);
             let registered = match (held, pointer, store.is_some()) {
                 (Some(_), _, _) => true,
                 (None, Ok(pointer), true) => changes.register(pointer),
                 _ => false,
             };
-            let member = pointer.map(|pointer| match carried {
+            let member = pointer.map(|pointer| match held {
                 Some(held) => (pointer, Ok(held.span)),
                 None => (pointer, batch.member(memory, index % 64, pointer)),
             });
@@ -1473,7 +1464,7 @@ impl Captured {
                 }
                 Err(reason) => row.failure = Some(reason),
             }
-            let cached = match (member, carried, store.as_deref()) {
+            let cached = match (member, held, store.as_deref()) {
                 (_, Some(held), Some(store)) => cname_group_member::held_cached_name_growing(
                     store.held_name_text(held),
                     &mut self.cached_names.first,
@@ -1515,20 +1506,7 @@ impl Captured {
             let text = row
                 .cached_name
                 .map(|(start, len)| &self.cached_names.first[start..start + len]);
-            if let (Some(held), Some(store), Ok((_, Ok(span))), Some(text)) =
-                (held, store.as_deref(), member, text)
-                && carried.is_none()
-            {
-                let counts = &mut self.attack.status_counts;
-                counts.verified += 1;
-                if !cname_group_member::same_recorded_fields(&held.span, &span)
-                    || store.held_name_text(held) != text
-                {
-                    counts.mismatches += 1;
-                    changes.mismatch();
-                }
-            }
-            if carried.is_some() {
+            if held.is_some() {
                 self.attack.status_counts.names_reused += 1;
             }
             if let (Some(store), true, Ok((pointer, Ok(span))), Some(text)) =
@@ -1807,9 +1785,6 @@ impl Captured {
                 .map(|part| part.organisation_refused)
                 .sum::<u64>();
             ORGANISATION_REFUSALS.fetch_add(refused, std::sync::atomic::Ordering::Relaxed);
-            let status = &self.status_packet;
-            self.attack
-                .verify_maxima(|index| status.unit_maxima(index), changes);
             let named = qpc();
             self.capture_naming_holding(
                 memory,
@@ -1868,25 +1843,7 @@ impl Captured {
         memory: &impl Memory,
         context: CaptureContext,
         sources: Sources<'_, DivisionSeed>,
-        store: Option<&mut super::attack_stats::ArmyStatStore>,
-    ) {
-        self.capture_attack_observed(
-            memory,
-            context,
-            sources,
-            store,
-            &crate::army_stat_changes::Observer,
-        );
-    }
-
-    /// [`Self::capture_attack`] observed through `changes`.
-    pub(super) fn capture_attack_observed(
-        &mut self,
-        memory: &impl Memory,
-        context: CaptureContext,
-        sources: Sources<'_, DivisionSeed>,
         mut store: Option<&mut super::attack_stats::ArmyStatStore>,
-        changes: &dyn crate::army_stat_changes::Changes,
     ) {
         let _reads = crate::read_accounting::table(TableId::DivisionStatus);
         if self.owned_settlement
@@ -1933,7 +1890,6 @@ impl Captured {
             sources.outcome,
             store,
             |index| status.unit_maxima(index),
-            changes,
             |index| {
                 ready
                     .then(|| {
@@ -1970,11 +1926,7 @@ impl Captured {
             return 0;
         }
         let mut store = changes_family::take_store();
-        let mut leaders = changes_family::Leaders::new(
-            &mut store,
-            changes,
-            crate::sampled_verify::current_burned_in(changes_family::VERIFY),
-        );
+        let mut leaders = changes_family::Leaders::new(&mut store, changes);
         self.bans.outcome = match ccountry::Reader::new(memory, context.base, context.game_state) {
             Err(reason) => Outcome::Unavailable { reason },
             Ok(countries) => {
@@ -2313,9 +2265,6 @@ impl Captured {
             .status_packet
             .capture_movement_organisation(memory, base, state, rows);
         ORGANISATION_REFUSALS.fetch_add(refused, std::sync::atomic::Ordering::Relaxed);
-        let status = &self.status_packet;
-        self.attack
-            .verify_maxima(|index| status.unit_maxima(index), changes);
         let named = qpc();
         self.capture_naming_holding(
             memory,
@@ -2505,7 +2454,6 @@ impl Captured {
                 inputs.outcome(),
                 self.deferred_store.as_deref_mut(),
                 |index| status.unit_maxima(index),
-                &crate::army_stat_changes::Observer,
                 |index| {
                     parts
                         .iter()
@@ -3372,11 +3320,10 @@ mod tests {
     }
 
     /// A held name member no hooked writer touched stands in for its reads,
-    /// giving the rows a read gives; under `army_stat_verify` every one is
-    /// read and compared instead. A member a writer touched is read again.
+    /// giving the rows a read gives. A member a writer touched is read again.
     #[test]
     fn naming_carries_an_untouched_member_and_rereads_a_touched_one() {
-        use crate::army_stat_changes::{VERIFY, Watches};
+        use crate::army_stat_changes::Watches;
         struct Reads<'a, M>(&'a M, std::cell::RefCell<Vec<usize>>);
         impl<M: Memory> Memory for Reads<'_, M> {
             fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -3454,23 +3401,13 @@ mod tests {
         assert_eq!(first[0].1.as_deref(), Some(&text[..]));
         let (second, read, counts) = hour(&mut store);
         assert_eq!(second, first);
-        if VERIFY {
-            assert_eq!(read, [true; 3]);
-            assert_eq!((counts.verified, counts.mismatches), (3, 0));
-        } else {
-            assert_eq!(read, [false; 3]);
-            assert_eq!(counts.names_reused, 3);
-        }
+        assert_eq!(read, [false; 3]);
+        assert_eq!(counts.names_reused, 3);
         drop(watches.notify(members[0].as_ptr() as usize, 1));
         let (third, read, counts) = hour(&mut store);
         assert_eq!(third, first);
-        assert!(read[0]);
-        if VERIFY {
-            assert_eq!((counts.verified, counts.mismatches), (2, 0));
-        } else {
-            assert_eq!(read, [true, false, false]);
-            assert_eq!(counts.names_reused, 2);
-        }
+        assert_eq!(read, [true, false, false]);
+        assert_eq!(counts.names_reused, 2);
         assert!(!watches.poisoned());
     }
 
@@ -4309,17 +4246,15 @@ mod tests {
 
     /// The Presentation job's DivisionStatus passes (status, dig-in,
     /// naming) and the attack pass, for a quiet hour carried through the
-    /// army_stat store and for an hour that reads every division. Build
-    /// without `army_stat_verify`, which reads every carryable division.
+    /// army_stat store and for an hour that reads every division.
     #[test]
     #[ignore = "release benchmark: DivisionStatus with and without the army_stat carry"]
     fn presentation_carry_scale_bench() {
         use super::super::attack_stats::ArmyStatStore;
-        use crate::army_stat_changes::{VERIFY, Watches};
-        if cfg!(debug_assertions) || VERIFY {
-            panic!("run the carry benchmark in release, without army_stat_verify");
+        use crate::army_stat_changes::Watches;
+        if cfg!(debug_assertions) {
+            panic!("run the carry benchmark in release");
         }
-        crate::sampled_verify::begin_hour(1);
         for divisions in [5_000, 30_000] {
             let shape = scale_fixture::Shape {
                 countries: 1_500,
@@ -4373,7 +4308,7 @@ mod tests {
                 assert_eq!(capture.status.outcome, Outcome::Rows { len: divisions });
                 assert_eq!(capture.naming.len, divisions);
                 let begin = std::time::Instant::now();
-                capture.capture_attack_observed(&memory, context, sources(), store, &watches);
+                capture.capture_attack(&memory, context, sources(), store);
                 let attack = begin.elapsed().as_secs_f64() * 1e3;
                 let mut frequency = 0;
                 // SAFETY: writes the frequency into a local.
@@ -4768,7 +4703,6 @@ mod tests {
             let mut split_store = held_store::Loan::fixture(Box::new(ArmyStatStore::new()));
             let mut warmed = None;
             for hour in [1, 2, 3, 4, 5] {
-                crate::sampled_verify::begin_hour(hour);
                 // An earlier scalar fault outranks a later preparation fault.
                 // The following hour must recover its rows without losing holds.
                 let rows = if hour == 2 {
@@ -4792,13 +4726,7 @@ mod tests {
                     Some(&mut serial_store),
                     &serial_changes,
                 );
-                serial.capture_attack_observed(
-                    &memory,
-                    context,
-                    sources(),
-                    Some(&mut serial_store),
-                    &serial_changes,
-                );
+                serial.capture_attack(&memory, context, sources(), Some(&mut serial_store));
                 split.prepare_status_observed(
                     &memory,
                     context,
@@ -4839,13 +4767,7 @@ mod tests {
                     Some(&mut split_store),
                     &split_changes,
                 );
-                split.capture_attack_observed(
-                    &memory,
-                    context,
-                    sources(),
-                    Some(&mut split_store),
-                    &split_changes,
-                );
+                split.capture_attack(&memory, context, sources(), Some(&mut split_store));
                 serial.decode_inputs();
                 let returned = split.retain_owned_settlement(
                     split_store,
@@ -4855,12 +4777,7 @@ mod tests {
                     ))),
                     context,
                 );
-                // FIFO decode may overlap the next callback's verification hour.
-                if owned {
-                    crate::sampled_verify::begin_hour(hour + 1);
-                }
                 split.decode_inputs();
-                crate::sampled_verify::begin_hour(hour);
                 split_store = returned.or_else(|| split.take_settled_store()).unwrap();
                 assert_eq!(
                     split.outcomes(),
@@ -4877,7 +4794,7 @@ mod tests {
                 assert_eq!(split.attack.epoch(), serial.attack.epoch());
                 assert_eq!(split.attack.carryable, serial.attack.carryable);
                 assert_eq!(split.attack.experience, serial.attack.experience);
-                if hour > 1 && !crate::army_stat_changes::VERIFY {
+                if hour > 1 {
                     assert!(split.attack.held_maxima.iter().any(Option::is_some));
                 }
                 let mut serial_names = NamingWork::default();

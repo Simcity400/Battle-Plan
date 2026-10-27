@@ -26,9 +26,6 @@ pub const OWNER: usize = 0x38;
 pub const UPDATE_RECORD_RVA: usize = 0x0196_2c40;
 /// Pruning records older than the runtime timeout from both vectors.
 pub const PRUNE_RVA: usize = 0x0196_3860;
-/// `NGame.AIR_LOG_TIMEOUT_HOURS`, loaded as an i32 and subtracted from the game clock
-/// (`cgame_state::CURRENT_HOUR`) when pruning air records.
-pub const LOG_TIMEOUT_RVA: usize = 0x0333_6678;
 
 /// One non-null slot from a completely enumerated, authenticated CStrategicAir
 /// region table. The slot index is the native strategic-region id. Addresses

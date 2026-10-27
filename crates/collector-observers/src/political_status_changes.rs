@@ -55,16 +55,9 @@ static OWN: AtomicBool = AtomicBool::new(false);
 static FORWARD: AtomicBool = AtomicBool::new(false);
 
 /// Quiet hours (the walk's four tables carried whole), popularity refresh
-/// hours (carried with every held party's popularity gathered afresh), read
-/// hours, compared countries and mismatches.
-static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "a quiet politics hour's held Politics, PoliticalParties, ActiveIdeas or PartyLeaders rows differ from a fresh read",
-]);
-
-/// Whether the walk reads every hour afresh and compares with what a quiet
-/// hour would carry, rather than carrying it (the family's burn-in).
-pub const VERIFY: bool = cfg!(feature = "political_status_verify");
+/// hours (carried with every held party's popularity gathered afresh) and
+/// read hours.
+static READS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
 /// The shared sites [`crate::politics_changes`] forwards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,21 +80,12 @@ pub fn popularity() -> Option<(u64, u64)> {
     POPULARITY.quiet()
 }
 
-/// A quiet hour's held rows differed from a fresh read: neither domain
-/// certifies anything for the rest of the attachment.
-pub fn mismatch() {
-    STRUCTURE.poison();
-    POPULARITY.poison();
-}
-
 /// What the Politics walk sees of the domains.
 pub trait Changes: Sync {
     /// [`structure`].
     fn structure(&self) -> Option<(u64, u64)>;
     /// [`popularity`].
     fn popularity(&self) -> Option<(u64, u64)>;
-    /// [`mismatch`].
-    fn mismatch(&self);
 }
 
 /// The hooks' domains.
@@ -112,9 +96,6 @@ impl Changes for Observer {
     }
     fn popularity(&self) -> Option<(u64, u64)> {
         popularity()
-    }
-    fn mismatch(&self) {
-        mismatch();
     }
 }
 
@@ -228,22 +209,17 @@ pub struct Counts {
     pub popularity: bool,
     /// Every country was read.
     pub read: bool,
-    pub verified: u64,
-    pub mismatches: u64,
 }
 
-/// The walk already called [`mismatch`] at a difference.
+/// Publishes one walk hour's counts.
 pub fn record(counts: &Counts) {
     for (target, value) in READS.iter().zip([
         u64::from(counts.quiet),
         u64::from(counts.popularity),
         u64::from(counts.read),
-        counts.verified,
-        counts.mismatches,
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
 }
 
 /// Notifications running now.
@@ -358,10 +334,6 @@ impl Changes for Watches {
     fn popularity(&self) -> Option<(u64, u64)> {
         self.popularity.quiet()
     }
-    fn mismatch(&self) {
-        self.structure.poison();
-        self.popularity.poison();
-    }
 }
 
 pub fn status() -> impl serde::Serialize {
@@ -399,21 +371,14 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "political_status_changes"),
-        "verify": VERIFY,
         "observed": STRUCTURE.quiet().is_some() || STRUCTURE.active() != 0,
         "poisoned": STRUCTURE.poisoned() || POPULARITY.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "quiet_hours": reads[0],
         "popularity_refresh_hours": reads[1],
         "read_hours": reads[2],
-        "verified_countries": reads[3],
-        "mismatches": reads[4],
         "structure_events": events(true),
         "popularity_events": events(false),
-        "scope": "cumulative since attach; the structure token stands still while no capital, last election, ruling party or party or idea array writer runs, the popularity token while no party popularity writer runs (the daily update moves popularity every day, and the structure only when it changed a last election: politics_daily_elections; the capital setter only when it changed a capital: set_capital_changes); when the structure, party and party-leader tokens, every held leader's character certificate and the country census are those of the latest complete walk, the Politics walk carries Politics, PoliticalParties, ActiveIdeas and PartyLeaders whole without reading any country (quiet_hours), or, when only the popularity token moved, carries them with every held party's popularity gathered afresh in one batch (popularity_refresh_hours); otherwise it reads (read_hours); a carried hour reads its sampled slice of countries afresh (one in rotation_hours by country id) and verify mode reads every hour afresh, comparing each country with what a carried hour would publish (verified_countries, mismatches); the first mismatch disables both domains"
+        "scope": "cumulative since attach; the structure token stands still while no capital, last election, ruling party or party or idea array writer runs, the popularity token while no party popularity writer runs (the daily update moves popularity every day, and the structure only when it changed a last election: politics_daily_elections; the capital setter only when it changed a capital: set_capital_changes); when the structure, party and party-leader tokens, every held leader's character certificate and the country census are those of the latest complete walk, the Politics walk carries Politics, PoliticalParties, ActiveIdeas and PartyLeaders whole without reading any country (quiet_hours), or, when only the popularity token moved, carries them with every held party's popularity gathered afresh in one batch (popularity_refresh_hours); otherwise it reads (read_hours)"
     })
 }
 

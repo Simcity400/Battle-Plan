@@ -222,21 +222,19 @@ impl Captured {
         store: Option<&mut AdvisorStore>,
         fingerprints: Option<&mut SliceFingerprints>,
     ) -> [u64; N] {
-        let check =
-            crate::sampled_verify::Check::burned_in(hour, crate::advisor_pool_changes::VERIFY);
         self.capture_with(
             memory,
             base,
             game_state,
             hour,
             force_full,
-            store.map(|store| (store, &crate::advisor_pool_changes::Observer as _, check)),
+            store.map(|store| (store, &crate::advisor_pool_changes::Observer as _)),
             fingerprints,
         )
     }
 
     /// One capture, carrying through `reuse` when present.
-    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn capture_with(
         &mut self,
         memory: &impl Memory,
@@ -244,11 +242,7 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
-        mut reuse: Option<(
-            &mut AdvisorStore,
-            &dyn crate::advisor_pool_changes::Changes,
-            crate::sampled_verify::Check,
-        )>,
+        mut reuse: Option<(&mut AdvisorStore, &dyn crate::advisor_pool_changes::Changes)>,
         fingerprints: Option<&mut SliceFingerprints>,
     ) -> [u64; N] {
         self.reset();
@@ -257,13 +251,12 @@ impl Captured {
             let _reads = crate::read_accounting::table(TABLES[0]);
             let started = qpc();
             let walk = match reuse.as_mut() {
-                Some((store, _, _)) if appointed::CARRY => appointed::capture(
+                Some((store, _)) if appointed::CARRY => appointed::capture(
                     memory,
                     base,
                     game_state,
                     store.appointed(),
                     &appointed::Observer,
-                    crate::sampled_verify::Check::burned_in(hour, appointed::VERIFY),
                     &mut self.rows.rows,
                     &mut self.bytes.first,
                 ),
@@ -292,13 +285,12 @@ impl Captured {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let started = qpc();
             let [active_outcome, retired_outcome] = match reuse.as_mut() {
-                Some((store, _, _)) if records::CARRY && active && retired => records::capture(
+                Some((store, _)) if records::CARRY && active && retired => records::capture(
                     memory,
                     base,
                     game_state,
                     store.records(),
                     &appointed::Observer,
-                    crate::sampled_verify::Check::burned_in(hour, records::VERIFY),
                     &mut self.active.rows,
                     &mut self.retired.rows,
                 ),
@@ -333,8 +325,8 @@ impl Captured {
             let _reads = crate::read_accounting::table(TABLES[2]);
             let started = qpc();
             let walk = match reuse.as_mut() {
-                Some((store, changes, check)) => {
-                    let mut carry = TokenReuse::begin(store, *changes, *check);
+                Some((store, changes)) => {
+                    let mut carry = TokenReuse::begin(store, *changes);
                     let walk = advisor_tokens::walk_carried(
                         memory,
                         base,
@@ -378,8 +370,8 @@ impl Captured {
             let selection = &self.available_selection;
             let select = |country: u32| selection.contains(country);
             let walk = match reuse {
-                Some((store, changes, check)) => {
-                    let mut carry = PoolReuse::begin(store, changes, check, hour);
+                Some((store, changes)) => {
+                    let mut carry = PoolReuse::begin(store, changes, hour);
                     let walk = native::walk_available_carried(
                         memory,
                         base,

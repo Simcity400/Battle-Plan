@@ -848,17 +848,14 @@ impl Capture {
     }
 
     /// [`Self::walk_growing`] carrying the rows of [`Self::province_store`]
-    /// ([`carry`]) the hour's territory `take` certifies; `covers` is the
-    /// sampled slice by province id and `verify` reads and compares every
-    /// province. Without a store it is [`Self::walk_growing`].
+    /// ([`carry`]) the hour's territory `take` certifies. Without a store it
+    /// is [`Self::walk_growing`].
     pub fn walk_carrying(
         &mut self,
         memory: &impl Memory,
         base: usize,
         game_state: usize,
         take: Option<[u64; 2]>,
-        covers: &dyn Fn(u64) -> bool,
-        verify: bool,
     ) -> Outcome {
         let Self {
             rows,
@@ -869,12 +866,9 @@ impl Capture {
             province_store,
             ..
         } = self;
-        let mut hour = province_store.as_deref_mut().map(|store| carry::Hour {
-            store,
-            take,
-            covers,
-            verify,
-        });
+        let mut hour = province_store
+            .as_deref_mut()
+            .map(|store| carry::Hour { store, take });
         let (outcome, walk) = walk_with_conflicts_buffer(
             memory,
             base,

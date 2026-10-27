@@ -1,9 +1,6 @@
 use super::*;
 use engine_native::{cgame_state, memory::SliceMemory};
-use std::{
-    cell::RefCell,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::cell::RefCell;
 
 const GAME: usize = 0x1000;
 const COUNTRIES: usize = 0x4000;
@@ -86,26 +83,14 @@ impl Memory for World {
         .copy(at, out)
     }
 }
-struct ChangesForTest {
-    every: AtomicBool,
-    poisoned: AtomicBool,
-}
+struct ChangesForTest;
 impl Changes for ChangesForTest {
     fn take(&self, _: Table, _: &mut dyn FnMut(usize)) -> Option<u64> {
         Some(1)
     }
-    fn mismatch(&self, _: Table, _: Mismatch) {
-        self.poisoned.store(true, Ordering::Relaxed);
-    }
-    fn every(&self, _: Table) -> bool {
-        self.every.load(Ordering::Relaxed)
-    }
 }
 fn changes() -> &'static ChangesForTest {
-    Box::leak(Box::new(ChangesForTest {
-        every: AtomicBool::new(false),
-        poisoned: AtomicBool::new(false),
-    }))
+    &ChangesForTest
 }
 fn movers(capture: &mut SpeedTerms, countries: usize) {
     capture.keys = vec![SPEED_KEY, SPEED_KEY, SPEED_KEY + 1];
@@ -184,7 +169,7 @@ fn shared_unit_speed_history_follows_hourly_marks_across_pooled_frames() {
 }
 
 #[test]
-fn deferred_unit_speed_entries_keep_owned_values_refusals_and_frozen_verification() {
+fn deferred_unit_speed_entries_keep_owned_values_and_refusals() {
     for countries in [0, 1, 7, 512] {
         // No movers still needs a valid native country table (sentinel plus a slot).
         let mut world = World::new(countries.max(1));
@@ -192,7 +177,6 @@ fn deferred_unit_speed_entries_keep_owned_values_refusals_and_frozen_verificatio
         let mut capture = SpeedTerms { changes, ..SpeedTerms::default() };
         movers(&mut capture, countries);
         entries(&mut capture, &world, vec![], 1);
-        changes.every.store(true, Ordering::Relaxed);
         if countries != 0 {
             world.value(1, -70_000);
         }
@@ -205,17 +189,14 @@ fn deferred_unit_speed_entries_keep_owned_values_refusals_and_frozen_verificatio
         {
             let reader = ccountry::Reader::new(&world, 0, GAME);
             assert_eq!(capture.acquire_entries(&world, &reader, Take {
-                epoch: Some(1), complete: true, marked: vec![],
+                epoch: Some(1), complete: true, marked: (1..=countries as u32).collect(),
             }), Outcome::Rows { len: countries * 2 });
         }
         assert!(capture.entries.is_empty(), "acquisition assembles no unit-speed rows");
-        assert!(!changes.poisoned.load(Ordering::Relaxed));
         // Settlement has neither a borrowed Memory nor a native fallback. The
         // game can change or disappear without affecting the frozen observation.
         drop(world);
-        changes.every.store(false, Ordering::Relaxed);
         assert_eq!(capture.settle_entries(), Outcome::Rows { len: countries * 2 });
-        assert_eq!(changes.poisoned.load(Ordering::Relaxed), countries != 0);
         assert_eq!(capture.counts[2], [(countries * 2 - usize::from(countries > 1)) as u64, 0, u64::from(countries > 1)]);
         for owner in 1..=countries {
             assert_eq!(capture.entries[(owner - 1) * 2], CountryUnitSpeedEntryRow {
@@ -286,24 +267,6 @@ fn discarded_frame_without_army_store_returns_unit_speed_loan() {
     let mut next = super::super::Captured::vacant();
     let mut pass = next.take_speed_terms();
     pass.capture(&Owned, 0, 0, sources());
-}
-
-#[test]
-fn unit_speed_verification_publishes_fresh_entries_and_poison_on_a_missed_write() {
-    let mut world = World::new(2);
-    let changes = changes();
-    let mut capture = SpeedTerms {
-        changes,
-        ..SpeedTerms::default()
-    };
-    movers(&mut capture, 2);
-    entries(&mut capture, &world, vec![], 1);
-    world.value(1, -70_000);
-    changes.every.store(true, Ordering::Relaxed);
-    entries(&mut capture, &world, vec![], 1);
-    assert!(changes.poisoned.load(Ordering::Relaxed));
-    assert_eq!(capture.entries[0].entry, Some(Some(-70_000)));
-    assert_eq!(capture.counts[2], [4, 0, 0]);
 }
 
 #[test]

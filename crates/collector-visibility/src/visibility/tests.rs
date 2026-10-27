@@ -351,10 +351,8 @@ fn quiet_region_access_hours_publish_the_held_read() {
         let plan = plan.read(Domain::RegionAccess, &changes);
         held.settle(
             Domain::RegionAccess,
-            &changes,
             plan,
             true,
-            |_| false,
             |rows| changes::assign(rows, &[row]),
         );
     }
@@ -364,15 +362,7 @@ fn quiet_region_access_hours_publish_the_held_read() {
         bytes: &[],
     };
     let mut captured = Captured::with_capacities(&fixture_capacities());
-    crate::sampled_verify::begin_hour(3);
     captured.capture_naval_access(&memory, 0, 0x1000, false, true, &changes, &held);
-    if changes::VERIFY {
-        assert!(matches!(
-            captured.naval_access.outcome,
-            Outcome::Unavailable { .. }
-        ));
-        return;
-    }
     assert_eq!(captured.naval_access.outcome, Outcome::Rows { len: 1 });
     assert_eq!(captured.naval_access.rows[0], row);
     // A full hour reads.

@@ -1,6 +1,5 @@
 //! Per-division input parts: attack stats and the army stat writer observer, dig-in factors, land inputs, supply inputs and unit combat references, which division presentation, railway guns and naval counters read. The host owns the presentation jobs, loans and table assembly.
 
-use collector_certificates::sampled_verify;
 use collector_certificates::watch_registry;
 use collector_hooks::hook;
 use collector_memory::read_accounting;

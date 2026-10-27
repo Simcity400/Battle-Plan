@@ -11,10 +11,7 @@
 //! while the content database loads.
 //!
 //! The traits job reads a leader's vector only when no held read carries its
-//! certificate ([`crate::extended::characters`]); every hour also reads the
-//! carryable leaders of its sampled slice afresh and compares them, and a
-//! difference poisons reuse for the attachment. `unit_leader_trait_verify`,
-//! on by default during burn-in, reads every carryable leader.
+//! certificate ([`crate::extended::characters`]).
 use crate::{
     unit_leader_changes::{Changes, Counts},
     watch_registry::{Notification, WatchRegistry},
@@ -24,11 +21,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 static WATCHES: WatchRegistry = WatchRegistry::new();
 /// Forwarded calls per [`Site`].
 static CALLS: [AtomicU64; Site::ALL.len()] = [const { AtomicU64::new(0) }; Site::ALL.len()];
-/// Reused, read, verified and mismatched leaders, and carrying hours.
-static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried UnitLeaderTraits rows differ from a fresh read",
-]);
+/// Reused and read leaders, and carrying hours.
+static READS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 /// Leaders the latest capture visited, for off-thread sizing.
 static LEADERS: AtomicUsize = AtomicUsize::new(0);
 
@@ -59,10 +53,6 @@ impl Site {
     }
 }
 
-/// Whether the traits job reads every carryable leader afresh and compares,
-/// rather than the hour's slice.
-pub const VERIFY: bool = cfg!(feature = "unit_leader_trait_verify");
-
 /// The forwarded writers' domain.
 pub struct Observer;
 impl Changes for Observer {
@@ -71,9 +61,6 @@ impl Changes for Observer {
     }
     fn sequence(&self, leader: usize) -> Option<(u64, u64)> {
         WATCHES.sequence(leader)
-    }
-    fn mismatch(&self) {
-        WATCHES.poison();
     }
 }
 
@@ -128,16 +115,13 @@ pub fn forwarded(leader: usize, site: Site) -> Notification<'static> {
 /// The decode worker publishes one capture's counts and the leaders it
 /// visited.
 pub fn record(counts: &Counts, leaders: usize) {
-    for (target, value) in READS.iter().zip([
-        counts.reused,
-        counts.read,
-        counts.verified,
-        counts.mismatches,
-        u64::from(counts.reused != 0),
-    ]) {
+    for (target, value) in
+        READS
+            .iter()
+            .zip([counts.reused, counts.read, u64::from(counts.reused != 0)])
+    {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
     LEADERS.store(leaders, Ordering::Relaxed);
 }
 
@@ -151,20 +135,13 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "unit_leader_trait_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_leaders": reads[0],
         "read_leaders": reads[1],
-        "verified_leaders": reads[2],
-        "mismatches": reads[3],
-        "carrying_hours": reads[4],
+        "carrying_hours": reads[2],
         "events": events,
         "watches": WATCHES.status(),
-        "scope": "cumulative since attach; a leader's UnitLeaderTraits rows are carried, without reading the leader, while the role census names it at the held address for the held character and no forwarded writer (events: the naval tree family's modifier recalculation tail and leader construct, copy_construct and destroy) touched it since the held read; every other leader is read and its rows held; every hour also reads the carryable leaders of its slice afresh (one in rotation_hours by leader id; every one in verify mode), publishes the fresh rows and disables reuse at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; a leader's UnitLeaderTraits rows are carried, without reading the leader, while the role census names it at the held address for the held character and no forwarded writer (events: the naval tree family's modifier recalculation tail and leader construct, copy_construct and destroy) touched it since the held read; every other leader is read and its rows held"
     })
 }
 

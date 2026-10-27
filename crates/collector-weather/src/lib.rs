@@ -1,6 +1,5 @@
 //! Weather capture: province and region weather records with their window-following carry, region combat modifiers and the weather display. The country input family counts the weather writers and reports the carry; the host owns dispatch, loans and table assembly.
 
-use collector_certificates::sampled_verify;
 use collector_memory::read_accounting;
 use collector_memory::terminal as allocation;
 use collector_observers::country_input_changes;

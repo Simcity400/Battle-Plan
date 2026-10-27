@@ -14,13 +14,9 @@
 //! Each table's capture holds its latest complete read in a [`Held`] with the
 //! token taken before it. An hour whose token equals the held one publishes
 //! the held rows without reading the game; any other hour reads afresh and
-//! holds that read when the token stood still across it. The hour of the
-//! sampled rotation that a domain's index names reads afresh even when quiet
-//! and compares the read with the held rows; a difference is a write no hook
-//! saw and disables that domain for the attachment. `world_input_verify`, on
-//! by default during the family's burn-in, reads and compares every quiet
-//! hour. Anything unobserved (disabled, poisoned, an epoch change, a running
-//! writer) yields no token, and the capture reads afresh.
+//! holds that read when the token stood still across it. Anything unobserved
+//! (disabled, poisoned, an epoch change, a running writer) yields no token,
+//! and the capture reads afresh.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -181,18 +177,8 @@ fn navy_reset_enabled(enabled: bool) {
         callback(enabled);
     }
 }
-/// Per domain: quiet hours, read hours, compared hours and mismatches.
-static READS: [[AtomicU64; 4]; DOMAINS] = [const { [const { AtomicU64::new(0) }; 4] }; DOMAINS];
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "a quiet hour's held ProvinceNames rows differ from a fresh read",
-    "a quiet hour's held NavalRegionAccess rows differ from a fresh read",
-    "a quiet hour's held world tension tables differ from a fresh read",
-    "a carried country's DynamicModifiers rows differ from a fresh read",
-    "a carried MIO roster differs from a fresh read",
-    "a carried MIO policy roster differs from a fresh read",
-    "a carried design MIO differs from a fresh read",
-    "the carried game fog switch differs from its observed value",
-]);
+/// Per domain: quiet hours and read hours.
+static READS: [[AtomicU64; 2]; DOMAINS] = [const { [const { AtomicU64::new(0) }; 2] }; DOMAINS];
 const NAMES: [&str; DOMAINS] = [
     "province_names",
     "region_access",
@@ -204,9 +190,6 @@ const NAMES: [&str; DOMAINS] = [
     "game_fog",
 ];
 
-/// Read and compare every quiet hour instead of carrying it (burn-in).
-pub const VERIFY: bool = cfg!(feature = "world_input_verify");
-
 /// A domain's quiet token: `(epoch, revision)`.
 pub type Token = (u64, u64);
 
@@ -215,9 +198,6 @@ pub type Token = (u64, u64);
 pub trait Changes: Sync {
     /// `domain`'s token while observed with no writer running.
     fn token(&self, domain: Domain) -> Option<Token>;
-    /// A held table differed from a fresh read: `domain` certifies nothing
-    /// for the rest of the attachment.
-    fn mismatch(&self, domain: Domain);
     /// A CCountry's certificate of its DynamicModifiers rows, registering it:
     /// the dynamic modifier domain's sequence (add, renew, remove and the
     /// daily update) and the naval tree family's (`modifier recalculation`,
@@ -233,9 +213,6 @@ impl Changes for Observer {
     fn token(&self, domain: Domain) -> Option<Token> {
         WATCHES[domain as usize].quiet()
     }
-    fn mismatch(&self, domain: Domain) {
-        WATCHES[domain as usize].poison();
-    }
     fn country(&self, country: usize) -> Option<[(u64, u64); 2]> {
         Some([
             WATCHES[Domain::DynamicModifiers as usize].sequence(country)?,
@@ -244,24 +221,18 @@ impl Changes for Observer {
     }
 }
 
-/// One DynamicModifiers capture's countries: carried, read, compared with
-/// their held rows and differing. A difference has already poisoned the
-/// domain ([`Changes::mismatch`]).
-pub fn record_countries(carried: u64, read: u64, compared: u64, mismatches: u64) {
+/// One DynamicModifiers capture's countries: carried and read.
+pub fn record_countries(carried: u64, read: u64) {
     let reads = &READS[Domain::DynamicModifiers as usize];
-    for (target, value) in reads.iter().zip([carried, read, compared, mismatches]) {
+    for (target, value) in reads.iter().zip([carried, read]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(compared, mismatches, Domain::DynamicModifiers as usize);
 }
 
 /// Receiver counts from the existing daily MIO and variant workers.
 /// These domains do not participate in hourly boundary scans.
-pub fn record_daily(domain: Domain, carried: bool, read: bool, compared: bool, mismatch: bool) {
-    for (target, value) in READS[domain as usize]
-        .iter()
-        .zip([carried, read, compared, mismatch])
-    {
+pub fn record_daily(domain: Domain, carried: bool, read: bool) {
+    for (target, value) in READS[domain as usize].iter().zip([carried, read]) {
         target.fetch_add(u64::from(value), Ordering::Relaxed);
     }
 }
@@ -273,8 +244,6 @@ pub struct Plan {
     token: Option<Token>,
     /// Publish the held table without reading.
     pub carry: bool,
-    /// The read is the domain's sampled comparison of a quiet hour.
-    compare: bool,
     /// The token stood still across the read ([`Plan::read`]).
     steady: bool,
 }
@@ -290,7 +259,6 @@ impl Plan {
     pub const READ: Self = Self {
         token: None,
         carry: false,
-        compare: false,
         steady: false,
     };
 
@@ -329,12 +297,9 @@ impl<P> Held<P> {
     ) -> Plan {
         let token = changes.token(domain);
         let quiet = !force_full && token.is_some() && self.token == token;
-        let compare =
-            quiet && crate::sampled_verify::current_burned_in(VERIFY).covers(domain as u64);
         Plan {
             token,
-            carry: quiet && !compare,
-            compare,
+            carry: quiet,
             steady: false,
         }
     }
@@ -352,39 +317,21 @@ impl<P> Held<P> {
     }
 
     /// After a fresh read, with the plan [`Plan::read`] returned: `read` when
-    /// it completed. A comparing plan compares it with the held table
-    /// (`differs`); the read is then held (`hold`, off the game thread,
-    /// false when its storage could not grow) when the token stood still
-    /// across it, and nothing is held otherwise.
+    /// it completed. The read is held (`hold`, off the game thread, false
+    /// when its storage could not grow) when the token stood still across
+    /// it, and nothing is held otherwise.
     pub fn settle(
         &mut self,
         domain: Domain,
-        changes: &(impl Changes + ?Sized),
         plan: Plan,
         read: bool,
-        differs: impl FnOnce(&P) -> bool,
         hold: impl FnOnce(&mut P) -> bool,
     ) {
-        let compared = plan.compare && read;
-        let mismatch = compared && differs(&self.payload);
-        record(domain, compared, mismatch);
-        if mismatch {
-            changes.mismatch(domain);
-        }
+        READS[domain as usize][1].fetch_add(1, Ordering::Relaxed);
         self.token = None;
         if read && plan.steady && hold(&mut self.payload) {
             self.token = plan.token;
         }
-    }
-}
-
-fn record(domain: Domain, compared: bool, mismatch: bool) {
-    let reads = &READS[domain as usize];
-    reads[1].fetch_add(1, Ordering::Relaxed);
-    reads[2].fetch_add(u64::from(compared), Ordering::Relaxed);
-    reads[3].fetch_add(u64::from(mismatch), Ordering::Relaxed);
-    if compared {
-        SAMPLED.record(1, u64::from(mismatch), domain as usize);
     }
 }
 
@@ -454,9 +401,6 @@ pub fn prepare_mios(count: usize, invalidate: bool) {
 pub fn mio_rosters(pointer: usize) -> Option<Token> {
     WATCHES[Domain::IndustrialOrganisationRosters as usize].sequence(pointer)
 }
-pub fn mio_rosters_mismatch() {
-    WATCHES[Domain::IndustrialOrganisationRosters as usize].poison();
-}
 
 /// Certificates cover policy identity/name/context/score only. Cost and cooldown
 /// are always read in the existing daily production-country census. Reload and
@@ -476,9 +420,6 @@ pub fn mio_policies() -> Option<Token> {
     }
     WATCHES[Domain::IndustrialOrganisationPolicies as usize].quiet()
 }
-pub fn mio_policies_mismatch() {
-    WATCHES[Domain::IndustrialOrganisationPolicies as usize].poison();
-}
 
 /// Runs only in the existing daily variant-detail acquisition worker.
 pub fn prepare_design_mios(count: usize, invalidate: bool) {
@@ -488,9 +429,6 @@ pub fn prepare_design_mios(count: usize, invalidate: bool) {
 }
 pub fn design_mio(pointer: usize) -> Option<Token> {
     WATCHES[Domain::DesignIndustrialOrganisation as usize].sequence(pointer)
-}
-pub fn design_mio_mismatch() {
-    WATCHES[Domain::DesignIndustrialOrganisation as usize].poison();
 }
 
 /// Off the game thread: free a replaced watch table.
@@ -517,8 +455,6 @@ pub fn status() -> impl serde::Serialize {
                     "poisoned": watches.poisoned(),
                     "quiet": reads[0],
                     "read": reads[1],
-                    "compared": reads[2],
-                    "mismatches": reads[3],
                 }),
             )
         },
@@ -526,15 +462,10 @@ pub fn status() -> impl serde::Serialize {
     crate::status::status!({
         "configured": cfg!(feature = "world_input_changes"),
         "doctrines": crate::doctrine_changes::status(),
-        "verify": VERIFY,
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "domains": domains,
         "events": events,
         "watches": WATCHES[Domain::DynamicModifiers as usize].status(),
-        "scope": "cumulative since attach; a whole-table domain's token stands still while none of its writers runs (province_names: the rename and reset effects; region_access: region access setter and the navy reset; tension: update total, which every source writer ends in); an hour whose token equals the one taken before the table's latest complete read publishes that read (quiet, in hours), any other hour reads afresh (read); the domain's hour of the rotation (its index in rotation_hours) reads a quiet hour afresh and compares it (compared), as verify mode does every quiet hour; dynamic_modifiers counts countries instead: a country whose certificate (the add, renew, remove and daily update sites naming its container, and the naval tree family's modifier recalculation and country appearance reset) is the held read's is carried (quiet), and each country is read afresh and compared on its day of the rotation by id; the first mismatch disables that domain"
+        "scope": "cumulative since attach; a whole-table domain's token stands still while none of its writers runs (province_names: the rename and reset effects; region_access: region access setter and the navy reset; tension: update total, which every source writer ends in); an hour whose token equals the one taken before the table's latest complete read publishes that read (quiet, in hours), any other hour reads afresh (read); dynamic_modifiers counts countries instead: a country whose certificate (the add, renew, remove and daily update sites naming its container, and the naval tree family's modifier recalculation and country appearance reset) is the held read's is carried (quiet), any other country is read (read)"
     })
 }
 
@@ -929,9 +860,6 @@ impl Changes for Isolated {
     fn token(&self, domain: Domain) -> Option<Token> {
         self.watches[domain as usize].quiet()
     }
-    fn mismatch(&self, domain: Domain) {
-        self.watches[domain as usize].poison();
-    }
     /// The naval tree half is held still.
     fn country(&self, country: usize) -> Option<[(u64, u64); 2]> {
         Some([
@@ -1182,25 +1110,21 @@ mod tests {
     /// still across is not held.
     #[test]
     fn a_held_table_is_carried_only_while_its_domain_is_quiet() {
-        // Not the domain's comparison hour (its index, 0).
-        crate::sampled_verify::begin_hour(5);
         let changes = Isolated::new();
         let domain = Domain::ProvinceNames;
         let mut held = Held::new(Vec::<u32>::new());
         let read = |held: &mut Held<Vec<u32>>, plan: Plan, rows: &[u32]| {
             held.settle(
                 domain,
-                &changes,
                 plan.read(domain, &changes),
                 true,
-                |held| held != rows,
                 |held| assign(held, rows),
             )
         };
         let plan = held.plan(domain, &changes, false);
         assert!(!plan.carry, "nothing is held yet");
         read(&mut held, plan, &[1, 2]);
-        assert!(held.plan(domain, &changes, false).carry || VERIFY);
+        assert!(held.plan(domain, &changes, false).carry);
         assert!(!held.plan(domain, &changes, true).carry);
         assert_eq!(held.carried(domain), &[1, 2]);
         changes.write(domain);
@@ -1212,45 +1136,13 @@ mod tests {
         assert!(!held.plan(domain, &changes, false).carry);
         let plan = held.plan(domain, &changes, false);
         read(&mut held, plan, &[3]);
-        assert!(held.plan(domain, &changes, false).carry || VERIFY);
+        assert!(held.plan(domain, &changes, false).carry);
         // Another domain's writer leaves this one quiet.
         changes.write(Domain::Tension);
-        assert!(held.plan(domain, &changes, false).carry || VERIFY);
+        assert!(held.plan(domain, &changes, false).carry);
         // A capture whose read did not complete holds nothing.
         let plan = held.plan(domain, &changes, false);
-        held.settle(domain, &changes, plan, false, |_| false, |_| true);
-        assert!(!held.plan(domain, &changes, false).carry);
-    }
-
-    /// The domain's rotation hour reads a quiet hour afresh and compares it;
-    /// a difference poisons the domain, which then never carries.
-    #[test]
-    fn a_quiet_hour_that_differs_from_the_held_read_poisons_its_domain() {
-        let changes = Isolated::new();
-        let domain = Domain::RegionAccess;
-        let mut held = Held::new(Vec::<u32>::new());
-        let plan = held.plan(domain, &changes, false);
-        held.settle(
-            domain,
-            &changes,
-            plan.read(domain, &changes),
-            true,
-            |_| false,
-            |held| assign(held, &[7]),
-        );
-        crate::sampled_verify::begin_hour(domain as i32);
-        let plan = held.plan(domain, &changes, false);
-        assert!(!plan.carry && plan.compare);
-        held.settle(
-            domain,
-            &changes,
-            plan.read(domain, &changes),
-            true,
-            |held| held != &[8],
-            |held| assign(held, &[8]),
-        );
-        assert!(changes.poisoned(domain));
-        assert_eq!(changes.token(domain), None);
+        held.settle(domain, plan, false, |_| true);
         assert!(!held.plan(domain, &changes, false).carry);
     }
 }

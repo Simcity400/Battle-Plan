@@ -13,11 +13,8 @@ doctest = false
 test-support = ["collector-extended-support/test-support", "collector-observers/test-support"]
 default = ["opinion_changes", "flag_changes", "variable_changes"]
 flag_changes = []
-flag_verify = ["flag_changes"]
 opinion_changes = []
-opinion_verify = ["opinion_changes"]
 variable_changes = []
-variable_verify = ["variable_changes"]
 
 [dependencies]
 engine-allocation.workspace = true

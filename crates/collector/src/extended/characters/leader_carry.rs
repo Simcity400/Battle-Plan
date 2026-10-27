@@ -5,28 +5,23 @@
 //! A capture takes the certificate of each leader its role census names
 //! before reading anything ([`LeaderCarry::certify`]). A leader is carried,
 //! without reading it, when the job holds a read of it at the census's unit
-//! pointer for the census's character under an equal certificate and its id
-//! is outside the hour's slice; the capture reads only its other leaders and
-//! the decode publishes the held rows. When the domain's quiet token and the
-//! census generation are those taken before the certification whose rows the
-//! job last held, no observed writer ran since and every occurrence is the
-//! one certified then, so each held certificate still matches without a
-//! lookup, and the occurrences with a unit leader are the ones it visited,
-//! so the hour reuses that certification's visits and costs one pass over
-//! its leaders. The decode worker compares each fresh read of a carryable leader
-//! (the slice's, every one in verify mode) with its held rows, poisoning reuse
-//! at a difference ([`LeaderCarry::rebuild`]). A fresh read equal to its held
-//! rows only renews the entry's certificate; the held rows are rebuilt only
-//! when a leader's rows changed or a leader appeared or left the census. A
+//! pointer for the census's character under an equal certificate; the
+//! capture reads only its other leaders and the decode publishes the held
+//! rows. When the domain's quiet token and the census generation are those
+//! taken before the certification whose rows the job last held, no observed
+//! writer ran since and every occurrence is the one certified then, so each
+//! held certificate still matches without a lookup, and the occurrences with
+//! a unit leader are the ones it visited, so the hour reuses that
+//! certification's visits and costs one pass over its leaders. A fresh read
+//! equal to its held rows only renews the entry's certificate
+//! ([`LeaderCarry::rebuild`]); the held rows are rebuilt only when a
+//! leader's rows changed or a leader appeared or left the census. A
 //! row follows from its leader's fields alone: UnitLeaders' skill block is
 //! the shared definition and a trait row's definition fields are the
 //! content's, which only a load replaces. Captures that do not certify carry
 //! and hold nothing.
 use super::*;
-use crate::{
-    sampled_verify::Check,
-    unit_leader_changes::{Changes, Counts},
-};
+use crate::unit_leader_changes::{Changes, Counts};
 use std::ops::Range;
 
 /// A held row type: its text spans, relative to its leader's held text.
@@ -109,7 +104,6 @@ impl Held for cunit_leader::TraitRow {
 struct Entry {
     pointer: usize,
     character: u32,
-    /// The leader's id: the slice key.
     leader: u32,
     certificate: (u64, u64),
     rows: Range<usize>,
@@ -138,8 +132,6 @@ struct Visit {
 /// The family a carry reports to.
 #[derive(Clone, Copy)]
 pub(super) struct Family {
-    /// The family's `*_verify` feature.
-    pub verify: bool,
     /// Publishes one capture's counts and the leaders it visited.
     pub record: fn(&Counts, usize),
 }
@@ -147,8 +139,6 @@ pub(super) struct Family {
 pub(crate) struct LeaderCarry<R> {
     changes: &'static dyn Changes,
     family: Family,
-    /// Tests: the slice; production follows the hour.
-    check: Option<Check>,
     /// Sorted by pointer.
     entries: Vec<Entry>,
     rows: Vec<R>,
@@ -188,38 +178,31 @@ impl<R> std::fmt::Debug for LeaderCarry<R> {
 
 /// UnitLeaders on quiet roster hours.
 pub(super) const UNITS: Family = Family {
-    verify: crate::unit_leader_changes::VERIFY,
     record: crate::unit_leader_changes::record,
 };
 
 /// UnitLeaderTraits in the traits job.
 pub(super) const TRAITS: Family = Family {
-    verify: crate::unit_leader_trait_changes::VERIFY,
     record: crate::unit_leader_trait_changes::record,
 };
 
 impl Default for UnitCarry {
     fn default() -> Self {
-        Self::with(&crate::unit_leader_changes::Observer, UNITS, None)
+        Self::with(&crate::unit_leader_changes::Observer, UNITS)
     }
 }
 
 impl Default for TraitCarry {
     fn default() -> Self {
-        Self::with(&crate::unit_leader_trait_changes::Observer, TRAITS, None)
+        Self::with(&crate::unit_leader_trait_changes::Observer, TRAITS)
     }
 }
 
 impl<R: Held> LeaderCarry<R> {
-    pub(super) fn with(
-        changes: &'static dyn Changes,
-        family: Family,
-        check: Option<Check>,
-    ) -> Self {
+    pub(super) fn with(changes: &'static dyn Changes, family: Family) -> Self {
         Self {
             changes,
             family,
-            check,
             entries: Vec::new(),
             rows: Vec::new(),
             text: Vec::new(),
@@ -250,11 +233,6 @@ impl<R: Held> LeaderCarry<R> {
     #[cfg(test)]
     pub(super) fn counts(&self) -> Counts {
         self.counts
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_check(&mut self, check: Check) {
-        self.check = Some(check);
     }
 
     /// Each capture, before anything else: nothing is certified yet.
@@ -306,16 +284,13 @@ impl<R: Held> LeaderCarry<R> {
         }
         // Unchanged, the visits are the held certification's: each held
         // entry's certificate is the one its read was held under.
-        let check = self
-            .check
-            .unwrap_or_else(|| crate::sampled_verify::current_burned_in(self.family.verify));
         let mut carrying = false;
         for visit in &self.visits {
             let Some(at) = visit.entry else {
                 continue;
             };
             let entry = &mut self.entries[at];
-            entry.carried = visit.carryable && !check.covers(u64::from(entry.leader));
+            entry.carried = visit.carryable;
             if entry.carried {
                 carrying = true;
                 self.carried.0 += entry.rows.len();
@@ -422,9 +397,8 @@ impl<R: Held> LeaderCarry<R> {
         self.token = None;
     }
 
-    /// Decode worker, after the payload's rows: compare the fresh reads of
-    /// carryable leaders, renew or hold every fresh read the census named and
-    /// drop the leaders it no longer names. `fresh` gives each fresh visit's
+    /// Decode worker, after the payload's rows: renew or hold every fresh
+    /// read the census named and drop the leaders it no longer names. `fresh` gives each fresh visit's
     /// row count and leader id from the rows that remain, in visit order;
     /// carried visits publish their held rows.
     pub(super) fn rebuild(
@@ -446,9 +420,6 @@ impl<R: Held> LeaderCarry<R> {
             return;
         }
         self.token = self.pending.take();
-        if self.counts.mismatches != 0 {
-            self.changes.mismatch();
-        }
         (self.family.record)(&self.counts, self.visits.len());
     }
 
@@ -508,10 +479,6 @@ impl<R: Held> LeaderCarry<R> {
                     && self.rows[entry.rows.clone()] == self.added_rows[rows_start..]
                     && self.text[entry.text.clone()] == self.added_text[text_start..]
             });
-            if visit.carryable {
-                self.counts.verified += 1;
-                self.counts.mismatches += u64::from(!same);
-            }
             let Some(certificate) = visit.certificate else {
                 // Unobserved: the census names it, but nothing certifies a
                 // held read.

@@ -286,14 +286,6 @@ impl<const N: usize> Object<N> {
                 .all(|(index, &(_, len))| self.bytes[index][..len] == other.bytes[index][..len])
     }
 
-    fn differs(&self, other: &Self, fields: &[(usize, usize); N]) -> bool {
-        self.pointer == other.pointer
-            && fields[..self.completed.min(other.completed).min(N)]
-                .iter()
-                .enumerate()
-                .any(|(index, &(_, len))| self.bytes[index][..len] != other.bytes[index][..len])
-    }
-
     /// A pointer-sized field the gather copied, else zero.
     fn word(&self, index: usize) -> usize {
         if index < self.completed {
@@ -438,15 +430,6 @@ impl Heap {
             && self.completed == other.completed
             && (0..self.completed.min(2)).all(|index| self.bytes(index) == other.bytes(index))
     }
-
-    fn differs(&self, other: &Self) -> bool {
-        (0..self.completed.min(other.completed).min(2)).any(|index| {
-            self.spans[index].1 != 0
-                && other.spans[index].1 != 0
-                && (self.spans[index] != other.spans[index]
-                    || self.bytes(index) != other.bytes(index))
-        })
-    }
 }
 
 /// The task-force fields a carry of its terms compares hour to hour.
@@ -583,12 +566,6 @@ impl HeldShip {
                 self.ship.bytes[index][start..len] == other.ship.bytes[index][start..len]
             })
             && self.heap.same(&other.heap)
-    }
-
-    /// Whether any owned field or payload observed on both sides differs.
-    /// Unavailable observations do not hide independent byte differences.
-    pub fn differs(&self, other: &Self) -> bool {
-        self.ship.differs(&other.ship, &SHIP) || self.heap.differs(&other.heap)
     }
 }
 

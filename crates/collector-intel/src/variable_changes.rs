@@ -48,13 +48,9 @@ const _: () = assert!(
 );
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused, read, verified and mismatched stores; reused and read rows;
-/// quiet hours and the stores they visited.
-static READS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-/// The family's sampled comparisons.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried ScriptVariables rows differ from a fresh read",
-]);
+/// Reused and read stores; reused and read rows; quiet hours and the stores
+/// they visited.
+static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 /// Ordinary scopes from live sizing and the latest complete capture.
 static SCOPES: AtomicUsize = AtomicUsize::new(0);
 /// MIO stores, disjoint from the ordinary and faction store censuses.
@@ -201,11 +197,6 @@ impl Watches {
     pub fn roster_write(&self) {
         drop(self.roster.notify(0));
     }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn roster_poisoned(&self) -> bool {
-        self.roster.poisoned()
-    }
 }
 
 /// The take before an hour's walk: the marks' epoch and the structure token.
@@ -222,9 +213,6 @@ pub trait Changes: Sync {
     /// across hours prove that no observed writer touched it since the
     /// first.
     fn register(&self, store: usize) -> Option<((u64, u64), bool)>;
-    /// A fresh read disagreed with carried rows: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
     /// Before any read of the hour: visits every store a hooked writer
     /// touched since the previous take, clearing its mark, and returns the
     /// marks' epoch with the structure token. `None` when nothing taken
@@ -234,17 +222,11 @@ pub trait Changes: Sync {
     /// The character roster's token ([`crate::roster_changes::roster`]):
     /// equal values prove the roster's occurrences, order and ids unchanged.
     fn roster(&self) -> Option<(u64, u64)>;
-    /// A held scope list disagreed with a fresh walk: disable reuse of the
-    /// variable and roster domains for the attachment.
-    fn scope_mismatch(&self);
 }
 
 impl Changes for Watches {
     fn register(&self, store: usize) -> Option<((u64, u64), bool)> {
         self.registry.register(store)
-    }
-    fn mismatch(&self) {
-        self.registry.poison();
     }
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<Taken> {
         self.take_marks(visit)
@@ -256,16 +238,6 @@ impl Changes for Watches {
     #[cfg(not(any(test, feature = "test-support")))]
     fn roster(&self) -> Option<(u64, u64)> {
         crate::roster_changes::roster()
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    fn scope_mismatch(&self) {
-        self.registry.poison();
-        self.roster.poison();
-    }
-    #[cfg(not(any(test, feature = "test-support")))]
-    fn scope_mismatch(&self) {
-        self.registry.poison();
-        crate::roster_changes::mismatch();
     }
 }
 
@@ -287,18 +259,11 @@ impl Changes for Observer {
     fn register(&self, store: usize) -> Option<((u64, u64), bool)> {
         WATCHES.register(store)
     }
-    fn mismatch(&self) {
-        WATCHES.mismatch();
-    }
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<Taken> {
         WATCHES.take_marks(visit)
     }
     fn roster(&self) -> Option<(u64, u64)> {
         crate::roster_changes::roster()
-    }
-    fn scope_mismatch(&self) {
-        WATCHES.mismatch();
-        crate::roster_changes::mismatch();
     }
 }
 
@@ -307,12 +272,6 @@ impl Changes for Observer {
 pub fn embedded_certificate(store: usize) -> Option<(u64, u64, u64)> {
     WATCHES.embedded_certificate(store)
 }
-
-/// Whether captures read every carryable store afresh and compare, rather
-/// than the hour's sampled slice ([`crate::sampled_verify`]); such an hour
-/// is never quiet, and one whose quiet key matched is compared whole with
-/// the held walk.
-pub const VERIFY: bool = cfg!(feature = "variable_verify");
 
 /// Notifications and exception-handler calls running now.
 pub fn active() -> usize {
@@ -461,13 +420,11 @@ pub fn collect() {
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     pub reused_rows: u64,
     pub read_rows: u64,
     /// The capture published the held walk without walking a scope.
     pub quiet: bool,
-    /// Stores a quiet hour visited: marked, sampled or unobserved.
+    /// Stores a quiet hour visited: marked, freshly registered or unobserved.
     pub visited: u64,
 }
 
@@ -477,8 +434,6 @@ pub fn record(counts: &Counts, scopes: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         counts.reused_rows,
         counts.read_rows,
         u64::from(counts.quiet),
@@ -486,7 +441,6 @@ pub fn record(counts: &Counts, scopes: Option<usize>) {
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
     if let Some(scopes) = scopes {
         SCOPES.store(scopes, Ordering::Relaxed);
     }
@@ -503,20 +457,13 @@ pub fn status() -> impl serde::Serialize {
     let (taken, refused_takes) = WATCHES.registry.takes();
     crate::status::status!({
         "configured": cfg!(feature = "variable_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_stores": reads[0],
         "read_stores": reads[1],
-        "verified_stores": reads[2],
-        "mismatches": reads[3],
-        "reused_rows": reads[4],
-        "read_rows": reads[5],
-        "quiet_hours": reads[6],
-        "visited_stores": reads[7],
+        "reused_rows": reads[2],
+        "read_rows": reads[3],
+        "quiet_hours": reads[4],
+        "visited_stores": reads[5],
         "taken_stores": taken,
         "refused_takes": refused_takes,
         "structure_token": WATCHES.structure.load(Ordering::Relaxed),
@@ -527,7 +474,7 @@ pub fn status() -> impl serde::Serialize {
         "unread_contexts": WATCHES.unread_contexts.load(Ordering::Relaxed),
         "unlocated_threads": UNLOCATED_THREADS.load(Ordering::Relaxed),
         "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a quiet hour (quiet_hours) publishes the held walk's rows and reads only the stores a hooked writer marked since the previous hour's take, its slice's stores and unobserved ones (visited_stores), when the take's epoch and structure token (every release and every first-chance C++ exception, cxx_exceptions, moves it), the character roster's token, the global root, the country census and the state slots all equal the held walk's; any other hour reads every scope's identity and every store's vtable, header and seed, and carries a store's entries and keys when it is the store held for the same scope with the same hash header and no hooked writer touched it since its read; when no release or exception moved the structure token since the held walk, a store no writer touched whose header or seed moved is a missed write; the handler (exception_handler, installed with the family, never handling an exception) moves the token so that the hour after an exception walks every scope; every hour also reads the carryable stores of its slice afresh (one in rotation_hours by scope kind and id; every one in verify mode, which also compares each hour whose quiet key matched whole with the held walk instead of carrying it), publishes the fresh rows and disables reuse at the first mismatch (sampled_*); events count notified calls, get_mutable_value and erase_variable calls on the calling thread's temporary store run without one, and a context end (end_*) notifies only a context that may change its store's seed (hook_timing counts every call)"
+        "scope": "cumulative since attach; a quiet hour (quiet_hours) publishes the held walk's rows and reads only the stores a hooked writer marked since the previous hour's take, freshly registered and unobserved ones (visited_stores), when the take's epoch and structure token (every release and every first-chance C++ exception, cxx_exceptions, moves it), the character roster's token, the global root, the country census and the state slots all equal the held walk's; any other hour reads every scope's identity and every store's vtable, header and seed, and carries a store's entries and keys when it is the store held for the same scope with the same hash header and no hooked writer touched it since its read; when no release or exception moved the structure token since the held walk, a store no writer touched whose header or seed moved is read afresh; the handler (exception_handler, installed with the family, never handling an exception) moves the token so that the hour after an exception walks every scope; events count notified calls, get_mutable_value and erase_variable calls on the calling thread's temporary store run without one, and a context end (end_*) notifies only a context that may change its store's seed (hook_timing counts every call)"
     })
 }
 

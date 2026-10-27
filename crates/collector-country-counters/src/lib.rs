@@ -1,6 +1,5 @@
 //! Ordinary country capture: country appearance, country counter inputs and the reserved visibility both read. The host owns the ordinary job, the navy pass installation, loans and table assembly.
 
-use collector_certificates::sampled_verify;
 use collector_memory::read_accounting;
 use collector_memory::terminal as allocation;
 use collector_naval_movement::country_naval_movement_inputs;

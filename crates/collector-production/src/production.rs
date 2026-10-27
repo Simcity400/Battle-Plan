@@ -643,7 +643,6 @@ impl Variants {
         let mut organisation_carry = DesignCarry {
             held: &mut self.organisation_holds,
             fresh: force_full || !self.organisations_complete,
-            day: hour.div_euclid(24),
         };
         capture_source(&mut self.stats, source, |source, rows| {
             cequipment_variant::walk_stats_carried(memory, source, rows, &mut organisation_carry)
@@ -673,26 +672,17 @@ struct DesignHeld {
     pointer: usize,
     token: Option<(u64, u64)>,
     observed: Option<(u64, u64)>,
-    verify: Option<u64>,
     did_read: bool,
 }
 struct DesignCarry<'a> {
     held: &'a mut Vec<DesignHeld>,
     fresh: bool,
-    day: i32,
-}
-fn design_digest(row: &cequipment_variant::Organisation) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    row.hash(&mut hash);
-    hash.finish()
 }
 impl cequipment_variant::OrganisationCarry for DesignCarry<'_> {
     fn fresh(
         &mut self,
         index: usize,
         source: &cequipment_variant::RegistryRow,
-        old: &cequipment_variant::Organisation,
     ) -> Result<bool, &'static str> {
         if self.held.len() <= index {
             engine_allocation::resize_default(self.held, index + 1)
@@ -705,29 +695,16 @@ impl cequipment_variant::OrganisationCarry for DesignCarry<'_> {
             && held.pointer == source.pointer()
             && token.is_some()
             && token == held.token;
-        let sample = (source.id >> 32) % 24 == self.day.rem_euclid(24) as u64;
         held.observed = token;
-        held.verify = (carry && sample).then(|| design_digest(old));
-        held.did_read = !carry || sample;
+        held.did_read = !carry;
         Ok(held.did_read)
     }
-    fn read(
-        &mut self,
-        index: usize,
-        source: &cequipment_variant::RegistryRow,
-        row: &cequipment_variant::Organisation,
-    ) {
+    fn read(&mut self, index: usize, source: &cequipment_variant::RegistryRow) {
         let held = &mut self.held[index];
-        let mismatch = held.verify.is_some_and(|old| old != design_digest(row));
-        if mismatch {
-            collector_observers::world_input_changes::design_mio_mismatch();
-        }
         collector_observers::world_input_changes::record_daily(
             collector_observers::world_input_changes::Domain::DesignIndustrialOrganisation,
             !held.did_read,
             held.did_read,
-            held.verify.is_some(),
-            mismatch,
         );
         held.reference = source.id;
         held.pointer = source.pointer();

@@ -23,19 +23,10 @@
 //! touched the manager since. HiredAdvisors' latest complete walk is held
 //! here too ([`super::appointed`]).
 //!
-//! The pools a walk can carry are read afresh on their day of the
-//! [`crate::sampled_verify`] rotation (keyed by country id; a pool is read
-//! once a day, so its rotation runs over days), and the table on the hour of
-//! key 0 of the burned-in rotation, once in 24 days (every one under
-//! `advisor_pool_verify`); the fresh rows are
-//! published and a difference poisons reuse. The store follows the Slow job's
-//! loan and holds only the latest complete walks, so its size follows live
-//! demand. Allocation is advisory: what cannot be held is read afresh at its
-//! next read.
-use crate::{
-    advisor_pool_changes::{Changes, Counts, Table},
-    sampled_verify::Check,
-};
+//! The store follows the Slow job's loan and holds only the latest complete
+//! walks, so its size follows live demand. Allocation is advisory: what
+//! cannot be held is read afresh at its next read.
+use crate::advisor_pool_changes::{Changes, Counts, Table};
 use engine_allocation as allocation;
 use engine_characters::{advisor_tokens, advisor_tokens::TokenCarry};
 use engine_native::{
@@ -44,8 +35,8 @@ use engine_native::{
 use std::ops::Range;
 
 type Certified = (u64, u64);
-/// A planned pool: its token, certificate, the carryable held entry it
-/// would verify and the character domain's quiet state before its read.
+/// A planned pool: its token, certificate, the held entry it carries and
+/// the character domain's quiet state before its read.
 type Planned = (
     usize,
     Option<PoolCertificate>,
@@ -179,8 +170,6 @@ pub struct AdvisorStore {
     pools: usize,
     counts: Counts,
     tokens: Tokens,
-    /// A held table whose fresh read is being compared.
-    token_plan: Option<TokenCertificate>,
     token_counts: Counts,
     /// HiredAdvisors' latest complete walk ([`super::appointed`]).
     appointed: super::appointed::Appointed,
@@ -258,23 +247,12 @@ impl AdvisorStore {
 pub struct PoolReuse<'a> {
     store: &'a mut AdvisorStore,
     changes: &'a dyn Changes,
-    /// Which carryable pools this walk reads afresh and compares, by country
-    /// id over days ([`Check::covers_daily`]).
-    pub check: Check,
 }
-
-/// The AdvisorTokens table's stable sampling key.
-pub const TOKEN_KEY: u64 = 0;
 
 impl<'a> PoolReuse<'a> {
     /// A walk at `hour`, which carries from that hour of the day's held walk
     /// and replaces it.
-    pub fn begin(
-        store: &'a mut AdvisorStore,
-        changes: &'a dyn Changes,
-        check: Check,
-        hour: i32,
-    ) -> Self {
+    pub fn begin(store: &'a mut AdvisorStore, changes: &'a dyn Changes, hour: i32) -> Self {
         store.take_forgotten();
         store.slice = hour.rem_euclid(SLICES as i32) as usize;
         std::mem::swap(&mut store.previous, &mut store.slices[store.slice]);
@@ -283,11 +261,7 @@ impl<'a> PoolReuse<'a> {
         store.counts = Counts::default();
         store.pools = 0;
         store.planned = None;
-        Self {
-            store,
-            changes,
-            check,
-        }
+        Self { store, changes }
     }
 
     /// Keeps this walk's pools, in its hour's place, only when every pool
@@ -353,14 +327,12 @@ impl AvailableCarry for PoolReuse<'_> {
                         self.changes.character(character) == Some(certified)
                     })
             });
-        if let Some(index) = held
-            && !self.check.covers_daily(u64::from(pool.country))
-        {
+        if let Some(index) = held {
             let entry = &store.previous.entries[index];
             store.planned = Some((token, certificate, Some(index), None));
             return (token, Some((entry.rows.len(), entry.bytes.len())));
         }
-        store.planned = Some((token, certificate, held, self.changes.characters_quiet()));
+        store.planned = Some((token, certificate, None, self.changes.characters_quiet()));
         let pending = store.pending.get_or_insert_with(Vec::new);
         pending.clear();
         (token, None)
@@ -424,31 +396,11 @@ impl AvailableCarry for PoolReuse<'_> {
         let store = &mut *self.store;
         store.counts.read += 1;
         store.counts.read_rows += rows.len() as u64;
-        let Some((planned, certificate, held, before)) = store.planned.take() else {
+        let Some((planned, certificate, _, before)) = store.planned.take() else {
             return;
         };
         if planned != token {
             return;
-        }
-        if let Some(index) = held {
-            store.counts.verified += 1;
-            let entry = &store.previous.entries[index];
-            let same = entry.rows.len() == rows.len()
-                && store.previous.bytes[entry.bytes.clone()] == *bytes
-                && store.previous.rows[entry.rows.clone()]
-                    .iter()
-                    .zip(rows)
-                    .all(|(held, row)| {
-                        Row {
-                            idea_start: held.idea_start + bytes_start,
-                            slot_start: held.slot_start + bytes_start,
-                            ..*held
-                        } == *row
-                    });
-            if !same {
-                store.counts.mismatches += 1;
-                self.changes.mismatch();
-            }
         }
         let pending = store.pending.take().unwrap_or_default();
         if let Some(certificate) = certificate
@@ -468,8 +420,6 @@ impl AvailableCarry for PoolReuse<'_> {
 pub struct TokenReuse<'a> {
     store: &'a mut AdvisorStore,
     changes: &'a dyn Changes,
-    /// Whether this hour reads a carryable table afresh and compares.
-    verify: bool,
     /// The certificate this walk registered, held with a complete read.
     certificate: Option<TokenCertificate>,
     carried: bool,
@@ -477,15 +427,12 @@ pub struct TokenReuse<'a> {
 }
 
 impl<'a> TokenReuse<'a> {
-    pub fn begin(store: &'a mut AdvisorStore, changes: &'a dyn Changes, check: Check) -> Self {
-        let verify = check.covers(TOKEN_KEY);
+    pub fn begin(store: &'a mut AdvisorStore, changes: &'a dyn Changes) -> Self {
         store.take_forgotten();
         store.token_counts = Counts::default();
-        store.token_plan = None;
         Self {
             store,
             changes,
-            verify,
             certificate: None,
             carried: false,
             read: None,
@@ -499,7 +446,6 @@ impl<'a> TokenReuse<'a> {
         if !complete || !(self.carried || self.read == Some(true)) {
             store.tokens.certificate = None;
         }
-        store.token_plan = None;
         store.measure();
         crate::advisor_pool_changes::record(Table::AdvisorTokens, &store.token_counts, None);
     }
@@ -521,11 +467,9 @@ impl TokenCarry for TokenReuse<'_> {
                     header: *header,
                 });
         let tokens = &self.store.tokens;
-        let held = self.certificate.is_some() && tokens.certificate == self.certificate;
-        if held && !self.verify {
+        if self.certificate.is_some() && tokens.certificate == self.certificate {
             return Some((tokens.rows.len(), tokens.bytes.len()));
         }
-        self.store.token_plan = if held { self.certificate } else { None };
         None
     }
 
@@ -542,13 +486,6 @@ impl TokenCarry for TokenReuse<'_> {
         let store = &mut *self.store;
         store.token_counts.read += 1;
         store.token_counts.read_rows += rows.len() as u64;
-        if store.token_plan.take().is_some() {
-            store.token_counts.verified += 1;
-            if store.tokens.rows != rows || store.tokens.bytes != bytes {
-                store.token_counts.mismatches += 1;
-                self.changes.mismatch();
-            }
-        }
         let tokens = &mut store.tokens;
         tokens.certificate = None;
         let held = self.certificate.is_some()

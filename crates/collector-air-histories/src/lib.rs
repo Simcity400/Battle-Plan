@@ -1,6 +1,5 @@
 //! Air history capture: the carried air histories, re-read only where a native writer touched them, and the history writer observer. The host owns dispatch, the fingerprint loan and table assembly.
 
-use collector_certificates::sampled_verify;
 use collector_certificates::slicing;
 use collector_certificates::watch_registry;
 use collector_hooks::hook;

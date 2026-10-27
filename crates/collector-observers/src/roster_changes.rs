@@ -44,15 +44,9 @@ static MANAGER_FORWARD: AtomicBool = AtomicBool::new(false);
 /// The advisor family forwards `repair_containers`.
 static REPAIR_FORWARD: AtomicBool = AtomicBool::new(false);
 
-/// Per table: quiet hours (carried without the walk), full reads, sampled
-/// comparisons and mismatches.
-static READS: [[AtomicU64; 4]; TABLES.len()] =
-    [const { [const { AtomicU64::new(0) }; 4] }; TABLES.len()];
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "a quiet roster hour's held Characters rows or census differ from a fresh read",
-    "a quiet roster hour's held ScriptFlags scopes differ from a fresh walk",
-    "a quiet scientist hour's held CharacterRoleTraits scientist rows differ from a fresh read",
-]);
+/// Per table: quiet hours (carried without the walk) and full reads.
+static READS: [[AtomicU64; 2]; TABLES.len()] =
+    [const { [const { AtomicU64::new(0) }; 2] }; TABLES.len()];
 
 /// The captures that rely on these domains.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,10 +56,6 @@ pub enum Table {
     CharacterRoleTraits,
 }
 const TABLES: [&str; 3] = ["Characters", "ScriptFlags", "CharacterRoleTraits"];
-
-/// Whether captures read every hour afresh and compare with what a quiet
-/// hour would carry, rather than carrying it (the family's burn-in).
-pub const VERIFY: bool = cfg!(feature = "roster_verify");
 
 /// The roster domain's token: `(epoch, revision)` while observed with no
 /// writer running.
@@ -78,13 +68,6 @@ pub fn scientists() -> Option<(u64, u64)> {
     SCIENTISTS.quiet()
 }
 
-/// A quiet hour's held rows differed from a fresh read: neither domain
-/// certifies anything for the rest of the attachment.
-pub fn mismatch() {
-    ROSTER.poison();
-    SCIENTISTS.poison();
-}
-
 /// One capture's use of a domain.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
@@ -92,9 +75,6 @@ pub struct Counts {
     pub quiet: bool,
     /// Read afresh.
     pub read: bool,
-    /// Entries compared with what a quiet hour holds, and how many differed.
-    pub verified: u64,
-    pub mismatches: u64,
 }
 
 /// The roster domain as a capture consults it; tests substitute a domain of
@@ -102,8 +82,6 @@ pub struct Counts {
 pub trait Roster: Sync {
     /// [`roster`].
     fn token(&self) -> Option<(u64, u64)>;
-    /// [`mismatch`].
-    fn mismatch(&self);
     /// [`record`].
     fn record(&self, table: Table, counts: &Counts);
 }
@@ -115,9 +93,6 @@ impl Roster for Observer {
     fn token(&self) -> Option<(u64, u64)> {
         roster()
     }
-    fn mismatch(&self) {
-        mismatch();
-    }
     fn record(&self, table: Table, counts: &Counts) {
         record(table, counts);
     }
@@ -128,8 +103,8 @@ impl Roster for Observer {
 #[cfg(any(test, feature = "test-support"))]
 pub struct Isolated {
     pub registry: WatchRegistry,
-    /// Quiet hours, read hours, verified entries, mismatches.
-    counts: [AtomicU64; 4],
+    /// Quiet hours and read hours.
+    counts: [AtomicU64; 2],
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -144,7 +119,7 @@ impl Isolated {
     pub const fn new() -> Self {
         Self {
             registry: WatchRegistry::new(),
-            counts: [const { AtomicU64::new(0) }; 4],
+            counts: [const { AtomicU64::new(0) }; 2],
         }
     }
 
@@ -162,8 +137,8 @@ impl Isolated {
         self.registry.poisoned()
     }
 
-    /// Quiet hours, read hours, verified entries and mismatches recorded.
-    pub fn counts(&self) -> [u64; 4] {
+    /// Quiet hours and read hours recorded.
+    pub fn counts(&self) -> [u64; 2] {
         self.counts
             .each_ref()
             .map(|count| count.load(Ordering::Relaxed))
@@ -175,32 +150,24 @@ impl Roster for Isolated {
     fn token(&self) -> Option<(u64, u64)> {
         self.registry.quiet()
     }
-    fn mismatch(&self) {
-        self.registry.poison();
-    }
     fn record(&self, _table: Table, counts: &Counts) {
-        for (target, value) in self.counts.iter().zip([
-            u64::from(counts.quiet),
-            u64::from(counts.read),
-            counts.verified,
-            counts.mismatches,
-        ]) {
+        for (target, value) in self
+            .counts
+            .iter()
+            .zip([u64::from(counts.quiet), u64::from(counts.read)])
+        {
             target.fetch_add(value, Ordering::Relaxed);
         }
     }
 }
 
-/// The capture already called [`mismatch`] at a difference.
 pub fn record(table: Table, counts: &Counts) {
-    for (target, value) in READS[table as usize].iter().zip([
-        u64::from(counts.quiet),
-        u64::from(counts.read),
-        counts.verified,
-        counts.mismatches,
-    ]) {
+    for (target, value) in READS[table as usize]
+        .iter()
+        .zip([u64::from(counts.quiet), u64::from(counts.read)])
+    {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, table as usize);
 }
 
 /// Notifications running now.
@@ -278,24 +245,17 @@ pub fn status() -> impl serde::Serialize {
             crate::status::status!({
                 "quiet_hours": reads[0],
                 "read_hours": reads[1],
-                "verified": reads[2],
-                "mismatches": reads[3],
             }),
         )
     }));
     crate::status::status!({
         "configured": cfg!(feature = "roster_changes"),
-        "verify": VERIFY,
         "roster_observed": ROSTER.quiet().is_some() || ROSTER.active() != 0,
         "scientists_observed": SCIENTISTS.quiet().is_some() || SCIENTISTS.active() != 0,
         "poisoned": ROSTER.poisoned() || SCIENTISTS.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "tables": tables,
         "events": events,
-        "scope": "cumulative since attach; the roster domain's token stands still while no character is appended to or cleared from the CCharacterManager arrays, no manager is built and no rostered character's id is repaired, the scientist domain's while no scientist role or trait array is written; Characters carries its rows and the role census's occurrences, and ScriptFlags its whole walk (with the flag domain and the country census), over a quiet roster hour, CharacterRoleTraits its scientist rows over a quiet scientist hour; quiet_hours counts hours carried so, read_hours hours read afresh; a quiet hour reads its sampled slice afresh (one in rotation_hours by stable key) and verify mode reads every hour afresh, comparing it with what a quiet hour would carry (verified, mismatches); the first mismatch disables both domains"
+        "scope": "cumulative since attach; the roster domain's token stands still while no character is appended to or cleared from the CCharacterManager arrays, no manager is built and no rostered character's id is repaired, the scientist domain's while no scientist role or trait array is written; Characters carries its rows and the role census's occurrences, and ScriptFlags its whole walk (with the flag domain and the country census), over a quiet roster hour, CharacterRoleTraits its scientist rows over a quiet scientist hour; quiet_hours counts hours carried so, read_hours hours read afresh"
     })
 }
 

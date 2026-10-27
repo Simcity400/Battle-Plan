@@ -165,10 +165,8 @@ impl Captured {
             };
             held.settle(
                 Domain::ProvinceNames,
-                changes,
                 plan.read(Domain::ProvinceNames, changes),
                 read.is_some(),
-                |(rows, bytes)| read.is_some_and(|read| (&rows[..], &bytes[..]) != read),
                 |(rows, bytes)| {
                     read.is_some_and(|(fresh, text)| {
                         changes::assign(rows, fresh) && changes::assign(bytes, text)
@@ -341,8 +339,7 @@ mod tests {
     }
 
     /// A quiet hour publishes the held read without reading a province; an
-    /// hour after a writer ran, a full hour and the domain's comparison hour
-    /// read afresh.
+    /// hour after a writer ran and a full hour read afresh.
     #[test]
     fn quiet_hours_publish_the_held_read_without_reading() {
         let changes = changes::Isolated::new();
@@ -350,14 +347,12 @@ mod tests {
         let mut bytes = census();
         let mut capture = Captured::with_capacities(&Capacities::default());
         let mut at = |bytes: &[u8], hour: i32, force_full: bool| {
-            crate::sampled_verify::begin_hour(hour);
             let memory = CountedMemory::new(SliceMemory { base: BASE, bytes });
             let reads = crate::read_accounting::Capture::new();
             capture.capture_held(&memory, 0, BASE, hour, force_full, &changes, &held);
             let spans = reads.finish()[TABLES[0].index()].spans;
             (capture.tables(), spans)
         };
-        // Hour 1 avoids the domain's comparison hour (its index, 0).
         name(&mut bytes, b"Original");
         let (table, spans) = at(&bytes, 1, false);
         assert_eq!(table, [rows(b"Original")]);
@@ -365,13 +360,7 @@ mod tests {
         // Memory changes without a hooked writer: a quiet hour still
         // publishes the held read, and reads nothing.
         name(&mut bytes, b"Unseen");
-        let (table, spans) = at(&bytes, 2, false);
-        if changes::VERIFY {
-            assert_eq!(table, [rows(b"Unseen")]);
-            assert!(changes.poisoned(Domain::ProvinceNames));
-            return;
-        }
-        assert_eq!((table, spans), ([rows(b"Original")], 0));
+        assert_eq!(at(&bytes, 2, false), ([rows(b"Original")], 0));
         // A full hour reads.
         let (table, spans) = at(&bytes, 3, true);
         assert_eq!(table, [rows(b"Unseen")]);
@@ -381,16 +370,6 @@ mod tests {
         changes.write(Domain::ProvinceNames);
         assert_eq!(at(&bytes, 4, false).0, [rows(b"Renamed")]);
         assert_eq!(at(&bytes, 5, false), ([rows(b"Renamed")], 0));
-        // The comparison hour of the burned-in rotation reads a quiet hour
-        // afresh; an unseen write poisons the domain, and every later hour
-        // reads.
-        name(&mut bytes, b"Missed");
-        let rotation = crate::sampled_verify::BURNED_IN_ROTATION as i32;
-        let (table, spans) = at(&bytes, rotation, false);
-        assert_eq!(table, [rows(b"Missed")]);
-        assert!(spans > 0);
-        assert!(changes.poisoned(Domain::ProvinceNames));
-        assert!(at(&bytes, rotation + 1, false).1 > 0);
     }
 
     #[test]

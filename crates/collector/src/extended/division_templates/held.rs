@@ -184,9 +184,6 @@ mod tests {
                 fn sequence(&self, _: usize) -> Option<(u64, u64)> {
                     panic!("quiet finalization must not walk receiver certificates again")
                 }
-                fn mismatch(&self) {
-                    unreachable!()
-                }
             }
             store.finish(&QuietOnly(watches.quiet().unwrap()), &[row], &[], &[], &[]);
             let (next_layout, next_settings) = store.values(&row);

@@ -16,9 +16,7 @@
 //! whose handle, task force and certificate are those of its held read from
 //! them, reading only its task force, location, country, weather, variants
 //! and the other shared sources; the readers and their arithmetic are the
-//! same, so the row is the one a fresh read makes. Every hour reads the
-//! carryable ships of its sampled slice afresh and compares them with the
-//! held bytes; a difference poisons the family.
+//! same, so the row is the one a fresh read makes.
 //!
 //! A task force's terms (country, pride ship, doctrine, terrain and location
 //! weather, fleet leader with its tree certificate, HQ support) are read once
@@ -34,7 +32,6 @@
 use crate::{
     clock::qpc,
     projection::{Projection, project_table},
-    sampled_verify::Check,
     ship_model_changes::{self, Certificate, Changes, Counts, NO_SLOTS, Slots},
     table_capture::{CaptureRows, grow_capacity},
 };
@@ -504,37 +501,6 @@ fn model_carry_complete(row: &cship::ModelRow) -> bool {
         }
 }
 
-fn observed_differs<T: PartialEq>(kept: Option<T>, fresh: Option<T>) -> bool {
-    kept.zip(fresh).is_some_and(|(kept, fresh)| kept != fresh)
-}
-
-fn model_observations_differ(kept: &cship::ModelRow, fresh: &cship::ModelRow) -> bool {
-    kept.ship != fresh.ship
-        || kept.variant != fresh.variant
-        || kept.hull_sprite != fresh.hull_sprite
-        || kept.fallback_sprite != fresh.fallback_sprite
-        || kept.model_number != fresh.model_number
-        || kept.formation_flags != fresh.formation_flags
-        || kept.definition_valid != fresh.definition_valid
-        || kept.carrier_air_base != fresh.carrier_air_base
-        || kept.maximum_strength != fresh.maximum_strength
-        || kept.anti_air_base != fresh.anti_air_base
-        || kept.positive_equipment_flags != fresh.positive_equipment_flags
-        || observed_differs(kept.naval_power, fresh.naval_power)
-        || observed_differs(kept.subunit_index, fresh.subunit_index)
-        || kept
-            .hull_variant
-            .zip(fresh.hull_variant)
-            .is_some_and(|(kept, fresh)| {
-                observed_differs(kept.definition_index, fresh.definition_index)
-                    || observed_differs(kept.module_count, fresh.module_count)
-                    || observed_differs(kept.upgrade_level_sum, fresh.upgrade_level_sum)
-                    || observed_differs(kept.module_priority_sum, fresh.module_priority_sum)
-                    || observed_differs(kept.version, fresh.version)
-                    || observed_differs(kept.organisation_marker, fresh.organisation_marker)
-            })
-}
-
 /// The census and certificate inputs of a carried row. The reader's objects,
 /// arrays and finished row stay in its cold box until a reader needs them.
 #[derive(Clone, Copy)]
@@ -929,13 +895,11 @@ type HeldDoctrine = ([(u64, u64); 2], [i64; 4]);
 type HeldWeather = (cship::OrganisationWeather, [(u64, u64); 2], u64);
 
 /// The task force a range is reading: its fields, its doctrine tree's
-/// sequence taken before its first ship's read, its held terms, and whether
-/// the hour's slice compares them instead of serving them.
+/// sequence taken before its first ship's read and its held terms.
 struct TaskState {
     fields: cship::TaskForceFields,
     sequence: Option<(u64, u64)>,
     held: Option<HeldTask>,
-    covered: bool,
     /// The held weather terms' province night factor, as read this hour.
     night_factor: Option<u64>,
 }
@@ -1342,10 +1306,10 @@ impl Captured {
         }
     }
     /// Before the first ship of a task force in the range: finish the
-    /// previous task force, then serve this one's held terms that still hold
-    /// (outside the hour's slice): its modifier array while its mine exposure
-    /// is the held one, and its doctrine contribution while its doctrine
-    /// tree writer and its country's tree certificate held still.
+    /// previous task force, then serve this one's held terms that still hold:
+    /// its modifier array while its mine exposure is the held one, and its
+    /// doctrine contribution while its doctrine tree writer and its country's
+    /// tree certificate held still.
     fn begin_task(
         &mut self,
         memory: &impl Memory,
@@ -1359,12 +1323,6 @@ impl Captured {
             });
         // The doctrine tree's certificate precedes the read it certifies.
         let sequence = carrying.changes.sequence(task.pointer);
-        let covered = carrying.check.covers(task.handle >> 32);
-        if covered {
-            // The slice compares this task force's held country terms with
-            // a fresh read, not with another task force's held ones.
-            self.doctrine.forget_country();
-        }
         // The applied night factor of the held location, which the reader's
         // province terms follow.
         let night_factor = held
@@ -1372,9 +1330,7 @@ impl Captured {
             .and_then(|held| held.weather)
             .and_then(|(weather, _, _)| engine_native::read::<u64>(memory, weather.night_factor()));
         carrying.task_modifiers = None;
-        if let Some(held) = held.as_ref()
-            && !covered
-        {
+        if let Some(held) = held.as_ref() {
             if let Some(entries) = held.modifiers.as_ref()
                 && held.mine_exposure == task.mine_exposure
             {
@@ -1410,14 +1366,12 @@ impl Captured {
             fields: task,
             sequence,
             held,
-            covered,
             night_factor,
         });
     }
 
-    /// After a task force's last ship in the range: compare its terms with
-    /// the held ones when the slice covers it, and keep them for the next
-    /// hour.
+    /// After a task force's last ship in the range: keep its terms for the
+    /// next hour.
     fn finish_task(&mut self, memory: &impl Memory, carrying: &mut Carrying<'_>) {
         let Some(state) = carrying.task.take() else {
             return;
@@ -1465,34 +1419,6 @@ impl Captured {
                 let certificate = weather_certificate(carrying.changes, &weather, country)?;
                 Some((weather, certificate, factor))
             });
-        if let Some(held) = state.held.as_ref().filter(|_| state.covered) {
-            let modifiers_differ = held.mine_exposure == task.mine_exposure
-                && held.modifiers.as_ref().map(|entries| entries.as_slice()) != observed;
-            let doctrine_differs = held.country == country
-                && held.doctrine.is_some_and(|(held, value)| {
-                    Some(held) == certificate && Some(value) != doctrine
-                });
-            let weather_differs = held.mine_exposure == task.mine_exposure
-                && held.weather.zip(weather).is_some_and(
-                    |((kept, kept_certificate, kept_factor), (fresh, certificate, factor))| {
-                        kept.same_sources(&fresh)
-                            && kept_certificate == certificate
-                            && kept_factor == factor
-                            && kept != fresh
-                    },
-                );
-            let country_differs = held.country == country
-                && held.country_terms.zip(country_terms).is_some_and(
-                    |((kept_certificate, kept), (certificate, fresh))| {
-                        kept_certificate == certificate && kept != fresh
-                    },
-                );
-            carrying.counts.verified += 1;
-            if modifiers_differ || doctrine_differs || weather_differs || country_differs {
-                carrying.counts.mismatches += 1;
-                carrying.changes.mismatch();
-            }
-        }
         let held = HeldTask {
             pointer: task.pointer,
             handle: task.handle,
@@ -1702,26 +1628,9 @@ impl Captured {
         true
     }
 
-    fn own_observations_differ(&self, held: &Held, read: &cship::HeldShip) -> bool {
-        held.fields.differs(read)
-            || held.accumulators.iter().zip(read.accumulators()).any(
-                |((address, entries), fresh_address)| {
-                    *address == fresh_address
-                        && if fresh_address == 0 {
-                            !entries.is_empty()
-                        } else {
-                            self.modifiers
-                                .borrow()
-                                .observed(fresh_address)
-                                .is_some_and(|fresh| entries[..] != *fresh)
-                        }
-                },
-            )
-    }
-
     /// Read one ship, serving its own objects and modifier arrays from its
-    /// held read when its handle, task force and certificate are that read's
-    /// and `check` does not cover it, and keep the hour's read for the next.
+    /// held read when its handle, task force and certificate are that read's,
+    /// and keep the hour's read for the next.
     fn visit_detail(
         &mut self,
         memory: &impl Memory,
@@ -1755,9 +1664,7 @@ impl Captured {
         });
         let original_hot = taken.as_ref().map(|(hot, _)| *hot);
         let certificate = observation.map(|(certificate, _)| certificate);
-        let covered = carrying.check.covers(row.id >> 32);
-        if !covered
-            && let Some((hot, held)) = taken.as_mut()
+        if let Some((hot, held)) = taken.as_mut()
             && certificate == Some(hot.certificate)
         {
             hot.slots = observation.expect("a certified read").1;
@@ -1779,14 +1686,11 @@ impl Captured {
             carry_cost(|cost| cost.cold_ship_bytes += std::mem::size_of::<cship::HeldShip>());
             held
         });
-        let (held, stale) = match taken {
+        let (mut carry, mut stale) = match taken {
             Some(held) if certificate == Some(held.certificate) => (Some(held), None),
-            Some(held) if !covered && certificate.is_some() => (None, Some(held)),
+            Some(held) if certificate.is_some() => (None, Some(held)),
             _ => (None, None),
         };
-        // A read the hour's slice covers is compared with a fresh one; any
-        // other certified read is carried.
-        let (mut carry, held) = if covered { (None, held) } else { (held, None) };
         // A held read whose certificate moved (a hooked writer ran) is
         // compared with this hour's bytes of the ship's own objects and
         // modifier arrays, each read as the readers would read it: all equal,
@@ -1794,7 +1698,6 @@ impl Captured {
         // the new certificate; with only the arrays changed, the model part
         // below still stands.
         let mut visited = false;
-        let mut stale = stale;
         if let Some(mut moved) = stale.take() {
             fields.visit(memory, pointer);
             visited = true;
@@ -2025,20 +1928,10 @@ impl Captured {
             kept,
             carrying,
         );
-        if !carrying.store {
+        if !carrying.store || self.len == len {
             return;
         }
         let read = fields.held();
-        if self.len == len {
-            if let Some(held) = &held {
-                carrying.counts.verified += 1;
-                if self.own_observations_differ(held, &read) {
-                    carrying.counts.mismatches += 1;
-                    carrying.changes.mismatch();
-                }
-            }
-            return;
-        }
         // This task force's terms, once one of its ships was read.
         if let Some(task) = fields.task_force()
             && carrying.terms.map(|(pointer, _)| pointer) != Some(task.pointer)
@@ -2081,30 +1974,6 @@ impl Captured {
                 modifiers.observed(address)
             }
         });
-        if let Some(held) = &held {
-            carrying.counts.verified += 1;
-            // Compare independent observations wherever both reads succeeded.
-            let fresh = &self.rows.rows[self.len - 1];
-            let row_differs = held.row.as_ref().is_some_and(|(kept, kept_terms)| {
-                let model_differs =
-                    fields.same_variants(&held.fields) && model_observations_differ(kept, fresh);
-                let organisation_differs = carrying
-                    .terms
-                    .is_some_and(|(task, terms)| task == read.task_force() && terms == *kept_terms)
-                    && held.organisation.map(|own| own.modifier_guard())
-                        == self
-                            .doctrine
-                            .organisation_operands(pointer)
-                            .map(|own| own.modifier_guard())
-                    && kept.maximum_organisation != fresh.maximum_organisation;
-                held.fields.carrier_air_base() == 0 && (model_differs || organisation_differs)
-            });
-            let own_differs = self.own_observations_differ(held, &read);
-            if own_differs || row_differs {
-                carrying.counts.mismatches += 1;
-                carrying.changes.mismatch();
-            }
-        }
         let [Some(experience), Some(medals)] = arrays else {
             carrying.counts.uncertified += 1;
             return;
@@ -2122,7 +1991,7 @@ impl Captured {
         let kept = observation.is_some_and(|(certificate, slots)| {
             let [experience_at, medals_at] = read.accumulators();
             // A spare box keeps its arrays' storage.
-            let boxed = match held.or(stale) {
+            let boxed = match stale {
                 Some(mut spare) => {
                     spare.pointer = pointer;
                     spare.ship = row.id;
@@ -2408,12 +2277,7 @@ impl Captured {
             self.forget_stores();
             self.pending_owned = false;
         }
-        self.capture_carrying(
-            memory,
-            context,
-            &ship_model_changes::Observer,
-            crate::sampled_verify::current_burned_in(ship_model_changes::VERIFY),
-        )
+        self.capture_carrying(memory, context, &ship_model_changes::Observer)
     }
 
     /// Native demand and certificate checks finish here; the frame retains
@@ -2466,14 +2330,12 @@ impl Captured {
         }
     }
 
-    /// [`Self::capture_owned`] observing `changes`, comparing the carryable
-    /// ships `check` covers.
+    /// [`Self::capture_owned`] observing `changes`.
     fn capture_carrying(
         &mut self,
         memory: &impl Memory,
         context: CaptureContext,
         changes: &dyn Changes,
-        check: Check,
     ) -> CaptureReport {
         self.context = Some(context);
         let power_certificate = self.worker_growth.then(naval_power_certificate).flatten();
@@ -2492,7 +2354,6 @@ impl Captured {
         let carrying = RefCell::new(Carrying {
             store: ship_model_changes::CARRY && self.terminal_failure.is_none(),
             changes,
-            check,
             counts: Counts::default(),
             task: None,
             task_modifiers: None,
@@ -2784,12 +2645,10 @@ fn task_terms(
 }
 
 /// A range's carry state: whether it holds reads at all, the observation
-/// domain, the hour's sampled check, its counts and the task force it is
-/// reading.
+/// domain, its counts and the task force it is reading.
 struct Carrying<'a> {
     store: bool,
     changes: &'a dyn Changes,
-    check: Check,
     counts: Counts,
     task: Option<TaskState>,
     task_modifiers: Option<(usize, Arc<Vec<[u8; 16]>>)>,

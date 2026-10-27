@@ -71,7 +71,6 @@ fn hour(
     icons: &(Vec<native::IconRow>, Vec<u8>),
     store: &mut KeyStore,
     watches: &Watches,
-    check: Check,
 ) -> Hour {
     let memory = SliceMemory {
         base: 0,
@@ -85,7 +84,6 @@ fn hour(
         &icons.1,
         store,
         watches,
-        check,
         &mut rows,
         &mut bytes,
     );
@@ -105,14 +103,14 @@ fn quiet_hours_carry_keys_and_a_written_template_is_read_again() {
     let watches = Watches::enabled(16);
     let mut store = KeyStore::default();
     let roster = icons(&[(FIRST, &b"Alpha"[..], None), (SECOND, &b"Beta_"[..], None)]);
-    let first = hour(&world, &roster, &mut store, &watches, Check::Nothing);
+    let first = hour(&world, &roster, &mut store, &watches);
     assert_eq!(first.outcome, Outcome::Rows { len: 2 });
     assert_eq!(first.keys(), [b"key_a", b"key_b"]);
     assert_eq!(text(&first.bytes, first.rows[1].name), Some(&b"Beta_"[..]));
     assert_eq!((first.rows[0].owner, first.rows[0].unit_type), (7, 3));
     // Quiet: an unreadable template is not read.
     world[FIRST + native::NAME_KEY + 16..][..8].copy_from_slice(&99_u64.to_le_bytes());
-    let quiet = hour(&world, &roster, &mut store, &watches, Check::Nothing);
+    let quiet = hour(&world, &roster, &mut store, &watches);
     assert_eq!(quiet.keys(), [b"key_a", b"key_b"]);
     // A hooked assignment to the second template (named through its data).
     put(&mut world, FIRST + native::NAME_KEY, b"key_a");
@@ -120,38 +118,21 @@ fn quiet_hours_carry_keys_and_a_written_template_is_read_again() {
     drop(watches.notify(SECOND, 0));
     // An unobserved change to the first stays carried.
     put(&mut world, FIRST + native::NAME_KEY, b"key_z");
-    let written = hour(&world, &roster, &mut store, &watches, Check::Nothing);
+    let written = hour(&world, &roster, &mut store, &watches);
     assert_eq!(written.keys(), [b"key_a", b"key_c"]);
     // Reordered, each key is still found by its template.
     let reordered = icons(&[(SECOND, &b"Beta_"[..], None), (FIRST, &b"Alpha"[..], None)]);
     drop(watches.notify(0xdead, 3));
-    let moved = hour(&world, &reordered, &mut store, &watches, Check::Nothing);
+    let moved = hour(&world, &reordered, &mut store, &watches);
     assert_eq!(moved.keys(), [b"key_c", b"key_a"]);
     assert!(!watches.poisoned());
 }
 
-/// The verified slice reads carryable keys afresh and publishes them; a
-/// carried key that differs poisons the domain.
+/// A hooked assignment enters during a fresh name read. The fresh key (or
+/// fault) remains the outcome; the overlapped observation cannot poison or
+/// become a held capture.
 #[test]
-fn verified_keys_are_read_and_a_difference_poisons() {
-    let mut world = world();
-    let watches = Watches::enabled(16);
-    let mut store = KeyStore::default();
-    let roster = icons(&[(FIRST, &b"Alpha"[..], None), (SECOND, &b"Beta_"[..], None)]);
-    hour(&world, &roster, &mut store, &watches, Check::Nothing);
-    hour(&world, &roster, &mut store, &watches, Check::Every);
-    assert!(!watches.poisoned());
-    put(&mut world, SECOND + native::NAME_KEY, b"key_c");
-    let verified = hour(&world, &roster, &mut store, &watches, Check::Every);
-    assert_eq!(verified.keys(), [b"key_a", b"key_c"]);
-    assert!(watches.poisoned());
-}
-
-/// A hooked assignment enters after the sampled key's certificate was taken
-/// and before its header read. The fresh key (or fault) remains the outcome;
-/// the overlapped observation cannot poison or become a held capture.
-#[test]
-fn sampled_key_writer_during_fresh_names_withdraws_without_poison() {
+fn key_writer_during_fresh_names_holds_nothing() {
     use std::cell::Cell;
     struct Writer<'a> {
         world: &'a [u8],
@@ -179,7 +160,6 @@ fn sampled_key_writer_during_fresh_names_withdraws_without_poison() {
         let watches = Watches::enabled(16);
         let mut store = KeyStore::default();
         let roster = icons(&[(FIRST, &b"Alpha"[..], None)]);
-        hour(&world, &roster, &mut store, &watches, Check::Nothing);
         put(&mut world, FIRST + native::NAME_KEY, b"key_c");
         let writer = Writer {
             world: &world,
@@ -195,7 +175,6 @@ fn sampled_key_writer_during_fresh_names_withdraws_without_poison() {
             &roster.1,
             &mut store,
             &watches,
-            Check::Every,
             &mut rows,
             &mut bytes,
         );
@@ -209,7 +188,7 @@ fn sampled_key_writer_during_fresh_names_withdraws_without_poison() {
             assert_eq!(text(&bytes, rows[0].name_key), Some(&b"key_c"[..]));
         }
         assert_eq!(
-            hour(&world, &roster, &mut store, &watches, Check::Nothing).keys(),
+            hour(&world, &roster, &mut store, &watches).keys(),
             [b"key_c"]
         );
     }
@@ -223,12 +202,12 @@ fn the_walks_key_is_published_and_failures_hold_nothing() {
     let watches = Watches::enabled(16);
     let mut store = KeyStore::default();
     let roster = icons(&[(FIRST, &b""[..], Some(&b"walk_key"[..]))]);
-    let read = hour(&world, &roster, &mut store, &watches, Check::Nothing);
+    let read = hour(&world, &roster, &mut store, &watches);
     assert_eq!(read.keys(), [b"walk_key"]);
     assert!(store.quiet.is_some());
     let mut failed = roster.clone();
     failed.0[0].unit_type_failure = Some("subunit category unreadable");
-    let failure = hour(&world, &failed, &mut store, &watches, Check::Nothing);
+    let failure = hour(&world, &failed, &mut store, &watches);
     assert_eq!(
         failure.outcome,
         Outcome::Unavailable {
@@ -250,7 +229,6 @@ fn the_walks_key_is_published_and_failures_hold_nothing() {
         &[],
         &mut store,
         &watches,
-        Check::Nothing,
         &mut rows,
         &mut bytes,
     );

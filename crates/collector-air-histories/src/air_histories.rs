@@ -24,17 +24,10 @@
 //! to. The table is emitted by slice and on change
 //! ([`crate::slicing`]). An advance shifts every summation index, so a
 //! country holding histories is emitted again on the day they advance.
-//! Every hour also copies the carried countries of its sampled-verification
-//! slice ([`crate::sampled_verify`], keyed by the country's index within its
-//! part; `history_verify` takes every carried country) in every wanted
-//! region. The decode thread compares each with its held histories after
-//! applying the hour, publishes the fresh copy and poisons the observation
-//! on a difference.
 
 use crate::{
     clock::qpc,
     history_changes::{self, Changes},
-    sampled_verify::Check,
     slicing::{SliceFingerprints, SliceSelection},
     table_capture::{CaptureRows, grow_capacity},
     table_conversion::table,
@@ -231,11 +224,6 @@ pub struct Staging {
     ticks: u64,
     /// What the job presizes its certificates to.
     capacity: Option<Capacities>,
-    /// The carried countries this hour copies and compares; set with the
-    /// frame's hour.
-    check: Check,
-    /// This hour's fresh copies of them: `replaced` names their slots.
-    verify: Option<Box<Staging>>,
 }
 
 impl Staging {
@@ -279,9 +267,6 @@ impl Staging {
         self.scenario_failures.clear();
         self.counts = Counts::default();
         self.ticks = 0;
-        if let Some(verify) = &mut self.verify {
-            verify.clear_copies();
-        }
     }
 
     /// The AirMissions job's regions and verdict; fails only when the
@@ -322,10 +307,6 @@ impl Staging {
             + self.windows.capacity() * size_of::<Window>()
             + self.channels.capacity() * 72
             + self.scenario_failures.capacity() * size_of::<Option<&'static str>>()
-            + self
-                .verify
-                .as_ref()
-                .map_or(0, |verify| verify.allocated_bytes())
     }
 
     /// The copied windows of `histories`, each found at `(slot, region)`.
@@ -658,84 +639,7 @@ pub fn stage(
             state.unwrap_or_else(State::Failed)
         }
     };
-    if staging.check.any() && staging.completed() && !allocation::capture_stopped() {
-        let Staging {
-            regions,
-            verify,
-            check,
-            state,
-            slots,
-            ..
-        } = staging;
-        let sample = verify.get_or_insert_with(Box::default);
-        sample.clear_copies();
-        sample.slots = *slots;
-        sample.state = sample_part(
-            memory,
-            base,
-            game_state,
-            part,
-            (regions, *check, *state == State::Quiet),
-            certificates,
-            sample,
-        )
-        .unwrap_or_else(State::Failed);
-    }
     staging.ticks = qpc().saturating_sub(begin).max(0) as u64;
-}
-
-/// This hour's sampled comparison for one part: copy each carried country
-/// `check` covers afresh into `sample`, in every wanted region, exactly as
-/// a changed country is copied. A `quiet` hour copied nothing; otherwise the
-/// part's certificates list the countries it copied afresh.
-fn sample_part(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    part: usize,
-    (regions, check, quiet): (&[u64], Check, bool),
-    certificates: &mut Certificates,
-    sample: &mut Staging,
-) -> Result<State, &'static str> {
-    let Certificates { roots, scratch, .. } = certificates;
-    let Scratch {
-        read,
-        extend: picked,
-        targets,
-        addresses,
-        found,
-        windows,
-        ..
-    } = scratch;
-    let fresh: &[usize] = if quiet { &[] } else { &read[..] };
-    picked.clear();
-    for (index, &root) in roots.iter().enumerate() {
-        if root != 0 && check.covers(index as u64) && fresh.binary_search(&index).is_err() {
-            push(picked, index)?;
-        }
-    }
-    let slot = |index: usize| (part + index * PARTS) as u32;
-    sample.owned = roots.len();
-    reserve(&mut sample.replaced, picked.len())?;
-    sample
-        .replaced
-        .extend(picked.iter().map(|&index| slot(index)));
-    targets.clear();
-    reserve(targets, picked.len())?;
-    targets.extend(picked.iter().map(|&index| roots[index]));
-    if !picked.is_empty() {
-        let readers = ccountry::Reader::new(memory, base, game_state)?;
-        native::authenticate_roots(memory, base, &readers, targets, |at| slot(picked[at]))?;
-    }
-    addresses.clear();
-    found.clear();
-    native::region_slots(memory, targets, regions, |at, region, history| {
-        push(addresses, history)?;
-        push(found, (slot(picked[at]), region))?;
-        Ok(())
-    })?;
-    sample.copy_windows(memory, base, addresses, found, windows)?;
-    Ok(State::Copied)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -958,8 +862,6 @@ pub struct Captured {
     parts: Vec<Staging>,
     /// The parts ran for this frame and their copies await decoding.
     staged: bool,
-    /// This frame's sampled comparison: countries compared and differing.
-    sampled: [u64; 2],
 }
 
 impl Captured {
@@ -971,7 +873,6 @@ impl Captured {
                 .map(|_| Staging::with_capacities(capacity))
                 .collect(),
             staged: false,
-            sampled: [0; 2],
         }
     }
 
@@ -1019,13 +920,9 @@ impl Captured {
         slots.saturating_mul(regions + 1)
     }
 
-    /// Start a frame's selection and sampled comparison at its hour.
+    /// Start a frame's selection at its hour.
     pub fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.selection.reset(hour, force_full);
-        let check = Check::burned_in(hour, cfg!(feature = "history_verify"));
-        for part in &mut self.parts {
-            part.check = check;
-        }
     }
 
     /// The countries whose rows this frame emitted.
@@ -1117,7 +1014,6 @@ impl Captured {
     }
 
     fn apply(&mut self, held: &mut Held, fingerprints: &mut SliceFingerprints) {
-        self.sampled = [0; 2];
         let mut counts = Counts {
             quiet: true,
             ..Counts::default()
@@ -1145,25 +1041,6 @@ impl Captured {
             });
             self.selection.invalidate(fingerprints);
             return;
-        }
-        // Sampled copies that failed compare nothing; the hour stands.
-        let samples = self
-            .parts
-            .iter()
-            .filter_map(|part| part.verify.as_deref())
-            .filter(|sample| sample.state == State::Copied && !sample.replaced.is_empty());
-        if samples.clone().next().is_some() {
-            let mut copy = Held::new();
-            if copy.apply(samples.clone()).is_err() {
-                self.rows.fail(Outcome::Unavailable {
-                    reason: "collector allocation failed",
-                });
-                self.selection.invalidate(fingerprints);
-                return;
-            }
-            let slots = samples.flat_map(|sample| sample.replaced.iter().copied());
-            self.sampled = held.replace_differing(&mut copy, slots);
-            history_changes::sampled(self.sampled[0], self.sampled[1]);
         }
         let begin = qpc();
         for (slot, country) in held.countries.iter().enumerate() {
@@ -1379,29 +1256,6 @@ impl Held {
             }
         }
         Ok(())
-    }
-
-    /// Compare each sampled slot's held histories with its fresh `copy`,
-    /// taking the copy where they differ so the hour emits it. Returns the
-    /// slots compared and those that differed.
-    fn replace_differing(&mut self, copy: &mut Held, slots: impl Iterator<Item = u32>) -> [u64; 2] {
-        let mut counts = [0; 2];
-        for slot in slots {
-            let slot = slot as usize;
-            let (Some(country), Some(fresh)) =
-                (self.countries.get_mut(slot), copy.countries.get_mut(slot))
-            else {
-                continue;
-            };
-            counts[0] += 1;
-            if country.histories != fresh.histories {
-                counts[1] += 1;
-                country.histories = std::mem::take(&mut fresh.histories);
-                self.generation += 1;
-                country.generation = self.generation;
-            }
-        }
-        counts
     }
 
     /// Whether both hold the same histories.
@@ -2083,8 +1937,6 @@ pub mod hour {
         pub certificates: Vec<Certificates>,
         pub opening: Opening,
         pub held: Held,
-        /// The staged hours' sampled comparison; none unless a test sets it.
-        pub check: Check,
     }
 
     /// A frame's pack, presized as the pool presizes it.
@@ -2111,7 +1963,6 @@ pub mod hour {
                 certificates: (0..PARTS).map(|_| Certificates::new()).collect(),
                 opening: Opening::new(),
                 held: Held::new(),
-                check: Check::Nothing,
             }
         }
 
@@ -2131,9 +1982,6 @@ pub mod hour {
             threads: bool,
         ) -> std::time::Duration {
             let started = std::time::Instant::now();
-            for part in &mut frame.parts {
-                part.check = self.check;
-            }
             let parts = frame.parts.iter_mut().zip(&mut self.certificates);
             if threads {
                 std::thread::scope(|scope| {
@@ -2180,9 +2028,6 @@ pub mod hour {
             changes: &impl Changes,
             refused: usize,
         ) {
-            for part in &mut frame.parts {
-                part.check = self.check;
-            }
             let parts = frame.parts.iter_mut().zip(&mut self.certificates);
             for (part, (staging, certificates)) in parts.enumerate() {
                 if part == refused {
@@ -2294,11 +2139,6 @@ pub mod hour {
                 counts.add(&part.counts);
             }
             counts
-        }
-
-        /// The frame's sampled comparison: countries compared and differing.
-        pub fn sampled(frame: &Captured) -> [u64; 2] {
-            frame.sampled
         }
 
         /// Countries the frame's parts copied afresh.

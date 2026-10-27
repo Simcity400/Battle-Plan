@@ -13,16 +13,10 @@
 //! emits the held rows of that hour's slice and of every country whose rows
 //! changed since it was last scanned. A country's fingerprint is the
 //! generation of its held rows, which moves only when a copy differs.
-//!
-//! Every hour also copies the carried countries of its sampled-verification
-//! slice ([`crate::sampled_verify`], keyed by the country's index within its
-//! part); the decode thread compares each with its held rows before applying
-//! the fresh copy, and a difference poisons the observation.
 
 use crate::{
     clock::qpc,
     relation_changes::{self, Changes},
-    sampled_verify::Check,
     slicing::{SliceFingerprints, SliceSelection},
     table_capture::{CaptureRows, grow_capacity},
     table_conversion::table,
@@ -85,9 +79,6 @@ pub struct Staging {
     staged: Vec<native::Staged>,
     /// Each staged country's certificate index and sequences.
     certify: Vec<(usize, [Sequence; 2])>,
-    /// Per staged country: a carried one copied for this hour's sampled
-    /// comparison rather than for a writer.
-    sampled: Vec<bool>,
     /// Slots found empty whose earlier country is gone.
     removed: Vec<u32>,
     /// The registry's slot count.
@@ -97,9 +88,6 @@ pub struct Staging {
     needed: usize,
     reused: u64,
     ticks: u64,
-    /// The carried countries this hour copies and compares; set with the
-    /// frame's hour.
-    check: Check,
 }
 
 impl Staging {
@@ -117,7 +105,6 @@ impl Staging {
         let owned = slots.div_ceil(PARTS);
         let _ = reserve(&mut self.staged, owned);
         let _ = reserve(&mut self.certify, owned);
-        let _ = reserve(&mut self.sampled, owned);
         let _ = reserve(&mut self.removed, owned);
     }
 
@@ -125,7 +112,6 @@ impl Staging {
         self.used = 0;
         self.staged.clear();
         self.certify.clear();
-        self.sampled.clear();
         self.removed.clear();
         self.slots = 0;
         self.state = State::Idle;
@@ -138,13 +124,7 @@ impl Staging {
         self.bytes.capacity()
             + self.staged.capacity() * size_of::<native::Staged>()
             + self.certify.capacity() * size_of::<(usize, [Sequence; 2])>()
-            + self.sampled.capacity()
             + self.removed.capacity() * 4
-    }
-
-    /// Countries copied for this hour's sampled comparison.
-    fn sampled_count(&self) -> u64 {
-        self.sampled.iter().filter(|&&sampled| sampled).count() as u64
     }
 
     /// A failed job: nothing it staged may be applied.
@@ -160,8 +140,6 @@ pub struct Captured {
     parts: Vec<Staging>,
     /// The parts ran for this frame and their copies await decoding.
     staged: bool,
-    /// This frame's sampled comparison: countries compared and differing.
-    sampled: [u64; 2],
 }
 
 impl Captured {
@@ -173,7 +151,6 @@ impl Captured {
                 .map(|_| Staging::with_capacity(capacity))
                 .collect(),
             staged: false,
-            sampled: [0; 2],
         }
     }
 
@@ -213,13 +190,9 @@ impl Captured {
         }
     }
 
-    /// Start a frame's selection and sampled comparison at its hour.
+    /// Start a frame's selection at its hour.
     pub fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         self.selection.reset(hour, force_full);
-        let check = Check::burned_in(hour, cfg!(feature = "relation_verify"));
-        for part in &mut self.parts {
-            part.check = check;
-        }
     }
 
     /// The countries whose rows this frame emitted.
@@ -298,22 +271,15 @@ impl Captured {
     fn apply(&mut self, held: &mut Held, fingerprints: &mut SliceFingerprints) {
         let (mut reused, mut read, mut quiet) = (0, 0, true);
         let mut failure = None;
-        self.sampled = [0; 2];
         for part in &self.parts {
             match part.state {
                 State::Idle => failure = Some("air relation part did not run"),
                 State::Failed(reason) => failure = Some(reason),
                 State::Quiet => reused += part.reused,
                 State::Copied => {
-                    let sampled = part.sampled_count();
-                    // Only copies a writer caused end a quiet hour.
-                    quiet &= part.staged.len() as u64 == sampled && part.removed.is_empty();
+                    quiet &= part.staged.is_empty() && part.removed.is_empty();
                     reused += part.reused;
-                    read += part.staged.len() as u64 - sampled;
-                    // Compared before the part's copies replace its rows; no
-                    // other part holds its slots.
-                    self.sampled[0] += sampled;
-                    self.sampled[1] += held.differing(part);
+                    read += part.staged.len() as u64;
                     if held.apply(part).is_err() {
                         failure = Some("collector allocation failed");
                         break;
@@ -327,9 +293,6 @@ impl Captured {
             self.selection.invalidate(fingerprints);
             return;
         }
-        // A differing held row was replaced by its fresh copy, which this
-        // hour emits as a change.
-        relation_changes::sampled(self.sampled[0], self.sampled[1]);
         let begin = qpc();
         for (slot, country) in held.countries.iter().enumerate() {
             if country.country != 0 {
@@ -497,7 +460,7 @@ fn stage_part(
         && quiet == certificates.quiet
         && countries.count() as usize == certificates.slots
         && same_countries(&countries, part, &certificates.known)?;
-    if quiet_hour && !staging.check.any() {
+    if quiet_hour {
         staging.reused = certificates
             .known
             .iter()
@@ -516,7 +479,6 @@ fn stage_part(
     reserve(&mut certificates.known, owned)?;
     reserve(&mut staging.staged, owned)?;
     reserve(&mut staging.certify, owned)?;
-    reserve(&mut staging.sampled, owned)?;
     reserve(&mut staging.removed, owned)?;
     certificates.known.resize(owned, Certificate::default());
     let mut pending = Pending {
@@ -531,17 +493,15 @@ fn stage_part(
         // The roster cache answers this without a read in the hour.
         let country = countries.at(slot as u32)?;
         // A cached pair holds while the slot keeps its country object and
-        // neither receiver's writers ran (in a quiet hour, none ran).
+        // neither receiver's writers ran.
         let carried = complete
             && known.country != 0
             && country.is_some_and(|country| country.pointer == known.country)
-            && (quiet_hour
-                || [
-                    changes.sequence(known.country),
-                    changes.sequence(known.diplomacy),
-                ] == [Some(known.sequences[0]), Some(known.sequences[1])]);
-        // A carried country of the hour's slice is copied afresh and compared.
-        if carried && !staging.check.covers(index as u64) {
+            && [
+                changes.sequence(known.country),
+                changes.sequence(known.diplomacy),
+            ] == [Some(known.sequences[0]), Some(known.sequences[1])];
+        if carried {
             staging.reused += 1;
             continue;
         }
@@ -557,7 +517,6 @@ fn stage_part(
             slot as u32,
             country.pointer,
             changes.sequence(country.pointer),
-            carried,
         );
         if pending.len == native::BATCH {
             pending.flush(memory, base, changes, staging)?;
@@ -589,13 +548,7 @@ fn stage_part(
     // refused receiver must still be read afresh every hour.
     certificates.quiet = quiet.filter(|_| observed);
     certificates.complete = true;
-    Ok(
-        if quiet_hour && staging.staged.is_empty() && staging.removed.is_empty() {
-            State::Quiet
-        } else {
-            State::Copied
-        },
-    )
+    Ok(State::Copied)
 }
 
 /// Room for `len` elements, allocated fallibly.
@@ -613,7 +566,6 @@ struct Pending {
     slot: [u32; native::BATCH],
     country: [usize; native::BATCH],
     sequence: [Sequence; native::BATCH],
-    sampled: [bool; native::BATCH],
 }
 
 impl Default for Pending {
@@ -625,18 +577,16 @@ impl Default for Pending {
             slot: [0; native::BATCH],
             country: [0; native::BATCH],
             sequence: [None; native::BATCH],
-            sampled: [false; native::BATCH],
         }
     }
 }
 
 impl Pending {
-    fn push(&mut self, index: usize, slot: u32, country: usize, sequence: Sequence, sampled: bool) {
+    fn push(&mut self, index: usize, slot: u32, country: usize, sequence: Sequence) {
         self.index[self.len] = index;
         self.slot[self.len] = slot;
         self.country[self.len] = country;
         self.sequence[self.len] = sequence;
-        self.sampled[self.len] = sampled;
         self.len += 1;
     }
 
@@ -662,7 +612,6 @@ impl Pending {
                 self.index[index],
                 [self.sequence[index], changes.sequence(diplomacy[index])],
             ));
-            staging.sampled.push(self.sampled[index]);
         }
         native::headers(memory, base, self.links, &batch[..len], |mut staged| {
             staged.offset = staging.used;
@@ -766,25 +715,6 @@ impl Held {
         Ok(())
     }
 
-    /// The part's sampled copies that differ from the held rows, before
-    /// they are applied.
-    fn differing(&self, part: &Staging) -> u64 {
-        let empty = HeldCountry::default();
-        part.staged
-            .iter()
-            .zip(&part.sampled)
-            .filter(|&(staged, &sampled)| {
-                let bytes = &part.bytes[staged.offset..staged.offset + staged.bytes()];
-                sampled
-                    && !self
-                        .countries
-                        .get(staged.slot as usize)
-                        .unwrap_or(&empty)
-                        .holds(staged, bytes)
-            })
-            .count() as u64
-    }
-
     /// Expand the selected countries' rows into the pack's buffer in slot
     /// order, growing it here on the decode thread when this hour needs more.
     fn publish(&self, selection: &SliceSelection, output: &mut Vec<native::Row>) -> Outcome {
@@ -874,8 +804,6 @@ pub mod hour {
         /// Make the next hour a full hour, as the spool's recovery does;
         /// hour 0 always is one.
         pub force_full: bool,
-        /// Each hour's sampled comparison; none unless a test sets it.
-        pub check: fn(i32) -> Check,
     }
 
     impl Hour {
@@ -889,7 +817,6 @@ pub mod hour {
                 certificates: (0..PARTS).map(|_| Certificates::new()).collect(),
                 held: Held::new(),
                 force_full: false,
-                check: |_| Check::Nothing,
             }
         }
 
@@ -905,9 +832,6 @@ pub mod hour {
         ) -> std::time::Duration {
             let force_full = std::mem::take(&mut self.force_full) || hour == 0;
             self.pack.prepare_hour(hour, force_full);
-            for part in &mut self.pack.parts {
-                part.check = (self.check)(hour);
-            }
             let started = std::time::Instant::now();
             let parts = self.pack.parts.iter_mut().zip(&mut self.certificates);
             if threads {
@@ -951,11 +875,6 @@ pub mod hour {
         /// The rows this hour emitted, in slot order.
         pub fn emitted_rows(&self) -> &[native::Row] {
             &self.pack.rows.rows[..self.pack.rows.outcome.len()]
-        }
-
-        /// The hour's sampled comparison: countries compared and differing.
-        pub fn sampled(&self) -> [u64; 2] {
-            self.pack.sampled
         }
 
         pub fn staged_countries(&self) -> usize {

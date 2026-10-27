@@ -5,7 +5,6 @@ use crate::{
     clock::qpc,
     raw::RawLog,
     read_accounting,
-    sampled_verify::Check,
     slicing::{SliceFingerprints, SliceSelection},
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
     table_conversion::{table, unavailable},
@@ -872,8 +871,6 @@ impl Captured {
         let context = RelationsCopyContext {
             base,
             game_state,
-            opinion_cap: self.opinion_rows_cap(),
-            tuple_cap: self.tuple_rows_cap(),
             active: [TABLES[13], TABLES[14]]
                 .map(|table| replay_data::cadence::should_walk(table, hour, force_full)),
             epoch: relation_epoch(),
@@ -1658,26 +1655,16 @@ impl Captured {
                 let begin = qpc();
                 capture_rows(&mut self.flags, |rows| {
                     let _reads = read_accounting::table(TABLES[7]);
-                    let reuse = flags.map(|store| {
-                        FlagReuse::begin(
-                            store,
-                            &crate::flag_changes::Observer,
-                            Check::burned_in(hour, crate::flag_changes::VERIFY),
-                        )
-                    });
+                    let reuse = flags
+                        .map(|store| FlagReuse::begin(store, &crate::flag_changes::Observer));
                     walk_flags_growing(memory, base, state, rows, &mut self.flag_scratch, reuse)
                 });
                 ticks[7] = elapsed(begin);
             }
             if active[8] {
                 let begin = qpc();
-                let mut reuse = variables.map(|store| {
-                    VariableReuse::begin(
-                        store,
-                        &crate::variable_changes::Observer,
-                        Check::burned_in(hour, crate::variable_changes::VERIFY),
-                    )
-                });
+                let mut reuse = variables
+                    .map(|store| VariableReuse::begin(store, &crate::variable_changes::Observer));
                 capture_variables(
                     &mut self.variables,
                     &mut self.variable_entries,
@@ -3154,10 +3141,7 @@ fn walk_flags_buffer(
             if let (Some(reuse), Some(country)) = (reuse.as_mut(), country) {
                 reuse.country(country, id);
             }
-            let plan = reuse.as_mut().map(|reuse| {
-                let verify = reuse.check.covers(flag_store::key(kind, id));
-                reuse.plan(verify, kind, id, manager)
-            });
+            let plan = reuse.as_mut().map(|reuse| reuse.plan(kind, id, manager));
             if let (Some(reuse), Some(plan)) = (reuse.as_mut(), plan.as_ref())
                 && let Some(rows) = plan.carry_rows()
             {
@@ -3449,18 +3433,10 @@ struct SharedOpinions {
     /// Marks the latest drain found pending, under any epoch: the opinion
     /// log is offered room for them.
     required_log: usize,
-    /// Rows of the sampled comparison's full read.
-    verify: Vec<crelation_status::OpinionRow>,
-    required_verify: usize,
-    /// The owners the sampled comparison read.
-    sampled_owners: Vec<u32>,
     drain: Drain,
     /// Offers the opinion log room for that many marks
     /// ([`crate::opinion_changes::offer`]).
     offer: fn(usize),
-    /// Tests: the refreshes' sampled comparison; otherwise the hour's
-    /// ([`crate::sampled_verify::current`]).
-    check: Option<Check>,
     charge: crate::raw_memory::Charge,
 }
 
@@ -3474,12 +3450,8 @@ impl SharedOpinions {
             marks: Vec::new(),
             required_marks: 0,
             required_log: 0,
-            verify: Vec::new(),
-            required_verify: 0,
-            sampled_owners: Vec::new(),
             drain: default_drain(),
             offer: default_offer(),
-            check: None,
             charge: crate::raw_memory::Charge::default(),
         }
     }
@@ -3508,12 +3480,9 @@ impl SharedOpinions {
         // An hour's marks: those the last drain found, and at least one per
         // opinion held, as a daily sweep can change each of them.
         (self.offer)(self.required_log.max(self.baseline.rows()));
-        fit(&mut self.verify, self.required_verify);
         self.charge.set(crate::raw_memory::Capacity {
             payload_vectors: (self.baseline.allocated_bytes()
-                + self.marks.capacity() * size_of::<crelation_status::Mark>()
-                + self.verify.capacity() * size_of::<crelation_status::OpinionRow>()
-                + self.sampled_owners.capacity() * size_of::<u32>())
+                + self.marks.capacity() * size_of::<crelation_status::Mark>())
                 as u64,
             ..Default::default()
         });
@@ -3737,91 +3706,8 @@ pub struct RelationsCopyContext {
     pub base: usize,
     pub game_state: usize,
     pub active: [bool; 2],
-    pub opinion_cap: usize,
-    pub tuple_cap: usize,
     /// `relation_epoch` at dispatch.
     pub epoch: u64,
-}
-
-/// This refresh's sampled comparison ([`crate::sampled_verify`]): read the
-/// selected owners `check` covers (a daily rotation, since each owner is read
-/// once a day) in full, with no baseline, and compare each one's rows with
-/// the observed walk's. A difference poisons the observation, drops the
-/// baseline and publishes a full read of the whole selection instead.
-#[allow(clippy::too_many_arguments)]
-fn sample_opinions(
-    memory: &impl Memory,
-    ctx: RelationsCopyContext,
-    shared: &mut SharedOpinions,
-    resolver: &mut crelation_status::Resolver,
-    rows: &mut Vec<crelation_status::OpinionRow>,
-    outcome: Outcome,
-    check: Check,
-    select: impl Fn(u32) -> bool + Copy,
-) -> Outcome {
-    let Outcome::Rows { len } = outcome else {
-        return outcome;
-    };
-    shared.required_verify = rows.len();
-    let owners = std::cell::RefCell::new(std::mem::take(&mut shared.sampled_owners));
-    owners.borrow_mut().clear();
-    let short = std::cell::Cell::new(false);
-    let expected = crelation_status::walk_growing_with(
-        memory,
-        ctx.base,
-        ctx.game_state,
-        &mut shared.verify,
-        &mut Vec::new(),
-        [true, false],
-        resolver,
-        &mut crelation_status::Baseline::default(),
-        None,
-        |owner| {
-            let sampled = select(owner) && check.covers_daily(u64::from(owner));
-            if sampled {
-                let mut owners = owners.borrow_mut();
-                if engine_allocation::reserve_push_batch(&mut owners, 1).is_ok() {
-                    owners.push(owner);
-                } else {
-                    short.set(true);
-                }
-            }
-            sampled
-        },
-    )
-    .opinions;
-    shared.sampled_owners = owners.into_inner();
-    let (Outcome::Rows { len: fresh }, false) = (expected, short.get()) else {
-        crate::opinion_changes::unverified();
-        return outcome;
-    };
-    let (held, read) = (&rows[..len], &shared.verify[..fresh]);
-    let mismatches = shared
-        .sampled_owners
-        .iter()
-        .filter(|&&owner| {
-            let owned = |row: &&crelation_status::OpinionRow| row.owner_country == owner;
-            !held.iter().filter(owned).eq(read.iter().filter(owned))
-        })
-        .count() as u64;
-    crate::opinion_changes::sampled(shared.sampled_owners.len() as u64, mismatches);
-    if mismatches == 0 {
-        return outcome;
-    }
-    shared.baseline.clear();
-    crelation_status::walk_growing_with(
-        memory,
-        ctx.base,
-        ctx.game_state,
-        rows,
-        &mut Vec::new(),
-        [true, false],
-        resolver,
-        &mut crelation_status::Baseline::default(),
-        None,
-        select,
-    )
-    .opinions
 }
 
 /// Select every owner a drained opinion or relation mark names, so that this
@@ -3903,20 +3789,9 @@ pub fn copy_relations_refresh(
     let anchor = usize::from(ctx.active[1]);
     let _reads = read_accounting::table(TABLES[13 + anchor]);
     let started = qpc();
-    let lens = [
-        job.opinions.len().min(ctx.opinion_cap),
-        job.tuples.len().min(ctx.tuple_cap),
-    ];
     if let (Some(selection), Some(fingerprints)) = (&mut job.selection, &mut job.fingerprints) {
         scan_relation_owners(memory, ctx.base, ctx.game_state, selection, fingerprints);
     }
-    let check = job
-        .shared
-        .as_mut()
-        .and_then(|lent| lent.shared().check)
-        .unwrap_or_else(|| {
-            crate::sampled_verify::current_burned_in(cfg!(feature = "opinion_verify"))
-        });
     // Lent to another job: read every status, as after a load.
     let mut unshared = crelation_status::Baseline::default();
     let (baseline, observation) = match &mut job.shared {
@@ -3928,8 +3803,6 @@ pub fn copy_relations_refresh(
                 required_marks,
                 required_log,
                 drain,
-                verify,
-                required_verify,
                 ..
             } = lent.shared();
             // Only opinion refreshes account for the log.
@@ -3947,17 +3820,9 @@ pub fn copy_relations_refresh(
                 *required_marks = pending;
             }
             *required_log = pending;
-            // No replay is published without its sampled comparison: until
-            // the comparison's storage holds this job's rows, the observation
-            // hands over no marks, so the walk reads every selected owner in
-            // full.
-            let verifiable = !check.any() || verify.len() >= lens[0];
-            if check.any() {
-                *required_verify = (*required_verify).max(lens[0]);
-            }
             let observation = drained.map(|(epoch, count)| crelation_status::Observation {
                 token: (epoch, ctx.epoch),
-                marks: count.filter(|_| verifiable).map(|count| &marks[..count]),
+                marks: count.map(|count| &marks[..count]),
             });
             // The held rows of an owner outside the hour's read are current
             // only while every opinion write since its read was handed over
@@ -3981,10 +3846,7 @@ pub fn copy_relations_refresh(
     // a full hour: the pack's placeholder selection is a full one.
     let selection = job.selection.as_ref();
     let select = |owner| selection.is_none_or(|selection| selection.contains(owner));
-    // Compare only walks that replayed an owner: a walk that read every
-    // selected owner in full has nothing carried.
-    let replayed = baseline.counts().reused_owners;
-    let mut walk = crelation_status::walk_growing_with(
+    let walk = crelation_status::walk_growing_with(
         memory,
         ctx.base,
         ctx.game_state,
@@ -3996,22 +3858,9 @@ pub fn copy_relations_refresh(
         observation,
         select,
     );
-    let replayed = baseline.counts().reused_owners != replayed;
     if let Some(lent) = &mut job.shared {
         let shared = lent.shared();
         crate::opinion_changes::record(shared.baseline.counts(), &mut shared.reported);
-        if replayed && check.any() {
-            walk.opinions = sample_opinions(
-                memory,
-                ctx,
-                shared,
-                &mut job.resolver,
-                &mut job.opinions,
-                walk.opinions,
-                check,
-                select,
-            );
-        }
     }
     let mut copy_ticks = [0; 2];
     copy_ticks[anchor] = elapsed(started);
@@ -4713,8 +4562,6 @@ pub mod relations_test_kit {
             base: BASE,
             game_state: GS,
             active: [true; 2],
-            opinion_cap: intel.opinion_rows_cap(),
-            tuple_cap: intel.tuple_rows_cap(),
             epoch: 0,
         };
         let report = copy_relations_refresh(memory, ctx, &mut job);
@@ -5716,8 +5563,6 @@ mod tests {
             base: relations_kit::BASE,
             game_state: relations_kit::GS,
             active: [true; 2],
-            opinion_cap: 16,
-            tuple_cap: 16,
             epoch: 0,
         };
         assert!(copy_relations_refresh(&relations_kit::memory(&bytes), ctx, &mut job).raw_ok);
@@ -7535,8 +7380,6 @@ mod tests {
                         base: relations_kit::BASE,
                         game_state: relations_kit::GS,
                         active,
-                        opinion_cap,
-                        tuple_cap,
                         epoch: 0,
                     },
                     &mut job,
@@ -7821,11 +7664,10 @@ mod tests {
         })
     }
 
-    fn observed_store(check: Check) -> &'static OpinionStore {
+    fn observed_store() -> &'static OpinionStore {
         let mut shared = SharedOpinions::new();
         shared.drain = test_drain;
         shared.marks = vec![crelation_status::Mark::default(); 8];
-        shared.check = Some(check);
         Box::leak(Box::new(std::sync::Mutex::new(OpinionSlot::Home(shared))))
     }
 
@@ -7834,8 +7676,6 @@ mod tests {
             base: relations_kit::BASE,
             game_state: relations_kit::GS,
             active: [true; 2],
-            opinion_cap: 16,
-            tuple_cap: 16,
             epoch,
         }
     }
@@ -7863,7 +7703,7 @@ mod tests {
     #[test]
     fn relations_jobs_share_one_opinion_store() {
         let bytes = relations_kit::opinionated_fixture();
-        let store = observed_store(Check::Nothing);
+        let store = observed_store();
         let [mut first, mut second] = [(); 2].map(|()| RelationsJob {
             store: Some(store),
             ..RelationsJob::new()
@@ -7922,7 +7762,7 @@ mod tests {
         let mut store = Some(Box::new(SliceFingerprints::new()));
         // Every opinion write is observed (none happens), so the held rows of
         // owners outside the hour's slice stay current.
-        let opinions = observed_store(Check::Nothing);
+        let opinions = observed_store();
         // One hour: begin before the loan, walk while it is out, then the
         // join, the typed capture and the failure path. Returns the owners
         // the hour's published rows came from, and whether they were
@@ -7935,7 +7775,6 @@ mod tests {
                     failure: Option<(&'static str, bool)>| {
             let (context, selection) =
                 pack.begin_relations(relations_kit::BASE, relations_kit::GS, hour, false, true);
-            assert_eq!((context.opinion_cap, context.tuple_cap), (16, 16));
             assert_eq!(pack.relation_activity(), [true; 2]);
             let loaned = std::mem::replace(pack, Captured::vacant());
             // What the old dispatch order read: the placeholder has nothing.
@@ -8078,12 +7917,10 @@ mod tests {
             base: relations_kit::BASE,
             game_state: relations_kit::GS,
             active: [true; 2],
-            opinion_cap: 16,
-            tuple_cap: 16,
             epoch: 0,
         };
         let mut job = RelationsJob {
-            store: Some(observed_store(Check::Nothing)),
+            store: Some(observed_store()),
             ..RelationsJob::new()
         };
         let mut unobserved = RelationsJob::new();
@@ -8142,7 +7979,7 @@ mod tests {
     fn relation_baselines_last_until_the_epoch_moves() {
         let bytes = relations_kit::opinionated_fixture();
         let mut job = RelationsJob {
-            store: Some(observed_store(Check::Nothing)),
+            store: Some(observed_store()),
             ..RelationsJob::new()
         };
         // Owners, then their rows, get storage; the third refresh records.
@@ -8166,33 +8003,20 @@ mod tests {
         );
     }
 
-    /// Observed refreshes re-read the marked statuses; verify mode compares
-    /// every replayed owner with a walk of every status and publishes that
-    /// walk when an unobserved write made them differ.
+    /// Observed refreshes replay unmarked statuses and re-read the marked
+    /// ones.
     #[test]
-    fn observed_refreshes_read_marked_statuses_and_verify_mode_catches_a_missed_write() {
-        let _lock = crate::opinion_changes::test_lock();
-        crate::opinion_changes::observe_for_test(true);
-        let verified = || {
-            let status = serde_json::to_value(crate::opinion_changes::status()).unwrap();
-            [
-                "unverified_refreshes",
-                "sampled_verified",
-                "sampled_mismatches",
-            ]
-            .map(|key| status[key].as_u64().unwrap())
-        };
-        let before = verified();
+    fn observed_refreshes_read_marked_statuses() {
         let mut bytes = relations_kit::opinionated_fixture();
         let mut job = RelationsJob {
-            store: Some(observed_store(Check::Every)),
+            store: Some(observed_store()),
             ..RelationsJob::new()
         };
         let opinion =
             |owner, target| relations_kit::status(owner, target) + crelation_status::OPINION;
         let initial = observed_refresh(&bytes, &mut job, 1);
         assert_eq!(initial.0, Outcome::Rows { len: 2 });
-        // Records, then replays (the first replay sizes the verify rows).
+        // Records, then replays.
         for _ in 0..3 {
             assert_eq!(observed_refresh(&bytes, &mut job, 1), initial);
         }
@@ -8206,85 +8030,6 @@ mod tests {
         });
         let marked = observed_refresh(&bytes, &mut job, 1);
         assert_eq!(marked.1[1].opinion, 61);
-        // An unmarked write is caught by verify, which publishes a full read.
-        relations_kit::p32(&mut bytes, opinion(1, 3), 62);
-        let missed = observed_refresh(&bytes, &mut job, 1);
-        assert_eq!(missed.1[1].opinion, 62);
-        let delta = |now: [u64; 3]| std::array::from_fn(|index| now[index] - before[index]);
-        // The first refresh sizes owners; the next sizes their exact matrices.
-        // Three refreshes then compare all three owners; the last finds one
-        // owner's unmarked change.
-        assert_eq!(delta(verified()), [0, 9, 1]);
-        // The mismatch poisoned the real observation: a drain now observes
-        // nothing, so every refresh reads every status.
-        let (mut consumed, mut output, mut required) =
-            (0, [crelation_status::Mark::default(); 4], 0);
-        assert_eq!(
-            crate::opinion_changes::drain(&mut consumed, &mut output, &mut required),
-            None
-        );
-        assert_eq!(
-            serde_json::to_value(crate::opinion_changes::status()).unwrap()["poisoned"],
-            true
-        );
-        // The baseline was dropped: the next refresh reads every status.
-        assert_eq!(observed_refresh(&bytes, &mut job, 1), missed);
-        assert_eq!(delta(verified()), [0, 9, 1]);
-        crate::opinion_changes::observe_for_test(false);
-    }
-
-    /// Each owner is read once a day, so the sampled comparison rotates over
-    /// days: an owner is compared at one refresh in a rotation, an unmarked
-    /// write is caught within one rotation of its refreshes, and that refresh
-    /// publishes a full read.
-    #[test]
-    fn sampled_refreshes_catch_a_missed_write_within_one_rotation() {
-        let _lock = crate::opinion_changes::test_lock();
-        crate::opinion_changes::observe_for_test(true);
-        let sampled = || {
-            let status = serde_json::to_value(crate::opinion_changes::status()).unwrap();
-            ["sampled_verified", "sampled_mismatches"].map(|key| status[key].as_u64().unwrap())
-        };
-        // Owners 1 to 3 are compared on the days a rotation starts.
-        let day = |day: i32| Check::Slice { hour: day * 24 + 2 };
-        let store = observed_store(day(1));
-        let set = |check| LentOpinions::borrow(store).unwrap().shared().check = Some(check);
-        let mut bytes = relations_kit::opinionated_fixture();
-        let mut job = RelationsJob {
-            store: Some(store),
-            ..RelationsJob::new()
-        };
-        let initial = observed_refresh(&bytes, &mut job, 1);
-        for _ in 0..3 {
-            assert_eq!(observed_refresh(&bytes, &mut job, 1), initial);
-        }
-        let before = sampled();
-        // A write no hook marked.
-        relations_kit::p32(
-            &mut bytes,
-            relations_kit::status(1, 3) + crelation_status::OPINION,
-            62,
-        );
-        for at in 2..24 {
-            set(day(at));
-            assert_eq!(
-                observed_refresh(&bytes, &mut job, 1),
-                initial,
-                "day {at} replays the held opinion"
-            );
-        }
-        assert_eq!(sampled(), before, "no owner is compared off its day");
-        set(day(24));
-        let caught = observed_refresh(&bytes, &mut job, 1);
-        assert_eq!(caught.1[1].opinion, 62, "the full read is published");
-        assert_eq!(sampled(), [before[0] + 3, before[1] + 1]);
-        let status = serde_json::to_value(crate::opinion_changes::status()).unwrap();
-        assert_eq!(status["poisoned"], true);
-        assert_eq!(
-            status["last_mismatch"],
-            "replayed opinions differ from a full read"
-        );
-        crate::opinion_changes::observe_for_test(false);
     }
 
     /// One sliced refresh at `hour`: the owners it read and its opinion rows.
@@ -8312,7 +8057,7 @@ mod tests {
     fn marked_owners_are_read_the_next_hour_outside_their_slice() {
         let mut bytes = relations_kit::opinionated_fixture();
         let mut job = RelationsJob {
-            store: Some(observed_store(Check::Nothing)),
+            store: Some(observed_store()),
             ..RelationsJob::new()
         };
         let mut fingerprints = Some(Box::new(SliceFingerprints::new()));
@@ -8381,8 +8126,6 @@ mod tests {
             base: relations_kit::BASE,
             game_state: relations_kit::GS,
             active: [true; 2],
-            opinion_cap: intel.opinion_rows_cap(),
-            tuple_cap: intel.tuple_rows_cap(),
             epoch: 0,
         };
         let report = copy_relations_refresh(&memory, ctx, &mut tiny);

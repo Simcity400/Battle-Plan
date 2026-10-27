@@ -4,7 +4,6 @@
 /// A revision is usable only while all relevant native writers are observed and quiet.
 pub trait Changes {
     fn revision(&self, array: usize) -> Option<(u64, u64)>;
-    fn verify(&self) -> bool;
     /// Optional quiet revision covering every writer of a watched holder.
     /// Callers still validate fresh owner/header dependencies before reuse.
     fn quiet_revision(&self) -> Option<(u64, u64)> {
@@ -23,8 +22,6 @@ pub struct Counts {
     pub reused_characters: u64,
     pub reused_entries: u64,
     pub read_characters: u64,
-    pub verified_entries: u64,
-    pub mismatches: u64,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -131,14 +128,6 @@ impl Cache {
         self.counts = Counts::default();
     }
 
-    /// The keys whose entries the previous walk certified for reuse.
-    pub(crate) fn certified(&self) -> impl Iterator<Item = &Key> {
-        let used = if self.valid { self.used } else { 0 };
-        self.keys[..used]
-            .iter()
-            .filter(|key| key.revision.is_some())
-    }
-
     pub(crate) fn matches(&self, index: usize, key: Key) -> bool {
         key.revision.is_some() && self.keys.get(index) == Some(&key)
     }
@@ -207,7 +196,6 @@ mod tests {
         assert!(cache.all_watched());
         cache.begin(scope);
         assert!(cache.matches(0, key));
-        assert_eq!(cache.certified().count(), 1);
     }
 
     #[test]

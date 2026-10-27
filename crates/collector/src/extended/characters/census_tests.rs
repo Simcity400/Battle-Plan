@@ -573,9 +573,6 @@ impl advisors::Changes for Quiet {
     fn revision(&self, _map: usize) -> Option<(u64, u64)> {
         Some((0, 0))
     }
-    fn check(&self) -> crate::sampled_verify::Check {
-        crate::sampled_verify::Check::Nothing
-    }
 }
 
 /// Pooled capacities that hold a 5,000-country roster without truncation.
@@ -944,7 +941,7 @@ fn exhausted_census_storage_falls_back_and_grows_to_the_whole_demand() {
 }
 
 #[test]
-fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
+fn census_advisor_cache_keeps_reuse_and_fresh_countries() {
     let mut world = small();
     let ctx = context(PART_MASKS[2]);
     let fresh = |world: &World| typed(world, 2);
@@ -996,30 +993,11 @@ fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
     assert_eq!(cache.counts.planned, 0);
     assert!(cache.counts.reused > 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
-    // Verification reads every proposed hit and finds none stale.
-    struct Verify;
-    impl advisors::Changes for Verify {
-        fn quiet(&self) -> Option<(u64, u64)> {
-            Some((0, 0))
-        }
-        fn revision(&self, _map: usize) -> Option<(u64, u64)> {
-            Some((0, 0))
-        }
-        fn check(&self) -> crate::sampled_verify::Check {
-            crate::sampled_verify::Check::Every
-        }
-    }
-    cache.prepare();
-    cache.capture_growing(&world, ctx, &Verify, loan.admitted(MODULE, GAME_STATE));
-    assert!(cache.counts.verified > 0);
-    assert_eq!(cache.counts.mismatches, 0);
-    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
 }
 
 /// The advisor family's domain with a revision that moves when a writer runs.
 pub(super) struct Advisors {
     pub revision: Cell<u64>,
-    pub check: crate::sampled_verify::Check,
 }
 
 impl advisors::Changes for Advisors {
@@ -1029,30 +1007,25 @@ impl advisors::Changes for Advisors {
     fn revision(&self, _map: usize) -> Option<(u64, u64)> {
         Some((0, 0))
     }
-    fn check(&self) -> crate::sampled_verify::Check {
-        self.check
-    }
 }
 
 /// A quiet hour of the advisor job carries every definition, modifier cache
-/// and tooltip key without a read, apart from its sampled slice; a writer of
-/// either family, a changed census or a load reads again.
+/// and tooltip key without a read; a writer of either family, a changed
+/// census or a load reads again.
 #[test]
-fn quiet_advisor_hours_read_nothing_but_their_slice() {
+fn quiet_advisor_hours_read_nothing() {
     use crate::character_changes::Counting as Lookups;
-    use crate::sampled_verify::Check;
     static DOMAIN: Lookups = Lookups::new();
     let mut world = small();
     DOMAIN.watches.enable(world.characters);
     let ctx = context(PART_MASKS[2]);
     let fresh = |world: &World| typed(world, 2);
-    let mut observer = Advisors {
+    let observer = Advisors {
         revision: Cell::new(0),
-        check: Check::Nothing,
     };
     let demand = cadvisor::modifier_demand(&world, MODULE, GAME_STATE).unwrap();
     let mut cache = advisors::Cache::with_modifier_demand(demand);
-    cache.observe_roles(&DOMAIN, Some(Check::Nothing));
+    cache.observe_roles(&DOMAIN);
     let owner = roster(&world);
     let loan = owner.role_census().unwrap();
     cache.capture_growing(&world, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
@@ -1067,17 +1040,6 @@ fn quiet_advisor_hours_read_nothing_but_their_slice() {
     assert_eq!(cache.counts.planned, 0);
     assert!(cache.counts.reused > 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
-    // A sampled quiet hour reads only its slice.
-    observer.check = Check::Slice { hour: 7 };
-    cache.observe_roles(&DOMAIN, Some(Check::Slice { hour: 7 }));
-    let counting = Counting::new(&world);
-    cache.capture_growing(&counting, ctx, &observer, loan.admitted(MODULE, GAME_STATE));
-    assert!(counting.calls.get() > 0);
-    assert!(cache.counts.verified > 0);
-    assert_eq!((DOMAIN.lookups(), cache.counts.mismatches), (0, 0));
-    characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
-    observer.check = Check::Nothing;
-    cache.observe_roles(&DOMAIN, Some(Check::Nothing));
     // An advisor-family writer: the definitions are certified again.
     observer.revision.set(1);
     let counting = Counting::new(&world);
@@ -1145,18 +1107,16 @@ fn visit_lists_follow_the_live_census_length() {
 #[test]
 fn a_frame_publishes_its_held_advisor_table_without_rewriting_it() {
     use crate::character_changes::Counting as Lookups;
-    use crate::sampled_verify::Check;
     static DOMAIN: Lookups = Lookups::new();
     let world = small();
     DOMAIN.watches.enable(world.characters);
     let ctx = context(PART_MASKS[2]);
     let observer = Advisors {
         revision: Cell::new(0),
-        check: Check::Nothing,
     };
     let demand = cadvisor::modifier_demand(&world, MODULE, GAME_STATE).unwrap();
     let mut cache = advisors::Cache::with_modifier_demand(demand);
-    cache.observe_roles(&DOMAIN, Some(Check::Nothing));
+    cache.observe_roles(&DOMAIN);
     let owner = roster(&world);
     let loan = owner.role_census().unwrap();
     let mut frame = Captured::with_capacities(&capacities());
@@ -1187,27 +1147,4 @@ fn a_frame_publishes_its_held_advisor_table_without_rewriting_it() {
     // An advisor-family writer: the capture reads and the frame is rewritten.
     observer.revision.set(1);
     assert_eq!(hour(&mut cache, &mut frame), fresh);
-}
-
-/// A census's slice is the occurrences whose character id the check covers,
-/// whether listed by key bucket or filtered.
-#[test]
-fn a_census_slice_lists_exactly_the_covered_occurrences() {
-    use crate::sampled_verify::Check;
-    let world = World::new(2_000);
-    let owner = roster(&world);
-    let loan = owner.role_census().unwrap();
-    let census = loan.admitted(MODULE, GAME_STATE).unwrap();
-    let checks = [Check::Nothing, Check::Every]
-        .into_iter()
-        .chain((0..30).map(|hour| Check::Slice { hour }))
-        .chain([0, 7, 575, 600].map(|hour| Check::BurnedIn { hour }));
-    for check in checks {
-        let mut covered: Vec<usize> = census.covered(check).collect();
-        covered.sort_unstable();
-        let filtered: Vec<usize> = (0..census.len())
-            .filter(|&index| check.covers(u64::from(census.occurrence(index).id())))
-            .collect();
-        assert_eq!(covered, filtered, "{check:?}");
-    }
 }

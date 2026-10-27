@@ -10,10 +10,7 @@
 //! Every writer of a manager's header and rows is a hooked site
 //! ([`engine_mutations::script_flag_mutations`]), so the fresh read would return the
 //! held rows: each manager's rows are sorted by token, so the carried copy
-//! is byte-identical. Each hour also reads the carryable managers of its
-//! sampled slice ([`crate::sampled_verify`], keyed by [`key`]; every one
-//! under `flag_verify`) afresh, publishes the fresh rows and poisons reuse
-//! on a difference; [`FlagReuse::plan`] takes that choice per scope.
+//! is byte-identical.
 //!
 //! A quiet hour walks no scope at all. The latest complete walk that held every scope under its own
 //! certificate keeps its rows in walk order, its countries, its scopes in walk order with each
@@ -33,22 +30,16 @@
 //! its manager's rows and marks it. When both tokens and the country census (the callback's
 //! authenticated census, which costs no read) equal the held ones and the hour's take returned the
 //! held walk's epoch, the walk publishes the held rows in walk order without walking any scope,
-//! reading afresh only the managers the take marked, whose rows replace their held ones, and the
-//! managers of its sampled slice, which it compares; it finds them through an index of the held
-//! walk (by manager and by sampling bucket) and copies the held rows between them whole, touching
-//! no other scope; a difference poisons the flag and roster domains and the hour walks afresh.
-//! While the roster family burns in (`roster_verify`), no hour is quiet: each walk whose key
-//! matched and whose take marked nothing is compared whole with the held rows.
+//! reading afresh only the managers the take marked, whose rows replace their held ones; it finds
+//! them through an index of the held walk by manager and copies the held rows between them whole,
+//! touching no other scope.
 //!
 //! The store follows the IntelResidual job's loan and holds only the
 //! managers of the latest complete walk, so its size follows live demand.
 //! Allocation is advisory: a manager whose rows cannot be held is read
 //! afresh next hour.
 use super::ScopedFlag;
-use crate::{
-    flag_changes::{Changes, Counts},
-    sampled_verify::{BURNED_IN_ROTATION, Check},
-};
+use crate::flag_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_native::{Memory, walk::Outcome};
 use engine_scripts::{cflag_manager, cscript_flag};
@@ -165,7 +156,7 @@ pub struct FlagStore {
     /// The hour's take: the marked managers, sorted, and its epoch.
     marked: Vec<usize>,
     taken: Option<u64>,
-    /// A quiet hour's fresh read of a marked or sampled manager.
+    /// A quiet hour's fresh read of a marked manager.
     scratch: Vec<cscript_flag::Row>,
     /// The index of `order` a quiet hour visits by ([`Index`]).
     index: Index,
@@ -173,20 +164,14 @@ pub struct FlagStore {
 
 /// Where a quiet hour finds the scopes it reads, so it touches only those
 /// and copies the held rows between them whole: each scope's first row in
-/// `published`, the scopes by sampling bucket and by manager.
+/// `published` and the scopes by manager.
 #[derive(Default)]
 struct Index {
     /// `order`'s first published row per scope, and the row count after
     /// the last.
     starts: Vec<usize>,
-    /// Scopes in walk order per bucket of [`key`] modulo
-    /// [`BURNED_IN_ROTATION`], from `bucket_starts`.
-    buckets: Vec<u32>,
-    bucket_starts: Vec<u32>,
     /// `(manager, scope)`, sorted: a quiet walk's managers are distinct.
     managers: Vec<(usize, u32)>,
-    /// Each bucket's next free place while the buckets are filled.
-    cursor: Vec<u32>,
     /// The hour's scopes to read, in walk order.
     visits: Vec<u32>,
 }
@@ -198,16 +183,9 @@ thread_local! {
     static EXAMINED: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Buckets of the sampling key: whether any [`Check`] covers a key depends
-/// only on the key modulo the longest rotation, which the daily one divides.
-const BUCKETS: usize = BURNED_IN_ROTATION as usize;
-const _: () = assert!(BURNED_IN_ROTATION.is_multiple_of(crate::sampled_verify::ROTATION));
-
 impl Index {
     fn clear(&mut self) {
         self.starts.clear();
-        self.buckets.clear();
-        self.bucket_starts.clear();
         self.managers.clear();
     }
 
@@ -218,32 +196,14 @@ impl Index {
         let len = order.len();
         let stored = allocation::advisory(|| {
             allocation::reserve(&mut self.starts, len + 1)?;
-            allocation::reserve(&mut self.buckets, len)?;
-            allocation::reserve(&mut self.bucket_starts, BUCKETS + 1)?;
-            allocation::reserve(&mut self.cursor, BUCKETS + 1)?;
             allocation::reserve(&mut self.managers, len)
         });
         if stored.is_err() || u32::try_from(len).is_err() {
             self.clear();
             return false;
         }
-        self.rows(order);
-        self.bucket_starts.resize(BUCKETS + 1, 0);
-        for visited in order {
-            self.bucket_starts[bucket(visited) + 1] += 1;
-        }
-        for at in 0..BUCKETS {
-            self.bucket_starts[at + 1] += self.bucket_starts[at];
-        }
         // Within the reservations above: nothing here allocates.
-        self.cursor.clear();
-        self.cursor.extend_from_slice(&self.bucket_starts);
-        self.buckets.resize(len, 0);
-        for (scope, visited) in order.iter().enumerate() {
-            let slot = &mut self.cursor[bucket(visited)];
-            self.buckets[*slot as usize] = scope as u32;
-            *slot += 1;
-        }
+        self.rows(order);
         self.managers.extend(
             order
                 .iter()
@@ -265,15 +225,11 @@ impl Index {
         }
     }
 
-    /// The scopes a quiet hour reads: each marked manager's and each one
-    /// `check` covers, in walk order; `false` when they cannot be listed.
-    fn plan(&mut self, marked: &[usize], check: Check) -> bool {
+    /// The scopes a quiet hour reads: each marked manager's, in walk order;
+    /// `false` when they cannot be listed.
+    fn plan(&mut self, marked: &[usize]) -> bool {
         self.visits.clear();
-        let covered: usize = (0..BUCKETS)
-            .filter(|&at| check.covers(at as u64))
-            .map(|at| (self.bucket_starts[at + 1] - self.bucket_starts[at]) as usize)
-            .sum();
-        if allocation::advisory(|| allocation::reserve(&mut self.visits, marked.len() + covered))
+        if allocation::advisory(|| allocation::reserve(&mut self.visits, marked.len()))
             .is_err()
         {
             return false;
@@ -286,10 +242,6 @@ impl Index {
                 self.visits.push(self.managers[at].1);
             }
         }
-        for at in (0..BUCKETS).filter(|&at| check.covers(at as u64)) {
-            let range = self.bucket_starts[at] as usize..self.bucket_starts[at + 1] as usize;
-            self.visits.extend_from_slice(&self.buckets[range]);
-        }
         self.visits.sort_unstable();
         self.visits.dedup();
         true
@@ -297,18 +249,9 @@ impl Index {
 
     fn measure(&self) -> usize {
         self.starts.capacity() * size_of::<usize>()
-            + (self.buckets.capacity()
-                + self.bucket_starts.capacity()
-                + self.cursor.capacity()
-                + self.visits.capacity())
-                * size_of::<u32>()
+            + self.visits.capacity() * size_of::<u32>()
             + self.managers.capacity() * size_of::<(usize, u32)>()
     }
-}
-
-/// A scope's sampling bucket.
-fn bucket(visited: &Visited) -> usize {
-    (key(visited.kind, visited.id) % BURNED_IN_ROTATION) as usize
 }
 
 impl FlagStore {
@@ -398,12 +341,11 @@ impl FlagStore {
             self.current.clear();
         }
         self.previous.clear();
-        // Every scope held under one certificate, with no mismatch: a later
-        // hour with this key publishes these rows.
+        // Every scope held under one certificate: a later hour with this key
+        // publishes these rows.
         self.quiet = key.filter(|_| {
             complete
                 && self.held_all
-                && self.counts.mismatches == 0
                 && self.current.entries.len() == self.scopes
                 && self.visiting.len() == self.scopes
                 && self.taken.is_some()
@@ -449,16 +391,14 @@ impl FlagStore {
     }
 
     /// A quiet hour's rows into `output`: the held rows in walk order, each
-    /// marked manager's and each manager `check` covers read afresh in its
-    /// place. A covered manager no take marked is compared with its held
-    /// rows. Only those scopes are visited, in walk order ([`Index::plan`]);
-    /// the held rows between them are copied whole. `None` when a read did
-    /// not complete or `output` has no room.
+    /// marked manager's read afresh in its place. Only those scopes are
+    /// visited, in walk order ([`Index::plan`]); the held rows between them
+    /// are copied whole. `None` when a read did not complete or `output` has
+    /// no room.
     fn publish(
         &mut self,
         memory: &impl Memory,
         base: usize,
-        check: Check,
         output: &mut engine_native::walk::Buffer<'_, ScopedFlag>,
     ) -> Option<Sample> {
         let mut sample = Sample::default();
@@ -470,7 +410,7 @@ impl FlagStore {
             index,
             ..
         } = self;
-        if index.starts.len() != order.len() + 1 || !index.plan(marked, check) {
+        if index.starts.len() != order.len() + 1 || !index.plan(marked) {
             return None;
         }
         let mut len = 0usize;
@@ -501,8 +441,6 @@ impl FlagStore {
             copy(output, &mut len, cursor, at)?;
             let visited = &mut order[at];
             let held = published.get(index.starts[at]..index.starts[at + 1])?;
-            let fresh = marked.binary_search(&visited.manager).is_ok();
-            let compare = !fresh && check.covers(key(visited.kind, visited.id));
             let head = cflag_manager::read_header(memory, visited.manager);
             let read = cflag_manager::walk_header_buffer(
                 memory,
@@ -515,17 +453,6 @@ impl FlagStore {
             };
             sample.read += 1;
             sample.rows += count as u64;
-            if compare {
-                sample.verified += 1;
-                if held
-                    .iter()
-                    .map(|flag| &flag.flag)
-                    .ne(scratch[..count].iter())
-                {
-                    sample.differs = true;
-                    return Some(sample);
-                }
-            }
             visited.rows = count;
             let end = len.checked_add(count)?;
             if output.is_growing() {
@@ -540,7 +467,7 @@ impl FlagStore {
                     flag: *flag,
                 };
             }
-            sample.renewed |= fresh && output[len..end] != *held;
+            sample.renewed |= output[len..end] != *held;
             len = end;
             cursor = at + 1;
         }
@@ -568,12 +495,9 @@ fn visit(visiting: &mut Vec<Visited>, held_all: &mut bool, certificate: &Certifi
 /// What a quiet hour's reads found.
 #[derive(Clone, Copy, Debug, Default)]
 struct Sample {
-    /// Managers read afresh (marked or sampled), and their rows.
+    /// Managers read afresh, and their rows.
     read: u64,
     rows: u64,
-    /// Sampled managers no take marked, compared with their held rows.
-    verified: u64,
-    differs: bool,
     /// A marked manager's rows differ from its held ones.
     renewed: bool,
     /// Rows published.
@@ -584,21 +508,9 @@ struct Sample {
 pub struct FlagReuse<'a> {
     pub store: &'a mut FlagStore,
     pub changes: &'a dyn Changes,
-    /// Which carryable scopes this hour reads afresh and compares.
-    pub check: Check,
-    /// No hour is quiet: a walk whose key matched is compared whole with the
-    /// held rows instead (the roster family's burn-in, `roster_verify`).
-    pub quiet_verify: bool,
     /// Taken before the walk's first registration or read.
     key: Option<QuietKey>,
-    /// The key matched the held one, so the walk is compared with it.
-    compare: bool,
     roster: crate::roster_changes::Counts,
-}
-
-/// A scope's stable sampling key: its kind and id.
-pub fn key(kind: u8, id: u32) -> u64 {
-    (u64::from(kind) << 32) | u64::from(id)
 }
 
 /// One scope's plan: carry its held rows, or read it afresh.
@@ -607,36 +519,24 @@ pub struct Plan {
     certificate: Option<Certificate>,
     /// The carryable held rows, indexing the previous walk's rows.
     held: Option<Range<usize>>,
-    /// Whether the held rows may be carried without a fresh read.
-    carry: bool,
 }
 
 impl Plan {
     /// Rows the caller must have room for to carry the scope, when it may.
     pub fn carry_rows(&self) -> Option<usize> {
-        self.held.as_ref().filter(|_| self.carry).map(Range::len)
+        self.held.as_ref().map(Range::len)
     }
 }
 
 impl<'a> FlagReuse<'a> {
     /// The walk begins the store at [`Self::quiet_hour`].
-    pub fn begin(store: &'a mut FlagStore, changes: &'a dyn Changes, check: Check) -> Self {
+    pub fn begin(store: &'a mut FlagStore, changes: &'a dyn Changes) -> Self {
         Self {
             store,
             changes,
-            check,
-            quiet_verify: crate::roster_changes::VERIFY,
             key: None,
-            compare: false,
             roster: Default::default(),
         }
-    }
-
-    /// Tests: whether a matching key publishes the held rows.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn verifying_quiet(mut self, verify: bool) -> Self {
-        self.quiet_verify = verify;
-        self
     }
 
     /// Before the walk: takes the key and, when the hour is quiet, publishes
@@ -666,69 +566,42 @@ impl<'a> FlagReuse<'a> {
             && store.quiet == self.key
             && store.taken.is_some()
             && store.taken == store.epoch
-            && self.check != Check::Every
             && countries(&store.countries);
-        if matched && self.quiet_verify {
-            // A marked manager's held rows are stale: only an unmarked hour
-            // compares the walk with them.
-            self.compare = store.marked.is_empty();
-        } else if matched {
-            match store.publish(memory, base, self.check, output) {
-                Some(sample) if !sample.differs => {
-                    let len = sample.len;
-                    // A marked manager that changed renews the held rows; a
-                    // copy that cannot grow withholds the next quiet hour.
-                    if sample.renewed
-                        && allocation::advisory(|| {
-                            store.published.clear();
-                            allocation::reserve_exact(&mut store.published, len)
-                        })
-                        .is_err()
-                    {
-                        store.quiet = None;
-                    } else if sample.renewed {
-                        store.published.extend_from_slice(&output[..len]);
-                        store.index.rows(&store.order);
-                    }
-                    let held_rows = store.current.rows.len() as u64;
-                    let scopes = store.order.len() as u64;
-                    store.counts = Counts {
-                        reused: scopes - sample.read,
-                        read: sample.read,
-                        verified: sample.verified,
-                        mismatches: 0,
-                        reused_rows: held_rows.saturating_sub(sample.rows),
-                        read_rows: sample.rows,
-                        quiet: true,
-                    };
-                    store.measure();
-                    crate::flag_changes::record(&store.counts, Some(store.scopes));
-                    crate::roster_changes::record(
-                        crate::roster_changes::Table::ScriptFlags,
-                        &crate::roster_changes::Counts {
-                            quiet: true,
-                            ..Default::default()
-                        },
-                    );
-                    return Some(Outcome::Rows { len });
-                }
-                Some(sample) => {
-                    // A missed write: nothing certifies reuse any more, and
-                    // this hour walks every scope afresh.
-                    self.changes.scope_mismatch();
-                    store.begin();
-                    store.counts.verified = sample.verified;
-                    store.counts.mismatches = 1;
-                    self.roster = crate::roster_changes::Counts {
-                        read: true,
-                        verified: 1,
-                        mismatches: 1,
-                        ..Default::default()
-                    };
-                    return None;
-                }
-                None => {}
+        if matched && let Some(sample) = store.publish(memory, base, output) {
+            let len = sample.len;
+            // A marked manager that changed renews the held rows; a copy that
+            // cannot grow withholds the next quiet hour.
+            if sample.renewed
+                && allocation::advisory(|| {
+                    store.published.clear();
+                    allocation::reserve_exact(&mut store.published, len)
+                })
+                .is_err()
+            {
+                store.quiet = None;
+            } else if sample.renewed {
+                store.published.extend_from_slice(&output[..len]);
+                store.index.rows(&store.order);
             }
+            let held_rows = store.current.rows.len() as u64;
+            let scopes = store.order.len() as u64;
+            store.counts = Counts {
+                reused: scopes - sample.read,
+                read: sample.read,
+                reused_rows: held_rows.saturating_sub(sample.rows),
+                read_rows: sample.rows,
+                quiet: true,
+            };
+            store.measure();
+            crate::flag_changes::record(&store.counts, Some(store.scopes));
+            crate::roster_changes::record(
+                crate::roster_changes::Table::ScriptFlags,
+                &crate::roster_changes::Counts {
+                    quiet: true,
+                    ..Default::default()
+                },
+            );
+            return Some(Outcome::Rows { len });
         }
         store.begin();
         self.roster.read = true;
@@ -745,11 +618,10 @@ impl<'a> FlagReuse<'a> {
         }
     }
 
-    /// Registers one scope's manager and plans its rows: carryable when the
-    /// held read of the same scope and manager is proved current, and
-    /// carried without a read unless `verify` (the hour's [`Check`] covers
-    /// it). Registration precedes every read it certifies.
-    pub fn plan(&mut self, verify: bool, kind: u8, id: u32, manager: usize) -> Plan {
+    /// Registers one scope's manager and plans its rows: carried without a
+    /// read when the held read of the same scope and manager is proved
+    /// current. Registration precedes every read it certifies.
+    pub fn plan(&mut self, kind: u8, id: u32, manager: usize) -> Plan {
         self.store.scopes += 1;
         let certificate = self
             .changes
@@ -763,11 +635,7 @@ impl<'a> FlagReuse<'a> {
             });
         self.store.held_all &= certificate.is_some();
         let held = certificate.and_then(|certificate| self.store.previous.find(&certificate));
-        Plan {
-            certificate,
-            carry: held.is_some() && !verify,
-            held,
-        }
+        Plan { certificate, held }
     }
 
     /// The carried rows of a plan whose [`Plan::carry_rows`] the caller has
@@ -794,19 +662,11 @@ impl<'a> FlagReuse<'a> {
     }
 
     /// A fresh read of a planned scope: `rows` are its rows sorted by token
-    /// when `outcome` is complete. They are compared with carryable held
-    /// rows (a difference poisons reuse) and held for the next hour.
+    /// when `outcome` is complete. They are held for the next hour.
     pub fn read(&mut self, plan: &Plan, outcome: Outcome, rows: &[cscript_flag::Row]) {
         let store = &mut *self.store;
         store.counts.read += 1;
         store.counts.read_rows += rows.len() as u64;
-        if let Some(range) = plan.held.clone() {
-            store.counts.verified += 1;
-            if !matches!(outcome, Outcome::Rows { .. }) || store.previous.rows[range] != *rows {
-                store.counts.mismatches += 1;
-                self.changes.mismatch();
-            }
-        }
         if let (Some(certificate), Outcome::Rows { .. }) = (plan.certificate, outcome) {
             if !store.current.hold(certificate, rows) {
                 store.held_all = false;
@@ -821,21 +681,9 @@ impl<'a> FlagReuse<'a> {
     }
 
     /// Ends the walk: `complete` when every scope was read or carried whole;
-    /// `rows` are the walk's rows in walk order. A walk whose key matched the
-    /// held one (verify mode) is compared whole with the held rows first.
-    pub(super) fn finish(mut self, complete: bool, rows: &[ScopedFlag]) {
-        if self.compare && complete {
-            let store = &*self.store;
-            let same = store.published == rows && store.countries == store.walking;
-            self.roster.verified += 1;
-            if !same {
-                self.roster.mismatches += 1;
-                self.store.counts.mismatches += 1;
-                self.changes.scope_mismatch();
-            }
-        }
+    /// `rows` are the walk's rows in walk order.
+    pub(super) fn finish(self, complete: bool, rows: &[ScopedFlag]) {
         crate::roster_changes::record(crate::roster_changes::Table::ScriptFlags, &self.roster);
-        let key = self.key.filter(|_| self.check != Check::Every);
-        self.store.finish(complete, key, rows);
+        self.store.finish(complete, self.key, rows);
     }
 }

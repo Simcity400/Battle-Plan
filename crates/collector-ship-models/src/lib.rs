@@ -1,6 +1,5 @@
 //! Ship model capture: each ship's model operands, its held read and the ship model writer observer. The host owns dispatch, loans and table assembly.
 
-use collector_certificates::sampled_verify;
 use collector_certificates::watch_registry;
 use collector_extended_support::outcomes::MISSING;
 use collector_hooks::hook;

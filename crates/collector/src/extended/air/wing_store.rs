@@ -9,9 +9,7 @@
 //! load, gap, recovery, table change, poison or running writer revokes it). Every writer of a
 //! wing's pool is a hooked site ([`engine_mutations::air_wing_equipment_mutations`]), and a wing built at a
 //! destroyed wing's address carries that destructor's notification, so a carried wing's rows equal
-//! a fresh read's. Each hour also reads the carryable wings of its sampled slice
-//! ([`crate::sampled_verify`], keyed by wing id; every one under `wing_verify`) afresh, publishes
-//! the fresh rows and poisons reuse on a difference.
+//! a fresh read's.
 //!
 //! The store travels with the AirWing job's payload and holds only the wings
 //! of the latest complete pass, so its size follows live demand. Allocation
@@ -20,10 +18,7 @@
 //! keeps every part's rows only when it was complete as a whole
 //! ([`WingStore::conclude`]). A wing whose owner moved to another part is
 //! read afresh by that part's store once.
-use crate::{
-    sampled_verify::Check,
-    wing_changes::{Changes, Counts},
-};
+use crate::wing_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_mutations::air_wing_equipment_mutations::POOL;
 use engine_native::walk::Outcome;
@@ -87,8 +82,8 @@ pub(crate) struct WingStore {
     bytes: usize,
     /// Set on the game thread; the next pass drops every held row.
     forgotten: bool,
-    /// Only changed reads need row scratch; carried and equal verified rows
-    /// remain ranges into the preceding whole buffer until settlement.
+    /// Only fresh reads need row scratch; carried rows remain ranges into
+    /// the preceding whole buffer until settlement.
     fresh: Vec<WingEquipmentRow>,
 }
 
@@ -246,14 +241,12 @@ pub(crate) struct Plan {
     certificate: Option<Certificate>,
     /// The carryable held rows, indexing the previous pass's rows.
     held: Option<Range<usize>>,
-    /// Whether the held rows may be carried without a fresh read.
-    carry: bool,
 }
 
 impl Plan {
     /// Rows the caller must have room for to carry the wing, when it may.
     pub(crate) fn carry_rows(&self) -> Option<usize> {
-        self.held.as_ref().filter(|_| self.carry).map(Range::len)
+        self.held.as_ref().map(Range::len)
     }
 }
 
@@ -261,24 +254,17 @@ impl Plan {
 pub(crate) struct WingReuse<'a> {
     store: &'a mut WingStore,
     changes: &'a dyn Changes,
-    /// Which carryable wings this hour reads afresh and compares.
-    check: Check,
 }
 
 impl<'a> WingReuse<'a> {
-    pub(crate) fn begin(store: &'a mut WingStore, changes: &'a dyn Changes, check: Check) -> Self {
+    pub(crate) fn begin(store: &'a mut WingStore, changes: &'a dyn Changes) -> Self {
         store.begin();
-        Self {
-            store,
-            changes,
-            check,
-        }
+        Self { store, changes }
     }
 
-    /// Registers one wing's pool and plans its rows: carryable when the held
-    /// read of the same wing and id is proved current, and carried without a
-    /// read unless the hour's [`Check`] covers it. Registration precedes
-    /// every read it certifies.
+    /// Registers one wing's pool and plans its rows: carried without a read
+    /// when the held read of the same wing and id is proved current.
+    /// Registration precedes every read it certifies.
     pub(crate) fn plan(&mut self, wing: usize, id: u64) -> Plan {
         self.store.wings += 1;
         let certificate =
@@ -291,11 +277,7 @@ impl<'a> WingReuse<'a> {
                     id,
                 });
         let held = certificate.and_then(|certificate| self.store.previous.find(&certificate));
-        Plan {
-            certificate,
-            carry: held.is_some() && !self.check.covers(id),
-            held,
-        }
+        Plan { certificate, held }
     }
 
     /// The carried rows of a plan whose [`Plan::carry_rows`] the caller has
@@ -311,25 +293,11 @@ impl<'a> WingReuse<'a> {
     }
 
     /// A fresh read of a planned wing: `rows` are its rows in pool order when
-    /// `outcome` is complete. They are compared with carryable held rows (a
-    /// difference poisons reuse) and held for the next hour.
+    /// `outcome` is complete. They are held for the next hour.
     pub(crate) fn read(&mut self, plan: &Plan, outcome: Outcome, rows: &[WingEquipmentRow]) {
         let store = &mut *self.store;
         store.counts.read += 1;
         store.counts.read_rows += rows.len() as u64;
-        if let Some(range) = plan.held.clone() {
-            store.counts.verified += 1;
-            if matches!(outcome, Outcome::Rows { .. })
-                && store.previous.rows[range.clone()] == *rows
-            {
-                if let Some(certificate) = plan.certificate {
-                    store.hold_carried(certificate, range);
-                }
-                return;
-            }
-            store.counts.mismatches += 1;
-            self.changes.mismatch();
-        }
         if let (Some(certificate), Outcome::Rows { .. }) = (plan.certificate, outcome) {
             store.hold_read(certificate, rows);
         }

@@ -285,7 +285,6 @@ impl Captured {
             store,
             &crate::character_changes::Observer,
             &role_store::LeaderObserver,
-            crate::sampled_verify::Check::burned_in(hour, crate::character_changes::VERIFY),
         )
     }
 
@@ -301,7 +300,6 @@ impl Captured {
         store: Option<&mut RoleStore>,
         changes: &dyn crate::character_changes::Changes,
         leaders: &dyn role_store::LeaderChanges,
-        check: crate::sampled_verify::Check,
     ) -> [u64; N] {
         let Some(census) = census else {
             if let Some(store) = store {
@@ -336,7 +334,6 @@ impl Captured {
             store.as_deref_mut().map(|store| role_store::RoleReuse {
                 store,
                 changes,
-                check,
                 held,
                 leaders,
             }),

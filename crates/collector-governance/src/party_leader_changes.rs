@@ -21,12 +21,8 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused, read, verified and mismatched countries; reused and read rows.
-static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-/// The family's sampled comparisons.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried PartyLeaders rows differ from a fresh read",
-]);
+/// Reused and read countries; reused and read rows.
+static READS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// Parties the latest complete capture walked, for off-thread sizing.
 static PARTIES: AtomicUsize = AtomicUsize::new(0);
 
@@ -92,9 +88,6 @@ pub trait Changes: Sync {
     /// `(epoch, sequence)` of a character in the character domain,
     /// registering it; `None` when it cannot be observed.
     fn character(&self, character: usize) -> Option<(u64, u64)>;
-    /// A fresh read disagreed with carried rows: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
 }
 
 /// The hooks' domains.
@@ -108,9 +101,6 @@ impl Changes for Observer {
     }
     fn character(&self, character: usize) -> Option<(u64, u64)> {
         crate::character_changes::Changes::sequence(&crate::character_changes::Observer, character)
-    }
-    fn mismatch(&self) {
-        WATCHES.registry.poison();
     }
 }
 
@@ -131,19 +121,12 @@ impl Changes for Pair<'_> {
     fn character(&self, character: usize) -> Option<(u64, u64)> {
         crate::character_changes::Changes::sequence(self.characters, character)
     }
-    fn mismatch(&self) {
-        self.parties.registry.poison();
-    }
 }
 
 /// The hooks' domain's quiet token ([`Changes::quiet`]).
 pub fn quiet() -> Option<(u64, u64)> {
     WATCHES.registry.quiet()
 }
-
-/// Whether captures read every carryable country afresh and compare,
-/// rather than the hour's sampled slice ([`crate::sampled_verify`]).
-pub const VERIFY: bool = cfg!(feature = "party_leader_verify");
 
 /// Notifications running now.
 pub fn active() -> usize {
@@ -177,8 +160,6 @@ pub fn collect() {
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     pub reused_rows: u64,
     pub read_rows: u64,
 }
@@ -189,14 +170,11 @@ pub fn record(counts: &Counts, parties: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         counts.reused_rows,
         counts.read_rows,
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
     if let Some(parties) = parties {
         PARTIES.store(parties, Ordering::Relaxed);
     }
@@ -212,21 +190,14 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "party_leader_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_countries": reads[0],
         "read_countries": reads[1],
-        "verified_countries": reads[2],
-        "mismatches": reads[3],
-        "reused_rows": reads[4],
-        "read_rows": reads[5],
+        "reused_rows": reads[2],
+        "read_rows": reads[3],
         "events": events,
         "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a country's PartyLeaders rows are carried when its political status and party array header are those of the held read, no hooked writer touched any of its parties since and every listed leader's character keeps its certificate; the political status and party array header are read every hour; every hour also reads the carryable countries of its slice afresh (one in rotation_hours by country id; every one in verify mode), publishes the fresh rows and disables reuse at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; a country's PartyLeaders rows are carried when its political status and party array header are those of the held read, no hooked writer touched any of its parties since and every listed leader's character keeps its certificate; the political status and party array header are read every hour"
     })
 }
 

@@ -1,13 +1,9 @@
 //! ScriptFlags rows carried between hours per flag manager
 //! ([`super::super::FlagStore`], [`crate::flag_changes`]): quiet hours read no
 //! manager and publish the same rows, a hooked write re-reads only its
-//! manager, an invalidation re-reads every manager, and verify mode catches
-//! a write no hook saw and poisons reuse.
+//! manager and an invalidation re-reads every manager.
 use super::*;
-use crate::{
-    flag_changes::{Counts, Watches},
-    sampled_verify::{Check, ROTATION},
-};
+use crate::flag_changes::{Counts, Watches};
 use std::cell::RefCell;
 
 /// Every guarded call's first address, over the [`flag_scopes`] bytes.
@@ -100,20 +96,13 @@ struct Hour {
     manager_reads: usize,
 }
 
-fn walk(bytes: &[u8], store: &mut FlagStore, watches: &Watches, check: Check) -> Hour {
-    walk_with(bytes, store, watches, check, crate::roster_changes::VERIFY).0
+fn walk(bytes: &[u8], store: &mut FlagStore, watches: &Watches) -> Hour {
+    walk_with(bytes, store, watches).0
 }
 
-/// [`walk`], publishing a quiet hour's held rows unless `quiet_verify`; also
-/// returns the guarded reads of any scope root, state, character or manager,
-/// none of which a quiet hour makes.
-fn walk_with(
-    bytes: &[u8],
-    store: &mut FlagStore,
-    watches: &Watches,
-    check: Check,
-    quiet_verify: bool,
-) -> (Hour, usize) {
+/// [`walk`], also returning the guarded reads of any scope root, state,
+/// character or manager, none of which a quiet hour makes.
+fn walk_with(bytes: &[u8], store: &mut FlagStore, watches: &Watches) -> (Hour, usize) {
     let memory = Calls {
         bytes,
         calls: RefCell::default(),
@@ -126,7 +115,7 @@ fn walk_with(
         GAME,
         &mut rows,
         &mut scratch,
-        Some(FlagReuse::begin(store, watches, check).verifying_quiet(quiet_verify)),
+        Some(FlagReuse::begin(store, watches)),
     );
     rows.truncate(outcome.len());
     let calls = memory.calls.into_inner();
@@ -175,7 +164,7 @@ fn set_value(bytes: &mut [u8], scope: usize, value: i16) {
 /// The first hour reads and holds every manager; this is what the old
 /// behaviour does every hour.
 fn first_hour(bytes: &[u8], store: &mut FlagStore, watches: &Watches) -> Hour {
-    let first = walk(bytes, store, watches, Check::Nothing);
+    let first = walk(bytes, store, watches);
     assert_eq!(first.outcome, Outcome::Rows { len: 4 });
     assert_eq!(
         (
@@ -197,7 +186,7 @@ fn quiet_hours_read_no_manager_and_publish_identical_rows() {
     let mut store = FlagStore::new();
     let first = first_hour(&bytes, &mut store, &watches);
     for _ in 0..3 {
-        let quiet = walk(&bytes, &mut store, &watches, Check::Nothing);
+        let quiet = walk(&bytes, &mut store, &watches);
         assert_eq!(quiet.outcome, first.outcome);
         assert_eq!(quiet.rows, first.rows);
         assert_eq!(
@@ -226,7 +215,7 @@ fn a_hooked_write_rereads_only_its_manager() {
     set_value(&mut bytes, 1, 7);
     drop(notification);
     watches.boundary(false);
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let hour = walk(&bytes, &mut store, &watches);
     assert_eq!(hour.outcome, Outcome::Rows { len: 4 });
     assert_eq!((hour.counts.read, hour.counts.reused), (1, 4));
     assert_eq!(hour.rows[1].scope_kind, COUNTRY_SCOPE);
@@ -239,7 +228,7 @@ fn a_hooked_write_rereads_only_its_manager() {
     );
     // The re-read manager is carried again from the next quiet hour.
     watches.boundary(false);
-    let quiet = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let quiet = walk(&bytes, &mut store, &watches);
     assert_eq!((quiet.counts.read, quiet.counts.reused), (0, 5));
     assert_eq!(quiet.rows, hour.rows);
 }
@@ -252,13 +241,13 @@ fn an_invalidating_hour_rereads_every_manager() {
     let first = first_hour(&bytes, &mut store, &watches);
     // Load, gap or recovery.
     watches.boundary(true);
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let hour = walk(&bytes, &mut store, &watches);
     assert_eq!((hour.counts.read, hour.counts.reused), (5, 0));
     assert_eq!(hour.rows, first.rows);
     // A forgotten store (a failed job) reads every manager too.
     watches.boundary(false);
     store.forget();
-    let forgotten = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let forgotten = walk(&bytes, &mut store, &watches);
     assert_eq!((forgotten.counts.read, forgotten.counts.reused), (5, 0));
 }
 
@@ -275,7 +264,7 @@ fn a_changed_scope_identity_is_read_afresh() {
     put(&mut bytes, 0x6000 + ccharacter::ID, &46_u32.to_le_bytes());
     watches.roster_write();
     watches.boundary(false);
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let hour = walk(&bytes, &mut store, &watches);
     assert_eq!((hour.counts.read, hour.counts.reused), (1, 4));
     assert_eq!(
         (hour.rows[3].scope_kind, hour.rows[3].scope_id),
@@ -284,58 +273,16 @@ fn a_changed_scope_identity_is_read_afresh() {
 }
 
 #[test]
-fn verify_catches_an_unobserved_write_and_poisons_reuse() {
-    let mut bytes = flag_scopes();
-    let watches = Watches::enabled(16);
-    let mut store = FlagStore::new();
-    first_hour(&bytes, &mut store, &watches);
-    // Verify of an unchanged hour reads every carryable manager and agrees.
-    let agreed = walk(&bytes, &mut store, &watches, Check::Every);
-    assert_eq!(
-        (
-            agreed.counts.read,
-            agreed.counts.verified,
-            agreed.counts.mismatches
-        ),
-        (5, 5, 0)
-    );
-    assert!(!watches.poisoned());
-    watches.boundary(false);
-    // A write no hook observed.
-    set_value(&mut bytes, 2, 9);
-    let caught = walk(&bytes, &mut store, &watches, Check::Every);
-    // The state's mismatch poisons at once: the characters after it are no
-    // longer carryable, so they are read but not verified.
-    assert_eq!(
-        (
-            caught.counts.read,
-            caught.counts.verified,
-            caught.counts.mismatches
-        ),
-        (5, 3, 1)
-    );
-    assert!(watches.poisoned());
-    // The fresh rows are published.
-    assert_eq!(caught.rows[2].scope_kind, STATE_SCOPE);
-    assert_eq!(caught.rows[2].flag.value, 9);
-    // Without verify, a poisoned domain carries nothing.
-    watches.boundary(false);
-    let after = walk(&bytes, &mut store, &watches, Check::Nothing);
-    assert_eq!((after.counts.read, after.counts.reused), (5, 0));
-    assert_eq!(after.rows[2].flag.value, 9);
-}
-
-#[test]
-fn an_unobserved_write_without_verify_is_carried_stale() {
+fn an_unobserved_write_is_carried_stale() {
     // Guards the premise of the family: only hooked writers move a
-    // certificate, so a missed writer would be carried until verify or an
+    // certificate, so a missed writer would be carried until an
     // invalidation, which is why every writer site is hooked.
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
     first_hour(&bytes, &mut store, &watches);
     set_value(&mut bytes, 0, 5);
-    let stale = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let stale = walk(&bytes, &mut store, &watches);
     assert_eq!(stale.counts.reused, 5);
     assert_eq!(stale.rows[0].flag.value, i16::MIN);
 }
@@ -355,44 +302,13 @@ fn a_failed_walk_holds_nothing() {
     put(&mut broken, 0x8000 + cstate::FLAGS, &0_u64.to_le_bytes());
     drop(notification);
     watches.boundary(false);
-    let failed = walk(&broken, &mut store, &watches, Check::Nothing);
+    let failed = walk(&broken, &mut store, &watches);
     assert!(matches!(failed.outcome, Outcome::Unavailable { .. }));
     // The failed walk's carried rows certify nothing afterwards.
     set_value(&mut bytes, 0, 5);
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let hour = walk(&bytes, &mut store, &watches);
     assert_eq!((hour.counts.read, hour.counts.reused), (5, 0));
     assert_eq!(hour.rows[0].flag.value, 5);
-}
-
-#[test]
-fn an_hourly_slice_verifies_only_its_scopes_and_carries_the_rest() {
-    let bytes = flag_scopes();
-    let watches = Watches::enabled(16);
-    let mut store = FlagStore::new();
-    first_hour(&bytes, &mut store, &watches);
-    // Global 0, country 2, state 1 and characters 44 and 45, by kind and id.
-    let keys = [
-        flag_store::key(GLOBAL_SCOPE, 0),
-        flag_store::key(COUNTRY_SCOPE, 2),
-        flag_store::key(STATE_SCOPE, 1),
-        flag_store::key(CHARACTER_SCOPE, 44),
-        flag_store::key(CHARACTER_SCOPE, 45),
-    ];
-    let mut verified = 0;
-    for hour in 0..ROTATION as i32 {
-        let check = Check::Slice { hour };
-        let sampled = walk(&bytes, &mut store, &watches, check);
-        let due = keys.iter().filter(|&&key| check.covers(key)).count() as u64;
-        assert_eq!(
-            (sampled.counts.verified, sampled.counts.reused),
-            (due, 5 - due)
-        );
-        assert_eq!(sampled.counts.mismatches, 0);
-        verified += due;
-        watches.boundary(false);
-    }
-    // One rotation compares every carried scope exactly once.
-    assert_eq!(verified, 5);
 }
 
 #[test]
@@ -429,12 +345,12 @@ fn a_quiet_hour_walks_no_scope_and_publishes_identical_rows() {
     let bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
-    let (first, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (first, reads) = walk_with(&bytes, &mut store, &watches);
     assert_ne!(reads, 0);
     assert!(!first.counts.quiet);
     watches.boundary(false);
     for _ in 0..3 {
-        let (quiet, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+        let (quiet, reads) = walk_with(&bytes, &mut store, &watches);
         assert_eq!(quiet.outcome, first.outcome);
         assert_eq!(quiet.rows, first.rows);
         assert!(quiet.counts.quiet);
@@ -453,13 +369,13 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
-    walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    walk_with(&bytes, &mut store, &watches);
     watches.boundary(false);
     let notification = watches.notify(MANAGERS[1], 0);
     set_value(&mut bytes, 1, 7);
     drop(notification);
     watches.boundary(false);
-    let (written, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (written, reads) = walk_with(&bytes, &mut store, &watches);
     assert!(written.counts.quiet);
     assert_eq!((written.counts.read, written.counts.reused), (1, 4));
     // Only the marked manager's header and row were read.
@@ -468,10 +384,10 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     assert_eq!(written.rows[1].flag.value, 7);
     assert_eq!(
         written.rows,
-        walk(&bytes, &mut FlagStore::new(), &watches, Check::Nothing).rows
+        walk(&bytes, &mut FlagStore::new(), &watches).rows
     );
     watches.boundary(false);
-    let (quiet, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (quiet, reads) = walk_with(&bytes, &mut store, &watches);
     assert!(quiet.counts.quiet);
     assert_eq!(reads, 0);
     assert_eq!(quiet.rows, written.rows);
@@ -515,13 +431,13 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
         );
     }
     // Unseen, the quiet hour still publishes the held rows...
-    let (stale, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (stale, _) = walk_with(&bytes, &mut store, &watches);
     assert!(stale.counts.quiet);
     watches.boundary(false);
     // ...and the roster write that appends it walks every scope again.
     watches.roster_write();
     watches.boundary(false);
-    let (appended, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (appended, reads) = walk_with(&bytes, &mut store, &watches);
     assert!(!appended.counts.quiet);
     assert_ne!(reads, 0);
     // The country changed since the last full walk too: its old per-scope
@@ -530,7 +446,7 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     assert_eq!(appended.outcome, Outcome::Rows { len: 5 });
     assert_eq!(
         appended.rows,
-        walk(&bytes, &mut FlagStore::new(), &watches, Check::Nothing).rows
+        walk(&bytes, &mut FlagStore::new(), &watches).rows
     );
     watches.boundary(false);
     // Removing that scope revokes the roster token too. No surviving
@@ -542,61 +458,15 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     );
     watches.roster_write();
     watches.boundary(false);
-    let (removed, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (removed, reads) = walk_with(&bytes, &mut store, &watches);
     assert!(!removed.counts.quiet);
     assert_ne!(reads, 0);
     assert_eq!((removed.counts.read, removed.counts.reused), (0, 5));
     assert_eq!(removed.outcome, Outcome::Rows { len: 4 });
     assert_eq!(
         removed.rows,
-        walk(&bytes, &mut FlagStore::new(), &watches, Check::Nothing).rows
+        walk(&bytes, &mut FlagStore::new(), &watches).rows
     );
-}
-
-/// A quiet hour's slice reads its managers afresh: a write no hook saw
-/// poisons the flag and roster domains, and that hour walks and publishes
-/// every scope afresh.
-#[test]
-fn a_quiet_hour_slice_catches_a_missed_write_and_poisons_both_domains() {
-    let mut bytes = flag_scopes();
-    let watches = Watches::enabled(16);
-    let mut store = FlagStore::new();
-    walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
-    watches.boundary(false);
-    set_value(&mut bytes, 2, 9);
-    let hour = (0..ROTATION as i32)
-        .find(|&hour| Check::Slice { hour }.covers(flag_store::key(STATE_SCOPE, 1)))
-        .unwrap();
-    let (caught, reads) = walk_with(&bytes, &mut store, &watches, Check::Slice { hour }, false);
-    assert!(!caught.counts.quiet);
-    assert_ne!(reads, 0);
-    assert_eq!(caught.counts.mismatches, 1);
-    assert_eq!(caught.rows[2].flag.value, 9);
-    assert!(watches.poisoned());
-    assert!(watches.roster_poisoned());
-}
-
-/// While the roster family burns in, a hour whose key matched walks every
-/// scope and compares the walk with the held rows: a scope change no hook saw
-/// (a character's id) poisons both domains.
-#[test]
-fn verify_mode_compares_each_quiet_hour_with_a_fresh_walk() {
-    let mut bytes = flag_scopes();
-    let watches = Watches::enabled(16);
-    let mut store = FlagStore::new();
-    walk_with(&bytes, &mut store, &watches, Check::Nothing, true);
-    watches.boundary(false);
-    let (agreed, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, true);
-    assert!(!agreed.counts.quiet);
-    assert_ne!(reads, 0);
-    assert_eq!(agreed.counts.mismatches, 0);
-    assert!(!watches.roster_poisoned());
-    watches.boundary(false);
-    put(&mut bytes, 0x6000 + ccharacter::ID, &46_u32.to_le_bytes());
-    let (caught, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, true);
-    assert_eq!(caught.rows[3].scope_id, 46);
-    assert_eq!(caught.counts.mismatches, 1);
-    assert!(watches.roster_poisoned());
 }
 
 /// The country census comparison: the same countries in walk order, and
@@ -621,71 +491,34 @@ fn a_quiet_hour_needs_the_held_countries_in_walk_order() {
 }
 
 /// The family's premise for a character scope: an unhooked write to a
-/// character's embedded manager is carried by a quiet hour until the hour's
-/// sampled slice reads that manager afresh, which publishes the fresh rows
-/// and poisons the flag and roster domains.
+/// character's embedded manager is carried by a quiet hour, which reads no
+/// manager.
 #[test]
-fn a_quiet_hour_slice_catches_an_unhooked_character_flag_write() {
+fn a_quiet_hour_carries_an_unhooked_character_flag_write() {
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
-    walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    walk_with(&bytes, &mut store, &watches);
     watches.boundary(false);
     set_value(&mut bytes, 3, 9);
-    let key = flag_store::key(CHARACTER_SCOPE, 44);
-    // An hour whose slice holds none of the five scopes reads no manager.
-    let keys = [
-        flag_store::key(GLOBAL_SCOPE, 0),
-        flag_store::key(COUNTRY_SCOPE, 2),
-        flag_store::key(STATE_SCOPE, 1),
-        key,
-        flag_store::key(CHARACTER_SCOPE, 45),
-    ];
-    let outside = (0..ROTATION as i32)
-        .find(|&hour| !keys.iter().any(|&key| Check::Slice { hour }.covers(key)))
-        .unwrap();
-    let (stale, reads) = walk_with(
-        &bytes,
-        &mut store,
-        &watches,
-        Check::Slice { hour: outside },
-        false,
-    );
+    let (stale, reads) = walk_with(&bytes, &mut store, &watches);
     assert!(stale.counts.quiet);
     assert_eq!(reads, 0);
     assert_eq!(stale.rows[3].flag.value, i16::MIN);
-    watches.boundary(false);
-    let inside = (0..ROTATION as i32)
-        .find(|&hour| Check::Slice { hour }.covers(key))
-        .unwrap();
-    let (caught, _) = walk_with(
-        &bytes,
-        &mut store,
-        &watches,
-        Check::Slice { hour: inside },
-        false,
-    );
-    assert!(!caught.counts.quiet);
-    assert_eq!(caught.counts.mismatches, 1);
-    assert_eq!(caught.rows[3].scope_id, 44);
-    assert_eq!(caught.rows[3].flag.value, 9);
-    assert!(watches.poisoned());
-    assert!(watches.roster_poisoned());
 }
 
 /// A quiet hour's publishing loop visits only the scopes it reads: none in
-/// an unwritten, unsampled hour; the written manager's scope after a write,
-/// including one whose rows shrink; the sampled scope in a sampled hour.
-/// The held rows between them are copied whole, and every hour's rows are a
-/// fresh walk's.
+/// an unwritten hour; the written manager's scope after a write, including
+/// one whose rows shrink. The held rows between them are copied whole, and
+/// every hour's rows are a fresh walk's.
 #[test]
 fn a_quiet_hour_visits_only_the_scopes_it_reads() {
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
-    walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    walk_with(&bytes, &mut store, &watches);
     watches.boundary(false);
-    let (quiet, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (quiet, _) = walk_with(&bytes, &mut store, &watches);
     assert!(quiet.counts.quiet);
     assert!(FlagStore::visited_scopes().is_empty());
     watches.boundary(false);
@@ -694,36 +527,14 @@ fn a_quiet_hour_visits_only_the_scopes_it_reads() {
     set_value(&mut bytes, 1, 7);
     drop(notification);
     watches.boundary(false);
-    let (written, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (written, _) = walk_with(&bytes, &mut store, &watches);
     assert!(written.counts.quiet);
     // Walk order: the global scope, country 2, state 1, then characters.
     assert_eq!(FlagStore::visited_scopes(), [1]);
     assert_eq!(
         written.rows,
-        walk(&bytes, &mut FlagStore::new(), &watches, Check::Nothing).rows
+        walk(&bytes, &mut FlagStore::new(), &watches).rows
     );
-    watches.boundary(false);
-    // A sampled hour reads and compares the scopes its slice covers, the
-    // country's among them.
-    let keys = [
-        flag_store::key(GLOBAL_SCOPE, 0),
-        flag_store::key(COUNTRY_SCOPE, 2),
-        flag_store::key(STATE_SCOPE, 1),
-        flag_store::key(CHARACTER_SCOPE, 44),
-        flag_store::key(CHARACTER_SCOPE, 45),
-    ];
-    let sampled = Check::BurnedIn {
-        hour: (keys[1] % crate::sampled_verify::BURNED_IN_ROTATION) as i32,
-    };
-    let due: Vec<u32> = (0..keys.len() as u32)
-        .filter(|&scope| sampled.covers(keys[scope as usize]))
-        .collect();
-    assert!(due.contains(&1));
-    let (compared, _) = walk_with(&bytes, &mut store, &watches, sampled, false);
-    assert!(compared.counts.quiet);
-    assert_eq!(compared.counts.verified, due.len() as u64);
-    assert_eq!(FlagStore::visited_scopes(), due);
-    assert_eq!(compared.rows, written.rows);
     watches.boundary(false);
     // The country's flag is cleared: its scope's rows shrink to none, and
     // every later scope's held rows move up.
@@ -739,15 +550,15 @@ fn a_quiet_hour_visits_only_the_scopes_it_reads() {
     );
     drop(notification);
     watches.boundary(false);
-    let (cleared, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (cleared, _) = walk_with(&bytes, &mut store, &watches);
     assert!(cleared.counts.quiet);
     assert_eq!(FlagStore::visited_scopes(), [1]);
-    let fresh = walk(&bytes, &mut FlagStore::new(), &watches, Check::Nothing).rows;
+    let fresh = walk(&bytes, &mut FlagStore::new(), &watches).rows;
     assert_eq!(cleared.rows, fresh);
     assert_eq!(cleared.rows.len(), 3);
     // The renewed rows, re-indexed, are carried whole the next hour.
     watches.boundary(false);
-    let (next, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (next, _) = walk_with(&bytes, &mut store, &watches);
     assert!(next.counts.quiet);
     assert!(FlagStore::visited_scopes().is_empty());
     assert_eq!(next.rows, fresh);
@@ -779,11 +590,11 @@ fn preinstall_flag_sizing_includes_empty_scopes_and_embedded_stores() {
     // managers are empty. The next hour walks and reads none of them.
     let watches = Watches::enabled(scopes + embedded);
     let mut store = FlagStore::new();
-    let (first, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (first, _) = walk_with(&bytes, &mut store, &watches);
     assert_eq!(first.outcome, Outcome::Rows { len: 4 });
     assert_eq!((first.counts.read, first.counts.reused), (scopes as u64, 0));
     watches.boundary(false);
-    let (quiet, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (quiet, reads) = walk_with(&bytes, &mut store, &watches);
     assert!(quiet.counts.quiet);
     assert_eq!(quiet.outcome, first.outcome);
     assert_eq!(quiet.rows, first.rows);
@@ -831,11 +642,11 @@ fn refused_flag_watches_read_fresh_instead_of_certifying_a_quiet_hour() {
             .all(|&manager| watches.sequence(manager).is_none())
     );
     let mut store = FlagStore::new();
-    let (first, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (first, _) = walk_with(&bytes, &mut store, &watches);
     assert_eq!(first.outcome, Outcome::Rows { len: 4 });
     watches.boundary(false);
     set_value(&mut bytes, 1, 7);
-    let (fresh, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (fresh, reads) = walk_with(&bytes, &mut store, &watches);
     assert!(!fresh.counts.quiet);
     assert_eq!((fresh.counts.read, fresh.counts.reused), (5, 0));
     assert_ne!(reads, 0);
@@ -847,14 +658,14 @@ fn a_marked_flag_read_refusal_never_publishes_the_held_table() {
     let mut bytes = flag_scopes();
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
-    walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    walk_with(&bytes, &mut store, &watches);
     watches.boundary(false);
     let notification = watches.notify(MANAGERS[1], 0);
     put(&mut bytes, MANAGERS[1], &0_u64.to_le_bytes());
     drop(notification);
     watches.boundary(false);
-    let (refused, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
-    let fresh = walk(&bytes, &mut FlagStore::new(), &watches, Check::Nothing);
+    let (refused, _) = walk_with(&bytes, &mut store, &watches);
+    let fresh = walk(&bytes, &mut FlagStore::new(), &watches);
     assert_eq!(
         refused.outcome,
         Outcome::Unavailable {
@@ -872,7 +683,7 @@ fn a_marked_flag_read_refusal_never_publishes_the_held_table() {
         &((BASE + cflag_manager::VTABLE_RVA) as u64).to_le_bytes(),
     );
     watches.boundary(false);
-    let (recovered, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (recovered, _) = walk_with(&bytes, &mut store, &watches);
     assert_eq!((recovered.counts.read, recovered.counts.reused), (5, 0));
     assert_eq!(recovered.outcome, Outcome::Rows { len: 4 });
 }
@@ -887,17 +698,11 @@ fn a_daily_expiry_mark_refreshes_the_countdown_and_removal_only() {
     );
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
-    let (first, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let (first, _) = walk_with(&bytes, &mut store, &watches);
     watches.boundary(false);
     // Advancing an ordinary hour changes neither the stored set hour nor
     // the native remaining-days field, even for a timed flag.
-    let (quiet, reads) = walk_with(
-        &bytes,
-        &mut store,
-        &watches,
-        Check::BurnedIn { hour: 23 },
-        false,
-    );
+    let (quiet, reads) = walk_with(&bytes, &mut store, &watches);
     assert!(quiet.counts.quiet);
     assert_eq!(quiet.rows, first.rows);
     assert_eq!(reads, 0);
@@ -917,7 +722,7 @@ fn a_daily_expiry_mark_refreshes_the_countdown_and_removal_only() {
         }
         drop(notification);
         watches.boundary(false);
-        let (expired, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+        let (expired, _) = walk_with(&bytes, &mut store, &watches);
         assert!(expired.counts.quiet);
         assert_eq!((expired.counts.read, expired.counts.reused), (1, 4));
         assert_eq!(FlagStore::visited_scopes(), [1]);
@@ -932,7 +737,7 @@ fn a_daily_expiry_mark_refreshes_the_countdown_and_removal_only() {
         }
         assert_eq!(
             expired.rows,
-            walk(&bytes, &mut FlagStore::new(), &watches, Check::Nothing).rows
+            walk(&bytes, &mut FlagStore::new(), &watches).rows
         );
     }
 }

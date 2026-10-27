@@ -27,16 +27,12 @@ impl Changes for ObservedChanges {
     fn register(&self, receiver: usize) -> bool {
         self.watches.register(receiver)
     }
-    fn mismatch(&self) {
-        self.watches.mismatch();
-    }
 }
 
 // regression: d1569a7b46 Share pass-local province reads in division organisation movement
 #[test]
 fn division_presentation_rows_share_one_experience_certificate() {
     const DIVISIONS: usize = 48;
-    crate::sampled_verify::begin_hour(1);
     let shape = scale_fixture::Shape {
         countries: 16,
         divisions: DIVISIONS,
@@ -105,13 +101,7 @@ fn division_presentation_rows_share_one_experience_certificate() {
             &changes,
         );
         assert_eq!(changes.experience.swap(0, Relaxed), DIVISIONS);
-        held.capture_attack_observed(
-            &world.live(),
-            context,
-            sources(),
-            Some(&mut store),
-            &changes,
-        );
+        held.capture_attack(&world.live(), context, sources(), Some(&mut store));
         held.decode_inputs();
         // A new store exercises all native operands rather than carrying them.
         let mut baseline = ArmyStatStore::new();
@@ -123,13 +113,7 @@ fn division_presentation_rows_share_one_experience_certificate() {
             &changes,
         );
         assert_eq!(changes.experience.swap(0, Relaxed), DIVISIONS);
-        fresh.capture_attack_observed(
-            &world.live(),
-            context,
-            sources(),
-            Some(&mut baseline),
-            &changes,
-        );
+        fresh.capture_attack(&world.live(), context, sources(), Some(&mut baseline));
         fresh.decode_inputs();
         assert_eq!(held.outcomes(), fresh.outcomes());
         assert_eq!(held.tables(), fresh.tables());

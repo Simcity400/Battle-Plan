@@ -42,12 +42,11 @@ pub(crate) struct MissionSources<'a, C> {
     pub carry: Option<MissionCarry<'a>>,
 }
 
-/// The AirRegionalMissions walk's held registrations ([`MissionStore`]), the
-/// notifications that certify them and the hour's sampled check.
+/// The AirRegionalMissions walk's held registrations ([`MissionStore`]) and
+/// the notifications that certify them.
 pub(crate) struct MissionCarry<'a> {
     pub store: &'a mut MissionStore,
     pub changes: &'a dyn crate::mission_changes::Changes,
-    pub check: crate::sampled_verify::Check,
 }
 
 pub const N: usize = 16;
@@ -590,12 +589,8 @@ impl Captured {
             // The strict registrations alone: the retired selected transport
             // preview's root, factor, wing and normalization words are not read.
             let original = match carry {
-                Some(MissionCarry {
-                    store,
-                    changes,
-                    check,
-                }) => {
-                    let mut reuse = MissionReuse::begin(store, changes, check);
+                Some(MissionCarry { store, changes }) => {
+                    let mut reuse = MissionReuse::begin(store, changes);
                     let walked = cair_regional_mission::walk_carried(
                         memory,
                         base,

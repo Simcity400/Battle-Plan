@@ -193,21 +193,6 @@ fn touched_tail_reuses_equal_damage_and_matches_replacement_changes() {
     assert_eq!(held[2].first_damage.as_ptr(), damage);
 }
 
-/// A fresh read of a carried holder must be its held row less a leading run
-/// old enough for the latest cutoff.
-#[test]
-fn a_sampled_read_must_be_the_held_row_less_a_pruned_run() {
-    let held = [record(1, 70), record(2, 80), record(3, 100)];
-    assert!(pruned_from(&held, &held, Some(90)));
-    assert!(pruned_from(&held, &held[1..], Some(90)));
-    assert!(pruned_from(&held, &held[2..], Some(90)));
-    assert!(pruned_from(&held, &held[2..], None));
-    // Removing a record the cutoff keeps, or changing one, is a difference.
-    assert!(!pruned_from(&held, &held[2..], Some(75)));
-    assert!(!pruned_from(&held, &[record(9, 100)], Some(90)));
-    assert!(!pruned_from(&held[1..], &held, Some(90)));
-}
-
 #[test]
 fn suffix_start_finds_the_records_the_updater_can_reach() {
     let records = [record(1, 70), record(2, 120), record(3, 80), record(4, 100)];

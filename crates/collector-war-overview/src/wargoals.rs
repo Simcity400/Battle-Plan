@@ -17,17 +17,11 @@ struct Owner {
 #[derive(Default)]
 struct Store {
     owners: Vec<Option<Owner>>,
-    verify: Inputs,
     input_bytes: usize,
 }
 static STORE: Mutex<Store> = Mutex::new(Store {
     owners: Vec::new(),
     input_bytes: 0,
-    verify: Inputs {
-        goals: Vec::new(),
-        justifications: Vec::new(),
-        targets: Vec::new(),
-    },
 });
 
 #[derive(Default)]
@@ -55,14 +49,7 @@ impl Captured {
         force_full: bool,
         walk: impl FnOnce(&mut dyn FnMut(ccountry::Country, usize)) -> R,
     ) -> R {
-        self.visit_certified(
-            memory,
-            base,
-            force_full,
-            changes::certificate,
-            changes::verify,
-            walk,
-        )
+        self.visit_certified(memory, base, force_full, changes::certificate, walk)
     }
     fn visit_certified<R>(
         &mut self,
@@ -70,7 +57,6 @@ impl Captured {
         base: usize,
         force_full: bool,
         certificate_for: impl Fn(u32) -> Option<changes::Certificate>,
-        verify_for: impl Fn(u32) -> bool,
         walk: impl FnOnce(&mut dyn FnMut(ccountry::Country, usize)) -> R,
     ) -> R {
         self.goals.clear();
@@ -95,7 +81,6 @@ impl Captured {
                 let certificate = certificate_for(country.id);
                 let Store {
                     owners,
-                    verify,
                     input_bytes,
                 } = &mut **store;
                 let owner = owners[index].get_or_insert_with(Owner::default);
@@ -110,54 +95,33 @@ impl Captured {
                         && certificate.unwrap()[part] == owner.certificate.unwrap()[part]
                 });
                 let carry = parts.iter().all(|part| *part);
-                let check = parts.iter().any(|part| *part) && verify_for(country.id);
-                if !carry || check {
+                if !carry {
                     // Lost observation must not select an hourly full scan.
                     if certificate.is_none() && owner.country != 0 && !force_full {
                         return Err("war-goal writer certificate unavailable");
                     }
                     owner.certificate = None;
-                    let before = owner.inputs.allocated_bytes() + verify.allocated_bytes();
-                    let read = (|| {
-                        // Keep owner capacities in place. Only the shared scratch
-                        // grows for verification, and it reads carried domains only.
-                        if check {
-                            verify.goals.clear();
-                            verify.justifications.clear();
-                            verify.targets.clear();
-                            verify.read_parts(memory, base, country, diplomacy, parts)?;
-                        }
-                        if !carry {
-                            owner.inputs.read_parts(
-                                memory,
-                                base,
-                                country,
-                                diplomacy,
-                                parts.map(|carried| !carried),
-                            )?;
-                        }
-                        Ok::<_, &'static str>(())
-                    })();
+                    let before = owner.inputs.allocated_bytes();
+                    let read = owner.inputs.read_parts(
+                        memory,
+                        base,
+                        country,
+                        diplomacy,
+                        parts.map(|carried| !carried),
+                    );
                     *input_bytes = input_bytes
                         .saturating_sub(before)
-                        .saturating_add(owner.inputs.allocated_bytes() + verify.allocated_bytes());
+                        .saturating_add(owner.inputs.allocated_bytes());
                     read?;
                     if certificate_for(country.id) != certificate {
                         return Err("war-goal writers overlapped inventory acquisition");
-                    }
-                    if check {
-                        let mismatch = !owner.inputs.same_parts(verify, parts);
-                        changes::verified(mismatch);
-                        if mismatch {
-                            return Err("war-goal writer certificate mismatch");
-                        }
                     }
                     owner.country = country.pointer;
                     owner.country_id = country.id;
                     owner.diplomacy = diplomacy;
                     owner.certificate = certificate;
                 }
-                changes::record(carry && !check);
+                changes::record(carry);
                 engine_allocation::reserve(&mut self.goals, owner.inputs.goals.len())
                     .map_err(|_| "war-goal row allocation failed")?;
                 engine_allocation::reserve(&mut self.targets, owner.inputs.targets.len())
@@ -287,7 +251,6 @@ mod tests {
             0,
             true,
             |_| Some([(1, 1), (1, 1)]),
-            |_| false,
             |visit| visit(country, diplomacy),
         );
         assert!(
@@ -300,7 +263,6 @@ mod tests {
             0,
             false,
             |_| Some([(1, 1), (1, 1)]),
-            |_| false,
             |visit| visit(country, diplomacy),
         );
         assert!(
@@ -314,7 +276,6 @@ mod tests {
             0,
             false,
             |_| None,
-            |_| false,
             |visit| visit(country, diplomacy),
         );
         assert!(c.outcomes().iter().all(|r| matches!(
@@ -328,7 +289,6 @@ mod tests {
             0,
             false,
             |_| Some([(1, 2), (1, 2)]),
-            |_| false,
             |visit| visit(country, diplomacy),
         );
         assert!(
@@ -347,7 +307,6 @@ mod tests {
                 reads.set(n);
                 Some([(1, n), (1, n)])
             },
-            |_| false,
             |visit| visit(country, diplomacy),
         );
         assert!(c.outcomes().iter().all(|r| matches!(
@@ -356,63 +315,5 @@ mod tests {
                 reason: "war-goal writers overlapped inventory acquisition"
             }
         )));
-    }
-
-    #[test]
-    fn wargoals_verification_keeps_owner_storage_in_place() {
-        let _serial = TESTS.lock().unwrap();
-        let mut w = World::new(0, 1, 0x1600);
-        let diplomacy = w.alloc(0x300);
-        let politics = w.alloc(0x120);
-        let owner = w.object(1);
-        w.u64(owner + ccountry::POLITICAL_STATUS, politics as u64);
-        w.u64(politics, cpolitical_status::VTABLE_RVA as u64);
-        w.u64(politics + cpolitical_status::COUNTRY, owner as u64);
-        let unused = w.alloc(8);
-        w.array(
-            diplomacy + engine_native::cdiplomacy_status::OWNED_WARGOALS,
-            unused,
-            1,
-        );
-        let memory = w.memory();
-        let reader = ccountry::Reader::new(&memory, 0, w.game_state()).unwrap();
-        let country = reader.at(1).unwrap().unwrap();
-        *STORE.lock().unwrap() = Store::default();
-        let mut captured = Captured::default();
-        captured.visit_certified(
-            &memory,
-            0,
-            true,
-            |_| Some([(1, 1), (1, 1)]),
-            |_| false,
-            |visit| visit(country, diplomacy),
-        );
-        let original = STORE.lock().unwrap().owners[country.canonical_slot as usize]
-            .as_ref()
-            .unwrap()
-            .inputs
-            .targets
-            .as_ptr() as usize;
-        assert_eq!(captured.outcomes()[1], Outcome::Rows { len: 1 });
-        for certificate in [[(1, 1), (1, 1)], [(1, 1), (1, 2)]] {
-            captured.visit_certified(
-                &memory,
-                0,
-                false,
-                |_| Some(certificate),
-                |_| true,
-                |visit| visit(country, diplomacy),
-            );
-            assert_eq!(captured.outcomes()[1], Outcome::Rows { len: 1 });
-            let store = STORE.lock().unwrap();
-            let owner = store.owners[country.canonical_slot as usize]
-                .as_ref()
-                .unwrap();
-            assert_eq!(
-                owner.inputs.targets.as_ptr() as usize,
-                original,
-                "verification must not replace an owner's reusable target storage"
-            );
-        }
     }
 }

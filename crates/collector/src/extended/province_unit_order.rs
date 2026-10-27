@@ -9,19 +9,15 @@
 //! walk, compact: each province's occupant counts, every handle and the land
 //! visits. Every hour reads the province array header. When the take of the
 //! marked provinces returned the epoch the held walk was certified in and
-//! the header is the held one, only the marked provinces and the sampled
-//! slice are read (their slots, records, lanes and occupants), and every
-//! other province's row is rebuilt from the held walk without touching its
-//! slot; otherwise every province is read.
-//! Each hour also reads the carryable provinces of its sampled slice (by
-//! province id; every one under `province_unit_verify`) afresh, publishes the
-//! fresh rows and poisons reuse on a difference. The take clears the marks,
-//! so a walk that does not complete is not held and a failed job forgets the
-//! store: the next hour reads every province.
+//! the header is the held one, only the marked provinces are read (their
+//! slots, records, lanes and occupants), and every other province's row is
+//! rebuilt from the held walk without touching its slot; otherwise every
+//! province is read. The take clears the marks, so a walk that does not
+//! complete is not held and a failed job forgets the store: the next hour
+//! reads every province.
 use crate::{
     division_census::UnitInputs,
     province_unit_changes::{self, Changes, Counts},
-    sampled_verify::Check,
     sampling::qpc,
     spooling::table,
     table_capture::{Arena, CaptureRows, grow_vec},
@@ -147,13 +143,9 @@ struct Hour {
 /// by the store whose take certified it.
 pub(crate) struct ProvinceUnitStore {
     changes: &'static dyn Changes,
-    /// Tests fix the comparison; production takes the hour's.
-    check: Option<Check>,
     held: Held,
-    /// The provinces this hour reads, ascending: marked or sampled.
+    /// The provinces this hour reads, ascending: the marked ones.
     listed: Vec<u32>,
-    /// Per listed province: read only to compare with the held walk.
-    sampled: Vec<bool>,
     /// This hour's slot pointers, at `id - 1`.
     slots: Vec<usize>,
     /// The listed walk's rows, handles and land visits.
@@ -168,22 +160,14 @@ impl ProvinceUnitStore {
     pub(crate) fn new(changes: &'static dyn Changes) -> Self {
         Self {
             changes,
-            check: None,
             held: Held::default(),
             listed: Vec::new(),
-            sampled: Vec::new(),
             slots: Vec::new(),
             rows: Vec::new(),
             handles: Vec::new(),
             land: Vec::new(),
             bytes: 0,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_check(mut self, check: Check) -> Self {
-        self.check = Some(check);
-        self
     }
 
     /// A failed job: its take consumed marks its walk did not hold, so
@@ -227,49 +211,6 @@ impl ProvinceUnitStore {
         }
     }
 
-    /// Adds the carryable provinces of the hour's sampled slice to the marked
-    /// ones, keeping the list ascending; `false` when it cannot be stored.
-    fn sample(&mut self, provinces: u32) -> bool {
-        let check = self.check.unwrap_or_else(|| {
-            crate::sampled_verify::current_burned_in(province_unit_changes::VERIFY)
-        });
-        let marked = std::mem::take(&mut self.listed);
-        let stored = advisory(|| {
-            reserve(&mut self.listed, marked.len())?;
-            self.sampled.clear();
-            reserve(&mut self.sampled, marked.len())
-        });
-        if stored.is_err() {
-            return false;
-        }
-        let mut next = marked
-            .iter()
-            .copied()
-            .filter(|&id| id < provinces)
-            .peekable();
-        for id in 1..provinces {
-            let is_marked = next.peek() == Some(&id);
-            let sampled = !is_marked && check.covers(u64::from(id));
-            if !is_marked && !sampled {
-                continue;
-            }
-            if is_marked {
-                next.next();
-            }
-            if advisory(|| {
-                reserve(&mut self.listed, 1)?;
-                reserve(&mut self.sampled, 1)
-            })
-            .is_err()
-            {
-                return false;
-            }
-            self.listed.push(id);
-            self.sampled.push(sampled);
-        }
-        true
-    }
-
     fn measure(&mut self) {
         self.bytes = (self.held.pointers.capacity() + self.slots.capacity()) * 8
             + self.held.counts.capacity() * 8
@@ -277,7 +218,6 @@ impl ProvinceUnitStore {
             + (self.held.land.capacity() + self.land.capacity())
                 * std::mem::size_of::<(u32, u64)>()
             + self.listed.capacity() * 4
-            + self.sampled.capacity()
             + self.rows.capacity() * std::mem::size_of::<UnitOrderRow>();
     }
 }
@@ -472,11 +412,10 @@ impl Captured {
     }
 
     /// A carryable hour under an unchanged province array: reads only the
-    /// marked and sampled provinces and takes every other province's row,
-    /// handles and land visits from the held walk, compares the sampled
-    /// ones with it, and holds the result. `false`, with nothing published
-    /// and nothing held, when a list or a row cannot be stored; the caller
-    /// then reads every province.
+    /// marked provinces, takes every other province's row, handles and land
+    /// visits from the held walk, and holds the result. `false`, with nothing
+    /// published and nothing held, when a list or a row cannot be stored; the
+    /// caller then reads every province.
     fn carry(
         &mut self,
         memory: &impl Memory,
@@ -487,7 +426,10 @@ impl Captured {
         hour: Hour,
     ) -> bool {
         let provinces = store.held.counts.len() + 1;
-        if !store.sample(provinces as u32) || !grow_vec(&mut self.rows.rows, provinces - 1) {
+        store
+            .listed
+            .retain(|&id| (1..provinces as u32).contains(&id));
+        if !grow_vec(&mut self.rows.rows, provinces - 1) {
             return false;
         }
         store.rows.clear();
@@ -543,7 +485,7 @@ impl Captured {
         {
             return false;
         }
-        let mut counts = Counts {
+        let counts = Counts {
             reused: (provinces - 1 - store.listed.len()) as u64,
             read: store.listed.len() as u64,
             quiet: hour.marks == 0,
@@ -567,18 +509,6 @@ impl Captured {
                         .iter()
                         .take_while(|visit| visit.0 == id)
                         .count();
-                if store.sampled[next] {
-                    counts.verified += 1;
-                    let fresh_handles = |range: [usize; 2]| &store.handles[range[0]..][..range[1]];
-                    let held_handles = &held.handles[from..from + held_len];
-                    if fresh_handles(row.mixed) != &held_handles[..mixed as usize]
-                        || fresh_handles(row.naval) != &held_handles[mixed as usize..]
-                        || store.land[fresh_land..fresh_end] != held.land[held_land..held_end]
-                    {
-                        counts.mismatches += 1;
-                        store.changes.mismatch();
-                    }
-                }
                 let start = used;
                 for range in [row.mixed, row.naval] {
                     self.arena.first[used..used + range[1]]
@@ -961,10 +891,10 @@ pub(crate) mod owned_tests {
         }
     }
 
-    /// A store over a leaked enabled domain, comparing as `check` says.
-    fn shared_store(check: Check) -> (&'static province_unit_changes::Domain, ProvinceUnitStore) {
+    /// A store over a leaked enabled domain.
+    fn shared_store() -> (&'static province_unit_changes::Domain, ProvinceUnitStore) {
         let domain = Box::leak(Box::new(province_unit_changes::Domain::enabled(64)));
-        (domain, ProvinceUnitStore::new(domain).with_check(check))
+        (domain, ProvinceUnitStore::new(domain))
     }
 
     /// One hour of `captured` with `store`: each province's mixed handles,
@@ -1000,7 +930,7 @@ pub(crate) mod owned_tests {
 
     /// A store holding a complete walk, for the job handoff tests.
     pub(crate) fn held_store() -> Box<ProvinceUnitStore> {
-        let (_, mut store) = shared_store(Check::Nothing);
+        let (_, mut store) = shared_store();
         let mut captured = Captured::with_capacities(&Capacities::default());
         hour(&mut captured, &World::new(), &mut store);
         assert!(store.holds());
@@ -1010,13 +940,11 @@ pub(crate) mod owned_tests {
     /// Frames recycle and alternate; the store they share holds the walk. An
     /// unmarked province's lists are carried without reading its record; a
     /// province an append or erase marked is read, including a re-append to
-    /// the same province that reorders its list at an unchanged count. A
-    /// sampled carryable province is read and compared, and a difference no
-    /// writer announced is published and poisons reuse.
+    /// the same province that reorders its list at an unchanged count.
     #[test]
     fn unmarked_provinces_carry_and_marked_ones_read_their_new_order() {
         let mut world = World::new();
-        let (domain, mut store) = shared_store(Check::Nothing);
+        let (domain, mut store) = shared_store();
         let mut frames = [(); 2].map(|_| Captured::with_capacities(&Capacities::default()));
         let mut at = 0;
         let mut next = |world: &World, store: &mut ProvinceUnitStore| {
@@ -1050,26 +978,9 @@ pub(crate) mod owned_tests {
         // its own: the store's walk is the moved one.
         assert_eq!(next(&world, &mut store), moved);
         assert_eq!(reads(&world), [false; 3]);
-        // Sampled provinces are read and compared: unchanged, they agree.
-        store.check = Some(Check::Every);
-        assert_eq!(next(&world, &mut store), moved);
-        assert_eq!(reads(&world), [true; 3]);
-        assert!(!domain.poisoned());
         // An invalidating hour reads every province.
-        store.check = Some(Check::Nothing);
         domain.boundary(true);
         assert_eq!(next(&world, &mut store), moved);
-        assert_eq!(reads(&world), [true; 3]);
-        // A write no hook announced: the sampled read publishes it and
-        // poisons reuse, so every later hour reads every province.
-        world.occupy(2, &[]);
-        world.occupy(3, &[2]);
-        store.check = Some(Check::Every);
-        let fresh = next(&world, &mut store);
-        assert_eq!(fresh[1..], [(2, vec![]), (3, vec![handle(2)])]);
-        assert!(domain.poisoned());
-        store.check = Some(Check::Nothing);
-        assert_eq!(next(&world, &mut store), fresh);
         assert_eq!(reads(&world), [true; 3]);
     }
 
@@ -1080,7 +991,7 @@ pub(crate) mod owned_tests {
         let mut world = World::new();
         world.occupy(2, &[]);
         world.occupy(3, &[2]);
-        let (_, mut store) = shared_store(Check::Nothing);
+        let (_, mut store) = shared_store();
         let mut captured = Captured::with_capacities(&Capacities::default());
         assert_eq!(
             hour(&mut captured, &world, &mut store)[2],
@@ -1105,7 +1016,7 @@ pub(crate) mod owned_tests {
     fn a_walk_that_does_not_complete_holds_nothing() {
         for job_failed in [false, true] {
             let mut world = World::new();
-            let (domain, mut store) = shared_store(Check::Nothing);
+            let (domain, mut store) = shared_store();
             let mut frames = [(); 2].map(|_| Captured::with_capacities(&Capacities::default()));
             hour(&mut frames[0], &world, &mut store);
             frames[1].reset();
@@ -1218,7 +1129,7 @@ pub(crate) mod owned_tests {
         let domain = Box::leak(Box::new(province_unit_changes::Domain::enabled(
             PROVINCES + 1,
         )));
-        let mut store = ProvinceUnitStore::new(domain).with_check(Check::Nothing);
+        let mut store = ProvinceUnitStore::new(domain);
         let mut captured = Captured::with_capacities(&Capacities::default());
         let mut time = |store: Option<&mut ProvinceUnitStore>, marked: usize| {
             for id in (1..=PROVINCES)

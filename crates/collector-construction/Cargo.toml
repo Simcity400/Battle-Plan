@@ -13,7 +13,6 @@ doctest = false
 test-support = ["collector-certificates/test-support", "collector-country-counters/test-support", "collector-extended-support/test-support", "collector-hooks/test-support", "collector-memory/test-support", "collector-observers/test-support", "collector-primitives/test-support", "collector-raw/test-support", "collector-timing/test-support"]
 default = ["building_changes"]
 building_changes = []
-building_verify = ["building_changes"]
 
 [dependencies]
 engine-allocation.workspace = true

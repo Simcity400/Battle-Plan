@@ -1,13 +1,9 @@
 //! WingEquipment rows carried between hours per air wing
 //! ([`super::WingStore`], [`crate::wing_changes`]): quiet hours read no pool,
 //! entry or variant and publish the same rows; a hooked write re-reads only
-//! its wing; an invalidation re-reads every wing; verify catches a write no
-//! hook saw and poisons reuse.
+//! its wing; an invalidation re-reads every wing.
 use super::*;
-use crate::{
-    sampled_verify::{Check, ROTATION},
-    wing_changes::{Counts, Watches},
-};
+use crate::wing_changes::{Counts, Watches};
 use engine_mutations::{
     air_wing_equipment_mutations::MUTATIONS, air_wing_equipment_mutations::Receiver,
     air_wing_equipment_mutations::pools,
@@ -115,10 +111,9 @@ fn walk(
     bytes: &[u8],
     store: &mut WingStore,
     watches: &Watches,
-    check: Check,
     ids: [u64; WINGS],
 ) -> Hour {
-    let (rows, complete, reads) = settle(bytes, store, watches, check, ids);
+    let (rows, complete, reads) = settle(bytes, store, watches, ids);
     store.conclude(complete);
     crate::wing_changes::record(&store.counts(), complete.then_some(WINGS));
     Hour {
@@ -134,14 +129,12 @@ fn settle(
     bytes: &[u8],
     store: &mut WingStore,
     watches: &Watches,
-    check: Check,
     ids: [u64; WINGS],
 ) -> (Vec<rows::WingEquipmentRow>, bool, usize) {
     settle_selected(
         bytes,
         store,
         watches,
-        check,
         &ids.into_iter().enumerate().collect::<Vec<_>>(),
     )
 }
@@ -150,14 +143,13 @@ fn settle_selected(
     bytes: &[u8],
     store: &mut WingStore,
     watches: &Watches,
-    check: Check,
     selected: &[(usize, u64)],
 ) -> (Vec<rows::WingEquipmentRow>, bool, usize) {
     let memory = Calls {
         bytes,
         calls: RefCell::default(),
     };
-    let mut reuse = WingReuse::begin(store, watches, check);
+    let mut reuse = WingReuse::begin(store, watches);
     let mut rows = Vec::new();
     let mut complete = true;
     for &(index, id) in selected {
@@ -191,7 +183,7 @@ const IDS: [u64; WINGS] = [7, 8, 9];
 /// The first hour reads and holds every wing; this is what the old
 /// behaviour does every hour.
 fn first_hour(bytes: &[u8], store: &mut WingStore, watches: &Watches) -> Hour {
-    let first = walk(bytes, store, watches, Check::Nothing, IDS);
+    let first = walk(bytes, store, watches, IDS);
     assert_eq!(first.rows.len(), 6);
     assert_eq!(
         (
@@ -214,7 +206,7 @@ fn a_settled_store_counts_its_held_rows_before_the_census_concludes() {
     let watches = Watches::enabled(16);
     let mut store = WingStore::new();
     assert_eq!(store.allocated_bytes(), 0);
-    settle(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    settle(&bytes, &mut store, &watches, IDS);
     let settled = store.allocated_bytes();
     assert_ne!(settled, 0);
     store.forget();
@@ -228,7 +220,7 @@ fn quiet_hours_read_no_pool_and_publish_identical_rows() {
     let mut store = WingStore::new();
     let first = first_hour(&bytes, &mut store, &watches);
     for _ in 0..3 {
-        let quiet = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+        let quiet = walk(&bytes, &mut store, &watches, IDS);
         assert_eq!(quiet.rows, first.rows);
         assert_eq!(
             (
@@ -255,14 +247,14 @@ fn a_hooked_write_rereads_only_its_wing() {
     set_amount(&mut bytes, 1, 0, 5);
     drop(notification);
     watches.boundary(false);
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    let hour = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((hour.counts.read, hour.counts.reused), (1, 2));
     let mut expected = first.rows.clone();
     expected[2].amount_raw = 5;
     assert_eq!(hour.rows, expected);
     // The re-read wing is carried again from the next quiet hour.
     watches.boundary(false);
-    let quiet = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    let quiet = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((quiet.counts.read, quiet.counts.reused), (0, 3));
     assert_eq!(quiet.rows, expected);
 }
@@ -287,7 +279,7 @@ fn a_split_notifies_both_wings() {
     set_amount(&mut bytes, 2, 1, 3);
     drop(notifications);
     watches.boundary(false);
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    let hour = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((hour.counts.read, hour.counts.reused), (2, 1));
     assert_eq!((hour.rows[1].amount_raw, hour.rows[5].amount_raw), (1, 3));
 }
@@ -300,70 +292,33 @@ fn an_invalidating_hour_or_a_new_wing_id_rereads() {
     let first = first_hour(&bytes, &mut store, &watches);
     // Load, gap or recovery.
     watches.boundary(true);
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    let hour = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((hour.counts.read, hour.counts.reused), (3, 0));
     assert_eq!(hour.rows, first.rows);
     // A wing with another id at the same address is read afresh, and its
     // rows carry the current id.
     watches.boundary(false);
-    let renamed = walk(&bytes, &mut store, &watches, Check::Nothing, [7, 18, 9]);
+    let renamed = walk(&bytes, &mut store, &watches, [7, 18, 9]);
     assert_eq!((renamed.counts.read, renamed.counts.reused), (1, 2));
     assert!(renamed.rows[2..4].iter().all(|row| row.wing == 18));
     // A forgotten store (a failed job) reads every wing.
     watches.boundary(false);
     store.forget();
-    let forgotten = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    let forgotten = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((forgotten.counts.read, forgotten.counts.reused), (3, 0));
 }
 
 #[test]
-fn verify_catches_an_unobserved_write_and_poisons_reuse() {
-    let mut bytes = world();
-    let watches = Watches::enabled(16);
-    let mut store = WingStore::new();
-    first_hour(&bytes, &mut store, &watches);
-    let agreed = walk(&bytes, &mut store, &watches, Check::Every, IDS);
-    assert_eq!(
-        (
-            agreed.counts.read,
-            agreed.counts.verified,
-            agreed.counts.mismatches
-        ),
-        (3, 3, 0)
-    );
-    assert!(!watches.poisoned());
-    watches.boundary(false);
-    // A write no hook observed.
-    set_amount(&mut bytes, 0, 0, 9);
-    let caught = walk(&bytes, &mut store, &watches, Check::Every, IDS);
-    // The first wing's mismatch poisons at once: the wings after it are no
-    // longer carryable, so they are read but not verified.
-    assert_eq!(
-        (
-            caught.counts.read,
-            caught.counts.verified,
-            caught.counts.mismatches
-        ),
-        (3, 1, 1)
-    );
-    assert!(watches.poisoned());
-    assert_eq!(caught.rows[0].amount_raw, 9);
-    watches.boundary(false);
-    let after = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
-    assert_eq!((after.counts.read, after.counts.reused), (3, 0));
-}
-
-#[test]
-fn an_unobserved_write_without_verify_is_carried_stale() {
+fn an_unobserved_write_is_carried_stale() {
     // Guards the premise of the family: only hooked writers move a
-    // certificate, so a missed writer would be carried until verify or an
+    // certificate, so a missed writer would be carried until an
     // invalidation, which is why every writer site is hooked.
     let mut bytes = world();
     let watches = Watches::enabled(16);
     let mut store = WingStore::new();
     let first = first_hour(&bytes, &mut store, &watches);
     set_amount(&mut bytes, 0, 0, 9);
-    let stale = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    let stale = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!(stale.counts.reused, 3);
     assert_eq!(stale.rows, first.rows);
 }
@@ -380,36 +335,14 @@ fn a_failed_pass_holds_nothing() {
     let mut broken = bytes.clone();
     put(&mut broken, pool, &0_u64.to_le_bytes());
     watches.boundary(false);
-    let failed = walk(&broken, &mut store, &watches, Check::Nothing, IDS);
+    let failed = walk(&broken, &mut store, &watches, IDS);
     assert_eq!(failed.counts.reused, 2);
     // The incomplete pass certifies nothing afterwards.
     set_amount(&mut bytes, 0, 0, 5);
     watches.boundary(false);
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    let hour = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((hour.counts.read, hour.counts.reused), (3, 0));
     assert_eq!(hour.rows[0].amount_raw, 5);
-}
-
-#[test]
-fn an_hourly_slice_verifies_only_its_wings_and_carries_the_rest() {
-    let bytes = world();
-    let watches = Watches::enabled(16);
-    let mut store = WingStore::new();
-    first_hour(&bytes, &mut store, &watches);
-    let mut verified = 0;
-    for hour in 0..ROTATION as i32 {
-        let check = Check::Slice { hour };
-        let sampled = walk(&bytes, &mut store, &watches, check, IDS);
-        let due = IDS.iter().filter(|&&id| check.covers(id)).count() as u64;
-        assert_eq!(
-            (sampled.counts.verified, sampled.counts.reused),
-            (due, 3 - due)
-        );
-        assert_eq!(sampled.counts.mismatches, 0);
-        verified += due;
-        watches.boundary(false);
-    }
-    assert_eq!(verified, 3);
 }
 
 #[test]
@@ -447,40 +380,40 @@ fn without_the_kill_airplanes_detour_nothing_is_carried() {
     let watches = Watches::with_kills(16, false);
     let mut store = WingStore::new();
     for _ in 0..3 {
-        let hour = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+        let hour = walk(&bytes, &mut store, &watches, IDS);
         assert_eq!((hour.counts.read, hour.counts.reused), (3, 0));
         watches.boundary(false);
     }
     // An unobserved loss is read, never carried stale.
     set_amount(&mut bytes, 0, 0, 9);
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    let hour = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((hour.counts.read, hour.counts.reused), (3, 0));
     assert_eq!(hour.rows[0].amount_raw, 9);
     // Once the detour is live the domain starts a new epoch: the first hour
     // reads afresh, the next carries.
     watches.boundary(false);
     watches.observe_kills(true);
-    let first = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    let first = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((first.counts.read, first.counts.reused), (3, 0));
     watches.boundary(false);
-    let quiet = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    let quiet = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((quiet.counts.read, quiet.counts.reused), (0, 3));
     // Disabling the detour stops certification at once.
     watches.observe_kills(false);
     watches.boundary(false);
-    let after = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    let after = walk(&bytes, &mut store, &watches, IDS);
     assert_eq!((after.counts.read, after.counts.reused), (3, 0));
 }
 
 #[test]
-fn quiet_and_equal_verified_wings_keep_the_whole_owned_row_buffer() {
+fn quiet_wings_keep_the_whole_owned_row_buffer() {
     let bytes = world();
     let watches = Watches::enabled(16);
     let mut store = WingStore::new();
     let first = first_hour(&bytes, &mut store, &watches);
     let storage = store.held_rows().as_ptr();
-    for check in [Check::Nothing, Check::Every, Check::Slice { hour: 1 }] {
-        let hour = walk(&bytes, &mut store, &watches, check, IDS);
+    for _ in 0..3 {
+        let hour = walk(&bytes, &mut store, &watches, IDS);
         assert_eq!(hour.rows, first.rows);
         assert_eq!(store.held_rows().as_ptr(), storage);
         assert_eq!(store.held_rows().len(), first.rows.len());
@@ -493,16 +426,10 @@ fn changed_new_removed_reordered_and_refused_wings_match_fresh_rows() {
     let watches = Watches::enabled(16);
     let mut store = WingStore::new();
     let mut capture = |bytes: &[u8], selected: &[(usize, u64)], expected_reads| {
-        let (actual, complete, _) =
-            settle_selected(bytes, &mut store, &watches, Check::Nothing, selected);
+        let (actual, complete, _) = settle_selected(bytes, &mut store, &watches, selected);
         assert_eq!(store.counts().read, expected_reads);
-        let (fresh, fresh_complete, _) = settle_selected(
-            bytes,
-            &mut WingStore::new(),
-            &watches,
-            Check::Nothing,
-            selected,
-        );
+        let (fresh, fresh_complete, _) =
+            settle_selected(bytes, &mut WingStore::new(), &watches, selected);
         assert_eq!((actual, complete), (fresh, fresh_complete));
         store.conclude(complete);
     };
@@ -540,10 +467,10 @@ fn quiet_wing_cache_needs_no_allocation_and_duplicate_wings_never_certify_a_read
     let watches = Watches::enabled(16);
     let mut store = WingStore::new();
     first_hour(&bytes, &mut store, &watches);
-    walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    walk(&bytes, &mut store, &watches, IDS);
     let storage = store.held_rows().as_ptr();
     crate::test_support::with_allocations_denied(|| {
-        let mut reuse = WingReuse::begin(&mut store, &watches, Check::Nothing);
+        let mut reuse = WingReuse::begin(&mut store, &watches);
         for (index, id) in IDS.into_iter().enumerate() {
             let plan = reuse.plan(wing(index), id);
             assert_eq!(plan.carry_rows(), Some(2));
@@ -553,21 +480,10 @@ fn quiet_wing_cache_needs_no_allocation_and_duplicate_wings_never_certify_a_read
     });
     store.conclude(true);
     assert_eq!(store.held_rows().as_ptr(), storage);
-    let (_, complete, _) = settle_selected(
-        &bytes,
-        &mut store,
-        &watches,
-        Check::Nothing,
-        &[(0, 7), (0, 7), (1, 8)],
-    );
+    let (_, complete, _) =
+        settle_selected(&bytes, &mut store, &watches, &[(0, 7), (0, 7), (1, 8)]);
     store.conclude(complete);
-    let (_, complete, _) = settle_selected(
-        &bytes,
-        &mut store,
-        &watches,
-        Check::Nothing,
-        &[(0, 7), (1, 8)],
-    );
+    let (_, complete, _) = settle_selected(&bytes, &mut store, &watches, &[(0, 7), (1, 8)]);
     assert!(complete);
     assert_eq!((store.counts().read, store.counts().reused), (1, 1));
 }

@@ -516,12 +516,10 @@ fn ledger_read(
 }
 
 /// A navy whose registered-mission set is empty has every region ledger
-/// Empty  (append, remove and reset write both),
-/// so outside its sampled slice its region headers are not read, and the
-/// ledgers are those of a read of every navy.
+/// empty (append, remove and reset write both), so its region headers are
+/// not read, and the ledgers are those of a read of every navy.
 #[test]
-fn a_navy_without_registered_missions_reads_no_region_header_outside_its_slice() {
-    use crate::sampled_verify::Check;
+fn a_navy_without_registered_missions_reads_no_region_header() {
     let mut world = build(3);
     empty_navy(&mut world, 2, true);
     let headers = region_headers(&world, 2);
@@ -530,12 +528,7 @@ fn a_navy_without_registered_missions_reads_no_region_header_outside_its_slice()
     assert!(reads_headers(&reads));
     assert_eq!(counts.read, 3);
     assert!(all.iter().all(|row| row.owner != 2) && !all.is_empty());
-    // Hour 71 samples slot 23: navy 2 is skipped.
-    let skip = LedgerSkip {
-        enabled: true,
-        check: Check::Slice { hour: 71 },
-    };
-    let (ledgers, counts, reads) = ledger_read(&world, skip);
+    let (ledgers, counts, reads) = ledger_read(&world, LedgerSkip { enabled: true });
     assert_eq!(ledgers, all);
     assert!(!reads_headers(&reads));
     assert_eq!(
@@ -543,65 +536,8 @@ fn a_navy_without_registered_missions_reads_no_region_header_outside_its_slice()
         LedgerCounts {
             skipped: 1,
             read: 2,
-            verified: 0,
-            mismatches: 0,
         }
     );
-    // Its slice, and verify mode, read it and compare an empty ledger.
-    for check in [Check::Slice { hour: 26 }, Check::Every] {
-        let skip = LedgerSkip {
-            enabled: true,
-            check,
-        };
-        let (ledgers, counts, reads) = ledger_read(&world, skip);
-        assert_eq!(ledgers, all);
-        assert!(reads_headers(&reads));
-        assert_eq!(
-            counts,
-            LedgerCounts {
-                skipped: 0,
-                read: 3,
-                verified: 1,
-                mismatches: 0,
-            }
-        );
-    }
-}
-
-/// A skippable navy whose ledgers still file missions is a missed writer:
-/// read in its slice, it publishes the fresh ledgers, counts a mismatch and
-/// stops every later skip.
-#[test]
-fn a_filed_ledger_behind_an_empty_registered_set_is_a_published_mismatch() {
-    use crate::sampled_verify::Check;
-    let mut world = build(3);
-    let (all, _, _) = ledger_read(&world, LedgerSkip::NEVER);
-    assert!(all.iter().any(|row| row.owner == 3));
-    empty_navy(&mut world, 3, false);
-    for check in [Check::Slice { hour: 3 }, Check::Every] {
-        let skip = LedgerSkip {
-            enabled: true,
-            check,
-        };
-        let (ledgers, counts, _) = ledger_read(&world, skip);
-        assert_eq!(ledgers, all);
-        assert_eq!(
-            counts,
-            LedgerCounts {
-                skipped: 0,
-                read: 3,
-                verified: 1,
-                mismatches: 1,
-            }
-        );
-    }
-    crate::navy_ledger_changes::record(LedgerCounts {
-        skipped: 0,
-        read: 3,
-        verified: 1,
-        mismatches: 1,
-    });
-    assert!(!LedgerSkip::current().enabled);
 }
 
 #[test]

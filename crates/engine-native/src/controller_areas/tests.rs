@@ -143,11 +143,6 @@ fn nodes(output: &Output) -> Vec<(u32, Option<u32>, Option<Vec<u32>>)> {
         .collect()
 }
 
-/// No sampled slice.
-fn none(_: u64) -> bool {
-    false
-}
-const NONE: &dyn Fn(u64) -> bool = &none;
 const TAKE: Option<[u64; 2]> = Some([3, 4]);
 
 /// Provinces 1 and 6 are sea; area 0 holds 2 and 3, area 1 holds 4 and 5.
@@ -189,8 +184,6 @@ fn a_full_read_labels_areas_by_their_smallest_member_and_records_nodes_once() {
             &pointers,
             &mut output,
             TAKE,
-            NONE,
-            false,
         )
         .unwrap();
     assert!(counts.full && !counts.quiet);
@@ -231,8 +224,6 @@ fn a_quiet_hour_publishes_the_held_areas_without_reading_them() {
             &pointers,
             &mut output,
             TAKE,
-            NONE,
-            false,
         )
         .unwrap();
     let held = nodes(&output);
@@ -250,32 +241,13 @@ fn a_quiet_hour_publishes_the_held_areas_without_reading_them() {
             &pointers,
             &mut output,
             TAKE,
-            NONE,
-            false,
         )
         .unwrap();
     assert!(counts.quiet && !counts.full);
     assert_eq!((counts.read, counts.carried), (0, 2));
     assert_eq!(nodes(&output), held);
     assert_eq!(labels(&fresh), labels(&rows));
-    // The area's day in the slice reads it afresh: the difference poisons
-    // the family and the hour reads everything.
-    let counts = store
-        .capture(
-            &world.memory(),
-            0,
-            &mut fresh,
-            &pointers,
-            &mut output,
-            TAKE,
-            &|key| key == 2,
-            false,
-        )
-        .unwrap();
-    assert_eq!(counts.mismatches, 1);
-    assert!(counts.full && store.poisoned());
-    assert_eq!(output.nodes[0].first_land, None);
-    // Another epoch reads everything too.
+    // Another epoch reads everything.
     let counts = store
         .capture(
             &world.memory(),
@@ -284,11 +256,10 @@ fn a_quiet_hour_publishes_the_held_areas_without_reading_them() {
             &pointers,
             &mut output,
             Some([5, 4]),
-            NONE,
-            false,
         )
         .unwrap();
     assert!(counts.full);
+    assert_eq!(output.nodes[0].first_land, None);
 }
 
 /// A marked hour need compare only the provinces a controller change can
@@ -311,8 +282,6 @@ fn the_repointable_provinces_are_the_marked_ones_areas_and_neighbours() {
             &pointers,
             &mut output,
             TAKE,
-            NONE,
-            false,
         )
         .unwrap();
     let mut scope = Vec::new();
@@ -347,8 +316,6 @@ fn a_marked_hour_follows_the_moved_province_and_relabels_both_areas() {
             &pointers,
             &mut output,
             TAKE,
-            NONE,
-            false,
         )
         .unwrap();
     // Province 2 changes controller: it leaves area 0 for area 1, so area 0's
@@ -365,8 +332,6 @@ fn a_marked_hour_follows_the_moved_province_and_relabels_both_areas() {
             &pointers,
             &mut output,
             TAKE,
-            NONE,
-            false,
         )
         .unwrap();
     assert!(!counts.full && !counts.quiet);
@@ -386,58 +351,6 @@ fn a_marked_hour_follows_the_moved_province_and_relabels_both_areas() {
         nodes(&output),
         [(2, Some(4), Some(vec![3])), (3, Some(3), Some(vec![2]))]
     );
-    // The same marked hour under verification matches a fresh read.
-    store.marks().push(2);
-    let counts = store
-        .capture(
-            &world.memory(),
-            0,
-            &mut rows,
-            &pointers,
-            &mut output,
-            TAKE,
-            NONE,
-            true,
-        )
-        .unwrap();
-    assert_eq!(counts.mismatches, 0);
-    assert!(counts.full && !store.poisoned());
-}
-
-#[test]
-fn verification_publishes_the_fresh_read_and_poisons_on_a_missed_write() {
-    let (mut world, mut rows, pointers) = baseline();
-    let mut store = Store::new();
-    let mut output = Output::default();
-    store
-        .capture(
-            &world.memory(),
-            0,
-            &mut rows,
-            &pointers,
-            &mut output,
-            TAKE,
-            NONE,
-            true,
-        )
-        .unwrap();
-    // A representative change no mark announced.
-    world.u64(area(0) + 0x28, province(2));
-    let counts = store
-        .capture(
-            &world.memory(),
-            0,
-            &mut rows,
-            &pointers,
-            &mut output,
-            TAKE,
-            NONE,
-            true,
-        )
-        .unwrap();
-    assert!(counts.mismatches >= 1);
-    assert!(store.poisoned());
-    assert_eq!(output.nodes[0].first_land, Some(2));
 }
 
 #[test]
@@ -457,8 +370,6 @@ fn node_faults_refuse_only_their_operands_and_a_short_walk_labels_nothing() {
             &pointers,
             &mut output,
             TAKE,
-            NONE,
-            false,
         )
         .unwrap();
     assert_eq!(nodes(&output), [(2, Some(3), None), (4, None, None)]);
@@ -475,8 +386,6 @@ fn node_faults_refuse_only_their_operands_and_a_short_walk_labels_nothing() {
             &pointers,
             &mut output,
             TAKE,
-            NONE,
-            false,
         )
         .unwrap();
     assert_eq!(nodes(&output)[0], (2, Some(3), None));
@@ -490,8 +399,6 @@ fn node_faults_refuse_only_their_operands_and_a_short_walk_labels_nothing() {
                 short,
                 &mut output,
                 TAKE,
-                NONE,
-                false
             )
             .is_err()
     );

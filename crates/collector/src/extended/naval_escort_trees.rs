@@ -104,26 +104,6 @@ impl Trees {
         });
         Recorded::Value(value)
     }
-    pub(crate) fn hash(&self, span: Option<[usize; 2]>) -> u64 {
-        let mut hash = 0xcbf29ce484222325_u64;
-        let mut add = |bytes: &[u8]| {
-            for &byte in bytes {
-                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
-            }
-        };
-        if let Some([first, len]) = span {
-            add(&[1]);
-            for node in &self.nodes[first..first + len] {
-                add(&node.children.to_le_bytes());
-                add(&node.values[0].to_le_bytes());
-                add(&(node.name[1] as u64).to_le_bytes());
-                add(&self.text[node.name[0]..node.name[0] + node.name[1]]);
-            }
-        } else {
-            add(&[0]);
-        }
-        hash
-    }
 }
 #[cfg(test)]
 mod tests {

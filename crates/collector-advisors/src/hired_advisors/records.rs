@@ -10,26 +10,15 @@
 //! domain observes ([`crate::roster_changes`]). So while the quiet tokens and array headers
 //! HiredAdvisors rests on ([`super::appointed`]) are those taken before the latest complete walk,
 //! every row equals that walk's, and such a quiet hour publishes it without reading any country.
-//! The quiet hour of the day that [`crate::sampled_verify`] gives the tables' key ([`KEY`]; every
-//! hour under `character_record_verify`) walks every country instead and compares the walk whole
-//! with the held rows; a difference disables the pool domain for the attachment. Any hour that is
-//! not quiet walks every country, and an hour holds its walk when the tokens and headers stood
-//! still across it.
+//! Any hour that is not quiet walks every country, and an hour holds its walk when the tokens and
+//! headers stood still across it.
 use super::appointed::{Domains, Key, key, publish};
-use crate::{
-    advisor_pool_changes::{Counts, Table},
-    sampled_verify::Check,
-};
+use crate::advisor_pool_changes::{Counts, Table};
 use engine_allocation as allocation;
 use engine_native::{Memory, ccountry_characters as native, walk::Outcome};
 
 /// Whether the character records carry a quiet hour.
 pub const CARRY: bool = cfg!(feature = "character_record_changes");
-/// Whether every hour walks and compares what a quiet hour would carry.
-pub const VERIFY: bool = cfg!(feature = "character_record_verify");
-/// The tables' stable sampling key, apart from HiredAdvisors' so the two
-/// comparing walks fall on different hours.
-pub const KEY: u64 = 1;
 
 /// The latest complete walk held for quiet hours, with its key.
 #[derive(Default)]
@@ -68,17 +57,14 @@ impl Records {
 }
 
 /// One hour's active and retired records into the capture's buffers: a
-/// quiet hour outside `check`'s hour for [`KEY`] publishes the held walk;
-/// any other hour walks every country, and a quiet one compares the walk
-/// whole with the held rows. Records the hour's counts.
-#[allow(clippy::too_many_arguments)]
+/// quiet hour publishes the held walk; any other hour walks every country.
+/// Records the hour's counts.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     held: &mut Records,
     domains: &dyn Domains,
-    check: Check,
     active: &mut Vec<native::ActiveRow>,
     retired: &mut Vec<native::ActiveRow>,
 ) -> [Outcome; 2] {
@@ -86,11 +72,7 @@ pub fn capture(
     let quiet = before.is_some() && before == held.key;
     let mut counts = Counts::default();
     let rows = |active: usize, retired: usize| (active + retired) as u64;
-    if quiet
-        && !check.covers(KEY)
-        && publish(&held.active, active)
-        && publish(&held.retired, retired)
-    {
+    if quiet && publish(&held.active, active) && publish(&held.retired, retired) {
         counts.reused = 1;
         counts.reused_rows = rows(held.active.len(), held.retired.len());
         crate::advisor_pool_changes::record(Table::CharacterRecords, &counts, None);
@@ -106,14 +88,6 @@ pub fn capture(
         ] => active.get(..active_len).zip(retired.get(..retired_len)),
         _ => None,
     };
-    if let (true, Some((walked, retired))) = (quiet, complete) {
-        // What the quiet hour would have published, compared whole.
-        counts.verified = rows(walked.len(), retired.len());
-        if held.active != walked || held.retired != retired {
-            counts.mismatches = 1;
-            domains.mismatch();
-        }
-    }
     // Held only when the tokens and headers stood still across the walk.
     match (complete, before) {
         (Some((walked, retired)), Some(before))
@@ -132,12 +106,10 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-    /// The domains of one test: a pool token it moves, and the mismatches
-    /// it saw.
+    /// The domains of one test: a pool token it moves.
     #[derive(Default)]
     struct Fake {
         pools: AtomicU64,
-        mismatches: AtomicU64,
     }
     impl Domains for Fake {
         fn pools(&self) -> Option<(u64, u64)> {
@@ -148,9 +120,6 @@ mod tests {
         }
         fn roster(&self) -> Option<(u64, u64)> {
             Some((1, 0))
-        }
-        fn mismatch(&self) {
-            self.mismatches.fetch_add(1, Relaxed);
         }
     }
 
@@ -177,12 +146,10 @@ mod tests {
         }
     }
 
-    /// A quiet hour publishes the held walk without walking; the quiet hour
-    /// of the tables' rotation walks and compares, and a held record the
-    /// walk does not find is a mismatch; a moved token walks without
-    /// comparing.
+    /// A quiet hour publishes the held walk without walking; a moved token
+    /// walks and holds the fresh walk.
     #[test]
-    fn a_quiet_hour_publishes_the_held_records_and_its_rotation_hour_compares() {
+    fn a_quiet_hour_publishes_the_held_records_and_a_moved_token_walks() {
         let world = empty_world();
         let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
@@ -191,14 +158,13 @@ mod tests {
         let domains = Fake::default();
         let mut held = Records::default();
         let (mut active, mut retired) = (Vec::new(), Vec::new());
-        let mut hour = |held: &mut Records, hour: i32| {
+        let mut hour = |held: &mut Records| {
             capture(
                 &memory,
                 0,
                 0x1000,
                 held,
                 &domains,
-                Check::Slice { hour },
                 &mut active,
                 &mut retired,
             )
@@ -210,23 +176,17 @@ mod tests {
             ]
         };
         // The first hour walks and holds the (empty) walk.
-        assert_eq!(hour(&mut held, 2), rows(0, 0));
+        assert_eq!(hour(&mut held), rows(0, 0));
         assert!(held.key.is_some());
         // Held records stand in for the walk's: a quiet hour publishes them,
         // so this hour did not walk.
         held.active.push(record(7, 70));
         held.retired.push(record(7, 71));
-        assert_eq!(hour(&mut held, 3), rows(1, 1));
-        // The rotation hour of the key walks, finds no record and reports
-        // the held ones as a missed write.
-        assert_eq!(hour(&mut held, 25), rows(0, 0));
-        assert_eq!(domains.mismatches.load(Relaxed), 1);
-        // A writer moved the pool token: the hour walks and compares
-        // nothing.
-        held.retired.push(record(7, 71));
+        assert_eq!(hour(&mut held), rows(1, 1));
+        assert_eq!(hour(&mut held), rows(1, 1));
+        // A writer moved the pool token: the hour walks and holds its walk.
         domains.pools.fetch_add(1, Relaxed);
-        assert_eq!(hour(&mut held, 4), rows(0, 0));
-        assert_eq!(domains.mismatches.load(Relaxed), 1);
-        assert!(held.retired.is_empty() && held.key.is_some());
+        assert_eq!(hour(&mut held), rows(0, 0));
+        assert!(held.active.is_empty() && held.retired.is_empty() && held.key.is_some());
     }
 }

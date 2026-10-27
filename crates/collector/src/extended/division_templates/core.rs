@@ -6,7 +6,7 @@ use crate::template_changes::Changes;
 type Stamp = (u64, u64);
 type Certificate = [Stamp; 3];
 
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default)]
 struct Core {
     row: native::IconRow,
     bytes: Vec<u8>,
@@ -80,7 +80,6 @@ struct Entry {
     core: Core,
     speed: Option<Vec<u32>>,
     carried: bool,
-    verify_speed: bool,
 }
 
 #[derive(Default)]
@@ -145,11 +144,6 @@ impl Store {
 
     pub fn carry(&mut self, record: &[u8], changes: &dyn Changes) -> Option<native::IconCore<'_>> {
         let (template, pointer, owner, certificate) = self.pending?;
-        if crate::sampled_verify::current_burned_in(crate::template_changes::VERIFY)
-            .covers(template >> 32)
-        {
-            return None;
-        }
         let at = self
             .entries
             .binary_search_by_key(&template, |entry| entry.template)
@@ -213,22 +207,10 @@ impl Store {
         {
             Ok(at) => {
                 let entry = &mut self.entries[at];
-                if entry.certificate == certificate
-                    && entry.record == record
-                    && crate::sampled_verify::current_burned_in(crate::template_changes::VERIFY)
-                        .covers(template >> 32)
-                {
-                    let mismatch = entry.core != core;
-                    crate::template_changes::record_core_comparison(mismatch);
-                    if mismatch {
-                        changes.mismatch();
-                    }
-                }
                 let previous_bytes = entry.record.capacity() + entry.core.allocated_bytes();
                 if engine_allocation::reserve(&mut entry.record, record.len()).is_err() {
                     return;
                 }
-                entry.verify_speed = entry.certificate == certificate && entry.record == record;
                 entry.carried = false;
                 self.payload_bytes -= previous_bytes;
                 entry.certificate = certificate;
@@ -253,7 +235,6 @@ impl Store {
                         core,
                         speed: None,
                         carried: false,
-                        verify_speed: false,
                     },
                 );
                 at
@@ -292,17 +273,6 @@ impl Store {
         {
             entry.speed = None;
             return;
-        }
-        if entry.verify_speed
-            && let Some((kept, fresh)) = entry.speed.as_deref().zip(keys)
-            && crate::sampled_verify::current_burned_in(crate::template_changes::VERIFY)
-                .covers(template >> 32)
-        {
-            let mismatch = kept != fresh;
-            crate::template_changes::record_core_comparison(mismatch);
-            if mismatch {
-                changes.mismatch();
-            }
         }
         entry.speed = keys.and_then(|keys| engine_allocation::copy_vec(keys).ok());
     }
@@ -348,9 +318,6 @@ mod tests {
         }
         fn core_dependencies(&self) -> Option<Stamp> {
             Some((1, self.dependencies.load(Relaxed)))
-        }
-        fn mismatch(&self) {
-            self.watches.mismatch();
         }
     }
 

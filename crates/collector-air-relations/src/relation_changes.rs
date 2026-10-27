@@ -23,8 +23,6 @@ const RECEIVERS_PER_COUNTRY: usize = 2;
 static ORIGINAL: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 static EVENTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 static READS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
-static SAMPLED: crate::sampled_verify::Sampled =
-    crate::sampled_verify::Sampled::burned_in(&["held relation vectors differ from a fresh copy"]);
 
 /// Notifications running now.
 pub fn active() -> usize {
@@ -80,15 +78,6 @@ pub fn record(reused: u64, read: u64, quiet_hours: u64) {
     }
 }
 
-/// One hour's sampled comparison ([`crate::sampled_verify`]): `verified`
-/// carried countries copied afresh, `mismatches` of them differing from the
-/// held rows. A mismatch disables reuse for the attachment.
-pub fn sampled(verified: u64, mismatches: u64) {
-    if SAMPLED.record(verified, mismatches, 0) {
-        WATCHES.poison();
-    }
-}
-
 pub fn status() -> impl serde::Serialize {
     let event_counts = EVENTS.each_ref().map(|value| value.load(Ordering::Relaxed));
     let events = crate::status::map(
@@ -100,18 +89,13 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "relation_changes"),
-        "verify": cfg!(feature = "relation_verify"),
         "poisoned": WATCHES.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_countries": reads[0],
         "read_countries": reads[1],
         "quiet_hours": reads[2],
         "events": events,
         "watches": WATCHES.status(),
-        "scope": "cumulative since attach; a quiet hour reuses every country's vectors without a read; every hour also copies the carried countries of its slice (one in rotation_hours by index within their part; every carried country in verify mode), compares them with the held rows on the decode thread, publishes the fresh copies and disables reuse at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; a quiet hour reuses every country's vectors without a read; any other hour copies only the countries a writer touched, whose slot changed or that were never observed, and reuses the rest"
     })
 }
 

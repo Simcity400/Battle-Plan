@@ -8,15 +8,9 @@
 //! recalculation, and `country appearance reset`, the only country caller of
 //! the clear). The daily update runs for every country, so every country is
 //! read once a day after it; an event reads only the countries it touched.
-//! Each country is read afresh and compared with its held rows on its day of
-//! the sampled rotation (by id), and `world_input_verify` compares every
-//! carryable country; a difference poisons the domain, and every country is
-//! read from then on. A read is held only when the certificate stood still
-//! across it; a failed job forgets the store.
-use crate::{
-    sampled_verify::Check,
-    world_input_changes::{self as changes, Changes, Domain},
-};
+//! A read is held only when the certificate stood still across it; a failed
+//! job forgets the store.
+use crate::world_input_changes::{self as changes, Changes};
 use engine_native::ccountry;
 use engine_stability::cdynamic_modifier_container as container;
 use std::sync::{Mutex, MutexGuard, TryLockError};
@@ -51,11 +45,8 @@ static STORE: Mutex<Store> = Mutex::new(Store {
 pub struct Walk<'a, C: Changes + ?Sized> {
     store: MutexGuard<'a, Store>,
     changes: &'a C,
-    check: Check,
     carried: u64,
     read: u64,
-    compared: u64,
-    mismatches: u64,
 }
 
 /// One country's plan: its certificate before the read, and whether its
@@ -68,14 +59,10 @@ pub struct Plan {
 impl<'a, C: Changes + ?Sized> Walk<'a, C> {
     /// The production store, or `None` while another walk holds it.
     pub fn begin(changes: &'a C) -> Option<Self> {
-        Self::begin_in(
-            &STORE,
-            changes,
-            crate::sampled_verify::current_burned_in(changes::VERIFY),
-        )
+        Self::begin_in(&STORE, changes)
     }
 
-    pub fn begin_in(store: &'a Mutex<Store>, changes: &'a C, check: Check) -> Option<Self> {
+    pub fn begin_in(store: &'a Mutex<Store>, changes: &'a C) -> Option<Self> {
         let mut store = match store.try_lock() {
             Ok(store) => store,
             // A walk that panicked left it: hold nothing it held.
@@ -90,11 +77,8 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
         Some(Self {
             store,
             changes,
-            check,
             carried: 0,
             read: 0,
-            compared: 0,
-            mismatches: 0,
         })
     }
 
@@ -115,7 +99,6 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
                 certificate.is_some()
                     && held.pointer == country.pointer
                     && Some(held.certificate) == certificate
-                    && !self.check.covers(u64::from(country.id))
             }
             Err(_) => false,
         };
@@ -171,9 +154,8 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
     }
 
     /// After a fresh read of `country`: its rows, token bytes and values, when
-    /// the read completed. A country whose held rows the plan could have
-    /// carried is compared with them; the read is held when the certificate
-    /// stood still across it.
+    /// the read completed. The read is held when the certificate stood still
+    /// across it.
     pub fn read(
         &mut self,
         country: ccountry::Country,
@@ -185,19 +167,6 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
             return;
         };
         let at = self.find(country.id);
-        if let Ok(index) = at {
-            let held = &self.store.held[index];
-            if plan.certificate.is_some()
-                && held.pointer == country.pointer
-                && Some(held.certificate) == plan.certificate
-            {
-                self.compared += 1;
-                if held.rows != rows || held.tokens != tokens || held.values != values {
-                    self.mismatches += 1;
-                    self.changes.mismatch(Domain::DynamicModifiers);
-                }
-            }
-        }
         let held = plan
             .certificate
             .filter(|&certificate| self.changes.country(country.pointer) == Some(certificate))
@@ -233,7 +202,7 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
             let walk = self.store.walks;
             self.store.held.retain(|held| held.seen == walk);
         }
-        changes::record_countries(self.carried, self.read, self.compared, self.mismatches);
+        changes::record_countries(self.carried, self.read);
     }
 }
 
@@ -271,9 +240,7 @@ mod tests {
     }
 
     /// A country none of its writers touched is carried; a write to its
-    /// container reads it afresh, a read across a write is not held, and the
-    /// country's day of the rotation compares a read with its held rows,
-    /// poisoning the domain at a difference.
+    /// container reads it afresh, and a read across a write is not held.
     #[test]
     fn a_country_is_carried_until_a_writer_touches_its_container() {
         let changes = Isolated::new();
@@ -283,8 +250,8 @@ mod tests {
             canonical_slot: 3,
             id: 7,
         };
-        let hour = |check: Check, rows: &[container::Row], mid_read: bool| {
-            let mut walk = Walk::begin_in(&store, &changes, check).unwrap();
+        let hour = |rows: &[container::Row], mid_read: bool| {
+            let mut walk = Walk::begin_in(&store, &changes).unwrap();
             let plan = walk.plan(country);
             let carried = plan.carry.then(|| {
                 let (mut out, mut tokens, mut values) = (Vec::new(), Vec::new(), Vec::new());
@@ -300,24 +267,16 @@ mod tests {
             walk.finish(true);
             carried
         };
-        let quiet = Check::Slice { hour: 1 };
-        assert_eq!(hour(quiet, &[row(3)], false), None, "first read");
-        assert_eq!(hour(quiet, &[row(9)], false), Some(vec![row(3)]));
+        assert_eq!(hour(&[row(3)], false), None, "first read");
+        assert_eq!(hour(&[row(9)], false), Some(vec![row(3)]));
         // The daily update decremented its days: read afresh.
         changes.write_country(country.pointer);
-        assert_eq!(hour(quiet, &[row(2)], false), None);
-        assert_eq!(hour(quiet, &[row(9)], false), Some(vec![row(2)]));
+        assert_eq!(hour(&[row(2)], false), None);
+        assert_eq!(hour(&[row(9)], false), Some(vec![row(2)]));
         // A writer ran during the read: published, not held.
         changes.write_country(country.pointer);
-        assert_eq!(hour(quiet, &[row(1)], true), None);
-        assert_eq!(hour(quiet, &[row(1)], false), None);
-        assert_eq!(hour(quiet, &[row(9)], false), Some(vec![row(1)]));
-        // Country 7's day of the rotation: read and compared.
-        let day = Check::Slice { hour: 7 };
-        assert_eq!(hour(day, &[row(1)], false), None);
-        assert!(!changes.poisoned(Domain::DynamicModifiers));
-        assert_eq!(hour(day, &[row(4)], false), None);
-        assert!(changes.poisoned(Domain::DynamicModifiers));
-        assert_eq!(hour(quiet, &[row(4)], false), None, "poisoned: always read");
+        assert_eq!(hour(&[row(1)], true), None);
+        assert_eq!(hour(&[row(1)], false), None);
+        assert_eq!(hour(&[row(9)], false), Some(vec![row(1)]));
     }
 }

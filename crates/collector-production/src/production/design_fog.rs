@@ -88,9 +88,6 @@ mod tests {
             assert_eq!(domain, Domain::GameFog);
             *self.0.lock().unwrap()
         }
-        fn mismatch(&self, _: Domain) {
-            unreachable!()
-        }
         fn country(&self, _: usize) -> Option<[Token; 2]> {
             unreachable!()
         }

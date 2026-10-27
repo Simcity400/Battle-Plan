@@ -22,13 +22,8 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused, read, verified and mismatched countries; reused and read rows;
-/// quiet walks.
-static READS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
-/// The family's sampled comparisons.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried AirRegionalMissions registrations differ from a fresh read",
-]);
+/// Reused and read countries; reused and read rows; quiet walks.
+static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 /// Country air objects the latest complete walk visited, for off-thread
 /// sizing.
 static COUNTRIES: AtomicUsize = AtomicUsize::new(0);
@@ -71,11 +66,6 @@ impl Watches {
     pub(crate) fn boundary(&self, invalidate: bool) {
         self.registry.boundary(invalidate);
     }
-
-    #[cfg(test)]
-    pub(crate) fn poisoned(&self) -> bool {
-        self.registry.poisoned()
-    }
 }
 
 /// What a walk sees of the notifications.
@@ -89,9 +79,6 @@ pub(crate) trait Changes: Sync {
     /// when it cannot be observed. Equal values across hours prove that no
     /// observed writer touched it.
     fn sequence(&self, air: usize) -> Option<(u64, u64)>;
-    /// A fresh read disagreed with carried registrations: disable reuse for
-    /// the attachment.
-    fn mismatch(&self);
 }
 
 impl Changes for Watches {
@@ -100,9 +87,6 @@ impl Changes for Watches {
     }
     fn sequence(&self, air: usize) -> Option<(u64, u64)> {
         self.registry.sequence(air)
-    }
-    fn mismatch(&self) {
-        self.registry.poison();
     }
 }
 
@@ -115,14 +99,7 @@ impl Changes for Observer {
     fn sequence(&self, air: usize) -> Option<(u64, u64)> {
         WATCHES.sequence(air)
     }
-    fn mismatch(&self) {
-        WATCHES.mismatch();
-    }
 }
-
-/// Whether walks read every carryable country afresh and compare, rather
-/// than the hour's sampled slice ([`crate::sampled_verify`]).
-pub(crate) const VERIFY: bool = cfg!(feature = "mission_verify");
 
 /// Notifications running now.
 pub fn active() -> usize {
@@ -170,8 +147,6 @@ pub fn collect() {
 pub(crate) struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     pub reused_rows: u64,
     pub read_rows: u64,
     /// The walk's certificates held by the domain's unchanged quiet token,
@@ -185,15 +160,12 @@ pub(crate) fn record(counts: &Counts, countries: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         counts.reused_rows,
         counts.read_rows,
         u64::from(counts.quiet),
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
     if let Some(countries) = countries {
         COUNTRIES.store(countries, Ordering::Relaxed);
     }
@@ -229,23 +201,16 @@ pub fn status() -> impl serde::Serialize {
         "ground_crews": crate::ground_crew_changes::status(),
         "naval_map": crate::naval_map_changes::status(),
         "fleet_regions": collector_observers::fleet_region_changes::status(),
-        "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_countries": reads[0],
         "read_countries": reads[1],
-        "verified_countries": reads[2],
-        "mismatches": reads[3],
-        "reused_rows": reads[4],
-        "read_rows": reads[5],
-        "quiet_hours": reads[6],
+        "reused_rows": reads[2],
+        "read_rows": reads[3],
+        "quiet_hours": reads[4],
         "events": events,
         "watches": WATCHES.registry.status(),
         "radar_symbols": crate::radar_changes::status(),
-        "scope": "cumulative since attach; a country's AirRegionalMissions registrations are carried when its country air object has the address, canonical slot and gathered mission-vector header bytes of the held read and no hooked writer touched it since, and each carried registration's wing in this hour's census still names the object's country and the registration's region (otherwise the country is read afresh); every object's headers and the wing census are read every hour; every hour also reads the carryable countries of its slice afresh (one in rotation_hours by canonical slot; every one in verify mode), publishes the fresh rows and disables reuse at the first mismatch (sampled_*); quiet_hours counts walks whose certificates held by the domain's unchanged quiet token alone, without a per-country lookup"
+        "scope": "cumulative since attach; a country's AirRegionalMissions registrations are carried when its country air object has the address, canonical slot and gathered mission-vector header bytes of the held read and no hooked writer touched it since, and each carried registration's wing in this hour's census still names the object's country and the registration's region (otherwise the country is read afresh); every object's headers and the wing census are read every hour; quiet_hours counts walks whose certificates held by the domain's unchanged quiet token alone, without a per-country lookup"
     })
 }
 

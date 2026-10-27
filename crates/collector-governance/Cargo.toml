@@ -17,8 +17,6 @@ breakdown_witness = []
 character_changes = ["advisor_changes"]
 party_changes = []
 party_leader_changes = ["character_changes"]
-party_leader_verify = ["party_leader_changes"]
-party_verify = ["party_changes"]
 
 [dependencies]
 engine-allocation.workspace = true

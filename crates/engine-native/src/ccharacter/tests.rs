@@ -1264,12 +1264,11 @@ fn shared_portrait_census_removes_only_common_reads_and_preserves_faults() {
 }
 
 #[test]
-fn observed_portraits_reuse_only_certified_entries_and_verify_missed_writes() {
+fn observed_portraits_reuse_only_certified_entries() {
     use crate::portrait_cache::{Cache, Changes};
     use std::cell::Cell;
     struct Observer {
         generation: Cell<u64>,
-        verify: Cell<bool>,
         enabled: Cell<bool>,
         change_after: Cell<Option<usize>>,
     }
@@ -1286,13 +1285,9 @@ fn observed_portraits_reuse_only_certified_entries_and_verify_missed_writes() {
             }
             Some((1, self.generation.get()))
         }
-        fn verify(&self) -> bool {
-            self.verify.get()
-        }
     }
     let observer = Observer {
         generation: Cell::new(1),
-        verify: Cell::new(false),
         enabled: Cell::new(true),
         change_after: Cell::new(None),
     };
@@ -1358,24 +1353,9 @@ fn observed_portraits_reuse_only_certified_entries_and_verify_missed_writes() {
     assert_eq!(entries[0].is_set, 7);
     assert_eq!(cache.counts.reused_entries, 0);
 
-    // A missing notification must be exposed by diagnostic full reads.
-    observer.verify.set(true);
-    bytes[0x1808] = 9;
-    assert_eq!(
-        capture(
-            &TracedMemory::new(&bytes, None),
-            &mut cache,
-            &mut rows,
-            &mut entries
-        )
-        .outcome,
-        Outcome::Rows { len: 2 }
-    );
-    assert_eq!(cache.counts.verified_entries, 1);
-    assert_eq!(cache.counts.mismatches, 1);
-    assert_eq!(entries[0].is_set, 9);
-
     // Failure invalidates arena metadata; the next observation reads again.
+    bytes[0x1808] = 9;
+    observer.generation.set(3);
     let failed = capture(
         &TracedMemory::new(&bytes, Some(0x1800)),
         &mut cache,
@@ -1383,7 +1363,6 @@ fn observed_portraits_reuse_only_certified_entries_and_verify_missed_writes() {
         &mut entries,
     );
     assert!(matches!(failed.outcome, Outcome::Unavailable { .. }));
-    observer.verify.set(false);
     capture(
         &TracedMemory::new(&bytes, None),
         &mut cache,

@@ -309,7 +309,6 @@ mod tests {
             fn fresh_only(&self) -> bool { true }
             fn quiet(&self) -> Option<(u64, u64)> { None }
             fn sequence(&self, _: usize) -> Option<(u64, u64)> { None }
-            fn mismatch(&self) { unreachable!() }
         }
         let (mut memory, root, handle) = fixture();
         let mut store = Store::default();

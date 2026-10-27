@@ -1120,8 +1120,7 @@ impl ReserveWorld {
 }
 
 /// One reserve source's failed read refuses only its row; a certified tree is
-/// carried, a rotated one is compared with a fresh read, and a moved
-/// certificate reads afresh.
+/// carried, and a moved certificate reads afresh.
 #[test]
 fn reserve_trees_refuse_per_row_and_carry_certified_trees() {
     struct Fixed(std::cell::Cell<(u64, u64)>);
@@ -1155,12 +1154,10 @@ fn reserve_trees_refuse_per_row_and_carry_certified_trees() {
     };
     // The unreadable source refuses its own row only.
     assert_eq!(rows(&mut captured, &world), [(4, Some(7)), (5, None)]);
-    // A write no hook saw: the certified tree is carried (the rotation
-    // compares the other source this pass)...
+    // A write no hook saw: the certified tree stays carried.
     world.put(0x308, &9_i64.to_le_bytes());
     assert_eq!(rows(&mut captured, &world), [(4, Some(7)), (5, None)]);
-    // ...until the rotation reads it afresh and compares.
-    assert_eq!(rows(&mut captured, &world), [(4, Some(9)), (5, None)]);
+    assert_eq!(rows(&mut captured, &world), [(4, Some(7)), (5, None)]);
     // A moved certificate reads afresh.
     world.put(0x308, &11_i64.to_le_bytes());
     changes.0.set((1, 2));
@@ -1241,10 +1238,9 @@ fn reserve_tree_carries_stay_linear() {
         pass(&mut captured, &world),
         expected(&|index| index as i64 + 1)
     );
-    // Writes no hook saw, everywhere but the next two passes' rotated
-    // comparisons (sources 1 and 2), so no comparison differs.
+    // Writes no hook saw, at every source.
     let unseen = |index: usize| 100_000 + index as i64;
-    for index in (0..SOURCES).filter(|index| !matches!(index, 1 | 2)) {
+    for index in 0..SOURCES {
         world.put(at(index) + 0x208, &unseen(index).to_le_bytes());
     }
     // A quiet pass carries every held tree.
@@ -1256,7 +1252,7 @@ fn reserve_tree_carries_stay_linear() {
     changes.0.set(true);
     assert_eq!(
         pass(&mut captured, &world),
-        expected(&|index| if index % 2 == 1 && index != 1 {
+        expected(&|index| if index % 2 == 1 {
             unseen(index)
         } else {
             index as i64 + 1

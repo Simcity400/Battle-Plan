@@ -37,14 +37,9 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static DOMAIN: Domain = Domain::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Per [`Table`]: reused, read, verified and mismatched rows, quiet hours
-/// (carried with no marked id) and full reads.
-static READS: [[AtomicU64; 6]; 2] = [const { [const { AtomicU64::new(0) }; 6] }; 2];
-/// The family's sampled comparisons; the reason index is the [`Table`].
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried States rows differ from a fresh read",
-    "carried Provinces rows differ from a fresh read",
-]);
+/// Per [`Table`]: reused and read rows, quiet hours (carried with no
+/// marked id) and full reads.
+static READS: [[AtomicU64; 4]; 2] = [const { [const { AtomicU64::new(0) }; 4] }; 2];
 /// Slots of the state and province arrays the latest complete captures
 /// walked, for off-thread sizing.
 static SLOTS: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
@@ -190,9 +185,6 @@ pub trait Changes: Sync {
         provinces: &mut dyn FnMut(usize),
         states: &mut dyn FnMut(usize),
     ) -> Option<[u64; 2]>;
-    /// A fresh read disagreed with carried rows: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
 }
 
 impl Changes for Domain {
@@ -209,9 +201,6 @@ impl Changes for Domain {
         let states = self.province_states.take(states);
         Some([provinces?, states?])
     }
-    fn mismatch(&self) {
-        self.poison();
-    }
 }
 
 /// The hooks' domain.
@@ -227,14 +216,7 @@ impl Changes for Observer {
     ) -> Option<[u64; 2]> {
         DOMAIN.take_provinces(provinces, states)
     }
-    fn mismatch(&self) {
-        DOMAIN.mismatch();
-    }
 }
-
-/// Whether captures read every carryable state and province afresh and
-/// compare, rather than the hour's sampled slice ([`crate::sampled_verify`]).
-pub const VERIFY: bool = cfg!(feature = "territory_verify");
 
 static SCRIPTED_VP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SCRIPTED_CONTROLLERS: std::sync::atomic::AtomicBool =
@@ -360,8 +342,6 @@ pub fn collect() {
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     /// Carried with no marked id.
     pub quiet: bool,
     /// Every row read: no held capture certified any.
@@ -374,14 +354,11 @@ pub fn record(table: Table, counts: &Counts, slots: Option<usize>) {
     for (target, value) in READS[table as usize].iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         u64::from(counts.quiet),
         u64::from(counts.full),
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, table as usize);
     if let Some(slots) = slots {
         SLOTS[table as usize].store(slots, Ordering::Relaxed);
     }
@@ -401,20 +378,13 @@ pub fn status() -> impl serde::Serialize {
         crate::status::status!({
             "reused_rows": reads[0],
             "read_rows": reads[1],
-            "verified_rows": reads[2],
-            "mismatched_rows": reads[3],
-            "quiet_hours": reads[4],
-            "full_reads": reads[5],
+            "quiet_hours": reads[2],
+            "full_reads": reads[3],
         })
     };
     crate::status::status!({
         "configured": cfg!(feature = "territory_changes"),
-        "verify": VERIFY,
         "poisoned": DOMAIN.sets().iter().any(|set| set.poisoned()),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "states": table(Table::States),
         "provinces": table(Table::Provinces),
         "events": events,
@@ -424,7 +394,7 @@ pub fn status() -> impl serde::Serialize {
         "province_set": DOMAIN.provinces.status(),
         "state_set": DOMAIN.states.status(),
         "province_state_set": DOMAIN.province_states.status(),
-        "scope": "cumulative since attach; a States row is carried when no hooked writer marked its state since the held complete capture in the same epoch and the state array header, slot pointers and shared infrastructure and continent operands are unchanged; every state's identity and manpower and StateFlags are read every hour; Provinces rows are carried by province_changes, whose status counts them; every hour also reads the carryable states of its slice afresh (one in rotation_hours by state id; every one in verify mode), publishes the fresh rows and disables reuse at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; a States row is carried when no hooked writer marked its state since the held complete capture in the same epoch and the state array header, slot pointers and shared infrastructure and continent operands are unchanged; every state's identity and manpower and StateFlags are read every hour; Provinces rows are carried by province_changes, whose status counts them"
     })
 }
 
@@ -813,9 +783,9 @@ mod tests {
     }
 
     #[test]
-    fn a_mismatch_poisons_every_set() {
+    fn poisoning_refuses_every_set() {
         let domain = Domain::enabled(64, 1024);
-        domain.mismatch();
+        domain.poison();
         assert!(domain.poisoned());
         assert_eq!(take_states(&domain).0, None);
         assert_eq!(take_provinces(&domain).0, None);

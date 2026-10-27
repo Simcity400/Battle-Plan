@@ -2288,9 +2288,6 @@ fn run_with_memory(
                         .map(|store| air::MissionCarry {
                             store,
                             changes: &crate::mission_changes::Observer,
-                            check: crate::sampled_verify::current_burned_in(
-                                crate::mission_changes::VERIFY,
-                            ),
                         }),
                 },
             );
@@ -4543,8 +4540,6 @@ mod tests {
                         base: 0,
                         game_state: usize::MAX,
                         active: [true; 2],
-                        opinion_cap: 4,
-                        tuple_cap: 4,
                         epoch: 0,
                     },
                     payload: {

@@ -14,8 +14,7 @@
 //! commander references, the naval tree family's certificates of its accumulator and its fleet
 //! leaders' ([`crate::naval_tree_changes`]), its navy's stored hubs and its headquarters
 //! commanders' skill objects. A country whose certificate moved is read within the hour, so its
-//! rows equal the game's every hour; the daily slice reads every other country and compares it
-//! with its previous read, and a difference disables every certificate. A navy whose
+//! rows equal the game's every hour; the daily slice reads every other country. A navy whose
 //! registered-mission set is empty has empty ledgers, so its region headers are not read
 //! ([`crate::navy_ledger_changes`]).
 use crate::{
@@ -289,9 +288,6 @@ pub struct Captured {
     ledger_counts: LedgerCounts,
     /// A CCountry's or CUnitLeader's certificate ([`crate::naval_tree_changes::sequence`]).
     sequence: fn(usize) -> Option<(u64, u64)>,
-    /// Burn-in (`naval_tree_verify`): every country every hour, each one whose certificate
-    /// held still compared.
-    verify: bool,
 }
 
 #[cfg(not(test))]
@@ -304,9 +300,6 @@ fn default_sequence() -> fn(usize) -> Option<(u64, u64)> {
 fn default_sequence() -> fn(usize) -> Option<(u64, u64)> {
     |_| Some((1, 0))
 }
-
-/// Tests read slices unless a test asks for the burn-in.
-const DEFAULT_VERIFY: bool = cfg!(not(test)) && crate::naval_tree_changes::VERIFY;
 
 fn elapsed(started: i64) -> u64 {
     qpc().saturating_sub(started).max(0) as u64
@@ -425,7 +418,6 @@ impl Captured {
             selection: SliceSelection::new(storage),
             ledger_counts: LedgerCounts::default(),
             sequence: default_sequence(),
-            verify: DEFAULT_VERIFY,
         }
     }
 
@@ -555,7 +547,7 @@ impl Captured {
         &self.selection
     }
 
-    /// The latest ledger read's skipped, read and compared navies.
+    /// The latest ledger read's skipped and read navies.
     pub(crate) fn ledger_counts(&self) -> LedgerCounts {
         self.ledger_counts
     }
@@ -847,18 +839,13 @@ impl Captured {
             let scan = qpc();
             receivers = Some(self.scan(memory, base, game_state, fingerprints));
             self.selection.scan_ticks = elapsed(scan);
-            if self.verify {
-                self.selection.force_full = true;
-            }
         }
         let (countries_outcome, commanders_outcome, commander_ticks) =
             self.read_family(memory, base, game_state);
         self.countries.outcome = countries_outcome;
         self.commanders.outcome = commanders_outcome;
-        if let (Some(fingerprints), Some(receivers)) = (fingerprints, receivers) {
-            let hashes = self.content_hashes();
-            let (verified, mismatches) = self.selection.compare(fingerprints, hashes.as_deref());
-            crate::naval_tree_changes::missions(receivers, verified, mismatches);
+        if let Some(receivers) = receivers {
+            crate::naval_tree_changes::missions(receivers);
         }
         ticks[2] = elapsed(started).saturating_sub(commander_ticks);
         ticks[3] = commander_ticks;
@@ -1627,8 +1614,7 @@ impl Captured {
     /// pass requires a navy for every positive canonical country. A navy
     /// whose registered-mission set is empty
     /// ([`cstrategic_navy::REGISTERED_MISSIONS`]) has every ledger empty: as
-    /// `skip` allows, its region headers are not read unless `skip.check`
-    /// covers its slot, when a nonempty ledger is a mismatch.
+    /// `skip` allows, its region headers are not read.
     fn read_ledgers<M: Memory>(
         &mut self,
         memory: &M,
@@ -1722,17 +1708,13 @@ impl Captured {
             let outer = navy.take_ledger_regions()?;
             // Append, remove and reset write a
             // ledger and the set together: no registered mission, no entry.
-            let empty =
-                skip.enabled && cstrategic_navy::registered_missions(memory, pointer) == Ok(0);
-            if empty && !skip.check.covers(u64::from(slot)) {
+            if skip.enabled && cstrategic_navy::registered_missions(memory, pointer) == Ok(0) {
                 self.ledger_counts.skipped += 1;
                 continue;
             }
             self.ledger_counts.read += 1;
-            let mut filed = false;
             let mut presence = None;
             inputs::ledger_regions_in(memory, outer, |region, ledger| {
-                filed = true;
                 if self.growing {
                     engine_native::walk::Buffer::Growing(&mut self.scratch)
                         .ensure(ledger.count as usize)?;
@@ -1790,10 +1772,6 @@ impl Captured {
                 len += 1;
                 Ok(())
             })?;
-            if empty {
-                self.ledger_counts.verified += 1;
-                self.ledger_counts.mismatches += u64::from(filed);
-            }
         }
         // The original icon pass required a navy for every positive
         // canonical country beyond the manager's physical slots too.
@@ -1926,45 +1904,6 @@ impl Captured {
             }
         }
         Some(digest.finish())
-    }
-
-    /// Each country this hour's complete family read covers, ascending, with a hash of its
-    /// rows; `None` when either table is incomplete.
-    fn content_hashes(&self) -> Option<Vec<(u32, u64)>> {
-        let (Outcome::Rows { len: countries }, Outcome::Rows { len: commanders }) =
-            (self.countries.outcome, self.commanders.outcome)
-        else {
-            return None;
-        };
-        let value = |digest: &mut Digest, value: Value| {
-            digest.i64(value.raw).u64(u64::from(value.present));
-        };
-        let mut hashes = engine_allocation::vec(countries).ok()?;
-        // Each country's row and then its commanders were appended in turn.
-        let mut commander_rows = self.commanders.rows[..commanders].iter().peekable();
-        for row in &self.countries.rows[..countries] {
-            let mut digest = Digest::new();
-            for entry in row.values {
-                value(&mut digest, entry);
-            }
-            digest.u64(self.escort_trees.hash(row.escort_tree));
-            for &hub in &self.hubs.first[row.hubs..row.hubs + row.hub_count] {
-                digest.u64(u64::from(hub));
-            }
-            while let Some(commander) =
-                commander_rows.next_if(|commander| commander.country == row.country)
-            {
-                digest
-                    .u64(commander.reference)
-                    .u64(u64::from(commander.source));
-                for entry in commander.values {
-                    value(&mut digest, entry);
-                }
-            }
-            hashes.push((row.country, digest.finish()));
-        }
-        hashes.sort_unstable_by_key(|&(country, _)| country);
-        Some(hashes)
     }
 
     /// The selected countries' rows. Returns the two outcomes and the commander read ticks.

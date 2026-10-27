@@ -1,6 +1,6 @@
 use super::*;
 use engine_native::memory::SliceMemory;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 
 // Offsets from the world's base.
 const STATE: usize = 0;
@@ -301,23 +301,8 @@ impl Memory for Census<'_> {
     }
 }
 
-thread_local! {
-    /// The write count [`WeatherCarry::observe`] reports in these tests.
-    static WRITES: Cell<Option<u64>> = const { Cell::new(Some(0)) };
-}
-
-fn observed() -> Option<u64> {
-    WRITES.with(Cell::get)
-}
-
-/// A carry that compares only the hour's slice and reads the test's count.
 fn carry() -> Box<WeatherCarry> {
-    WRITES.with(|writes| writes.set(Some(0)));
-    Box::new(WeatherCarry {
-        observe: observed,
-        every: false,
-        ..Default::default()
-    })
+    Box::default()
 }
 
 /// What one hour's job captured.
@@ -393,14 +378,9 @@ fn read(world: &World, census: &Census<'_>) -> (Vec<u32>, Vec<u32>) {
     )
 }
 
-/// The window's slots plus the hour's comparison slice.
-fn expected(window: (u32, u32), count: u32, hour: i32) -> Vec<u32> {
-    let check = crate::sampled_verify::Check::burned_in(hour, false);
-    (0..count)
-        .filter(|&slot| {
-            in_window(slot, window, count) || check.covers(u64::from(slot))
-        })
-        .collect()
+/// The window's slots.
+fn expected(window: (u32, u32), count: u32) -> Vec<u32> {
+    (0..count).filter(|&slot| in_window(slot, window, count)).collect()
 }
 
 fn every(count: u32) -> Vec<u32> {
@@ -436,22 +416,6 @@ fn held(provinces: u32, regions: u32, budgets: (i32, i32)) -> (World, Box<Weathe
 }
 
 #[test]
-fn graduated_comparisons_use_the_full_phase_and_preserve_every_mode() {
-    for hour in [-600, -1, 0, 23, 24, 575, 576, 599] {
-        let (start, step) = compared(hour, false);
-        assert_eq!(step, crate::sampled_verify::BURNED_IN_ROTATION as u32);
-        for slot in 0..5_000 {
-            assert_eq!(
-                slot >= start && (slot - start) % step == 0,
-                crate::sampled_verify::Check::burned_in(hour, false).covers(u64::from(slot)),
-                "hour {hour}, slot {slot}"
-            );
-        }
-        assert_eq!(compared(hour, true), (0, 1));
-    }
-}
-
-#[test]
 fn window_ports_the_update_passes_loop() {
     // Ordinary: the budget from the cursor.
     assert_eq!(window(5, 10, 3), Some((5, 3)));
@@ -472,8 +436,8 @@ fn window_ports_the_update_passes_loop() {
 }
 
 /// The old read took every record every hour; a held hour now reads only
-/// the slots the pass visited (and the hour's comparison slice), sized from
-/// the live budgets a mod sets, and captures exactly what a full read does.
+/// the slots the pass visited, sized from the live budgets a mod sets, and
+/// captures exactly what a full read does.
 #[test]
 fn window_hours_read_only_the_visited_slots() {
     for (provinces, regions, budgets) in [
@@ -500,8 +464,8 @@ fn window_hours_read_only_the_visited_slots() {
             assert_eq!(
                 read(&world, &census),
                 (
-                    expected(region_window, regions, at),
-                    expected(province_window, provinces, at)
+                    expected(region_window, regions),
+                    expected(province_window, provinces)
                 ),
                 "{budgets:?} hour {at}"
             );
@@ -592,74 +556,12 @@ fn every_other_hour_falls_back() {
     assert_eq!(read(&world, &census), (every(9), every(40)));
 }
 
-/// A write no hook saw differs from the carried record: the hour reads
-/// every record and the carry stays poisoned; one the count explains does
-/// not poison.
+/// An hour whose province records did not follow their window reads every province's
+/// weather modifier entries with them: an entry a counted writer changed outside the
+/// window is read afresh, not carried.
 #[test]
-fn a_difference_reads_all_and_only_an_unexplained_one_poisons() {
-    let (mut world, mut carry) = held(40, 9, (5, 2));
-    carry.every = true;
-    // Explained: the count moved while the hour read.
-    world.pass(1);
-    world.write_province(30, 77);
-    WRITES.with(|writes| writes.set(Some(2)));
-    let (carry, _) = hour(&world, carry, 2, false, Some(0));
-    assert!(!carry.poisoned);
-    assert_eq!(carry.followed, 2);
-    // Held under the moved count: a full hour, then the window.
-    WRITES.with(|writes| writes.set(Some(4)));
-    world.pass(2);
-    let (carry, _) = hour(&world, carry, 3, false, Some(4));
-    assert_eq!(carry.followed, 0);
-    world.pass(3);
-    let (carry, _) = hour(&world, carry, 4, false, Some(4));
-    assert_eq!(carry.followed, 3);
-    // Unexplained: a region's combat entry changed outside the window.
-    let (region_window, _) = next_windows(&world);
-    world.pass(4);
-    let outside = (0..9)
-        .find(|&slot| !in_window(slot, region_window, 9))
-        .unwrap();
-    let value = world.combat_value(outside);
-    world.put(value, &(-5_i64).to_le_bytes());
-    let (carry, _) = hour(&world, carry, 5, false, Some(4));
-    assert!(carry.poisoned);
-    assert_eq!(carry.followed, 2);
-    world.pass(5);
-    let (carry, _) = hour(&world, carry, 6, false, Some(4));
-    assert!(carry.poisoned);
-    assert_eq!(carry.followed, 0);
-}
-
-#[test]
-fn regional_map_terms_share_the_existing_outside_window_carry_guard() {
-    for key in [
-        engine_executable::modifier_keys::NAVAL_DETECTION,
-        engine_executable::modifier_keys::AIR_ATTACK_FACTOR,
-        engine_executable::modifier_keys::AIR_DEFENCE_FACTOR,
-    ] {
-        let (mut world, mut carry) = held(40, 9, (5, 2));
-        carry.every = true;
-        let (window, _) = next_windows(&world);
-        world.pass(1);
-        let slot = (0..9).find(|&slot| !in_window(slot, window, 9)).unwrap();
-        let term = COMBAT_KEYS.iter().position(|&value| value == key).unwrap();
-        let address = world.combat_value(slot) + term * engine_native::modifier_entry::STRIDE;
-        world.put(address, &(-91_111_i64).to_le_bytes());
-        let (carry, _) = hour(&world, carry, 2, false, Some(0));
-        assert!(carry.poisoned, "{key}");
-        assert_eq!(carry.combat[slot as usize].unwrap()[term], Some(-91_111));
-    }
-}
-
-/// A province record difference reads every province that hour, and every province's
-/// weather modifier entries with it: an entry changed outside the window and outside the
-/// hour's comparison slice is read afresh, not carried. A later entry difference the
-/// slice finds poisons the carry like a record difference.
-#[test]
-fn a_record_difference_reads_every_province_modifier_entry() {
-    let rotation = crate::sampled_verify::BURNED_IN_ROTATION as u32;
-    let provinces = rotation + 80; // A selected slot must also exist beyond the update window.
+fn an_unfollowed_province_hour_reads_every_province_modifier_entry() {
+    let provinces = 80;
     let mut world = World::new(provinces, 9, (5, 2));
     let key = engine_executable::modifier_keys::ARMY_SPEED_FACTOR;
     let entries: Vec<usize> = (0..provinces)
@@ -667,35 +569,20 @@ fn a_record_difference_reads_every_province_modifier_entry() {
         .collect();
     let (carry, _) = hour(&world, carry(), 1, false, Some(0));
     assert_eq!(carry.province_modifiers.len(), provinces as usize);
-    // Hour 2 compares the slots of its phase; one record there and one entry elsewhere
-    // change outside the window.
     let (_, window) = next_windows(&world);
     world.pass(1);
-    let phase = 2 % rotation;
-    let outside = |slot: &u32| !in_window(*slot, window, provinces);
-    let record = (0..provinces)
-        .filter(outside)
-        .find(|slot| slot % rotation == phase)
-        .unwrap();
-    let entry = (0..provinces)
-        .filter(outside)
-        .find(|slot| slot % rotation != phase && *slot != record)
-        .unwrap();
-    world.write_province(record, -1);
+    let entry = (0..provinces).find(|&slot| !in_window(slot, window, provinces)).unwrap();
     world.put(entries[entry as usize], &(-7_i64).to_le_bytes());
     // `hour` asserts the carried capture equals a full read of the same memory.
-    let (carry, census) = hour(&world, carry, 2, false, Some(0));
-    assert!(carry.poisoned);
+    let (carry, census) = hour(&world, carry, 2, false, Some(1));
     assert!(!carry.provinces_followed);
     assert_eq!(read(&world, &census).1, every(provinces));
 }
 
 /// A weather hour's guarded read at the vanilla census (13,414 provinces,
 /// 305 region slots, `provinces_per_update` 584 and `regions_per_update` 7
-/// from vanilla `common/weather.txt`): every record, the windows with the
-/// hour's comparison slice, and the windows with every carried record
-/// compared (`weather_verify`). Cold: the world is evicted from cache before
-/// each hour, as a game hour finds it.
+/// from vanilla `common/weather.txt`): every record, and the windows. Cold:
+/// the world is evicted from cache before each hour, as a game hour finds it.
 /// `cargo test --release -p collector weather_window_bench -- --ignored --nocapture`
 #[test]
 #[ignore = "synthetic guarded weather window timing"]
@@ -704,16 +591,10 @@ fn weather_window_bench() {
     let live = unsafe { engine_native::memory::LiveMemory::new() };
     let state = world.base + STATE;
     let mut evict = vec![0_u8; 256 << 20];
-    let mut jobs: [WeatherJob; 3] = std::array::from_fn(|_| WeatherJob::new());
-    for (index, job) in jobs.iter_mut().enumerate().skip(1) {
-        job.carry = Some(Box::new(WeatherCarry {
-            observe: observed,
-            every: index == 2,
-            ..Default::default()
-        }));
-    }
-    let mut samples: [Vec<f64>; 3] = Default::default();
-    let mut read = [0_u64; 3];
+    let mut jobs: [WeatherJob; 2] = std::array::from_fn(|_| WeatherJob::new());
+    jobs[1].carry = Some(carry());
+    let mut samples: [Vec<f64>; 2] = Default::default();
+    let mut read = [0_u64; 2];
     for at in 1..=40 {
         world.pass(i64::from(at));
         for (index, job) in jobs.iter_mut().enumerate() {
@@ -742,14 +623,10 @@ fn weather_window_bench() {
             }
         }
     }
-    for (index, (name, mut sample)) in [
-        "every record",
-        "windows + hourly slice",
-        "windows + every carried record (weather_verify)",
-    ]
-    .into_iter()
-    .zip(samples)
-    .enumerate()
+    for (index, (name, mut sample)) in ["every record", "windows"]
+        .into_iter()
+        .zip(samples)
+        .enumerate()
     {
         sample.sort_by(f64::total_cmp);
         let len = sample.len();

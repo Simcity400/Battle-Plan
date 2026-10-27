@@ -6,9 +6,8 @@
 //! set's epoch, so the consumer reads every province.
 //!
 //! The ProvinceUnitOrder capture ([`crate::extended::province_unit_order`])
-//! is the set's one consumer: it reads only the provinces its take returns,
-//! and the hour's sampled slice, and carries every other province's lists
-//! from its held complete walk.
+//! is the set's one consumer: it reads only the provinces its take returns
+//! and carries every other province's lists from its held complete walk.
 use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
@@ -23,13 +22,9 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static DOMAIN: Domain = Domain::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused, read, verified and mismatched provinces, quiet hours (carried
-/// with no marked province) and full reads.
-static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-/// The family's sampled comparisons.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried ProvinceUnitOrder rows differ from a fresh read",
-]);
+/// Reused and read provinces, quiet hours (carried with no marked province)
+/// and full reads.
+static READS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// Slots of the province array the latest complete walk visited, for
 /// off-thread sizing.
 static SLOTS: AtomicUsize = AtomicUsize::new(0);
@@ -80,28 +75,17 @@ impl Domain {
     pub(crate) fn boundary(&self, invalidate: bool) {
         self.provinces.boundary(invalidate);
     }
-
-    #[cfg(test)]
-    pub(crate) fn poisoned(&self) -> bool {
-        self.provinces.poisoned()
-    }
 }
 
 /// What a capture sees of the notifications.
 pub(crate) trait Changes: Sync {
     /// The take of the marked province ids ([`DirtySet::take`]).
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64>;
-    /// A fresh read disagreed with carried rows: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
 }
 
 impl Changes for Domain {
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
         self.provinces.take(visit)
-    }
-    fn mismatch(&self) {
-        self.provinces.poison();
     }
 }
 
@@ -111,16 +95,10 @@ impl Changes for Observer {
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
         DOMAIN.take(visit)
     }
-    fn mismatch(&self) {
-        DOMAIN.mismatch();
-    }
 }
 
 /// Whether ProvinceUnitOrder carries unmarked provinces.
 pub(crate) const CARRY: bool = cfg!(feature = "province_unit_changes");
-/// Whether captures read every carryable province afresh and compare,
-/// rather than the hour's sampled slice ([`crate::sampled_verify`]).
-pub(crate) const VERIFY: bool = cfg!(feature = "province_unit_verify");
 
 /// The guarded id of the province at `province`; zero, which no province
 /// has, names none.
@@ -166,8 +144,6 @@ pub fn collect() {
 pub(crate) struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     /// Carried with no marked province.
     pub quiet: bool,
     /// Every province read: no held walk certified any.
@@ -180,14 +156,11 @@ pub(crate) fn record(counts: &Counts, slots: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         u64::from(counts.quiet),
         u64::from(counts.full),
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
     if let Some(slots) = slots {
         SLOTS.store(slots, Ordering::Relaxed);
     }
@@ -203,22 +176,15 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": CARRY,
-        "verify": VERIFY,
         "poisoned": DOMAIN.provinces.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_provinces": reads[0],
         "read_provinces": reads[1],
-        "verified_provinces": reads[2],
-        "mismatched_provinces": reads[3],
-        "quiet_hours": reads[4],
-        "full_reads": reads[5],
+        "quiet_hours": reads[2],
+        "full_reads": reads[3],
         "events": events,
         "unnamed_receivers": DOMAIN.unnamed.load(Ordering::Relaxed),
         "province_set": DOMAIN.provinces.status(),
-        "scope": "cumulative since attach; the province array header is read each hour, and while it and the take's epoch are those of the held complete walk only the marked provinces and the slice are read (slot, record, lanes and occupants) and every other province's ProvinceUnitOrder lists are carried from the held walk; otherwise every province is read; every hour also reads the carryable provinces of its slice afresh (one in rotation_hours by province id; every one in verify mode), publishes the fresh rows and disables reuse at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; the province array header is read each hour, and while it and the take's epoch are those of the held complete walk only the marked provinces are read (slot, record, lanes and occupants) and every other province's ProvinceUnitOrder lists are carried from the held walk; otherwise every province is read"
     })
 }
 
@@ -325,7 +291,7 @@ mod tests {
     }
 
     /// Each site marks the province it names; an unnamed receiver and an
-    /// invalidating boundary move the epoch; a mismatch poisons the set.
+    /// invalidating boundary move the epoch.
     #[test]
     fn each_site_marks_its_province() {
         let domain = Domain::enabled(1024);
@@ -345,8 +311,5 @@ mod tests {
         let moved = moved.unwrap();
         domain.boundary(true);
         assert_ne!(take(&domain).0, Some(moved));
-        Changes::mismatch(&domain);
-        assert!(domain.poisoned());
-        assert_eq!(take(&domain).0, None);
     }
 }

@@ -3,18 +3,15 @@
 //! state's identity, manpower and flags, and publishes exactly a fresh
 //! read's rows.
 use super::*;
-use crate::{
-    sampled_verify::Check,
-    territory_changes::{Domain, Target},
-};
+use crate::territory_changes::{Domain, Target};
 use engine_mutations::{territory_mutations::MUTATIONS, territory_mutations::Receiver};
 
 fn domain() -> &'static Domain {
     Box::leak(Box::new(Domain::enabled(64, 64)))
 }
 
-fn store(domain: &'static Domain, check: Check) -> Option<Box<StateStore>> {
-    Some(Box::new(StateStore::new(domain).with_check(check)))
+fn store(domain: &'static Domain) -> Option<Box<StateStore>> {
+    Some(Box::new(StateStore::new(domain)))
 }
 
 /// The fixture with a custom name on the first state and an owner name on
@@ -91,7 +88,7 @@ fn reread(memory: &Traced) -> [bool; 2] {
 fn a_quiet_hour_carries_every_state_and_reads_only_identity_manpower_and_flags() {
     let bytes = named();
     let domain = domain();
-    let mut store = store(domain, Check::Nothing);
+    let mut store = store(domain);
     let first = Traced::new(&bytes);
     hour(&mut store, &first);
     assert_eq!(reread(&first), [true, true]);
@@ -137,7 +134,7 @@ fn each_state_site_rereads_exactly_its_state() {
     );
     for (site, (mutation, receiver)) in MUTATIONS.iter().enumerate() {
         let domain = domain();
-        let mut store = store(domain, Check::Nothing);
+        let mut store = store(domain);
         hour(&mut store, &Traced::new(&bytes));
         let (target, expected) = match *receiver {
             Receiver::State(rows) => (
@@ -178,7 +175,7 @@ fn a_changed_infrastructure_operand_rereads_every_state() {
         }
     }
     let bytes = named();
-    let mut store = store(domain(), Check::Nothing);
+    let mut store = store(domain());
     hour(&mut store, &Traced::new(&bytes));
     let traced = Traced::new(&bytes);
     let memory = PerLevel(&traced, -15_000);
@@ -192,37 +189,6 @@ fn a_changed_infrastructure_operand_rereads_every_state() {
     assert!(store.as_ref().unwrap().counts().full);
 }
 
-/// The sampled slice reads a carryable state afresh and publishes it; a
-/// write no hooked site observed is a difference, which poisons reuse.
-#[test]
-fn a_slice_difference_publishes_the_fresh_row_and_poisons() {
-    let bytes = named();
-    let domain = domain();
-    let mut store = store(domain, Check::Every);
-    hour(&mut store, &Traced::new(&bytes));
-    let quiet = Traced::new(&bytes);
-    let carried = hour(&mut store, &quiet);
-    assert_eq!(reread(&quiet), [true, true]);
-    let counts = store.as_ref().unwrap().counts();
-    assert_eq!((counts.verified, counts.mismatches), (2, 0));
-    assert!(!domain.poisoned());
-    assert_fresh(&carried, &quiet);
-    let mut unobserved = bytes.clone();
-    put(
-        &mut unobserved,
-        FIRST + cstate::CONTROLLER,
-        9_u32.to_le_bytes(),
-    );
-    let carried = hour(&mut store, &Traced::new(&unobserved));
-    assert_eq!(carried.census.payload[0].controller, 9);
-    assert_eq!(store.as_ref().unwrap().counts().mismatches, 1);
-    assert!(domain.poisoned());
-    // Poisoned: every later hour reads afresh.
-    let memory = Traced::new(&unobserved);
-    hour(&mut store, &memory);
-    assert!(store.as_ref().unwrap().counts().full);
-}
-
 /// A writer running across the take refuses it: that hour reads every state
 /// and holds nothing, so the next one reads every state too; after that the
 /// writer's own state is read and the rest carried.
@@ -230,7 +196,7 @@ fn a_slice_difference_publishes_the_fresh_row_and_poisons() {
 fn a_refused_take_reads_everything_and_holds_nothing() {
     let bytes = named();
     let domain = domain();
-    let mut store = store(domain, Check::Nothing);
+    let mut store = store(domain);
     hour(&mut store, &Traced::new(&bytes));
     let running = domain.notify(
         7,
@@ -257,7 +223,7 @@ fn a_refused_take_reads_everything_and_holds_nothing() {
 #[test]
 fn a_forgotten_store_reads_everything() {
     let bytes = named();
-    let mut store = store(domain(), Check::Nothing);
+    let mut store = store(domain());
     hour(&mut store, &Traced::new(&bytes));
     store.as_mut().unwrap().forget();
     let memory = Traced::new(&bytes);
@@ -295,7 +261,7 @@ fn a_carried_hour_names_categories_without_allocating() {
         bytes: &bytes,
     });
     let domain = domain();
-    let mut store = store(domain, Check::Nothing);
+    let mut store = store(domain);
     hour(&mut store, &memory);
     hour(&mut store, &memory);
     let mut request = carried_request(&mut store);

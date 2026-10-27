@@ -277,7 +277,7 @@ fn batched_naming_admitted_status_prefix_equals_serial() {
 
 #[test]
 fn batched_naming_carried_members_and_heap_cache_equal_serial() {
-    use crate::army_stat_changes::{VERIFY, Watches};
+    use crate::army_stat_changes::Watches;
     let (bytes, mut seeds) = fixture(65);
     for (index, seed) in seeds.iter_mut().enumerate() {
         seed.pointer = 0x1000_0000 + index * 256;
@@ -308,11 +308,11 @@ fn batched_naming_carried_members_and_heap_cache_equal_serial() {
         assert_eq!(
             store.name_lookups - lookups,
             expected,
-            "each seed's held lookup must serve gathering, decoding and verification"
+            "each seed's held lookup must serve gathering and decoding"
         );
         store.hold(actual.attack.epoch());
         same(&actual, &capture(&reads(&bytes, true, None, false), &seeds));
-        if hour == 0 || VERIFY {
+        if hour == 0 {
             assert_eq!(memory.members.get(), 2);
         } else if hour == 1 {
             assert_eq!(memory.members.get(), 0, "held members must not be gathered");
@@ -330,9 +330,8 @@ fn batched_naming_carried_members_and_heap_cache_equal_serial() {
 }
 
 #[test]
-fn batched_naming_selects_once_with_sampled_touched_and_reordered_seeds() {
-    use crate::army_stat_changes::{VERIFY, Watches};
-    crate::sampled_verify::begin_hour(20);
+fn batched_naming_selects_once_with_touched_and_reordered_seeds() {
+    use crate::army_stat_changes::Watches;
     let (bytes, mut seeds) = fixture(5_000);
     for (index, seed) in seeds.iter_mut().enumerate() {
         seed.pointer = 0x1000_0000 + index * 256;
@@ -348,15 +347,9 @@ fn batched_naming_selects_once_with_sampled_touched_and_reordered_seeds() {
             // cache refusals and never enter carry selection.
             seeds[90].name_member = None;
             seeds[91].name_member = Some(0);
-            // Touch a sampled member, so its lost held eligibility changes the
-            // verified count with or without army_stat_verify.
-            let check = crate::sampled_verify::current_burned_in(VERIFY);
             let touched = seeds
                 .iter()
-                .find(|seed| {
-                    seed.name_member.is_some_and(|at| at != 0) && check.covers(seed.division >> 32)
-                })
-                .and_then(|seed| seed.name_member)
+                .find_map(|seed| seed.name_member.filter(|&at| at != 0))
                 .unwrap();
             drop(watches.notify(touched, 1));
         }
@@ -380,25 +373,23 @@ fn batched_naming_selects_once_with_sampled_touched_and_reordered_seeds() {
         };
         actual.capture_naming_holding(&memory, 0, &seeds, Some(&mut store), &watches);
         assert_eq!(store.name_lookups - before, expected);
-        // Verified: sampled, valid members still held and untouched. The
-        // notified member loses its held eligibility and is read fresh.
-        let check = crate::sampled_verify::current_burned_in(VERIFY);
-        let verified = seeds
+        // Reused: valid members still held and untouched. The notified member
+        // loses its held eligibility and is read fresh.
+        let reused = seeds
             .iter()
             .enumerate()
             .filter(|(index, seed)| {
                 let Some(pointer) = seed.name_member.filter(|&at| at != 0) else {
                     return false;
                 };
-                check.covers(seed.division >> 32)
-                    && actual.attack.carryable
+                actual.attack.carryable
                     && store
                         .held_name(*index, seed.division)
                         .is_some_and(|at| store.held_name_record(at).member == pointer)
                     && !actual.attack.touched(pointer)
             })
             .count();
-        assert_eq!(actual.attack.status_counts.verified as usize, verified);
+        assert_eq!(actual.attack.status_counts.names_reused as usize, reused);
         store.hold(actual.attack.epoch());
         same(&actual, &capture(&reads(&bytes, true, None, false), &seeds));
     }

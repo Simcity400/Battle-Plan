@@ -1367,8 +1367,7 @@ fn ship_model_details_equal_the_direct_readers_in_under_half_their_guarded_calls
 /// A ship whose handle, task force and certificate are those of its held
 /// read is served from it: its row is the fresh read's, without reading the
 /// ship's own objects. A notified ship is read again and shows its change; an
-/// unnotified change stays carried until a verifying hour reads it afresh,
-/// publishes it and poisons the family.
+/// unnotified change stays carried.
 #[test]
 fn held_ships_are_carried_until_a_writer_touches_them() {
     use crate::ship_model_changes::Watches;
@@ -1381,14 +1380,14 @@ fn held_ships_are_carried_until_a_writer_touches_them() {
             entries: 64,
         },
     });
-    let hour = |capture: &mut Captured, world: &Fleet, check: Check| {
+    let hour = |capture: &mut Captured, world: &Fleet| {
         capture.begin_sources();
         for index in 0..fleet::SHIPS {
             capture.visit_source(fleet::ship(index), &fleet::census(index));
         }
         capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
         world.calls.set(0);
-        capture.capture_carrying(world, CaptureContext::new(fleet::IMAGE), &watches, check);
+        capture.capture_carrying(world, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
         (
             capture.rows.rows[..fleet::SHIPS].to_vec(),
@@ -1399,8 +1398,8 @@ fn held_ships_are_carried_until_a_writer_touches_them() {
         let at = fleet::ship(index) + cship::BASE_ORGANISATION - fleet::LOW;
         world.low[at..at + 8].copy_from_slice(&value.to_le_bytes());
     };
-    let (fresh, read) = hour(&mut capture, &world, Check::Nothing);
-    let (carried, served) = hour(&mut capture, &world, Check::Nothing);
+    let (fresh, read) = hour(&mut capture, &world);
+    let (carried, served) = hour(&mut capture, &world);
     assert_eq!(carried, fresh);
     // A carried ship gathers neither its fields nor its pool entries.
     assert!(
@@ -1411,7 +1410,7 @@ fn held_ships_are_carried_until_a_writer_touches_them() {
     // A task force whose doctrine tree writer ran has its doctrine walked
     // again; the other's contribution stays served.
     drop(watches.notify(fleet::TASKS[0], 6));
-    let (rows, rewalked) = hour(&mut capture, &world, Check::Nothing);
+    let (rows, rewalked) = hour(&mut capture, &world);
     assert_eq!(rows, fresh);
     assert!(
         rewalked >= served + 4,
@@ -1420,17 +1419,14 @@ fn held_ships_are_carried_until_a_writer_touches_them() {
 
     base_organisation(&mut world, 3, 20_000_000);
     drop(watches.notify(fleet::ship(3), 0));
-    let (rows, _) = hour(&mut capture, &world, Check::Nothing);
+    let (rows, _) = hour(&mut capture, &world);
     assert_ne!(rows[3].maximum_organisation, fresh[3].maximum_organisation);
     assert_eq!(rows[..3], fresh[..3]);
 
     base_organisation(&mut world, 4, 30_000_000);
-    let (carried, _) = hour(&mut capture, &world, Check::Nothing);
+    let (carried, _) = hour(&mut capture, &world);
     assert_eq!(carried[4], fresh[4], "no writer was observed");
     assert!(!watches.poisoned());
-    let (verified, _) = hour(&mut capture, &world, Check::Every);
-    assert_ne!(verified[4], fresh[4], "the fresh read is published");
-    assert!(watches.poisoned());
 }
 
 #[test]
@@ -1456,21 +1452,11 @@ fn deferred_ship_store_publication_preserves_carry_and_discards_unfinished_store
     };
     for _ in 0..2 {
         seed(&mut synchronous);
-        synchronous.capture_carrying(
-            &world,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        synchronous.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
         seed(&mut deferred);
         deferred.pending_owned = true;
         deferred.defer_owned = true;
-        deferred.capture_carrying(
-            &world,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        deferred.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
         deferred.defer_owned = false;
         drop(watches.notify(fleet::ship(0), 0));
         let reads = world.calls.get();
@@ -1494,12 +1480,7 @@ fn deferred_ship_store_publication_preserves_carry_and_discards_unfinished_store
     seed(&mut deferred);
     deferred.pending_owned = true;
     deferred.defer_owned = true;
-    deferred.capture_carrying(
-        &world,
-        CaptureContext::new(fleet::IMAGE),
-        &watches,
-        Check::Nothing,
-    );
+    deferred.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
     deferred.reset();
     assert!(!deferred.pending_owned);
     assert!(deferred.store.held.is_empty());
@@ -1510,8 +1491,8 @@ fn deferred_ship_store_publication_preserves_carry_and_discards_unfinished_store
 /// force's terms are read with it (it is the task force's first ship in the
 /// range): the model reader and its suffixes read only the ship's certified
 /// inputs, its variants and the session's fixed content, so they do not run,
-/// and a hull definition changed under them is not read again until a
-/// verifying hour reads the ship afresh.
+/// and a hull definition changed under them is not read again while the ship
+/// is carried; a fresh read shows the change.
 #[test]
 fn a_carried_ships_model_part_is_not_read_again() {
     use crate::ship_model_changes::Watches;
@@ -1524,23 +1505,24 @@ fn a_carried_ships_model_part_is_not_read_again() {
             entries: 64,
         },
     });
-    let mut hour = |world: &Fleet, check: Check| {
+    let hour = |capture: &mut Captured, world: &Fleet| {
         capture.begin_sources();
         for index in 0..fleet::SHIPS {
             capture.visit_source(fleet::ship(index), &fleet::census(index));
         }
         capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
-        capture.capture_carrying(world, CaptureContext::new(fleet::IMAGE), &watches, check);
+        capture.capture_carrying(world, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
         capture.rows.rows[..fleet::SHIPS].to_vec()
     };
-    let fresh = hour(&world, Check::Nothing);
+    let fresh = hour(&mut capture, &world);
     assert_eq!(fresh[0].hull_sprite.as_bytes(), b"hull");
     world.low[fleet::DEFINITION + engine_native::cequipment_type::HULL_SPRITE - fleet::LOW] = b'w';
-    assert_eq!(hour(&world, Check::Nothing), fresh);
-    let verified = hour(&world, Check::Every);
-    assert_eq!(verified[0].hull_sprite.as_bytes(), b"wull");
-    assert_eq!(verified[8].hull_sprite.as_bytes(), b"wull");
+    assert_eq!(hour(&mut capture, &world), fresh);
+    capture.forget_stores();
+    let read = hour(&mut capture, &world);
+    assert_eq!(read[0].hull_sprite.as_bytes(), b"wull");
+    assert_eq!(read[8].hull_sprite.as_bytes(), b"wull");
 }
 
 /// A ship a hooked writer touched is gathered again; when its own objects
@@ -1565,12 +1547,7 @@ fn a_touched_ship_with_unchanged_bytes_carries_again() {
             capture.visit_source(fleet::ship(index), &fleet::census(index));
         }
         capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
-        capture.capture_carrying(
-            world,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        capture.capture_carrying(world, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
         capture.rows.rows[..fleet::SHIPS].to_vec()
     };
@@ -1618,12 +1595,7 @@ fn a_held_row_in_the_buffer_is_not_rewritten() {
             capture.visit_source(fleet::ship(index), &fleet::census(index));
         }
         capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
-        capture.capture_carrying(
-            world,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        capture.capture_carrying(world, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
     };
     hour(&mut capture, &world);
@@ -1660,12 +1632,7 @@ fn a_task_forces_first_ship_carries_its_row() {
             capture.visit_source(fleet::ship(index), &fleet::census(index));
         }
         capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
-        capture.capture_carrying(
-            &world,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        capture.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
         capture.rows.rows[..fleet::SHIPS].to_vec()
     };
@@ -1703,12 +1670,7 @@ fn unavailable_power_certificate_preserves_core_carry_without_suffix_polling() {
             capture.visit_source_growing(fleet::ship(index), &fleet::census(index));
         }
         capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
-        capture.capture_carrying(
-            &world,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        capture.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
         assert!(
             capture.rows.rows[..fleet::SHIPS]
@@ -1753,12 +1715,7 @@ fn held_country_terms_are_not_read_again() {
             capture.visit_source(fleet::ship(index), &fleet::census(index));
         }
         capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
-        capture.capture_carrying(
-            &world,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        capture.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
     };
     hour(&mut capture);
@@ -1773,7 +1730,7 @@ fn held_country_terms_are_not_read_again() {
 }
 
 /// Compute per ship, in warm memory, over 2,048 ships: the median wall time
-/// of a range's hour read afresh (every ship compared) and with finished rows
+/// of a range's hour read afresh (nothing held) and with finished rows
 /// carried (all but each task force's first ship), in two task forces and in
 /// task forces of three ships (as at 1943), the latter also with each
 /// first ship's model part read again (no model carry: such a ship runs every
@@ -1787,36 +1744,24 @@ fn ship_model_compute_bench() {
     use crate::ship_model_changes::Watches;
     const HOURS: usize = 200;
     const SHIPS: usize = 2048;
-    // (label, ships per task force, check, model carry, every ship touched
-    // by a writer that changed no byte)
-    for (label, per_task, check, model_carry, touched) in [
-        ("read afresh", 1024, Check::Every, true, false),
-        ("rows carried", 1024, Check::Nothing, true, false),
-        (
-            "three per task force, read afresh",
-            3,
-            Check::Every,
-            true,
-            false,
-        ),
-        (
-            "three per task force, rows carried",
-            3,
-            Check::Nothing,
-            true,
-            false,
-        ),
+    // (label, ships per task force, read afresh, model carry, every ship
+    // touched by a writer that changed no byte)
+    for (label, per_task, afresh, model_carry, touched) in [
+        ("read afresh", 1024, true, true, false),
+        ("rows carried", 1024, false, true, false),
+        ("three per task force, read afresh", 3, true, true, false),
+        ("three per task force, rows carried", 3, false, true, false),
         (
             "three per task force, no model carry",
             3,
-            Check::Nothing,
+            false,
             false,
             false,
         ),
         (
             "three per task force, every ship touched",
             3,
-            Check::Nothing,
+            false,
             true,
             true,
         ),
@@ -1846,13 +1791,11 @@ fn ship_model_compute_bench() {
                         drop(watches.notify(fleet::ship(index), 0));
                     }
                 }
+                if afresh {
+                    capture.forget_stores();
+                }
                 let started = std::time::Instant::now();
-                capture.capture_carrying(
-                    &world,
-                    CaptureContext::new(fleet::IMAGE),
-                    &watches,
-                    check,
-                );
+                capture.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
                 assert_eq!(capture.outcomes(), [Outcome::Rows { len: SHIPS }]);
                 started.elapsed().as_nanos() as f64 / SHIPS as f64
             })
@@ -1990,12 +1933,7 @@ fn ship_model_quiet_bench() {
         capture.finish_sources(Outcome::Rows { len: SHIPS });
         census_ns.push(per_ship(started));
         let started = std::time::Instant::now();
-        capture.capture_carrying(
-            &world,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        capture.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
         capture_ns.push(per_ship(started));
         let started = std::time::Instant::now();
         for index in 0..SHIPS {
@@ -2165,18 +2103,12 @@ mod carry_cost_bench {
         sequences: AtomicUsize,
         trees: AtomicUsize,
         certificates: AtomicUsize,
-        mismatches: AtomicUsize,
     }
 
     impl Changes for CountedChanges<'_> {
         fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
             self.sequences.fetch_add(1, Ordering::Relaxed);
             self.inner.sequence(receiver)
-        }
-
-        fn mismatch(&self) {
-            self.mismatches.fetch_add(1, Ordering::Relaxed);
-            self.inner.mismatch();
         }
 
         fn tree_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
@@ -2225,14 +2157,13 @@ mod carry_cost_bench {
             }
         }
 
-        fn check(self) -> Check {
-            match self {
-                Self::Fresh => Check::Every,
-                _ => Check::Nothing,
-            }
-        }
-
-        fn prepare(self, world: &mut World, watches: &Watches, hour: usize) {
+        fn prepare(
+            self,
+            world: &mut World,
+            watches: &Watches,
+            capture: &mut Captured,
+            hour: usize,
+        ) {
             match self {
                 Self::Moved => world.move_tasks(hour),
                 Self::Revalidated => {
@@ -2240,7 +2171,8 @@ mod carry_cost_bench {
                         drop(watches.notify(fleet::ship(index), 0));
                     }
                 }
-                _ => {}
+                Self::Fresh => capture.forget_stores(),
+                Self::Carried => {}
             }
         }
     }
@@ -2291,16 +2223,10 @@ mod carry_cost_bench {
             sequences: AtomicUsize::new(0),
             trees: AtomicUsize::new(0),
             certificates: AtomicUsize::new(0),
-            mismatches: AtomicUsize::new(0),
         };
         let accounting = crate::read_accounting::Capture::new();
         let memory = engine_native::memory::CountedMemory::new(Borrowed(&world.memory));
-        capture.capture_carrying(
-            &memory,
-            CaptureContext::new(fleet::IMAGE),
-            &changes,
-            path.check(),
-        );
+        capture.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &changes);
         let reads = accounting.finish()[TableId::ShipModels.index()];
         assert!(reads.copy_calls + reads.scattered_calls + reads.record_calls != 0);
         assert_eq!(
@@ -2401,19 +2327,9 @@ mod carry_cost_bench {
         );
     }
 
-    fn hour(
-        world: &World,
-        capture: &mut Captured,
-        changes: &dyn Changes,
-        check: Check,
-    ) -> Vec<cship::ModelRow> {
+    fn hour(world: &World, capture: &mut Captured, changes: &dyn Changes) -> Vec<cship::ModelRow> {
         world.seed(capture);
-        capture.capture_carrying(
-            &world.memory,
-            CaptureContext::new(fleet::IMAGE),
-            changes,
-            check,
-        );
+        capture.capture_carrying(&world.memory, CaptureContext::new(fleet::IMAGE), changes);
         assert_eq!(
             capture.outcomes(),
             [Outcome::Rows {
@@ -2423,8 +2339,18 @@ mod carry_cost_bench {
         capture.rows.rows[..world.census.len()].to_vec()
     }
 
+    /// An hour that reads every ship afresh: the reference a carried hour equals.
+    fn fresh_hour(
+        world: &World,
+        capture: &mut Captured,
+        changes: &dyn Changes,
+    ) -> Vec<cship::ModelRow> {
+        capture.forget_stores();
+        hour(world, capture, changes)
+    }
+
     #[test]
-    fn quiet_task_arrays_share_ownership_through_verification_and_roster_changes() {
+    fn quiet_task_arrays_share_ownership_through_roster_changes() {
         let mut world = World::new(4);
         let mut fields = cship::ShipFields::new(fleet::IMAGE);
         for index in 0..world.tasks.len() {
@@ -2442,7 +2368,7 @@ mod carry_cost_bench {
         }
         let watches = Watches::enabled(4 * world.census.len());
         let mut captured = capture(world.census.len());
-        let fresh = hour(&world, &mut captured, &watches, Check::Nothing);
+        let fresh = hour(&world, &mut captured, &watches);
         let arrays: Vec<_> = captured
             .store
             .tasks
@@ -2454,8 +2380,8 @@ mod carry_cost_bench {
                 )
             })
             .collect();
-        for check in [Check::Nothing, Check::Nothing, Check::Every] {
-            assert_eq!(hour(&world, &mut captured, &watches, check), fresh);
+        for _ in 0..3 {
+            assert_eq!(hour(&world, &mut captured, &watches), fresh);
             for (pointer, entries) in &arrays {
                 assert!(!entries.is_empty());
                 let held = captured
@@ -2473,13 +2399,13 @@ mod carry_cost_bench {
         }
         let all = world.census.clone();
         world.census.truncate(2 * PER_TASK);
-        let deleted = hour(&world, &mut captured, &watches, Check::Nothing);
+        let deleted = hour(&world, &mut captured, &watches);
         assert_eq!(captured.store.tasks.len(), 2);
         let mut direct = capture(all.len());
-        assert_eq!(deleted, hour(&world, &mut direct, &watches, Check::Every));
+        assert_eq!(deleted, fresh_hour(&world, &mut direct, &watches));
         world.census = all;
-        let added = hour(&world, &mut captured, &watches, Check::Nothing);
-        assert_eq!(added, hour(&world, &mut direct, &watches, Check::Every));
+        let added = hour(&world, &mut captured, &watches);
+        assert_eq!(added, fresh_hour(&world, &mut direct, &watches));
         assert_eq!(captured.store.tasks.len(), 4);
     }
 
@@ -2489,7 +2415,7 @@ mod carry_cost_bench {
         let mut world = World::new(countries);
         let watches = Watches::enabled(4 * world.census.len());
         let mut held = capture(world.census.len());
-        let previous = hour(&world, &mut held, &watches, Check::Nothing);
+        let previous = hour(&world, &mut held, &watches);
         for index in 0..world.census.len() {
             let at = fleet::ship(index) + cship::BASE_ORGANISATION - fleet::LOW;
             world.memory.low[at..at + 8].copy_from_slice(&30_000_000_i64.to_le_bytes());
@@ -2500,7 +2426,7 @@ mod carry_cost_bench {
             .watched
             .set(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA);
         world.memory.hits.set(0);
-        let current = hour(&world, &mut held, &watches, Check::Nothing);
+        let current = hour(&world, &mut held, &watches);
         assert_ne!(
             current[0].maximum_organisation,
             previous[0].maximum_organisation
@@ -2511,7 +2437,7 @@ mod carry_cost_bench {
             "equal model suffixes need no definition database"
         );
         let mut fresh = capture(world.census.len());
-        assert_eq!(current, hour(&world, &mut fresh, &watches, Check::Every));
+        assert_eq!(current, fresh_hour(&world, &mut fresh, &watches));
         assert!(
             world.memory.hits.get() > 0,
             "fresh reference still reads the model suffix"
@@ -2521,13 +2447,13 @@ mod carry_cost_bench {
         let at = fleet::ship(0) + cship::BASE_ORGANISATION - fleet::LOW;
         world.memory.low[at..at + 8].copy_from_slice(&31_000_000_i64.to_le_bytes());
         world.memory.hits.set(0);
-        let recovered = hour(&world, &mut held, &watches, Check::Nothing);
+        let recovered = hour(&world, &mut held, &watches);
         assert!(
             world.memory.hits.get() > 0,
             "an epoch change cannot use partial revalidation"
         );
         let mut fresh = capture(world.census.len());
-        assert_eq!(recovered, hour(&world, &mut fresh, &watches, Check::Every));
+        assert_eq!(recovered, fresh_hour(&world, &mut fresh, &watches));
     }
 
     #[test]
@@ -2539,7 +2465,7 @@ mod carry_cost_bench {
             let ships = world.census.len();
             let watches = Watches::enabled(4 * ships);
             let mut held = capture(ships);
-            hour(&world, &mut held, &watches, Check::Nothing);
+            hour(&world, &mut held, &watches);
             super::MODEL_CARRY_OFF.set(!model_carry);
             let mut samples = Vec::with_capacity(SAMPLES);
             let mut calls = 0;
@@ -2553,12 +2479,7 @@ mod carry_cost_bench {
                 world.seed(&mut held);
                 let before = world.memory.calls.get();
                 let timer = Instant::now();
-                held.capture_carrying(
-                    &world.memory,
-                    CaptureContext::new(fleet::IMAGE),
-                    &watches,
-                    Check::Nothing,
-                );
+                held.capture_carrying(&world.memory, CaptureContext::new(fleet::IMAGE), &watches);
                 samples.push(timer.elapsed().as_nanos() as f64 / ships as f64);
                 calls += world.memory.calls.get() - before;
                 assert_eq!(held.outcomes(), [Outcome::Rows { len: ships }]);
@@ -2586,23 +2507,17 @@ mod carry_cost_bench {
         let watches = Watches::enabled(4 * world.census.len());
         let mut capture = capture(world.census.len());
         let before_fresh = world.memory.calls.get();
-        let fresh = hour(&world, &mut capture, &watches, Check::Nothing);
+        let fresh = hour(&world, &mut capture, &watches);
         let fresh_calls = world.memory.calls.get() - before_fresh;
         let changes = CountedChanges {
             inner: &watches,
             sequences: AtomicUsize::new(0),
             trees: AtomicUsize::new(0),
             certificates: AtomicUsize::new(0),
-            mismatches: AtomicUsize::new(0),
         };
         world.seed(&mut capture);
         let before = world.memory.calls.get();
-        capture.capture_carrying(
-            &world.memory,
-            CaptureContext::new(fleet::IMAGE),
-            &changes,
-            Check::Nothing,
-        );
+        capture.capture_carrying(&world.memory, CaptureContext::new(fleet::IMAGE), &changes);
         assert_eq!(capture.rows.rows[..world.census.len()], fresh);
         let cost = CARRY_COST.get();
         assert_eq!(cost.searches, 0);
@@ -2637,9 +2552,9 @@ mod carry_cost_bench {
         let mut world = World::new(4);
         let watches = Watches::enabled(4 * world.census.len());
         let mut capture = capture(world.census.len());
-        hour(&world, &mut capture, &watches, Check::Nothing);
+        hour(&world, &mut capture, &watches);
         world.move_tasks(1);
-        let carried = hour(&world, &mut capture, &watches, Check::Nothing);
+        let carried = hour(&world, &mut capture, &watches);
         let cost = CARRY_COST.get();
         assert_eq!(
             cost.cold_ship_bytes, 0,
@@ -2647,11 +2562,11 @@ mod carry_cost_bench {
         );
         assert_eq!(cost.row_clones, 0);
         let mut direct = self::capture(world.census.len());
-        assert_eq!(carried, hour(&world, &mut direct, &watches, Check::Every));
+        assert_eq!(carried, fresh_hour(&world, &mut direct, &watches));
         const MARK: i32 = 0x5eed;
         capture.rows.rows[5].model_number = MARK;
         world.move_tasks(0);
-        let rows = hour(&world, &mut capture, &watches, Check::Nothing);
+        let rows = hour(&world, &mut capture, &watches);
         assert_eq!(
             rows[5].model_number, MARK,
             "only organisation and roster position are written"
@@ -2663,7 +2578,7 @@ mod carry_cost_bench {
         let mut world = World::new(4);
         let watches = Watches::enabled(4 * world.census.len());
         let mut capture = capture(world.census.len());
-        hour(&world, &mut capture, &watches, Check::Nothing);
+        hour(&world, &mut capture, &watches);
         // Swap the two occurrences within a task force, keeping parent and
         // current roster identity intact while changing census positions.
         world.census.swap(0, 1);
@@ -2679,12 +2594,7 @@ mod carry_cost_bench {
         capture.finish_sources(Outcome::Rows {
             len: world.census.len(),
         });
-        capture.capture_carrying(
-            &world.memory,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        capture.capture_carrying(&world.memory, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(
             capture.outcomes(),
             [Outcome::Rows {
@@ -2746,9 +2656,9 @@ mod carry_cost_bench {
             let mut world = critical_world();
             let watches = Watches::enabled(4 * world.census.len());
             let mut held = capture(world.census.len());
-            let seeded = hour(&world, &mut held, &watches, Check::Nothing);
+            let seeded = hour(&world, &mut held, &watches);
             assert!(seeded.iter().all(|row| row.has_criticals == Some(1)));
-            let quiet = hour(&world, &mut held, &watches, Check::Nothing);
+            let quiet = hour(&world, &mut held, &watches);
             assert_eq!(seeded, quiet);
             world.move_tasks(1);
             let memory = CriticalMemory {
@@ -2758,12 +2668,7 @@ mod carry_cost_bench {
                 fault,
             };
             world.seed(&mut held);
-            held.capture_carrying(
-                &memory,
-                CaptureContext::new(fleet::IMAGE),
-                &watches,
-                Check::Nothing,
-            );
+            held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
             let outcome = held.outcomes();
             let carried = held.rows.rows[..world.census.len()].to_vec();
             assert_eq!(
@@ -2792,12 +2697,7 @@ mod carry_cost_bench {
             let mut direct = capture(world.census.len());
             memory.count_reads.set(0);
             world.seed(&mut direct);
-            direct.capture_carrying(
-                &memory,
-                CaptureContext::new(fleet::IMAGE),
-                &watches,
-                Check::Every,
-            );
+            direct.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
             assert_eq!(outcome, direct.outcomes());
             if fault.is_none() {
                 assert_eq!(carried, direct.rows.rows[..world.census.len()]);
@@ -2810,19 +2710,15 @@ mod carry_cost_bench {
         let world = World::new(4);
         let watches = Watches::enabled(4 * world.census.len());
         let mut capture = capture(world.census.len());
-        let expected = hour(&world, &mut capture, &watches, Check::Nothing);
+        let expected = hour(&world, &mut capture, &watches);
         drop(watches.notify(fleet::ship(3), 0));
         let changes = CountedChanges {
             inner: &watches,
             sequences: AtomicUsize::new(0),
             trees: AtomicUsize::new(0),
             certificates: AtomicUsize::new(0),
-            mismatches: AtomicUsize::new(0),
         };
-        assert_eq!(
-            hour(&world, &mut capture, &changes, Check::Nothing),
-            expected
-        );
+        assert_eq!(hour(&world, &mut capture, &changes), expected);
         let cost = CARRY_COST.get();
         assert_eq!(cost.searches, 0);
         assert_eq!(cost.row_clones, 0);
@@ -2833,10 +2729,7 @@ mod carry_cost_bench {
         );
         assert!(!watches.poisoned());
         watches.boundary(true);
-        assert_eq!(
-            hour(&world, &mut capture, &watches, Check::Nothing),
-            expected
-        );
+        assert_eq!(hour(&world, &mut capture, &watches), expected);
         assert!(
             CARRY_COST.get().cold_ship_bytes
                 >= world.census.len() * std::mem::size_of::<cship::HeldShip>()
@@ -2881,7 +2774,7 @@ mod carry_cost_bench {
         let world = World::new(4);
         let watches = Watches::enabled(4 * world.census.len());
         let mut held = capture(world.census.len());
-        let previous = hour(&world, &mut held, &watches, Check::Nothing);
+        let previous = hour(&world, &mut held, &watches);
         let memory = WriterDuringReads {
             bytes: RefCell::new(world.memory.low.clone()),
             watches: &watches,
@@ -2889,12 +2782,7 @@ mod carry_cost_bench {
             fired: Cell::new(false),
         };
         world.seed(&mut held);
-        held.capture_carrying(
-            &memory,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
         assert!(memory.fired.get());
         assert_eq!(
             held.outcomes(),
@@ -2908,12 +2796,7 @@ mod carry_cost_bench {
         );
         let mut direct = capture(world.census.len());
         world.seed(&mut direct);
-        direct.capture_carrying(
-            &memory,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Every,
-        );
+        direct.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(
             held.rows.rows[..world.census.len()],
             direct.rows.rows[..world.census.len()]
@@ -2945,11 +2828,11 @@ mod carry_cost_bench {
             }
         }
         let mut held = capture(world.census.len());
-        let initial = hour(&world, &mut held, &watches, Check::Nothing);
+        let initial = hour(&world, &mut held, &watches);
         world.memory.low[variant + engine_native::cequipment_variant::VERSION - fleet::LOW] = 7;
-        let carried = hour(&world, &mut held, &watches, Check::Nothing);
+        let carried = hour(&world, &mut held, &watches);
         let mut direct = capture(world.census.len());
-        let fresh = hour(&world, &mut direct, &watches, Check::Every);
+        let fresh = fresh_hour(&world, &mut direct, &watches);
         assert_ne!(fresh[0].hull_variant, initial[0].hull_variant);
         assert_eq!(carried, fresh);
         assert!(!watches.poisoned());
@@ -2981,58 +2864,19 @@ mod carry_cost_bench {
 
     #[test]
     fn partial_definition_suffixes_recover_without_carrying_or_poisoning() {
-        for check in [Check::Nothing, Check::Every] {
-            let world = World::new(4);
-            let watches = Watches::enabled(4 * world.census.len());
-            let mut held = capture(world.census.len());
-            world.seed(&mut held);
-            held.capture_carrying(
-                &CriticalMemory {
-                    inner: &world.memory,
-                    watched: 0,
-                    count_reads: Cell::new(0),
-                    fault: Some(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA),
-                },
-                CaptureContext::new(fleet::IMAGE),
-                &watches,
-                Check::Nothing,
-            );
-            assert_eq!(
-                held.outcomes(),
-                [Outcome::Rows {
-                    len: world.census.len()
-                }]
-            );
-            assert_eq!(
-                held.rows.rows[0].hull_variant.unwrap().definition_index,
-                None
-            );
-            let recovered = hour(&world, &mut held, &watches, check);
-            let mut direct = capture(world.census.len());
-            assert_eq!(recovered, hour(&world, &mut direct, &watches, Check::Every));
-            assert_eq!(recovered[0].hull_variant.unwrap().definition_index, Some(1));
-            assert!(!watches.poisoned());
-        }
-    }
-
-    #[test]
-    fn sampled_definition_suffix_faults_publish_without_poisoning() {
         let world = World::new(4);
         let watches = Watches::enabled(4 * world.census.len());
         let mut held = capture(world.census.len());
-        hour(&world, &mut held, &watches, Check::Nothing);
-        let memory = CriticalMemory {
-            inner: &world.memory,
-            watched: 0,
-            count_reads: Cell::new(0),
-            fault: Some(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA),
-        };
         world.seed(&mut held);
         held.capture_carrying(
-            &memory,
+            &CriticalMemory {
+                inner: &world.memory,
+                watched: 0,
+                count_reads: Cell::new(0),
+                fault: Some(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA),
+            },
             CaptureContext::new(fleet::IMAGE),
             &watches,
-            Check::Every,
         );
         assert_eq!(
             held.outcomes(),
@@ -3040,106 +2884,15 @@ mod carry_cost_bench {
                 len: world.census.len()
             }]
         );
-        let mut direct = capture(world.census.len());
-        world.seed(&mut direct);
-        direct.capture_carrying(
-            &memory,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Every,
-        );
-        assert_eq!(held.outcomes(), direct.outcomes());
-        assert_eq!(
-            held.rows.rows[..world.census.len()],
-            direct.rows.rows[..world.census.len()]
-        );
         assert_eq!(
             held.rows.rows[0].hull_variant.unwrap().definition_index,
             None
         );
+        let recovered = hour(&world, &mut held, &watches);
+        let mut direct = capture(world.census.len());
+        assert_eq!(recovered, fresh_hour(&world, &mut direct, &watches));
+        assert_eq!(recovered[0].hull_variant.unwrap().definition_index, Some(1));
         assert!(!watches.poisoned());
-    }
-
-    #[test]
-    fn sampled_suffix_faults_do_not_hide_critical_organisation_mismatches() {
-        let mut world = critical_world();
-        let entry = fleet::ship(0) + 0xa00 - fleet::LOW;
-        let critical =
-            u64::from_le_bytes(world.memory.low[entry..entry + 8].try_into().unwrap()) as usize;
-        let table = fleet::LOW + world.memory.low.len();
-        world.memory.low.resize(world.memory.low.len() + 0x20000, 0);
-        let at = critical + 0x98 - fleet::LOW;
-        let values = critical + 0x200;
-        world.memory.low[at..at + 8].copy_from_slice(&(values as u64).to_le_bytes());
-        world.memory.low[at + 8..at + 12].copy_from_slice(&1_u32.to_le_bytes());
-        world.memory.low[at + 12..at + 16].copy_from_slice(&1_u32.to_le_bytes());
-        let at = values - fleet::LOW;
-        world.memory.low[at..at + 4]
-            .copy_from_slice(&engine_executable::modifier_keys::NAVY_ORG.to_le_bytes());
-        world.memory.low[at + 8..at + 16].copy_from_slice(&100_000_i64.to_le_bytes());
-        let watches = Watches::enabled(4 * world.census.len());
-        let changes = CountedChanges {
-            inner: &watches,
-            sequences: AtomicUsize::new(0),
-            trees: AtomicUsize::new(0),
-            certificates: AtomicUsize::new(0),
-            mismatches: AtomicUsize::new(0),
-        };
-        let mut held = capture(world.census.len());
-        world.seed(&mut held);
-        held.capture_carrying(
-            &MetadataMemory {
-                inner: &world.memory,
-                table,
-                fault: None,
-            },
-            CaptureContext::new(fleet::IMAGE),
-            &changes,
-            Check::Nothing,
-        );
-        let before = held.rows.rows[0].maximum_organisation;
-        world.memory.low[entry + 8..entry + 12].copy_from_slice(&5_i32.to_le_bytes());
-        world.seed(&mut held);
-        held.capture_carrying(
-            &MetadataMemory {
-                inner: &world.memory,
-                table,
-                fault: Some(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA),
-            },
-            CaptureContext::new(fleet::IMAGE),
-            &changes,
-            Check::Every,
-        );
-        assert_eq!(
-            held.outcomes(),
-            [Outcome::Rows {
-                len: world.census.len()
-            }]
-        );
-        assert_eq!(
-            held.rows.rows[0].hull_variant.unwrap().definition_index,
-            None
-        );
-        assert_ne!(held.rows.rows[0].maximum_organisation, before);
-        assert_eq!(changes.mismatches.load(Ordering::Relaxed), 1);
-        assert!(watches.poisoned());
-        let mut direct = capture(world.census.len());
-        world.seed(&mut direct);
-        direct.capture_carrying(
-            &MetadataMemory {
-                inner: &world.memory,
-                table,
-                fault: Some(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA),
-            },
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Every,
-        );
-        assert_eq!(held.outcomes(), direct.outcomes());
-        assert_eq!(
-            held.rows.rows[..world.census.len()],
-            direct.rows.rows[..world.census.len()]
-        );
     }
 
     #[test]
@@ -3177,7 +2930,6 @@ mod carry_cost_bench {
                 },
                 CaptureContext::new(fleet::IMAGE),
                 &watches,
-                Check::Nothing,
             );
             assert_eq!(
                 held.outcomes(),
@@ -3203,12 +2955,7 @@ mod carry_cost_bench {
                 fault: None,
             };
             world.seed(&mut held);
-            held.capture_carrying(
-                &memory,
-                CaptureContext::new(fleet::IMAGE),
-                &watches,
-                Check::Nothing,
-            );
+            held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
             assert_eq!(
                 held.outcomes(),
                 [Outcome::Rows {
@@ -3218,12 +2965,7 @@ mod carry_cost_bench {
             assert_ne!(held.rows.rows[0].maximum_organisation, before);
             let mut direct = capture(world.census.len());
             world.seed(&mut direct);
-            direct.capture_carrying(
-                &memory,
-                CaptureContext::new(fleet::IMAGE),
-                &watches,
-                Check::Every,
-            );
+            direct.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
             assert_eq!(held.outcomes(), direct.outcomes());
             assert_eq!(
                 held.rows.rows[..world.census.len()],
@@ -3265,7 +3007,6 @@ mod carry_cost_bench {
                 },
                 CaptureContext::new(fleet::IMAGE),
                 &watches,
-                Check::Nothing,
             );
             assert_eq!(
                 held.outcomes(),
@@ -3291,24 +3032,14 @@ mod carry_cost_bench {
             };
             world.seed(&mut held);
             let before = count(Batch::ShipModelGuards);
-            held.capture_carrying(
-                &memory,
-                CaptureContext::new(fleet::IMAGE),
-                &watches,
-                Check::Nothing,
-            );
+            held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
             assert_eq!(
                 count(Batch::ShipModelGuards) - before,
                 u64::from(!bad_variant)
             );
             let mut direct = capture(world.census.len());
             world.seed(&mut direct);
-            direct.capture_carrying(
-                &memory,
-                CaptureContext::new(fleet::IMAGE),
-                &watches,
-                Check::Every,
-            );
+            direct.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
             assert_eq!(held.outcomes(), direct.outcomes());
         }
     }
@@ -3348,12 +3079,7 @@ mod carry_cost_bench {
         assert!(!fields.held_variant_unchanged(&memory, &variant_observation));
         let mut held = capture(world.census.len());
         world.seed(&mut held);
-        held.capture_carrying(
-            &memory,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(
             held.outcomes(),
             [Outcome::Rows {
@@ -3372,20 +3098,10 @@ mod carry_cost_bench {
             version: variant + engine_native::cequipment_variant::VERSION,
         };
         world.seed(&mut held);
-        held.capture_carrying(
-            &memory,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
         let mut direct = capture(world.census.len());
         world.seed(&mut direct);
-        direct.capture_carrying(
-            &memory,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Every,
-        );
+        direct.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(held.outcomes(), direct.outcomes());
         assert_eq!(
             held.outcomes(),
@@ -3456,12 +3172,7 @@ mod carry_cost_bench {
             );
             let mut held = capture(world.census.len());
             world.seed(&mut held);
-            held.capture_carrying(
-                &memory,
-                CaptureContext::new(fleet::IMAGE),
-                &watches,
-                Check::Nothing,
-            );
+            held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
             assert_eq!(
                 held.outcomes(),
                 [Outcome::Rows {
@@ -3488,20 +3199,10 @@ mod carry_cost_bench {
             fields.visit(&memory, ship);
             assert!(!observation.same(&fields.held()));
             world.seed(&mut held);
-            held.capture_carrying(
-                &memory,
-                CaptureContext::new(fleet::IMAGE),
-                &watches,
-                Check::Nothing,
-            );
+            held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
             let mut direct = capture(world.census.len());
             world.seed(&mut direct);
-            direct.capture_carrying(
-                &memory,
-                CaptureContext::new(fleet::IMAGE),
-                &watches,
-                Check::Every,
-            );
+            direct.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
             assert_eq!(held.outcomes(), direct.outcomes());
             assert_eq!(
                 held.outcomes(),
@@ -3545,12 +3246,7 @@ mod carry_cost_bench {
         };
         let mut held = capture(world.census.len());
         world.seed(&mut held);
-        held.capture_carrying(
-            &memory,
-            CaptureContext::new(fleet::IMAGE),
-            &watches,
-            Check::Nothing,
-        );
+        held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
         assert_eq!(
             held.outcomes(),
             [Outcome::Rows {
@@ -3566,127 +3262,19 @@ mod carry_cost_bench {
         fields.visit_held(&world.memory, &observation);
         assert!(fields.held().revalidation_complete());
 
-        let current = hour(&world, &mut held, &watches, Check::Nothing);
+        let current = hour(&world, &mut held, &watches);
         let mut direct = capture(world.census.len());
-        assert_eq!(current, hour(&world, &mut direct, &watches, Check::Every));
+        assert_eq!(current, fresh_hour(&world, &mut direct, &watches));
         assert_eq!(current[0].subunit_index, Some(0));
         assert!(!watches.poisoned());
     }
 
-    #[test]
-    fn sampled_incomplete_own_gathers_compare_successful_fields() {
-        for changed in [false, true] {
-            let mut world = World::new(4);
-            let watches = Watches::enabled(4 * world.census.len());
-            let changes = CountedChanges {
-                inner: &watches,
-                sequences: AtomicUsize::new(0),
-                trees: AtomicUsize::new(0),
-                certificates: AtomicUsize::new(0),
-                mismatches: AtomicUsize::new(0),
-            };
-            let mut held = capture(world.census.len());
-            hour(&world, &mut held, &changes, Check::Nothing);
-            // Changed shared terms legitimately change the maximum. The ship's
-            // observed base must still be compared when a later gather fails.
-            world.move_tasks(1);
-            if changed {
-                let at = fleet::ship(0) + cship::BASE_ORGANISATION - fleet::LOW;
-                world.memory.low[at..at + 8].copy_from_slice(&20_000_000_i64.to_le_bytes());
-            }
-            let memory = SubunitGatherFault {
-                inner: &world.memory,
-                subunit: fleet::ship(0) + cship::SUBUNIT_INDEX,
-            };
-            world.seed(&mut held);
-            held.capture_carrying(
-                &memory,
-                CaptureContext::new(fleet::IMAGE),
-                &changes,
-                Check::Every,
-            );
-            assert_eq!(
-                held.outcomes(),
-                [Outcome::Rows {
-                    len: world.census.len()
-                }]
-            );
-            assert_eq!(held.rows.rows[0].subunit_index, None);
-            assert_eq!(
-                changes.mismatches.load(Ordering::Relaxed),
-                usize::from(changed)
-            );
-            assert_eq!(watches.poisoned(), changed);
-            let mut direct = capture(world.census.len());
-            world.seed(&mut direct);
-            direct.capture_carrying(
-                &memory,
-                CaptureContext::new(fleet::IMAGE),
-                &watches,
-                Check::Every,
-            );
-            assert_eq!(
-                held.rows.rows[..world.census.len()],
-                direct.rows.rows[..world.census.len()]
-            );
-        }
-    }
-
-    #[test]
-    fn sampled_model_failures_keep_independent_own_field_mismatches() {
-        for changed in [false, true] {
-            let mut world = World::new(4);
-            let watches = Watches::enabled(4 * world.census.len());
-            let changes = CountedChanges {
-                inner: &watches,
-                sequences: AtomicUsize::new(0),
-                trees: AtomicUsize::new(0),
-                certificates: AtomicUsize::new(0),
-                mismatches: AtomicUsize::new(0),
-            };
-            let mut held = capture(world.census.len());
-            hour(&world, &mut held, &changes, Check::Nothing);
-            if changed {
-                let at = fleet::ship(0) + cship::BASE_ORGANISATION - fleet::LOW;
-                world.memory.low[at..at + 8].copy_from_slice(&20_000_000_i64.to_le_bytes());
-            }
-            world.seed(&mut held);
-            held.capture_carrying(
-                &CriticalMemory {
-                    inner: &world.memory,
-                    watched: 0,
-                    count_reads: Cell::new(0),
-                    fault: Some(fleet::ship(0) + cship::MODEL_NUMBER),
-                },
-                CaptureContext::new(fleet::IMAGE),
-                &changes,
-                Check::Every,
-            );
-            assert!(matches!(held.outcomes()[0], Outcome::Unavailable { .. }));
-            assert_eq!(
-                changes.mismatches.load(Ordering::Relaxed),
-                usize::from(changed)
-            );
-            assert_eq!(watches.poisoned(), changed);
-        }
-    }
-
     fn split_hour(capture: &mut Captured, memory: &impl Memory, changes: &dyn Changes) {
         let parts = capture.split_details(3);
-        capture.capture_carrying(
-            memory,
-            CaptureContext::new(fleet::IMAGE),
-            changes,
-            Check::Nothing,
-        );
+        capture.capture_carrying(memory, CaptureContext::new(fleet::IMAGE), changes);
         for index in 0..parts - 1 {
             let mut part = capture.take_part(index);
-            part.capture_carrying(
-                memory,
-                CaptureContext::new(fleet::IMAGE),
-                changes,
-                Check::Nothing,
-            );
+            part.capture_carrying(memory, CaptureContext::new(fleet::IMAGE), changes);
             capture.restore_part(index, part);
         }
         capture.finish_split();
@@ -3913,13 +3501,12 @@ mod carry_cost_bench {
                         &world.memory,
                         CaptureContext::new(fleet::IMAGE),
                         &watches,
-                        Check::Nothing,
                     );
                     assert_eq!(capture.outcomes(), [Outcome::Rows { len: ships }]);
                 }
                 let mut samples = Vec::with_capacity(SAMPLES);
                 for hour in 1..=SAMPLES {
-                    path.prepare(&mut world, &watches, hour);
+                    path.prepare(&mut world, &watches, &mut capture, hour);
                     world.seed(&mut capture);
                     if cold {
                         evict(&mut eviction);
@@ -3929,7 +3516,6 @@ mod carry_cost_bench {
                         &world.memory,
                         CaptureContext::new(fleet::IMAGE),
                         &watches,
-                        path.check(),
                     );
                     samples.push(timer.elapsed().as_nanos() as f64 / ships as f64);
                     assert_eq!(capture.outcomes(), [Outcome::Rows { len: ships }]);
@@ -3942,7 +3528,7 @@ mod carry_cost_bench {
                     path.label(),
                     median(samples),
                 );
-                path.prepare(&mut world, &watches, SAMPLES + 1);
+                path.prepare(&mut world, &watches, &mut capture, SAMPLES + 1);
                 world.seed(&mut capture);
                 account(&world, &mut capture, &watches, path);
             }

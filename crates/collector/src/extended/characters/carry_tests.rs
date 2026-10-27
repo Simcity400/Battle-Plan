@@ -12,7 +12,6 @@ use super::quiet::QuietRoster;
 use super::*;
 use crate::character_changes::{Counting as Lookups, Watches};
 use crate::roster_changes::{Counts, Isolated, Roster as RosterDomain};
-use crate::sampled_verify::Check;
 use crate::unit_leader_changes::{Changes as LeaderChanges, Watches as LeaderWatches};
 use std::cell::Cell;
 
@@ -47,8 +46,6 @@ struct Hour {
     characters: TableView,
     reused: u64,
     read: u64,
-    verified: u64,
-    mismatches: u64,
     name_reads: usize,
     /// The roster job's prepared program served the hour.
     planned: bool,
@@ -76,8 +73,6 @@ fn hour(job: &mut CharactersJob, world: &World) -> Hour {
         characters: captured.tables()[0].clone(),
         reused: counts.reused,
         read: counts.read,
-        verified: counts.verified,
-        mismatches: counts.mismatches,
         name_reads: memory.hits.get(),
         planned,
     }
@@ -102,9 +97,9 @@ fn world() -> World {
     World::new(200)
 }
 
-fn job(watches: &'static Watches, check: Check) -> CharactersJob {
+fn job(watches: &'static Watches) -> CharactersJob {
     let mut job = CharactersJob::new_part(0);
-    job.carry = Carry::with(watches, Some(check));
+    job.carry = Carry::with(watches);
     job
 }
 
@@ -121,7 +116,7 @@ fn quiet_hours_read_no_character_name_and_publish_the_roster_walk_rows() {
     static WATCHES: Watches = Watches::new();
     let world = world();
     WATCHES.enable(world.characters);
-    let mut job = job(&WATCHES, Check::Nothing);
+    let mut job = job(&WATCHES);
     // The first hour reads and holds every row; later hours carry them.
     let first = hour(&mut job, &world);
     assert_eq!(first.characters, expected(&world));
@@ -144,7 +139,7 @@ fn quiet_hours_recertify_the_carried_set_without_a_lookup() {
     let characters = world.characters as u64;
     DOMAIN.watches.enable(world.characters);
     let mut job = CharactersJob::new_part(0);
-    job.carry = Carry::with(&DOMAIN, Some(Check::Nothing));
+    job.carry = Carry::with(&DOMAIN);
     settle(&mut job, &world);
     hour(&mut job, &world);
     DOMAIN.lookups();
@@ -185,7 +180,7 @@ fn a_renamed_character_alone_is_read_and_a_new_world_reads_every_name() {
     static WATCHES: Watches = Watches::new();
     let mut world = world();
     WATCHES.enable(world.characters);
-    let mut job = job(&WATCHES, Check::Nothing);
+    let mut job = job(&WATCHES);
     settle(&mut job, &world);
     // set_character_name on character 7, observed by its hooked setter.
     world.patch(World::character(7) + ccharacter::NAME, b"Rena");
@@ -205,70 +200,6 @@ fn a_renamed_character_alone_is_read_and_a_new_world_reads_every_name() {
     assert_eq!(reloaded.characters, expected(&world));
     assert_eq!(reloaded.reused, 0);
     assert!(reloaded.name_reads > 0);
-}
-
-#[test]
-fn verify_mode_reads_every_name_and_poisons_on_an_unobserved_rename() {
-    static WATCHES: Watches = Watches::new();
-    let mut world = world();
-    WATCHES.enable(world.characters);
-    let mut job = job(&WATCHES, Check::Every);
-    settle(&mut job, &world);
-    let verified = hour(&mut job, &world);
-    assert_eq!((verified.reused, verified.mismatches), (0, 0));
-    assert!(verified.name_reads > 0);
-    assert!(!WATCHES.poisoned());
-    // A rename no hook observed.
-    world.patch(World::character(9) + ccharacter::NAME, b"Odd!");
-    let caught = hour(&mut job, &world);
-    assert_eq!(caught.mismatches, 1);
-    assert!(WATCHES.poisoned());
-    assert_eq!(caught.characters, expected(&world));
-}
-
-#[test]
-fn sampled_hours_cover_every_carried_name_and_catch_an_unobserved_rename_within_one_rotation() {
-    static WATCHES: Watches = Watches::new();
-    let mut world = world();
-    WATCHES.enable(world.characters);
-    let mut job = job(&WATCHES, Check::Nothing);
-    settle(&mut job, &world);
-    // Any 24 consecutive hours read each carried character once, outside
-    // the prepared program, which still serves every hour.
-    let mut compared = 0;
-    for at in 0..24 {
-        job.carry.set_check(Check::Slice { hour: at });
-        let quiet = hour(&mut job, &world);
-        assert_eq!(quiet.characters, expected(&world));
-        assert_eq!((quiet.read, quiet.mismatches), (0, 0));
-        assert!(quiet.planned, "hour {at}");
-        compared += quiet.verified;
-    }
-    assert_eq!(compared, world.characters as u64);
-    // A rename no hook observed.
-    world.patch(World::character(9) + ccharacter::NAME, b"Odd!");
-    let mut id = [0; 4];
-    assert!(world.copy(World::character(9) + ccharacter::ID, &mut id));
-    let id = u32::from_le_bytes(id);
-    let mut caught = None;
-    for at in 0..24 {
-        job.carry.set_check(Check::Slice { hour: at });
-        let sampled = hour(&mut job, &world);
-        if sampled.mismatches != 0 {
-            caught = Some((at, sampled));
-            break;
-        }
-        assert_ne!(sampled.characters, expected(&world), "hour {at} carries");
-    }
-    let (at, caught) = caught.expect("caught within one rotation");
-    assert_eq!(at as u32, id % 24);
-    assert_eq!(caught.mismatches, 1);
-    assert!(WATCHES.poisoned());
-    assert_eq!(
-        caught.characters,
-        expected(&world),
-        "the hour reads every name afresh"
-    );
 }
 
 /// Counts the reads a quiet roster hour does not make: the roster's pointer pages and each
@@ -389,14 +320,10 @@ fn roster_hour(job: &mut CharactersJob, world: &World) -> RosterHour {
     }
 }
 
-fn roster_job(
-    watches: &'static Watches,
-    domain: &'static dyn RosterDomain,
-    check: Check,
-) -> CharactersJob {
+fn roster_job(watches: &'static Watches, domain: &'static dyn RosterDomain) -> CharactersJob {
     let mut job = CharactersJob::new_part(0);
-    job.carry = Carry::with(watches, Some(Check::Nothing));
-    job.roster = QuietRoster::with(domain, Some(check));
+    job.carry = Carry::with(watches);
+    job.roster = QuietRoster::with(domain);
     job
 }
 
@@ -424,9 +351,9 @@ fn quiet_roster_hours_publish_the_full_pass_without_walking_the_roster() {
     let world = world();
     WATCHES.enable(world.characters);
     DOMAIN.enable();
-    let mut quiet = roster_job(&WATCHES, &DOMAIN, Check::Nothing);
+    let mut quiet = roster_job(&WATCHES, &DOMAIN);
     // A job whose domain is never observed always runs the full pass.
-    let mut full = roster_job(&WATCHES, &NEVER, Check::Nothing);
+    let mut full = roster_job(&WATCHES, &NEVER);
     let first = roster_hour(&mut quiet, &world);
     assert!(first.counts.read && !first.counts.quiet);
     assert!(first.pages > 0 && first.identities > 0);
@@ -467,14 +394,14 @@ fn a_settled_quiet_hour_republishes_its_characters_rows() {
     let world = world();
     WATCHES.enable(world.characters);
     DOMAIN.enable();
-    let mut job = roster_job(&WATCHES, &DOMAIN, Check::Nothing);
+    let mut job = roster_job(&WATCHES, &DOMAIN);
     settle_roster(&mut job, &world);
     assert!(roster_hour(&mut job, &world).counts.quiet);
     let report = copy_characters_growing(&world, context(PART_MASKS[0]), &mut job, Roles::Gather);
     assert!(report.raw_ok && job.roster.quiet);
     assert!(job.published.matches(super::quiet::rows_key(MODULE, &job)));
     let version = job.carry.version;
-    let carry = std::mem::replace(&mut job.carry, Carry::with(&WATCHES, Some(Check::Nothing)));
+    let carry = std::mem::replace(&mut job.carry, Carry::with(&WATCHES));
     job.carry.version = version;
     let mut captured = Captured::with_capacities(&capacities());
     captured.decode_characters_payload(MODULE, &job, &mut [0; N]);
@@ -493,7 +420,7 @@ fn a_roster_write_reads_the_roster_again() {
     world.roster = Some((0..200).collect());
     WATCHES.enable(world.characters);
     DOMAIN.enable();
-    let mut job = roster_job(&WATCHES, &DOMAIN, Check::Nothing);
+    let mut job = roster_job(&WATCHES, &DOMAIN);
     settle_roster(&mut job, &world);
     assert!(roster_hour(&mut job, &world).counts.quiet);
     // Character creation and registration appends character 200 to the roster.
@@ -542,7 +469,7 @@ fn quiet_roster_hours_read_every_unit_leader_afresh() {
     let mut world = world();
     WATCHES.enable(world.characters);
     DOMAIN.enable();
-    let mut job = roster_job(&WATCHES, &DOMAIN, Check::Nothing);
+    let mut job = roster_job(&WATCHES, &DOMAIN);
     settle_roster(&mut job, &world);
     let before = roster_hour(&mut job, &world);
     assert!(before.counts.quiet && before.planned);
@@ -593,7 +520,7 @@ fn a_settled_quiet_roster_hour_reads_every_unit_leader_in_one_program() {
         let world = World::countries(countries);
         WATCHES[index].enable(world.characters);
         DOMAINS[index].enable();
-        let mut job = roster_job(&WATCHES[index], &DOMAINS[index], Check::Nothing);
+        let mut job = roster_job(&WATCHES[index], &DOMAINS[index]);
         settle_roster(&mut job, &world);
         let units = (0..world.characters)
             .filter(|&character| World::unit(character).is_some())
@@ -628,8 +555,8 @@ fn a_unit_leader_read_failing_inside_the_program_fails_as_the_pass_does() {
     WATCHES.enable(world.characters);
     DOMAIN.enable();
     UNPLANNED.enable();
-    let mut planned = roster_job(&WATCHES, &DOMAIN, Check::Nothing);
-    let mut unplanned = roster_job(&WATCHES, &UNPLANNED, Check::Nothing);
+    let mut planned = roster_job(&WATCHES, &DOMAIN);
+    let mut unplanned = roster_job(&WATCHES, &UNPLANNED);
     settle_roster(&mut planned, &world);
     settle_roster(&mut unplanned, &world);
     world
@@ -655,79 +582,6 @@ fn a_unit_leader_read_failing_inside_the_program_fails_as_the_pass_does() {
     characters_test_kit::assert_matches_direct(&repaired.captured, &walked(&world));
 }
 
-/// A roster change no hook observed (two slots swapped in memory) is caught
-/// by the sampled slice within one rotation, or by verify mode at once; it
-/// poisons the domain and that hour reads afresh.
-#[test]
-fn an_unobserved_roster_change_is_caught_by_the_slice_or_verify_mode() {
-    static WATCHES: Watches = Watches::new();
-    static DOMAIN: Isolated = Isolated::new();
-    static VERIFIED: Isolated = Isolated::new();
-    let mut world = world();
-    WATCHES.enable(world.characters);
-    DOMAIN.enable();
-    VERIFIED.enable();
-    let mut job = roster_job(&WATCHES, &DOMAIN, Check::Nothing);
-    let mut verify = roster_job(&WATCHES, &VERIFIED, Check::Every);
-    settle_roster(&mut job, &world);
-    settle_roster(&mut verify, &world);
-    // Any 24 consecutive quiet hours compare every slot and id once, beside
-    // both headers each hour.
-    let mut compared = 0;
-    for at in 0..24 {
-        job.roster.set_check(Check::Slice { hour: at });
-        let quiet = roster_hour(&mut job, &world);
-        assert!(quiet.counts.quiet, "hour {at}");
-        assert_eq!(quiet.counts.mismatches, 0);
-        compared += quiet.counts.verified - 1;
-        characters_test_kit::assert_matches_direct(&quiet.captured, &walked(&world));
-    }
-    assert_eq!(compared, world.characters as u64);
-    // Verify mode reads every hour and compares the whole census.
-    let checked = roster_hour(&mut verify, &world);
-    assert!(checked.counts.read && !checked.counts.quiet && checked.pages > 0);
-    assert_eq!(
-        (checked.counts.verified, checked.counts.mismatches),
-        (world.characters as u64, 0)
-    );
-    assert!(!VERIFIED.poisoned());
-    // Slots 10 and 11 swapped, with no roster write.
-    let mut swapped: Vec<usize> = (0..world.characters).collect();
-    swapped.swap(10, 11);
-    world.roster = Some(swapped);
-    let id = |index: usize| {
-        let mut id = [0; 4];
-        assert!(world.copy(World::character(index) + ccharacter::ID, &mut id));
-        u64::from(u32::from_le_bytes(id))
-    };
-    let first = (id(10) % 24).min(id(11) % 24) as i32;
-    let fresh = walked(&world);
-    let mut caught = None;
-    for at in 0..24 {
-        job.roster.set_check(Check::Slice { hour: at });
-        let hour = roster_hour(&mut job, &world);
-        if hour.counts.mismatches != 0 {
-            caught = Some((at, hour));
-            break;
-        }
-        assert!(hour.counts.quiet);
-        assert_ne!(hour.characters(), fresh.tables()[0], "hour {at} carries");
-    }
-    let (at, caught) = caught.expect("caught within one rotation");
-    assert_eq!(at, first);
-    assert!(DOMAIN.poisoned());
-    assert!(caught.counts.read && !caught.counts.quiet && caught.pages > 0);
-    characters_test_kit::assert_matches_direct(&caught.captured, &fresh);
-    // Every later hour reads afresh.
-    let after = roster_hour(&mut job, &world);
-    assert!(after.counts.read && after.pages > 0);
-    // Verify mode catches it the first hour.
-    let verified = roster_hour(&mut verify, &world);
-    assert_eq!(verified.counts.mismatches, 1);
-    assert!(VERIFIED.poisoned());
-    characters_test_kit::assert_matches_direct(&verified.captured, &fresh);
-}
-
 /// A renamed character's certificate is revoked: that hour reads the roster
 /// and the name afresh; the next is quiet again.
 #[test]
@@ -737,7 +591,7 @@ fn a_renamed_character_reads_the_roster_again() {
     let mut world = world();
     WATCHES.enable(world.characters);
     DOMAIN.enable();
-    let mut job = roster_job(&WATCHES, &DOMAIN, Check::Nothing);
+    let mut job = roster_job(&WATCHES, &DOMAIN);
     settle_roster(&mut job, &world);
     assert!(roster_hour(&mut job, &world).counts.quiet);
     // set_character_name on character 7, observed by its hooked setter.
@@ -784,9 +638,6 @@ impl LeaderChanges for LeaderLookups {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.watches.sequence(leader)
     }
-    fn mismatch(&self) {
-        self.watches.mismatch();
-    }
 }
 
 /// A roster job whose quiet hours carry UnitLeaders rows under `leaders`.
@@ -794,10 +645,9 @@ fn unit_job(
     watches: &'static Watches,
     domain: &'static dyn RosterDomain,
     leaders: &'static dyn LeaderChanges,
-    check: Check,
 ) -> CharactersJob {
-    let mut job = roster_job(watches, domain, Check::Nothing);
-    job.unit_carry = UnitCarry::with(leaders, leader_carry::UNITS, Some(check));
+    let mut job = roster_job(watches, domain);
+    job.unit_carry = UnitCarry::with(leaders, leader_carry::UNITS);
     job
 }
 
@@ -821,7 +671,7 @@ fn quiet_hours_read_no_unchanged_unit_leader() {
     WATCHES.enable(world.characters);
     DOMAIN.enable();
     LEADERS.watches.enable(world.characters);
-    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS, Check::Nothing);
+    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS);
     settle_roster(&mut job, &world);
     let held = roster_hour(&mut job, &world);
     assert!(held.counts.quiet);
@@ -854,7 +704,7 @@ fn a_notified_leader_is_read_again() {
     WATCHES.enable(world.characters);
     DOMAIN.enable();
     LEADERS.enable(world.characters);
-    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS, Check::Nothing);
+    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS);
     settle_roster(&mut job, &world);
     roster_hour(&mut job, &world);
     let leader = World::unit(5).unwrap();
@@ -870,51 +720,14 @@ fn a_notified_leader_is_read_again() {
     assert!(!LEADERS.poisoned());
 }
 
-/// A write no hook observed keeps a carried row stale until the leader's
-/// slice reads it: that hour publishes the fresh row and poisons reuse, so
-/// the next quiet hour reads every leader.
-#[test]
-fn the_slice_catches_a_missed_leader_write() {
-    static WATCHES: Watches = Watches::new();
-    static DOMAIN: Isolated = Isolated::new();
-    static LEADERS: LeaderWatches = LeaderWatches::new();
-    let mut world = world();
-    WATCHES.enable(world.characters);
-    DOMAIN.enable();
-    LEADERS.enable(world.characters);
-    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS, Check::Nothing);
-    settle_roster(&mut job, &world);
-    roster_hour(&mut job, &world);
-    let leader = World::unit(9).unwrap();
-    world
-        .patches
-        .push((leader + cunit_leader::OWNER, 7_u32.to_le_bytes().to_vec()));
-    let stale = roster_hour(&mut job, &world);
-    assert_ne!(stale.units(), walked(&world).tables()[3]);
-    // The hour of the day whose slice holds the leader's id.
-    let id: u32 = 2_000_000 + 9;
-    job.unit_carry.set_check(Check::Slice {
-        hour: (id % 24) as i32,
-    });
-    let caught = roster_hour(&mut job, &world);
-    assert_eq!(caught.units(), walked(&world).tables()[3]);
-    let counts = job.unit_carry.counts();
-    assert_eq!((counts.verified, counts.mismatches), (counts.read, 1));
-    assert!(LEADERS.poisoned());
-    roster_hour(&mut job, &world);
-    let counts = job.unit_carry.counts();
-    assert_eq!((counts.reused, counts.read), (0, leaders(&world)));
-}
-
 /// A roster job whose role census is kept under `census`.
 fn census_job(
     watches: &'static Watches,
     domain: &'static dyn RosterDomain,
     census: &'static crate::watch_registry::WatchRegistry,
-    check: Check,
 ) -> CharactersJob {
-    let mut job = roster_job(watches, domain, Check::Nothing);
-    job.census_carry = super::census::CensusCarry::with(census, Some(check));
+    let mut job = roster_job(watches, domain);
+    job.census_carry = super::census::CensusCarry::with(census);
     job
 }
 
@@ -932,7 +745,7 @@ fn quiet_hours_keep_the_role_census_without_gathering_it() {
     WATCHES.enable(world.characters);
     DOMAIN.enable();
     CENSUS.set_enabled(true);
-    let mut job = census_job(&WATCHES, &DOMAIN, &CENSUS, Check::Nothing);
+    let mut job = census_job(&WATCHES, &DOMAIN, &CENSUS);
     settle_roster(&mut job, &world);
     let held = roster_hour(&mut job, &world);
     for _ in 0..2 {
@@ -950,39 +763,6 @@ fn quiet_hours_keep_the_role_census_without_gathering_it() {
         gathered.roles, held.roles,
         "unchanged bytes keep the generation"
     );
-}
-
-/// A write no census hook observed (a character's country here) keeps a
-/// stale census until the character's slice gathers it: that hour gathers
-/// the whole census, publishes its rows and poisons the carry.
-#[test]
-fn the_slice_catches_a_missed_census_write() {
-    static WATCHES: Watches = Watches::new();
-    static DOMAIN: Isolated = Isolated::new();
-    static CENSUS: crate::watch_registry::WatchRegistry =
-        crate::watch_registry::WatchRegistry::new();
-    let mut world = world();
-    WATCHES.enable(world.characters);
-    DOMAIN.enable();
-    CENSUS.set_enabled(true);
-    let mut job = census_job(&WATCHES, &DOMAIN, &CENSUS, Check::Nothing);
-    settle_roster(&mut job, &world);
-    roster_hour(&mut job, &world);
-    world.patches.push((
-        World::character(40) + ccharacter::COUNTRY,
-        99_u32.to_le_bytes().to_vec(),
-    ));
-    let stale = roster_hour(&mut job, &world);
-    assert_ne!(stale.characters(), walked(&world).tables()[0]);
-    let id: u32 = 1_000_000 + 40;
-    job.census_carry.set_check(Check::Slice {
-        hour: (id % 24) as i32,
-    });
-    let caught = roster_hour(&mut job, &world);
-    assert_eq!(caught.characters(), walked(&world).tables()[0]);
-    assert!(CENSUS.poisoned());
-    let next = roster_hour(&mut job, &world);
-    assert_eq!(next.census, 2 * world.characters);
 }
 
 /// The traits job of a role hour over `loan`, run as the pipeline runs it;
@@ -1016,7 +796,7 @@ fn trait_hour(
 /// role census it borrows.
 fn trait_job(leaders: &'static LeaderWatches, world: &World) -> (CharactersJob, CharactersJob) {
     let mut job = CharactersJob::new_part(3);
-    job.trait_carry = TraitCarry::with(leaders, leader_carry::TRAITS, Some(Check::Nothing));
+    job.trait_carry = TraitCarry::with(leaders, leader_carry::TRAITS);
     (job, census_tests::roster(world))
 }
 
@@ -1069,34 +849,6 @@ fn unchanged_leaders_carry_their_traits_without_reading_them() {
     assert!(!LEADERS.poisoned());
 }
 
-/// A trait write no forwarded site observed keeps a carried leader's rows
-/// stale until its slice reads it: that hour publishes the fresh rows and
-/// poisons reuse, so the next hour reads every leader.
-#[test]
-fn the_slice_catches_a_missed_trait_write() {
-    static LEADERS: LeaderWatches = LeaderWatches::new();
-    let mut world = world();
-    LEADERS.enable(world.characters);
-    let (mut job, owner) = trait_job(&LEADERS, &world);
-    let loan = owner.role_census().unwrap();
-    trait_hour(&mut job, &world, &loan);
-    swap_trait(&mut world, 13, 9);
-    let (stale, _) = trait_hour(&mut job, &world, &loan);
-    assert_ne!(stale, traits_walked(&world));
-    let id: u32 = 2_000_000 + 13;
-    job.trait_carry.set_check(Check::Slice {
-        hour: (id % 24) as i32,
-    });
-    let (caught, _) = trait_hour(&mut job, &world, &loan);
-    assert_eq!(caught, traits_walked(&world));
-    let counts = job.trait_carry.counts();
-    assert_eq!(counts.mismatches, 1);
-    assert!(LEADERS.poisoned());
-    trait_hour(&mut job, &world, &loan);
-    let counts = job.trait_carry.counts();
-    assert_eq!((counts.reused, counts.read), (0, leaders(&world)));
-}
-
 /// A roster hour decoded into `frame`, which keeps its buffers between hours
 /// as a pipeline frame does; its Characters and UnitLeaders tables.
 fn roster_hour_into(
@@ -1134,7 +886,7 @@ fn a_frame_publishes_its_held_tables_without_rewriting_them() {
     WATCHES.enable(world.characters);
     DOMAIN.enable();
     LEADERS.enable(world.characters);
-    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS, Check::Nothing);
+    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS);
     settle_roster(&mut job, &world);
     let mut frame = Captured::with_capacities(&capacities());
     for _ in 0..2 {
@@ -1176,8 +928,10 @@ fn a_frame_publishes_its_held_tables_without_rewriting_them() {
     assert_eq!(units, walked(&world).tables()[3]);
 }
 
+/// Notified leaders read afresh in roster order, the first with less
+/// training than the next, republish the held frame unchanged.
 #[test]
-fn quiet_leader_comparison_grows_for_later_training() {
+fn fresh_leader_reads_grow_for_later_training() {
     static WATCHES: Watches = Watches::new();
     static DOMAIN: Isolated = Isolated::new();
     static LEADERS: LeaderWatches = LeaderWatches::new();
@@ -1190,17 +944,13 @@ fn quiet_leader_comparison_grows_for_later_training() {
     WATCHES.enable(world.characters);
     DOMAIN.enable();
     LEADERS.enable(world.characters);
-    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS, Check::Nothing);
+    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS);
     settle_roster(&mut job, &world);
     let mut frame = Captured::with_capacities(&capacities());
     for _ in 0..2 {
         roster_hour_into(&mut job, &world, &mut frame);
     }
     assert!(frame.held.units.is_some());
-    let id: u32 = 2_000_005;
-    job.unit_carry.set_check(Check::Slice {
-        hour: (id % 24) as i32,
-    });
     // The next fresh leader's text fits, but only a prefix of its training
     // fits in the scratch buffer left by the first leader.
     let expected = walked(&world).tables();
@@ -1209,13 +959,12 @@ fn quiet_leader_comparison_grows_for_later_training() {
     frame.units.rows.rows[0].native.owner = MARK;
     let held = frame.tables()[3].clone();
     for _ in 0..2 {
+        drop(LEADERS.notify(first, 0));
+        drop(LEADERS.notify(World::unit(29).unwrap(), 0));
         let (_, units) = roster_hour_into(&mut job, &world, &mut frame);
         assert_eq!(units, held, "rows republished in place");
         assert_eq!(frame.tables()[5], expected[5]);
-        let counts = job.unit_carry.counts();
-        assert!(counts.read > 1);
-        assert_eq!(counts.verified, counts.read);
-        assert_eq!(counts.mismatches, 0);
+        assert_eq!(job.unit_carry.counts().read, 2);
     }
     assert!(!LEADERS.poisoned());
 }
@@ -1229,7 +978,7 @@ fn quiet_leader_comparison_preserves_training_refusals() {
     WATCHES.enable(world.characters);
     DOMAIN.enable();
     LEADERS.enable(world.characters);
-    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS, Check::Nothing);
+    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS);
     settle_roster(&mut job, &world);
     let mut frame = Captured::with_capacities(&capacities());
     for _ in 0..2 {
@@ -1264,7 +1013,7 @@ fn quiet_leader_comparison_preserves_training_refusals() {
 fn leader_carry_rejects_mismatched_trait_spans() {
     static LEADERS: LeaderWatches = LeaderWatches::new();
     LEADERS.enable(1);
-    let mut carry = TraitCarry::with(&LEADERS, leader_carry::TRAITS, Some(Check::Every));
+    let mut carry = TraitCarry::with(&LEADERS, leader_carry::TRAITS);
     let row = cunit_leader::TraitRow {
         leader_id: 7,
         token_len: 1,
@@ -1272,6 +1021,8 @@ fn leader_carry_rejects_mismatched_trait_spans() {
     };
     let certify = |carry: &mut TraitCarry| {
         carry.begin_hour();
+        // Notified, so the hour reads the leader afresh.
+        drop(LEADERS.notify(0x1000, 0));
         assert!(!carry.certify(1, 1, || std::iter::once((0, 0x1000, 7))));
     };
     certify(&mut carry);
@@ -1360,7 +1111,7 @@ fn forced_full_refresh_publishes_current_training_without_a_stale_carry_key() {
     WATCHES.enable(world.characters);
     DOMAIN.enable();
     LEADERS.enable(world.characters);
-    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS, Check::Nothing);
+    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS);
     settle_roster(&mut job, &world);
     let mut frame = Captured::with_capacities(&capacities());
     roster_hour_into(&mut job, &world, &mut frame);
@@ -1431,7 +1182,7 @@ fn experience_mutations_refresh_one_leader_and_carry_complete_training() {
     WATCHES.enable(world.characters);
     DOMAIN.enable();
     LEADERS.enable(world.characters);
-    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS, Check::Nothing);
+    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS);
     settle_roster(&mut job, &world);
     let before = roster_hour(&mut job, &world);
     let held = roster_hour(&mut job, &world);

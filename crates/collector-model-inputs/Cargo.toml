@@ -13,7 +13,6 @@ doctest = false
 test-support = ["collector-extended-support/test-support"]
 default = ["local_subunit_changes"]
 local_subunit_changes = []
-local_subunit_verify = ["local_subunit_changes"]
 
 [dependencies]
 engine-allocation.workspace = true

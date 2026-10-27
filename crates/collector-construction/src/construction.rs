@@ -168,34 +168,28 @@ impl Buildings {
             self.fail(replay_data::cadence::SKIPPED_REASON);
             return 0;
         }
-        let check = crate::sampled_verify::Check::burned_in(hour, crate::building_changes::VERIFY);
         self.capture_with(
             memory,
             base,
             game_state,
-            store.map(|store| (store, &crate::building_changes::Observer as _, check)),
+            store.map(|store| (store, &crate::building_changes::Observer as _)),
         )
     }
 
     /// One capture, carrying through `reuse` when present. A quiet hour
     /// walks no location; its ticks and reads are charged to the same
     /// table, like a walk's.
-    #[allow(clippy::type_complexity)]
     fn capture_with(
         &mut self,
         memory: &impl Memory,
         base: usize,
         game_state: usize,
-        reuse: Option<(
-            &mut BuildingStore,
-            &dyn crate::building_changes::Changes,
-            crate::sampled_verify::Check,
-        )>,
+        reuse: Option<(&mut BuildingStore, &dyn crate::building_changes::Changes)>,
     ) -> u64 {
         let _reads = read_accounting::table(TABLES[0]);
         let begin = qpc();
         let buildings = match reuse {
-            Some((store, changes, check)) => building_store::capture(
+            Some((store, changes)) => building_store::capture(
                 memory,
                 base,
                 game_state,
@@ -203,7 +197,6 @@ impl Buildings {
                 &mut self.province_buildings.rows,
                 store,
                 changes,
-                check,
             ),
             None => cbuilding_status::walk(
                 memory,

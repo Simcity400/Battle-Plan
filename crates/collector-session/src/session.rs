@@ -769,8 +769,8 @@ impl Captured {
         self.reason_bytes.required = tension.reasons.len();
     }
 
-    /// After a decoded read: compare it on the domain's comparison hour and
-    /// hold it when the worker saw the token stand still across its copy.
+    /// After a decoded read: hold it when the worker saw the token stand
+    /// still across its copy.
     fn hold(&self, observed: Observed, plan: Plan) {
         let Ok(mut held) = observed.held.lock() else {
             return;
@@ -788,30 +788,14 @@ impl Captured {
             )),
             _ => None,
         };
-        held.settle(
-            Domain::Tension,
-            observed.changes,
-            plan,
-            read.is_some(),
-            |tension| {
-                read.is_some_and(|read| {
-                    (
-                        &tension.manager[..],
-                        &tension.sources[..],
-                        &tension.aggregates[..],
-                        &tension.reasons[..],
-                    ) != read
-                })
-            },
-            |tension| {
-                read.is_some_and(|(manager, sources, aggregates, reasons)| {
-                    changes::assign(&mut tension.manager, manager)
-                        && changes::assign(&mut tension.sources, sources)
-                        && changes::assign(&mut tension.aggregates, aggregates)
-                        && changes::assign(&mut tension.reasons, reasons)
-                })
-            },
-        );
+        held.settle(Domain::Tension, plan, read.is_some(), |tension| {
+            read.is_some_and(|(manager, sources, aggregates, reasons)| {
+                changes::assign(&mut tension.manager, manager)
+                    && changes::assign(&mut tension.sources, sources)
+                    && changes::assign(&mut tension.aggregates, aggregates)
+                    && changes::assign(&mut tension.reasons, reasons)
+            })
+        });
     }
 }
 

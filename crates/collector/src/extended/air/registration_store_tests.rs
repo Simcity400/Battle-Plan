@@ -2,7 +2,7 @@
 //! ([`super::RegistrationStore`], [`crate::air_base_carry_changes`]).
 use super::air_bases_test_kit as kit;
 use super::*;
-use crate::{air_base_carry_changes::Watches, extended::fog, sampled_verify::Check};
+use crate::{air_base_carry_changes::Watches, extended::fog};
 use engine_native::{cair_base, cair_wing_pool, ccountry_air_container};
 use std::cell::RefCell;
 
@@ -42,23 +42,20 @@ fn job(watches: &'static Watches) -> AirBasesJob {
     job
 }
 
-/// One acquisition of `bytes` under `check` and its replay: the
-/// registrations, the live reads and the store's counts.
+/// One acquisition of `bytes` and its replay: the registrations, the live
+/// reads and the store's counts.
 fn hour(
     bytes: &[u8],
     job: &mut AirBasesJob,
-    check: Check,
 ) -> (fog::RegistrationsSnapshot, Vec<usize>, RegistrationCounts) {
-    let (decoded, reads, counts) = captured_hour(bytes, job, check);
+    let (decoded, reads, counts) = captured_hour(bytes, job);
     (decoded.registrations_snapshot(), reads, counts)
 }
 
 fn captured_hour(
     bytes: &[u8],
     job: &mut AirBasesJob,
-    check: Check,
 ) -> (fog::Captured, Vec<usize>, RegistrationCounts) {
-    job.carry.check = check;
     let memory = Reads {
         inner: kit::memory(bytes),
         reads: RefCell::default(),
@@ -97,13 +94,8 @@ fn assert_same(left: &fog::RegistrationsSnapshot, right: &fog::RegistrationsSnap
     );
 }
 
-fn counts(carried: u64, read: u64, verified: u64, mismatches: u64) -> RegistrationCounts {
-    RegistrationCounts {
-        carried,
-        read,
-        verified,
-        mismatches,
-    }
+fn counts(carried: u64, read: u64) -> RegistrationCounts {
+    RegistrationCounts { carried, read }
 }
 
 #[test]
@@ -146,9 +138,9 @@ fn failed_registration_observer_and_forwarder_read_changed_native_subtrees() {
                 kit::CONT1 + ccountry_air_container::CAPACITY_RAW,
                 value as u64,
             );
-            let (decoded, reads, work) = captured_hour(&bytes, &mut job, Check::Nothing);
+            let (decoded, reads, work) = captured_hour(&bytes, &mut job);
             let fresh = decoded.registrations_snapshot();
-            assert_eq!(work, counts(0, 2, 0, 0));
+            assert_eq!(work, counts(0, 2));
             assert!(
                 reads
                     .iter()
@@ -191,11 +183,11 @@ fn an_untouched_state_base_carries_its_subtree_and_a_touched_one_is_read() {
     let mut bytes = fixture();
     let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
     let mut job = job(watches);
-    let (first, _, read) = hour(&bytes, &mut job, Check::Nothing);
-    assert_eq!(read, counts(0, 2, 0, 0));
+    let (first, _, read) = hour(&bytes, &mut job);
+    assert_eq!(read, counts(0, 2));
     assert_same(&first, &direct(&bytes));
-    let (carried, reads, read) = hour(&bytes, &mut job, Check::Nothing);
-    assert_eq!(read, counts(2, 0, 0, 0));
+    let (carried, reads, read) = hour(&bytes, &mut job);
+    assert_eq!(read, counts(2, 0));
     for object in [kit::CONT1, kit::POOL0, kit::W0, kit::W1] {
         assert!(
             !reads
@@ -211,8 +203,8 @@ fn an_untouched_state_base_carries_its_subtree_and_a_touched_one_is_read() {
     // The wing vector's count is its header's last word.
     kit::put32(&mut bytes, kit::POOL0 + cair_wing_pool::WINGS + 12, 1);
     drop(notification);
-    let (removed, _, read) = hour(&bytes, &mut job, Check::Nothing);
-    assert_eq!(read, counts(1, 1, 0, 0));
+    let (removed, _, read) = hour(&bytes, &mut job);
+    assert_eq!(read, counts(1, 1));
     assert_same(&removed, &direct(&bytes));
     assert_eq!(removed.wings, [kit::WING_HANDLE_0]);
 }
@@ -225,10 +217,10 @@ fn registration_work_names_each_base_by_how_its_subtree_was_taken() {
     let bytes = fixture();
     let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
     let mut job = job(watches);
-    hour(&bytes, &mut job, Check::Nothing);
+    hour(&bytes, &mut job);
     assert_eq!(job.registration_work.bases(), [1, 0, 2]);
     assert_eq!(job.registration_work.spliced(), [0, 0]);
-    hour(&bytes, &mut job, Check::Nothing);
+    hour(&bytes, &mut job);
     assert_eq!(job.registration_work.bases(), [1, 2, 0]);
     assert!(
         job.registration_work
@@ -236,30 +228,6 @@ fn registration_work_names_each_base_by_how_its_subtree_was_taken() {
             .iter()
             .all(|&count| count > 0)
     );
-}
-
-/// A write no hook observed is carried until the base's slice reads it
-/// afresh: the comparison counts it, poisons reuse and publishes the fresh
-/// rows, and every later hour reads every base.
-#[test]
-fn a_compared_base_that_differs_poisons_reuse() {
-    let mut bytes = fixture();
-    let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
-    let mut job = job(watches);
-    hour(&bytes, &mut job, Check::Nothing);
-    kit::put64(
-        &mut bytes,
-        kit::CONT1 + ccountry_air_container::CAPACITY_RAW,
-        7,
-    );
-    // B0 differs and poisons at once; B1 then takes no certificate.
-    let (compared, _, read) = hour(&bytes, &mut job, Check::Every);
-    assert_eq!(read, counts(0, 2, 1, 1));
-    assert!(watches.poisoned());
-    assert_same(&compared, &direct(&bytes));
-    let (after, _, read) = hour(&bytes, &mut job, Check::Nothing);
-    assert_eq!(read, counts(0, 2, 0, 0));
-    assert_same(&after, &direct(&bytes));
 }
 
 /// At attach no watch table is installed: the first pass holds nothing but
@@ -270,16 +238,16 @@ fn the_first_pass_sizes_the_watches_without_holding_a_base() {
     let bytes = fixture();
     let watches: &'static Watches = Box::leak(Box::new(Watches::without_table()));
     let mut job = job(watches);
-    let (_, _, read) = hour(&bytes, &mut job, Check::Nothing);
-    assert_eq!(read, counts(0, 2, 0, 0));
+    let (_, _, read) = hour(&bytes, &mut job);
+    assert_eq!(read, counts(0, 2));
     let bases = job.registration_store.as_ref().unwrap().bases();
     assert_eq!(bases, 2);
     watches.offer(bases);
     watches.boundary(false);
-    let (_, _, read) = hour(&bytes, &mut job, Check::Nothing);
-    assert_eq!(read, counts(0, 2, 0, 0));
-    let (_, _, read) = hour(&bytes, &mut job, Check::Nothing);
-    assert_eq!(read, counts(2, 0, 0, 0));
+    let (_, _, read) = hour(&bytes, &mut job);
+    assert_eq!(read, counts(0, 2));
+    let (_, _, read) = hour(&bytes, &mut job);
+    assert_eq!(read, counts(2, 0));
 }
 
 /// A base listing a pool whose base handle names no base (or another one) is read every hour: that
@@ -294,17 +262,16 @@ fn a_base_whose_pool_names_another_base_is_never_carried() {
     );
     let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
     let mut job = job(watches);
-    hour(&bytes, &mut job, Check::Nothing);
-    let (carried, _, read) = hour(&bytes, &mut job, Check::Nothing);
-    assert_eq!(read, counts(1, 1, 0, 0));
+    hour(&bytes, &mut job);
+    let (carried, _, read) = hour(&bytes, &mut job);
+    assert_eq!(read, counts(1, 1));
     assert_same(&carried, &direct(&bytes));
 }
 
-/// A base the dense slot check covers this hour is read afresh even when the
-/// carry's own slice does not cover it, so the slot check still compares
-/// the base it would otherwise carry.
+/// A base whose dense list proves its slots carries its subtree under the
+/// same slot mode, and the replay publishes a fresh read's rows.
 #[test]
-fn a_base_the_slot_check_covers_is_read_afresh() {
+fn a_dense_planned_base_carries_its_subtree() {
     // Each state base's dense list names its one container.
     let mut bytes = fixture();
     for (base, list, container) in [
@@ -319,26 +286,15 @@ fn a_base_the_slot_check_covers_is_read_afresh() {
     }
     let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
     let mut job = job(watches);
-    job.slot_run = crate::air_base_changes::SlotRun {
-        dense: true,
-        check: Check::Nothing,
-    };
-    hour(&bytes, &mut job, Check::Nothing);
-    let (_, _, read) = hour(&bytes, &mut job, Check::Nothing);
-    assert_eq!(read, counts(2, 0, 0, 0));
-    job.slot_run.check = Check::Every;
-    let (checked, _, read) = hour(&bytes, &mut job, Check::Nothing);
-    assert_eq!(read, counts(0, 2, 0, 0));
-    // The host base, whose dense list is empty, is planned and compared too.
-    assert_eq!(
-        (
-            job.slot_report.dense,
-            job.slot_report.verified,
-            job.slot_report.mismatches
-        ),
-        (3, 3, 0)
-    );
-    assert_same(&checked, &direct(&bytes));
+    job.slot_run = crate::air_base_changes::SlotRun { dense: true };
+    let (first, _, read) = hour(&bytes, &mut job);
+    assert_eq!(read, counts(0, 2));
+    // The host base, whose dense list is empty, is planned too.
+    assert_eq!(job.slot_report.dense, 3);
+    assert_same(&first, &direct(&bytes));
+    let (carried, _, read) = hour(&bytes, &mut job);
+    assert_eq!(read, counts(2, 0));
+    assert_same(&carried, &first);
 }
 
 /// A pass that stops early (here an unreadable air manager) holds nothing,
@@ -348,171 +304,22 @@ fn a_pass_that_stops_early_holds_nothing() {
     let mut bytes = fixture();
     let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
     let mut job = job(watches);
-    hour(&bytes, &mut job, Check::Nothing);
+    hour(&bytes, &mut job);
     let manager = kit::GAME_STATE + engine_native::cgame_state::STRATEGIC_AIR_MANAGER;
     kit::put64(&mut bytes, manager, 0);
-    hour(&bytes, &mut job, Check::Nothing);
+    hour(&bytes, &mut job);
     kit::put64(&mut bytes, manager, kit::MANAGER as u64);
-    let (restored, _, read) = hour(&bytes, &mut job, Check::Nothing);
-    assert_eq!(read, counts(0, 2, 0, 0));
+    let (restored, _, read) = hour(&bytes, &mut job);
+    assert_eq!(read, counts(0, 2));
     assert_same(&restored, &direct(&bytes));
-}
-
-/// One fresh read of a single span with `bytes`, reaching `objects` as its
-/// containers and wings.
-fn read<'a>(
-    span: &'a crate::raw::Span,
-    bytes: &'a [u8],
-    objects: &'a [usize],
-) -> super::registration_store::Fresh<'a> {
-    super::registration_store::Fresh {
-        spans: std::slice::from_ref(span),
-        bytes,
-        start: 0,
-        links: &[],
-        demand: [1, 0],
-        link_table: 0..0,
-        containers: objects,
-        wings: objects,
-    }
-}
-
-/// A container's span is held as the rows consume it: its fuel words, which
-/// the hourly strategic-air stage rewrites without a registration writer,
-/// never make a compared base differ, while its capacity does, named by the
-/// span and its first differing byte.
-#[test]
-fn a_held_container_span_differs_only_in_what_the_rows_consume() {
-    use super::registration_store::Difference;
-    use engine_native::cair_base::CONTAINER_SPAN;
-    let container = 0x1000;
-    let span = crate::raw::Span {
-        addr: container + ccountry_air_container::COUNTRY,
-        len: CONTAINER_SPAN as u32,
-        ok: true,
-        mask: 0,
-        start: 0,
-        bulk: false,
-    };
-    let containers = [container];
-    let mut store = RegistrationStore::new();
-    store.begin();
-    let mut bytes = vec![0_u8; CONTAINER_SPAN];
-    let certificate = Some((1, 1));
-    assert_eq!(
-        store.hold(
-            7,
-            0x10,
-            certificate,
-            true,
-            &read(&span, &bytes, &containers),
-            false
-        ),
-        None
-    );
-    let offset = |field: usize| field - ccountry_air_container::COUNTRY;
-    bytes[offset(ccountry_air_container::FUEL_DEMAND_RAW)] = 9;
-    bytes[offset(ccountry_air_container::FUEL_ALLOCATED_RAW)] = 4;
-    assert_eq!(
-        store.hold(
-            7,
-            0x10,
-            certificate,
-            true,
-            &read(&span, &bytes, &containers),
-            true
-        ),
-        None
-    );
-    bytes[offset(ccountry_air_container::CAPACITY_RAW) + 1] = 3;
-    assert_eq!(
-        store.hold(
-            7,
-            0x10,
-            certificate,
-            true,
-            &read(&span, &bytes, &containers),
-            true
-        ),
-        Some(Difference {
-            what: "span bytes",
-            address: span.addr,
-            len: span.len,
-            byte: offset(ccountry_air_container::CAPACITY_RAW) + 1,
-        })
-    );
-    assert_eq!(store.counts(), counts(0, 3, 2, 1));
-}
-
-/// A wing's identity is held as the walk consumes it: its `CSelectable` state (the selected byte
-/// the player sets) never makes a compared base differ, while its handle does.
-#[test]
-fn a_held_wing_identity_differs_only_in_what_the_walk_consumes() {
-    use super::registration_store::Difference;
-    let wing = 0x2000;
-    let span = crate::raw::Span {
-        addr: wing,
-        len: 32,
-        ok: true,
-        mask: 0,
-        start: 0,
-        bulk: false,
-    };
-    let wings = [wing];
-    let mut store = RegistrationStore::new();
-    store.begin();
-    let mut bytes = vec![0_u8; 32];
-    let certificate = Some((1, 1));
-    assert_eq!(
-        store.hold(
-            7,
-            0x10,
-            certificate,
-            true,
-            &read(&span, &bytes, &wings),
-            false
-        ),
-        None
-    );
-    bytes[0x0c] = 1;
-    assert_eq!(
-        store.hold(
-            7,
-            0x10,
-            certificate,
-            true,
-            &read(&span, &bytes, &wings),
-            true
-        ),
-        None
-    );
-    bytes[24] = 5;
-    assert_eq!(
-        store.hold(
-            7,
-            0x10,
-            certificate,
-            true,
-            &read(&span, &bytes, &wings),
-            true
-        ),
-        Some(Difference {
-            what: "span bytes",
-            address: wing,
-            len: 32,
-            byte: 24,
-        })
-    );
 }
 
 /// [`hour`] decoding with `decoded`, which keeps walked bases across hours.
 fn hour_reusing(
     bytes: &[u8],
     job: &mut AirBasesJob,
-    check: Check,
     decoded: &mut DecodedRegistrations,
 ) -> fog::RegistrationsSnapshot {
-    job.carry.check = check;
     let report = copy_air_bases_refresh(
         &kit::memory(bytes),
         AirBasesCopyContext {
@@ -549,20 +356,19 @@ fn decoded(reused: u64, walked: u64) -> DecodedCounts {
 }
 
 /// The decode worker appends a carried base's rows from its walk of the
-/// same held segment, walks a base read afresh into a new segment, and keeps
-/// appending a base whose fresh read compared equal to its segment.
+/// same held segment and walks a base read afresh into a new segment.
 #[test]
 fn a_carried_segment_appends_the_rows_its_earlier_walk_decoded() {
     let mut bytes = fixture();
     let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
     let mut job = job(watches);
     let mut reuse = DecodedRegistrations::default();
-    let first = hour_reusing(&bytes, &mut job, Check::Nothing, &mut reuse);
+    let first = hour_reusing(&bytes, &mut job, &mut reuse);
     assert_same(&first, &direct(&bytes));
     assert_eq!(job.segments.len(), 2);
     assert_eq!(reuse.counts(), decoded(0, 2));
 
-    let carried = hour_reusing(&bytes, &mut job, Check::Nothing, &mut reuse);
+    let carried = hour_reusing(&bytes, &mut job, &mut reuse);
     assert_eq!(reuse.counts(), decoded(2, 2));
     assert_same(&carried, &first);
 
@@ -571,19 +377,10 @@ fn a_carried_segment_appends_the_rows_its_earlier_walk_decoded() {
     let notification = watches.notify(Some(B0_HANDLE));
     kit::put32(&mut bytes, kit::POOL0 + cair_wing_pool::WINGS + 12, 1);
     drop(notification);
-    let removed = hour_reusing(&bytes, &mut job, Check::Nothing, &mut reuse);
+    let removed = hour_reusing(&bytes, &mut job, &mut reuse);
     assert_eq!(reuse.counts(), decoded(3, 3));
     assert_same(&removed, &direct(&bytes));
     assert_eq!(removed.wings, [kit::WING_HANDLE_0]);
-
-    // Every base is read and compared equal: both keep their segments.
-    let compared = hour_reusing(&bytes, &mut job, Check::Every, &mut reuse);
-    assert_eq!(
-        job.registration_store.as_ref().unwrap().counts(),
-        counts(0, 2, 2, 0)
-    );
-    assert_eq!(reuse.counts(), decoded(5, 3));
-    assert_same(&compared, &direct(&bytes));
 }
 
 /// A base the acquisition reports no segment for is walked every hour, and
@@ -594,9 +391,9 @@ fn a_base_without_a_reported_segment_is_walked() {
     let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
     let mut job = job(watches);
     let mut reuse = DecodedRegistrations::default();
-    hour_reusing(&bytes, &mut job, Check::Nothing, &mut reuse);
+    hour_reusing(&bytes, &mut job, &mut reuse);
     job.registration_store = None;
-    let walked = hour_reusing(&bytes, &mut job, Check::Nothing, &mut reuse);
+    let walked = hour_reusing(&bytes, &mut job, &mut reuse);
     assert!(job.segments.is_empty());
     assert_eq!(reuse.counts(), decoded(0, 2));
     assert_same(&walked, &direct(&bytes));

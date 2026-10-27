@@ -19,7 +19,6 @@ engine-native.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }
-collector-certificates.workspace = true
 collector-extended-support.workspace = true
 collector-memory.workspace = true
 collector-observers.workspace = true

@@ -120,11 +120,9 @@ impl Jobs {
     }
 }
 
-/// Wings whose held rows a certificate covered: carried, or read and
-/// compared.
+/// Wings whose held rows a certificate covered: carried.
 fn certified(job: &AirWingJob) -> u64 {
-    assert_eq!(job.carry.0.mismatches, 0);
-    job.carry.0.reused + job.carry.0.verified
+    job.carry.0.reused
 }
 
 /// One serial census of `world`.

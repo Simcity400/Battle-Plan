@@ -140,7 +140,6 @@ pub(crate) use collector_metadata::roster;
 pub(crate) use collector_observers::retreat_ban_changes;
 pub(crate) use collector_observers::roster_changes;
 mod runtime;
-pub(crate) use collector_certificates::sampled_verify;
 mod sampling;
 mod scripted_maps;
 pub(crate) use collector_certificates::slicing;

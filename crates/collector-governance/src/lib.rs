@@ -1,7 +1,6 @@
 //! Governance capture: politics, parties and party leaders, ideas, research and technologies, focus, decisions, buildings and the held fingerprint, building, leader and party stores, with the party and party-leader writer observers. The host owns dispatch, loans and table assembly.
 
 use collector_certificates::drift;
-use collector_certificates::sampled_verify;
 use collector_certificates::slicing;
 use collector_certificates::watch_registry;
 use collector_hooks::hook;

@@ -33,16 +33,8 @@ static UNAPPOINT_FORWARDER: AtomicBool = AtomicBool::new(false);
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
 /// Per table (AvailableAdvisors pools, AdvisorTokens tables, HiredAdvisors
-/// and character record hours): reused, read, verified and mismatched;
-/// reused and read rows.
-static READS: [[AtomicU64; 6]; 4] = [const { [const { AtomicU64::new(0) }; 6] }; 4];
-/// The family's sampled comparisons; a reason per carried table.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::new(&[
-    "carried AvailableAdvisors rows differ from a fresh read",
-    "carried AdvisorTokens rows differ from a fresh read",
-    "a quiet hour's held HiredAdvisors rows differ from a fresh read",
-    "a quiet hour's held character records differ from a fresh read",
-]);
+/// and character record hours): reused and read; reused and read rows.
+static READS: [[AtomicU64; 4]; 4] = [const { [const { AtomicU64::new(0) }; 4] }; 4];
 /// Pools the latest complete capture walked, for off-thread sizing.
 static POOLS: AtomicUsize = AtomicUsize::new(0);
 
@@ -135,9 +127,6 @@ pub trait Changes: Sync {
     /// The character domain's `(epoch, revision)` with no writer running;
     /// equal values around a read prove no character writer ran during it.
     fn characters_quiet(&self) -> Option<(u64, u64)>;
-    /// A fresh read disagreed with carried rows: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
 }
 
 /// The hooks' domains.
@@ -151,9 +140,6 @@ impl Changes for Observer {
     }
     fn characters_quiet(&self) -> Option<(u64, u64)> {
         crate::character_changes::quiet()
-    }
-    fn mismatch(&self) {
-        WATCHES.registry.poison();
     }
 }
 
@@ -174,14 +160,7 @@ impl Changes for Pair<'_> {
     fn characters_quiet(&self) -> Option<(u64, u64)> {
         self.characters.quiet()
     }
-    fn mismatch(&self) {
-        self.pools.registry.poison();
-    }
 }
-
-/// Whether captures read every carryable pool and token set afresh and
-/// compare, rather than the hour's sampled slice ([`crate::sampled_verify`]).
-pub const VERIFY: bool = cfg!(feature = "advisor_pool_verify");
 
 fn receiver(receiver: Receiver, first: usize) -> Option<usize> {
     match receiver {
@@ -195,13 +174,6 @@ fn receiver(receiver: Receiver, first: usize) -> Option<usize> {
 /// set moves it, so equal tokens prove no observed writer ran between them.
 pub fn quiet() -> Option<(u64, u64)> {
     WATCHES.registry.quiet()
-}
-
-/// A quiet hour's held HiredAdvisors rows or character records differed
-/// from a fresh read: nothing in the domain certifies anything for the rest
-/// of the attachment.
-pub fn mismatch() {
-    WATCHES.registry.poison();
 }
 
 /// Notifications running now.
@@ -237,8 +209,6 @@ pub fn collect() {
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     pub reused_rows: u64,
     pub read_rows: u64,
 }
@@ -249,14 +219,11 @@ pub fn record(table: Table, counts: &Counts, pools: Option<usize>) {
     for (target, value) in READS[table as usize].iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         counts.reused_rows,
         counts.read_rows,
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, table as usize);
     if let Some(pools) = pools {
         POOLS.store(pools, Ordering::Relaxed);
     }
@@ -276,26 +243,19 @@ pub fn status() -> impl serde::Serialize {
             crate::status::status!({
                 "reused": reads[0],
                 "read": reads[1],
-                "verified": reads[2],
-                "mismatches": reads[3],
-                "reused_rows": reads[4],
-                "read_rows": reads[5],
+                "reused_rows": reads[2],
+                "read_rows": reads[3],
             }),
         )
     }));
     crate::status::status!({
         "configured": cfg!(feature = "advisor_pool_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "tables": tables,
         "events": events,
         "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
         "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; HiredAdvisors and CharacterRecords (CountryCharacters with CountryRetiredCharacters) count hours: a quiet hour (reused) publishes the latest complete walk's rows without reading any country when this domain's token (every pool, appointed list, character record and token set writer), the character domain's and the roster's tokens and the country and link array headers equal those taken before that walk; every other hour (read) walks every country, and the quiet hour of each table's rotation hour (every hour in its verify mode) compares the walk with the held rows (verified rows, mismatches); AvailableAdvisors counts pools (one per country), each read once a day at its country's owner slice: a pool's rows are carried when its CCountryCharacters, country and array header are those of the held read a day earlier, no hooked writer touched it since and every listed advisor's character certificate is unchanged; AdvisorTokens counts token tables, read every hour: the table is carried when its manager and header are those of the held read and no hooked writer touched it since; the slice's countries, pool objects and headers and the token manager are read at every read; a pool a walk can carry is read afresh on its day of the rotation (one in rotation_hours days by country id) and the table on the hour of key 0 of a rotation of rotation_hours days (every one in verify mode), the fresh rows published and reuse disabled at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; HiredAdvisors and CharacterRecords (CountryCharacters with CountryRetiredCharacters) count hours: a quiet hour (reused) publishes the latest complete walk's rows without reading any country when this domain's token (every pool, appointed list, character record and token set writer), the character domain's and the roster's tokens and the country and link array headers equal those taken before that walk; every other hour (read) walks every country; AvailableAdvisors counts pools (one per country), each read once a day at its country's owner slice: a pool's rows are carried when its CCountryCharacters, country and array header are those of the held read a day earlier, no hooked writer touched it since and every listed advisor's character certificate is unchanged; AdvisorTokens counts token tables, read every hour: the table is carried when its manager and header are those of the held read and no hooked writer touched it since; the slice's countries, pool objects and headers and the token manager are read at every read"
     })
 }
 

@@ -138,11 +138,10 @@ fn session_is_read_every_hour() {
 }
 
 /// A quiet hour copies nothing and publishes the held read; an hour after a
-/// source writer ended in `update_total` copies and decodes afresh, and the
-/// tension domain's comparison hour reads a quiet hour and compares it.
+/// source writer ended in `update_total` copies and decodes afresh.
 #[test]
 fn quiet_tension_hours_publish_the_held_read_without_copying() {
-    use crate::world_input_changes::{self as changes, Domain, Held, Isolated};
+    use crate::world_input_changes::{Domain, Held, Isolated};
     struct NoReads;
     impl Memory for NoReads {
         fn copy(&self, address: usize, _: &mut [u8]) -> bool {
@@ -165,7 +164,6 @@ fn quiet_tension_hours_publish_the_held_read_without_copying() {
         job: &mut SessionJob,
         captured: &mut Captured,
     ) -> bool {
-        crate::sampled_verify::begin_hour(hour);
         let ctx = SessionCopyContext {
             base: 0,
             game_state: BASE,
@@ -177,7 +175,6 @@ fn quiet_tension_hours_publish_the_held_read_without_copying() {
         captured.decode_session_payload(0, job, &mut [0; N]);
         job.log.spans.is_empty()
     }
-    // Hour 1 avoids the domain's comparison hour (its index, 2).
     let memory = SliceMemory {
         base: BASE,
         bytes: &bytes,
@@ -185,9 +182,6 @@ fn quiet_tension_hours_publish_the_held_read_without_copying() {
     assert!(!hour_at(&memory, 1, &mut job, &mut captured));
     assert_matches_direct(&captured, &direct(&memory, &capacities));
     let expected = direct(&memory, &capacities);
-    if changes::VERIFY {
-        return;
-    }
     assert!(hour_at(&NoReads, 3, &mut job, &mut captured));
     assert_matches_direct(&captured, &expected);
     // A source writer ran: the next hour copies the new total.
@@ -205,22 +199,6 @@ fn quiet_tension_hours_publish_the_held_read_without_copying() {
     assert_matches_direct(&captured, &direct(&memory, &capacities));
     assert!(hour_at(&NoReads, 5, &mut job, &mut captured));
     assert_matches_direct(&captured, &direct(&memory, &capacities));
-    // The comparison hour of the burned-in rotation reads afresh; a write no
-    // hook saw poisons the domain.
-    let rotation = crate::sampled_verify::BURNED_IN_ROTATION as i32;
-    put(
-        &mut bytes,
-        MANAGER + cworld_threat::TOTAL,
-        &9_i64.to_le_bytes(),
-    );
-    let memory = SliceMemory {
-        base: BASE,
-        bytes: &bytes,
-    };
-    assert!(!hour_at(&memory, rotation + 2, &mut job, &mut captured));
-    assert_matches_direct(&captured, &direct(&memory, &capacities));
-    assert!(changes.poisoned(Domain::Tension));
-    assert!(!hour_at(&memory, rotation + 3, &mut job, &mut captured));
 }
 
 #[test]

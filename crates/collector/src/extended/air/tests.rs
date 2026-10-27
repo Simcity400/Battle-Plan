@@ -1969,7 +1969,6 @@ fn air_bases_staging_overflow_falls_back_to_typed_walk() {
         required_links: 0,
         capacity_charge: crate::raw_memory::Charge::default(),
         slot_run: Default::default(),
-        slot_full: Vec::new(),
         slot_report: Default::default(),
         carry: Default::default(),
         registration_store: None,
@@ -2177,40 +2176,22 @@ fn sparse_slot_decode(
 }
 
 /// A container the dense list lacks, whether it shares a listed container's
-/// chunk or not: the plan reads neither, so only the hour's comparison sees
-/// it, which records the base from the full scan (the replay too) and counts
-/// the difference.
+/// chunk or not, is read by neither the plan nor its replay: the plan relies
+/// on its writers keeping the list in step, and the whole scan sees it.
 #[test]
-fn a_container_the_dense_list_lacks_is_seen_by_the_comparison_alone() {
+fn a_container_the_dense_list_lacks_is_missed_by_the_plan_alone() {
     let _hint = crate::country_scale::hint_guard();
-    use crate::{air_base_changes::SlotRun, sampled_verify::Check};
-    let unchecked = SlotRun {
-        dense: true,
-        check: Check::Nothing,
-    };
-    let compared = SlotRun {
-        dense: true,
-        check: Check::Every,
-    };
+    use crate::air_base_changes::SlotRun;
     // Slot 2 shares slot 1's chunk; slot 4000 lies in a chunk no listed
     // container names.
     for stray in [2, 4000] {
         let bytes = sparse_slot_world(Some(stray));
-        let (job, _) = sparse_slot_copy(&bytes, unchecked);
-        assert_eq!(job.slot_report.mismatches, 0);
+        let (job, _) = sparse_slot_copy(&bytes, SlotRun { dense: true });
         let (missed, direct) = sparse_slot_decode(&bytes, &job);
         assert_eq!(direct.outcome, Outcome::Rows { len: 4 });
         assert_eq!(missed.outcome, Outcome::Rows { len: 3 });
-        let (job, _) = sparse_slot_copy(&bytes, compared);
-        assert_eq!(
-            (
-                job.slot_report.verified,
-                job.slot_report.mismatches,
-                job.slot_report.full
-            ),
-            (1, 1, 1)
-        );
-        assert_eq!(job.slot_full, [SPARSE_HANDLE]);
+        let (job, _) = sparse_slot_copy(&bytes, SlotRun { dense: false });
+        assert_eq!(job.slot_report.full, 1);
         let (decoded, direct) = sparse_slot_decode(&bytes, &job);
         assert_eq!(
             (decoded.outcome, &decoded.rows, &decoded.wings),

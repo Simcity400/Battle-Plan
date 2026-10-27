@@ -1,8 +1,7 @@
 //! A quiet politics hour ([`super::politics_hour`]): it publishes what a walk
 //! of the same memory publishes while reading no country's politics; a
 //! hooked structure write, a moved party-leader certificate or a new country
-//! walks; a popularity write gathers only popularity; a change no hook saw is
-//! caught by the sampled slice or verify, poisons and walks; and the party and
+//! walks; a popularity write gathers only popularity; and the party and
 //! party-leader stores still carry per country after quiet hours.
 //!
 //! The domains are each test's own (`Watches`), so parallel tests never share
@@ -12,7 +11,6 @@ use super::*;
 use crate::{
     character_changes, party_changes, party_leader_changes,
     political_status_changes::{self, Counts},
-    sampled_verify::Check,
 };
 use engine_mutations::political_status_mutations::Domain;
 use engine_native::{
@@ -396,10 +394,8 @@ impl<'d> Session<'d> {
         }
     }
 
-    /// One hour, `check` choosing the quiet hour's countries read afresh
-    /// (`Check::Every` stands for `political_status_verify`), then the next
-    /// boundary.
-    fn hour(&mut self, world: &World, hour: i32, check: Check) -> Published {
+    /// One hour, then the next boundary.
+    fn hour(&mut self, world: &World, hour: i32) -> Published {
         let memory = Counted {
             memory: SliceMemory {
                 base: 0,
@@ -417,9 +413,6 @@ impl<'d> Session<'d> {
             leader_changes: &pair,
             party_changes: &self.domains.parties,
             status: &self.domains.status,
-            leader_check: Check::Nothing,
-            party_check: Check::Nothing,
-            check,
             force_full: false,
         };
         self.captured.capture_sliced(
@@ -450,11 +443,11 @@ impl<'d> Session<'d> {
     /// The first hour walks every country and holds its tables; the second is
     /// quiet.
     fn start(&mut self, world: &World) {
-        let first = self.hour(world, 1, Check::Nothing);
+        let first = self.hour(world, 1);
         assert!(first.counts.read && !first.counts.quiet);
         assert_ne!(first.politics_reads, 0, "a walk reads every country");
         assert_eq!((first.tables, first.buffers), walked(world, 1));
-        let quiet = self.hour(world, 2, Check::Nothing);
+        let quiet = self.hour(world, 2);
         assert!(quiet.counts.quiet && !quiet.counts.read);
     }
 }
@@ -466,7 +459,7 @@ fn a_quiet_hour_publishes_what_a_walk_of_the_same_memory_publishes() {
     let mut session = Session::new(&domains);
     session.start(&world);
     for hour in 3..6 {
-        let quiet = session.hour(&world, hour, Check::Nothing);
+        let quiet = session.hour(&world, hour);
         assert!(quiet.counts.quiet, "hour {hour}");
         assert_eq!(politics(&quiet).len(), 2);
         assert_eq!(parties(&quiet).len(), 4);
@@ -482,7 +475,7 @@ fn a_quiet_hour_reads_no_country_politics() {
     let mut session = Session::new(&domains);
     session.start(&world);
     for hour in 3..8 {
-        let quiet = session.hour(&world, hour, Check::Nothing);
+        let quiet = session.hour(&world, hour);
         assert!(quiet.counts.quiet, "hour {hour}");
         assert_eq!(
             (quiet.politics_reads, quiet.popularity_reads),
@@ -528,13 +521,13 @@ fn each_hooked_structure_write_walks_and_publishes_its_value() {
     for (name, write) in writes {
         write(&mut world);
         domains.status.write(Domain::Structure);
-        let walk = session.hour(&world, hour, Check::Nothing);
+        let walk = session.hour(&world, hour);
         assert!(walk.counts.read && !walk.counts.quiet, "{name}");
         assert_ne!(walk.politics_reads, 0, "{name}");
         assert_eq!((walk.tables, walk.buffers), walked(&world, hour), "{name}");
         hour += 1;
         // Held again: the next hour is quiet with the new values.
-        let quiet = session.hour(&world, hour, Check::Nothing);
+        let quiet = session.hour(&world, hour);
         assert!(quiet.counts.quiet, "{name}");
         assert_eq!(quiet.politics_reads, 0, "{name}");
         assert_eq!(
@@ -544,7 +537,7 @@ fn each_hooked_structure_write_walks_and_publishes_its_value() {
         );
         hour += 1;
     }
-    let last = session.hour(&world, hour, Check::Nothing);
+    let last = session.hour(&world, hour);
     assert_eq!(politics(&last)[0].capital, 555);
     assert_eq!(politics(&last)[1].ruling_party, Some(7));
     assert_eq!(
@@ -570,7 +563,7 @@ fn a_popularity_write_gathers_only_popularity() {
     // AddPopularity (or the daily update) on country 2's second party.
     world.popularity(1, 1, 77_777);
     domains.status.write(Domain::Popularity);
-    let refreshed = session.hour(&world, 3, Check::Nothing);
+    let refreshed = session.hour(&world, 3);
     assert!(refreshed.counts.popularity, "a popularity refresh hour");
     assert!(!refreshed.counts.quiet && !refreshed.counts.read);
     assert_eq!(refreshed.politics_reads, 0, "only the popularity is read");
@@ -578,62 +571,14 @@ fn a_popularity_write_gathers_only_popularity() {
     assert_eq!(parties(&refreshed)[3].popularity, 77_777);
     assert_eq!((refreshed.tables, refreshed.buffers), walked(&world, 3));
     // The new popularity is held under the new token.
-    let quiet = session.hour(&world, 4, Check::Nothing);
+    let quiet = session.hour(&world, 4);
     assert!(quiet.counts.quiet);
     assert_eq!((quiet.politics_reads, quiet.popularity_reads), (0, 0));
     assert_eq!(parties(&quiet)[3].popularity, 77_777);
     // A structure write still walks.
     domains.status.write(Domain::Both);
-    let walk = session.hour(&world, 5, Check::Nothing);
+    let walk = session.hour(&world, 5);
     assert!(walk.counts.read);
-}
-
-#[test]
-fn a_change_no_hook_saw_is_caught_by_the_slice_poisons_and_walks() {
-    let mut world = World::new();
-    let domains = Domains::new();
-    let mut session = Session::new(&domains);
-    session.start(&world);
-    // Country 2 falls in hour 2's slice, country 1 in hour 1's.
-    let (first, second) = (Check::Slice { hour: 1 }, Check::Slice { hour: 2 });
-    assert!(first.covers(1) && !first.covers(2) && second.covers(2));
-    let agreed = session.hour(&world, 3, second);
-    assert!(agreed.counts.quiet);
-    assert_eq!((agreed.counts.verified, agreed.counts.mismatches), (1, 0));
-    assert_ne!(agreed.politics_reads, 0, "the slice reads its country");
-    assert!(!domains.status.poisoned());
-    // A capital write on country 1 that no hook saw.
-    world.int(country(0) + ccountry::CAPITAL, 999);
-    let caught = session.hour(&world, 4, first);
-    assert_eq!((caught.counts.verified, caught.counts.mismatches), (1, 1));
-    assert!(caught.counts.read && !caught.counts.quiet);
-    assert!(domains.status.poisoned());
-    assert_eq!(politics(&caught)[0].capital, 999);
-    assert_eq!((caught.tables, caught.buffers), walked(&world, 4));
-    // Poisoned: every later hour walks.
-    let after = session.hour(&world, 5, Check::Nothing);
-    assert!(after.counts.read && !after.counts.quiet);
-}
-
-#[test]
-fn verify_walks_every_hour_and_catches_a_change_no_hook_saw() {
-    let mut world = World::new();
-    let domains = Domains::new();
-    let mut session = Session::new(&domains);
-    let first = session.hour(&world, 1, Check::Every);
-    assert!(first.counts.read);
-    assert_eq!(first.counts.verified, 0, "nothing held yet");
-    let agreed = session.hour(&world, 2, Check::Every);
-    assert!(agreed.counts.read && !agreed.counts.quiet);
-    assert_ne!(agreed.politics_reads, 0);
-    assert_eq!((agreed.counts.verified, agreed.counts.mismatches), (2, 0));
-    assert!(!domains.status.poisoned());
-    // A popularity write no hook saw: the token stands still.
-    world.popularity(0, 0, 1);
-    let caught = session.hour(&world, 3, Check::Every);
-    assert_eq!((caught.counts.verified, caught.counts.mismatches), (2, 1));
-    assert!(domains.status.poisoned());
-    assert_eq!((caught.tables, caught.buffers), walked(&world, 3));
 }
 
 #[test]
@@ -647,7 +592,7 @@ fn a_revoked_leader_certificate_walks() {
     let notification = domains.characters.notify(Some(character(1, 0)), 2);
     world.role(1, 0, -8);
     drop(notification);
-    let walk = session.hour(&world, 3, Check::Nothing);
+    let walk = session.hour(&world, 3);
     assert!(walk.counts.read && !walk.counts.quiet);
     let expected = walked(&world, 3);
     assert_eq!((&walk.tables, &walk.buffers), (&expected.0, &expected.1));
@@ -655,7 +600,7 @@ fn a_revoked_leader_certificate_walks() {
         panic!("PartyLeaders unavailable");
     };
     assert_eq!(leaders[2].role, Some(-8));
-    assert!(session.hour(&world, 4, Check::Nothing).counts.quiet);
+    assert!(session.hour(&world, 4).counts.quiet);
 }
 
 #[test]
@@ -666,11 +611,11 @@ fn a_new_country_walks() {
     session.start(&world);
     // A dynamic country takes slot 3; no politics hook ran.
     world.word(CTAB + 3 * 8, country(2) as u64);
-    let walk = session.hour(&world, 3, Check::Nothing);
+    let walk = session.hour(&world, 3);
     assert!(walk.counts.read && !walk.counts.quiet);
     assert_eq!(politics(&walk).len(), 3);
     assert_eq!((walk.tables, walk.buffers), walked(&world, 3));
-    let quiet = session.hour(&world, 4, Check::Nothing);
+    let quiet = session.hour(&world, 4);
     assert!(quiet.counts.quiet);
     assert_eq!(politics(&quiet).len(), 3);
 }
@@ -681,13 +626,13 @@ fn quiet_hours_leave_the_stores_carrying_per_country() {
     let domains = Domains::new();
     let mut session = Session::new(&domains);
     session.start(&world);
-    assert!(session.hour(&world, 3, Check::Nothing).counts.quiet);
+    assert!(session.hour(&world, 3).counts.quiet);
     // set_party_name on country 2's second party: only the party domain sees
     // it, so the hour walks and the stores carry every other country.
     let notification = domains.parties.notify(party(1, 1), 0);
     world.string(party(1, 1) + cpolitical_party::NAME, b"RENAMED");
     drop(notification);
-    let walk = session.hour(&world, 4, Check::Nothing);
+    let walk = session.hour(&world, 4);
     assert!(walk.counts.read && !walk.counts.quiet);
     assert_eq!((walk.tables, walk.buffers), walked(&world, 4));
     let [parties, ideas] = session.parties.counts();
@@ -695,7 +640,7 @@ fn quiet_hours_leave_the_stores_carrying_per_country() {
     assert_eq!((ideas.read, ideas.reused), (0, 2));
     let leaders = session.leaders.counts();
     assert_eq!((leaders.read, leaders.reused), (0, 2));
-    assert!(session.hour(&world, 5, Check::Nothing).counts.quiet);
+    assert!(session.hour(&world, 5).counts.quiet);
 }
 
 #[test]
@@ -706,14 +651,14 @@ fn an_invalidating_hour_or_a_forgotten_store_walks() {
     session.start(&world);
     // A load, gap or recovery starts an epoch in every domain.
     domains.boundary(true);
-    let reloaded = session.hour(&world, 3, Check::Nothing);
+    let reloaded = session.hour(&world, 3);
     assert!(reloaded.counts.read);
-    assert!(session.hour(&world, 4, Check::Nothing).counts.quiet);
+    assert!(session.hour(&world, 4).counts.quiet);
     // A failed Governance job forgets both stores.
     session.parties.forget();
     session.leaders.forget();
-    let forgotten = session.hour(&world, 5, Check::Nothing);
+    let forgotten = session.hour(&world, 5);
     assert!(forgotten.counts.read);
     assert_eq!((forgotten.tables, forgotten.buffers), walked(&world, 5));
-    assert!(session.hour(&world, 6, Check::Nothing).counts.quiet);
+    assert!(session.hour(&world, 6).counts.quiet);
 }

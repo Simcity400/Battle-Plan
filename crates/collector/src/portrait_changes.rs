@@ -31,10 +31,7 @@ static POISONED: AtomicBool = AtomicBool::new(false);
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
 static EVENTS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "reused portrait entries differ from a fresh read",
-]);
+static COUNTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
 struct Slot {
     address: AtomicUsize,
@@ -172,9 +169,6 @@ impl Changes for Observer {
         }
         Some((epoch, sequence))
     }
-    fn verify(&self) -> bool {
-        cfg!(feature = "portrait_verify")
-    }
 }
 
 pub fn record(counts: Counts) {
@@ -182,23 +176,8 @@ pub fn record(counts: Counts) {
         counts.reused_characters,
         counts.reused_entries,
         counts.read_characters,
-        counts.verified_entries,
-        counts.mismatches,
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
-    }
-    // A verification mismatch permanently disables reuse for this attachment.
-    if counts.mismatches != 0 {
-        POISONED.store(true, Ordering::SeqCst);
-    }
-}
-
-/// One share's sampled comparison ([`crate::sampled_verify`]): `verified`
-/// reusable characters read afresh, `mismatches` of them differing. A
-/// mismatch permanently disables reuse for this attachment.
-pub fn sampled(verified: u64, mismatches: u64) {
-    if SAMPLED.record(verified, mismatches, 0) {
-        POISONED.store(true, Ordering::SeqCst);
     }
 }
 
@@ -213,14 +192,9 @@ pub fn status() -> impl serde::Serialize {
     );
     crate::status::status!({
         "configured": cfg!(feature = "portrait_changes"),
-        "verify": cfg!(feature = "portrait_verify"),
         "poisoned": POISONED.load(Ordering::SeqCst),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_characters": counts[0], "reused_entries": counts[1],
-        "read_characters": counts[2], "verified_entries": counts[3], "mismatches": counts[4],
+        "read_characters": counts[2],
         "planned_parts": PLANNED_PARTS.load(Ordering::Relaxed),
         "quiet_parts": QUIET_PARTS.load(Ordering::Relaxed),
         "work": {
@@ -231,7 +205,7 @@ pub fn status() -> impl serde::Serialize {
             "scope": "QPC ticks for complete part acquisition, including certification, source reads and row work; not game-thread pause"
         },
         "events": events,
-        "scope": "cumulative acquisition observations since attach; a quiet part (quiet_parts, also counted in planned_parts) repeats a census share with no writer of a watched holder since its last complete capture and reads nothing; before each share's capture the reusable characters of the hour's slice (one in rotation_hours by character id) are read afresh and compared (sampled_*), and a mismatch disables reuse; verify mode instead reads all descriptors and compares would-be hits (verified_entries, mismatches); pooled buffers have independent baselines; bounded watch exhaustion disables reuse for that address"
+        "scope": "cumulative acquisition observations since attach; a quiet part (quiet_parts, also counted in planned_parts) repeats a census share with no writer of a watched holder since its last complete capture and reads nothing; pooled buffers have independent baselines; bounded watch exhaustion disables reuse for that address"
     })
 }
 

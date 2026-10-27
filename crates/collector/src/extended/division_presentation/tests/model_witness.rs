@@ -159,7 +159,6 @@ fn map_model_witness_equals_full_division_status_columns() {
     for hour in [1, 2] {
         slot.prepare_hour(hour, false);
         let mut store = slot.take().unwrap();
-        crate::sampled_verify::begin_hour(hour);
         let context = CaptureContext {
             hour,
             ..populated.context()

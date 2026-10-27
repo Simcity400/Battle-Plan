@@ -4,15 +4,12 @@ use super::super::bench::{ARRAYS, World, rows as published};
 use super::*;
 use crate::country_input_changes::Domain;
 use engine_native::{
-    ccountry, cdiplomacy_status, cgame_state, csubject_relation::Name, memory::SliceMemory,
-    msvc_string,
+    ccountry, cgame_state, csubject_relation::Name, memory::SliceMemory, msvc_string,
 };
 use replay_data::{rows::CountryAppearanceRow, rows::Recorded};
 use std::cell::RefCell;
 
 const COUNTRIES: usize = 48;
-/// Hour 5's slice: countries 5 and 29 (`id % ROTATION == 5`).
-const SLICE: Check = Check::Slice { hour: 5 };
 
 /// Records every guarded read's address.
 struct Traced<'a> {
@@ -88,7 +85,6 @@ fn hour(
     captured: &mut Captured,
     store: &mut AppearanceStore,
     domain: &Domain,
-    check: Check,
 ) -> Vec<u32> {
     let memory = Traced {
         memory: SliceMemory {
@@ -106,7 +102,6 @@ fn hour(
         Some(Carry {
             store,
             changes: domain,
-            check,
         }),
     );
     let reads = memory.reads.borrow();
@@ -119,72 +114,49 @@ fn every() -> Vec<u32> {
     (1..=COUNTRIES as u32).collect()
 }
 
-/// A quiet hour reads no country's appearance but its slice's, and publishes
-/// the rows, arenas and payloads a full read of the same memory does.
+/// A quiet hour reads no country's appearance, and publishes the rows,
+/// arenas and payloads a full read of the same memory does.
 #[test]
-fn a_quiet_hour_reads_only_its_slice_and_publishes_a_full_read() {
+fn a_quiet_hour_reads_no_country_and_publishes_a_full_read() {
     let world = world();
     let domain = Domain::enabled(64);
     let mut store = AppearanceStore::default();
     let mut captured = Captured::with_capacities(&world.capacities());
     // Nothing held yet: every country is read.
     assert_eq!(
-        hour(&world, &mut captured, &mut store, &domain, SLICE),
+        hour(&world, &mut captured, &mut store, &domain),
         every()
     );
     assert_eq!((published(&captured), layout(&captured)), full(&world));
     for _ in 0..2 {
-        assert_eq!(
-            hour(&world, &mut captured, &mut store, &domain, SLICE),
-            [5, 29]
-        );
+        assert!(hour(&world, &mut captured, &mut store, &domain).is_empty());
         let rows = published(&captured);
         assert_eq!((rows.clone(), layout(&captured)), full(&world));
         // Carried rows keep their payload and original tag bytes.
         assert_eq!(rows[1].subjects, Recorded::Value(vec![2, -1, 2]));
         assert_eq!(rows[1].original_tag, Recorded::Value(Some(b"XYZ".to_vec())));
     }
-    assert!(!domain.poisoned(Table::Appearance));
 }
 
-/// A marked country is read within the hour; a change written without a mark
-/// is found by its slice, which publishes the fresh row and poisons the set,
-/// so later hours read every country.
+/// A marked country is read within the hour, then carried again.
 #[test]
-fn a_marked_country_is_read_and_an_unmarked_change_poisons_the_set() {
+fn a_marked_country_is_read_within_the_hour() {
     let mut world = world();
     let domain = Domain::enabled(64);
     let mut store = AppearanceStore::default();
     let mut captured = Captured::with_capacities(&world.capacities());
-    hour(&world, &mut captured, &mut store, &domain, SLICE);
+    hour(&world, &mut captured, &mut store, &domain);
     let colour = country(&world, 3) + ccountry::CURRENT_PRIMARY_COLOR;
     put(&mut world, colour, &0x3f00_0000_u32.to_le_bytes());
     domain.write(Table::Appearance, 3);
-    assert_eq!(
-        hour(&world, &mut captured, &mut store, &domain, SLICE),
-        [3, 5, 29]
-    );
+    assert_eq!(hour(&world, &mut captured, &mut store, &domain), [3]);
     let rows = published(&captured);
     assert_eq!(rows[2].red, 0x3f00_0000);
     assert_eq!((rows, layout(&captured)), full(&world));
-    assert!(!domain.poisoned(Table::Appearance));
-
-    // Country 29's subject roster changes with no mark: its slice reads it.
-    let diplomacy = word(&world, country(&world, 29) + ccountry::DIPLOMACY_STATUS);
-    let payload = word(&world, diplomacy + cdiplomacy_status::SUBJECTS);
-    put(&mut world, payload, &77_i32.to_le_bytes());
-    assert_eq!(
-        hour(&world, &mut captured, &mut store, &domain, SLICE),
-        [5, 29]
-    );
+    assert!(hour(&world, &mut captured, &mut store, &domain).is_empty());
     let rows = published(&captured);
-    assert_eq!(rows[28].subjects, Recorded::Value(vec![77, -1, 29]));
+    assert_eq!(rows[2].red, 0x3f00_0000);
     assert_eq!((rows, layout(&captured)), full(&world));
-    assert!(domain.poisoned(Table::Appearance));
-    assert_eq!(
-        hour(&world, &mut captured, &mut store, &domain, SLICE),
-        every()
-    );
 }
 
 /// A failed read holds nothing, and a take whose epoch moved certifies
@@ -195,37 +167,24 @@ fn a_failed_read_or_an_uncertified_take_reads_every_country() {
     let domain = Domain::enabled(64);
     let mut store = AppearanceStore::default();
     let mut captured = Captured::with_capacities(&world.capacities());
-    hour(&world, &mut captured, &mut store, &domain, SLICE);
+    hour(&world, &mut captured, &mut store, &domain);
     // Country 7's diplomacy status fails its read: the hour is refused.
     let diplomacy = word(&world, country(&world, 7) + ccountry::DIPLOMACY_STATUS);
     let vtable = world.bytes[diplomacy - world.origin..][..8].to_vec();
     put(&mut world, diplomacy, &0_u64.to_le_bytes());
     domain.write(Table::Appearance, 7);
-    hour(&world, &mut captured, &mut store, &domain, SLICE);
+    hour(&world, &mut captured, &mut store, &domain);
     assert!(matches!(
         captured.outcomes()[0],
         Outcome::Unavailable { .. }
     ));
     put(&mut world, diplomacy, &vtable);
     // The take is certified, but nothing is held.
-    assert_eq!(
-        hour(&world, &mut captured, &mut store, &domain, SLICE),
-        every()
-    );
-    assert_eq!(
-        hour(&world, &mut captured, &mut store, &domain, SLICE),
-        [5, 29]
-    );
+    assert_eq!(hour(&world, &mut captured, &mut store, &domain), every());
+    assert!(hour(&world, &mut captured, &mut store, &domain).is_empty());
     // A writer that names no country moves the epoch.
     domain.write_every(Table::Appearance);
-    assert_eq!(
-        hour(&world, &mut captured, &mut store, &domain, SLICE),
-        every()
-    );
+    assert_eq!(hour(&world, &mut captured, &mut store, &domain), every());
     assert_eq!((published(&captured), layout(&captured)), full(&world));
-    assert_eq!(
-        hour(&world, &mut captured, &mut store, &domain, SLICE),
-        [5, 29]
-    );
-    assert!(!domain.poisoned(Table::Appearance));
+    assert!(hour(&world, &mut captured, &mut store, &domain).is_empty());
 }

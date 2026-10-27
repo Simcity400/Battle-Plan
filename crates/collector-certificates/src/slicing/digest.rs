@@ -1,5 +1,5 @@
-/// FNV-1a over the fields of one owner's read that its hooked writers
-/// certify ([`super::Changed::read`]); stable within a process, never persisted.
+/// FNV-1a over an owner's fields, for its fingerprint; stable within a
+/// process, never persisted.
 pub struct Digest(u64);
 
 impl Default for Digest {

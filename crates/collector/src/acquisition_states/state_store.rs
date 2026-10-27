@@ -12,10 +12,7 @@
 //! the shared operands are those of the held capture. Every writer of those
 //! fields is a hooked site ([`engine_mutations::territory_mutations`]) or a building
 //! writer the building family forwards, so a carried row equals a fresh
-//! read's. Each hour also reads the carryable states of its sampled slice
-//! ([`crate::sampled_verify`], keyed by state id; every one under
-//! `territory_verify`) afresh, publishes the fresh rows and poisons reuse on
-//! a difference.
+//! read's.
 //!
 //! The take clears the marks, so a capture that does not complete holds
 //! nothing and a failed job forgets the store: the next hour reads every
@@ -23,7 +20,6 @@
 use super::Inputs;
 use crate::{
     extended::state_flags,
-    sampled_verify::Check,
     territory_changes::{self, Changes, Counts, Table},
 };
 use engine_allocation as allocation;
@@ -86,8 +82,6 @@ struct Hour {
 /// The States job's held rows and scratch.
 pub(crate) struct StateStore {
     changes: &'static dyn Changes,
-    /// Tests fix the comparison; production takes the hour's.
-    check: Option<Check>,
     held: Held,
     hour: Hour,
     /// Set on the game thread; the next capture drops every held row.
@@ -101,9 +95,8 @@ pub(crate) struct StateStore {
     /// The hour's category definitions by pointer, with their tokens; reserved
     /// for every held state with the other scratch, so naming allocates nothing.
     categories: Vec<(u64, Option<u32>)>,
-    /// Per held row: read afresh, and whether only for comparison.
+    /// Per held row: read afresh.
     reread: Vec<bool>,
-    sampled: Vec<bool>,
     counts: Counts,
 }
 
@@ -111,7 +104,6 @@ impl StateStore {
     pub(crate) fn new(changes: &'static dyn Changes) -> Self {
         Self {
             changes,
-            check: None,
             held: Held::default(),
             hour: Hour::default(),
             forgotten: false,
@@ -122,15 +114,8 @@ impl StateStore {
             manpower: Vec::new(),
             categories: Vec::new(),
             reread: Vec::new(),
-            sampled: Vec::new(),
             counts: Counts::default(),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_check(mut self, check: Check) -> Self {
-        self.check = Some(check);
-        self
     }
 
     /// Nothing held certifies anything: the next capture reads afresh.
@@ -184,11 +169,6 @@ impl StateStore {
         };
     }
 
-    fn check(&self) -> Check {
-        self.check
-            .unwrap_or_else(|| crate::sampled_verify::current_burned_in(territory_changes::VERIFY))
-    }
-
     /// Whether this hour may carry the held rows.
     fn carryable(&self) -> bool {
         self.hour.complete
@@ -222,10 +202,8 @@ impl StateStore {
         let len = self.held.rows.len();
         let scratch = allocation::advisory(|| {
             allocation::resize_default(&mut self.slots, array.count as usize - 1)?;
-            for values in [&mut self.reread, &mut self.sampled] {
-                values.clear();
-                allocation::resize_default(values, len)?;
-            }
+            self.reread.clear();
+            allocation::resize_default(&mut self.reread, len)?;
             allocation::resize_default(&mut self.ids, len)?;
             allocation::resize_default(&mut self.manpower, len)?;
             self.categories.clear();
@@ -258,16 +236,9 @@ impl StateStore {
             &mut self.manpower,
         )
         .ok()?;
-        let check = self.check();
         for &id in &self.marked {
             if let Ok(index) = self.ids.binary_search(&id) {
                 self.reread[index] = true;
-            }
-        }
-        for (index, &id) in self.ids.iter().enumerate() {
-            if !self.reread[index] && check.covers(u64::from(id)) {
-                self.reread[index] = true;
-                self.sampled[index] = true;
             }
         }
         if !engine_native::walk::Buffer::for_worker(rows, growing)
@@ -351,40 +322,17 @@ impl StateStore {
         inputs.acquire_carried(memory, base, visitor, growing, |index| {
             (!reread[index]).then(|| held.fractions[index])
         });
-        self.compare(rows, names, inputs);
+        self.count();
         self.hold(rows, names, walk, visitor, inputs);
         Some((census, walk))
     }
 
-    /// Compares each sampled row's fresh read with its held row; a
-    /// difference poisons reuse.
-    fn compare(&mut self, rows: &[cstate::Row], names: &[u8], inputs: &Inputs) {
-        let fractions = inputs.complete(rows.len().min(self.held.rows.len()));
-        for (index, held) in self.held.rows.iter().enumerate() {
-            if !self.reread[index] {
+    fn count(&mut self) {
+        for &reread in &self.reread {
+            if reread {
+                self.counts.read += 1;
+            } else {
                 self.counts.reused += 1;
-                continue;
-            }
-            self.counts.read += 1;
-            if !self.sampled[index] {
-                continue;
-            }
-            self.counts.verified += 1;
-            let fresh = &rows[index];
-            let same = fresh.owner == held.owner
-                && fresh.controller == held.controller
-                && fresh.continent == held.continent
-                && fresh.movement_infrastructure == held.movement_infrastructure
-                && text(fresh, names) == text(held, &self.held.names)
-                && fresh.single_controller == held.single_controller
-                && fresh.best_vp_index == held.best_vp_index
-                && fractions
-                    .and_then(|rows| rows.get(index))
-                    .map(|row| row.fraction)
-                    == Some(self.held.fractions[index]);
-            if !same {
-                self.counts.mismatches += 1;
-                self.changes.mismatch();
             }
         }
         self.counts.quiet = self.marked.is_empty();
@@ -472,14 +420,8 @@ impl StateStore {
             + self.ids.capacity() * size_of::<u32>()
             + self.manpower.capacity() * size_of::<cstate::Manpower>()
             + self.categories.capacity() * size_of::<(u64, Option<u32>)>()
-            + self.reread.capacity()
-            + self.sampled.capacity();
+            + self.reread.capacity();
     }
-}
-
-/// A row's custom and owner name bytes in `bytes`.
-fn text<'a>(row: &cstate::Row, bytes: &'a [u8]) -> [&'a [u8]; 2] {
-    [row.custom_name, row.owner_name].map(|span| &bytes[span.start..][..span.len])
 }
 
 /// The fractions of a complete capture.

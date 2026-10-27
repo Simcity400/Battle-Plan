@@ -91,14 +91,9 @@ pub fn experience_damage(army: usize) -> (Notification<'static>, Notification<'s
 }
 
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused, read, verified and mismatched divisions; refused reads; witnessed
-/// divisions; divisions whose status maxima, and whose name members, were
-/// carried.
-static READS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-/// The family's sampled comparisons.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried DivisionStatus attack operands, maxima or name member differ from a fresh read",
-]);
+/// Reused and read divisions; refused reads; witnessed divisions; divisions
+/// whose status maxima, and whose name members, were carried.
+static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 /// Divisions the latest complete capture visited, for off-thread sizing.
 static DIVISIONS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
@@ -218,9 +213,6 @@ pub trait Changes: Sync {
     /// Registers a receiver before its read; whether it is now watched in
     /// the epoch of the hour's take.
     fn register(&self, receiver: usize) -> bool;
-    /// A fresh read disagreed with carried operands: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
 }
 
 impl Changes for Watches {
@@ -241,9 +233,6 @@ impl Changes for Watches {
     }
     fn register(&self, receiver: usize) -> bool {
         self.registry.register(receiver).is_some()
-    }
-    fn mismatch(&self) {
-        self.registry.poison();
     }
 }
 
@@ -268,14 +257,7 @@ impl Changes for Observer {
     fn register(&self, receiver: usize) -> bool {
         WATCHES.register(receiver)
     }
-    fn mismatch(&self) {
-        WATCHES.mismatch();
-    }
 }
-
-/// Whether captures read every carryable division afresh and compare,
-/// rather than the hour's sampled slice ([`crate::sampled_verify`]).
-pub const VERIFY: bool = cfg!(feature = "army_stat_verify");
 
 /// Whether the off-by-default diagnostic records the native operands
 /// (`DivisionStatus.attack`) of another slice of divisions each hour, which
@@ -342,8 +324,6 @@ pub fn collect() {
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     pub refused: u64,
     pub witnessed: u64,
     pub maxima_reused: u64,
@@ -356,8 +336,6 @@ pub fn record(counts: &Counts, divisions: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         counts.refused,
         counts.witnessed,
         counts.maxima_reused,
@@ -365,7 +343,6 @@ pub fn record(counts: &Counts, divisions: Option<usize>) {
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
     if let Some(divisions) = divisions {
         DIVISIONS.store(divisions, Ordering::Relaxed);
     }
@@ -381,21 +358,14 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "army_stat_changes"),
-        "verify": VERIFY,
         "witness": WITNESS,
         "poisoned": WATCHES.registry.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_divisions": reads[0],
         "read_divisions": reads[1],
-        "verified_divisions": reads[2],
-        "mismatches": reads[3],
-        "refused_divisions": reads[4],
-        "witnessed_divisions": reads[5],
-        "maxima_reused_divisions": reads[6],
-        "names_reused_divisions": reads[7],
+        "refused_divisions": reads[2],
+        "witnessed_divisions": reads[3],
+        "maxima_reused_divisions": reads[4],
+        "names_reused_divisions": reads[5],
         "events": events,
         "watches": WATCHES.registry.status(),
         "unit_history": unit_history_changes::status(),
@@ -404,7 +374,7 @@ pub fn status() -> impl serde::Serialize {
         "progression_watches": WATCHES.progression.status(),
         "progression_refusals": crate::status::map(PROGRESSION_FAILURE_NAMES.into_iter().zip(PROGRESSION_FAILURES.iter().map(|n| n.load(Ordering::Relaxed)))),
         "experience_refusals": crate::status::map(EXPERIENCE_FAILURE_NAMES.into_iter().zip(EXPERIENCE_FAILURES.iter().map(|n| n.load(Ordering::Relaxed)))),
-        "scope": "cumulative since attach; a division's DivisionStatus.attack_stats are carried when the hour's take of the marks returned the held capture's epoch, its army has the address and stat block of the held read and no hooked update_active_stats marked it since; every other division's stat block is read; every hour also reads the carryable divisions of its slice afresh (one in rotation_hours by division id; every one in verify mode), publishes the fresh operands and disables reuse at the first mismatch (sampled_*); witnessed_divisions counts the attack_witness diagnostic's native operands; maxima_reused_divisions counts divisions whose DivisionStatus maxima (same block, same writer, same marks) were carried rather than read, and names_reused_divisions those whose name member span and cached-name lookup cache text (marked on the member by cached-name refresh, the country-wide refresh moving the epoch) were; the slice's carryable maxima and members are read and compared too"
+        "scope": "cumulative since attach; a division's DivisionStatus.attack_stats are carried when the hour's take of the marks returned the held capture's epoch, its army has the address and stat block of the held read and no hooked update_active_stats marked it since; every other division's stat block is read; witnessed_divisions counts the attack_witness diagnostic's native operands; maxima_reused_divisions counts divisions whose DivisionStatus maxima (same block, same writer, same marks) were carried rather than read, and names_reused_divisions those whose name member span and cached-name lookup cache text (marked on the member by cached-name refresh, the country-wide refresh moving the epoch) were"
     })
 }
 
@@ -720,7 +690,7 @@ mod tests {
     }
 
     /// The writer moves only the army it names; a running writer certifies
-    /// nothing, and a mismatch poisons the domain.
+    /// nothing.
     #[test]
     fn the_writer_marks_only_its_registered_receiver() {
         let watches = Watches::enabled(16);
@@ -748,9 +718,6 @@ mod tests {
         assert!(moved.is_some() && moved != epoch);
         watches.boundary(true);
         assert_ne!(take(&watches).0, moved);
-        Changes::mismatch(&watches);
-        assert!(watches.poisoned());
-        assert_eq!(take(&watches).0, None);
     }
 }
 

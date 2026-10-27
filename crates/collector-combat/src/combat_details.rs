@@ -51,9 +51,8 @@ static REFUSED_SIDE_INPUTS: AtomicU64 = AtomicU64::new(0);
 /// ReserveModifierTrees rows refused at capture, and the first reason.
 static REFUSED_TREES: AtomicU64 = AtomicU64::new(0);
 static FIRST_TREE_REFUSAL: OnceLock<&'static str> = OnceLock::new();
-/// Reserve trees carried, read, verified against a fresh read and found
-/// differing.
-static RESERVE_TREE_COUNTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+/// Reserve trees carried and read.
+static RESERVE_TREE_COUNTS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 static FIRST_SIDE_INPUT_REFUSAL: OnceLock<&'static str> = OnceLock::new();
 
 /// The reserve reinforcement speed shares the land combat pass composed and
@@ -70,9 +69,7 @@ pub fn status() -> impl serde::Serialize {
         "first_tree_refusal": FIRST_TREE_REFUSAL.get(),
         "trees_carried": RESERVE_TREE_COUNTS[0].load(Ordering::Relaxed),
         "trees_read": RESERVE_TREE_COUNTS[1].load(Ordering::Relaxed),
-        "trees_verified": RESERVE_TREE_COUNTS[2].load(Ordering::Relaxed),
-        "trees_mismatched": RESERVE_TREE_COUNTS[3].load(Ordering::Relaxed),
-        "trees_scope": "cumulative ReserveModifierTrees sources since attach: refused rows (that source's tree, accumulator or commander name unreadable; the other rows stand), trees carried while the naval tree writers' certificate of their country or commander held, trees read, carried trees read afresh in rotation and compared, and comparisons that differed (a write no hook saw, which disables every certificate)",
+        "trees_scope": "cumulative ReserveModifierTrees sources since attach: refused rows (that source's tree, accumulator or commander name unreadable; the other rows stand), trees carried while the naval tree writers' certificate of their country or commander held, and trees read",
         "side_inputs_scope": "cumulative optional side inputs of captured LandCombatDetails rows since attach (a selected commander's next skill level, the live LEADER_TRAITS_XP_SHOW threshold, the selected leader modifier block) whose read failed; each leaves only its hover part unknown and the row intact",
     })
 }
@@ -957,10 +954,8 @@ pub struct Captured {
     /// ReserveModifierTrees, in key order, and its outcome.
     reserve_trees: Vec<ReserveModifierTreeRow>,
     reserve_outcome: Outcome,
-    /// Trees carried across passes, in source order, and the verification
-    /// turn.
+    /// Trees carried across passes, in source order.
     held_reserve_trees: HeldReserveTrees,
-    reserve_verify_turn: usize,
     /// Tests only: held trees the last pass examined to find its carries.
     #[cfg(test)]
     reserve_carry_probes: usize,
@@ -1154,7 +1149,6 @@ impl Captured {
             reserve_trees: Vec::new(),
             reserve_outcome: RESERVE_TREES_UNCAPTURED,
             held_reserve_trees: HeldReserveTrees::default(),
-            reserve_verify_turn: 0,
             #[cfg(test)]
             reserve_carry_probes: 0,
             #[cfg(test)]
@@ -1559,12 +1553,8 @@ impl Captured {
         let mut held = std::mem::take(&mut self.held_reserve_trees);
         let mut kept = Vec::new();
         kept.try_reserve(sources.len()).map_err(|_| ALLOCATION)?;
-        // One source a pass, in rotation, is read afresh when carried and
-        // compared with the carried tree.
-        let verify = self.reserve_verify_turn % sources.len().max(1);
-        self.reserve_verify_turn = self.reserve_verify_turn.wrapping_add(1);
-        let mut counts = [0_u64; 4];
-        for (index, source) in sources.into_iter().enumerate() {
+        let mut counts = [0_u64; 2];
+        for source in sources {
             // Only the trees the naval tree writers' hooks cover carry: the
             // country tree and the commander's unit modifier.
             let certificate = if source.kind < 2 && source.accumulator != 0 {
@@ -1587,15 +1577,6 @@ impl Captured {
                     replay_data::rows::printed_tree(&tree).map_err(|_| ALLOCATION)
                 };
             let nodes = match carried {
-                Some(entry) if index == verify => {
-                    counts[2] += 1;
-                    let read = fresh();
-                    if read.as_ref().ok() != Some(&entry) {
-                        counts[3] += 1;
-                        naval_tree_changes::missed_write();
-                    }
-                    read
-                }
                 Some(entry) => {
                     counts[0] += 1;
                     Ok(entry)

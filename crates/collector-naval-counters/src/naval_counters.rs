@@ -336,28 +336,19 @@ pub struct Captured {
 /// certifies), each under the receiver's certificate taken before the census
 /// was read. A complete capture holds the censuses whose receivers still have
 /// that certificate when it ends; the frame's next capture is served them
-/// while the certificate still holds when served and the hour's sampled
-/// slice does not cover the receiver. A covered receiver is read afresh and
-/// compared with its held census when both were read under the same
-/// certificate and it still holds; a difference poisons the naval tree
-/// watches. The held censuses leave the store when a capture begins and
-/// return only when it completes, so a capture that does not complete (or an
-/// Ordinary family that fails: [`Captured::forget_censuses`]) holds nothing.
+/// while the certificate still holds when served. The held censuses leave the
+/// store when a capture begins and return only when it completes, so a
+/// capture that does not complete (or an Ordinary family that fails:
+/// [`Captured::forget_censuses`]) holds nothing.
 #[derive(Default)]
 struct CensusStore {
     /// Sorted by [`ctask_force::HeldCensus::identity`].
     held: Vec<ctask_force::HeldCensus>,
-    /// The censuses held before this capture, sorted by identity.
-    previous: Vec<ctask_force::HeldCensus>,
-    /// Those this capture may be served (outside the sampled slice).
+    /// The censuses held before this capture, which it may be served, sorted
+    /// by identity.
     serve: Vec<ctask_force::HeldCensus>,
     /// The certified censuses this capture used.
     log: Vec<ctask_force::HeldCensus>,
-}
-
-/// A receiver's stable key for the sampled slice.
-fn census_key(receiver: usize) -> u64 {
-    (receiver >> 4) as u64
 }
 
 /// The census of `identity` in `sorted`.
@@ -372,39 +363,22 @@ fn held_census(
 }
 
 impl CensusStore {
-    /// Before a capture: take the held censuses out, and those it may be
-    /// served.
-    fn prepare(&mut self, check: crate::sampled_verify::Check) {
-        self.previous.clear();
-        std::mem::swap(&mut self.held, &mut self.previous);
+    /// Before a capture: take the held censuses out to be served.
+    fn prepare(&mut self) {
         self.serve.clear();
+        std::mem::swap(&mut self.held, &mut self.serve);
         self.log.clear();
-        if engine_allocation::advisory(|| {
-            engine_allocation::reserve(&mut self.serve, self.previous.len())
-        })
-        .is_err()
-        {
-            return;
-        }
-        self.serve.extend(
-            self.previous
-                .iter()
-                .filter(|census| !check.covers(census_key(census.receiver))),
-        );
     }
 
-    /// After a capture: compare the covered receivers' fresh censuses with
-    /// the held ones read under the same certificate, then hold this
-    /// capture's censuses whose receivers' certificates are still the ones
-    /// taken before them (nothing when it did not complete). Returns how
-    /// many censuses were served, verified and mismatched.
+    /// After a capture: hold this capture's censuses whose receivers'
+    /// certificates are still the ones taken before them (nothing when it
+    /// did not complete). Returns how many censuses were served.
     fn finish(
         &mut self,
         complete: bool,
-        check: crate::sampled_verify::Check,
         certificate: impl Fn(usize) -> Option<ctask_force::Certificate>,
-    ) -> (u64, u64, u64) {
-        let (mut served, mut verified, mut mismatches) = (0_u64, 0_u64, 0_u64);
+    ) -> u64 {
+        let mut served = 0_u64;
         self.log
             .sort_unstable_by_key(ctask_force::HeldCensus::identity);
         self.log.dedup_by_key(|census| census.identity());
@@ -416,45 +390,31 @@ impl CensusStore {
             .is_ok()
         {
             for census in &self.log {
-                let identity = census.identity();
-                // No writer moved the receiver since its census was taken.
-                let holds = certificate(census.receiver) == Some(census.certificate);
-                if held_census(&self.serve, &identity)
+                if held_census(&self.serve, &census.identity())
                     .is_some_and(|held| held.certificate == census.certificate)
                 {
                     // The reader served exactly this census.
                     served += 1;
-                } else if holds
-                    && check.covers(census_key(census.receiver))
-                    && let Some(held) = held_census(&self.previous, &identity)
-                    && held.certificate == census.certificate
-                {
-                    verified += 1;
-                    mismatches += u64::from(held.values != census.values);
                 }
-                if holds {
+                // No writer moved the receiver since its census was taken.
+                if certificate(census.receiver) == Some(census.certificate) {
                     self.held.push(*census);
                 }
             }
         }
-        self.previous.clear();
         self.serve.clear();
-        (served, verified, mismatches)
+        served
     }
 
     /// Hold nothing, keeping the allocations.
     fn forget(&mut self) {
         self.held.clear();
-        self.previous.clear();
         self.serve.clear();
         self.log.clear();
     }
 
     fn allocated_bytes(&self) -> usize {
-        (self.held.capacity()
-            + self.previous.capacity()
-            + self.serve.capacity()
-            + self.log.capacity())
+        (self.held.capacity() + self.serve.capacity() + self.log.capacity())
             * size_of::<ctask_force::HeldCensus>()
     }
 }
@@ -645,8 +605,7 @@ impl Captured {
         // took, for status.
         let (mut visited, mut missions_ticks, mut motion_ticks) = (0_u64, 0_u64, 0_u64);
         // The certified censuses this frame held and may serve this hour.
-        let check = crate::sampled_verify::current_burned_in(crate::naval_tree_changes::VERIFY);
-        self.censuses.prepare(check);
+        self.censuses.prepare();
         let mut motion = ctask_force::MapMotionCollector::new_growing(
             memory,
             base,
@@ -765,12 +724,11 @@ impl Captured {
             _ => None,
         };
         let walked = motion.finish(failed);
-        let (served, verified, mismatches) = self.censuses.finish(
+        let served = self.censuses.finish(
             matches!(walked.outcome, Outcome::Rows { .. }),
-            check,
             crate::naval_tree_changes::sequence,
         );
-        crate::naval_tree_changes::censuses(served, verified, mismatches);
+        crate::naval_tree_changes::censuses(served);
         let registered = missions.finish(failed);
         self.missions.outcome = registered.outcome;
         self.regions.len = registered.regions_len;
@@ -2072,22 +2030,21 @@ mod tests {
     }
 
     /// A capture of every receiver in `trees` (receiver, current value): the
-    /// values used and the census counts.
+    /// values used and the censuses served.
     fn census_capture(
         store: &mut CensusStore,
         registry: &crate::watch_registry::WatchRegistry,
-        check: crate::sampled_verify::Check,
         trees: &[(usize, i64)],
         reads: &mut usize,
-    ) -> (Vec<i64>, (u64, u64, u64)) {
-        store.prepare(check);
+    ) -> (Vec<i64>, u64) {
+        store.prepare();
         let used = trees
             .iter()
             .map(|&(receiver, current)| use_census(store, registry, receiver, current, reads))
             .collect();
         (
             used,
-            store.finish(true, check, |receiver| registry.sequence(receiver)),
+            store.finish(true, |receiver| registry.sequence(receiver)),
         )
     }
 
@@ -2099,26 +2056,19 @@ mod tests {
     /// read, not at completion, so the next capture reads the new values.
     #[test]
     fn a_fresh_census_is_not_held_past_a_writer_after_its_read() {
-        use crate::sampled_verify::Check;
         let registry = crate::watch_registry::WatchRegistry::enabled(64);
         let mut store = CensusStore::default();
         let mut reads = 0;
-        store.prepare(Check::Nothing);
+        store.prepare();
         assert_eq!(use_census(&mut store, &registry, TREE, 10, &mut reads), 10);
         // A hooked writer rebuilds the tree before the capture completes.
         drop(registry.notify(TREE));
-        store.finish(true, Check::Nothing, |receiver| registry.sequence(receiver));
+        store.finish(true, |receiver| registry.sequence(receiver));
         assert!(
             store.held.is_empty(),
             "the census is not held past the writer"
         );
-        let (used, _) = census_capture(
-            &mut store,
-            &registry,
-            Check::Nothing,
-            &[(TREE, 11)],
-            &mut reads,
-        );
+        let (used, _) = census_capture(&mut store, &registry, &[(TREE, 11)], &mut reads);
         assert_eq!((used, reads), (vec![11], 2));
     }
 
@@ -2126,33 +2076,19 @@ mod tests {
     /// after it was served: the next capture reads the tree afresh.
     #[test]
     fn a_served_census_is_not_held_past_a_writer_after_it_was_served() {
-        use crate::sampled_verify::Check;
         let registry = crate::watch_registry::WatchRegistry::enabled(64);
         let mut store = CensusStore::default();
         let mut reads = 0;
-        census_capture(
-            &mut store,
-            &registry,
-            Check::Nothing,
-            &[(TREE, 10)],
-            &mut reads,
-        );
+        census_capture(&mut store, &registry, &[(TREE, 10)], &mut reads);
         assert_eq!(store.held.len(), 1);
-        store.prepare(Check::Nothing);
+        store.prepare();
         assert_eq!(use_census(&mut store, &registry, TREE, 10, &mut reads), 10);
         assert_eq!(reads, 1, "served");
         drop(registry.notify(TREE));
-        let (served, _, _) =
-            store.finish(true, Check::Nothing, |receiver| registry.sequence(receiver));
+        let served = store.finish(true, |receiver| registry.sequence(receiver));
         assert_eq!(served, 1);
         assert!(store.held.is_empty(), "the served census is not held again");
-        let (used, _) = census_capture(
-            &mut store,
-            &registry,
-            Check::Nothing,
-            &[(TREE, 11)],
-            &mut reads,
-        );
+        let (used, _) = census_capture(&mut store, &registry, &[(TREE, 11)], &mut reads);
         assert_eq!((used, reads), (vec![11], 2));
     }
 
@@ -2161,124 +2097,36 @@ mod tests {
     /// census holds its result and is served unchanged.
     #[test]
     fn a_writer_before_the_first_registration_is_read() {
-        use crate::sampled_verify::Check;
         let registry = crate::watch_registry::WatchRegistry::enabled(64);
         let mut store = CensusStore::default();
         let mut reads = 0;
         drop(registry.notify(TREE));
-        let (used, _) = census_capture(
-            &mut store,
-            &registry,
-            Check::Nothing,
-            &[(TREE, 11)],
-            &mut reads,
-        );
+        let (used, _) = census_capture(&mut store, &registry, &[(TREE, 11)], &mut reads);
         assert_eq!(used, [11]);
-        let (used, (served, _, _)) = census_capture(
-            &mut store,
-            &registry,
-            Check::Nothing,
-            &[(TREE, 11)],
-            &mut reads,
-        );
+        let (used, served) = census_capture(&mut store, &registry, &[(TREE, 11)], &mut reads);
         assert_eq!((used, served, reads), (vec![11], 1, 1));
-    }
-
-    /// A covered receiver is read afresh and compared with its held census
-    /// only when both reads had the same certificate and it still holds; a
-    /// held census whose tree changed without a writer is a mismatch.
-    #[test]
-    fn a_covered_census_is_compared_under_one_certificate() {
-        use crate::sampled_verify::Check;
-        let registry = crate::watch_registry::WatchRegistry::enabled(64);
-        let mut store = CensusStore::default();
-        let mut reads = 0;
-        census_capture(
-            &mut store,
-            &registry,
-            Check::Nothing,
-            &[(TREE, 10)],
-            &mut reads,
-        );
-        let (used, counts) = census_capture(
-            &mut store,
-            &registry,
-            Check::Every,
-            &[(TREE, 10)],
-            &mut reads,
-        );
-        assert_eq!((used, counts, reads), (vec![10], (0, 1, 0), 2));
-        // An unhooked write.
-        let (used, counts) = census_capture(
-            &mut store,
-            &registry,
-            Check::Every,
-            &[(TREE, 12)],
-            &mut reads,
-        );
-        assert_eq!((used, counts), (vec![12], (0, 1, 1)));
-        // A hooked write between the held read and the fresh one.
-        drop(registry.notify(TREE));
-        let (used, counts) = census_capture(
-            &mut store,
-            &registry,
-            Check::Every,
-            &[(TREE, 13)],
-            &mut reads,
-        );
-        assert_eq!((used, counts), (vec![13], (0, 0, 0)));
-        // A hooked write during the fresh read.
-        store.prepare(Check::Every);
-        use_census(&mut store, &registry, TREE, 13, &mut reads);
-        drop(registry.notify(TREE));
-        assert_eq!(
-            store.finish(true, Check::Every, |receiver| registry.sequence(receiver)),
-            (0, 0, 0)
-        );
-        assert!(store.held.is_empty());
     }
 
     /// A capture that does not complete, or never reaches its completion,
     /// leaves nothing to serve; forgetting keeps the allocations.
     #[test]
     fn an_incomplete_census_capture_holds_nothing() {
-        use crate::sampled_verify::Check;
         let registry = crate::watch_registry::WatchRegistry::enabled(64);
         let mut store = CensusStore::default();
         let mut reads = 0;
-        census_capture(
-            &mut store,
-            &registry,
-            Check::Nothing,
-            &[(TREE, 10)],
-            &mut reads,
-        );
-        store.prepare(Check::Nothing);
+        census_capture(&mut store, &registry, &[(TREE, 10)], &mut reads);
+        store.prepare();
         use_census(&mut store, &registry, TREE, 10, &mut reads);
-        store.finish(false, Check::Nothing, |receiver| {
-            registry.sequence(receiver)
-        });
+        store.finish(false, |receiver| registry.sequence(receiver));
         assert!(store.held.is_empty());
-        census_capture(
-            &mut store,
-            &registry,
-            Check::Nothing,
-            &[(TREE, 10)],
-            &mut reads,
-        );
+        census_capture(&mut store, &registry, &[(TREE, 10)], &mut reads);
         assert_eq!(store.held.len(), 1);
         // A capture that panics between preparation and completion.
-        store.prepare(Check::Nothing);
+        store.prepare();
         assert!(store.held.is_empty(), "taken out while the capture runs");
-        store.prepare(Check::Nothing);
+        store.prepare();
         assert!(store.serve.is_empty());
-        census_capture(
-            &mut store,
-            &registry,
-            Check::Nothing,
-            &[(TREE, 10)],
-            &mut reads,
-        );
+        census_capture(&mut store, &registry, &[(TREE, 10)], &mut reads);
         assert_eq!(store.held.len(), 1);
         let bytes = store.allocated_bytes();
         store.forget();
@@ -2286,11 +2134,10 @@ mod tests {
         assert_eq!(store.allocated_bytes(), bytes);
     }
 
-    /// Distinct receivers (one census each) are all held, all served in the
-    /// next capture and all compared under full verification, by sorted lookups.
+    /// Distinct receivers (one census each) are all held and all served in
+    /// the next capture, by sorted lookups.
     #[test]
-    fn censuses_of_many_receivers_are_held_served_and_verified() {
-        use crate::sampled_verify::Check;
+    fn censuses_of_many_receivers_are_held_and_served() {
         const RECEIVERS: usize = 8;
         let registry =
             crate::watch_registry::WatchRegistry::enabled((4 * RECEIVERS).next_power_of_two());
@@ -2301,17 +2148,15 @@ mod tests {
             .rev()
             .map(|index| (TREE + index * 0x1310, index as i64))
             .collect();
-        census_capture(&mut store, &registry, Check::Nothing, &trees, &mut reads);
+        census_capture(&mut store, &registry, &trees, &mut reads);
         assert_eq!((store.held.len(), reads), (RECEIVERS, RECEIVERS));
         assert!(
             store
                 .held
                 .is_sorted_by_key(ctask_force::HeldCensus::identity)
         );
-        let (_, counts) = census_capture(&mut store, &registry, Check::Nothing, &trees, &mut reads);
-        assert_eq!((counts, reads), ((RECEIVERS as u64, 0, 0), RECEIVERS));
-        let (_, counts) = census_capture(&mut store, &registry, Check::Every, &trees, &mut reads);
-        assert_eq!(counts, (0, RECEIVERS as u64, 0));
+        let (_, served) = census_capture(&mut store, &registry, &trees, &mut reads);
+        assert_eq!((served, reads), (RECEIVERS as u64, RECEIVERS));
         assert_eq!(store.held.len(), RECEIVERS);
     }
     #[test]

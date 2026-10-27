@@ -13,7 +13,6 @@ doctest = false
 test-support = ["collector-extended-support/test-support", "collector-observers/test-support"]
 default = ["ship_model_changes"]
 ship_model_changes = []
-ship_model_verify = ["ship_model_changes"]
 
 [dependencies]
 collector-model-inputs.workspace = true

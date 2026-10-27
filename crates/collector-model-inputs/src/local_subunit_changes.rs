@@ -24,13 +24,8 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused, read, verified and mismatched countries; reused and read rows;
-/// quiet walks.
-static READS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
-/// The family's sampled comparisons.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried CountryLocalSubunits rows differ from a fresh read",
-]);
+/// Reused and read countries; reused and read rows; quiet walks.
+static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 /// Deployment statuses the latest complete walk visited, for off-thread
 /// sizing.
 static COUNTRIES: AtomicUsize = AtomicUsize::new(0);
@@ -94,9 +89,6 @@ pub trait Changes: Sync {
     /// when it cannot be observed. Equal values across hours prove that no
     /// observed writer touched it.
     fn sequence(&self, status: usize) -> Option<(u64, u64)>;
-    /// A fresh read disagreed with carried rows: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
 }
 
 impl Changes for Watches {
@@ -105,9 +97,6 @@ impl Changes for Watches {
     }
     fn sequence(&self, status: usize) -> Option<(u64, u64)> {
         self.registry.sequence(status)
-    }
-    fn mismatch(&self) {
-        self.registry.poison();
     }
 }
 
@@ -126,16 +115,10 @@ impl Changes for Observer {
     fn sequence(&self, status: usize) -> Option<(u64, u64)> {
         WATCHES.sequence(status)
     }
-    fn mismatch(&self) {
-        WATCHES.mismatch();
-    }
 }
 
 /// Whether CountryLocalSubunits is carried between hours.
 pub const CARRY: bool = cfg!(feature = "local_subunit_changes");
-/// Whether walks read every carryable country afresh and compare, rather
-/// than the hour's sampled slice ([`crate::sampled_verify`]).
-pub const VERIFY: bool = cfg!(feature = "local_subunit_verify");
 
 /// Notifications running now.
 pub fn active() -> usize {
@@ -173,8 +156,6 @@ pub fn collect() {
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     pub reused_rows: u64,
     pub read_rows: u64,
     /// The walk's certificates held by the domain's unchanged quiet token,
@@ -188,15 +169,12 @@ pub fn record(counts: &Counts, countries: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         counts.reused_rows,
         counts.read_rows,
         u64::from(counts.quiet),
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
     if let Some(countries) = countries {
         COUNTRIES.store(countries, Ordering::Relaxed);
     }
@@ -212,22 +190,15 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "local_subunit_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_countries": reads[0],
         "read_countries": reads[1],
-        "verified_countries": reads[2],
-        "mismatches": reads[3],
-        "reused_rows": reads[4],
-        "read_rows": reads[5],
-        "quiet_hours": reads[6],
+        "reused_rows": reads[2],
+        "read_rows": reads[3],
+        "quiet_hours": reads[4],
         "events": events,
         "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; CountryLocalSubunits is walked every hour: a country's rows are carried when its country object is that of the held walk and either the domain's quiet token is unchanged since before that walk (quiet_hours; no deployment status is read) or no hooked writer touched its deployment status since the held walk registered it and the status and clone vector header read this hour are the held ones; every other country is read afresh; a walk is held only when no hooked writer ran during it; every hour also reads the carryable countries of its slice afresh (each once in rotation_hours days, at the hour and on the day its country id names; every one in verify mode), publishes the fresh rows and disables reuse at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; CountryLocalSubunits is walked every hour: a country's rows are carried when its country object is that of the held walk and either the domain's quiet token is unchanged since before that walk (quiet_hours; no deployment status is read) or no hooked writer touched its deployment status since the held walk registered it and the status and clone vector header read this hour are the held ones; every other country is read afresh; a walk is held only when no hooked writer ran during it"
     })
 }
 

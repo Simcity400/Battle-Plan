@@ -6,7 +6,6 @@ pub struct VariantPart {
     sources: Vec<cequipment_variant::RegistryRow>,
     carried: Vec<Option<Arc<rows::VariantDesignState>>>,
     leaves: Variants,
-    hour: i32,
     fresh: bool,
     details: bool,
     definitions_only: bool,
@@ -48,7 +47,6 @@ impl VariantPart {
         let mut carry = DesignCarry {
             held: &mut self.leaves.organisation_holds,
             fresh: self.fresh,
-            day: self.hour.div_euclid(24),
         };
         capture_source(&mut self.leaves.stats, Ok(source), |source, rows| {
             cequipment_variant::walk_stats_carried(memory, source, rows, &mut carry)
@@ -189,7 +187,6 @@ impl Variants {
                     .map_err(|_| "variant partition allocation failed")?,
                 carried,
                 leaves,
-                hour,
                 fresh: full || !self.organisations_complete,
                 details,
                 definitions_only: false,
@@ -365,7 +362,6 @@ mod tests {
                     sources: Vec::new(),
                     carried: Vec::new(),
                     leaves: Variants::vacant(),
-                    hour: 0,
                     fresh: false,
                     details: true,
                     definitions_only: false,

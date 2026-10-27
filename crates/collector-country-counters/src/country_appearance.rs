@@ -445,7 +445,6 @@ impl Captured {
             Some(boundary) => {
                 self.rows.outcome = match carry.as_mut() {
                     Some(carry) => {
-                        let check = carry.check;
                         let store = &mut *carry.store;
                         ccountry::walk_appearance_carrying_growing(
                             memory,
@@ -454,7 +453,7 @@ impl Captured {
                             boundary,
                             &mut self.rows.rows,
                             &mut self.raw,
-                            &mut |globals, country, row| store.select(check, globals, country, row),
+                            &mut |globals, country, row| store.select(globals, country, row),
                         )
                     }
                     None => ccountry::walk_appearance_observed_growing(
@@ -554,7 +553,7 @@ impl Captured {
         POSITIVE_ORIGINAL_TAG_REFUSALS
             .fetch_add(refused as u64, std::sync::atomic::Ordering::Relaxed);
         if let Some(carry) = carry {
-            carry.store.finish(self, carry.changes);
+            carry.store.finish(self);
         }
         let appearance_ticks =
             appearance_ticks.saturating_add(qpc().saturating_sub(begin).max(0) as u64);

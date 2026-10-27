@@ -390,10 +390,7 @@ fn building_worker_growth_preserves_original_fault_order_and_the_independent_sco
 /// settled hours ([`super::BuildingStore`], [`crate::building_changes`]).
 mod carried {
     use super::*;
-    use crate::{
-        building_changes::{Changes, Counts, Watches},
-        sampled_verify::{Check, ROTATION},
-    };
+    use crate::building_changes::{Changes, Counts, Watches};
     use engine_mutations::building_mutations;
     use engine_native::cpdx_array::Array;
     use std::ops::Range;
@@ -415,12 +412,7 @@ mod carried {
         reads: Vec<(usize, usize)>,
     }
 
-    fn capture(
-        fixture: &Fixture,
-        store: &mut BuildingStore,
-        watches: &Watches,
-        check: Check,
-    ) -> Hour {
+    fn capture(fixture: &Fixture, store: &mut BuildingStore, watches: &Watches) -> Hour {
         let memory = Trace {
             source: SliceMemory {
                 base: BASE,
@@ -430,7 +422,7 @@ mod carried {
             reads: RefCell::default(),
         };
         let mut buildings = Buildings::vacant();
-        buildings.capture_with(&memory, BASE, BASE, Some((store, watches, check)));
+        buildings.capture_with(&memory, BASE, BASE, Some((store, watches)));
         let outcomes = [
             buildings.state_buildings.outcome,
             buildings.province_buildings.outcome,
@@ -454,8 +446,8 @@ mod carried {
     }
 
     /// One capture whose two tables are complete and unchanged in size.
-    fn hour(fixture: &Fixture, store: &mut BuildingStore, watches: &Watches, check: Check) -> Hour {
-        let hour = capture(fixture, store, watches, check);
+    fn hour(fixture: &Fixture, store: &mut BuildingStore, watches: &Watches) -> Hour {
+        let hour = capture(fixture, store, watches);
         assert_eq!(hour.outcomes, [Outcome::Rows { len: ROWS }; 2]);
         hour
     }
@@ -570,7 +562,7 @@ mod carried {
     }
 
     fn first_hour(fixture: &Fixture, store: &mut BuildingStore, watches: &Watches) -> Hour {
-        let first = hour(fixture, store, watches, Check::Nothing);
+        let first = hour(fixture, store, watches);
         assert_eq!((first.counts.read, first.counts.reused), (STATUSES, 0));
         assert!(!first.counts.quiet);
         assert_ne!(first.building_reads, 0);
@@ -595,7 +587,7 @@ mod carried {
         let mut store = BuildingStore::new();
         let first = first_hour(&fixture, &mut store, &watches);
         for _ in 0..3 {
-            let quiet = hour(&fixture, &mut store, &watches, Check::Nothing);
+            let quiet = hour(&fixture, &mut store, &watches);
             assert_eq!(quiet.states, first.states);
             assert_eq!(quiet.provinces, first.provinces);
             assert!(quiet.counts.quiet);
@@ -637,7 +629,7 @@ mod carried {
         Changes::sequence(&watches, unwalked).unwrap();
         drop(watches.notify(Some(unwalked), 6));
         watches.boundary(false);
-        let changed = hour(&fixture, &mut store, &watches, Check::Nothing);
+        let changed = hour(&fixture, &mut store, &watches);
         assert!(changed.counts.settled && !changed.counts.quiet);
         assert_eq!(changed.counts.marked, 1);
         no_location_walk(&fixture, &changed.reads);
@@ -652,7 +644,7 @@ mod carried {
         assert_eq!(changed.provinces, first.provinces);
         assert_eq!((changed.states, changed.provinces), fresh(&fixture));
         watches.boundary(false);
-        let quiet = hour(&fixture, &mut store, &watches, Check::Nothing);
+        let quiet = hour(&fixture, &mut store, &watches);
         assert!(quiet.counts.quiet);
         assert_eq!((quiet.counts.read, quiet.counts.reused), (0, STATUSES));
         assert_eq!(quiet.location_reads, 0);
@@ -666,7 +658,7 @@ mod carried {
         let mut store = BuildingStore::new();
         let first = first_hour(&fixture, &mut store, &watches);
         watches.boundary(true);
-        let reloaded = hour(&fixture, &mut store, &watches, Check::Nothing);
+        let reloaded = hour(&fixture, &mut store, &watches);
         assert_eq!(
             (reloaded.counts.read, reloaded.counts.reused),
             (STATUSES, 0)
@@ -675,7 +667,7 @@ mod carried {
         assert_eq!(reloaded.states, first.states);
         watches.boundary(false);
         store.forget();
-        let forgotten = hour(&fixture, &mut store, &watches, Check::Nothing);
+        let forgotten = hour(&fixture, &mut store, &watches);
         assert_eq!(
             (forgotten.counts.read, forgotten.counts.reused),
             (STATUSES, 0)
@@ -685,7 +677,7 @@ mod carried {
         // certificate too.
         watches.boundary(false);
         drop(watches.notify(None, 0));
-        let unnamed = hour(&fixture, &mut store, &watches, Check::Nothing);
+        let unnamed = hour(&fixture, &mut store, &watches);
         assert_eq!((unnamed.counts.read, unnamed.counts.reused), (STATUSES, 0));
         assert!(!unnamed.counts.quiet);
     }
@@ -704,14 +696,14 @@ mod carried {
             BASE + cgame_state::PROVINCES + 8,
             &(COUNTRIES as u32 + 2).to_le_bytes(),
         );
-        let walked = hour(&fixture, &mut store, &watches, Check::Nothing);
+        let walked = hour(&fixture, &mut store, &watches);
         assert!(!walked.counts.quiet);
         assert_ne!(walked.location_reads, 0);
         assert_eq!(walked.building_reads, 0);
         assert_eq!((walked.counts.read, walked.counts.reused), (0, STATUSES));
         assert_eq!(walked.provinces, first.provinces);
         watches.boundary(false);
-        let quiet = hour(&fixture, &mut store, &watches, Check::Nothing);
+        let quiet = hour(&fixture, &mut store, &watches);
         assert!(quiet.counts.quiet);
         assert_eq!(quiet.location_reads, 0);
     }
@@ -719,7 +711,7 @@ mod carried {
     /// A written status whose building count changed (as GetOrCreateBuilding
     /// grows it) is read in a settled hour with its new headers, and the rows
     /// after it move: both tables equal a fresh walk's, and the next hours
-    /// carry and verify the new layout.
+    /// carry the new layout.
     #[test]
     fn a_written_status_whose_building_count_changed_moves_the_later_rows() {
         let mut fixture = fixture(COUNTRIES, TYPES);
@@ -735,7 +727,7 @@ mod carried {
         );
         drop(notification);
         watches.boundary(false);
-        let shrunk = capture(&fixture, &mut store, &watches, Check::Nothing);
+        let shrunk = capture(&fixture, &mut store, &watches);
         assert!(shrunk.counts.settled);
         no_location_walk(&fixture, &shrunk.reads);
         assert_eq!(statuses_read(&fixture, &shrunk.reads), [(false, 2)]);
@@ -745,102 +737,13 @@ mod carried {
         );
         let expected = fresh(&fixture);
         assert_eq!((shrunk.states, shrunk.provinces), expected);
-        for at in 0..ROTATION as i32 {
+        for _ in 0..3 {
             watches.boundary(false);
-            let carried = capture(&fixture, &mut store, &watches, Check::Slice { hour: at });
+            let carried = capture(&fixture, &mut store, &watches);
             assert!(carried.counts.quiet);
-            assert_eq!(carried.counts.mismatches, 0);
+            assert_eq!(carried.location_reads, 0);
             assert_eq!((carried.states, carried.provinces), expected);
         }
-    }
-
-    /// Each quiet hour reads exactly the held statuses of its slice afresh
-    /// from their statuses, without walking the locations, and so compares
-    /// every held status once per rotation.
-    #[test]
-    fn an_hourly_slice_verifies_each_status_once_per_rotation() {
-        let fixture = fixture(COUNTRIES, TYPES);
-        let watches = Watches::enabled(64);
-        let mut store = BuildingStore::new();
-        let first = first_hour(&fixture, &mut store, &watches);
-        let mut verified = 0;
-        for at in 0..ROTATION as i32 {
-            let check = Check::Slice { hour: at };
-            let sampled = hour(&fixture, &mut store, &watches, check);
-            assert!(sampled.counts.quiet);
-            assert_eq!(sampled.counts.verified + sampled.counts.reused, STATUSES);
-            assert_eq!(sampled.counts.read, sampled.counts.verified);
-            assert_eq!(sampled.counts.mismatches, 0);
-            assert_eq!(sampled.counts.read_rows, sampled.counts.verified * 4);
-            let covered: Vec<(bool, usize)> = [false, true]
-                .into_iter()
-                .flat_map(|province| (1..=COUNTRIES).map(move |id| (province, id)))
-                .filter(|&(province, id)| check.covers((u64::from(province) << 32) | id as u64))
-                .collect();
-            assert_eq!(statuses_read(&fixture, &sampled.reads), covered);
-            assert_eq!(covered.len() as u64, sampled.counts.verified);
-            no_location_walk(&fixture, &sampled.reads);
-            assert_eq!(sampled.states, first.states);
-            assert_eq!(sampled.provinces, first.provinces);
-            verified += sampled.counts.verified;
-            watches.boundary(false);
-        }
-        // States 1..=3 and provinces 1..=3, keyed by scope and id.
-        assert_eq!(verified, STATUSES);
-    }
-
-    /// A quiet hour's slice that finds a write no hook observed counts it,
-    /// poisons reuse and publishes every status read afresh.
-    #[test]
-    fn a_slice_mismatch_poisons_and_publishes_fresh_rows() {
-        let mut fixture = fixture(COUNTRIES, TYPES);
-        let watches = Watches::enabled(64);
-        let mut store = BuildingStore::new();
-        let first = first_hour(&fixture, &mut store, &watches);
-        let (_, building) = building(&fixture, false, 2, 1);
-        put(
-            &mut fixture.bytes,
-            building + cbuilding::LEVEL,
-            &7_i16.to_le_bytes(),
-        );
-        // State 2's key is 2.
-        let caught = hour(&fixture, &mut store, &watches, Check::Slice { hour: 2 });
-        assert!(!caught.counts.quiet && !caught.counts.unread_slice);
-        assert_eq!((caught.counts.verified, caught.counts.mismatches), (1, 1));
-        assert!(watches.poisoned());
-        assert_eq!((caught.counts.read, caught.counts.reused), (STATUSES, 0));
-        let mut expected = first.states.clone();
-        expected[TYPES + 1].level = 7;
-        assert_eq!(caught.states, expected);
-        watches.boundary(false);
-        let after = hour(&fixture, &mut store, &watches, Check::Nothing);
-        assert!(!after.counts.quiet);
-        assert_eq!((after.counts.read, after.counts.reused), (STATUSES, 0));
-        assert_eq!(after.states, expected);
-    }
-
-    /// A quiet hour's sampled status whose header changed without a
-    /// notification no longer reads as held: a counted mismatch that poisons
-    /// reuse, and the hour publishes the tables read afresh.
-    #[test]
-    fn a_slice_status_that_no_longer_reads_as_held_poisons_and_reads_afresh() {
-        let mut fixture = fixture(COUNTRIES, TYPES);
-        let watches = Watches::enabled(64);
-        let mut store = BuildingStore::new();
-        first_hour(&fixture, &mut store, &watches);
-        let status = status(&fixture, true, 3);
-        put(
-            &mut fixture.bytes,
-            status + cbuilding_status::BUILDINGS + 12,
-            &((TYPES - 1) as u32).to_le_bytes(),
-        );
-        // Province 3's key, (1 << 32 | 3) % 24, is 19.
-        let caught = capture(&fixture, &mut store, &watches, Check::Slice { hour: 19 });
-        assert!(caught.counts.unread_slice && !caught.counts.quiet);
-        assert_eq!(caught.counts.mismatches, 1);
-        assert!(watches.poisoned());
-        assert_eq!(caught.counts.read, STATUSES);
-        assert_eq!(caught.outcomes[1], Outcome::Rows { len: ROWS - 1 });
     }
 
     /// Entering nudge mode poisons the domain: no later hour is quiet or
@@ -855,52 +758,11 @@ mod carried {
         assert!(watches.poisoned());
         for _ in 0..2 {
             watches.boundary(false);
-            let after = hour(&fixture, &mut store, &watches, Check::Nothing);
+            let after = hour(&fixture, &mut store, &watches);
             assert!(!after.counts.quiet);
             assert_eq!((after.counts.read, after.counts.reused), (STATUSES, 0));
             assert_eq!(after.states, first.states);
         }
-    }
-
-    /// Verify mode takes no quiet hour: it reads and compares every held
-    /// status, catching a write no hook observed.
-    #[test]
-    fn verify_catches_an_unobserved_write_and_poisons_reuse() {
-        let mut fixture = fixture(COUNTRIES, TYPES);
-        let watches = Watches::enabled(64);
-        let mut store = BuildingStore::new();
-        first_hour(&fixture, &mut store, &watches);
-        let agreed = hour(&fixture, &mut store, &watches, Check::Every);
-        assert!(!agreed.counts.quiet);
-        assert_eq!(
-            (
-                agreed.counts.read,
-                agreed.counts.verified,
-                agreed.counts.mismatches
-            ),
-            (STATUSES, STATUSES, 0)
-        );
-        assert_eq!(
-            statuses_read(&fixture, &agreed.reads).len() as u64,
-            STATUSES
-        );
-        assert!(!watches.poisoned());
-        watches.boundary(false);
-        // Damage no hook observed on province 1's building 0.
-        let (_, building) = building(&fixture, true, 1, 0);
-        put(
-            &mut fixture.bytes,
-            building + cbuilding::PARTIAL_HEALTH,
-            &7_i64.to_le_bytes(),
-        );
-        let caught = hour(&fixture, &mut store, &watches, Check::Every);
-        assert_eq!(caught.counts.mismatches, 1);
-        assert!(watches.poisoned());
-        assert_eq!(caught.provinces[0].partial_health, 7);
-        watches.boundary(false);
-        let after = hour(&fixture, &mut store, &watches, Check::Nothing);
-        assert_eq!((after.counts.read, after.counts.reused), (STATUSES, 0));
-        assert_eq!(after.provinces[0].partial_health, 7);
     }
 
     /// A status without buildings is registered and held, counts as
@@ -925,7 +787,7 @@ mod carried {
         }
         let watches = Watches::enabled(64);
         let mut store = BuildingStore::new();
-        let first = capture(&fixture, &mut store, &watches, Check::Nothing);
+        let first = capture(&fixture, &mut store, &watches);
         assert_eq!(first.outcomes, [Outcome::Rows { len: ROWS - TYPES }; 2]);
         assert_eq!(
             (first.states.clone(), first.provinces.clone()),
@@ -935,10 +797,7 @@ mod carried {
         assert_eq!((first.counts.read, first.counts.reused), (STATUSES - 2, 0));
         assert_eq!(watches.registered(), STATUSES as usize);
         watches.boundary(false);
-        let verified = capture(&fixture, &mut store, &watches, Check::Every);
-        assert_eq!(verified.counts.verified, STATUSES - 2);
-        watches.boundary(false);
-        let quiet = capture(&fixture, &mut store, &watches, Check::Nothing);
+        let quiet = capture(&fixture, &mut store, &watches);
         assert!(quiet.counts.quiet);
         assert_eq!(quiet.counts.empty, 2);
         assert_eq!(
@@ -964,7 +823,7 @@ mod carried {
         }
         drop(notification);
         watches.boundary(false);
-        let built = capture(&fixture, &mut store, &watches, Check::Nothing);
+        let built = capture(&fixture, &mut store, &watches);
         assert!(built.counts.settled);
         no_location_walk(&fixture, &built.reads);
         assert_eq!(
@@ -1002,7 +861,7 @@ mod carried {
         );
         let watches = Watches::enabled(64);
         let mut store = BuildingStore::new();
-        let failed = capture(&fixture, &mut store, &watches, Check::Nothing);
+        let failed = capture(&fixture, &mut store, &watches);
         assert_eq!(failed.outcomes, fresh);
     }
 }

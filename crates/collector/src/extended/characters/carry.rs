@@ -30,19 +30,8 @@
 //! every occurrence of the held census is certified it carries all of them
 //! ([`Carry::certifies`], [`Carry::carry_certified`]), each row taking this
 //! hour's country from the role census.
-//!
-//! Every hour first reads the carried characters of its sampled-verification
-//! slice ([`crate::sampled_verify`], keyed by character id) afresh from live
-//! memory and compares each with its held row ([`Carry::sample`]); a
-//! difference poisons reuse and empties the carried set, so that hour's
-//! pass reads and publishes every name afresh. Verify mode carries nothing,
-//! and every hour compares each certified character's fresh row with its
-//! held row, poisoning reuse on a difference.
 use super::*;
-use crate::{
-    character_changes::{Changes, Counts, Table},
-    sampled_verify::Check,
-};
+use crate::character_changes::{Changes, Counts, Table};
 use std::ops::Range;
 
 /// An `order` position without a held entry.
@@ -98,13 +87,6 @@ pub(crate) struct Carry {
     /// This payload's Characters rows follow the carried set.
     pub(super) active: bool,
     changes: &'static dyn Changes,
-    /// Verify mode: carry nothing and compare every certified row.
-    verify: bool,
-    /// Tests: the hours' sampled comparison; otherwise the hour's
-    /// ([`crate::sampled_verify::current_burned_in`]).
-    check: Option<Check>,
-    /// Text of a sampled character's fresh read.
-    scratch: Vec<u8>,
     counts: Counts,
 }
 
@@ -121,17 +103,12 @@ impl std::fmt::Debug for Carry {
 
 impl Default for Carry {
     fn default() -> Self {
-        Self::with(&crate::character_changes::Observer, None)
+        Self::with(&crate::character_changes::Observer)
     }
 }
 
 impl Carry {
-    /// `check` overrides the hour's sampled comparison; [`Check::Every`] is
-    /// verify mode.
-    pub(super) fn with(changes: &'static dyn Changes, check: Option<Check>) -> Self {
-        let verify = check.map_or(crate::character_changes::VERIFY, |check| {
-            check == Check::Every
-        });
+    pub(super) fn with(changes: &'static dyn Changes) -> Self {
         Self {
             entries: Vec::new(),
             bytes: Vec::new(),
@@ -149,9 +126,6 @@ impl Carry {
             producer: false,
             active: false,
             changes,
-            verify,
-            check,
-            scratch: Vec::new(),
             counts: Counts::default(),
         }
     }
@@ -159,11 +133,6 @@ impl Carry {
     #[cfg(test)]
     pub(super) fn counts(&self) -> Counts {
         self.counts
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_check(&mut self, check: Check) {
-        self.check = Some(check);
     }
 
     pub(super) fn allocated_bytes(&self) -> u64 {
@@ -174,7 +143,6 @@ impl Carry {
             + crate::raw_memory::vector_bytes(&self.carried)
             + crate::raw_memory::vector_bytes(&self.certified)
             + crate::raw_memory::vector_bytes(&self.visits)
-            + crate::raw_memory::vector_bytes(&self.scratch)
     }
 
     fn position(&self, pointer: usize) -> Option<usize> {
@@ -254,16 +222,14 @@ impl Carry {
             }
             self.certified_quiet = token;
         }
-        if !self.verify {
-            let promote = std::mem::take(&mut self.promote) || self.carried.is_empty();
-            // The carried set is a sorted subset of the entries' pointers,
-            // so one merge finds each entry's membership.
-            let mut carried = self.carried.iter().peekable();
-            for (entry, &certified) in self.entries.iter().zip(&self.certified) {
-                let held = carried.next_if_eq(&&entry.pointer).is_some();
-                if certified && (promote || held) {
-                    next.push(entry.pointer);
-                }
+        let promote = std::mem::take(&mut self.promote) || self.carried.is_empty();
+        // The carried set is a sorted subset of the entries' pointers, so
+        // one merge finds each entry's membership.
+        let mut carried = self.carried.iter().peekable();
+        for (entry, &certified) in self.entries.iter().zip(&self.certified) {
+            let held = carried.next_if_eq(&&entry.pointer).is_some();
+            if certified && (promote || held) {
+                next.push(entry.pointer);
             }
         }
         if next != self.carried {
@@ -272,76 +238,11 @@ impl Carry {
         }
     }
 
-    /// Copy side, after [`Self::begin_hour`] and before the program key: read
-    /// the carried characters of this hour's sampled slice afresh from live
-    /// `memory` and compare each with its held row. A difference poisons
-    /// reuse and empties the carried set, so this hour's pass reads every
-    /// name afresh. A fresh read that fails compares nothing.
-    pub(super) fn sample(&mut self, memory: &impl engine_native::Memory, base: usize) {
-        let check = self
-            .check
-            .unwrap_or_else(|| crate::sampled_verify::current_burned_in(false));
-        if !self.active || self.verify || !check.any() || self.carried.is_empty() {
-            return;
-        }
-        let (mut verified, mut mismatches) = (0, 0);
-        for entry in &self.entries {
-            if !check.covers(u64::from(entry.id))
-                || self.carried.binary_search(&entry.pointer).is_err()
-            {
-                continue;
-            }
-            let held = &self.bytes[entry.bytes.clone()];
-            // A fresh text longer than the held one does not fit, and differs.
-            if self.scratch.len() < held.len()
-                && engine_allocation::advisory(|| {
-                    engine_allocation::resize(&mut self.scratch, held.len(), 0)
-                })
-                .is_err()
-            {
-                continue;
-            }
-            let mut row = [ccharacter::Row::default()];
-            let fresh = ccharacter::walk_entry(
-                memory,
-                base,
-                ccharacter_manager::Entry {
-                    pointer: entry.pointer,
-                    id: entry.id,
-                    country: entry.row.country,
-                    roster: entry.row.roster,
-                    ordinal: entry.row.ordinal,
-                },
-                |_| None,
-                &mut row,
-                &mut self.scratch[..held.len()],
-            );
-            let same = match fresh.outcome {
-                Outcome::Rows { len: 1 } => same(&row[0], &self.scratch, &entry.row, held),
-                Outcome::Truncated { .. } => false,
-                _ => continue,
-            };
-            verified += 1;
-            mismatches += u64::from(!same);
-        }
-        self.counts.verified += verified;
-        self.counts.mismatches += mismatches;
-        if mismatches != 0 {
-            self.changes.mismatch();
-            self.drop_carried();
-            // Compared once: the pass's fresh rows are not compared again.
-            self.certified.fill(false);
-            self.certified_quiet = None;
-        }
-    }
-
-    /// Quiet roster hour ([`super::quiet`]), after [`Self::begin_hour`] and
-    /// [`Self::sample`]: whether every occurrence of the held census names a
-    /// held character with the same pointer and id whose certificate holds
-    /// this hour. Verify mode carries nothing, so it certifies no hour.
+    /// Quiet roster hour ([`super::quiet`]), after [`Self::begin_hour`]:
+    /// whether every occurrence of the held census names a held character
+    /// with the same pointer and id whose certificate holds this hour.
     pub(super) fn certifies(&self, occurrences: &[ccharacter_manager::PortraitIdentity]) -> bool {
         self.active
-            && !self.verify
             && self.certified.len() == self.entries.len()
             && occurrences.iter().enumerate().all(|(at, occurrence)| {
                 self.position_at(at, occurrence.pointer)
@@ -463,8 +364,8 @@ impl Carry {
         self.producer = self.active && complete && !self.visits_failed;
     }
 
-    /// Decode worker, after the Characters rows of this payload: verify
-    /// certified rows read afresh, then hold a rediscovering pass's rows.
+    /// Decode worker, after the Characters rows of this payload: hold a
+    /// rediscovering pass's rows.
     /// `quiet`: the rows came from a quiet roster hour, which carries every
     /// occurrence ([`Self::carry_certified`]), so none was read afresh.
     pub(super) fn rebuild(
@@ -499,30 +400,6 @@ impl Carry {
             .count();
         self.counts.reused = carried as u64;
         self.counts.read = (rows.len() - carried) as u64;
-        // A row read afresh while its held row stays certified must equal it.
-        let (mut verified, mut mismatches) = (0, 0);
-        for (row, pointer) in rows.iter().zip(self.order_for(rows.len())) {
-            if self.carried.binary_search(&pointer).is_ok() {
-                continue;
-            }
-            let Some(index) = self.position(pointer) else {
-                continue;
-            };
-            let entry = &self.entries[index];
-            if !self.certified.get(index).copied().unwrap_or(false) || entry.id != row.id {
-                continue;
-            }
-            verified += 1;
-            if !same(row, bytes, &entry.row, &self.bytes[entry.bytes.clone()]) {
-                mismatches += 1;
-            }
-        }
-        // After this hour's sampled comparison ([`Self::sample`]).
-        self.counts.verified += verified;
-        self.counts.mismatches += mismatches;
-        if mismatches != 0 {
-            self.changes.mismatch();
-        }
         if self.producer {
             if self.visits.len() == rows.len() {
                 self.hold(rows, bytes);
@@ -631,21 +508,6 @@ impl Carry {
 fn fresh_version() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
-/// A fresh row equals a held one in every field the carry supplies.
-fn same(row: &ccharacter::Row, bytes: &[u8], held: &ccharacter::Row, text: &[u8]) -> bool {
-    let fresh = |start: usize, len: usize| bytes.get(start..start + len);
-    let old = |start: usize, len: usize| text.get(start..start + len);
-    row.id == held.id
-        && row.name_token_id == held.name_token_id
-        && row.gender == held.gender
-        && row.template == held.template
-        && row.template_identity == held.template_identity
-        && fresh(row.name_start, row.name_len) == old(held.name_start, held.name_len)
-        && fresh(row.token_start, row.token_len) == old(held.token_start, held.token_len)
-        && fresh(row.template_file_start, row.template_file_len)
-            == old(held.template_file_start, held.template_file_len)
 }
 
 #[cfg(test)]

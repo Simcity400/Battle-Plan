@@ -13,7 +13,6 @@ doctest = false
 test-support = ["collector-certificates/test-support", "collector-extended-support/test-support", "collector-hooks/test-support", "collector-memory/test-support", "collector-primitives/test-support", "collector-timing/test-support"]
 default = ["army_stat_changes"]
 army_stat_changes = []
-army_stat_verify = ["army_stat_changes"]
 attack_witness = []
 
 [dependencies]

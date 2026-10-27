@@ -1995,10 +1995,8 @@ fn carry_hour(
     capture: &mut Capture,
     memory: &impl Memory,
     take: Option<[u64; 2]>,
-    covers: &dyn Fn(u64) -> bool,
-    verify: bool,
 ) -> (Outcome, carry::Counts) {
-    let outcome = capture.walk_carrying(memory, 0, 0x1000, take, covers, verify);
+    let outcome = capture.walk_carrying(memory, 0, 0x1000, take);
     (outcome, capture.province_store.as_ref().unwrap().counts())
 }
 
@@ -2104,14 +2102,14 @@ fn a_quiet_hour_reads_no_carried_province_and_equals_a_full_read() {
     let bytes = carry_fixture();
     let memory = traced(&bytes);
     let mut capture = carrying();
-    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE);
     assert_eq!(outcome, Outcome::Rows { len: 67 });
     assert!(counts.full && counts.read == 67);
     assert!(capture.province_store.as_ref().unwrap().holds());
     assert_eq!(capture.rows[2].fort_positive, 1);
     assert_eq!(capture.rows[2].fort_bunker, Some(0));
     memory.reads.borrow_mut().clear();
-    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE);
     assert_eq!(outcome, Outcome::Rows { len: 67 });
     assert_eq!(
         counts,
@@ -2154,7 +2152,7 @@ fn marked_provinces_states_resets_and_moved_slots_are_read_again() {
     let mut bytes = carry_fixture();
     let mut capture = carrying();
     assert_eq!(
-        carry_hour(&mut capture, &slice(&bytes), TAKE, &|_| false, false).0,
+        carry_hour(&mut capture, &slice(&bytes), TAKE).0,
         Outcome::Rows { len: 67 }
     );
     // Province 5's controller, state 90's owner, state 91 reset (its
@@ -2174,7 +2172,7 @@ fn marked_provinces_states_resets_and_moved_slots_are_read_again() {
     put(&mut bytes, 0x300 + 4 * 8, &0x17000_u64.to_le_bytes());
     let memory = traced(&bytes);
     mark(&mut capture, &[5], &[91, 90]);
-    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE);
     assert_eq!(outcome, Outcome::Rows { len: 67 });
     assert_eq!((counts.read, counts.carried), (6, 61));
     assert!(!counts.quiet && !counts.full);
@@ -2184,7 +2182,7 @@ fn marked_provinces_states_resets_and_moved_slots_are_read_again() {
     assert_eq!(capture.rows[3].victory_points, 12);
     assert_full_read(&capture, &memory, 67);
     // The marks were consumed; the next hour carries the new rows.
-    let (_, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    let (_, counts) = carry_hour(&mut capture, &memory, TAKE);
     assert_eq!((counts.read, counts.carried), (0, 67));
     assert_full_read(&capture, &memory, 67);
 }
@@ -2196,7 +2194,7 @@ fn conflicted_provinces_and_their_groups_are_read_every_hour() {
     let mut memory = conflict_fixture();
     let mut capture = carrying();
     assert_eq!(
-        carry_hour(&mut capture, &memory, TAKE, &|_| false, false).0,
+        carry_hour(&mut capture, &memory, TAKE).0,
         Outcome::Rows { len: 3 }
     );
     assert_eq!(capture.conflict_walk.groups_len, 1);
@@ -2205,73 +2203,11 @@ fn conflicted_provinces_and_their_groups_are_read_every_hour() {
         0x19000 + crate::corders_group::BORDER_WAR,
         &1_u64.to_le_bytes(),
     );
-    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE);
     assert_eq!(outcome, Outcome::Rows { len: 3 });
     assert_eq!((counts.read, counts.carried), (1, 2));
     assert_eq!(capture.conflict_walk.groups_len, 2);
     assert_full_read(&capture, &memory, 3);
-}
-
-/// An unmarked change is caught when its province is in the hour's slice:
-/// the fresh row is published and the store poisoned, so the next hour
-/// reads every province.
-#[test]
-fn the_slice_catches_an_unmarked_change_and_poisons_the_carry() {
-    let mut bytes = carry_fixture();
-    let mut capture = carrying();
-    carry_hour(&mut capture, &slice(&bytes), TAKE, &|_| false, false);
-    put(
-        &mut bytes,
-        province_at(7) + VICTORY_POINTS,
-        &5_i32.to_le_bytes(),
-    );
-    let memory = slice(&bytes);
-    let (_, counts) = carry_hour(&mut capture, &memory, TAKE, &|id| id == 7 || id == 8, false);
-    assert_eq!(capture.rows[6].victory_points, 5);
-    assert_eq!(
-        (
-            counts.carried,
-            counts.read,
-            counts.verified,
-            counts.mismatches
-        ),
-        (65, 2, 2, 1)
-    );
-    assert!(capture.province_store.as_ref().unwrap().poisoned());
-    assert_full_read(&capture, &memory, 67);
-    let (_, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
-    assert!(counts.full && counts.read == 67 && counts.carried == 0);
-}
-
-/// Under verification every province is read; each carryable one is
-/// compared and the fresh rows are published.
-#[test]
-fn verification_reads_every_province_and_compares_the_carryable_ones() {
-    let mut bytes = carry_fixture();
-    let mut capture = carrying();
-    carry_hour(&mut capture, &slice(&bytes), TAKE, &|_| false, true);
-    mark(&mut capture, &[9], &[]);
-    let (_, counts) = carry_hour(&mut capture, &slice(&bytes), TAKE, &|_| false, true);
-    assert_eq!(
-        (
-            counts.read,
-            counts.carried,
-            counts.verified,
-            counts.mismatches
-        ),
-        (67, 0, 66, 0)
-    );
-    put(
-        &mut bytes,
-        province_at(21) + CONTROLLER,
-        &9_u32.to_le_bytes(),
-    );
-    let memory = slice(&bytes);
-    let (_, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, true);
-    assert_eq!((counts.verified, counts.mismatches), (67, 1));
-    assert_eq!(capture.rows[20].controller, 9);
-    assert!(capture.province_store.as_ref().unwrap().poisoned());
-    assert_full_read(&capture, &memory, 67);
 }
 
 /// A walk that fails, or a take that refused or moved, holds nothing: the
@@ -2282,33 +2218,33 @@ fn a_failed_walk_or_an_uncertified_take_holds_nothing() {
     let mut bytes = good.clone();
     let memory = slice(&good);
     let mut capture = carrying();
-    carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    carry_hour(&mut capture, &memory, TAKE);
     // Province 10 marked and no longer a province: the walk fails.
     put(&mut bytes, province_at(10), &0_u64.to_le_bytes());
     mark(&mut capture, &[10], &[]);
     assert_eq!(
-        carry_hour(&mut capture, &slice(&bytes), TAKE, &|_| false, false).0,
+        carry_hour(&mut capture, &slice(&bytes), TAKE).0,
         Outcome::Unavailable {
             reason: "province vtable mismatch"
         }
     );
     assert!(!capture.province_store.as_ref().unwrap().holds());
-    let (_, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    let (_, counts) = carry_hour(&mut capture, &memory, TAKE);
     assert!(counts.full && counts.read == 67);
     // A refused take reads everything and holds nothing.
-    let (_, counts) = carry_hour(&mut capture, &memory, None, &|_| false, false);
+    let (_, counts) = carry_hour(&mut capture, &memory, None);
     assert!(counts.full);
     assert!(!capture.province_store.as_ref().unwrap().holds());
-    let (_, counts) = carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    let (_, counts) = carry_hour(&mut capture, &memory, TAKE);
     assert!(counts.full);
     // A moved epoch reads everything and holds the new one.
-    let (_, counts) = carry_hour(&mut capture, &memory, Some([3, 5]), &|_| false, false);
+    let (_, counts) = carry_hour(&mut capture, &memory, Some([3, 5]));
     assert!(counts.full);
-    let (_, counts) = carry_hour(&mut capture, &memory, Some([3, 5]), &|_| false, false);
+    let (_, counts) = carry_hour(&mut capture, &memory, Some([3, 5]));
     assert_eq!(counts.carried, 67);
     // A requested refresh reads everything once.
     capture.province_store.as_mut().unwrap().force_full = true;
-    let (_, counts) = carry_hour(&mut capture, &memory, Some([3, 5]), &|_| false, false);
+    let (_, counts) = carry_hour(&mut capture, &memory, Some([3, 5]));
     assert!(counts.full);
     assert_full_read(&capture, &memory, 67);
 }
@@ -2319,14 +2255,14 @@ fn a_failed_walk_or_an_uncertified_take_holds_nothing() {
 fn carried_rows_read_their_area_pointers_again_on_request() {
     let mut bytes = carry_fixture();
     let mut capture = carrying();
-    carry_hour(&mut capture, &slice(&bytes), TAKE, &|_| false, false);
+    carry_hour(&mut capture, &slice(&bytes), TAKE);
     put(
         &mut bytes,
         province_at(5) + CONTROLLER_AREA,
         &0x18000_u64.to_le_bytes(),
     );
     let memory = slice(&bytes);
-    carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    carry_hour(&mut capture, &memory, TAKE);
     assert_eq!(capture.areas[4].controller, 0);
     capture
         .refresh_carried_areas(&memory, &|id| id == 5)
@@ -2334,7 +2270,7 @@ fn carried_rows_read_their_area_pointers_again_on_request() {
     assert_eq!(capture.areas[4].controller, 0x18000);
     assert_full_read(&capture, &memory, 67);
     // The store holds the fresh pointers for the next carried hour.
-    carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
+    carry_hour(&mut capture, &memory, TAKE);
     assert_eq!(capture.areas[4].controller, 0x18000);
 }
 

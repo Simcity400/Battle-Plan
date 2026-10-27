@@ -988,12 +988,7 @@ fn design_organisation_preserves_frozen_author_marker_bonus_order_and_faults() {
     );
     struct Quiet;
     impl OrganisationCarry for Quiet {
-        fn fresh(
-            &mut self,
-            _: usize,
-            _: &RegistryRow,
-            _: &Organisation,
-        ) -> Result<bool, &'static str> {
+        fn fresh(&mut self, _: usize, _: &RegistryRow) -> Result<bool, &'static str> {
             Ok(false)
         }
     }

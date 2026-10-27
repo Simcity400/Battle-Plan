@@ -2039,7 +2039,6 @@ impl RaidStatePacks {
                 states: &mut stores.states,
                 countries: &mut stores.buildings,
                 changes: &crate::raid_changes::Observer,
-                verify: crate::raid_changes::VERIFY,
             }),
         );
         scatter(&raid_state_inputs::TABLES, cost, &mut ticks);
@@ -2052,7 +2051,6 @@ impl RaidStatePacks {
             Some(resource_map::Stores {
                 routes: &mut stores.routes,
                 changes: &crate::raid_changes::Observer,
-                verify: crate::raid_changes::VERIFY,
             }),
         );
         scatter(&resource_map::TABLES, cost, &mut ticks);

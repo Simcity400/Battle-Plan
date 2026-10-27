@@ -104,18 +104,9 @@ struct Hour {
     requirements: Vec<LocalRequirement>,
 }
 
-fn hour(world: &World, store: &mut LocalStore, watches: &Watches, check: Check) -> Hour {
+fn hour(world: &World, store: &mut LocalStore, watches: &Watches) -> Hour {
     let (mut rows, mut requirements) = (Vec::new(), Vec::new());
-    let walk = capture(
-        world,
-        0,
-        STATE,
-        store,
-        watches,
-        check,
-        &mut rows,
-        &mut requirements,
-    );
+    let walk = capture(world, 0, STATE, store, watches, &mut rows, &mut requirements);
     rows.truncate(walk.outcome.len());
     requirements.truncate(walk.requirements_len);
     Hour { rows, requirements }
@@ -141,12 +132,12 @@ fn quiet_hours_carry_and_a_written_country_is_read_again() {
     let mut world = world();
     let watches = Watches::enabled(16);
     let mut store = LocalStore::default();
-    let first = hour(&world, &mut store, &watches, Check::Nothing);
+    let first = hour(&world, &mut store, &watches);
     assert_eq!(amounts(&first), [(1, 200_001), (2, 200_002)]);
     assert!(store.quiet.is_some());
     // Quiet: even an unreadable status is not read.
     world.word(World::country(1) + ccountry::DEPLOYMENT_MANAGER, 0);
-    let quiet = hour(&world, &mut store, &watches, Check::Nothing);
+    let quiet = hour(&world, &mut store, &watches);
     assert_eq!(amounts(&quiet), amounts(&first));
     world.word(
         World::country(1) + ccountry::DEPLOYMENT_MANAGER,
@@ -157,7 +148,7 @@ fn quiet_hours_carry_and_a_written_country_is_read_again() {
     drop(watches.notify(Some(World::status(2)), 1));
     // Country 1 is confirmed: an unobserved change to its clone stays carried.
     world.subunit(World::clone_of(1), 400_000);
-    let written = hour(&world, &mut store, &watches, Check::Nothing);
+    let written = hour(&world, &mut store, &watches);
     assert_eq!(amounts(&written), [(1, 200_001), (2, 300_000)]);
     // A clone appended unobserved moves country 1's header once another
     // write ends the quiet hours: it is read again, with its earlier change.
@@ -169,29 +160,9 @@ fn quiet_hours_carry_and_a_written_country_is_read_again() {
     world.word(World::status(1) + 0x108, World::clone_of(1) + 0x800);
     world.subunit(World::clone_of(1) + 0x800, 100_000);
     drop(watches.notify(Some(0xdead), 0));
-    let appended = hour(&world, &mut store, &watches, Check::Nothing);
+    let appended = hour(&world, &mut store, &watches);
     assert_eq!(amounts(&appended), [(1, 400_000), (2, 300_000)]);
     assert!(!watches.poisoned());
-}
-
-/// The verified slice reads carryable countries afresh and publishes the
-/// fresh rows; a held row that differs poisons the domain.
-#[test]
-fn verified_countries_are_read_and_a_difference_poisons() {
-    let mut world = world();
-    let watches = Watches::enabled(16);
-    let mut store = LocalStore::default();
-    hour(&world, &mut store, &watches, Check::Nothing);
-    hour(&world, &mut store, &watches, Check::Every);
-    assert!(!watches.poisoned());
-    world.subunit(World::clone_of(2), 300_000);
-    let verified = hour(&world, &mut store, &watches, Check::Every);
-    assert_eq!(amounts(&verified), [(1, 200_001), (2, 300_000)]);
-    assert!(watches.poisoned());
-    // Poisoned, nothing is certified: every country is read.
-    world.subunit(World::clone_of(1), 400_000);
-    let after = hour(&world, &mut store, &watches, Check::Nothing);
-    assert_eq!(amounts(&after), [(1, 400_000), (2, 300_000)]);
 }
 
 /// A failed walk holds nothing: the next hour reads every country.
@@ -200,24 +171,10 @@ fn a_failed_walk_forgets_the_store() {
     let mut world = world();
     let watches = Watches::enabled(16);
     let mut store = LocalStore::default();
-    hour(&world, &mut store, &watches, Check::Nothing);
+    hour(&world, &mut store, &watches);
     world.word(World::status(2), 0);
     drop(watches.notify(Some(World::status(2)), 2));
-    let failed = hour(&world, &mut store, &watches, Check::Nothing);
+    let failed = hour(&world, &mut store, &watches);
     assert!(failed.rows.is_empty());
     assert!(store.quiet.is_none() && store.countries.is_empty());
-}
-
-/// A country is compared once in a rotation of days, at its hour: never a
-/// whole walk's worth of countries in a day.
-#[test]
-fn each_country_is_verified_once_in_a_rotation_of_days() {
-    let rotation = crate::sampled_verify::ROTATION as i32;
-    for country in [0, 1, 23, 24, 577, 5_000] {
-        let hits = (0..rotation * rotation)
-            .filter(|&hour| verified(Check::Slice { hour }, country))
-            .count();
-        assert_eq!(hits, 1, "{country}");
-    }
-    assert!(verified(Check::Every, 9) && !verified(Check::Nothing, 9));
 }

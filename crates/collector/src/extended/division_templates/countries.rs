@@ -338,9 +338,6 @@ mod tests {
             fn deployment_reset_sequence(&self, status: usize) -> Option<(u64, u64)> {
                 self.reset.sequence(status)
             }
-            fn mismatch(&self) {
-                unreachable!()
-            }
         }
         let sources = Sources {
             template: Watches::enabled(16),

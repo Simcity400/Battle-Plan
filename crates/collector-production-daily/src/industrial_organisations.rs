@@ -159,7 +159,6 @@ impl Captured {
             held: &mut self.held,
             held_policies: &mut self.held_policies,
             fresh: force_full || !self.holds_complete,
-            day: hour.div_euclid(24),
             details_len: 0,
             policies_len: 0,
             details_failure: None,
@@ -332,7 +331,6 @@ struct DetailsVisitor<'a, M> {
     held: &'a mut Vec<MioHeld>,
     held_policies: &'a mut Vec<PolicyHeld>,
     fresh: bool,
-    day: i32,
     details_len: usize,
     policies_len: usize,
     details_failure: Option<&'static str>,
@@ -344,24 +342,6 @@ fn ensure<T: Default>(rows: &mut Vec<T>, index: usize) -> Result<(), &'static st
             .map_err(|_| "organisation capture allocation failed")?;
     }
     Ok(())
-}
-fn digest(row: &native::details::Row) -> [u64; 3] {
-    use std::hash::{Hash, Hasher};
-    let mut roster = std::collections::hash_map::DefaultHasher::new();
-    row.unlocked.hash(&mut roster);
-    row.queued.hash(&mut roster);
-    row.allowed_policies.hash(&mut roster);
-    let mut variables = std::collections::hash_map::DefaultHasher::new();
-    row.variables.seed.hash(&mut variables);
-    for entry in &row.variables.entries {
-        entry.name.hash(&mut variables);
-        entry.value_raw.hash(&mut variables);
-    }
-    let mut flags = std::collections::hash_map::DefaultHasher::new();
-    for flag in &row.flags {
-        (flag.token, flag.set_hour, flag.value, flag.remaining_days).hash(&mut flags);
-    }
-    [roster.finish(), variables.finish(), flags.finish()]
 }
 impl<M: Memory> native::Visitor for DetailsVisitor<'_, M> {
     fn country(&mut self, identity: &engine_native::ccountry::Country, status: usize) {
@@ -380,42 +360,17 @@ impl<M: Memory> native::Visitor for DetailsVisitor<'_, M> {
                 && held.status == status
                 && token.is_some()
                 && token == held.token;
-            let sample = country % 24 == self.day.rem_euclid(24) as u32;
-            let mut mismatch = false;
-            let rare_digest = |policies: &[native::details::Policy]| {
-                use std::hash::{Hash, Hasher};
-                let mut hash = std::collections::hash_map::DefaultHasher::new();
-                for policy in policies {
-                    (
-                        policy.token,
-                        policy.country,
-                        &policy.name,
-                        policy.cached_score_raw,
-                    )
-                        .hash(&mut hash);
-                }
-                hash.finish()
-            };
-            let before = (carry && sample).then(|| rare_digest(&row.policies));
             native::details::capture_policies_selected(
                 self.memory,
                 self.base,
                 status,
                 &mut row.policies,
-                !carry || sample,
+                !carry,
             )?;
-            if let Some(before) = before {
-                mismatch = before != rare_digest(&row.policies);
-                if mismatch {
-                    collector_observers::world_input_changes::mio_policies_mismatch();
-                }
-            }
             collector_observers::world_input_changes::record_daily(
                 collector_observers::world_input_changes::Domain::IndustrialOrganisationPolicies,
-                carry && !sample,
-                !carry || sample,
-                carry && sample,
-                mismatch,
+                carry,
+                !carry,
             );
             row.country = country;
             // A scalar any modifier source can move: read on every daily visit.
@@ -460,14 +415,10 @@ impl<M: Memory> native::Visitor for DetailsVisitor<'_, M> {
                 same && variables.is_some() && variables == held.variables,
                 same && flags.is_some() && flags == held.flags,
             ];
-            // Each quiet receiver is verified once in 24 daily observations;
-            // no comparison, native census or allocation is added to hourly work.
-            let sample = (identity.reference >> 32) % 24 == self.day.rem_euclid(24) as u64;
-            let before = sample.then(|| digest(row));
             let fresh = native::details::Freshness {
-                rosters: !carry[0] || sample,
-                variables: !carry[1] || sample,
-                flags: !carry[2] || sample,
+                rosters: !carry[0],
+                variables: !carry[1],
+                flags: !carry[2],
             };
             native::details::capture_selected(
                 self.memory,
@@ -479,28 +430,10 @@ impl<M: Memory> native::Visitor for DetailsVisitor<'_, M> {
                 self.scratch,
                 fresh,
             )?;
-            let mut mismatch = false;
-            if let Some(before) = before {
-                let after = digest(row);
-                mismatch = carry[0] && before[0] != after[0];
-                if mismatch {
-                    collector_observers::world_input_changes::mio_rosters_mismatch();
-                }
-                if carry[1] && before[1] != after[1] {
-                    collector_intel::variable_changes::Changes::mismatch(
-                        &collector_intel::variable_changes::Observer,
-                    );
-                }
-                if carry[2] && before[2] != after[2] {
-                    collector_intel::flag_changes::Observer.mismatch();
-                }
-            }
             collector_observers::world_input_changes::record_daily(
                 collector_observers::world_input_changes::Domain::IndustrialOrganisationRosters,
-                carry[0] && !sample,
+                carry[0],
                 fresh.rosters,
-                carry[0] && sample,
-                mismatch,
             );
             *held = MioHeld {
                 pointer,

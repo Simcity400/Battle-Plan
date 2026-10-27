@@ -1876,7 +1876,7 @@ fn sparse_walk(bytes: &[u8], dense: bool) -> (RegistrationWalk, Vec<Registration
             wings: &mut wings,
             resolved: &mut resolved,
         },
-        SlotMode { dense, full: &[] },
+        SlotMode { dense },
         None,
     );
     (walk, registrations, memory.rounds.into_inner())
@@ -1985,43 +1985,12 @@ fn a_stale_or_disagreeing_dense_list_falls_back_with_an_unchanged_outcome() {
 
     assert_eq!(check(&bytes, "slot out of range"), Outcome::Rows { len: 2 });
     // An empty list where containers occupy slots is no proof the walk can
-    // check: the fast path trusts it, and only the collector's dual-path
-    // comparison sees the difference.
+    // check: the fast path trusts it.
     let bytes = sparse_slot_fixture(&[]);
     let (dense, _, _) = sparse_walk(&bytes, true);
     assert_eq!(
         (dense.dense_bases, dense.outcome),
         (1, Outcome::Rows { len: 0 })
-    );
-    let (dense, _, _) = {
-        let memory = SliceMemory {
-            base: GAME,
-            bytes: &bytes,
-        };
-        let mut registrations = vec![RegistrationRow::default(); 4];
-        let mut wings = [0; 1];
-        let mut resolved = vec![None; 16];
-        let walk = walk_registrations_planned(
-            &memory,
-            IMAGE,
-            GAME,
-            RegistrationBuffers {
-                registrations: &mut registrations,
-                wings: &mut wings,
-                resolved: &mut resolved,
-            },
-            SlotMode {
-                dense: true,
-                full: &[(7_u64 << 32) | u64::from(TYPE)],
-            },
-            None,
-        );
-        (walk, registrations, ())
-    };
-    // A base the caller forces to the full scan reads every chunk.
-    assert_eq!(
-        (dense.dense_bases, dense.outcome),
-        (0, Outcome::Rows { len: 3 })
     );
 }
 
@@ -2225,7 +2194,7 @@ fn kept_walk(
             wings: &mut wings,
             resolved: &mut resolved,
         },
-        SlotMode { dense, full: &[] },
+        SlotMode { dense },
         Some(keep),
     );
     (walk, registrations, wings, memory.rounds.into_inner())

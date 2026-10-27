@@ -5,8 +5,7 @@
 //! remainder is compute), warm and after evicting the caches, beside the
 //! decode and the decode worker's rebuilds, then without republished
 //! Characters rows, without a kept role census and without carried
-//! UnitLeaders rows. Each hour reads its slice of the carried leaders and of
-//! the kept census, as after the families' burn-in.
+//! UnitLeaders rows.
 //!
 //! `cargo test -p collector --release --lib quiet_bench -- --ignored --nocapture`
 
@@ -19,7 +18,6 @@ use super::quiet::QuietRoster;
 use super::*;
 use crate::character_changes::Watches;
 use crate::roster_changes::Isolated;
-use crate::sampled_verify::Check;
 use std::cell::Cell;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -110,13 +108,7 @@ struct Times {
     rebuild: Duration,
 }
 
-/// Game hours the bench has run: each reads its hour's slice of leaders.
-static CLOCK: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-
 fn hour(job: &mut CharactersJob, memory: &Flat<'_>, captured: &mut Captured, timed: bool) -> Times {
-    let clock = CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    job.unit_carry.set_check(Check::Slice { hour: clock });
-    job.census_carry.set_check(Check::Slice { hour: clock });
     let counted = Timed {
         inner: memory,
         ticks: Cell::new(0),
@@ -179,11 +171,11 @@ fn quiet_roster_hour_costs_at_late_war_scale() {
     DOMAIN.enable();
     LEADERS.enable(world.characters);
     let mut job = CharactersJob::new_part(0);
-    job.unit_carry = UnitCarry::with(&LEADERS, UNITS, Some(Check::Nothing));
+    job.unit_carry = UnitCarry::with(&LEADERS, UNITS);
     CENSUS.set_enabled(true);
-    job.census_carry = super::census::CensusCarry::with(&CENSUS, Some(Check::Nothing));
-    job.carry = Carry::with(&WATCHES, Some(Check::Nothing));
-    job.roster = QuietRoster::with(&DOMAIN, Some(Check::Nothing));
+    job.census_carry = super::census::CensusCarry::with(&CENSUS);
+    job.carry = Carry::with(&WATCHES);
+    job.roster = QuietRoster::with(&DOMAIN);
     let mut captured = Captured::with_capacities(&capacities());
     for _ in 0..5 {
         hour(&mut job, &memory, &mut captured, false);
@@ -235,7 +227,7 @@ fn quiet_roster_hour_costs_at_late_war_scale() {
         median(rebuilt.iter().map(|times| times.rebuild).collect()),
     );
     // The gather a kept census replaces: every quiet hour gathers it.
-    job.census_carry = super::census::CensusCarry::with(&GATHERED, Some(Check::Nothing));
+    job.census_carry = super::census::CensusCarry::with(&GATHERED);
     let gathered: Vec<Times> = (0..HOURS)
         .map(|_| hour(&mut job, &memory, &mut captured, false))
         .collect();
@@ -245,7 +237,7 @@ fn quiet_roster_hour_costs_at_late_war_scale() {
         median(gathered.iter().map(|times| times.decode).collect()),
     );
     // The reads carried leaders replace: every quiet hour reads them all.
-    job.unit_carry = UnitCarry::with(&UNOBSERVED, UNITS, Some(Check::Nothing));
+    job.unit_carry = UnitCarry::with(&UNOBSERVED, UNITS);
     let read: Vec<Times> = (0..HOURS)
         .map(|_| hour(&mut job, &memory, &mut captured, false))
         .collect();
@@ -263,8 +255,6 @@ fn trait_hour(
     loan: &census::RoleCensus,
     captured: &mut Captured,
 ) -> (Duration, Duration) {
-    let clock = CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    job.trait_carry.set_check(Check::Slice { hour: clock });
     let started = Instant::now();
     let report = copy_characters_growing(memory, context(PART_MASKS[3]), job, Roles::Borrow(loan));
     let copy = started.elapsed();
@@ -298,7 +288,7 @@ fn trait_hour_costs_at_late_war_scale() {
     let mut captured = Captured::with_capacities(&capacities());
     for (label, changes) in [("carrying", &TRAITS), ("reading every leader", &UNOBSERVED)] {
         let mut job = CharactersJob::new_part(3);
-        job.trait_carry = TraitCarry::with(changes, FAMILY, Some(Check::Nothing));
+        job.trait_carry = TraitCarry::with(changes, FAMILY);
         for _ in 0..5 {
             trait_hour(&mut job, &memory, &loan, &mut captured);
         }
@@ -330,12 +320,11 @@ fn advisor_hour_costs_at_late_war_scale() {
     let ctx = context(PART_MASKS[2]);
     let observer = Advisors {
         revision: Cell::new(0),
-        check: Check::Nothing,
     };
     let demand =
         cadvisor::modifier_demand(&memory, MODULE, super::census_tests::GAME_STATE).unwrap();
     let mut cache = advisors::Cache::with_modifier_demand(demand);
-    cache.observe_roles(&DOMAIN, Some(Check::Nothing));
+    cache.observe_roles(&DOMAIN);
     let mut held = Captured::with_capacities(&capacities());
     let hour = |cache: &mut advisors::Cache, frame: &mut Captured| {
         let started = Instant::now();
@@ -385,9 +374,6 @@ fn portrait_hour_costs_at_late_war_scale() {
         fn quiet_revision(&self) -> Option<(u64, u64)> {
             Some((1, 0))
         }
-        fn verify(&self) -> bool {
-            false
-        }
     }
     const HOURS: usize = 15;
     let world = World::new(13_200);
@@ -422,7 +408,7 @@ fn portrait_hour_costs_at_late_war_scale() {
         let started = Instant::now();
         for part in 0..PARTS {
             let mut share = capture.take_part(part);
-            share.capture_observed(&memory, context, part, Some(census), &Quiet, Check::Nothing);
+            share.capture_observed(&memory, context, part, Some(census), &Quiet);
             capture.restore_part(part, share);
         }
         started.elapsed()

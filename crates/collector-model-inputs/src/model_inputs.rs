@@ -197,7 +197,6 @@ impl Captured {
                     game_state,
                     store,
                     &crate::local_subunit_changes::Observer,
-                    crate::sampled_verify::current_burned_in(crate::local_subunit_changes::VERIFY),
                     &mut self.local.rows,
                     &mut self.requirements.first,
                 ),

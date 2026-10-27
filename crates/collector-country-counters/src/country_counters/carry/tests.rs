@@ -323,7 +323,7 @@ fn a_quiet_hour_reads_no_carried_country_and_equals_a_full_read() {
     world.pride(2, b"Pride of a fleet with a long name");
     world.characters(3);
     let domain = domain(64);
-    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
+    let mut store = CounterStore::new(domain);
     let first = hour(&world, Some(&mut store), 10, None);
     assert_eq!(
         store.counts(),
@@ -369,13 +369,12 @@ fn a_quiet_hour_reads_no_carried_country_and_equals_a_full_read() {
     assert!(full.reverse.is_some());
 }
 
-/// A marked country is read afresh within the hour; a change no writer
-/// marked is carried until the hour's slice reads it, which poisons the set.
+/// A marked country is read afresh within the hour.
 #[test]
-fn marked_countries_are_read_and_the_slice_finds_an_unmarked_change() {
+fn marked_countries_are_read_afresh() {
     let mut world = World::new(4);
     let domain = domain(64);
-    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
+    let mut store = CounterStore::new(domain);
     hour(&world, Some(&mut store), 10, None);
     world.neighbors(2, &[7, 8, 9]);
     domain.write(Table::Counters, 2);
@@ -391,50 +390,11 @@ fn marked_countries_are_read_and_the_slice_finds_an_unmarked_change() {
             ..quiet()
         }
     );
-    // The slice reads country 1 afresh and finds its held row current.
-    store.check = Some(Check::Slice { hour: 1 });
+    // Held again with its new rows, it is carried.
     domain.boundary(false);
-    let sliced = hour(&world, Some(&mut store), 12, None);
-    assert_eq!(read_countries(&sliced.reads, 4), [1]);
-    assert_eq!(
-        store.counts(),
-        Counts {
-            read: 1,
-            verified: 1,
-            ..quiet()
-        }
-    );
-    assert!(!domain.poisoned(Table::Counters));
-    // An unmarked write is carried until the slice covers the country.
-    world.neighbors(3, &[5]);
-    store.check = Some(Check::Nothing);
-    domain.boundary(false);
-    let stale = hour(&world, Some(&mut store), 13, None);
-    assert_ne!(
-        stale.captured.tables(),
-        hour(&world, None, 13, None).captured.tables()
-    );
-    store.check = Some(Check::Slice { hour: 3 });
-    domain.boundary(false);
-    let found = hour(&world, Some(&mut store), 14, None);
-    assert_same(&found, &hour(&world, None, 14, None));
-    assert_eq!(
-        store.counts(),
-        Counts {
-            read: 1,
-            verified: 1,
-            mismatches: 1,
-            ..quiet()
-        }
-    );
-    assert!(domain.poisoned(Table::Counters));
-    let mismatch = domain.mismatches(Table::Counters).first.unwrap();
-    assert_eq!((mismatch.country, mismatch.field), (3, "neighbors"));
-    // A poisoned set certifies nothing: every country is read.
-    domain.boundary(false);
-    let after = hour(&world, Some(&mut store), 15, None);
-    assert_eq!(read_countries(&after.reads, 4), [1, 2, 3, 4]);
-    assert!(store.counts().full);
+    let held = hour(&world, Some(&mut store), 12, None);
+    assert_same(&held, &hour(&world, None, 12, None));
+    assert!(read_countries(&held.reads, 4).is_empty());
 }
 
 /// A country whose CCountryCharacters pointer moved is read, though no
@@ -443,7 +403,7 @@ fn marked_countries_are_read_and_the_slice_finds_an_unmarked_change() {
 fn a_moved_characters_pointer_reads_the_country() {
     let mut world = World::new(4);
     let domain = domain(64);
-    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
+    let mut store = CounterStore::new(domain);
     hour(&world, Some(&mut store), 10, None);
     world.characters(2);
     domain.boundary(false);
@@ -463,7 +423,7 @@ fn a_moved_characters_pointer_reads_the_country() {
 fn a_failed_read_holds_nothing_and_an_uncertified_take_reads_every_country() {
     let world = World::new(4);
     let domain = domain(64);
-    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
+    let mut store = CounterStore::new(domain);
     let failed = hour(
         &world,
         Some(&mut store),
@@ -507,7 +467,7 @@ fn manpower_expeditionary_roster_carries_quiet_and_refreshes_only_its_marked_own
         world.put64(entries + index * 8, value);
     }
     let domain = domain(5_001);
-    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
+    let mut store = CounterStore::new(domain);
     hour(&world, Some(&mut store), 10, None);
     domain.boundary(false);
     let carried = hour(&world, Some(&mut store), 11, None);
@@ -534,7 +494,7 @@ fn manpower_expeditionary_roster_carries_quiet_and_refreshes_only_its_marked_own
 fn manpower_refused_sent_roster_carries_without_an_hourly_retry() {
     let world = World::new(5_000);
     let domain = domain(5_001);
-    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
+    let mut store = CounterStore::new(domain);
     let refused = hour(
         &world,
         Some(&mut store),
@@ -546,21 +506,15 @@ fn manpower_refused_sent_roster_carries_without_an_hourly_retry() {
     let quiet = hour(&world, Some(&mut store), 11, None);
     assert!(read_countries(&quiet.reads, 5_000).is_empty());
     assert_eq!(quiet.captured.rows.rows[1].sent_expeditionaries, None);
-    store.check = Some(Check::Slice { hour: 2 });
-    domain.boundary(false);
-    let sampled = hour(&world, Some(&mut store), 12, None);
-    assert!(sampled.captured.rows.rows[1].sent_expeditionaries.is_some());
-    assert_eq!(store.counts().mismatches, 0);
-    store.check = Some(Check::Nothing);
     domain.write(Table::Counters, 2);
     domain.boundary(false);
-    let changed = hour(&world, Some(&mut store), 13, None);
+    let changed = hour(&world, Some(&mut store), 12, None);
     assert_eq!(read_countries(&changed.reads, 5_000), [2]);
     assert!(changed.captured.rows.rows[1].sent_expeditionaries.is_some());
 }
 
 #[test]
-fn air_modifier_packet_is_carried_and_verified_under_the_existing_country_certificate() {
+fn air_modifier_packet_is_carried_under_the_existing_country_certificate() {
     use engine_native::{modifier_accumulator, modifier_entry};
     use replay_data::rows::Recorded;
     let mut world = World::new(2);
@@ -569,7 +523,7 @@ fn air_modifier_packet_is_carried_and_verified_under_the_existing_country_certif
     world.put32(data + modifier_entry::KEY, ccountry::AIR_MODIFIER_KEYS[0]);
     world.put64(data + modifier_entry::VALUE, (-12_345_i64) as u64);
     let domain = domain(64);
-    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
+    let mut store = CounterStore::new(domain);
     let first = hour(&world, Some(&mut store), 10, None);
     let packet = |capture: &Captured| {
         let tables = capture.tables();
@@ -600,17 +554,6 @@ fn air_modifier_packet_is_carried_and_verified_under_the_existing_country_certif
     expected[0] = Some(23_456);
     assert_eq!(packet(&changed.captured), Recorded::Value(Some(expected)));
     assert_same(&changed, &hour(&world, None, 12, None));
-    // Daily verification names an unobserved Air-only change and poisons the certificate.
-    world.put64(data + modifier_entry::VALUE, 34_567);
-    store.check = Some(Check::Slice { hour: 1 });
-    domain.boundary(false);
-    let verified = hour(&world, Some(&mut store), 13, None);
-    assert_same(&verified, &hour(&world, None, 13, None));
-    assert_eq!(
-        domain.mismatches(Table::Counters).first.unwrap().field,
-        "air_modifiers"
-    );
-    assert!(domain.poisoned(Table::Counters));
     // The packet shares the accumulator's failure boundary, without inventing absent values.
     let failed = hour(
         &world,
@@ -622,7 +565,7 @@ fn air_modifier_packet_is_carried_and_verified_under_the_existing_country_certif
 }
 
 #[test]
-fn combat_numeric_projection_carries_and_daily_verification_names_drift() {
+fn combat_numeric_projection_carries_and_refreshes_its_marked_owner() {
     use engine_native::{modifier_accumulator, modifier_entry};
     let mut world = World::new(2);
     let data = world.pride + 0x100;
@@ -633,7 +576,7 @@ fn combat_numeric_projection_carries_and_daily_verification_names_drift() {
     );
     world.put64(data + modifier_entry::VALUE, (-12_345_i64) as u64);
     let domain = domain(64);
-    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
+    let mut store = CounterStore::new(domain);
     let packet = |capture: &Captured| {
         let tables = capture.tables();
         let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
@@ -665,15 +608,6 @@ fn combat_numeric_projection_carries_and_daily_verification_names_drift() {
     assert_eq!(
         packet(&hour(&world, Some(&mut store), 12, None).captured),
         (true, Some(23_456))
-    );
-    world.put64(data + modifier_entry::VALUE, 34_567);
-    store.check = Some(Check::Slice { hour: 1 });
-    domain.boundary(false);
-    let verified = hour(&world, Some(&mut store), 13, None);
-    assert_same(&verified, &hour(&world, None, 13, None));
-    assert_eq!(
-        domain.mismatches(Table::Counters).first.unwrap().field,
-        "air_combat_modifiers"
     );
     let failed = hour(
         &world,

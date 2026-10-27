@@ -35,9 +35,6 @@ static DEMAND: AtomicUsize = AtomicUsize::new(0);
 static READS: AtomicU64 = AtomicU64::new(0);
 static CARRIED: AtomicU64 = AtomicU64::new(0);
 static INVENTORY_BYTES: AtomicUsize = AtomicUsize::new(0);
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "a writer-certified war-goal inventory differs from its fresh read",
-]);
 static CALLS: [AtomicU64; mutations::SITES.len()] =
     [const { AtomicU64::new(0) }; mutations::SITES.len()];
 
@@ -110,17 +107,6 @@ pub fn boundary(invalidate: bool) {
 pub fn active() -> usize {
     WATCHES.iter().map(WatchRegistry::active).sum()
 }
-pub fn verify(country: u32) -> bool {
-    crate::sampled_verify::current_burned_in(false).covers(country as u64)
-}
-pub fn verified(mismatch: bool) {
-    SAMPLED.record(1, u64::from(mismatch), 0);
-    if mismatch {
-        for watches in &WATCHES {
-            watches.poison();
-        }
-    }
-}
 pub fn record(carried: bool) {
     (if carried { &CARRIED } else { &READS }).fetch_add(1, Ordering::Relaxed);
 }
@@ -132,9 +118,6 @@ pub fn status() -> impl serde::Serialize {
         "read_owners": READS.load(Ordering::Relaxed),
         "carried_owners": CARRIED.load(Ordering::Relaxed),
         "shared_inventory_bytes": INVENTORY_BYTES.load(Ordering::Relaxed),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
         "writers": crate::status::map(mutations::SITES.iter().zip(&CALLS).map(|(s,n)| (s.name, n.load(Ordering::Relaxed))).chain(std::iter::once(("expire_goals", EXPIRY_CALLS.load(Ordering::Relaxed))))),
         "goal_certificates": WATCHES[0].status(),
         "justification_certificates": WATCHES[1].status(),
@@ -475,20 +458,6 @@ mod tests {
         );
         for watch in &watches {
             unsafe { watch.release() };
-        }
-    }
-
-    #[test]
-    fn inventory_verification_uses_the_graduated_rotation() {
-        for hour in [-600, -1, 0, 23, 24, 575, 576, 599] {
-            crate::sampled_verify::begin_hour(hour);
-            for country in 0..5_000 {
-                assert_eq!(
-                    verify(country),
-                    crate::sampled_verify::Check::burned_in(hour, false).covers(u64::from(country)),
-                    "hour {hour}, country {country}"
-                );
-            }
         }
     }
 }

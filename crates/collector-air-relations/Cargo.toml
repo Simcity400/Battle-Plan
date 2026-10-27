@@ -13,7 +13,6 @@ doctest = false
 test-support = ["collector-certificates/test-support", "collector-extended-support/test-support", "collector-hooks/test-support", "collector-memory/test-support", "collector-observers/test-support", "collector-primitives/test-support", "collector-timing/test-support"]
 default = ["relation_changes"]
 relation_changes = []
-relation_verify = ["relation_changes"]
 
 [dependencies]
 engine-air-history.workspace = true

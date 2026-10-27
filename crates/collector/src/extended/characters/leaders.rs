@@ -7,9 +7,8 @@
 //! The map, its roles' parent links and current ideologies (`ccountry::LEADER_IDEOLOGY`) are
 //! written only at hooked sites ([`engine_mutations::character_role_mutations`],
 //! [`engine_mutations::advisor_mutations`]); set_country_leader_ideology names no character and revokes every
-//! certificate, and a `CIdeology` token is a database value. Verify mode reads every carryable
-//! character afresh, publishes the fresh rows and poisons reuse on a difference. Without an
-//! admitted census the job walks the roster and the cache forgets its rows.
+//! certificate, and a `CIdeology` token is a database value. Without an admitted census the job
+//! walks the roster and the cache forgets its rows.
 //!
 //! A fresh empty map is checked from its batch-gathered sentinel, as the
 //! census acquisition checks it; every other fresh character is read by
@@ -22,14 +21,9 @@
 //! ([`census::Admitted::generation`]), no observed writer ran and every
 //! occurrence, identity, country and map header is the one read then, so
 //! each held certificate still matches and the held rows are what a fresh
-//! read returns. Only the sampled slice is read, from the census, and
-//! compared; a difference poisons reuse and the hour reads every character
-//! afresh, and a slice read that fails reads every character too.
+//! read returns.
 use super::*;
-use crate::{
-    character_changes::{Changes, Counts, Table},
-    sampled_verify::Check,
-};
+use crate::character_changes::{Changes, Counts, Table};
 use std::ops::Range;
 
 const ROWS_ALLOCATION: &str = "country leader row allocation failed";
@@ -107,8 +101,6 @@ pub(crate) struct LeaderCache {
     /// before the last complete capture and its census generation, when it
     /// held every occurrence.
     quiet: Option<((u64, u64), u64)>,
-    /// A sampled character's fresh rows.
-    scratch: Vec<ccountry_leader::Row>,
     pub(super) counts: Counts,
 }
 
@@ -122,20 +114,9 @@ impl Default for LeaderCache {
             scope: (0, 0),
             finished: false,
             quiet: None,
-            scratch: Vec::new(),
             counts: Counts::default(),
         }
     }
-}
-
-/// What a quiet hour's sampled slice found.
-enum Slice {
-    /// Every sampled character read as held; how many were compared.
-    Same(u64),
-    /// A sampled character differs from its held rows.
-    Differs(u64),
-    /// A sampled read did not complete; the hour reads afresh.
-    Failed,
 }
 
 /// A view that serves the one map sentinel this callback already gathered;
@@ -161,7 +142,6 @@ impl<M: Memory> Memory for Gathered<'_, M> {
 struct Plan {
     certificate: Option<Certificate>,
     held: Option<usize>,
-    carry: bool,
 }
 
 impl LeaderCache {
@@ -175,7 +155,6 @@ impl LeaderCache {
         self.current.allocated()
             + self.previous.allocated()
             + crate::raw_memory::vector_bytes(&self.rows)
-            + crate::raw_memory::vector_bytes(&self.scratch)
     }
 
     /// One occurrence's rows read afresh into `rows[start..]`, as the walk
@@ -230,84 +209,7 @@ impl LeaderCache {
         .unwrap_or_else(|reason| Outcome::Unavailable { reason }))
     }
 
-    /// A quiet hour's slice: each held character `check` covers is read
-    /// afresh from the census, its sentinels gathered in batches as the walk
-    /// gathers them, and compared with its held rows.
-    fn sample(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        census: census::Admitted<'_>,
-        check: Check,
-    ) -> Slice {
-        use census::{SENTINEL, SENTINEL_BATCH};
-        if !check.any() {
-            return Slice::Same(0);
-        }
-        let mut compared = 0;
-        let mut picked = [0_usize; SENTINEL_BATCH];
-        let mut slots = [usize::MAX; SENTINEL_BATCH];
-        let mut heads = [0; SENTINEL_BATCH];
-        let mut sentinels = [0; SENTINEL_BATCH * SENTINEL];
-        let mut next = 0;
-        while next < census.len() {
-            let (mut len, mut staged) = (0, 0);
-            while len < SENTINEL_BATCH && next < census.len() {
-                let occurrence = census.occurrence(next);
-                if check.covers(u64::from(occurrence.id())) {
-                    picked[len] = next;
-                    slots[len] = usize::MAX;
-                    if let Some((head, _)) = census::map_head(occurrence.leaders())
-                        && !census::inside_view(occurrence.pointer, head, SENTINEL)
-                    {
-                        heads[staged] = head;
-                        slots[len] = staged;
-                        staged += 1;
-                    }
-                    len += 1;
-                }
-                next += 1;
-            }
-            let completed = census::gather_sentinels(memory, &heads[..staged], &mut sentinels);
-            for (&index, &slot) in picked[..len].iter().zip(&slots[..len]) {
-                let occurrence = census.occurrence(index);
-                let Some(held) = self.current.position(occurrence.pointer) else {
-                    return Slice::Failed;
-                };
-                let gathered = (slot < completed).then(|| -> [u8; SENTINEL] {
-                    sentinels[slot * SENTINEL..][..SENTINEL].try_into().unwrap()
-                });
-                self.scratch.clear();
-                let outcome = Self::read_fresh(
-                    memory,
-                    base,
-                    census.historical,
-                    &occurrence,
-                    gathered,
-                    &mut self.scratch,
-                    0,
-                    true,
-                );
-                let Ok(Outcome::Rows { len: fresh }) = outcome else {
-                    return Slice::Failed;
-                };
-                compared += 1;
-                let country = u32::from_le_bytes(occurrence.country());
-                let old = &self.current.rows[self.current.entries[held].rows.clone()];
-                let same = old.len() == fresh
-                    && old
-                        .iter()
-                        .zip(&self.scratch[..fresh])
-                        .all(|(old, new)| ccountry_leader::Row { country, ..*old } == *new);
-                if !same {
-                    return Slice::Differs(compared);
-                }
-            }
-        }
-        Slice::Same(compared)
-    }
-
-    fn plan(&self, changes: &dyn Changes, check: Check, occurrence: &census::Occurrence) -> Plan {
+    fn plan(&self, changes: &dyn Changes, occurrence: &census::Occurrence) -> Plan {
         // Registration precedes every read it certifies.
         let certificate = changes
             .sequence(occurrence.pointer)
@@ -322,11 +224,7 @@ impl LeaderCache {
             let index = self.previous.position(certificate.pointer)?;
             (self.previous.entries[index].certificate == certificate).then_some(index)
         });
-        Plan {
-            certificate,
-            held,
-            carry: held.is_some() && !check.covers(u64::from(occurrence.id())),
-        }
+        Plan { certificate, held }
     }
 
     /// One hour's rows from the admitted census, carrying each certified
@@ -338,40 +236,23 @@ impl LeaderCache {
         game_state: usize,
         census: census::Admitted<'_>,
         changes: &dyn Changes,
-        check: Check,
     ) {
         use census::{SENTINEL, SENTINEL_BATCH};
         let scope = (base, game_state);
         // Taken before any registration or read this capture certifies.
         let token = changes.quiet();
-        let mut sampled = Counts::default();
         if self.finished
             && self.scope == scope
-            && check != Check::Every
             && census.generation != 0
             && token.is_some_and(|token| self.quiet == Some((token, census.generation)))
         {
-            match self.sample(memory, base, census, check) {
-                Slice::Same(compared) => {
-                    self.counts = Counts {
-                        reused: census.len() as u64 - compared,
-                        read: compared,
-                        verified: compared,
-                        mismatches: 0,
-                        quiet: true,
-                    };
-                    crate::character_changes::record(Table::CountryLeaderRoles, &self.counts);
-                    return;
-                }
-                Slice::Differs(compared) => {
-                    // A missed write: nothing certifies reuse any more, and
-                    // this hour reads and publishes every character afresh.
-                    sampled.verified = compared;
-                    sampled.mismatches = 1;
-                    changes.mismatch();
-                }
-                Slice::Failed => {}
-            }
+            self.counts = Counts {
+                reused: census.len() as u64,
+                read: 0,
+                quiet: true,
+            };
+            crate::character_changes::record(Table::CountryLeaderRoles, &self.counts);
+            return;
         }
         self.quiet = None;
         if !self.finished || self.scope != scope {
@@ -398,9 +279,9 @@ impl LeaderCache {
             let mut staged = 0;
             for index in next..end {
                 let occurrence = census.occurrence(index);
-                let plan = self.plan(changes, check, &occurrence);
+                let plan = self.plan(changes, &occurrence);
                 slots[index - next] = usize::MAX;
-                if !plan.carry
+                if plan.held.is_none()
                     && let Some((head, _)) = census::map_head(occurrence.leaders())
                     && !census::inside_view(occurrence.pointer, head, SENTINEL)
                 {
@@ -416,7 +297,7 @@ impl LeaderCache {
                 let plan = plans[index - next];
                 let country = u32::from_le_bytes(occurrence.country());
                 let start = self.rows.len();
-                match plan.held.filter(|_| plan.carry) {
+                match plan.held {
                     Some(held) => {
                         let rows = self.previous.entries[held].rows.clone();
                         if unread == 0 {
@@ -468,19 +349,6 @@ impl LeaderCache {
                                 break 'batches;
                             }
                         }
-                        if let Some(held) = plan.held.filter(|_| unread == 0) {
-                            self.counts.verified += 1;
-                            let entry = &self.previous.entries[held];
-                            let old = &self.previous.rows[entry.rows.clone()];
-                            let same = old.len() == self.rows.len() - start
-                                && old.iter().zip(&self.rows[start..]).all(|(old, new)| {
-                                    ccountry_leader::Row { country, ..*old } == *new
-                                });
-                            if !same {
-                                self.counts.mismatches += 1;
-                                changes.mismatch();
-                            }
-                        }
                     }
                 }
                 if let Some(certificate) = plan.certificate
@@ -514,8 +382,6 @@ impl LeaderCache {
                 .filter(|_| {
                     held_all
                         && census.generation != 0
-                        && check != Check::Every
-                        && self.counts.mismatches == 0
                         && self.current.entries.len() == census.len()
                 })
                 .map(|token| (token, census.generation));
@@ -523,8 +389,6 @@ impl LeaderCache {
             self.current.clear();
         }
         self.previous.clear();
-        self.counts.verified += sampled.verified;
-        self.counts.mismatches += sampled.mismatches;
         crate::character_changes::record(Table::CountryLeaderRoles, &self.counts);
     }
 

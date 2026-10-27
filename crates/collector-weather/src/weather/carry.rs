@@ -31,22 +31,14 @@
 //! records (and the visited regions' modifier entries) and carries every
 //! other record from the held read. Anything else (the first hour, a gap, a
 //! forced full hour, a moved count, a cursor that moved by anything but one
-//! pass, a failed read, a poisoned carry) reads every record and holds it.
+//! pass, a failed read) reads every record and holds it.
 //! Clocks and the two display arrays are still read whole every hour: the
 //! day/night update rewrites every clock hourly.
-//!
-//! Each window hour also re-reads carried records — every one under
-//! `weather_verify`, otherwise the hour's rotating slice of slots — and
-//! compares them with the held ones. A difference while the write count
-//! moved is a hooked write during the read: the hour reads every record. A
-//! difference with the count still is a write no hook saw: it poisons the
-//! carry for the attachment.
 
 use super::*;
 use crate::country_input_changes::weather_carry::{
-    EXPLAINED, FULL_HOURS, MODIFIER_COMPARE_TICKS, MODIFIER_DIFFERENCES, MODIFIER_FULL_HOURS,
-    MODIFIER_LOOKUPS, MODIFIER_REFUSALS, MODIFIER_TICKS, MODIFIER_WINDOW_HOURS, POISONED, SAMPLED,
-    VERIFY, WINDOW_HOURS, WINDOW_RECORDS,
+    FULL_HOURS, MODIFIER_FULL_HOURS, MODIFIER_LOOKUPS, MODIFIER_REFUSALS, MODIFIER_TICKS,
+    MODIFIER_WINDOW_HOURS, WINDOW_HOURS, WINDOW_RECORDS,
 };
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -132,8 +124,6 @@ pub struct WeatherCarry {
     combat: Vec<Option<RegionModifiers>>,
     /// Every province's weather modifier accumulator of the held read.
     province_modifiers: ProvinceModifiers,
-    /// Scratch for the comparison reads.
-    scratch: Vec<u8>,
     /// This hour, set by the game thread before dispatch.
     hour: i32,
     force_full: bool,
@@ -148,13 +138,6 @@ pub struct WeatherCarry {
     /// This hour's province records followed their window. A province's modifier is
     /// rebuilt with its record, so the modifier entries follow theirs only then.
     provinces_followed: bool,
-    /// A comparison found a write no hook saw: every hour reads every
-    /// record for the rest of the attachment.
-    poisoned: bool,
-    /// The write count now, to tell a difference a hooked write explains.
-    observe: fn() -> Option<u64>,
-    /// Compare every carried record ([`VERIFY`]), not the hour's slice.
-    every: bool,
 }
 
 impl Default for WeatherCarry {
@@ -165,7 +148,6 @@ impl Default for WeatherCarry {
             provinces: Vec::new(),
             combat: Vec::new(),
             province_modifiers: ProvinceModifiers::default(),
-            scratch: Vec::new(),
             hour: 0,
             force_full: false,
             writes: None,
@@ -174,9 +156,6 @@ impl Default for WeatherCarry {
             complete: false,
             followed: 0,
             provinces_followed: false,
-            poisoned: false,
-            observe: crate::country_input_changes::weather_writes,
-            every: VERIFY,
         }
     }
 }
@@ -250,8 +229,7 @@ impl WeatherCarry {
     fn windows_of(&self, now: Words) -> Option<Windows> {
         let held = self.held?;
         let writes = self.writes?;
-        if self.poisoned
-            || self.force_full
+        if self.force_full
             || held.hour.checked_add(1) != Some(self.hour)
             || held.writes != writes
             || now.flags != [0; 3]
@@ -312,30 +290,6 @@ impl WeatherCarry {
             Part::Provinces => windows.provinces,
         })
     }
-
-    /// A comparison found `mismatches`: explained by a hooked write during
-    /// the read, or a write no hook saw (the carry is poisoned).
-    fn differed(&mut self) {
-        if (self.observe)() != self.writes {
-            EXPLAINED.fetch_add(1, Relaxed);
-        } else {
-            self.poisoned = true;
-            POISONED.store(true, Relaxed);
-        }
-    }
-}
-
-/// The slots of `0..count` a comparison reads this hour: `(start, step)`,
-/// every slot under `weather_verify`, otherwise those in the hour's phase of
-/// the rotation.
-fn compared(hour: i32, every: bool) -> (u32, u32) {
-    let check = crate::sampled_verify::Check::burned_in(hour, every);
-    if check == crate::sampled_verify::Check::Every {
-        return (0, 1);
-    }
-    let rotation = crate::sampled_verify::BURNED_IN_ROTATION;
-    // covers_phase identifies only the day's bucket, not the full graduated phase.
-    (hour.rem_euclid(rotation as i32) as u32, rotation as u32)
 }
 
 /// Whether `slot` is in the window `(first, visits)` of `count` slots.
@@ -343,9 +297,8 @@ fn in_window(slot: u32, (first, visits): (u32, u32), count: u32) -> bool {
     (u64::from(slot) + u64::from(count) - u64::from(first)) % u64::from(count) < u64::from(visits)
 }
 
-/// Gathers records `first, first + step, ...` (`count` of them) of `array`
-/// into `out`, packed; false when a field did not read.
-#[allow(clippy::too_many_arguments)]
+/// Gathers records `first..first + count` of `array` into `out`, packed;
+/// false when a field did not read.
 fn gather(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,
@@ -353,19 +306,18 @@ fn gather(
     layout: &RecordLayout<'_>,
     first: u32,
     count: u32,
-    step: u32,
     out: &mut [u8],
 ) -> bool {
     let record_bytes = layout.stride();
     let mut done = 0;
     while done < count {
         let batch = (count - done).min(64);
-        let Some(base) = array.element(first + done * step, stride) else {
+        let Some(base) = array.element(first + done, stride) else {
             return false;
         };
         let sources = RecordSources::Strided {
             base,
-            stride: stride * step as usize,
+            stride,
             count: batch as usize,
         };
         let begin = done as usize * record_bytes;
@@ -473,9 +425,8 @@ fn capture(
     }
 }
 
-/// Reads `window` of `array` into the held records and compares the hour's
-/// carried slots; false when either did not hold (the part reads every
-/// record).
+/// Reads `window` of `array` into the held records; false when it did not
+/// read (the part reads every record).
 fn follow(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,
@@ -490,53 +441,6 @@ fn follow(
     if carry.held_bytes(part).len() < count as usize * record_bytes {
         return false;
     }
-    // The comparison first, against the held bytes before the window
-    // overwrites them.
-    let (start, step) = compared(carry.hour, carry.every);
-    if start < count {
-        let compared = (count - start).div_ceil(step);
-        let needed = compared as usize * record_bytes;
-        if carry.scratch.len() < needed
-            && engine_allocation::resize(&mut carry.scratch, needed, 0).is_err()
-        {
-            return false;
-        }
-        let mut scratch = std::mem::take(&mut carry.scratch);
-        let read = gather(
-            memory,
-            array,
-            stride,
-            layout,
-            start,
-            compared,
-            step,
-            &mut scratch[..needed],
-        );
-        let (mut verified, mut mismatches) = (0, 0);
-        if read {
-            let held = carry.held_bytes(part);
-            for index in 0..compared {
-                let slot = start + index * step;
-                if in_window(slot, (first, visits), count) {
-                    continue;
-                }
-                let at = index as usize * record_bytes;
-                let fresh = &scratch[at..at + record_bytes];
-                let at = slot as usize * record_bytes;
-                verified += 1;
-                mismatches += u64::from(fresh != &held[at..at + record_bytes]);
-            }
-        }
-        carry.scratch = scratch;
-        SAMPLED.record(verified, mismatches, part as usize);
-        if mismatches != 0 {
-            carry.differed();
-            return false;
-        }
-        if !read {
-            return false;
-        }
-    }
     // The window, wrapping at the count, into the held records.
     let head = visits.min(count - first);
     let held = carry.held_bytes(part);
@@ -549,7 +453,6 @@ fn follow(
         layout,
         first,
         head,
-        1,
         &mut back[..head as usize * record_bytes],
     ) && gather(
         memory,
@@ -558,7 +461,6 @@ fn follow(
         layout,
         0,
         visits - head,
-        1,
         &mut front[..(visits - head) as usize * record_bytes],
     )
 }
@@ -628,8 +530,8 @@ pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
     }
 }
 
-/// The window's combat entries into the carried ones, after comparing the
-/// hour's carried slots; false on a difference or a refused read.
+/// The window's combat entries into the carried ones; false on a refused
+/// read.
 fn follow_combat(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,
@@ -637,25 +539,6 @@ fn follow_combat(
     (first, visits): (u32, u32),
 ) -> bool {
     let count = array.count;
-    let (start, step) = compared(carry.hour, carry.every);
-    let (mut verified, mut mismatches) = (0, 0);
-    let mut slot = start;
-    while slot < count {
-        if !in_window(slot, (first, visits), count) {
-            let Some(fresh) = region_combat(memory, array, slot) else {
-                SAMPLED.record(verified, mismatches, 2);
-                return false;
-            };
-            verified += 1;
-            mismatches += u64::from(Some(fresh) != carry.combat[slot as usize]);
-        }
-        slot += step;
-    }
-    SAMPLED.record(verified, mismatches, 2);
-    if mismatches != 0 {
-        carry.differed();
-        return false;
-    }
     for visit in 0..visits {
         let slot = (first + visit) % count;
         let Some(fresh) = region_combat(memory, array, slot) else {
@@ -682,10 +565,8 @@ fn read_province(
 /// provinces afresh and the rest carried when the carry allows it, otherwise
 /// every province. The weather window pass rebuilds a province record's modifier
 /// with the record, so the record carry's writers are the modifier's: an hour whose
-/// province records did not follow their window (a record difference among them)
-/// reads every province's entries too, and a carried entry difference is explained
-/// or poisons the carry as a record difference does, and that hour reads every
-/// province. Provinces beyond the hour's storage are refused and counted.
+/// province records did not follow their window reads every province's entries too.
+/// Provinces beyond the hour's storage are refused and counted.
 pub(super) fn capture_province_modifiers(memory: &impl Memory, job: &mut WeatherJob) {
     let begin = qpc();
     capture_province_modifiers_timed(memory, job);
@@ -702,13 +583,11 @@ fn capture_province_modifiers_timed(memory: &impl Memory, job: &mut WeatherJob) 
     job.province_modifiers
         .reserve_provinces(count as usize, grow);
     let mut scratch = std::mem::take(&mut job.province_scratch);
-    let window = match job.carry.as_deref_mut() {
+    let window = match job.carry.as_deref() {
         Some(carry)
             if carry.provinces_followed && carry.province_modifiers.len() == count as usize =>
         {
-            carry.window(Part::Provinces).filter(|&window| {
-                follow_province_modifiers(memory, array, carry, window, &mut scratch, grow)
-            })
+            carry.window(Part::Provinces)
         }
         _ => None,
     };
@@ -742,42 +621,6 @@ fn capture_province_modifiers_timed(memory: &impl Memory, job: &mut WeatherJob) 
             carry.province_modifiers.clear();
         }
     }
-}
-
-/// Compares the hour's carried slots outside the window with the province records'
-/// accumulators; false on a difference or a refusal.
-fn follow_province_modifiers(
-    memory: &impl Memory,
-    array: engine_native::cpdx_array::Array,
-    carry: &mut WeatherCarry,
-    window: (u32, u32),
-    scratch: &mut Vec<super::entries::Entry>,
-    grow: bool,
-) -> bool {
-    let count = array.count;
-    let (start, step) = compared(carry.hour, carry.every);
-    let (mut verified, mut mismatches) = (0, 0);
-    let mut slot = start;
-    let begin = qpc();
-    while slot < count {
-        if !in_window(slot, window, count) {
-            if !read_province(memory, array, slot, scratch, grow) {
-                SAMPLED.record(verified, mismatches, 3);
-                return false;
-            }
-            verified += 1;
-            mismatches += u64::from(carry.province_modifiers.get(slot as usize) != Some(scratch));
-        }
-        slot += step;
-    }
-    MODIFIER_COMPARE_TICKS.fetch_add(qpc().saturating_sub(begin).max(0) as u64, Relaxed);
-    SAMPLED.record(verified, mismatches, 3);
-    if mismatches != 0 {
-        MODIFIER_DIFFERENCES.fetch_add(mismatches, Relaxed);
-        carry.differed();
-        return false;
-    }
-    true
 }
 
 #[cfg(test)]

@@ -11,15 +11,9 @@
 //! `CCountryCharacters` only through the pool constructor. So while the pool domain's, the
 //! character domain's and the roster's quiet tokens and the country and link array headers are
 //! those taken before the latest complete walk, every row equals that walk's: such a quiet hour
-//! publishes it without reading any country. The quiet hour of the day that
-//! [`crate::sampled_verify`] gives the table's key ([`KEY`]; every hour under `appointment_verify`)
-//! walks every country instead and compares the walk whole with the held rows; a difference
-//! disables the pool domain for the attachment. Any hour that is not quiet walks every country, and
+//! publishes it without reading any country. Any hour that is not quiet walks every country, and
 //! an hour holds its walk when the tokens and headers stood still across it.
-use crate::{
-    advisor_pool_changes::{Counts, Table},
-    sampled_verify::Check,
-};
+use crate::advisor_pool_changes::{Counts, Table};
 use engine_allocation as allocation;
 use engine_native::{
     Memory, ccharacter::NameWalk, ccountry_characters as native, ccountry_characters::Row,
@@ -28,11 +22,6 @@ use engine_native::{
 
 /// Whether HiredAdvisors carries a quiet hour.
 pub const CARRY: bool = cfg!(feature = "appointment_changes");
-/// Whether every hour walks and compares what a quiet hour would carry.
-pub const VERIFY: bool = cfg!(feature = "appointment_verify");
-/// The table's stable sampling key: its quiet hour of the day walks and
-/// compares.
-pub const KEY: u64 = 0;
 
 /// The domains a quiet hour rests on; tests substitute their own.
 pub trait Domains: Sync {
@@ -42,8 +31,6 @@ pub trait Domains: Sync {
     fn characters(&self) -> Option<(u64, u64)>;
     /// The character roster's token ([`crate::roster_changes::roster`]).
     fn roster(&self) -> Option<(u64, u64)>;
-    /// A quiet hour's held rows differed from a fresh walk.
-    fn mismatch(&self);
 }
 
 /// The hooks' domains.
@@ -57,9 +44,6 @@ impl Domains for Observer {
     }
     fn roster(&self) -> Option<(u64, u64)> {
         crate::roster_changes::roster()
-    }
-    fn mismatch(&self) {
-        crate::advisor_pool_changes::mismatch();
     }
 }
 
@@ -129,37 +113,6 @@ impl Appointed {
     }
 }
 
-/// A row's idea and slot bytes in `bytes`.
-fn texts<'a>(row: &Row, bytes: &'a [u8]) -> Option<(&'a [u8], &'a [u8])> {
-    let text =
-        |start: usize, len: usize| start.checked_add(len).and_then(|end| bytes.get(start..end));
-    Some((
-        text(row.idea_start, row.idea_len)?,
-        text(row.slot_start, row.slot_len)?,
-    ))
-}
-
-/// Whether two rows record the same appointment.
-fn same(held: &Row, held_bytes: &[u8], fresh: &Row, fresh_bytes: &[u8]) -> bool {
-    (held.country, held.ordinal, held.character) == (fresh.country, fresh.ordinal, fresh.character)
-        && texts(held, held_bytes).is_some()
-        && texts(held, held_bytes) == texts(fresh, fresh_bytes)
-}
-
-/// Compares the held rows with `fresh`, a whole walk in walk order. Returns
-/// the rows compared and whether any differed.
-fn compare(held: &[Row], held_bytes: &[u8], fresh: &[Row], fresh_bytes: &[u8]) -> (u64, bool) {
-    let mut held = held.iter();
-    let mut compared = 0;
-    for row in fresh {
-        match held.next() {
-            Some(kept) if same(kept, held_bytes, row, fresh_bytes) => compared += 1,
-            _ => return (compared + 1, true),
-        }
-    }
-    (compared, held.next().is_some())
-}
-
 /// Copies `held` into the front of a capture buffer; false when it cannot
 /// grow.
 pub(super) fn publish<T: Default + Copy>(held: &[T], values: &mut Vec<T>) -> bool {
@@ -174,24 +127,21 @@ pub(super) fn publish<T: Default + Copy>(held: &[T], values: &mut Vec<T>) -> boo
 }
 
 /// One hour's HiredAdvisors into the capture's `rows` and `bytes`: a quiet
-/// hour outside `check`'s hour for [`KEY`] publishes the held walk; any other
-/// hour walks every country, and a quiet one compares the walk whole with the
-/// held rows. Records the hour's counts.
-#[allow(clippy::too_many_arguments)]
+/// hour publishes the held walk; any other hour walks every country. Records
+/// the hour's counts.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     held: &mut Appointed,
     domains: &dyn Domains,
-    check: Check,
     rows: &mut Vec<Row>,
     bytes: &mut Vec<u8>,
 ) -> NameWalk {
     let before = key(memory, base, game_state, domains);
     let quiet = before.is_some() && before == held.key;
     let mut counts = Counts::default();
-    if quiet && !check.covers(KEY) && publish(&held.rows, rows) && publish(&held.bytes, bytes) {
+    if quiet && publish(&held.rows, rows) && publish(&held.bytes, bytes) {
         counts.reused = 1;
         counts.reused_rows = held.rows.len() as u64;
         crate::advisor_pool_changes::record(Table::HiredAdvisors, &counts, None);
@@ -210,15 +160,6 @@ pub fn capture(
         Outcome::Rows { len } => rows.get(..len).zip(bytes.get(..walk.bytes_len)),
         _ => None,
     };
-    if let (true, Some((walked, walked_bytes))) = (quiet, complete) {
-        // What the quiet hour would have published, compared whole.
-        let (verified, differ) = compare(&held.rows, &held.bytes, walked, walked_bytes);
-        counts.verified = verified;
-        if differ {
-            counts.mismatches = 1;
-            domains.mismatch();
-        }
-    }
     // Held only when the tokens and headers stood still across the walk.
     match (complete, before) {
         (Some((walked, walked_bytes)), Some(before))
@@ -248,34 +189,9 @@ mod tests {
         }
     }
 
-    /// A walk compares with the held rows in order, with their idea and slot
-    /// bytes; a changed idea, a missing appointment and an extra one differ.
-    #[test]
-    fn a_walk_compares_with_the_held_rows() {
-        let held_bytes = b"aaaabbbbcccc";
-        let held = [row(1, 0, 10, 0), row(2, 0, 20, 4), row(2, 1, 21, 8)];
-        let fresh = [row(1, 0, 10, 8), row(2, 0, 20, 4), row(2, 1, 21, 0)];
-        assert_eq!(
-            compare(&held, held_bytes, &fresh, b"ccccbbbbaaaa"),
-            (3, false)
-        );
-        assert!(compare(&held, held_bytes, &fresh, b"ccccbbbbdddd").1);
-        assert!(compare(&held, held_bytes, &held[..2], held_bytes).1);
-        let extra = [
-            row(1, 0, 10, 0),
-            row(2, 0, 20, 4),
-            row(2, 1, 21, 8),
-            row(4, 0, 40, 0),
-        ];
-        assert!(compare(&held, held_bytes, &extra, held_bytes).1);
-        assert_eq!(compare(&[], b"", &[], b""), (0, false));
-    }
-
-    /// The domains of one test: a pool token it moves, and the mismatches
-    /// it saw.
+    /// The domains of one test: a pool token it moves.
     struct Fake {
         pools: std::sync::atomic::AtomicU64,
-        mismatches: std::sync::atomic::AtomicU64,
     }
     impl Domains for Fake {
         fn pools(&self) -> Option<(u64, u64)> {
@@ -287,10 +203,6 @@ mod tests {
         fn roster(&self) -> Option<(u64, u64)> {
             Some((1, 0))
         }
-        fn mismatch(&self) {
-            self.mismatches
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
     }
 
     /// Without a readable country census nothing is quiet and nothing is
@@ -301,32 +213,16 @@ mod tests {
             base: 0,
             bytes: &[],
         };
-        let domains = Fake {
-            pools: 0.into(),
-            mismatches: 0.into(),
-        };
+        let domains = Fake { pools: 0.into() };
         let mut held = Appointed::default();
         let (mut rows, mut bytes) = (Vec::new(), Vec::new());
-        for hour in 0..3 {
+        for _ in 0..3 {
             let walk = capture(
-                &memory,
-                0,
-                0x1000,
-                &mut held,
-                &domains,
-                Check::Slice { hour },
-                &mut rows,
-                &mut bytes,
+                &memory, 0, 0x1000, &mut held, &domains, &mut rows, &mut bytes,
             );
             assert!(matches!(walk.outcome, Outcome::Unavailable { .. }));
             assert!(held.key.is_none());
         }
-        assert_eq!(
-            domains
-                .mismatches
-                .load(std::sync::atomic::Ordering::Relaxed),
-            0
-        );
     }
 
     /// A game state whose country table holds one null slot and whose link
@@ -344,60 +240,35 @@ mod tests {
         bytes
     }
 
-    /// A quiet hour publishes the held walk without walking; the quiet hour
-    /// of the table's rotation walks and compares, and a held row the walk
-    /// does not find is a mismatch; a moved token walks without comparing.
+    /// A quiet hour publishes the held walk without walking; a moved token
+    /// walks and holds the fresh walk.
     #[test]
-    fn a_quiet_hour_publishes_the_held_walk_and_its_rotation_hour_compares() {
+    fn a_quiet_hour_publishes_the_held_walk_and_a_moved_token_walks() {
         let world = empty_world();
         let memory = engine_native::memory::SliceMemory {
             base: 0x1000,
             bytes: &world,
         };
-        let domains = Fake {
-            pools: 0.into(),
-            mismatches: 0.into(),
-        };
+        let domains = Fake { pools: 0.into() };
         let mut held = Appointed::default();
         let (mut rows, mut bytes) = (Vec::new(), Vec::new());
-        let mut hour = |held: &mut Appointed, hour: i32| {
-            capture(
-                &memory,
-                0,
-                0x1000,
-                held,
-                &domains,
-                Check::Slice { hour },
-                &mut rows,
-                &mut bytes,
-            )
-            .outcome
+        let mut hour = |held: &mut Appointed| {
+            capture(&memory, 0, 0x1000, held, &domains, &mut rows, &mut bytes).outcome
         };
         // The first hour walks and holds the (empty) walk.
-        assert_eq!(hour(&mut held, 1), Outcome::Rows { len: 0 });
+        assert_eq!(hour(&mut held), Outcome::Rows { len: 0 });
         assert!(held.key.is_some());
         // A held appointment stands in for the walk's: a quiet hour publishes
         // it, so this hour did not walk.
         held.rows.push(row(7, 0, 70, 0));
         held.bytes.extend_from_slice(b"idea");
-        assert_eq!(hour(&mut held, 2), Outcome::Rows { len: 1 });
-        // The rotation hour of key 0 walks, finds no appointment and reports
-        // the held one as a missed write.
-        assert_eq!(hour(&mut held, 24), Outcome::Rows { len: 0 });
-        let mismatches = || {
-            domains
-                .mismatches
-                .load(std::sync::atomic::Ordering::Relaxed)
-        };
-        assert_eq!(mismatches(), 1);
-        // A writer moved the pool token: the hour walks and compares nothing.
-        held.rows.push(row(7, 0, 70, 0));
-        held.bytes.extend_from_slice(b"idea");
+        assert_eq!(hour(&mut held), Outcome::Rows { len: 1 });
+        assert_eq!(hour(&mut held), Outcome::Rows { len: 1 });
+        // A writer moved the pool token: the hour walks and holds its walk.
         domains
             .pools
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(hour(&mut held, 3), Outcome::Rows { len: 0 });
-        assert_eq!(mismatches(), 1);
+        assert_eq!(hour(&mut held), Outcome::Rows { len: 0 });
         assert!(held.rows.is_empty() && held.key.is_some());
     }
 }

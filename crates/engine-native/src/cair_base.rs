@@ -218,12 +218,10 @@ pub struct DenseEntry {
 
 /// How the registration walk finds each base's occupied container slots.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct SlotMode<'a> {
+pub struct SlotMode {
     /// Read only the slot words a base's dense list names ([`dense_plan`]);
     /// a base whose list does not prove its slots reads every chunk.
     pub dense: bool,
-    /// Bases (by handle) that read every chunk regardless.
-    pub full: &'a [u64],
 }
 
 /// The occupied slots of one base's country-container vector from its dense registered-container
@@ -531,7 +529,7 @@ impl<M: Memory> Reader<'_, M> {
         buffers: &mut RegistrationBuffers<'_>,
         state: &mut RegistrationState,
         carrier: &mut Option<&mut CarrierCapture<'_, O>>,
-        slots: SlotMode<'_>,
+        slots: SlotMode,
         mut reuse: Option<&mut (dyn RegistrationReuse + '_)>,
     ) -> Result<(), &'static str> {
         let RegistrationBase {
@@ -549,7 +547,7 @@ impl<M: Memory> Reader<'_, M> {
         // A base whose dense list proves its occupied slots reads none of its
         // slot vector beyond the plan's slot words: the listed containers are
         // the occupied slots, every other one is null ([`dense_plan`]).
-        let planned = (slots.dense && !slots.full.contains(&base_handle))
+        let planned = slots.dense
             .then(|| {
                 dense_plan(
                     self.memory,
@@ -1046,7 +1044,7 @@ pub fn walk_registrations_planned<M: Memory>(
     base: usize,
     game_state: usize,
     buffers: RegistrationBuffers<'_>,
-    slots: SlotMode<'_>,
+    slots: SlotMode,
     reuse: Option<&mut (dyn RegistrationReuse + '_)>,
 ) -> RegistrationWalk {
     walk_registrations_inner::<M, M>(memory, base, game_state, buffers, &[], None, slots, reuse)
@@ -1089,7 +1087,7 @@ pub fn walk_registrations_with_carrier_planned<M: Memory, O: Memory>(
     buffers: RegistrationBuffers<'_>,
     base_rows: &[Row],
     carrier: &mut CarrierCapture<'_, O>,
-    slots: SlotMode<'_>,
+    slots: SlotMode,
     reuse: Option<&mut (dyn RegistrationReuse + '_)>,
 ) -> RegistrationWalk {
     walk_registrations_inner(
@@ -1112,7 +1110,7 @@ fn walk_registrations_inner<M: Memory, O: Memory>(
     mut buffers: RegistrationBuffers<'_>,
     base_rows: &[Row],
     mut carrier: Option<&mut CarrierCapture<'_, O>>,
-    slots: SlotMode<'_>,
+    slots: SlotMode,
     mut reuse: Option<&mut (dyn RegistrationReuse + '_)>,
 ) -> RegistrationWalk {
     let mut state = RegistrationState::default();
@@ -1220,7 +1218,7 @@ fn walk_registrations_inner<M: Memory, O: Memory>(
                 if state.unread_rows == before.1 {
                     reuse.walked(WalkedBase {
                         slots: state.last_slots,
-                        sought_plan: slots.dense && !slots.full.contains(&handle),
+                        sought_plan: slots.dense,
                         plan: state.last_plan.map(|len| &state.scratch.plan[..len]),
                         rows: &buffers.registrations[before.0..state.len],
                         wings_start: before.2,

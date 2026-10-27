@@ -140,15 +140,8 @@ impl Site {
 }
 
 static CALLS: [AtomicU64; Site::ALL.len()] = [const { AtomicU64::new(0) }; Site::ALL.len()];
-/// Quiet, read and compared hours, and compared wars.
-static READS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "a quiet hour's held WarRelations rows differ from a fresh walk",
-]);
-
-/// Whether the Wars job walks every hour and compares each quiet one with
-/// what it would carry, rather than carrying it (the family's burn-in).
-pub const VERIFY: bool = cfg!(feature = "war_verify");
+/// Quiet and read hours.
+static READS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
 /// Hook path, allocation-free: a forwarded writer is about to run. Dropping
 /// the guard notifies its return.
@@ -175,9 +168,6 @@ pub trait Changes: Sync {
     /// The domain's token: `(epoch, revision)` while observed and no
     /// forwarded writer runs.
     fn quiet(&self) -> Option<(u64, u64)>;
-    /// A quiet hour's held rows differed from a fresh walk: nothing is
-    /// carried for the rest of the attachment.
-    fn mismatch(&self);
 }
 
 /// The forwarded writers' domain.
@@ -185,9 +175,6 @@ pub struct Observer;
 impl Changes for Observer {
     fn quiet(&self) -> Option<(u64, u64)> {
         WARS.quiet()
-    }
-    fn mismatch(&self) {
-        WARS.poison();
     }
 }
 
@@ -205,24 +192,15 @@ pub struct Counts {
     pub quiet: bool,
     /// The walk ran.
     pub read: bool,
-    /// The walk ran on a quiet hour and was compared with the held rows.
-    pub compared: bool,
-    pub compared_wars: u64,
-    pub mismatches: u64,
 }
 
-/// The capture already called [`Changes::mismatch`] at a difference.
+/// Publishes one Wars capture's counts.
 pub fn record(counts: &Counts) {
-    for (target, value) in READS.iter().zip([
-        u64::from(counts.quiet),
-        u64::from(counts.read),
-        u64::from(counts.compared),
-        counts.compared_wars,
-    ]) {
+    for (target, value) in READS
+        .iter()
+        .zip([u64::from(counts.quiet), u64::from(counts.read)])
+    {
         target.fetch_add(value, Ordering::Relaxed);
-    }
-    if counts.compared {
-        SAMPLED.record(counts.compared_wars, counts.mismatches, 0);
     }
 }
 
@@ -242,19 +220,12 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "war_changes"),
-        "verify": VERIFY,
         "poisoned": WARS.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "quiet_hours": reads[0],
         "read_hours": reads[1],
-        "compared_hours": reads[2],
-        "compared_wars": reads[3],
         "events": calls,
         "forwarders": forwarders,
-        "scope": "cumulative since attach; WarRelations walks and validates every country's owned relations unless the hour is quiet: when the war domain's token (every forwarded writer of the war set, its vectors and its fixed fields) and the country census equal those taken before the latest complete walk, the held rows are published with each war's casualty counters read afresh (quiet_hours); the domain's hour of the rotation (every quiet hour in verify mode) walks instead and compares the walk with what it would carry (compared_*), disabling the carry at the first difference (sampled_*); the domain observes only while every forwarding family is enabled (forwarders)"
+        "scope": "cumulative since attach; WarRelations walks and validates every country's owned relations unless the hour is quiet: when the war domain's token (every forwarded writer of the war set, its vectors and its fixed fields) and the country census equal those taken before the latest complete walk, the held rows are published with each war's casualty counters read afresh (quiet_hours); the domain observes only while every forwarding family is enabled (forwarders)"
     })
 }
 

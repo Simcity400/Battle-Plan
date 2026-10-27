@@ -12,10 +12,7 @@
 //! ([`crate::raid_changes`]); a controller of a read state is read with it.
 //! An hour whose take of the marks does not certify the previous hour's read
 //! reads every owner. The supply-route flag, which the hourly supply rebuild
-//! rewrites, is read with its state and no hook certifies it. Every owner
-//! read and not marked is compared with its previous read
-//! ([`SliceSelection::compare`]), the supply-route flag excepted; a
-//! difference disables the family's marks for the attachment.
+//! rewrites, is read with its state and no hook certifies it.
 use crate::{
     clock::qpc,
     slicing::{SliceFingerprints, SliceSelection},
@@ -98,9 +95,6 @@ pub struct Stores<'a> {
     pub states: &'a mut SliceFingerprints,
     pub countries: &'a mut SliceFingerprints,
     pub changes: &'a dyn crate::raid_changes::Changes,
-    /// Read every owner every hour while still comparing each unmarked one
-    /// (`raid_verify`, [`crate::raid_changes::VERIFY`] in production).
-    pub verify: bool,
 }
 
 pub struct Captured {
@@ -118,9 +112,6 @@ pub struct Captured {
     built: native::Capacity,
     /// This hour's state census, the state owners scanned.
     census: Vec<u32>,
-    /// Each read owner's row hashes, then its content hash
-    /// ([`SliceSelection::compare`]); the worker grows it.
-    hashes: Vec<(u32, u64)>,
     /// The states whose StateResourceInputs, StateResources and
     /// StateDynamicModifiers rows this hour's read replaced.
     states: SliceSelection,
@@ -146,7 +137,6 @@ impl Captured {
             required: native::Capacity::zero(),
             built: native::Capacity::zero(),
             census: Vec::new(),
-            hashes: Vec::new(),
             states: SliceSelection::new(false),
             countries: SliceSelection::new(false),
         }
@@ -164,7 +154,6 @@ impl Captured {
             required: native::Capacity::zero(),
             built: capacity.walk,
             census: owned_vec(vec(capacity.walk.states)),
-            hashes: Vec::new(),
             states: SliceSelection::new(true),
             countries: SliceSelection::new(true),
         }
@@ -178,7 +167,6 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.buffers.allocated_bytes()
             + self.census.capacity() * size_of::<u32>()
-            + self.hashes.capacity() * size_of::<(u32, u64)>()
             + self.cores.capacity() * size_of::<native::CoreRow>()
             + self.core_links.capacity() * size_of::<u32>()
     }
@@ -356,7 +344,7 @@ impl Captured {
             let states = &mut self.states;
             let epoch = changes.take(Family::States, &mut |id| states.mark(id as u32));
             self.buffers.recruitment_enabled = epoch.is_some();
-            states.certify(stores.states, epoch, stores.verify);
+            states.certify(stores.states, epoch);
             // A country mark is its raw link; an unresolved one certifies
             // nothing.
             let mut resolved = true;
@@ -368,7 +356,7 @@ impl Captured {
                 Some(Ok(country)) => countries.mark(country.id),
                 _ => resolved = false,
             });
-            countries.certify(stores.countries, epoch.filter(|_| resolved), stores.verify);
+            countries.certify(stores.countries, epoch.filter(|_| resolved));
         }
         let (states, countries) = (&self.states, &self.countries);
         let select = native::Selection {
@@ -434,8 +422,8 @@ impl Captured {
             self.countries.mark_read(country);
         }
         self.required = walk.required;
-        if let Some(stores) = stores {
-            self.compare(stores, ids);
+        if scanned {
+            self.record_counts(ids);
         }
         [
             walked,
@@ -445,61 +433,24 @@ impl Captured {
             qpc().saturating_sub(cores_started).max(0) as u64,
         ]
     }
-    /// Compare every owner this hour read and no hook marked with its
-    /// previous read, disable a family's marks at a difference, and record
-    /// the hour's counts.
-    fn compare(&mut self, stores: Stores<'_>, ids: [Option<usize>; 2]) {
+    /// Record each family's counts for the hour.
+    fn record_counts(&self, ids: [Option<usize>; 2]) {
         use crate::raid_changes::{Counts, Family, record};
-        let state_tables = STATE_TABLES.map(|index| self.outcomes[index]);
-        let complete = state_tables
-            .iter()
-            .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
-            && state_hashes(
-                &self.buffers,
-                &self.outcomes,
-                self.token_bytes,
-                &self.cores,
-                &self.core_links,
-                &mut self.hashes,
+        for (family, selection, ids) in [
+            (Family::States, &self.states, ids[0]),
+            (Family::Countries, &self.countries, ids[1]),
+        ] {
+            record(
+                family,
+                &Counts {
+                    marked: u64::from(selection.marked_count),
+                    read: selection.read_owners().count() as u64,
+                    early: u64::from(selection.marked_early()),
+                    full: selection.force_full,
+                },
+                ids,
             );
-        let (verified, mismatches) = self
-            .states
-            .compare(stores.states, complete.then_some(&self.hashes[..]));
-        if mismatches != 0 {
-            stores.changes.mismatch(Family::States);
         }
-        record(
-            Family::States,
-            &Counts {
-                marked: u64::from(self.states.marked_count),
-                read: self.states.read_owners().count() as u64,
-                early: u64::from(self.states.marked_early()),
-                full: self.states.force_full,
-                verified,
-                mismatches,
-            },
-            ids[0],
-        );
-        let complete = matches!(self.outcomes[3], Outcome::Rows { .. })
-            && country_hashes(&self.buffers, self.outcomes[3], &mut self.hashes);
-        let (verified, mismatches) = self
-            .countries
-            .compare(stores.countries, complete.then_some(&self.hashes[..]));
-        if mismatches != 0 {
-            stores.changes.mismatch(Family::Countries);
-        }
-        record(
-            Family::Countries,
-            &Counts {
-                marked: u64::from(self.countries.marked_count),
-                read: self.countries.read_owners().count() as u64,
-                early: u64::from(self.countries.marked_early()),
-                full: self.countries.force_full,
-                verified,
-                mismatches,
-            },
-            ids[1],
-        );
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -623,191 +574,6 @@ impl Captured {
     }
 }
 
-/// A content hash's starting value and one word folded into it
-/// (SplitMix64's finalizer over the running value and the word).
-const SEED: u64 = 0x9e37_79b9_7f4a_7c15;
-fn mix(hash: u64, word: u64) -> u64 {
-    let mut value = (hash ^ word).wrapping_add(SEED);
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^ (value >> 31)
-}
-
-/// One row's words, tagged with its table.
-fn row(tag: u64, words: impl IntoIterator<Item = u64>) -> u64 {
-    words.into_iter().fold(mix(SEED, tag), mix)
-}
-
-/// Bytes as their length and little-endian eight-byte words.
-fn bytes(bytes: &[u8]) -> impl Iterator<Item = u64> + '_ {
-    std::iter::once(bytes.len() as u64).chain(bytes.chunks(8).map(|chunk| {
-        let mut word = [0; 8];
-        word[..chunk.len()].copy_from_slice(chunk);
-        u64::from_le_bytes(word)
-    }))
-}
-
-/// Fold `hashes` (owner, row hash), in table and row order, into one content
-/// hash per owner, ascending. The sort is stable, so an owner's rows keep
-/// their order.
-fn fold(hashes: &mut Vec<(u32, u64)>) {
-    hashes.sort_by_key(|&(owner, _)| owner);
-    hashes.dedup_by(|next, kept| {
-        next.0 == kept.0 && {
-            kept.1 = mix(kept.1, next.1);
-            true
-        }
-    });
-}
-
-/// Each read state's content: every field of its StateResourceInputs,
-/// StateResources, StateDynamicModifiers and StateCores (cores, claims and
-/// strategic locations)
-/// rows that a hooked
-/// writer certifies (the supply-route flag, which the hourly supply rebuild
-/// rewrites, is left out). False when a row's span or the storage fails.
-fn state_hashes(
-    buffers: &native::Buffers,
-    outcomes: &[Outcome; N],
-    token_bytes: usize,
-    cores: &[native::CoreRow],
-    core_links: &[u32],
-    hashes: &mut Vec<(u32, u64)>,
-) -> bool {
-    hashes.clear();
-    let (Some(inputs), Some(resources), Some(modifiers), Some(cores), Some(names)) = (
-        buffers.inputs.get(..outcomes[0].len()),
-        buffers.resources.get(..outcomes[1].len()),
-        buffers.modifiers.get(..outcomes[2].len()),
-        cores.get(..outcomes[4].len()),
-        buffers.tokens.get(..token_bytes),
-    ) else {
-        return false;
-    };
-    let rows = inputs.len() + resources.len() + modifiers.len() + cores.len();
-    if engine_allocation::reserve(hashes, rows).is_err() {
-        return false;
-    }
-    for input in inputs {
-        let level = input
-            .infrastructure_level
-            .map_or(0, |level| (1 << 32) | u64::from(level as u32));
-        hashes.push((
-            input.state,
-            row(
-                1,
-                [
-                    u64::from(input.gate),
-                    input.global_factor as u64,
-                    u64::from(input.origin),
-                    level,
-                    input.infrastructure_modifier as u64,
-                    u64::from(input.recruitment.is_some()),
-                    input.recruitment.map_or(0, |v| v[0] as u64),
-                    input.recruitment.map_or(0, |v| v[1] as u64),
-                    input.recruitment.map_or(0, |v| v[2] as u64),
-                    input.recruitment.map_or(0, |v| v[3] as u64),
-                ],
-            ),
-        ));
-    }
-    for resource in resources {
-        hashes.push((
-            resource.state,
-            row(
-                2,
-                [
-                    u64::from(resource.resource),
-                    resource.pool as u64,
-                    resource.additive as u64,
-                    resource.factor as u64,
-                    resource.cost as u64,
-                ],
-            ),
-        ));
-    }
-    for modifier in modifiers {
-        let Some(name) = modifier
-            .token_start
-            .checked_add(modifier.token_len)
-            .and_then(|end| names.get(modifier.token_start..end))
-        else {
-            return false;
-        };
-        let head = [
-            u64::from(modifier.ordinal),
-            u64::from(modifier.scope_country),
-            u64::from(modifier.scope_state as u32),
-        ];
-        hashes.push((modifier.state, row(3, head.into_iter().chain(bytes(name)))));
-    }
-    let list = |start: usize, len: usize| {
-        start
-            .checked_add(len)
-            .and_then(|end| core_links.get(start..end))
-    };
-    for core in cores {
-        let (Some(links), Some(claims), Some(locations), Some(provinces)) = (
-            list(core.start, core.len),
-            list(core.claims_start, core.claims_len),
-            list(core.locations_start, 2 * core.locations_len),
-            list(
-                core.province_locations_start,
-                2 * core.province_locations_len,
-            ),
-        ) else {
-            return false;
-        };
-        // Each list's length precedes its words, so no two alias.
-        let words = [links, claims, locations, provinces]
-            .into_iter()
-            .flat_map(|list| {
-                std::iter::once(list.len() as u64).chain(list.iter().map(|&word| u64::from(word)))
-            });
-        hashes.push((core.state, row(4, words)));
-    }
-    fold(hashes);
-    true
-}
-
-/// Each read country's content: its CountryBuildingResources rows, an empty
-/// read included. False when a span or the storage fails.
-fn country_hashes(
-    buffers: &native::Buffers,
-    outcome: Outcome,
-    hashes: &mut Vec<(u32, u64)>,
-) -> bool {
-    hashes.clear();
-    let Some(overrides) = buffers.overrides.get(..outcome.len()) else {
-        return false;
-    };
-    let read = &buffers.read_countries;
-    if engine_allocation::reserve(hashes, read.len() + overrides.len()).is_err() {
-        return false;
-    }
-    for &country in read {
-        hashes.push((country, row(5, [])));
-    }
-    for entry in overrides {
-        hashes.push((
-            entry.country,
-            row(
-                6,
-                [
-                    u64::from(entry.ordinal),
-                    u64::from(entry.entry),
-                    u64::from(entry.building),
-                    u64::from(entry.count),
-                    u64::from(entry.resource),
-                    entry.amount as u64,
-                ],
-            ),
-        ));
-    }
-    fold(hashes);
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,9 +613,6 @@ mod tests {
                     states: &mut states,
                     countries: &mut countries,
                     changes: &watches,
-                    // The marks and slice alone; burn-in builds' raid_verify
-                    // reads every owner.
-                    verify: false,
                 }),
             );
             let selection = captured.state_selection();

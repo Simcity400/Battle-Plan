@@ -1,7 +1,6 @@
 //! Construction capture: the construction rest's owned raw copy, buildings and their held building store, and the building writer observer that forwards to the territory, raid, rail and nuclear strike observers. The host owns dispatch, the World job's construction part, loans and table assembly.
 
 use collector_certificates::dirty_set;
-use collector_certificates::sampled_verify;
 use collector_certificates::watch_registry;
 use collector_country_counters::country_counters;
 use collector_hooks::hook;

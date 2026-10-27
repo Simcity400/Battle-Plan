@@ -25,8 +25,6 @@ static SCENARIO_REFUSALS: [AtomicU64; engine_air_history::air_kamikaze::SCENARIO
 /// Hours that copied every held history afresh, by cause: an invalidation,
 /// a larger watch table, or the hour before failing or being dropped.
 static RESTARTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
-static SAMPLED: crate::sampled_verify::Sampled =
-    crate::sampled_verify::Sampled::burned_in(&["held air histories differ from a fresh copy"]);
 
 /// One observation domain: the watched receivers and each writer site's
 /// calls. Its table is cleared only on an invalidation: a clear starts an
@@ -220,15 +218,6 @@ pub fn record_scenario_refusals(
     }
 }
 
-/// One hour's sampled comparison ([`crate::sampled_verify`]): `verified`
-/// carried countries copied afresh, `mismatches` of them differing from the
-/// followed histories. A mismatch disables reuse for the attachment.
-pub fn sampled(verified: u64, mismatches: u64) {
-    if SAMPLED.record(verified, mismatches, 0) {
-        WATCHES.registry.poison();
-    }
-}
-
 pub fn status() -> impl serde::Serialize {
     let event_counts = WATCHES
         .calls
@@ -246,17 +235,12 @@ pub fn status() -> impl serde::Serialize {
         .map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "history_changes"),
-        "verify": cfg!(feature = "history_verify"),
         "poisoned": WATCHES.registry.poisoned(),
         "reused_countries": reads[0],
         "read_countries": reads[1],
         "advanced_histories": reads[2],
         "refreshed_histories": reads[3],
         "quiet_hours": reads[4],
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "scenario_refusals": crate::status::map(engine_air_history::air_kamikaze::SCENARIO_REFUSALS.into_iter()
             .zip(SCENARIO_REFUSALS.iter().map(|count| count.load(Ordering::Relaxed)))),
         "events": events,
@@ -266,7 +250,7 @@ pub fn status() -> impl serde::Serialize {
             "table_install": restarts[1],
             "failed_hour": restarts[2],
         },
-        "scope": "cumulative since attach; a quiet hour reuses every country's histories and an observed advance is applied without a read; every hour also copies the carried countries of its slice (one in rotation_hours by index within their part; every carried country in verify mode), compares them with the followed histories, publishes the fresh copies and disables reuse at the first mismatch (sampled_*); a restart is an hour that copied every held history afresh: after a load, gap, recovery or attach, a larger watch table, or an hour whose part or AirMissions job failed or that was dropped before decoding"
+        "scope": "cumulative since attach; a quiet hour reuses every country's histories and an observed advance is applied without a read; a restart is an hour that copied every held history afresh: after a load, gap, recovery or attach, a larger watch table, or an hour whose part or AirMissions job failed or that was dropped before decoding"
     })
 }
 

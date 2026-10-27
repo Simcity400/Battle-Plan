@@ -1329,8 +1329,6 @@ impl Captured {
     }
 
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
-        // The hour's sampled verification slice, for every job it dispatches.
-        crate::sampled_verify::begin_hour(hour);
         self.group_counters.prepare_hour(force_full);
         // A frame whose sliced job never runs must not report an older read.
         self.governance.reset_slice_selections(hour, force_full);

@@ -13,14 +13,10 @@
 //! of a recorded field is a hooked site ([`engine_mutations::building_mutations`]), so
 //! the fresh read would return the held rows. A status without buildings has
 //! no rows to carry: it is still staged so that its active vector is checked
-//! as every walk checks it. Each hour also reads the carryable statuses of
-//! its sampled slice ([`crate::sampled_verify`], keyed by [`key`]; every one
-//! under `building_verify`) afresh, publishes the fresh rows and poisons
-//! reuse on a difference.
+//! as every walk checks it.
 //!
 //! A settled hour carries both tables without walking the locations: the latest walk completed both
-//! tables, held every status under a certificate and agreed with every held row it compared, the
-//! hour's take of the domain's marks ([`Changes::take`]) certifies the epoch taken before that
+//! tables and held every status under a certificate, the hour's take of the domain's marks ([`Changes::take`]) certifies the epoch taken before that
 //! walk, and the state and province table headers (`cgame_state::STATES`, `cgame_state::PROVINCES`)
 //! read as they did then. The take visits every registered status a hooked writer touched since the
 //! previous take, and every walked status is registered, so every other status is the one held. The
@@ -29,24 +25,18 @@
 //! mode poisons), so every location and every untouched status and building is the one held. The
 //! hour reads each touched status afresh from the status alone ([`cbuilding_status::refresh`],
 //! which requires its identity to be the held one), registering it first, and holds its fresh rows
-//! at its place in walk order; a quiet hour, whose take visited no held status, reads none. It also
-//! reads its slice's other held statuses afresh ([`cbuilding_status::reread`]) and compares them
-//! with their held read: a difference, or a status that no longer reads as held, poisons reuse and
-//! the hour walks every location afresh, as it does when a touched status does not read.
-//! `building_verify` takes no settled hour, so it still compares every held status.
+//! at its place in walk order; a quiet hour, whose take visited no held status, reads none. When a
+//! touched status does not read, the hour walks every location afresh.
 //!
 //! The store follows the Governance job's loan and holds only the statuses
 //! of the latest complete walk, so its size follows live demand. Allocation
 //! is advisory: a status whose rows cannot be held is read afresh next hour,
 //! and the next hour then walks.
-use crate::{
-    building_changes::{Changes, Counts},
-    sampled_verify::Check,
-};
+use crate::building_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_native::{
-    Memory, cbuilding, cbuilding_status, cbuilding_status::Carry, cbuilding_status::HEADER_BYTES,
-    cbuilding_status::Location, cbuilding_status::Walk, walk::Outcome,
+    Memory, cbuilding, cbuilding_status, cbuilding_status::Carry, cbuilding_status::Location,
+    cbuilding_status::Walk, walk::Outcome,
 };
 use std::ops::Range;
 
@@ -287,12 +277,11 @@ impl BuildingStore {
     }
 
     /// Keeps this walk's rows only when both tables were read or carried
-    /// completely, and publishes its counts with `sampled`, the comparisons
-    /// of a settled hour that fell back to this walk. `candidate` is the
-    /// watch epoch and location table headers taken before the walk; they
-    /// let the next hours carry both tables without walking when the walk
-    /// held every status once and agreed with every held row it compared.
-    fn finish(&mut self, walk: Walk, candidate: Option<(u64, [[u8; 16]; 2])>, sampled: Counts) {
+    /// completely, and publishes its counts. `candidate` is the watch epoch
+    /// and location table headers taken before the walk; they let the next
+    /// hours carry both tables without walking when the walk held every
+    /// status once.
+    fn finish(&mut self, walk: Walk, candidate: Option<(u64, [[u8; 16]; 2])>) {
         let complete = matches!(walk.states, Outcome::Rows { .. })
             && matches!(walk.provinces, Outcome::Rows { .. });
         let unique = if complete {
@@ -303,16 +292,12 @@ impl BuildingStore {
         };
         self.previous.clear();
         self.plans.clear();
-        self.counts.verified += sampled.verified;
-        self.counts.mismatches += sampled.mismatches;
-        self.counts.unread_slice = sampled.unread_slice;
         let states = walk.states.len();
         self.settled = candidate
             .filter(|_| {
                 complete
                     && self.held_all
                     && unique
-                    && self.counts.mismatches == 0
                     && self.state_rows == states
                     && self.current.rows.len() == states + walk.provinces.len()
             })
@@ -340,76 +325,12 @@ impl BuildingStore {
     /// The settled hour this capture may take: the take certifies the epoch
     /// of the walk that settled the store, and both location tables read as
     /// then.
-    fn settled_hour(
-        &self,
-        taken: Option<u64>,
-        roots: Option<[[u8; 16]; 2]>,
-        check: Check,
-    ) -> Option<Settled> {
+    fn settled_hour(&self, taken: Option<u64>, roots: Option<[[u8; 16]; 2]>) -> Option<Settled> {
         let settled = self.settled?;
         (!self.forgotten
-            && check != Check::Every
             && taken == Some(settled.epoch)
             && roots == Some(settled.roots))
         .then_some(settled)
-    }
-
-    /// A settled hour's slice: each held status with rows that `check`
-    /// covers and the take did not visit is read afresh from its status
-    /// alone and compared with its held rows. The statuses and rows read.
-    fn sample(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        check: Check,
-    ) -> Result<(u64, u64), Slice> {
-        let mut verified = 0;
-        let mut rows = 0;
-        if !check.any() {
-            return Ok((verified, rows));
-        }
-        let Self {
-            current,
-            marked,
-            scratch,
-            ..
-        } = self;
-        let mut covered = current.entries.iter().enumerate().filter(|(index, entry)| {
-            !entry.rows.is_empty()
-                && check.covers(key(&entry.certificate.location))
-                && marked.binary_search(index).is_err()
-        });
-        let mut batch = [Location {
-            province: false,
-            status: 0,
-            header: [0; HEADER_BYTES],
-            buildings: 0,
-        }; SLICE_BATCH];
-        let mut spans = [(0_usize, 0_usize); SLICE_BATCH];
-        loop {
-            let mut len = 0;
-            for (_, entry) in covered.by_ref().take(SLICE_BATCH) {
-                batch[len] = entry.certificate.location;
-                spans[len] = (entry.rows.start, entry.rows.end);
-                len += 1;
-            }
-            if len == 0 {
-                return Ok((verified, rows));
-            }
-            if cbuilding_status::reread(memory, base, &batch[..len], scratch).is_err() {
-                return Err(Slice::Unread { verified });
-            }
-            let mut at = 0;
-            for &(start, end) in &spans[..len] {
-                verified += 1;
-                let count = end - start;
-                if scratch[at..at + count] != current.rows[start..end] {
-                    return Err(Slice::Differs { verified });
-                }
-                at += count;
-                rows += count as u64;
-            }
-        }
     }
 
     /// The held statuses the take visited, read afresh after registering
@@ -538,19 +459,16 @@ impl BuildingStore {
     }
 
     /// A settled hour: the touched statuses read afresh and both tables
-    /// published from the held rows. `Err(None)` walks; `Err(Some(slice))`
-    /// walks after the slice found a difference.
-    #[allow(clippy::too_many_arguments)]
+    /// published from the held rows. `None` walks.
     fn settle(
         &mut self,
         memory: &impl Memory,
         base: usize,
         changes: &dyn Changes,
-        check: Check,
         settled: Settled,
         states: &mut Vec<cbuilding::Row>,
         provinces: &mut Vec<cbuilding::Row>,
-    ) -> Result<Walk, Option<Slice>> {
+    ) -> Option<Walk> {
         // Statuses the take visited that no entry holds are not walked.
         let Self {
             current,
@@ -559,20 +477,18 @@ impl BuildingStore {
             ..
         } = self;
         marked.clear();
-        allocation::advisory(|| allocation::reserve(marked, touched.len()))
-            .map_err(|_| None::<Slice>)?;
+        allocation::advisory(|| allocation::reserve(marked, touched.len())).ok()?;
         marked.extend(touched.iter().filter_map(|&status| current.index(status)));
         marked.sort_unstable();
-        let (verified, sampled_rows) = self.sample(memory, base, check).map_err(Some)?;
         if !self.refresh(memory, base, changes, settled.epoch)
             || !self.hold_refreshed(settled.epoch)
         {
-            return Err(None);
+            return None;
         }
         let held = &self.current;
         let (state_rows, province_rows) = held.rows.split_at(held.state_rows());
         if !(publish(states, state_rows) && publish(provinces, province_rows)) {
-            return Err(None);
+            return None;
         }
         let walk = Walk {
             states: Outcome::Rows {
@@ -593,11 +509,10 @@ impl BuildingStore {
             .iter()
             .filter(|location| location.buildings != 0)
             .count() as u64;
-        let read_rows = sampled_rows + refreshed_rows as u64;
+        let read_rows = refreshed_rows as u64;
         self.counts = Counts {
-            reused: with_rows - verified - refreshed_with_rows,
-            read: verified + self.marked.len() as u64,
-            verified,
+            reused: with_rows - refreshed_with_rows,
+            read: self.marked.len() as u64,
             reused_rows: held.rows.len() as u64 - read_rows,
             read_rows,
             empty: held.entries.len() as u64 - with_rows,
@@ -608,20 +523,8 @@ impl BuildingStore {
         };
         self.measure();
         crate::building_changes::record(&self.counts, None);
-        Ok(walk)
+        Some(walk)
     }
-}
-
-/// Held statuses a settled hour's slice reads afresh per guarded batch.
-const SLICE_BATCH: usize = 64;
-
-/// What a settled hour's sampled slice found that ends reuse.
-enum Slice {
-    /// A sampled status's rows differ from its held rows.
-    Differs { verified: u64 },
-    /// A sampled status no longer reads as its held read: a header changed
-    /// or a read failed.
-    Unread { verified: u64 },
 }
 
 /// `rows` into the front of `output`, growing it as the walk grows it.
@@ -637,9 +540,8 @@ fn publish(output: &mut Vec<cbuilding::Row>, rows: &[cbuilding::Row]) -> bool {
 }
 
 /// Both tables for one hour, carrying through `store`: a settled hour reads
-/// only the statuses a hooked writer touched and its slice; any other hour
-/// walks every location and carries each status it proves current.
-#[allow(clippy::too_many_arguments)]
+/// only the statuses a hooked writer touched; any other hour walks every
+/// location and carries each status it proves current.
 pub fn capture(
     memory: &impl Memory,
     base: usize,
@@ -648,38 +550,20 @@ pub fn capture(
     provinces: &mut Vec<cbuilding::Row>,
     store: &mut BuildingStore,
     changes: &dyn Changes,
-    check: Check,
 ) -> Walk {
     // Taken before any registration or read this capture certifies; a
     // status a writer touches after the take is visited by the next one.
     let roots = cbuilding_status::roots(memory, game_state);
     let taken = store.take(changes);
-    let mut sampled = Counts::default();
-    if let Some(settled) = store.settled_hour(taken, roots, check) {
-        match store.settle(memory, base, changes, check, settled, states, provinces) {
-            Ok(walk) => return walk,
-            Err(None) => {}
-            Err(Some(slice)) => {
-                // A missed write: nothing certifies reuse any more, and this
-                // hour reads and publishes every status afresh.
-                let (verified, unread_slice) = match slice {
-                    Slice::Differs { verified } => (verified, false),
-                    Slice::Unread { verified } => (verified, true),
-                };
-                sampled = Counts {
-                    verified,
-                    mismatches: 1,
-                    unread_slice,
-                    ..Counts::default()
-                };
-                changes.mismatch();
-            }
-        }
+    if let Some(settled) = store.settled_hour(taken, roots)
+        && let Some(walk) = store.settle(memory, base, changes, settled, states, provinces)
+    {
+        return walk;
     }
-    let mut reuse = BuildingReuse::begin(store, changes, check);
+    let mut reuse = BuildingReuse::begin(store, changes);
     let walk =
         cbuilding_status::walk_carried(memory, base, game_state, states, provinces, &mut reuse);
-    reuse.store.finish(walk, taken.zip(roots), sampled);
+    reuse.store.finish(walk, taken.zip(roots));
     walk
 }
 
@@ -687,24 +571,12 @@ pub fn capture(
 struct BuildingReuse<'a> {
     store: &'a mut BuildingStore,
     changes: &'a dyn Changes,
-    /// Which carryable statuses this hour reads afresh and compares.
-    check: Check,
-}
-
-/// A status's stable sampling key: its scope and location id.
-pub fn key(location: &Location) -> u64 {
-    let id = u32::from_le_bytes(location.header[4..8].try_into().unwrap());
-    (u64::from(location.province) << 32) | u64::from(id)
 }
 
 impl<'a> BuildingReuse<'a> {
-    fn begin(store: &'a mut BuildingStore, changes: &'a dyn Changes, check: Check) -> Self {
+    fn begin(store: &'a mut BuildingStore, changes: &'a dyn Changes) -> Self {
         store.begin();
-        Self {
-            store,
-            changes,
-            check,
-        }
+        Self { store, changes }
     }
 }
 
@@ -735,7 +607,7 @@ impl Carry for BuildingReuse<'_> {
         let held = certificate
             .and_then(|certificate| store.previous.find(&certificate))
             .filter(|held| held.len() == location.buildings);
-        let carry = held.is_some() && location.buildings != 0 && !self.check.covers(key(location));
+        let carry = held.is_some() && location.buildings != 0;
         let token = store.plans.len();
         let planned = allocation::advisory(|| allocation::reserve(&mut store.plans, 1));
         if planned.is_err() || certificate.is_none() {
@@ -787,13 +659,6 @@ impl Carry for BuildingReuse<'_> {
         let Some(plan) = store.plans.get(token).cloned() else {
             return;
         };
-        if let Some(range) = plan.held.filter(|_| !rows.is_empty()) {
-            store.counts.verified += 1;
-            if store.previous.rows[range] != *rows {
-                store.counts.mismatches += 1;
-                self.changes.mismatch();
-            }
-        }
         if let Some(certificate) = plan.certificate {
             store.held_all &= store.current.hold(certificate, token, rows, plan.start);
         }

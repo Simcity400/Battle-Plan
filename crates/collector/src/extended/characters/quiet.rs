@@ -19,20 +19,14 @@
 //! roster (headers, pointer pages or character views):
 //!
 //! 1. Characters rows: the carry is certified as on every hour
-//!    ([`carry::Carry::begin_hour`], [`carry::Carry::sample`]); every
-//!    occurrence of the held portrait census must be a held character with
-//!    the same pointer and id whose certificate holds, and all of them are
-//!    carried this pass.
-//! 2. The roster claim's sampled slice ([`crate::sampled_verify`], keyed by
-//!    character id): both array headers' counts, then each sliced
-//!    occurrence's roster slot and its character's id, read afresh. A
-//!    difference or a failed read poisons the domain and the hour runs the
-//!    full pass.
-//! 3. The role census is gathered from the held portrait census, as after a
+//!    ([`carry::Carry::begin_hour`]); every occurrence of the held portrait
+//!    census must be a held character with the same pointer and id whose
+//!    certificate holds, and all of them are carried this pass.
+//! 2. The role census is gathered from the held portrait census, as after a
 //!    full pass ([`gather_role_census`]): each occurrence's country, unit
 //!    leader pointer and role headers afresh in one guarded call, keeping
 //!    its generation when byte-identical so role jobs keep their quiet hours.
-//! 4. UnitLeaders rows, which change at any hour without a hook, are read as
+//! 3. UnitLeaders rows, which change at any hour without a hook, are read as
 //!    a census role job reads them: the unit leader of every occurrence with
 //!    one, in roster order ([`copy_unit`]), then the appended formation
 //!    fields. These reads are the job's prepared read program, keyed by the
@@ -52,47 +46,10 @@
 //! every row. The rows, the loaned portrait census
 //! and the role census equal what the full pass publishes over the same
 //! memory. Any step that cannot complete runs the full pass instead; a failed
-//! gather is not repeated after it, so no failed read is retried.
-//!
-//! `roster_verify`, on by default during burn-in, takes no quiet hour: the
-//! full pass runs, and when the token matched it compares the fresh portrait
-//! census with the held one. A completed prepared program checked every
-//! pointer page and identity header against them; a rediscovery compares its
-//! census with the preceding complete capture
-//! ([`ccharacter_manager::PortraitCensus::unchanged`]). A difference poisons
-//! the domain. Each roster-job hour records its use of the domain once.
+//! gather is not repeated after it, so no failed read is retried. Each
+//! roster-job hour records its use of the domain once.
 use super::*;
-use crate::{
-    roster_changes::{Counts, Roster, Table},
-    sampled_verify::Check,
-};
-use engine_native::{
-    ccharacter_manager::PortraitIdentity, memory::RecordField, memory::RecordLayout,
-    memory::RecordSources,
-};
-
-/// One roster slot pointer.
-const SLOT_FIELDS: [RecordField; 1] = [RecordField {
-    source_offset: 0,
-    destination_offset: 0,
-    len: 8,
-}];
-const SLOT_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&SLOT_FIELDS, 8) {
-    Some(layout) => layout,
-    None => panic!("roster slot layout"),
-};
-/// One character's id.
-const ID_FIELDS: [RecordField; 1] = [RecordField {
-    source_offset: ccharacter::ID,
-    destination_offset: 0,
-    len: 4,
-}];
-const ID_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&ID_FIELDS, 4) {
-    Some(layout) => layout,
-    None => panic!("character id layout"),
-};
-/// Bytes of scratch per sliced occurrence: its slot pointer, then its id.
-const SAMPLE: usize = 12;
+use crate::roster_changes::{Counts, Roster, Table};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Held {
@@ -103,10 +60,6 @@ struct Held {
 /// The roster job's held token and its quiet-hour state.
 pub(crate) struct QuietRoster {
     domain: &'static dyn Roster,
-    /// Tests: the hours' sampled slice; otherwise the hour's.
-    check: Option<Check>,
-    /// Verify mode: never quiet; compare each matched full pass.
-    verify: bool,
     /// The token taken before this job's latest complete full pass.
     held: Option<Held>,
     /// This payload came from a quiet hour: decode walks the role census.
@@ -117,10 +70,6 @@ pub(crate) struct QuietRoster {
     /// gather it again.
     gathered: bool,
     counts: Counts,
-    /// Sampled slice scratch: slot addresses, held pointers, fresh bytes.
-    slots: Vec<usize>,
-    pointers: Vec<usize>,
-    fresh: Vec<u8>,
 }
 
 impl std::fmt::Debug for QuietRoster {
@@ -129,7 +78,6 @@ impl std::fmt::Debug for QuietRoster {
             .debug_struct("QuietRoster")
             .field("held", &self.held)
             .field("quiet", &self.quiet)
-            .field("verify", &self.verify)
             .finish()
     }
 }
@@ -144,7 +92,6 @@ impl Roster for Unobserved {
     fn token(&self) -> Option<(u64, u64)> {
         None
     }
-    fn mismatch(&self) {}
     fn record(&self, _table: Table, _counts: &Counts) {}
 }
 
@@ -154,32 +101,20 @@ impl Default for QuietRoster {
         let domain: &'static dyn Roster = &crate::roster_changes::Observer;
         #[cfg(test)]
         let domain: &'static dyn Roster = &Unobserved;
-        Self::with(domain, None)
+        Self::with(domain)
     }
 }
 
 impl QuietRoster {
-    /// `check` overrides the hour's sampled slice; [`Check::Every`] is verify
-    /// mode.
-    pub(super) fn with(domain: &'static dyn Roster, check: Option<Check>) -> Self {
+    pub(super) fn with(domain: &'static dyn Roster) -> Self {
         Self {
             domain,
-            check,
-            verify: check.map_or(crate::roster_changes::VERIFY, |check| check == Check::Every),
             held: None,
             quiet: false,
             carry_begun: false,
             gathered: false,
             counts: Counts::default(),
-            slots: Vec::new(),
-            pointers: Vec::new(),
-            fresh: Vec::new(),
         }
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_check(&mut self, check: Check) {
-        self.check = Some(check);
     }
 
     /// This job's latest roster-job hour.
@@ -191,125 +126,6 @@ impl QuietRoster {
     /// The roster domain's token.
     pub(super) fn token(&self) -> Option<(u64, u64)> {
         self.domain.token()
-    }
-
-    pub(super) fn allocated_bytes(&self) -> u64 {
-        crate::raw_memory::vector_bytes(&self.slots)
-            + crate::raw_memory::vector_bytes(&self.pointers)
-            + crate::raw_memory::vector_bytes(&self.fresh)
-    }
-
-    /// A difference or failed read of the roster claim.
-    fn differs(&self, counts: &mut Counts, mismatches: u64) -> bool {
-        counts.mismatches += mismatches;
-        self.domain.mismatch();
-        false
-    }
-
-    /// Step 2: the hour's sampled slice of the roster claim over the held
-    /// census `rows` and its `historical` length. False when the quiet hour
-    /// cannot be taken: a difference or failed read (counted, poisoning) or
-    /// scratch storage that cannot be prepared.
-    fn sample(
-        &mut self,
-        memory: &impl Memory,
-        ctx: CharactersCopyContext,
-        rows: &[PortraitIdentity],
-        historical: usize,
-        growing: bool,
-        counts: &mut Counts,
-    ) -> bool {
-        let check = self
-            .check
-            .unwrap_or_else(|| crate::sampled_verify::current_burned_in(false));
-        if !check.any() {
-            return true;
-        }
-        let covered = |row: &PortraitIdentity| check.covers(u64::from(row.character));
-        let sampled = rows.iter().filter(|&row| covered(row)).count();
-        let Some(bytes) = sampled.checked_mul(SAMPLE) else {
-            return false;
-        };
-        self.slots.clear();
-        self.pointers.clear();
-        if growing
-            && engine_allocation::advisory(|| {
-                engine_allocation::reserve_exact(&mut self.slots, sampled)?;
-                engine_allocation::reserve_exact(&mut self.pointers, sampled)?;
-                if self.fresh.len() < bytes {
-                    engine_allocation::resize(&mut self.fresh, bytes, 0)?;
-                }
-                std::io::Result::Ok(())
-            })
-            .is_err()
-        {
-            return false;
-        }
-        if self.slots.capacity() < sampled
-            || self.pointers.capacity() < sampled
-            || self.fresh.len() < bytes
-        {
-            return false;
-        }
-        // Both array headers, afresh (`Roster::read`: the manager pointer,
-        // its vtable and both 16-byte headers).
-        counts.verified += 1;
-        let arrays = match ccharacter_manager::Roster::read(memory, ctx.base, ctx.game_state) {
-            Ok(roster) => roster.sections().map(|(array, _)| array),
-            Err(_) => return self.differs(counts, 1),
-        };
-        if arrays[0].count as usize != historical
-            || (arrays[0].count as usize).checked_add(arrays[1].count as usize) != Some(rows.len())
-        {
-            return self.differs(counts, 1);
-        }
-        for (index, row) in rows.iter().enumerate() {
-            if !covered(row) {
-                continue;
-            }
-            let (array, ordinal) = if index < historical {
-                (arrays[0], index)
-            } else {
-                (arrays[1], index - historical)
-            };
-            // The counts equal the held ones, so every slot is in range.
-            let Some(slot) = u32::try_from(ordinal)
-                .ok()
-                .and_then(|ordinal| array.element(ordinal, 8))
-            else {
-                return self.differs(counts, 1);
-            };
-            self.slots.push(slot);
-            self.pointers.push(row.pointer);
-        }
-        counts.verified += sampled as u64;
-        if sampled == 0 {
-            return true;
-        }
-        // Each sliced slot, then the id at each held pointer: one guarded
-        // gather each. An id read through the held pointer is the slot's
-        // character's id whenever the slot still holds that pointer.
-        let (slots, ids) = self.fresh[..bytes].split_at_mut(sampled * 8);
-        let slots_read =
-            memory.copy_records(RecordSources::Pointers(&self.slots), &SLOT_LAYOUT, slots);
-        let ids_read =
-            memory.copy_records(RecordSources::Pointers(&self.pointers), &ID_LAYOUT, ids);
-        let mut mismatches = u64::from(slots_read < sampled || ids_read < sampled);
-        for (index, row) in rows.iter().filter(|&row| covered(row)).enumerate() {
-            let slot = (index < slots_read)
-                .then(|| u64::from_le_bytes(slots[index * 8..][..8].try_into().unwrap()));
-            let id = (index < ids_read)
-                .then(|| u32::from_le_bytes(ids[index * 4..][..4].try_into().unwrap()));
-            if slot.is_some_and(|slot| slot != row.pointer as u64)
-                || id.is_some_and(|id| id != row.character)
-            {
-                mismatches += 1;
-            }
-        }
-        if mismatches != 0 {
-            return self.differs(counts, mismatches);
-        }
-        true
     }
 }
 
@@ -333,10 +149,8 @@ pub(super) fn capture(
     let matched = cfg!(feature = "roster_changes")
         && !ctx.force_full
         && token.is_some_and(|token| roster.held == Some(Held { token, scope }));
-    let verify = roster.verify;
-    let held_historical = job.census_historical;
     let mut counts = Counts::default();
-    if matched && !verify && gather && quiet_pass(memory, ctx, job, &mut counts) {
+    if matched && gather && quiet_pass(memory, ctx, job) {
         job.roster.quiet = true;
         counts.quiet = true;
     } else {
@@ -349,58 +163,26 @@ pub(super) fn capture(
             && !job.overflowed()
             && !job.requires_no_retry()
             && !job.log.fault.iter().any(|&fault| fault);
-        if matched && verify && complete {
-            let census = job.portrait_census.as_deref();
-            counts.verified += census
-                .and_then(|census| census.rows(ctx.base, ctx.game_state))
-                .map_or(0, |rows| rows.len() as u64);
-            // A completed prepared program compared every pointer page and
-            // identity header with those the held census was read from.
-            let same = job.log.planned_capture_succeeded()
-                || (job.census_historical == held_historical
-                    && census.is_some_and(|census| census.unchanged()));
-            if !same {
-                counts.mismatches += 1;
-                job.roster.domain.mismatch();
-            }
-        }
         job.roster.held = token
-            .filter(|_| complete && counts.mismatches == 0)
+            .filter(|_| complete)
             .map(|token| Held { token, scope });
     }
     job.roster.counts = counts;
     job.roster.domain.record(Table::Characters, &counts);
 }
 
-/// Steps 1 to 4 of a quiet hour; false runs the full pass instead.
-fn quiet_pass(
-    memory: &impl Memory,
-    ctx: CharactersCopyContext,
-    job: &mut CharactersJob,
-    counts: &mut Counts,
-) -> bool {
+/// Steps 1 to 3 of a quiet hour; false runs the full pass instead.
+fn quiet_pass(memory: &impl Memory, ctx: CharactersCopyContext, job: &mut CharactersJob) -> bool {
     // Step 1, exactly as the full pass begins (`copy_pass`), which then
     // skips it.
     job.carry
         .begin_hour(ctx.active[0] && !ctx.force_full && cfg!(feature = "character_changes"));
-    job.carry.sample(memory, ctx.base);
     job.roster.carry_begun = true;
-    let census = job.portrait_census.take();
-    let ready = census
+    let ready = job
+        .portrait_census
         .as_deref()
         .and_then(|census| census.rows(ctx.base, ctx.game_state))
-        .is_some_and(|rows| {
-            job.carry.certifies(rows)
-                && job.roster.sample(
-                    memory,
-                    ctx,
-                    rows,
-                    job.census_historical,
-                    job.worker_growing,
-                    counts,
-                )
-        });
-    job.portrait_census = census;
+        .is_some_and(|rows| job.carry.certifies(rows));
     if !ready || !job.carry.carry_certified() {
         return false;
     }
@@ -420,7 +202,7 @@ fn quiet_pass(
     job.advisor_section_complete = false;
     job.census_visited.clear();
     job.census_required = 0;
-    // Step 3: the held census is this hour's (complete for this scope).
+    // Step 2: the held census is this hour's (complete for this scope).
     job.census_current = true;
     job.role_census_current = false;
     job.roster.gathered = true;
@@ -430,7 +212,7 @@ fn quiet_pass(
         return false;
     }
     job.census_capture = true;
-    // Step 4: the leaders the unit carry holds unchanged are not read
+    // Step 3: the leaders the unit carry holds unchanged are not read
     // ([`unit_carry`]); the others are read one by one. When it carries none,
     // as this job's prepared read program (`program_key`): while the role
     // census keeps its generation, every unit-leader read of the job's latest
@@ -509,7 +291,7 @@ fn program_key(
     ]
 }
 
-/// Step 4: every occurrence's Characters demand and, when `read` (no
+/// Step 3: every occurrence's Characters demand and, when `read` (no
 /// prepared program completed), the unit leader of each occurrence with one,
 /// in roster order, with the full pass's reads and failure order from its
 /// unit pointer on; when `carrying`, only the leaders the unit carry does not

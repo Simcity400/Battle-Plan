@@ -1,7 +1,7 @@
 //! Naming timing over an owned synthetic arena, independent of world fixtures.
 use super::*;
 use crate::{
-    army_stat_changes::{VERIFY, Watches},
+    army_stat_changes::Watches,
     extended::attack_stats::ArmyStatStore,
 };
 use engine_native::memory::LiveMemory;
@@ -121,11 +121,10 @@ fn same_rows(actual: &Captured, fresh: &Captured) {
 #[test]
 #[ignore = "synthetic capture bench; run with --release -- --ignored --nocapture"]
 fn bench_division_status_naming() {
-    if cfg!(debug_assertions) || VERIFY {
-        panic!("run with --release without army_stat_verify");
+    if cfg!(debug_assertions) {
+        panic!("run with --release");
     }
-    // Sampling plus sparse writer marks leaves about 99.7% of names carried.
-    crate::sampled_verify::begin_hour(17);
+    // Sparse writer marks leave about 99.9% of names carried.
     for countries in [1_500, 5_000] {
         for divisions in [20_000, 60_000] {
             let (arena, seeds) = world(countries, divisions);

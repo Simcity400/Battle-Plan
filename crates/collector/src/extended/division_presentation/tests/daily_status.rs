@@ -50,7 +50,7 @@ pub(super) fn acquire(
         }
     }
     capture.capture_status_observed(memory, context, sources(), Some(store), changes);
-    capture.capture_attack_observed(memory, context, sources(), Some(store), changes);
+    capture.capture_attack(memory, context, sources(), Some(store));
 }
 
 #[test]
@@ -74,7 +74,6 @@ fn daily_status_owned_ranges_carry_footer_and_xp_but_keep_ratio_hourly() {
         }
         slot.prepare_hour(hour, false);
         let mut store = slot.take().unwrap();
-        crate::sampled_verify::begin_hour(hour);
         for (&army, row) in populated.world.armies.iter().zip(&mut rows) {
             let at = army - populated.world.base + supply::ASKED;
             populated.world.bytes[at..at + 8]

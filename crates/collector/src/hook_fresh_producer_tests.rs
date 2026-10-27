@@ -456,7 +456,6 @@ fn failed_army_observer_rejects_carry_and_reads_changed_native_operands() {
             Outcome::Rows { len: 1 },
             Some(&mut store),
             |_| None,
-            &crate::army_stat_changes::Observer,
         );
         assert!(
             reads

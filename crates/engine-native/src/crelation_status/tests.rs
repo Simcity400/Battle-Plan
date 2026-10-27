@@ -2358,7 +2358,7 @@ fn observed_walks_replay_the_baseline_and_read_only_marked_statuses() {
     assert!(replay.2 < recording.2, "{replay:?} {recording:?}");
     assert_eq!(baseline.counts().reused_owners - reused, 3);
     // Unmarked statuses are not read: an unobserved write stays unseen,
-    // exactly what a missed writer would do (verify mode exists for it).
+    // exactly what a missed writer would do.
     let mut unobserved = bytes.clone();
     p32(&mut unobserved, status(0, 3) + OPINION, 9);
     p64(&mut unobserved, status(2, 1), 0);

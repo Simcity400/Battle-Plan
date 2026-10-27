@@ -134,9 +134,6 @@ pub(crate) struct AirBasesJob {
     /// production copy from [`crate::air_base_changes`], otherwise as the
     /// caller left it. Kept across [`Self::clear`].
     pub(crate) slot_run: crate::air_base_changes::SlotRun,
-    /// Bases (by handle) this pass recorded from the full scan after a
-    /// compared difference; the replay scans them whole too.
-    pub(crate) slot_full: Vec<u64>,
     pub(crate) slot_report: crate::air_base_changes::SlotReport,
     /// How this pass carries its state bases' registration subtrees: set by
     /// the production copy from [`crate::air_base_carry_changes`], otherwise
@@ -165,39 +162,19 @@ pub(crate) struct HeldSegment {
 #[derive(Clone, Copy)]
 pub(crate) struct CarryRun {
     pub(crate) changes: &'static dyn crate::air_base_carry_changes::Changes,
-    /// Which carryable bases are also read afresh and compared.
-    pub(crate) check: crate::sampled_verify::Check,
-    /// The hour, which names a mismatch.
-    pub(crate) hour: i32,
 }
 
 impl Default for CarryRun {
     fn default() -> Self {
         Self {
             changes: &crate::air_base_carry_changes::Observer,
-            check: crate::sampled_verify::Check::Nothing,
-            hour: 0,
         }
     }
 }
 
 impl std::fmt::Debug for CarryRun {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CarryRun")
-            .field("check", &self.check)
-            .finish_non_exhaustive()
-    }
-}
-
-impl CarryRun {
-    /// The hour being captured, as the production job reads it.
-    #[cfg_attr(test, allow(dead_code))]
-    pub(crate) fn current(hour: i32) -> Self {
-        Self {
-            changes: &crate::air_base_carry_changes::Observer,
-            check: crate::sampled_verify::current_burned_in(crate::air_base_carry_changes::VERIFY),
-            hour,
-        }
+        f.debug_struct("CarryRun").finish_non_exhaustive()
     }
 }
 
@@ -277,7 +254,6 @@ impl AirBasesJob {
         self.seen_link_index.fill(usize::MAX);
         self.required_census = 0;
         self.required_links = 0;
-        self.slot_full.clear();
         self.slot_report = Default::default();
         self.segments.clear();
         self.registration_work = Default::default();
@@ -1369,7 +1345,6 @@ enum ChunkWords {
 /// ([`crate::air_base_changes`]).
 struct SlotPass<'a> {
     run: crate::air_base_changes::SlotRun,
-    full: &'a mut Vec<u64>,
     report: &'a mut crate::air_base_changes::SlotReport,
 }
 
@@ -1534,38 +1509,6 @@ fn snapshot_state_countries(
     }
 }
 
-/// Whether a base's whole slot vector, read outside the log, holds exactly
-/// the planned containers at their slots; `None` when a chunk did not read.
-fn whole_scan_agrees(
-    memory: &impl engine_native::Memory,
-    containers: &Array,
-    plan: &[Planned],
-) -> Option<bool> {
-    let mut bytes = [0u8; REG_MIRROR_BATCH * 8];
-    let mut found = 0;
-    let mut first = 0u32;
-    while first < containers.count {
-        let count = ((containers.count - first) as usize).min(REG_MIRROR_BATCH);
-        let address = containers.element(first, 8)?;
-        if !engine_native::read_slice(memory, address, &mut bytes[..count * 8]) {
-            return None;
-        }
-        for (offset, word) in bytes[..count * 8].chunks_exact(8).enumerate() {
-            let pointer = u64::from_le_bytes(word.try_into().unwrap());
-            if pointer == 0 {
-                continue;
-            }
-            let slot = first + offset as u32;
-            match plan.binary_search_by_key(&slot, |entry| entry.slot) {
-                Ok(index) if plan[index].container as u64 == pointer => found += 1,
-                _ => return Some(false),
-            }
-        }
-        first += count as u32;
-    }
-    Some(found == plan.len())
-}
-
 /// One pass's carry of state bases' registration subtrees
 /// ([`super::RegistrationStore`]).
 struct CarryPass<'a> {
@@ -1592,10 +1535,9 @@ impl CarryPass<'_> {
 
 /// One base's registration subtree for the log: a state base's held segment when its certificate
 /// and slot mode are the held read's and its links still resolve as then, otherwise read afresh and
-/// held. A host base, every base without a store, and a base either sampled slice covers (the
-/// carry's or the dense slot check's) is read. A read is held only when every pool it listed names
-/// the base by its base handle, the handle that pool's writers notify. Returns false exactly when
-/// the typed walk fails for this base.
+/// held. A host base and every base without a store is read. A read is held only when every pool
+/// it listed names the base by its base handle, the handle that pool's writers notify. Returns false
+/// exactly when the typed walk fails for this base.
 #[allow(clippy::too_many_arguments)]
 fn registrations(
     log: &mut RawLog<AIR_BASES_N>,
@@ -1621,7 +1563,6 @@ fn registrations(
             log,
             memory,
             base,
-            handle,
             pointer,
             &mut DenseSnapshot::default(),
             links,
@@ -1637,12 +1578,10 @@ fn registrations(
         return read;
     };
     store.visit();
-    let planned = slots.run.dense && !slots.full.contains(&handle);
+    let planned = slots.run.dense;
     // Registration precedes the read it certifies.
     let certificate = carry.run.changes.sequence(handle);
-    let compare = carry.run.check.covers(handle);
-    let fresh = compare || (planned && slots.run.check.covers(handle));
-    if !fresh && let Some(held) = store.carryable(handle, pointer, certificate, planned) {
+    if let Some(held) = store.carryable(handle, pointer, certificate, planned) {
         let (rows, segment) = (held.demand, held.segment);
         let spliced = (held.spans.len(), held.bytes.len());
         let resolved = held.links.iter().all(|&(country, slot)| {
@@ -1670,7 +1609,6 @@ fn registrations(
         log,
         memory,
         base,
-        handle,
         pointer,
         &mut dense_snapshot,
         links,
@@ -1696,9 +1634,6 @@ fn registrations(
     if certificate.is_some() {
         snapshot_state_countries(log, memory, pointer, &mut dense_snapshot);
     }
-    // A difference the slot check found this read records the base from the
-    // whole scan.
-    let planned = slots.run.dense && !slots.full.contains(&handle);
     let read = before
         .zip(*demand)
         .map(|([rows, wings], [after_rows, after_wings])| [after_rows - rows, after_wings - wings]);
@@ -1715,11 +1650,7 @@ fn registrations(
             containers: &carry.reached.containers,
             wings: &carry.reached.wings,
         };
-        if let Some(difference) = store.hold(handle, pointer, certificate, planned, &fresh, compare)
-        {
-            crate::air_base_carry_changes::note_mismatch(handle, carry.run.hour, difference);
-            carry.run.changes.mismatch();
-        }
+        store.hold(handle, pointer, certificate, planned, &fresh);
         // Only the segment this read was just held as names its bytes.
         if let Some(segment) = store.segment(handle) {
             carry.segment(handle, pointer, segment);
@@ -1741,7 +1672,6 @@ fn copy_air_base_registrations(
     log: &mut RawLog<AIR_BASES_N>,
     memory: &impl engine_native::Memory,
     base: usize,
-    base_handle: u64,
     pointer: usize,
     dense_snapshot: &mut DenseSnapshot,
     links: &Array,
@@ -1790,7 +1720,7 @@ fn copy_air_base_registrations(
         None => return false,
     };
     let mut plan = [Planned::default(); cair_base::DENSE_BOUND];
-    let planned = if slots.run.dense && !slots.full.contains(&base_handle) {
+    let planned = if slots.run.dense {
         match copy_dense_plan(
             log,
             memory,
@@ -1816,29 +1746,6 @@ fn copy_air_base_registrations(
     if log.overflowed {
         return false;
     }
-    // The hour's slice also scans a fast-path base whole, outside the log; a
-    // difference records the base from the full scan, as the replay will.
-    let planned = match planned {
-        Some(len) if slots.run.check.covers(base_handle) => {
-            slots.report.verified += 1;
-            match whole_scan_agrees(memory, &containers, &plan[..len]) {
-                Some(true) => Some(len),
-                Some(false) => {
-                    slots.report.mismatches += 1;
-                    if allocation::advisory(|| allocation::reserve(slots.full, 1)).is_err() {
-                        return false;
-                    }
-                    slots.full.push(base_handle);
-                    None
-                }
-                None => {
-                    slots.report.unread += 1;
-                    Some(len)
-                }
-            }
-        }
-        other => other,
-    };
     match planned {
         Some(_) => slots.report.dense += 1,
         None => slots.report.full += 1,
@@ -2277,7 +2184,6 @@ fn copy_air_bases_vectors(
         seen_link_index,
         registration_demand: job_registration_demand,
         slot_run,
-        slot_full,
         slot_report,
         carry: carry_run,
         registration_store,
@@ -2288,7 +2194,6 @@ fn copy_air_bases_vectors(
     } = job;
     let mut slots = SlotPass {
         run: *slot_run,
-        full: slot_full,
         report: slot_report,
     };
     let mut carry = CarryPass {
@@ -2627,7 +2532,7 @@ pub(crate) fn copy_air_bases_refresh_growing(
     #[cfg(not(test))]
     {
         job.slot_run = crate::air_base_changes::SlotRun::current();
-        job.carry = CarryRun::current(ctx.hour);
+        job.carry = CarryRun::default();
     }
     copy_air_bases_pass_with_context_growing(
         job,

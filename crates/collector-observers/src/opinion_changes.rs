@@ -14,7 +14,7 @@
 //! constructor run only while a game state is loaded or rebuilt, so they end
 //! the observation (a new epoch) instead. Each hour's relations refresh drains
 //! the log since its last one ([`drain`]) and reads every owner a mark names;
-//! anything unobserved (disabled, poisoned, a writer running, an overflowed or
+//! anything unobserved (disabled, a writer running, an overflowed or
 //! missing log, a new epoch) makes it read every owner.
 //!
 //! The log is sized from observed demand: the refresh offers a larger one off
@@ -106,7 +106,6 @@ static EPOCH: AtomicU64 = AtomicU64::new(1);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 /// The stability family forwards replace relation (the war body).
 static WAR_FORWARD: AtomicBool = AtomicBool::new(false);
-static POISONED: AtomicBool = AtomicBool::new(false);
 pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 const SITES: usize = MUTATIONS.len() + RELATIONS.len();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
@@ -117,11 +116,8 @@ static EVENTS: [AtomicU64; SITES + 1] = [const { AtomicU64::new(0) }; SITES + 1]
 /// Why the hooks are not installed, when they are not.
 static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 /// `[observed refreshes, unobserved refreshes, overflowed logs, refreshes
-/// whose sampled comparison could not run, refreshes that found the store
-/// lent, marks drained]`.
-static COUNTS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-static SAMPLED: crate::sampled_verify::Sampled =
-    crate::sampled_verify::Sampled::new(&["replayed opinions differ from a full read"]);
+/// that found the store lent, marks drained]`.
+static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 /// The walks' own counts (`crelation_status::BaselineCounts`), accumulated.
 static WALKS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 
@@ -229,8 +225,8 @@ impl Drop for Mutation {
     }
 }
 
-/// What a refresh may rely on: `None` when writes go unobserved (disabled or
-/// poisoned). Otherwise the epoch the observation continues, with the count
+/// What a refresh may rely on: `None` when writes go unobserved (disabled).
+/// Otherwise the epoch the observation continues, with the count
 /// of marks since `consumed` copied into `output`, or `None` for them when
 /// they cannot all be handed over (a writer mid-append, an overflowed or
 /// missing log or short storage); the refresh then reads every owner.
@@ -250,9 +246,7 @@ pub fn drain(
     // index is still active until its slot is stored.
     let cursor = CURSOR.load(Ordering::SeqCst);
     let epoch = EPOCH.load(Ordering::SeqCst);
-    let observing = ENABLED.load(Ordering::SeqCst)
-        && WAR_FORWARD.load(Ordering::SeqCst)
-        && !POISONED.load(Ordering::SeqCst);
+    let observing = ENABLED.load(Ordering::SeqCst) && WAR_FORWARD.load(Ordering::SeqCst);
     #[cfg(any(test, feature = "test-support"))]
     BETWEEN_READS.with_borrow_mut(|between| {
         if let Some(between) = between.take() {
@@ -292,7 +286,7 @@ pub fn drain(
             // caller's baseline was recorded under.
             None
         } else {
-            COUNTS[5].fetch_add(pending, Ordering::Relaxed);
+            COUNTS[4].fetch_add(pending, Ordering::Relaxed);
             Some(pending as usize)
         }
     } else {
@@ -399,23 +393,9 @@ pub fn cursor() -> u64 {
     CURSOR.load(Ordering::SeqCst)
 }
 
-/// One refresh's sampled comparison ([`crate::sampled_verify`]): `verified`
-/// replayed owners read in full, `mismatches` of them differing. A mismatch
-/// poisons the observation for the rest of the attachment.
-pub fn sampled(verified: u64, mismatches: u64) {
-    if SAMPLED.record(verified, mismatches, 0) {
-        POISONED.store(true, Ordering::SeqCst);
-    }
-}
-
-/// A refresh's sampled comparison could not run.
-pub fn unverified() {
-    COUNTS[3].fetch_add(1, Ordering::Relaxed);
-}
-
 /// A refresh ran without the shared baseline because another job held it.
 pub fn store_lent() {
-    COUNTS[4].fetch_add(1, Ordering::Relaxed);
+    COUNTS[3].fetch_add(1, Ordering::Relaxed);
 }
 
 /// The baseline's cumulative counts after a walk; `previous` is what was
@@ -465,18 +445,11 @@ pub fn status() -> impl serde::Serialize {
         "configured": cfg!(feature = "opinion_changes"),
         "unhooked": UNHOOKED.get(),
         "war_forward": WAR_FORWARD.load(Ordering::SeqCst),
-        "verify": cfg!(feature = "opinion_verify"),
-        "poisoned": POISONED.load(Ordering::SeqCst),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
-        "unverified_refreshes": counts[3],
         "observed_refreshes": counts[0],
         "unobserved_refreshes": counts[1],
         "overflowed_logs": counts[2],
-        "store_lent": counts[4],
-        "marks": counts[5],
+        "store_lent": counts[3],
+        "marks": counts[4],
         "log_capacity": INSTALLED_LEN.load(Ordering::Relaxed),
         "log_installs": INSTALLS.load(Ordering::Relaxed),
         "full_walks": walks[0],
@@ -487,7 +460,7 @@ pub fn status() -> impl serde::Serialize {
         "read_owners": walks[5],
         "invalidated_owners": walks[6],
         "events": events,
-        "scope": "cumulative since attach; each hour reads one owner slice and every owner a drained mark names (every owner when the marks are not handed over: overflowed_logs counts a log too small for the hour's marks, which offers a larger one); an incremental walk replays each selected owner whose country, diplomacy and matrix are unchanged and reads only the statuses a writer changed since its last read, and reads an invalid owner in full (read_owners); each refresh also reads in full the replayed owners of its sampled slice, which rotates over days so each owner is compared at one refresh in rotation_hours (every replayed owner in verify mode), publishes a full read and disables reuse at the first mismatch (sampled_*, owners); events count calls except recompute_opinion, whose changes are the marks"
+        "scope": "cumulative since attach; each hour reads one owner slice and every owner a drained mark names (every owner when the marks are not handed over: overflowed_logs counts a log too small for the hour's marks, which offers a larger one); an incremental walk replays each selected owner whose country, diplomacy and matrix are unchanged and reads only the statuses a writer changed since its last read, and reads an invalid owner in full (read_owners); events count calls except recompute_opinion, whose changes are the marks"
     })
 }
 
@@ -732,10 +705,9 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Observation on (true) or off, unpoisoned. Hold [`test_lock`].
+/// Observation on (true) or off. Hold [`test_lock`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn observe_for_test(enabled: bool) {
-    POISONED.store(false, Ordering::SeqCst);
     WAR_FORWARD.store(enabled, Ordering::SeqCst);
     ENABLED.store(enabled, Ordering::SeqCst);
 }
@@ -995,9 +967,6 @@ mod tests {
         let (next, marks) = drain(&mut consumed, &mut output, &mut required).unwrap();
         assert!(next > epoch);
         assert_eq!(marks, Some(0));
-        // A sampled mismatch poisons: nothing is observed any more.
-        sampled(1, 1);
-        assert_eq!(drain(&mut consumed, &mut output, &mut required), None);
         observe_for_test(false);
         assert_eq!(drain(&mut consumed, &mut output, &mut required), None);
     }

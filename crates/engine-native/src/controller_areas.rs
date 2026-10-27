@@ -33,11 +33,11 @@
 //! the collector reads again for every capture that compares them
 //! ([`Store::carries_quietly`]). An hour on which no province was marked
 //! ([`Store::marks`]: the territory family's province writers, including
-//! controller notification) publishes the held areas and checks its sampled
-//! slice. A marked hour compares the pointers of every province a controller
-//! change can re-point ([`Store::repointable`]; every province when that is not
-//! bounded) with the held ones and reads again the area of every marked or
-//! re-pointed province, the area it left and its neighbours' areas. This covers
+//! controller notification) publishes the held areas. A marked hour compares
+//! the pointers of every province a controller change can re-point
+//! ([`Store::repointable`]; every province when that is not bounded) with the
+//! held ones and reads again the area of every marked or re-pointed province,
+//! the area it left and its neighbours' areas. This covers
 //! every area whose members, representative or contacts a controller change
 //! touches. Areas are labelled by their smallest member, owner areas likewise;
 //! no pointer leaves the collector.
@@ -122,10 +122,6 @@ pub struct Counts {
     pub read: u64,
     /// Areas published from the held capture.
     pub carried: u64,
-    /// Held provinces and areas compared with a fresh read.
-    pub verified: u64,
-    /// Of those, the ones that differed.
-    pub mismatches: u64,
 }
 
 const ALLOCATION: &str = "controller area storage allocation failed";
@@ -139,16 +135,6 @@ struct Held {
     owner: usize,
     controller_label: u32,
     owner_label: u32,
-}
-
-impl Held {
-    fn same(&self, pointers: &Pointers) -> bool {
-        self.present
-            && self.province == pointers.province
-            && self.definition == pointers.definition
-            && self.controller == pointers.controller
-            && self.owner == pointers.owner
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -177,15 +163,6 @@ impl Area {
             contacts_failure: Some("controller area not read"),
         }
     }
-
-    /// What a read publishes, for comparisons.
-    fn same_read(&self, other: &Self) -> bool {
-        self.label == other.label
-            && self.failure == other.failure
-            && self.first_land == other.first_land
-            && self.contacts_failure.is_none() == other.contacts_failure.is_none()
-            && (self.contacts_failure.is_some() || self.contacts == other.contacts)
-    }
 }
 
 /// The held capture, lent to the province walk's job each hour.
@@ -209,10 +186,6 @@ pub struct Store {
     pairs: Vec<(usize, u32)>,
     neighbour_ids: Vec<u32>,
     neighbour_bytes: Vec<u8>,
-    /// The carried labels a verifying capture compares with its fresh read.
-    carried_labels: Vec<(u32, u32, u32)>,
-    carried_areas: Vec<Area>,
-    poisoned: bool,
     /// [`Self::allocated_bytes`] as of the latest capture.
     bytes: usize,
     /// A requested full refresh: the next capture reads every area.
@@ -241,13 +214,11 @@ impl Store {
     }
 
     /// Whether [`Self::capture`] of `rows` rows under `take` would publish
-    /// the held areas comparing only its slice's pointers: nothing marked
+    /// the held areas without comparing any pointer: nothing marked
     /// ([`Self::marks`]), nothing refused and no full read requested. Every
     /// other capture compares or reads every province's pointers.
-    pub fn carries_quietly(&self, take: Option<[u64; 2]>, rows: usize, verify: bool) -> bool {
-        !self.poisoned
-            && !self.force_full
-            && !verify
+    pub fn carries_quietly(&self, take: Option<[u64; 2]>, rows: usize) -> bool {
+        !self.force_full
             && take.is_some()
             && take == self.epochs
             && rows == self.present
@@ -337,12 +308,6 @@ impl Store {
         result
     }
 
-    /// A fresh read differed from what the held capture published: every
-    /// later capture reads every area.
-    pub fn poisoned(&self) -> bool {
-        self.poisoned
-    }
-
     /// The storage the store held after its latest capture; constant time,
     /// for the callback that takes it back.
     pub fn allocated_bytes(&self) -> usize {
@@ -364,17 +329,12 @@ impl Store {
             + self.pairs.capacity() * size_of::<(usize, u32)>()
             + self.neighbour_ids.capacity() * size_of::<u32>()
             + self.neighbour_bytes.capacity()
-            + self.carried_labels.capacity() * size_of::<(u32, u32, u32)>()
-            + self.carried_areas.capacity() * size_of::<Area>()
     }
 
     /// Labels `rows` and writes the hour's nodes. `pointers` holds each
     /// row's areas in row order from the same complete walk; `take` the
     /// territory family's province and province-state epochs, None when it
-    /// refused; `covers` the sampled slice by province id and area label;
-    /// `verify` reads every area afresh and compares it with what the carry
-    /// would publish. On an error no row is labelled and nothing is held.
-    #[allow(clippy::too_many_arguments)]
+    /// refused. On an error no row is labelled and nothing is held.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -383,10 +343,8 @@ impl Store {
         pointers: &[Pointers],
         output: &mut Output,
         take: Option<[u64; 2]>,
-        covers: &dyn Fn(u64) -> bool,
-        verify: bool,
     ) -> Result<Counts, &'static str> {
-        let result = self.capture_inner(memory, base, rows, pointers, take, covers, verify);
+        let result = self.capture_inner(memory, base, rows, pointers, take);
         self.marks.clear();
         let result = result.and_then(|counts| {
             self.publish(rows, output)?;
@@ -405,7 +363,6 @@ impl Store {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn capture_inner(
         &mut self,
         memory: &impl Memory,
@@ -413,29 +370,17 @@ impl Store {
         rows: &[cprovince::Row],
         pointers: &[Pointers],
         take: Option<[u64; 2]>,
-        covers: &dyn Fn(u64) -> bool,
-        verify: bool,
     ) -> Result<Counts, &'static str> {
         if pointers.len() < rows.len() {
             return Err("province area pointers shorter than the walk");
         }
         let pointers = &pointers[..rows.len()];
         let mut counts = Counts::default();
-        let eligible = !self.poisoned && !self.force_full && take.is_some() && take == self.epochs;
+        let eligible = !self.force_full && take.is_some() && take == self.epochs;
         self.force_full = false;
-        let carried =
-            eligible && self.carry(memory, base, rows, pointers, covers, verify, &mut counts)?;
+        let carried = eligible && self.carry(memory, base, rows, pointers, &mut counts)?;
         if !carried {
             self.full(memory, base, rows, pointers, &mut counts)?;
-        } else if verify {
-            // Keep what the carry would publish, read everything afresh and
-            // compare; the fresh read is published.
-            self.keep_carried()?;
-            self.full(memory, base, rows, pointers, &mut counts)?;
-            self.compare_carried(&mut counts);
-        }
-        if counts.mismatches != 0 {
-            self.poisoned = true;
         }
         self.epochs = take;
         Ok(counts)
@@ -567,15 +512,12 @@ impl Store {
 
     /// Publishes the held capture when nothing marked a province, otherwise
     /// follows the marks. False when the hour must read every area afresh.
-    #[allow(clippy::too_many_arguments)]
     fn carry(
         &mut self,
         memory: &impl Memory,
         base: usize,
         rows: &[cprovince::Row],
         pointers: &[Pointers],
-        covers: &dyn Fn(u64) -> bool,
-        verify: bool,
         counts: &mut Counts,
     ) -> Result<bool, &'static str> {
         if rows.len() != self.present {
@@ -583,28 +525,6 @@ impl Store {
         }
         if self.marks.is_empty() {
             counts.quiet = true;
-            if !verify {
-                for (row, current) in rows.iter().zip(pointers) {
-                    if !covers(u64::from(row.id)) {
-                        continue;
-                    }
-                    counts.verified += 1;
-                    if !self
-                        .provinces
-                        .get(row.id as usize)
-                        .is_some_and(|held| held.same(current))
-                    {
-                        counts.mismatches += 1;
-                    }
-                }
-                if counts.mismatches == 0 {
-                    self.affected.clear();
-                    self.verify_areas(memory, base, covers, counts)?;
-                }
-                if counts.mismatches != 0 {
-                    return Ok(false);
-                }
-            }
             counts.carried = self.areas.len() as u64;
             return Ok(true);
         }
@@ -732,42 +652,7 @@ impl Store {
                 }
             }
         }
-        if !verify {
-            self.verify_areas(memory, base, covers, counts)?;
-            if counts.mismatches != 0 {
-                return Ok(false);
-            }
-        }
         Ok(true)
-    }
-
-    /// Reads afresh the held areas of the hour's slice that the hour did not
-    /// read already, and counts those that differ.
-    fn verify_areas(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        covers: &dyn Fn(u64) -> bool,
-        counts: &mut Counts,
-    ) -> Result<(), &'static str> {
-        for at in 0..self.areas.len() {
-            let area = &self.areas[at];
-            if !covers(u64::from(area.label)) || self.affected.binary_search(&area.pointer).is_ok()
-            {
-                continue;
-            }
-            let held = area.clone();
-            let first = self.read_area(memory, base, at)?;
-            counts.verified += 1;
-            let fresh = &mut self.areas[at];
-            if first.is_some() {
-                fresh.label = first.unwrap_or(0);
-            }
-            if first.is_none() || !fresh.same_read(&held) {
-                counts.mismatches += 1;
-            }
-        }
-        Ok(())
     }
 
     /// The definition's neighbour ids in native order, into `neighbour_ids`.
@@ -914,58 +799,6 @@ impl Store {
             area.contacts_failure = Some(reason);
         }
         Ok(first)
-    }
-
-    fn keep_carried(&mut self) -> Result<(), &'static str> {
-        self.carried_labels.clear();
-        allocation::reserve(&mut self.carried_labels, self.present).map_err(|_| ALLOCATION)?;
-        for (id, held) in self.provinces.iter().enumerate() {
-            if held.present {
-                self.carried_labels
-                    .push((id as u32, held.controller_label, held.owner_label));
-            }
-        }
-        self.carried_areas.clear();
-        allocation::reserve(&mut self.carried_areas, self.areas.len()).map_err(|_| ALLOCATION)?;
-        for area in &self.areas {
-            let mut copy = Area::new(area.pointer, area.label, area.members);
-            copy.failure = area.failure;
-            copy.first_land = area.first_land;
-            copy.contacts_failure = area.contacts_failure;
-            allocation::reserve(&mut copy.contacts, area.contacts.len()).map_err(|_| ALLOCATION)?;
-            copy.contacts.extend_from_slice(&area.contacts);
-            self.carried_areas.push(copy);
-        }
-        Ok(())
-    }
-
-    /// Counts every province label and area the carry would have published
-    /// differently from the fresh read.
-    fn compare_carried(&mut self, counts: &mut Counts) {
-        for &(id, controller, owner) in &self.carried_labels {
-            counts.verified += 1;
-            let held = self.provinces.get(id as usize);
-            if !held.is_some_and(|held| {
-                held.present && held.controller_label == controller && held.owner_label == owner
-            }) {
-                counts.mismatches += 1;
-            }
-        }
-        if self.carried_labels.len() != self.present {
-            counts.mismatches += 1;
-        }
-        counts.verified += self.carried_areas.len() as u64;
-        if self.carried_areas.len() != self.areas.len() {
-            counts.mismatches += 1;
-        }
-        for (carried, fresh) in self.carried_areas.iter().zip(&self.areas) {
-            if carried.pointer != fresh.pointer
-                || carried.members != fresh.members
-                || !carried.same_read(fresh)
-            {
-                counts.mismatches += 1;
-            }
-        }
     }
 
     /// Writes the held labels into `rows` and the nodes into `output`.

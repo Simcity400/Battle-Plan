@@ -150,59 +150,39 @@ fn bench_province_gates_and_border_conflicts() {
             )
         });
         // The same table under a held walk the hour's take certifies, with
-        // no mark: every unconflicted province carried, without and with
-        // the one-in-24 slice a family in its burn-in reads.
+        // no mark: every unconflicted province carried.
         let mut capture = Capture::try_with_capacity(provinces, conflicts, 2 * conflicts).unwrap();
         capture.province_store = Some(Box::new(carry::RowStore::new()));
         let take = Some([1, 1]);
         assert_eq!(
-            capture.walk_carrying(&memory, base, game_state, take, &|_| false, false),
+            capture.walk_carrying(&memory, base, game_state, take),
             Outcome::Rows { len: provinces }
         );
-        for (name, rotation) in [("quiet carry", 0_u64), ("quiet carry, 1/24 slice", 24)] {
-            let covers = |id: u64| rotation != 0 && id.is_multiple_of(rotation);
-            report(&format!("{label}, {name}"), n, &memory, || {
-                let outcome =
-                    capture.walk_carrying(&memory, base, game_state, take, &covers, false);
-                assert_eq!(outcome, Outcome::Rows { len: provinces });
-                assert_eq!(
-                    capture.conflict_walk.outcome,
-                    Outcome::Rows { len: conflicts }
-                );
-                let counts = capture.province_store.as_ref().unwrap().counts();
-                assert_eq!(counts.mismatches, 0);
-                format!(
-                    "{} carried, {} read, {} verified",
-                    counts.carried, counts.read, counts.verified
-                )
-            });
-        }
-        // A marked hour as the 1936 burn-in averages (about six controller
-        // changes an hour) with its slice, and the area step's read of every
-        // carried row's pointers that such an hour asks for; then the
-        // verifying hour `province_verify` runs during the burn-in.
+        report(&format!("{label}, quiet carry"), n, &memory, || {
+            let outcome = capture.walk_carrying(&memory, base, game_state, take);
+            assert_eq!(outcome, Outcome::Rows { len: provinces });
+            assert_eq!(
+                capture.conflict_walk.outcome,
+                Outcome::Rows { len: conflicts }
+            );
+            let counts = capture.province_store.as_ref().unwrap().counts();
+            format!("{} carried, {} read", counts.carried, counts.read)
+        });
+        // A marked hour as 1936 averages (about six controller changes an
+        // hour), and the area step's read of every carried row's pointers
+        // that such an hour asks for.
         report(
-            &format!("{label}, marked hour (6 provinces), 1/24 slice, area pointers"),
+            &format!("{label}, marked hour (6 provinces), area pointers"),
             n,
             &memory,
             || {
                 let (marks, _) = capture.province_store.as_mut().unwrap().marks_mut();
                 marks.extend((1..=6).map(|index| index * provinces as u32 / 7));
-                let outcome = capture.walk_carrying(
-                    &memory,
-                    base,
-                    game_state,
-                    take,
-                    &|id| id % 24 == 0,
-                    false,
-                );
+                let outcome = capture.walk_carrying(&memory, base, game_state, take);
                 assert_eq!(outcome, Outcome::Rows { len: provinces });
                 capture.refresh_carried_areas(&memory, &|_| true).unwrap();
                 let counts = capture.province_store.as_ref().unwrap().counts();
-                format!(
-                    "{} carried, {} read, {} verified",
-                    counts.carried, counts.read, counts.verified
-                )
+                format!("{} carried, {} read", counts.carried, counts.read)
             },
         );
         // The same marked hour when the area step compares only the
@@ -212,39 +192,22 @@ fn bench_province_gates_and_border_conflicts() {
         // three areas each; modelled as the 120 ids around each mark.
         let marked: Vec<u32> = (1..=6).map(|index| index * provinces as u32 / 7).collect();
         report(
-            &format!("{label}, marked hour (6 provinces), 1/24 slice, bounded area pointers"),
+            &format!("{label}, marked hour (6 provinces), bounded area pointers"),
             n,
             &memory,
             || {
                 let (marks, _) = capture.province_store.as_mut().unwrap().marks_mut();
                 marks.extend(marked.iter().copied());
-                let outcome = capture.walk_carrying(
-                    &memory,
-                    base,
-                    game_state,
-                    take,
-                    &|id| id % 24 == 0,
-                    false,
-                );
+                let outcome = capture.walk_carrying(&memory, base, game_state, take);
                 assert_eq!(outcome, Outcome::Rows { len: provinces });
                 capture
                     .refresh_carried_areas(&memory, &|id| {
-                        id % 24 == 0 || marked.iter().any(|&mark| mark.abs_diff(id) <= 60)
+                        marked.iter().any(|&mark| mark.abs_diff(id) <= 60)
                     })
                     .unwrap();
                 let counts = capture.province_store.as_ref().unwrap().counts();
-                format!(
-                    "{} carried, {} read, {} verified",
-                    counts.carried, counts.read, counts.verified
-                )
+                format!("{} carried, {} read", counts.carried, counts.read)
             },
         );
-        report(&format!("{label}, verifying hour"), n, &memory, || {
-            let outcome = capture.walk_carrying(&memory, base, game_state, take, &|_| false, true);
-            assert_eq!(outcome, Outcome::Rows { len: provinces });
-            let counts = capture.province_store.as_ref().unwrap().counts();
-            assert_eq!(counts.mismatches, 0);
-            format!("{} read, {} verified", counts.read, counts.verified)
-        });
     }
 }

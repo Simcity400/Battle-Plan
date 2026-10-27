@@ -15,10 +15,8 @@ default = ["advisor_changes", "character_changes", "advisor_pool_changes", "rost
 advisor_changes = []
 advisor_pool_changes = ["character_changes"]
 appointment_changes = ["advisor_pool_changes", "roster_changes"]
-appointment_verify = ["appointment_changes"]
 character_changes = ["advisor_changes"]
 character_record_changes = ["advisor_pool_changes", "roster_changes"]
-character_record_verify = ["character_record_changes"]
 roster_changes = []
 
 [dependencies]

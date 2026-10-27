@@ -2,12 +2,9 @@
 //! ([`super::LeaderStore`], [`crate::party_leader_changes`]): quiet hours read
 //! no party, leader or character and publish the same rows; a hooked party
 //! or character write re-reads only its country; an invalidation re-reads
-//! every country; verify catches a write no hook saw and poisons reuse.
+//! every country.
 use super::*;
-use crate::{
-    party_leader_changes::{Counts, Pair, Watches},
-    sampled_verify::{Check, ROTATION},
-};
+use crate::party_leader_changes::{Counts, Pair, Watches};
 use engine_native::{
     ccharacter, ccountry, ccountry_leader, cideology_group, cpolitical_party::LeaderRow,
     memory::SliceMemory,
@@ -144,7 +141,7 @@ impl Domains {
     }
 }
 
-fn hour(bytes: &[u8], store: &mut LeaderStore, domains: &Domains, check: Check) -> Hour {
+fn hour(bytes: &[u8], store: &mut LeaderStore, domains: &Domains) -> Hour {
     let memory = Calls {
         bytes,
         calls: RefCell::default(),
@@ -153,7 +150,7 @@ fn hour(bytes: &[u8], store: &mut LeaderStore, domains: &Domains, check: Check) 
         parties: &domains.parties,
         characters: &domains.characters,
     };
-    let mut reuse = LeaderReuse::begin(store, &pair, check);
+    let mut reuse = LeaderReuse::begin(store, &pair);
     let mut rows = Vec::new();
     let mut complete = true;
     for index in 0..COUNTRIES {
@@ -182,7 +179,7 @@ fn hour(bytes: &[u8], store: &mut LeaderStore, domains: &Domains, check: Check) 
 }
 
 fn first_hour(bytes: &[u8], store: &mut LeaderStore, domains: &Domains) -> Hour {
-    let first = hour(bytes, store, domains, Check::Nothing);
+    let first = hour(bytes, store, domains);
     assert_eq!((first.counts.read, first.counts.reused), (2, 0));
     assert_eq!(
         first
@@ -204,7 +201,7 @@ fn quiet_hours_read_no_party_or_leader_and_publish_identical_rows() {
     let mut store = LeaderStore::new();
     let first = first_hour(&bytes, &mut store, &domains);
     for _ in 0..3 {
-        let quiet = hour(&bytes, &mut store, &domains, Check::Nothing);
+        let quiet = hour(&bytes, &mut store, &domains);
         assert_eq!(quiet.rows, first.rows);
         assert_eq!((quiet.counts.read, quiet.counts.reused), (0, 2));
         assert_eq!(quiet.detail_reads, 0);
@@ -224,7 +221,7 @@ fn a_hooked_party_or_character_write_rereads_only_its_country() {
     word(&mut bytes, leader + ccountry_leader::LEADER_ID, 13);
     drop(notification);
     domains.boundary(false);
-    let changed = hour(&bytes, &mut store, &domains, Check::Nothing);
+    let changed = hour(&bytes, &mut store, &domains);
     assert_eq!((changed.counts.read, changed.counts.reused), (1, 1));
     assert_eq!(changed.rows[1].leader_id, 13);
     // A role-map write on country 1's leader's character.
@@ -234,11 +231,11 @@ fn a_hooked_party_or_character_write_rereads_only_its_country() {
     word(&mut bytes, 0x1c40 + 0x20, u64::from((-8_i32) as u32));
     drop(notification);
     domains.boundary(false);
-    let changed = hour(&bytes, &mut store, &domains, Check::Nothing);
+    let changed = hour(&bytes, &mut store, &domains);
     assert_eq!((changed.counts.read, changed.counts.reused), (1, 1));
     assert_eq!(changed.rows[0].role, Some(-8));
     domains.boundary(false);
-    let quiet = hour(&bytes, &mut store, &domains, Check::Nothing);
+    let quiet = hour(&bytes, &mut store, &domains);
     assert_eq!((quiet.counts.read, quiet.counts.reused), (0, 2));
     assert_eq!(quiet.rows, changed.rows);
 }
@@ -250,55 +247,11 @@ fn an_invalidating_hour_or_a_forgotten_store_rereads_every_country() {
     let mut store = LeaderStore::new();
     let first = first_hour(&bytes, &mut store, &domains);
     domains.boundary(true);
-    let reloaded = hour(&bytes, &mut store, &domains, Check::Nothing);
+    let reloaded = hour(&bytes, &mut store, &domains);
     assert_eq!((reloaded.counts.read, reloaded.counts.reused), (2, 0));
     assert_eq!(reloaded.rows, first.rows);
     domains.boundary(false);
     store.forget();
-    let forgotten = hour(&bytes, &mut store, &domains, Check::Nothing);
+    let forgotten = hour(&bytes, &mut store, &domains);
     assert_eq!((forgotten.counts.read, forgotten.counts.reused), (2, 0));
-}
-
-#[test]
-fn an_hourly_slice_verifies_each_country_once_per_rotation() {
-    let bytes = world();
-    let domains = Domains::new();
-    let mut store = LeaderStore::new();
-    first_hour(&bytes, &mut store, &domains);
-    let mut verified = 0;
-    for at in 0..ROTATION as i32 {
-        let check = Check::Slice { hour: at };
-        let sampled = hour(&bytes, &mut store, &domains, check);
-        let due = (1..=COUNTRIES as u64)
-            .filter(|&id| check.covers(id))
-            .count() as u64;
-        assert_eq!(
-            (sampled.counts.verified, sampled.counts.reused),
-            (due, COUNTRIES as u64 - due)
-        );
-        verified += due;
-        domains.boundary(false);
-    }
-    assert_eq!(verified, COUNTRIES as u64);
-}
-
-#[test]
-fn verify_catches_an_unobserved_write_and_poisons_reuse() {
-    let mut bytes = world();
-    let domains = Domains::new();
-    let mut store = LeaderStore::new();
-    first_hour(&bytes, &mut store, &domains);
-    let agreed = hour(&bytes, &mut store, &domains, Check::Every);
-    assert_eq!((agreed.counts.verified, agreed.counts.mismatches), (2, 0));
-    assert!(!domains.parties.poisoned());
-    domains.boundary(false);
-    let (_, leader, _) = objects(0);
-    word(&mut bytes, leader + ccountry_leader::LEADER_ID, 99);
-    let caught = hour(&bytes, &mut store, &domains, Check::Every);
-    assert_eq!(caught.counts.mismatches, 1);
-    assert!(domains.parties.poisoned());
-    assert_eq!(caught.rows[0].leader_id, 99);
-    domains.boundary(false);
-    let after = hour(&bytes, &mut store, &domains, Check::Nothing);
-    assert_eq!((after.counts.read, after.counts.reused), (2, 0));
 }

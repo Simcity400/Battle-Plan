@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["collector-certificates/test-support", "collector-combat/test-support", "collector-extended-support/test-support", "collector-memory/test-support", "collector-observers/test-support", "collector-primitives/test-support"]
+test-support = ["collector-combat/test-support", "collector-extended-support/test-support", "collector-memory/test-support", "collector-observers/test-support", "collector-primitives/test-support"]
 
 
 [dependencies]
@@ -20,7 +20,6 @@ engine-naval-history.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }
-collector-certificates.workspace = true
 collector-combat.workspace = true
 collector-extended-support.workspace = true
 collector-memory.workspace = true

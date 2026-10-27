@@ -10,7 +10,6 @@ struct Observer {
     epoch: u64,
     clock: u64,
     changed: BTreeMap<usize, u64>,
-    check: Check,
     enabled: bool,
 }
 impl Observer {
@@ -35,9 +34,6 @@ impl Changes for Observer {
     fn revision(&self, map: usize) -> Option<(u64, u64)> {
         self.enabled
             .then_some((self.epoch, *self.changed.get(&map).unwrap_or(&0)))
-    }
-    fn check(&self) -> Check {
-        self.check
     }
 }
 fn context() -> CharactersCopyContext {
@@ -189,9 +185,6 @@ fn unregistered_maps_cannot_use_a_control_only_certificate() {
         }
         fn revision(&self, _map: usize) -> Option<(u64, u64)> {
             None
-        }
-        fn check(&self) -> Check {
-            Check::Nothing
         }
     }
     let mut bytes = super::super::tests::section_fixture();
@@ -812,72 +805,6 @@ fn same_count_replacement_and_larger_strings_refresh_only_the_affected_character
     assert_eq!((cache.counts.read, cache.counts.reused), (3, 0));
 }
 #[test]
-fn verification_detects_an_unobserved_in_place_write_and_returns_fresh_data() {
-    let mut bytes = kit::mapped_fixture();
-    let mut cache = Section::with_capacity(8, 512, 8);
-    let mut observer = Observer::new();
-    observer.check = Check::Every;
-    cache.capture(&kit::memory(&bytes), context(), &observer);
-    literal(
-        &mut bytes,
-        kit::ADV_ROLE + cadvisor::IDEA_TOKEN,
-        b"unobserved",
-    );
-    cache.capture(&kit::memory(&bytes), context(), &observer);
-    assert_fresh(&cache, &bytes);
-    assert_eq!(cache.counts.verified, 3);
-    assert_eq!(cache.counts.mismatches, 1);
-    assert!(!cache.valid);
-    cache.capture(&kit::memory(&bytes), context(), &observer);
-    assert_eq!(cache.counts.verified, 0);
-}
-#[test]
-fn sampled_hours_find_an_unobserved_in_place_write_within_one_rotation() {
-    let mut bytes = kit::mapped_fixture();
-    let mut cache = Section::with_capacity(8, 512, 8);
-    let mut observer = Observer::new();
-    cache.capture(&kit::memory(&bytes), context(), &observer);
-    // Any 24 consecutive hours compare each held character once.
-    let mut compared = 0;
-    for hour in 0..24 {
-        observer.check = Check::Slice { hour };
-        cache.capture(&kit::memory(&bytes), context(), &observer);
-        assert_fresh(&cache, &bytes);
-        assert_eq!(cache.counts.mismatches, 0);
-        compared += cache.counts.verified;
-    }
-    assert_eq!(compared, cache.characters as u64);
-    literal(
-        &mut bytes,
-        kit::ADV_ROLE + cadvisor::IDEA_TOKEN,
-        b"unobserved",
-    );
-    let id = u32::from_le_bytes(
-        bytes[CHARACTERS[0] + ccharacter::ID..][..4]
-            .try_into()
-            .unwrap(),
-    );
-    let published = |cache: &Section| {
-        cache.current.bytes[..cache.result.bytes_len]
-            .windows(10)
-            .any(|window| window == b"unobserved")
-    };
-    for hour in 0..24 {
-        observer.check = Check::Slice { hour };
-        cache.capture(&kit::memory(&bytes), context(), &observer);
-        if hour as u32 == id % 24 {
-            assert_eq!(cache.counts.mismatches, 1);
-            assert!(published(&cache), "the fresh rows are published");
-            assert_fresh(&cache, &bytes);
-            assert!(!cache.valid);
-            return;
-        }
-        assert_eq!(cache.counts.mismatches, 0);
-        assert!(!published(&cache), "hour {hour} carries the held rows");
-    }
-    panic!("not caught within one rotation");
-}
-#[test]
 fn truncation_and_unwatched_entries_stay_fresh_and_grow_off_capture() {
     let bytes = kit::mapped_fixture();
     let mut cache = Section::with_capacity(0, 0, 1);
@@ -1187,7 +1114,7 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
     };
     let observer = Observer::new();
     let mut cache = cache_for(&bytes);
-    cache.modifiers.roles = RoleObservation::with(&WATCHES, Some(Check::Nothing));
+    cache.modifiers.roles = RoleObservation::with(&WATCHES);
     // The first hour reads and holds every role.
     cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
     let roles = cache.result.outcome.len() as u64;
@@ -1246,81 +1173,6 @@ fn certified_advisor_modifiers_are_carried_until_a_hooked_rebuild() {
 }
 
 #[test]
-fn verify_mode_reads_held_advisor_modifiers_and_poisons_on_an_unobserved_write() {
-    use crate::character_changes::Watches;
-    static WATCHES: Watches = Watches::new();
-    WATCHES.enable(64);
-    let (mut bytes, data) = two_entry_cache();
-    let observer = Observer::new();
-    let mut cache = cache_for(&bytes);
-    cache.modifiers.roles = RoleObservation::with(&WATCHES, Some(Check::Every));
-    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
-    let roles = cache.result.outcome.len() as u64;
-    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
-    let counts = cache.modifiers.role_counts;
-    assert_eq!(
-        (counts.reused, counts.read, counts.verified),
-        (0, roles, roles)
-    );
-    assert_eq!(counts.mismatches, 0);
-    assert!(!WATCHES.poisoned());
-    put(&mut bytes, data.start + 8, (-1_i64).to_le_bytes());
-    cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
-    // The fresh read is published and reuse is disabled.
-    assert_outer_fresh(&cache, &bytes);
-    assert_eq!(first_role_entries(&cache), [entry(7, -1), entry(8, 9)]);
-    assert_eq!(cache.modifiers.role_counts.mismatches, 1);
-    assert!(WATCHES.poisoned());
-}
-
-#[test]
-fn sampled_hours_read_held_advisor_modifiers_and_find_an_unobserved_write_within_one_rotation() {
-    use crate::character_changes::Watches;
-    static WATCHES: Watches = Watches::new();
-    WATCHES.enable(64);
-    let (mut bytes, data) = two_entry_cache();
-    let observer = Observer::new();
-    let mut cache = cache_for(&bytes);
-    let capture = |cache: &mut Cache, bytes: &[u8], check| {
-        cache.modifiers.roles = RoleObservation::with(&WATCHES, Some(check));
-        cache.capture_growing(&kit::memory(bytes), context(), &observer, None);
-        cache.modifiers.role_counts
-    };
-    capture(&mut cache, &bytes, Check::Nothing);
-    let roles = cache.result.outcome.len() as u64;
-    // Any 24 consecutive hours read each held role once.
-    let mut compared = 0;
-    for hour in 0..24 {
-        let counts = capture(&mut cache, &bytes, Check::Slice { hour });
-        assert_eq!((counts.read, counts.mismatches), (counts.verified, 0));
-        compared += counts.verified;
-    }
-    assert_eq!(compared, roles);
-    // A write no hook observed, in the first character's role.
-    put(&mut bytes, data.start + 8, (-1_i64).to_le_bytes());
-    let id = u32::from_le_bytes(
-        bytes[CHARACTERS[0] + ccharacter::ID..][..4]
-            .try_into()
-            .unwrap(),
-    );
-    for hour in 0..24 {
-        let counts = capture(&mut cache, &bytes, Check::Slice { hour });
-        if hour as u32 == id % 24 {
-            assert_eq!(counts.mismatches, 1);
-            assert_eq!(first_role_entries(&cache), [entry(7, -1), entry(8, 9)]);
-            assert!(WATCHES.poisoned());
-            return;
-        }
-        assert_eq!(
-            first_role_entries(&cache),
-            [entry(7, -5), entry(8, 9)],
-            "hour {hour} carries the held entries"
-        );
-    }
-    panic!("not found within one rotation");
-}
-
-#[test]
 fn quiet_hours_carry_advisor_modifier_caches_and_read_only_a_rebuilt_role() {
     use crate::character_changes::Watches;
     static WATCHES: Watches = Watches::new();
@@ -1335,7 +1187,7 @@ fn quiet_hours_carry_advisor_modifier_caches_and_read_only_a_rebuilt_role() {
     let observer = Observer::new();
     let mut cache = Cache::with_modifier_demand(cadvisor::ModifierDemand::default());
     cache.sections = std::array::from_fn(|_| Section::with_capacity(0, 0, 0));
-    cache.modifiers.roles = RoleObservation::with(&WATCHES, Some(Check::Nothing));
+    cache.modifiers.roles = RoleObservation::with(&WATCHES);
     let mut captured = Captured::with_capacities(&Capacities {
         rows: [0; N],
         bytes: [0; N],

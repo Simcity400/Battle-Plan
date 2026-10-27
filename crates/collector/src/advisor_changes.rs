@@ -27,9 +27,7 @@ static ROLE_ORIGINAL: [AtomicUsize; ROLE_SITES] = [const { AtomicUsize::new(0) }
 /// Whether every character role-row site was installed.
 static ROLES_INSTALLED: AtomicBool = AtomicBool::new(false);
 static EVENTS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
-static COUNTS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-static SAMPLED: crate::sampled_verify::Sampled =
-    crate::sampled_verify::Sampled::burned_in(&["held advisor rows differ from a fresh read"]);
+static COUNTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 static NOTIFICATION_TICKS: AtomicU64 = AtomicU64::new(0);
 
 struct Slot {
@@ -185,28 +183,15 @@ impl Changes for Observer {
         let revision = watch(&WATCH, map, true)?.load(Ordering::SeqCst);
         (ACTIVE.load(Ordering::SeqCst) == 0).then_some((epoch, revision))
     }
-    fn check(&self) -> crate::sampled_verify::Check {
-        crate::sampled_verify::current_burned_in(cfg!(feature = "advisor_verify"))
-    }
 }
 
-/// `counts.verified` held characters were read afresh and compared,
-/// `counts.mismatches` of them differing; a mismatch disables reuse for the
-/// attachment.
 pub fn record(counts: Counts) {
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
-    for (target, value) in COUNTS.iter().zip([
-        counts.reused,
-        counts.read,
-        counts.roles,
-        counts.verified,
-        counts.mismatches,
-        counts.planned,
-    ]) {
+    for (target, value) in
+        COUNTS
+            .iter()
+            .zip([counts.reused, counts.read, counts.roles, counts.planned])
+    {
         target.fetch_add(value, Ordering::Relaxed);
-    }
-    if counts.mismatches != 0 {
-        POISONED.store(true, Ordering::SeqCst);
     }
 }
 pub fn status() -> impl serde::Serialize {
@@ -218,14 +203,12 @@ pub fn status() -> impl serde::Serialize {
             .zip(event_counts)
             .map(|(site, count)| (site.name, count)),
     );
-    crate::status::status!({ "configured": cfg!(feature = "advisor_changes"), "verify": cfg!(feature = "advisor_verify"),
+    crate::status::status!({ "configured": cfg!(feature = "advisor_changes"),
         "poisoned": POISONED.load(Ordering::SeqCst),
-        "sampled_verified": SAMPLED.verified(), "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(), "slice": SAMPLED.slice(),
         "reused_characters": counts[0], "read_characters": counts[1],
-        "reused_roles": counts[2], "planned_sections": counts[5], "events": events,
+        "reused_roles": counts[2], "planned_sections": counts[3], "events": events,
         "notification_ticks": NOTIFICATION_TICKS.load(Ordering::Relaxed),
-        "scope": "QPC notification bookkeeping ticks including guarded owner lookup, excluding native bodies; capture wall includes all cache work; before each section's capture the held characters of the hour's slice (one in rotation_hours by character id) are read afresh and compared (sampled_*), and a mismatch disables reuse; verify mode reads every proposed hit" })
+        "scope": "QPC notification bookkeeping ticks including guarded owner lookup, excluding native bodies; capture wall includes all cache work" })
 }
 
 pub struct Hooks {

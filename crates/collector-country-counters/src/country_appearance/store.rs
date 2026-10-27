@@ -5,29 +5,21 @@
 //! appearance (colours, cosmetic tag, name operands, graphical cultures, the
 //! ruling party's first leader, overlord, retained old names, original tag and
 //! subject roster) is read afresh only when a hooked writer marked it since
-//! the previous take, it is in the hour's sampled slice
-//! ([`crate::sampled_verify::current`]), it is new to the census or its last
-//! read was not held. Every other country's row, subject payload and original
-//! tag bytes are copied from its held read into the hour's arenas at the
-//! place a full read puts them, so the published table equals a full read of
-//! the same memory. A country is carried only while the hour's take returned
-//! the epoch its held read was certified under, the walk's naming globals
-//! (tag string header and dynamic tag boundary) are the held ones, and the
-//! census names the held object and native id at its canonical slot.
+//! the previous take, it is new to the census or its last read was not held.
+//! Every other country's row, subject payload and original tag bytes are
+//! copied from its held read into the hour's arenas at the place a full read
+//! puts them, so the published table equals a full read of the same memory.
+//! A country is carried only while the hour's take returned the epoch its
+//! held read was certified under, the walk's naming globals (tag string
+//! header and dynamic tag boundary) are the held ones, and the census names
+//! the held object and native id at its canonical slot.
 //!
-//! A slice read of an unmarked held country is compared with its held read
-//! (every recorded field and the subject payload); a difference is a missed
-//! write, which poisons the set ([`Changes::mismatch`]). Under
-//! `appearance_verify` every country is read every hour and each unmarked one
-//! compared. Only a complete read under a take that returned an epoch is
-//! held: a failed or incomplete one, or a failed job, holds nothing, so the
-//! next hour reads every country. A row that cannot be copied is read
-//! instead. Storage is advisory and worker-only.
+//! Only a complete read under a take that returned an epoch is held: a
+//! failed or incomplete one, or a failed job, holds nothing, so the next hour
+//! reads every country. A row that cannot be copied is read instead. Storage
+//! is advisory and worker-only.
 use super::Captured;
-use crate::{
-    country_input_changes::{self as changes, Changes, Counts, Mismatch, Table},
-    sampled_verify::Check,
-};
+use crate::country_input_changes::{self as changes, Changes, Counts, Table};
 use engine_allocation as allocation;
 use engine_native::{
     capture_text::Owned, ccountry::AppearanceGlobals, ccountry::Country,
@@ -52,9 +44,6 @@ struct Visit {
     country: Country,
     /// Copied from its held read; nothing of it was read.
     carried: bool,
-    /// Read although its held read is certified (the hour's check covers
-    /// it): compared with that read.
-    compare: bool,
 }
 
 /// The latest held read per canonical slot, and the hour's selection.
@@ -84,22 +73,18 @@ pub struct AppearanceStore {
 }
 
 /// A store on loan to one hour's appearance read, with the domain it takes
-/// its marks from and the hour's comparisons.
+/// its marks from.
 pub struct Carry<'a> {
     pub store: &'a mut AppearanceStore,
     pub changes: &'a dyn Changes,
-    pub check: Check,
 }
 
 impl<'a> Carry<'a> {
-    /// The hooks' domain and the hour's sampled slice, or every country
-    /// under `appearance_verify`.
+    /// The hooks' domain.
     pub fn observed(store: &'a mut AppearanceStore) -> Self {
-        let changes = &changes::Observer;
         Self {
             store,
-            changes,
-            check: crate::sampled_verify::current_burned_in(changes.every(Table::Appearance)),
+            changes: &changes::Observer,
         }
     }
 }
@@ -179,7 +164,6 @@ impl AppearanceStore {
     /// the held read and returns true when the country is carried.
     pub(super) fn select(
         &mut self,
-        check: Check,
         globals: AppearanceGlobals,
         country: Country,
         row: &mut OwnedAppearanceRow,
@@ -199,17 +183,10 @@ impl AppearanceStore {
             .held
             .get(country.canonical_slot as usize)
             .filter(|held| held.country == Some((country.pointer, country.id)));
-        let certified =
-            self.carrying && held.is_some() && self.marked.binary_search(&country.id).is_err();
-        let compare = certified && check.covers(u64::from(country.id));
-        let carried = certified
-            && !compare
+        let carried = self.carrying
+            && self.marked.binary_search(&country.id).is_err()
             && held.is_some_and(|held| allocation::advisory(|| row.copy_held(&held.row)).is_ok());
-        self.visits.push(Visit {
-            country,
-            carried,
-            compare,
-        });
+        self.visits.push(Visit { country, carried });
         carried
     }
 
@@ -229,13 +206,12 @@ impl AppearanceStore {
         self.carried(index).map(|held| &held.tag[..])
     }
 
-    /// After the hour's appearance read: compares each read of a certified
-    /// country with its held read, holds every complete fresh read, and
+    /// After the hour's appearance read: holds every complete fresh read and
     /// records the hour.
-    pub(super) fn finish(&mut self, captured: &Captured, changes: &dyn Changes) {
+    pub(super) fn finish(&mut self, captured: &Captured) {
         let walked = captured.rows.outcome.len().max(self.visits.len());
         let carried = self.visits.iter().filter(|visit| visit.carried).count();
-        let mut counts = Counts {
+        let counts = Counts {
             marked: self.marked.len() as u64,
             read: (walked - carried) as u64,
             full: !self.carrying,
@@ -279,24 +255,6 @@ impl AppearanceStore {
                         .and_then(|name| arena?.get(name.start..name.start.checked_add(name.len)?)),
                 };
                 let slot = visit.country.canonical_slot as usize;
-                if visit.compare
-                    && let Some(held) = self.held.get(slot)
-                {
-                    counts.verified += 1;
-                    match difference(held, &fresh) {
-                        None => continue,
-                        Some(field) => {
-                            counts.mismatches += 1;
-                            changes.mismatch(
-                                Table::Appearance,
-                                Mismatch {
-                                    country: visit.country.id,
-                                    field,
-                                },
-                            );
-                        }
-                    }
-                }
                 if let Some(held) = self.held.get_mut(slot) {
                     touched = true;
                     allocation::advisory(|| hold(held, visit.country, &fresh));
@@ -360,48 +318,6 @@ fn hold(held: &mut HeldCountry, country: Country, fresh: &Fresh<'_>) -> bool {
         held.country = Some((country.pointer, country.id));
     }
     stored.is_some()
-}
-
-/// The first recorded field group in which `fresh` differs from `held`.
-fn difference(held: &HeldCountry, fresh: &Fresh<'_>) -> Option<&'static str> {
-    let (kept, row) = (&held.row, fresh.row);
-    fn old(row: &OwnedAppearanceRow) -> Option<[&[u8]; 3]> {
-        row.old_names
-            .as_ref()
-            .map(|names| names.each_ref().map(Owned::as_bytes))
-    }
-    let same = |a: &Owned, b: &Owned| a.as_bytes() == b.as_bytes();
-    if kept.country != row.country {
-        Some("country")
-    } else if kept.subjects.count != row.subjects.count
-        || fresh.subjects != Some(&held.subjects[..])
-    {
-        Some("subject roster")
-    } else if kept.rgba != row.rgba || kept.ui_rgba != row.ui_rgba {
-        Some("colours")
-    } else if !same(&kept.cosmetic_tag, &row.cosmetic_tag) {
-        Some("cosmetic tag")
-    } else if !same(&kept.name_tag, &row.name_tag) {
-        Some("name tag")
-    } else if !same(&kept.leader_ideology, &row.leader_ideology)
-        || kept.leader_character != row.leader_character
-    {
-        Some("ruling party leader")
-    } else if !same(&kept.graphical_culture, &row.graphical_culture)
-        || !same(&kept.graphical_culture_2d, &row.graphical_culture_2d)
-    {
-        Some("graphical cultures")
-    } else if kept.overlord != row.overlord {
-        Some("overlord")
-    } else if old(kept) != old(row) {
-        Some("old names")
-    } else if kept.original_tag_reference != row.original_tag_reference
-        || fresh.tag != Some(&held.tag[..])
-    {
-        Some("original tag")
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]

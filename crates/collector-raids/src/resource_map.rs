@@ -10,10 +10,8 @@
 //! construction and the save loader). An hour whose take of the marks does not
 //! certify the previous hour's read reads every
 //! owner. A changed census marks its owner too: membership and route-storage
-//! changes legitimately change its rows. Every owner read and not marked is
-//! compared with its previous read
-//! ([`SliceSelection::compare`]); a difference disables the family's marks for the
-//! attachment. Read in the RaidState job, after the raid state inputs.
+//! changes legitimately change its rows. Read in the RaidState job, after the raid
+//! state inputs.
 use crate::{
     clock::qpc,
     slicing::{SliceFingerprints, SliceSelection},
@@ -58,8 +56,6 @@ collector_primitives::capacity_max!(Capacities;);
 pub struct Stores<'a> {
     pub routes: &'a mut SliceFingerprints,
     pub changes: &'a dyn crate::raid_changes::Changes,
-    /// Read every owner every hour while still comparing each unmarked one.
-    pub verify: bool,
 }
 
 pub struct Captured {
@@ -76,7 +72,6 @@ pub struct Captured {
     census: Vec<(RouteKey, usize, bool)>,
     routes: Vec<native::RouteRow>,
     path: Vec<u32>,
-    hashes: Vec<(u32, u64)>,
     outcomes: [Outcome; N],
     /// The countries whose TradeRoutes rows this hour's read replaced.
     selection: SliceSelection,
@@ -108,7 +103,6 @@ impl Captured {
             census: Vec::new(),
             routes: Vec::new(),
             path: Vec::new(),
-            hashes: Vec::new(),
             outcomes: [crate::MISSING; N],
             selection: SliceSelection::new(storage),
         }
@@ -135,7 +129,6 @@ impl Captured {
             + self.census.capacity() * size_of::<(RouteKey, usize, bool)>()
             + self.routes.capacity() * size_of::<native::RouteRow>()
             + self.path.capacity() * size_of::<u32>()
-            + self.hashes.capacity() * size_of::<(u32, u64)>()
     }
     /// Buffers grow on the worker during the read.
     pub fn grow(&mut self, _capacity: &mut Capacities) {}
@@ -333,8 +326,8 @@ impl Captured {
             })
         });
         let outcome = outcome.unwrap_or_else(|reason| Outcome::Unavailable { reason });
-        if let Some(stores) = stores {
-            self.compare(stores, outcome, reader_ids(memory, base, game_state));
+        if stores.is_some() {
+            self.record_counts(reader_ids(memory, base, game_state));
         }
         outcome
     }
@@ -378,7 +371,7 @@ impl Captured {
                 Some(country) => selection.mark(country),
                 None => resolved = false,
             });
-        selection.certify(stores.routes, epoch.filter(|_| resolved), stores.verify);
+        selection.certify(stores.routes, epoch.filter(|_| resolved));
     }
 
     /// Every route a client referenced this hour, in TradeRoutes' key order. A key naming
@@ -422,17 +415,9 @@ impl Captured {
         Ok(())
     }
 
-    /// Compare every owner this hour read and no hook marked with its previous read,
-    /// disable the family's marks at a difference, and record the hour's counts.
-    fn compare(&mut self, stores: Stores<'_>, outcome: Outcome, ids: Option<usize>) {
+    /// Record the hour's counts.
+    fn record_counts(&self, ids: Option<usize>) {
         use crate::raid_changes::{Counts, Family, record};
-        let complete = matches!(outcome, Outcome::Rows { .. }) && self.route_hashes();
-        let (verified, mismatches) = self
-            .selection
-            .compare(stores.routes, complete.then_some(&self.hashes[..]));
-        if mismatches != 0 {
-            stores.changes.mismatch(Family::Routes);
-        }
         record(
             Family::Routes,
             &Counts {
@@ -440,58 +425,9 @@ impl Captured {
                 read: self.selection.read_owners().count() as u64,
                 early: u64::from(self.selection.marked_early()),
                 full: self.selection.force_full,
-                verified,
-                mismatches,
             },
             ids,
         );
-    }
-
-    /// Each read owner's content: every field of its routes. False when a path's span or
-    /// the storage fails.
-    fn route_hashes(&mut self) -> bool {
-        self.hashes.clear();
-        if engine_allocation::reserve(&mut self.hashes, self.routes.len()).is_err() {
-            return false;
-        }
-        for route in &self.routes {
-            let Some(path) = route
-                .path_start
-                .checked_add(route.path_len)
-                .and_then(|end| self.path.get(route.path_start..end))
-            else {
-                return false;
-            };
-            let mut hash = crate::slicing::Digest::new();
-            hash.u64(u64::from(route.key.class))
-                .u64(u64::from(route.key.other))
-                .u64(u64::from(route.kind))
-                .u64(u64::from(route.from))
-                .u64(u64::from(route.to))
-                .u64(route.source_state.map(|id| u64::from(id) + 1).unwrap_or(0))
-                .u64(
-                    route
-                        .destination_state
-                        .map(|id| u64::from(id) + 1)
-                        .unwrap_or(0),
-                )
-                .u64(path.len() as u64);
-            for &id in path {
-                hash.u64(u64::from(id));
-            }
-            self.hashes.push((route.key.country, hash.finish()));
-        }
-        // One content hash per owner, in its rows' order.
-        self.hashes.dedup_by(|next, kept| {
-            next.0 == kept.0 && {
-                kept.1 = crate::slicing::Digest::new()
-                    .u64(kept.1)
-                    .u64(next.1)
-                    .finish();
-                true
-            }
-        });
-        true
     }
 
     pub fn tables(&self) -> [TableView; N] {

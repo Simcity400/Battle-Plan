@@ -299,7 +299,7 @@ mod tests {
         world: &World,
         lanes: usize,
         fault: Option<usize>,
-    ) -> Vec<([TableView; N], Vec<(bool, bool)>, bool, u64, u64)> {
+    ) -> Vec<([TableView; N], Vec<(bool, bool)>, bool)> {
         struct Fault<'a> {
             inner: SliceMemory<'a>,
             fault: Option<usize>,
@@ -323,7 +323,7 @@ mod tests {
         memory: &(impl Memory + Sync),
         lanes: usize,
         hours: &[i32],
-    ) -> Vec<([TableView; N], Vec<(bool, bool)>, bool, u64, u64)> {
+    ) -> Vec<([TableView; N], Vec<(bool, bool)>, bool)> {
         let changes = crate::country_input_changes::Domain::enabled(world.count + 1);
         let mut store = SliceFingerprints::new();
         let mut captured = Captured::vacant();
@@ -377,8 +377,6 @@ mod tests {
                     })
                     .collect(),
                 captured.technology_changed.certified,
-                captured.technology_changed.verified,
-                captured.technology_changed.mismatches,
             ));
         }
         output

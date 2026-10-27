@@ -2,13 +2,9 @@
 //! ([`super::PartyStore`], [`crate::party_changes`]): quiet hours read no
 //! party identity, name, ideology or idea and publish the same rows with
 //! fresh popularity and ruling flags; a hooked party write or a changed list
-//! re-reads only its country; an invalidation re-reads every country; verify
-//! catches a write no hook saw and poisons reuse.
+//! re-reads only its country; an invalidation re-reads every country.
 use super::*;
-use crate::{
-    party_changes::{Counts, Watches},
-    sampled_verify::{Check, ROTATION},
-};
+use crate::party_changes::{Counts, Watches};
 use engine_native::{
     ccountry, cidea, cideology_group, cpolitical_party, cpolitical_status::FreshIdeas,
     cpolitical_status::FreshParties, cpolitical_status::IdeaRow, memory::SliceMemory, msvc_string,
@@ -160,12 +156,12 @@ struct Hour {
 }
 
 /// One hour's walk of every country, as the Politics walk makes it.
-fn walk(bytes: &[u8], store: &mut PartyStore, watches: &Watches, check: Check) -> Hour {
+fn walk(bytes: &[u8], store: &mut PartyStore, watches: &Watches) -> Hour {
     let memory = Calls {
         bytes,
         calls: RefCell::default(),
     };
-    let mut reuse = PoliticsReuse::begin(store, watches, check);
+    let mut reuse = PoliticsReuse::begin(store, watches);
     let mut hour = Hour {
         parties: Vec::new(),
         ideas: Vec::new(),
@@ -271,7 +267,7 @@ fn assert_fresh(hour: &Hour, bytes: &[u8]) {
 
 /// The first hour reads and holds every country.
 fn first_hour(bytes: &[u8], store: &mut PartyStore, watches: &Watches) -> Hour {
-    let first = walk(bytes, store, watches, Check::Nothing);
+    let first = walk(bytes, store, watches);
     assert_eq!(first.parties.len(), 4);
     assert_eq!(first.ideas.len(), 4);
     assert_eq!(
@@ -299,7 +295,7 @@ fn quiet_hours_read_no_party_content_and_publish_fresh_rows() {
             status(0) + cpolitical_status::RULING_PARTY,
             party(0, (hour % 2) as usize) as u64,
         );
-        let quiet = walk(&bytes, &mut store, &watches, Check::Nothing);
+        let quiet = walk(&bytes, &mut store, &watches);
         assert_eq!(
             quiet
                 .counts
@@ -325,7 +321,7 @@ fn a_hooked_party_write_rereads_only_its_country() {
     bytes[party(1, 1) + cpolitical_party::NAME_DEFAULT] = 0;
     drop(notification);
     watches.boundary(false);
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let hour = walk(&bytes, &mut store, &watches);
     assert_eq!(
         hour.counts[0].read, 1,
         "only the written party's country is read"
@@ -334,7 +330,7 @@ fn a_hooked_party_write_rereads_only_its_country() {
     assert_fresh(&hour, &bytes);
     // Carried again from the next quiet hour.
     watches.boundary(false);
-    let quiet = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let quiet = walk(&bytes, &mut store, &watches);
     assert_eq!((quiet.counts[0].read, quiet.counts[0].reused), (0, 2));
     assert_fresh(&quiet, &bytes);
 }
@@ -354,11 +350,10 @@ fn a_changed_party_or_idea_list_rereads_its_country() {
         word(&mut bytes, array, second as u64);
         word(&mut bytes, array + 8, first as u64);
     }
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let hour = walk(&bytes, &mut store, &watches);
     assert_eq!(
-        hour.counts
-            .map(|counts| (counts.read, counts.reused, counts.mismatches)),
-        [(1, 1, 0), (1, 1, 0)]
+        hour.counts.map(|counts| (counts.read, counts.reused)),
+        [(1, 1), (1, 1)]
     );
     assert_fresh(&hour, &bytes);
 }
@@ -371,7 +366,7 @@ fn an_invalidating_hour_rereads_every_country() {
     first_hour(&bytes, &mut store, &watches);
     // Load, gap or recovery.
     watches.boundary(true);
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let hour = walk(&bytes, &mut store, &watches);
     assert_eq!(
         hour.counts.map(|counts| (counts.read, counts.reused)),
         [(2, 0), (2, 0)]
@@ -380,7 +375,7 @@ fn an_invalidating_hour_rereads_every_country() {
     // A forgotten store (a failed job) reads every country too.
     watches.boundary(false);
     store.forget();
-    let forgotten = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let forgotten = walk(&bytes, &mut store, &watches);
     assert_eq!(
         forgotten.counts.map(|counts| (counts.read, counts.reused)),
         [(2, 0), (2, 0)]
@@ -388,78 +383,18 @@ fn an_invalidating_hour_rereads_every_country() {
 }
 
 #[test]
-fn verify_catches_an_unobserved_write_and_poisons_reuse() {
-    let mut bytes = world();
-    let watches = Watches::enabled(64);
-    let mut store = PartyStore::new();
-    first_hour(&bytes, &mut store, &watches);
-    // Verify of an unchanged hour reads every carryable country and agrees,
-    // whatever the popularity.
-    set_popularity(&mut bytes, 0, 0, 1);
-    let agreed = walk(&bytes, &mut store, &watches, Check::Every);
-    assert_eq!(
-        agreed
-            .counts
-            .map(|counts| (counts.read, counts.verified, counts.mismatches)),
-        [(2, 2, 0), (2, 2, 0)]
-    );
-    assert!(!watches.poisoned());
-    watches.boundary(false);
-    // A name write no hook observed.
-    string(&mut bytes, party(0, 0) + cpolitical_party::NAME, b"UNSEEN");
-    let caught = walk(&bytes, &mut store, &watches, Check::Every);
-    assert_eq!(caught.counts[0].mismatches, 1);
-    assert!(watches.poisoned());
-    assert_fresh(&caught, &bytes);
-    // Without verify, a poisoned domain carries nothing.
-    watches.boundary(false);
-    let after = walk(&bytes, &mut store, &watches, Check::Nothing);
-    assert_eq!(
-        after.counts.map(|counts| (counts.read, counts.reused)),
-        [(2, 0), (2, 0)]
-    );
-    assert_fresh(&after, &bytes);
-}
-
-#[test]
-fn an_unobserved_write_without_verify_is_carried_stale() {
+fn an_unobserved_write_is_carried_stale() {
     // Guards the premise of the family: only hooked writers and changed
-    // lists move a certificate, so a missed writer would be carried until
-    // verify or an invalidation, which is why every writer site is hooked.
+    // lists move a certificate, so a missed writer would be carried until an
+    // invalidation, which is why every writer site is hooked.
     let mut bytes = world();
     let watches = Watches::enabled(64);
     let mut store = PartyStore::new();
     let first = first_hour(&bytes, &mut store, &watches);
     string(&mut bytes, party(0, 0) + cpolitical_party::NAME, b"UNSEEN");
-    let stale = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let stale = walk(&bytes, &mut store, &watches);
     assert_eq!(stale.counts[0].reused, 2);
     assert_eq!(stale.parties, first.parties);
-}
-
-#[test]
-fn an_hourly_slice_verifies_only_its_countries_and_carries_the_rest() {
-    let bytes = world();
-    let watches = Watches::enabled(64);
-    let mut store = PartyStore::new();
-    first_hour(&bytes, &mut store, &watches);
-    let mut verified = [0; 2];
-    for hour in 0..ROTATION as i32 {
-        let check = Check::Slice { hour };
-        let sampled = walk(&bytes, &mut store, &watches, check);
-        let due = [10_u64, 11]
-            .iter()
-            .filter(|&&key| check.covers(key))
-            .count() as u64;
-        for (counts, verified) in sampled.counts.iter().zip(&mut verified) {
-            assert_eq!((counts.verified, counts.reused), (due, 2 - due));
-            assert_eq!(counts.mismatches, 0);
-            *verified += due;
-        }
-        assert_fresh(&sampled, &bytes);
-        watches.boundary(false);
-    }
-    // One rotation compares every carried country exactly once.
-    assert_eq!(verified, [2, 2]);
 }
 
 #[test]
@@ -475,12 +410,12 @@ fn a_failed_walk_holds_nothing() {
         status(1) + cpolitical_status::RULING_PARTY,
         0x1234,
     );
-    let failed = walk(&broken, &mut store, &watches, Check::Nothing);
+    let failed = walk(&broken, &mut store, &watches);
     assert_eq!(failed.parties.len(), 2);
     // The incomplete party walk certifies nothing afterwards; the complete
     // idea walk still does.
     string(&mut bytes, party(0, 0) + cpolitical_party::NAME, b"UNSEEN");
-    let hour = walk(&bytes, &mut store, &watches, Check::Nothing);
+    let hour = walk(&bytes, &mut store, &watches);
     assert_eq!(
         hour.counts.map(|counts| (counts.read, counts.reused)),
         [(2, 0), (0, 2)]

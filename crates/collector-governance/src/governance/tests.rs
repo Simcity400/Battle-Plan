@@ -180,12 +180,9 @@ fn breakdown_capture_reads_sources_without_the_cached_trees() {
     assert!(engine_native::modifier_breakdown::balance(&memory, 0, RECORDS).is_err());
     let mut captured = Captured::vacant();
     captured.balances.outcome = Outcome::Rows { len: 1 };
-    // An hour whose slice the record is not in: no witness even in a
+    // An hour whose slice record 0 is not in: no witness even in a
     // `breakdown_witness` build.
-    let hour = (0..24)
-        .find(|&hour| !crate::sampled_verify::Check::hourly(hour, false).covers(0))
-        .unwrap();
-    captured.capture_breakdowns(&memory, 0, STATE, hour);
+    captured.capture_breakdowns(&memory, 0, STATE, 1);
     assert_eq!(captured.breakdown_outcome, Outcome::Rows { len: 1 });
     assert_eq!(
         captured.breakdowns,
@@ -1011,7 +1008,6 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
         store: &mut SliceFingerprints,
         changes: &crate::country_input_changes::Domain,
     ) -> (Vec<u32>, usize) {
-        crate::sampled_verify::begin_hour(hour);
         captured.technology_selection.reset(hour, force_full);
         let result = acquire(
             memory,
@@ -1077,12 +1073,9 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
 /// A hooked technology writer's mark reads its country within the hour,
 /// alone. Daily progress moves without a mark and the country's slice
 /// carries its held roster with its assigned technologies' progress read
-/// afresh; a level written
-/// without a mark is a missed writer: the slice whose sampled comparison
-/// covers the country reads it whole and disables reuse, and every country
-/// is read from then on.
+/// afresh; a level written without a mark is carried as held.
 #[test]
-fn a_marked_technology_roster_is_read_within_the_hour_and_an_unmarked_change_poisons() {
+fn a_marked_technology_roster_is_read_within_the_hour_and_an_unmarked_change_is_carried() {
     use crate::country_input_changes::{Domain, Table};
     let mut fixture = technology_fixture();
     assign_slots(&mut fixture, 0, &[fixture_technology(0, 0)]);
@@ -1094,7 +1087,6 @@ fn a_marked_technology_roster_is_read_within_the_hour_and_an_unmarked_change_poi
     enabled[4] = true;
     let mut store = SliceFingerprints::new();
     let mut at = |fixture: &focus_test_kit::Fixture, hour: i32| {
-        crate::sampled_verify::begin_hour(hour);
         captured.technology_selection.reset(hour, false);
         let result = acquire(
             &fixture.memory(),
@@ -1135,7 +1127,6 @@ fn a_marked_technology_roster_is_read_within_the_hour_and_an_unmarked_change_poi
     let (owners, rows) = at(&fixture, 25);
     assert_eq!(owners, [1]);
     assert_eq!(rows[0].progress_raw, 260_000);
-    assert!(!changes.poisoned(Table::Technologies));
     // A level changed with no mark is not read early, and slice 2 carries
     // the held level.
     fixture.w32(fixture_technology(1, 1) + ctechnology::LEVEL, 3);
@@ -1143,11 +1134,6 @@ fn a_marked_technology_roster_is_read_within_the_hour_and_an_unmarked_change_poi
     let (owners, rows) = at(&fixture, 50);
     assert_eq!(owners, [2]);
     assert_eq!(rows[1].level, 0);
-    assert!(!changes.poisoned(Table::Technologies));
-    // The slice whose sampled comparison covers country 2 finds it.
-    assert_eq!(at(&fixture, 2 + 576).0, [2]);
-    assert!(changes.poisoned(Table::Technologies));
-    assert_eq!(at(&fixture, 3 + 576).0, [1, 2]);
 }
 
 /// One hour's focus read through the family's stores: the countries whose
@@ -1225,8 +1211,8 @@ fn the_focus_boundary_reads_only_countries_owning_a_state() {
 /// Focus is read for every country at the first hour after the daily tick,
 /// which advances every country's progress, and between those only for the
 /// countries a hooked focus writer marked: a selection made at hour 5 is
-/// read at the next hour, not at the next day. Daily progress compares equal
-/// at the boundary; a selection no hook saw disables reuse there.
+/// read at the next hour, not at the next day. A selection no hook saw is
+/// read at the boundary.
 #[test]
 fn focus_is_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
     use crate::country_input_changes::{Domain, Table};
@@ -1254,7 +1240,7 @@ fn focus_is_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
     assert_eq!(captured.focus.rows[0].progress, 4_000);
     assert!(focus_hour(&mut captured, &fixture, 8, &mut store, &changes).is_empty());
     // The daily tick advances both countries' progress: every country is
-    // read at the boundary, and the unmarked progress compares equal.
+    // read at the boundary.
     fixture.w64(R1 + progress::PROGRESS, 99_000);
     fixture.w64(R2 + progress::PROGRESS, 9_000);
     assert_eq!(
@@ -1262,20 +1248,14 @@ fn focus_is_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
         [1, 2]
     );
     assert_eq!(captured.focus.rows[0].progress, 99_000);
-    assert!(!changes.poisoned(Table::Focus));
-    // A selection no hook marked waits for the boundary, whose comparison
-    // disables reuse; every country is read from then on.
+    // A selection no hook marked waits for the boundary.
     fixture.w64(R1 + progress::CURRENT, FC2 as u64);
     assert!(focus_hour(&mut captured, &fixture, 25, &mut store, &changes).is_empty());
     assert_eq!(
         focus_hour(&mut captured, &fixture, 48, &mut store, &changes),
         [1, 2]
     );
-    assert!(changes.poisoned(Table::Focus));
-    assert_eq!(
-        focus_hour(&mut captured, &fixture, 49, &mut store, &changes),
-        [1, 2]
-    );
+    assert!(focus_hour(&mut captured, &fixture, 49, &mut store, &changes).is_empty());
 }
 
 /// A drifting country no writer marked is carried at its slice: of its
@@ -1285,7 +1265,7 @@ fn focus_is_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write() {
 /// template again.
 #[test]
 fn an_unmarked_technology_slice_reads_only_progress() {
-    use crate::country_input_changes::Domain;
+    use crate::country_input_changes::{Domain, Table};
     let mut fixture = technology_fixture();
     let changes = Domain::enabled(64);
     let mut captured = Captured::vacant();
@@ -1305,7 +1285,6 @@ fn an_unmarked_technology_slice_reads_only_progress() {
         }
     }
     let mut at = |fixture: &focus_test_kit::Fixture, hour: i32| {
-        crate::sampled_verify::begin_hour(hour);
         captured.technology_selection.reset(hour, false);
         let memory = Reads {
             memory: fixture.memory(),
@@ -1351,8 +1330,10 @@ fn an_unmarked_technology_slice_reads_only_progress() {
     );
     assert_eq!(carried.len(), 2);
     assert_eq!(carried[1].progress_raw, 310_000);
-    // The same rows as a full read of the same memory.
-    let (full, _) = at(&fixture, 2 * 576 + 1);
+    // The same rows as a full read of the same memory: a mark reads the
+    // country whole.
+    changes.write(Table::Technologies, 1);
+    let (full, _) = at(&fixture, 27);
     assert_eq!(carried, full);
 }
 
@@ -1403,7 +1384,6 @@ fn a_carried_roster_reads_progress_in_roster_order_and_keeps_a_persistent_failur
     enabled[4] = true;
     let mut store = SliceFingerprints::new();
     let mut at = |fixture: &focus_test_kit::Fixture, hour: i32, address: usize, faults: u32| {
-        crate::sampled_verify::begin_hour(hour);
         captured.technology_selection.reset(hour, false);
         let memory = Faulty {
             memory: fixture.memory(),
@@ -1469,7 +1449,6 @@ fn a_carried_roster_fails_as_the_full_walk_at_each_fault() {
                    changes: &Domain,
                    (hour, force_full): (i32, bool),
                    (address, remaining): (usize, u32)| {
-        crate::sampled_verify::begin_hour(hour);
         let mut captured = Captured::vacant();
         let mut enabled = [false; N];
         enabled[2] = true;
@@ -1560,7 +1539,6 @@ fn two_slots_on_one_technology_read_its_progress_once_in_the_carried_roster() {
                    changes: &Domain,
                    (hour, force_full): (i32, bool),
                    (nth, persistent): (u32, bool)| {
-        crate::sampled_verify::begin_hour(hour);
         let mut captured = Captured::vacant();
         let mut enabled = [false; N];
         enabled[2] = true;

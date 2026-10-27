@@ -577,7 +577,6 @@ impl Captured {
             names,
             &mut self.keys,
             changes,
-            crate::sampled_verify::current_burned_in(crate::template_changes::VERIFY),
             &mut self.rows.rows,
             &mut self.bytes.first,
         );

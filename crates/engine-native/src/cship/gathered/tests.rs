@@ -128,42 +128,6 @@ fn every_object_lists_ascending_disjoint_fields_no_wider_than_its_storage() {
 }
 
 #[test]
-fn incomplete_held_observations_compare_only_successful_fields_and_payloads() {
-    let mut kept = HeldShip {
-        ship: Object {
-            pointer: SHIP_A,
-            completed: SHIP.len(),
-            ..Object::NONE
-        },
-        heap: Heap {
-            completed: 2,
-            spans: [(IMAGE, 16), (IMAGE + 32, 8)],
-            ..Heap::NONE
-        },
-        variants: [Object::NONE; POOL_ENTRIES],
-        naval_variants: [Object::NONE; POOL_ENTRIES],
-    };
-    let mut fresh = kept;
-    fresh.ship.completed = 9;
-    fresh.ship.bytes[9][0] = 1;
-    fresh.heap.completed = 1;
-    fresh.heap.sprite[0] = 1;
-    assert!(!kept.differs(&fresh));
-    assert!(!fresh.differs(&kept));
-    fresh.ship.bytes[8][0] = 1;
-    assert!(kept.differs(&fresh));
-    assert!(fresh.differs(&kept));
-    fresh.ship.bytes[8][0] = 0;
-    fresh.heap.pool[0] = 1;
-    assert!(kept.differs(&fresh));
-    fresh.heap.pool[0] = 0;
-    fresh.heap.spans[0].0 += 1;
-    assert!(kept.differs(&fresh));
-    kept.heap.completed = 0;
-    assert!(!kept.differs(&fresh));
-}
-
-#[test]
 fn gathered_fields_serve_every_read_inside_them_without_the_source() {
     let bytes = image();
     let slice = SliceMemory {

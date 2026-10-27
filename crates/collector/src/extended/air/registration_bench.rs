@@ -7,7 +7,7 @@
 //! `cargo test -p collector --release --lib registration_bench -- --ignored --nocapture`
 
 use super::*;
-use crate::{air_base_carry_changes::Watches, extended::fog, sampled_verify::Check};
+use crate::{air_base_carry_changes::Watches, extended::fog};
 use engine_native::{
     cair_base, cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state, cprovince,
     cstate, cstrategic_air_manager,
@@ -153,8 +153,7 @@ fn build(shape: &Shape) -> Vec<u8> {
     world.bytes
 }
 
-fn copy(bytes: &[u8], job: &mut AirBasesJob, check: Check) -> f64 {
-    job.carry.check = check;
+fn copy(bytes: &[u8], job: &mut AirBasesJob) -> f64 {
     let memory = super::air_bases_test_kit::memory(bytes);
     let started = Instant::now();
     let report = copy_air_bases_refresh_growing(
@@ -233,10 +232,7 @@ fn registration_bench() {
             ..CarryRun::default()
         };
         // Production takes each base's slots from its dense list.
-        job.slot_run = crate::air_base_changes::SlotRun {
-            dense: true,
-            check: Check::Nothing,
-        };
+        job.slot_run = crate::air_base_changes::SlotRun { dense: true };
         let mut captured = fog::Captured::with_capacities(&fog::Capacities {
             rows: [16; 7],
             radar_provinces: 8,
@@ -248,24 +244,22 @@ fn registration_bench() {
         // Warm: grow the log to the world, then hold every base and keep
         // every walk.
         let store = job.registration_store.take();
-        copy(&bytes, &mut job, Check::Nothing);
+        copy(&bytes, &mut job);
         job.grow();
         job.registration_store = store;
-        copy(&bytes, &mut job, Check::Nothing);
+        copy(&bytes, &mut job);
         let (_, fresh_rows) = decode(&job, &mut captured, Some(&mut reuse));
         let rows = fresh_rows.rows.len();
         let mut fresh_copy = Vec::new();
         let mut carried_copy = Vec::new();
-        let mut verify_copy = Vec::new();
         let mut walked = Vec::new();
         let mut reused = Vec::new();
-        let mut verify_reused = Vec::new();
         for _ in 0..HOURS {
             // Read afresh: no store.
             let store = job.registration_store.take();
-            fresh_copy.push(copy(&bytes, &mut job, Check::Nothing));
+            fresh_copy.push(copy(&bytes, &mut job));
             job.registration_store = store;
-            carried_copy.push(copy(&bytes, &mut job, Check::Nothing));
+            carried_copy.push(copy(&bytes, &mut job));
             assert_eq!(job.segments.len(), shape.bases);
             let (time, plain) = decode(&job, &mut captured, None);
             walked.push(time);
@@ -276,23 +270,18 @@ fn registration_bench() {
                 (kept.outcome, &kept.rows, &kept.wings)
             );
             assert_eq!(plain.rows, fresh_rows.rows);
-            verify_copy.push(copy(&bytes, &mut job, Check::Every));
-            let (time, _) = decode(&job, &mut captured, Some(&mut reuse));
-            verify_reused.push(time);
         }
         let counts = reuse.counts();
         println!(
-            "{} ({} bases, {} countries, {rows} rows, {} wings): AirBases job fresh {:.1} us, carried {:.1} us, verify-every {:.1} us; registrations decode walked {:.1} us, kept rows {:.1} us, after verify-every {:.1} us; decoded reused {} walked {}",
+            "{} ({} bases, {} countries, {rows} rows, {} wings): AirBases job fresh {:.1} us, carried {:.1} us; registrations decode walked {:.1} us, kept rows {:.1} us; decoded reused {} walked {}",
             shape.name,
             shape.bases,
             shape.countries,
             shape.bases * shape.containers * shape.pools * shape.wings,
             median(fresh_copy),
             median(carried_copy),
-            median(verify_copy),
             median(walked),
             median(reused),
-            median(verify_reused),
             counts.reused,
             counts.walked,
         );

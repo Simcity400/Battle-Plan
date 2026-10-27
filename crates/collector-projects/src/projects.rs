@@ -218,18 +218,17 @@ impl Capacities {
     }
 }
 
-pub const ACQUISITION_PHASE_NAMES: [&str; 6] = [
+pub const ACQUISITION_PHASE_NAMES: [&str; 5] = [
     "selection",
     "project_native",
     "runtime_native",
-    "fingerprint",
     "family_inclusive",
     "cold_join",
 ];
 
 pub struct Captured {
     profile_acquisition: bool,
-    acquisition_phases: [u64; 6],
+    acquisition_phases: [u64; 5],
     programs: CaptureRows<nproject_cprogram::Row>,
     facilities: CaptureRows<raid_facilities::Row>,
     raid_intel: CaptureRows<engine_raid_inputs::raid_intel_inputs::Row>,
@@ -381,7 +380,7 @@ impl Captured {
             project_read: Vec::new(),
             project_runtime: runtime::Runtime::default(),
             profile_acquisition: false,
-            acquisition_phases: [0; 6],
+            acquisition_phases: [0; 5],
             scientist_injury_read: false,
         }
     }
@@ -394,7 +393,7 @@ impl Captured {
         self.project_changed.certified
     }
 
-    pub fn acquisition_phases(&self) -> Option<[u64; 6]> {
+    pub fn acquisition_phases(&self) -> Option<[u64; 5]> {
         self.profile_acquisition.then_some(self.acquisition_phases)
     }
 
@@ -415,7 +414,7 @@ impl Captured {
         self.tooltip_operands.reset();
         self.counteroperatives.reset();
         self.projects.reset();
-        self.acquisition_phases = [0; 6];
+        self.acquisition_phases = [0; 5];
         self.history.reset();
         self.breakthroughs.reset();
         self.nukes.reset();
@@ -1473,10 +1472,7 @@ impl Captured {
     /// unpublished countries and those a hooked project writer marked
     /// ([`crate::country_input_changes`]). A row's owner is its project's stored owner tag (in the
     /// project), any raw id linking to the pool's country, so a read country selects, and the
-    /// census keeps alive, every raw id its link table entries name. A read of an unmarked owner
-    /// compares a digest of its projects' identity and lifecycle (definition, program reference,
-    /// started and completed) with its last read; the state machine and the reward history, which
-    /// the daily pass advances, are left out.
+    /// census keeps alive, every raw id its link table entries name.
     #[allow(clippy::too_many_arguments)]
     fn capture_project_family(
         &mut self,
@@ -1500,7 +1496,6 @@ impl Captured {
             &mut self.project_changed,
             |visit| changes.take(Table::Projects, visit),
             0,
-            changes.every(Table::Projects),
         );
         self.project_read.clear();
         let fail = |captured: &mut Self, reason| {
@@ -1542,7 +1537,7 @@ impl Captured {
                         &mut self.project_runtime,
                     );
                     if let Some(started) = started {
-                        self.acquisition_phases[5] = elapsed(started);
+                        self.acquisition_phases[4] = elapsed(started);
                     }
                     outcomes
                 } else {
@@ -1588,11 +1583,6 @@ impl Captured {
                 if let Some(started) = runtime_started {
                     self.acquisition_phases[2] = elapsed(started);
                 }
-                let digest_started = self.profile_acquisition.then(qpc);
-                self.compare_project_owners(store, changes);
-                if let Some(started) = digest_started {
-                    self.acquisition_phases[3] = elapsed(started);
-                }
             }
         }
         family::record(
@@ -1600,14 +1590,12 @@ impl Captured {
             &family::Counts {
                 marked: self.project_changed.marked() as u64,
                 read: self.project_countries().count() as u64,
-                verified: self.project_changed.verified,
-                mismatches: self.project_changed.mismatches,
                 full: !self.project_changed.certified,
             },
             None,
         );
         if let Some(started) = family_started {
-            self.acquisition_phases[4] = elapsed(started);
+            self.acquisition_phases[3] = elapsed(started);
         }
     }
 
@@ -1700,61 +1688,6 @@ impl Captured {
     fn project_countries(&self) -> impl Iterator<Item = &[(u32, u32)]> {
         self.project_read
             .chunk_by(|first, second| first.0 == second.0)
-    }
-
-    /// Holds each read country's digest, over the rows of all its owner raw
-    /// ids, and compares an unmarked one with its last read: a writer marks
-    /// the country, whichever raw id its projects name. An incomplete read
-    /// holds nothing.
-    fn compare_project_owners(
-        &mut self,
-        store: &mut SliceFingerprints,
-        changes: &dyn crate::country_input_changes::Changes,
-    ) {
-        let (Outcome::Rows { len }, Outcome::Rows { .. }) =
-            (self.projects.outcome, self.history.outcome)
-        else {
-            for country in self
-                .project_read
-                .chunk_by(|first, second| first.0 == second.0)
-            {
-                self.project_changed.unread(store, country[0].0);
-            }
-            return;
-        };
-        // The walk leaves its rows in key order (owner, local id).
-        let rows = &self.projects.rows[..len];
-        for country in self
-            .project_read
-            .chunk_by(|first, second| first.0 == second.0)
-        {
-            let mut digest = crate::slicing::Digest::new();
-            for &(_, owner) in country {
-                let start = rows.partition_point(|row| row.owner < owner);
-                let end = rows.partition_point(|row| row.owner <= owner);
-                digest.u64(u64::from(owner)).u64((end - start) as u64);
-                for row in &rows[start..end] {
-                    digest
-                        .u64(u64::from(row.local_id))
-                        .u64(u64::from(row.definition_id))
-                        .u64(row.program_reference)
-                        .u64(u64::from(row.started))
-                        .u64(u64::from(row.completed));
-                }
-            }
-            if self
-                .project_changed
-                .read(store, country[0].0, digest.finish())
-            {
-                changes.mismatch(
-                    crate::country_input_changes::Table::Projects,
-                    crate::country_input_changes::Mismatch {
-                        country: country[0].0,
-                        field: "Projects (identity and lifecycle)",
-                    },
-                );
-            }
-        }
     }
 }
 

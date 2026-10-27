@@ -20,17 +20,11 @@
 //! first registration, no hooked writer ran since: an object with the held
 //! address, slot and headers keeps its held certificate without a lookup.
 //!
-//! Each hour also reads the carryable objects of its sampled slice
-//! ([`crate::sampled_verify`], keyed by canonical slot; every one under
-//! `mission_verify`) afresh, publishes the fresh rows and poisons reuse on a
-//! difference. The store travels with the AirMissions job's request and
+//! The store travels with the AirMissions job's request and
 //! holds only the objects of the latest complete walk, so its size follows
 //! live demand. Allocation is advisory: an object whose registrations cannot
 //! be held is read afresh next hour.
-use crate::{
-    mission_changes::{Changes, Counts},
-    sampled_verify::Check,
-};
+use crate::mission_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_native::{
     cair_regional_mission::Carry, cair_regional_mission::Registration, cair_regional_mission::Root,
@@ -215,33 +209,21 @@ impl MissionStore {
     }
 }
 
-/// A country air object's stable sampling key: its canonical slot.
-pub(crate) fn key(root: &Root) -> u64 {
-    u64::from(root.canonical_slot)
-}
-
 /// One walk's view of the store and the observation that certifies reuse.
 pub(crate) struct MissionReuse<'a> {
     store: &'a mut MissionStore,
     changes: &'a dyn Changes,
-    /// Which carryable objects this hour reads afresh and compares.
-    check: Check,
     /// No hooked writer ran since the held walk began.
     quiet: bool,
 }
 
 impl<'a> MissionReuse<'a> {
     /// Takes the domain's quiet token before the walk's first registration.
-    pub(crate) fn begin(
-        store: &'a mut MissionStore,
-        changes: &'a dyn Changes,
-        check: Check,
-    ) -> Self {
+    pub(crate) fn begin(store: &'a mut MissionStore, changes: &'a dyn Changes) -> Self {
         let quiet = store.begin(changes.quiet());
         Self {
             store,
             changes,
-            check,
             quiet,
         }
     }
@@ -264,7 +246,7 @@ impl<'a> MissionReuse<'a> {
         self.store.finish(complete);
         let store = self.store;
         output.clear();
-        if !complete || store.counts.mismatches != 0 {
+        if !complete {
             store.orders.clear();
         } else {
             store.orders.capture(
@@ -302,7 +284,7 @@ impl Carry for MissionReuse<'_> {
     fn plan(&mut self, root: &Root) -> (usize, bool) {
         let certificate = self.certify(root);
         let held = certificate.and_then(|certificate| self.store.previous.find(&certificate));
-        let carry = held.is_some() && !self.check.covers(key(root));
+        let carry = held.is_some();
         let token = self.store.plans.len();
         let planned = allocation::advisory(|| allocation::reserve(&mut self.store.plans, 1));
         if planned.is_err() {
@@ -364,7 +346,7 @@ impl Carry for MissionReuse<'_> {
         };
         let registrations = &mut store.current.registrations;
         if allocation::advisory(|| allocation::reserve(registrations, 1)).is_err() {
-            // Neither compared nor held.
+            // Not held.
             registrations.truncate(start);
             plan.recorded = None;
             return;
@@ -382,15 +364,6 @@ impl Carry for MissionReuse<'_> {
             return;
         };
         let fresh = start..store.current.registrations.len();
-        if let Some(held) = plan.held {
-            store.counts.verified += 1;
-            if store.previous.registrations[held] != store.current.registrations[fresh.clone()] {
-                store.counts.mismatches += 1;
-                self.changes.mismatch();
-                // Poisoned: no later object is certified, quiet or not.
-                self.quiet = false;
-            }
-        }
         let current = &mut store.current;
         let certificate = plan.certificate.filter(|_| {
             allocation::advisory(|| allocation::reserve(&mut current.entries, 1)).is_ok()

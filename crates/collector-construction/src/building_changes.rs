@@ -28,15 +28,9 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused, read, verified and mismatched statuses; reused and read rows;
-/// empty statuses; quiet hours; statuses read because a writer touched
-/// them; settled hours.
-static READS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
-/// The family's sampled comparisons.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried StateBuildings or ProvinceBuildings rows differ from a fresh read",
-    "a settled hour's sampled building status no longer reads as its held read",
-]);
+/// Reused and read statuses; reused and read rows; empty statuses; quiet
+/// hours; statuses read because a writer touched them; settled hours.
+static READS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 /// Statuses the latest complete capture walked, for off-thread sizing.
 static STATUSES: AtomicUsize = AtomicUsize::new(0);
 
@@ -139,9 +133,6 @@ pub trait Changes: Sync {
     /// cannot be observed. Equal values across hours prove that no observed
     /// writer touched it.
     fn sequence(&self, status: usize) -> Option<(u64, u64)>;
-    /// A fresh read disagreed with carried rows: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
 }
 
 impl Changes for Watches {
@@ -150,9 +141,6 @@ impl Changes for Watches {
     }
     fn sequence(&self, status: usize) -> Option<(u64, u64)> {
         self.registry.sequence(status)
-    }
-    fn mismatch(&self) {
-        self.registry.poison();
     }
 }
 
@@ -165,14 +153,7 @@ impl Changes for Observer {
     fn sequence(&self, status: usize) -> Option<(u64, u64)> {
         WATCHES.sequence(status)
     }
-    fn mismatch(&self) {
-        WATCHES.mismatch();
-    }
 }
-
-/// Whether captures read every carryable status afresh and compare, rather
-/// than the hour's sampled slice ([`crate::sampled_verify`]).
-pub const VERIFY: bool = cfg!(feature = "building_verify");
 
 /// The status a site's first argument names: the argument itself, or a
 /// building's guarded backlink; `None` when that does not read, and for a
@@ -267,23 +248,18 @@ pub fn collect() {
 /// One capture's statuses and rows. `empty` statuses have no building and
 /// are neither read nor reused, unless a writer touched them. `settled`
 /// marks a capture that carried both tables without walking the locations,
-/// reading the `marked` statuses a writer touched (counted as read) and its
-/// sampled slice; `quiet` a settled one that read no touched status;
-/// `unread_slice` one whose settled slice found a status that no longer
-/// reads as its held read (a changed header or a failed read), a mismatch.
+/// reading only the `marked` statuses a writer touched (counted as read);
+/// `quiet` a settled one that read no touched status.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     pub reused_rows: u64,
     pub read_rows: u64,
     pub empty: u64,
     pub marked: u64,
     pub settled: bool,
     pub quiet: bool,
-    pub unread_slice: bool,
 }
 
 /// A worker publishes one capture's counts and, when it walked every status,
@@ -292,8 +268,6 @@ pub fn record(counts: &Counts, statuses: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         counts.reused_rows,
         counts.read_rows,
         counts.empty,
@@ -303,11 +277,6 @@ pub fn record(counts: &Counts, statuses: Option<usize>) {
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(
-        counts.verified,
-        counts.mismatches,
-        usize::from(counts.unread_slice),
-    );
     if let Some(statuses) = statuses {
         STATUSES.store(statuses, Ordering::Relaxed);
     }
@@ -323,27 +292,20 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "building_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_statuses": reads[0],
         "read_statuses": reads[1],
-        "verified_statuses": reads[2],
-        "mismatches": reads[3],
-        "reused_rows": reads[4],
-        "read_rows": reads[5],
-        "empty_statuses": reads[6],
-        "quiet_hours": reads[7],
-        "marked_statuses": reads[8],
-        "settled_hours": reads[9],
+        "reused_rows": reads[2],
+        "read_rows": reads[3],
+        "empty_statuses": reads[4],
+        "quiet_hours": reads[5],
+        "marked_statuses": reads[6],
+        "settled_hours": reads[7],
         "events": events,
         "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
         "structure_poisoned": WATCHES.structure.load(Ordering::Relaxed) != 0,
         "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a walk reads every location's identity and status headers and carries a state's or province's StateBuildings or ProvinceBuildings rows when its status, identity and vector headers are those of the held read and no hooked writer touched the status since; settled_hours counts hours that walked no location, because the latest walk certified every status (empty_statuses, without buildings, too), the watch epoch held and both location table headers are unchanged: they read afresh only the statuses a hooked writer marked since the previous hour (marked_statuses, from the status alone, its identity unchanged) and carry every other; quiet_hours counts the settled hours that marked none; every hour also reads the carryable statuses of its slice afresh (one in rotation_hours by scope and location id; every one in verify mode, which never settles), publishes the fresh rows and disables reuse at the first mismatch (sampled_*), and in a settled hour a sampled status that no longer reads as held is a mismatch; structure_poisoned: entering nudge mode (enter_nudge_mode) disabled reuse for the attachment"
+        "scope": "cumulative since attach; a walk reads every location's identity and status headers and carries a state's or province's StateBuildings or ProvinceBuildings rows when its status, identity and vector headers are those of the held read and no hooked writer touched the status since; settled_hours counts hours that walked no location, because the latest walk certified every status (empty_statuses, without buildings, too), the watch epoch held and both location table headers are unchanged: they read afresh only the statuses a hooked writer marked since the previous hour (marked_statuses, from the status alone, its identity unchanged) and carry every other; quiet_hours counts the settled hours that marked none; structure_poisoned: entering nudge mode (enter_nudge_mode) disabled reuse for the attachment"
     })
 }
 

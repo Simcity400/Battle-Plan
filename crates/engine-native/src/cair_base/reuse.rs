@@ -74,7 +74,7 @@ impl<M: Memory> Reader<'_, M> {
         resolved: &mut Resolver<'_>,
         buffers: &mut RegistrationBuffers<'_>,
         state: &mut RegistrationState,
-        slots: SlotMode<'_>,
+        slots: SlotMode,
         reuse: &mut (dyn RegistrationReuse + '_),
     ) -> bool {
         let RegistrationBase { pointer, handle } = observed;
@@ -85,7 +85,7 @@ impl<M: Memory> Reader<'_, M> {
         let Ok(containers) = self.array(pointer, COUNTRY_CONTAINERS) else {
             return false;
         };
-        let sought = slots.dense && !slots.full.contains(&handle);
+        let sought = slots.dense;
         if containers.count != output.slots || sought != output.sought_plan {
             return false;
         }

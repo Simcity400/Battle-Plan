@@ -17,35 +17,22 @@
 //! recovery, a requested refresh or a failed walk reads every area.
 //!
 //! A row the job carried ([`crate::province_changes`]) arrives with its held
-//! pointers: an hour that compares every province's pointers (any hour but a
-//! quiet carry) first reads every carried row's pointers again, and a quiet
-//! carry those of its slice, so the areas see what a full walk would gather.
-//!
-//! Each hour also compares the held pointers of its sampled slice of
-//! provinces (by id) with the walk and reads the held areas of its slice (by
-//! label) afresh, one in [`crate::sampled_verify::ROTATION`]; the first
-//! difference poisons reuse and every later hour reads every area.
-//! `area_verify`, on by default during the family's burn-in, reads every area
-//! every hour and compares it with what the carry would publish.
-use crate::sampled_verify::{Check, Sampled};
+//! pointers: an hour that compares every province's pointers first reads
+//! every carried row's pointers again, a bounded marked hour those it
+//! compares, and a quiet carry none, so the areas see what a full walk would
+//! gather.
 use engine_native::{cprovince::Capture, walk::Outcome};
 use std::sync::{
     Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 
-/// Every area is read and compared every hour (`area_verify`).
-pub const VERIFY: bool = cfg!(feature = "area_verify");
-
-static POISONED: AtomicBool = AtomicBool::new(false);
 /// Full, quiet and marked hours.
 static HOURS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 /// Re-pointed provinces, read areas and carried areas.
 static WORK: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 static REFUSALS: AtomicU64 = AtomicU64::new(0);
 static LAST_REFUSAL: Mutex<Option<&'static str>> = Mutex::new(None);
-static SAMPLED: Sampled =
-    Sampled::burned_in(&["held controller or owner areas differ from a fresh read"]);
 
 /// The Provinces job, after its walk: labels the walked rows' areas and
 /// writes the hour's controller-area nodes, under the hour's `take` of the
@@ -69,14 +56,12 @@ pub fn capture(
         refuse("the province walk did not complete");
         return outcome;
     };
-    let check = crate::sampled_verify::current_burned_in(VERIFY);
-    let quiet = store.carries_quietly(take, len, VERIFY);
+    let quiet = store.carries_quietly(take, len);
     // A marked hour compares only the provinces a controller change can
-    // re-point ([`engine_native::controller_areas::Store::repointable`]), besides
-    // the slice; anything it cannot bound compares every province.
+    // re-point ([`engine_native::controller_areas::Store::repointable`]);
+    // anything it cannot bound compares every province.
     let mut scope = std::mem::take(&mut store.scope);
     let bounded = !quiet
-        && !VERIFY
         && take.is_some()
         && matches!(
             store.repointable(memory, &capture.rows[..len], &mut scope),
@@ -84,9 +69,9 @@ pub fn capture(
         );
     let refreshed = capture.refresh_carried_areas(memory, &|id| {
         if quiet {
-            check.covers(u64::from(id))
+            false
         } else if bounded {
-            check.covers(u64::from(id)) || scope.binary_search(&id).is_ok()
+            scope.binary_search(&id).is_ok()
         } else {
             true
         }
@@ -97,24 +82,19 @@ pub fn capture(
     if let Err(reason) = refreshed {
         return fail(capture, reason);
     }
-    let mut result = run(capture, memory, base, len, take, check);
-    // A quiet or bounded carry that fell back to a full read (a slice
-    // mismatch or a refused area) read some carried rows' held pointers:
-    // read them all again and capture afresh.
+    let mut result = run(capture, memory, base, len, take);
+    // A quiet or bounded carry that fell back to a full read (a refused
+    // area) read some carried rows' held pointers: read them all again and
+    // capture afresh.
     let fell_back = match result {
         Ok(counts) => counts.full || (quiet && !counts.quiet),
         Err(_) => true,
     };
     if (quiet || bounded) && fell_back && capture.carried_rows() != 0 {
-        if let Ok(first) = result
-            && first.verified != 0
-        {
-            sampled(first.verified, first.mismatches);
-        }
         if let Err(reason) = capture.refresh_carried_areas(memory, &|_| true) {
             return fail(capture, reason);
         }
-        result = run(capture, memory, base, len, take, check);
+        result = run(capture, memory, base, len, take);
     }
     match result {
         Ok(counts) => record(counts),
@@ -129,7 +109,6 @@ fn run(
     base: usize,
     len: usize,
     take: Option<[u64; 2]>,
-    check: Check,
 ) -> Result<engine_native::controller_areas::Counts, &'static str> {
     let Capture {
         rows,
@@ -141,16 +120,7 @@ fn run(
     let Some(store) = area_store.as_mut() else {
         return Err("controller area store absent");
     };
-    store.capture(
-        memory,
-        base,
-        &mut rows[..len],
-        areas,
-        area_nodes,
-        take,
-        &|key| check.covers(key),
-        VERIFY,
-    )
+    store.capture(memory, base, &mut rows[..len], areas, area_nodes, take)
 }
 
 /// A carried row's pointers did not read again: the Provinces table
@@ -186,15 +156,6 @@ fn record(counts: engine_native::controller_areas::Counts) {
     {
         total.fetch_add(value, Ordering::Relaxed);
     }
-    if counts.verified != 0 {
-        sampled(counts.verified, counts.mismatches);
-    }
-}
-
-fn sampled(verified: u64, mismatches: u64) {
-    if SAMPLED.record(verified, mismatches, 0) {
-        POISONED.store(true, Ordering::Relaxed);
-    }
 }
 
 fn refuse(reason: &'static str) {
@@ -212,12 +173,6 @@ pub fn status() -> impl serde::Serialize {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     crate::status::status!({
         "configured": cfg!(feature = "area_changes"),
-        "verify": VERIFY,
-        "poisoned": POISONED.load(Ordering::Relaxed),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "full_hours": hours[0],
         "quiet_hours": hours[1],
         "marked_hours": hours[2],
@@ -226,7 +181,7 @@ pub fn status() -> impl serde::Serialize {
         "carried_areas": work[2],
         "refusals": REFUSALS.load(Ordering::Relaxed),
         "last_refusal": last_refusal,
-        "scope": "cumulative since attach; the Provinces job labels each province's controller and owner areas (gathered with its movement fields) by their smallest member and records each controller area's representative and ordered contacts once; an hour with no territory province mark publishes the held areas, a marked hour reads again the areas of the marked and re-pointed provinces, the areas they left and their neighbours' areas, and a refused or moved take reads every area; every hour also compares its slice of provinces (by id) and areas (by label) with a fresh read (one in rotation_hours; every one in verify mode) and the first difference makes every later hour read every area (sampled_*)"
+        "scope": "cumulative since attach; the Provinces job labels each province's controller and owner areas (gathered with its movement fields) by their smallest member and records each controller area's representative and ordered contacts once; an hour with no territory province mark publishes the held areas, a marked hour reads again the areas of the marked and re-pointed provinces, the areas they left and their neighbours' areas, and a refused or moved take reads every area"
     })
 }
 

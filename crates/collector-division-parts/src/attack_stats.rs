@@ -12,10 +12,8 @@
 //! ([`crate::army_stat_changes`]); each hour takes the marks once, before any
 //! read ([`Captured::certify`]). A division is carried only when the take
 //! returned the held epoch, its army and stat block are those of the held
-//! entry, its army was not marked and its id is outside the hour's sampled
-//! slice; every other one is read, its army registered first, and a read of
-//! a carryable division is compared with the held operands (a difference
-//! poisons the family). A held entry is found at the seed's own census index
+//! entry and its army was not marked; every other one is read, its army
+//! registered first. A held entry is found at the seed's own census index
 //! when the census did not move, so a quiet hour costs no lookup per
 //! division. A capture that does not complete holds nothing, and a failed
 //! job forgets the store. Without a store (the family not configured) every
@@ -438,7 +436,6 @@ pub struct Captured {
     pub exercise_experience: Vec<Option<i64>>,
     certify_ticks: [u64; CERTIFY_PHASE_NAMES.len()],
     scalars_deferred: bool,
-    certified_check: crate::sampled_verify::Check,
     history_finish: Option<Result<(), &'static str>>,
     pending_templates: Vec<Option<u64>>,
     officer: Vec<Option<i64>>,
@@ -467,8 +464,6 @@ pub struct Captured {
     pub carryable: bool,
     /// Each seed's carried maxima for the status pass.
     pub held_maxima: Vec<Option<DivisionMaxima>>,
-    /// The carryable maxima of the sampled slice, to compare with its reads.
-    sampled_maxima: Vec<(usize, DivisionMaxima)>,
     /// The status and naming passes' counts, published with the attack
     /// pass's.
     pub status_counts: Counts,
@@ -478,11 +473,10 @@ pub struct Captured {
     terrains: Vec<(i32, i64)>,
 }
 
-/// The witness slice: the sampled slice of twelve hours later, so a
-/// witnessed division was carried, not read, when it was carryable.
+/// The witness slice: the divisions whose id falls in this hour of the day.
 fn witnessed(hour: i32, id: u64) -> bool {
-    army_stat_changes::WITNESS
-        && crate::sampled_verify::Check::hourly(hour.wrapping_add(12), false).covers(id)
+    let period = replay_data::cadence::STAGGER_PERIOD;
+    army_stat_changes::WITNESS && id % period as u64 == hour.rem_euclid(period) as u64
 }
 
 impl Captured {
@@ -507,7 +501,6 @@ impl Captured {
             + self.registered.capacity()
             + self.touched.capacity() * 8
             + self.held_maxima.capacity() * std::mem::size_of::<Option<DivisionMaxima>>()
-            + self.sampled_maxima.capacity() * std::mem::size_of::<(usize, DivisionMaxima)>()
             + self.witness.capacity() * std::mem::size_of::<(u64, DivisionAttackInputs)>()
             + self.terrains.capacity() * std::mem::size_of::<(i32, i64)>()
     }
@@ -527,9 +520,7 @@ impl Captured {
     /// held entry it carries (its army and stat block those of the held read,
     /// the army registered in the held capture's epoch and untouched since)
     /// and the maxima the store carries for it (`held_maxima`); every other
-    /// division's army is registered before its block is read. A division of
-    /// the sampled slice carries nothing; its held maxima are compared with
-    /// the pass's read by [`Self::verify_maxima`].
+    /// division's army is registered before its block is read.
     pub fn certify(
         &mut self,
         memory: &impl Memory,
@@ -584,11 +575,9 @@ impl Captured {
         self.registered.clear();
         self.touched.clear();
         self.held_maxima.clear();
-        self.sampled_maxima.clear();
         self.status_counts = Counts::default();
         self.epoch = None;
         self.carryable = false;
-        self.certified_check = crate::sampled_verify::current_burned_in(army_stat_changes::VERIFY);
         self.scalars_deferred = false;
         self.history_finish = None;
         let Some(store) = store else {
@@ -656,7 +645,6 @@ impl Captured {
         } else {
             store.history.begin(seeds.len())
         };
-        let check = crate::sampled_verify::current_burned_in(army_stat_changes::VERIFY);
         self.certify_ticks[0] = crate::clock::qpc().saturating_sub(begin).max(0) as u64;
         let ordered_begin = crate::clock::qpc();
         for (index, seed) in seeds.iter().enumerate() {
@@ -800,11 +788,7 @@ impl Captured {
             self.held_index.push(held.map(|at| at as u32));
             self.registered
                 .push(held.is_some() || changes.register(seed.pointer));
-            let sampled = check.covers(seed.division >> 32);
-            if let (Some(held), true) = (maxima, sampled) {
-                self.sampled_maxima.push((index, held));
-            }
-            self.held_maxima.push(maxima.filter(|_| !sampled));
+            self.held_maxima.push(maxima);
         }
         self.certify_ticks[1] = crate::clock::qpc().saturating_sub(ordered_begin).max(0) as u64;
         let begin = crate::clock::qpc();
@@ -926,28 +910,9 @@ impl Captured {
         self.certify_ticks
     }
 
-    /// After the status pass: its read of each sampled carryable division's
-    /// maxima against the held ones; a difference poisons the family.
-    pub fn verify_maxima(
-        &mut self,
-        read: impl Fn(usize) -> Option<DivisionMaxima>,
-        changes: &dyn Changes,
-    ) {
-        for &(index, held) in &self.sampled_maxima {
-            let Some(fresh) = read(index) else {
-                continue;
-            };
-            self.status_counts.verified += 1;
-            if fresh != held {
-                self.status_counts.mismatches += 1;
-                changes.mismatch();
-            }
-        }
-    }
-
     /// Reads or carries every division of a census `outcome` prefix whose
-    /// stat block the seed names. `hour` decides the sampled and witnessed
-    /// slices. `maxima` gives the status pass's maxima of a seed, held with
+    /// stat block the seed names. `hour` decides the witnessed slice.
+    /// `maxima` gives the status pass's maxima of a seed, held with
     /// its operands; the carried entries are [`Self::certify`]'s.
     #[allow(clippy::too_many_arguments)] // The census, its seeds, the held store and the status maxima.
     pub fn capture(
@@ -959,24 +924,13 @@ impl Captured {
         outcome: Outcome,
         store: Option<&mut ArmyStatStore>,
         maxima: impl Fn(usize) -> Option<DivisionMaxima>,
-        changes: &dyn Changes,
     ) {
-        self.capture_prepared(
-            memory,
-            base,
-            hour,
-            seeds,
-            outcome,
-            store,
-            maxima,
-            changes,
-            |_| None,
-        );
+        self.capture_prepared(memory, base, hour, seeds, outcome, store, maxima, |_| None);
     }
 
     /// Consume range-local fresh reads only where the original ordered walk
-    /// chooses acquisition. Carry, verification, row order and store settlement
-    /// are still performed by that walk.
+    /// chooses acquisition. Carry, row order and store settlement are still
+    /// performed by that walk.
     #[allow(clippy::too_many_arguments)]
     pub fn capture_prepared<'a>(
         &mut self,
@@ -987,14 +941,10 @@ impl Captured {
         outcome: Outcome,
         store: Option<&mut ArmyStatStore>,
         maxima: impl Fn(usize) -> Option<DivisionMaxima>,
-        changes: &dyn Changes,
         prepared: impl Fn(usize) -> Option<Result<&'a stats::AttackStats, &'static str>>,
     ) {
         self.prepare_witness(memory, base, hour, seeds, outcome);
-        let check = crate::sampled_verify::current_burned_in(army_stat_changes::VERIFY);
-        self.capture_values(
-            memory, base, hour, seeds, outcome, store, maxima, changes, prepared, check,
-        );
+        self.capture_values(memory, base, hour, seeds, outcome, store, maxima, prepared);
     }
 
     /// The witness database is native; acquire it before the owned handoff.
@@ -1032,11 +982,8 @@ impl Captured {
         outcome: Outcome,
         store: Option<&mut ArmyStatStore>,
         maxima: impl Fn(usize) -> Option<DivisionMaxima>,
-        changes: &dyn Changes,
         prepared: impl Fn(usize) -> Option<Result<&'a stats::AttackStats, &'static str>>,
     ) {
-        // The callback may already have advanced the global verification hour.
-        let check = self.certified_check;
         self.capture_values(
             &OwnedAttack,
             base,
@@ -1045,9 +992,7 @@ impl Captured {
             outcome,
             store,
             maxima,
-            changes,
             prepared,
-            check,
         );
     }
 
@@ -1061,9 +1006,7 @@ impl Captured {
         outcome: Outcome,
         mut store: Option<&mut ArmyStatStore>,
         maxima: impl Fn(usize) -> Option<DivisionMaxima>,
-        changes: &dyn Changes,
         prepared: impl Fn(usize) -> Option<Result<&'a stats::AttackStats, &'static str>>,
-        check: crate::sampled_verify::Check,
     ) {
         self.reset();
         // The status and naming passes' counts publish with this pass's.
@@ -1100,7 +1043,6 @@ impl Captured {
             });
             let registered = self.registered.get(index).copied().unwrap_or(false);
             if let (Some(held), Some(store)) = (held, store.as_deref_mut())
-                && !check.covers(id)
                 && !witnessed(hour, id)
             {
                 counts.reused += 1;
@@ -1150,19 +1092,6 @@ impl Captured {
                     .as_ref()
                     .map_err(|&reason| reason),
             };
-            if let (Some(held), Some(store)) = (held, store.as_deref())
-                && let Ok(fresh) = &fresh
-                && check.covers(id)
-            {
-                counts.verified += 1;
-                if store.terrain(&held) != fresh.terrain.as_slice()
-                    || store.movement(&held) != fresh.movement_terrain.as_slice()
-                    || held.scalars != Scalars::of(fresh)
-                {
-                    counts.mismatches += 1;
-                    changes.mismatch();
-                }
-            }
             match fresh {
                 Ok(fresh) => {
                     if fresh.panel.iter().any(Option::is_none) || fresh.suppression.is_none() {

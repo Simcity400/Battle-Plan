@@ -620,44 +620,8 @@ fn gap_research_grants_uncertified_hourly_fallback_does_not_read_inventory_count
 }
 
 #[test]
-fn gap_research_grants_fingerprints_invalidate_for_every_inventory_kind() {
-    use research_modifiers::{Kind, Row};
-    for kind in [
-        Kind::GrantCounter,
-        Kind::SpeedGrant,
-        Kind::CostGrant,
-        Kind::GrantUses,
-        Kind::GrantTechnology,
-        Kind::GrantCategory,
-    ] {
-        let original = Row {
-            kind,
-            index: research_modifiers::grants::INVENTORY_INDEX,
-            raw: 12,
-            auxiliary: 34,
-            count: 2,
-            ..Default::default()
-        };
-        let before = research_digest(&[], &[], std::slice::from_ref(&original));
-        for field in 0..3 {
-            let mut changed = original.clone();
-            match field {
-                0 => changed.raw += 1,
-                1 => changed.auxiliary += 1,
-                _ => changed.count += 1,
-            }
-            assert_ne!(
-                before,
-                research_digest(&[], &[], &[changed]),
-                "{kind:?} field {field}"
-            );
-        }
-    }
-}
-
-#[test]
 fn seed_then_bitmap_installation_keeps_grant_inventory_shape_and_certificate() {
-    use crate::country_input_changes::{Changes, Mismatch};
+    use crate::country_input_changes::Changes;
     use std::sync::atomic::{AtomicBool, Ordering};
     struct Installing {
         installed: AtomicBool,
@@ -670,12 +634,6 @@ fn seed_then_bitmap_installation_keeps_grant_inventory_shape_and_certificate() {
                 .then(|| self.domain.take(table, visit))
                 .flatten()
         }
-        fn mismatch(&self, table: Table, at: Mismatch) {
-            self.domain.mismatch(table, at);
-        }
-        fn every(&self, _: Table) -> bool {
-            true
-        }
     }
     let world = World::new();
     let changes = Installing {
@@ -686,15 +644,15 @@ fn seed_then_bitmap_installation_keeps_grant_inventory_shape_and_certificate() {
     let mut captured = captured();
     let mut part = captured.take_research();
     let mut baseline = None;
+    // Hour 2 is forced so that its certified take still reads every country.
     for (hour, forced, installed, certified) in [
         (0, true, false, false),
         (1, false, true, false),
-        (2, false, true, true),
+        (2, true, true, true),
     ] {
         changes.installed.store(installed, Ordering::Relaxed);
         part.capture_changed(&world, context(hour, forced), &mut fingerprints, &changes);
         assert_eq!(part.changed.certified, certified, "hour {hour}");
-        assert_eq!(part.changed.mismatches, 0, "hour {hour}");
         let rows = part.modifiers.rows[..part.modifiers.outcome.len()].to_vec();
         assert_eq!(
             rows.iter()
@@ -709,66 +667,6 @@ fn seed_then_bitmap_installation_keeps_grant_inventory_shape_and_certificate() {
         }
         assert!(!changes.domain.poisoned(Table::Research));
     }
-    assert_eq!(part.changed.verified, 2);
-}
-
-#[test]
-fn research_diagnostics_keep_all_list_counts_and_each_modifier_kind_separate() {
-    use research_modifiers::{Kind, Row};
-    let initial = [
-        Row {
-            kind: Kind::GrantCounter,
-            raw: 7,
-            ..Default::default()
-        },
-        Row {
-            kind: Kind::GrantUses,
-            raw: 3,
-            ..Default::default()
-        },
-    ];
-    let before = research_digest(&[], &[], &initial);
-    let mut changed = initial.to_vec();
-    changed[0].source_id = 8;
-    changed[1].raw = 2;
-    changed.push(Row {
-        kind: Kind::SpeedGrant,
-        ..Default::default()
-    });
-    let mut after = research_digest(&[], &[], &changed);
-    // The integrated sharing roster has wire kind 31. A separate count and
-    // identity/value pair must survive simultaneous grant differences.
-    let roster = MODIFIER_GROUPS + 31 * 3;
-    after[0] = 4;
-    after[1] = 2;
-    after[2] += 1;
-    after[roster] = 1;
-    after[roster + 1] ^= 1;
-    after[roster + 2] ^= 1;
-    let (field, detail) = research_mismatch(Some(&before), &after, true, true, false, true);
-    assert_eq!(field, "ResearchInputs row count");
-    assert_eq!(detail.previous_counts, Some([0, 0, 2]));
-    assert_eq!(detail.current_counts, [4, 2, 4]);
-    let old = detail.previous_modifier_counts.unwrap();
-    let new = detail.current_modifier_counts;
-    assert_eq!(
-        (
-            old[Kind::SpeedGrant as usize],
-            new[Kind::SpeedGrant as usize]
-        ),
-        (0, 1)
-    );
-    assert_eq!((old[31], new[31]), (0, 1));
-    assert_eq!(
-        detail.modifier_identity_differences,
-        (1 << Kind::GrantCounter as u32) | (1 << Kind::SpeedGrant as u32) | (1 << 31)
-    );
-    assert_eq!(
-        detail.modifier_value_differences,
-        (1 << Kind::GrantUses as u32) | (1 << Kind::SpeedGrant as u32) | (1 << 31)
-    );
-    assert!(detail.take_available && detail.certified && detail.selection_force_full);
-    assert!(!detail.force_full);
 }
 
 /// Test B: a family capture with the part loaned, in either completion
@@ -883,15 +781,13 @@ fn owners(captured: &Captured) -> Vec<u32> {
     owners
 }
 
-/// One hour's research read, selected by `changes`' marks, with the hour's
-/// sampled comparisons ([`crate::sampled_verify::begin_hour`]).
+/// One hour's research read, selected by `changes`' marks.
 fn slice_capture(
     world: &impl engine_native::Memory,
     hour: i32,
     fingerprints: &mut SliceFingerprints,
     changes: &Domain,
 ) -> Captured {
-    crate::sampled_verify::begin_hour(hour);
     let mut captured = captured();
     let mut part = captured.take_research();
     part.capture_changed(world, context(hour, false), fingerprints, changes);
@@ -961,12 +857,10 @@ fn off_full_hours_read_only_the_slice_and_label_rows_with_the_hour() {
 
 /// Test E: a country a hooked writer marked is read within the hour, alone;
 /// an unmarked one waits for its slice, which carries its held read with the
-/// daily progress read afresh. An unmarked change of a certified field is a
-/// missed writer: the slice whose sampled comparison covers the country
-/// reads it whole and disables reuse, and every country is read from then
-/// on.
+/// daily progress read afresh. An unmarked change of a certified field is
+/// carried as held.
 #[test]
-fn a_marked_country_is_read_within_the_hour_and_an_unmarked_change_poisons_at_its_slice() {
+fn a_marked_country_is_read_within_the_hour_and_an_unmarked_change_is_carried_at_its_slice() {
     let mut world = World::new();
     let changes = Domain::enabled(64);
     // Nothing held yet: every country is read, outside its slice.
@@ -991,7 +885,7 @@ fn a_marked_country_is_read_within_the_hour_and_an_unmarked_change_poisons_at_it
     // Taken: the next hour does not read it again.
     assert!(owners(&slice_capture(&world, 7, &mut fingerprints, &changes)).is_empty());
     // Daily progress moves unmarked: no early read, and country 3's slice
-    // (hour 27) reads it and compares equal.
+    // (hour 27) carries it with the progress read afresh.
     world.put(
         SECOND.origin + TECH + engine_research::ctechnology::LIVE_PROGRESS,
         260_000_i64.to_le_bytes(),
@@ -1000,7 +894,6 @@ fn a_marked_country_is_read_within_the_hour_and_an_unmarked_change_poisons_at_it
     let captured = slice_capture(&world, 27, &mut fingerprints, &changes);
     assert_eq!(owners(&captured), [3]);
     assert_eq!(research(&captured).inputs[0].progress_raw, 260_000);
-    assert!(!changes.poisoned(Table::Research));
     // A slot speed changed with no mark is not read early, and the next
     // slice carries the held speed.
     world.put(speed, 97_000_i64.to_le_bytes());
@@ -1008,25 +901,6 @@ fn a_marked_country_is_read_within_the_hour_and_an_unmarked_change_poisons_at_it
     let carried = slice_capture(&world, 51, &mut fingerprints, &changes);
     assert_eq!(owners(&carried), [3]);
     assert_eq!(research(&carried).inputs[0].slot.research_speed_raw, 95_000);
-    assert!(!changes.poisoned(Table::Research));
-    // The slice whose sampled comparison covers country 3 reads it whole,
-    // finds the change and disables reuse.
-    assert_eq!(
-        owners(&slice_capture(&world, 3 + 576, &mut fingerprints, &changes)),
-        [3]
-    );
-    assert!(changes.poisoned(Table::Research));
-    // The status names the country and the field group that differed.
-    let first = changes.mismatches(Table::Research).first.unwrap();
-    assert_eq!(
-        (first.country, first.field),
-        (3, "ResearchInputs slot research_speed_raw")
-    );
-    assert_eq!(changes.mismatches(Table::Research).last, Some(first));
-    assert_eq!(
-        owners(&slice_capture(&world, 4 + 576, &mut fingerprints, &changes)),
-        [1, 3]
-    );
 }
 
 /// A writer that names no country, a moved epoch (a load or gap) or an
@@ -1253,15 +1127,17 @@ fn an_unmarked_slice_reads_only_the_daily_drift() {
     assert_eq!(carried, only(research(&loaned_only(&world))));
     assert_eq!(carried.inputs[0].progress_raw, 270_000);
     assert_eq!(carried.inputs[0].slot.banked_days_raw, 4_200_000);
-    // A slot roster that moved without a mark is read whole, and its
-    // comparison finds the missed write.
+    // A slot roster that moved without a mark is read whole.
     world.array(
         SECOND.origin + STATUS + ctechnology_status::RESEARCH_SLOTS_DATA,
         SECOND.origin + SLOTS,
         0,
     );
-    slice_capture(&world, 51, &mut fingerprints, &changes);
-    assert!(changes.poisoned(Table::Research));
+    let read = slice_capture(&world, 51, &mut fingerprints, &changes);
+    assert_eq!(
+        only(research(&read)),
+        only(research(&loaned_only(&world)))
+    );
 }
 
 /// Country 1's roster lists its slots in native index order 2, 1, 0, and

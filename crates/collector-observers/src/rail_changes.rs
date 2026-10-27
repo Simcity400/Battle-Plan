@@ -37,12 +37,7 @@ const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
 /// Per [`Counts`] field, cumulative.
-static READS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
-/// The family's sampled comparisons.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried RailCooldowns rows, their inputs or RailEdges rows differ from a fresh read",
-    "an unmarked rail info or cooldown list changed",
-]);
+static READS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
 /// Rail slots (province ids) of the latest complete capture, for off-thread
 /// sizing.
 static SLOTS: AtomicUsize = AtomicUsize::new(0);
@@ -171,17 +166,11 @@ pub trait Changes: Sync {
     /// ([`DirtySet::take`]), [`COUNTDOWN`] included; `None` certifies
     /// nothing.
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64>;
-    /// A fresh read disagreed with carried outputs: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
 }
 
 impl Changes for Watches {
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
         self.set.take(visit)
-    }
-    fn mismatch(&self) {
-        self.set.poison();
     }
 }
 
@@ -191,15 +180,7 @@ impl Changes for Observer {
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
         WATCHES.take(visit)
     }
-    fn mismatch(&self) {
-        WATCHES.mismatch();
-    }
 }
-
-/// Whether captures read every batch afresh and compare each carryable
-/// info, rather than the hour's sampled slice of batches
-/// ([`crate::sampled_verify`]).
-pub const VERIFY: bool = cfg!(feature = "rail_verify");
 
 /// What a site's arguments name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -291,8 +272,6 @@ pub fn collect() {
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     pub reused_edges: u64,
     pub read_edges: u64,
     /// Batches published from held outputs without a read.
@@ -305,8 +284,6 @@ pub struct Counts {
     pub countdown: bool,
     /// No held batch could be carried: everything was read.
     pub full: bool,
-    /// An unmarked info or cooldown list changed (counted in `mismatches`).
-    pub unmarked: bool,
 }
 
 /// A worker publishes one capture's counts and, when it completed, the rail
@@ -315,8 +292,6 @@ pub fn record(counts: &Counts, slots: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         counts.reused_edges,
         counts.read_edges,
         counts.carried_batches,
@@ -328,11 +303,6 @@ pub fn record(counts: &Counts, slots: Option<usize>) {
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(
-        counts.verified,
-        counts.mismatches,
-        usize::from(counts.unmarked),
-    );
     if let Some(slots) = slots {
         SLOTS.store(slots, Ordering::Relaxed);
     }
@@ -348,30 +318,23 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "rail_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.set.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_infos": reads[0],
         "read_infos": reads[1],
-        "verified_infos": reads[2],
-        "mismatches": reads[3],
-        "reused_edges": reads[4],
-        "read_edges": reads[5],
-        "carried_batches": reads[6],
-        "read_batches": reads[7],
-        "marked_provinces": reads[8],
-        "countdown_hours": reads[9],
-        "full_reads": reads[10],
-        "quiet_hours": reads[11],
+        "reused_edges": reads[2],
+        "read_edges": reads[3],
+        "carried_batches": reads[4],
+        "read_batches": reads[5],
+        "marked_provinces": reads[6],
+        "countdown_hours": reads[7],
+        "full_reads": reads[8],
+        "quiet_hours": reads[9],
         "events": events,
         "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
         "building_writes": WATCHES.buildings[0].load(Ordering::Relaxed),
         "unnamed_building_writes": WATCHES.buildings[1].load(Ordering::Relaxed),
         "set": WATCHES.set.status(),
-        "scope": "cumulative since attach; a batch of 64 rail slots is published from the held outputs of its last complete read (cooldown rows, building and selection inputs, indexed levels, RailEdges rows) without reading any slot when the hour's take returned the held capture's epoch, no hooked writer marked any of its provinces and the manager, rail table and province table headers are unchanged; the daily countdown (countdown_hours) marks every province on the held and the current cooldown lists, which are read every hour; in a batch read for a marked province an unmarked info whose identity, cooldown and pair header are those of its held read is carried; every hour also reads its slice of batches afresh (one in rotation_hours by batch; every one in verify mode), publishes the fresh outputs and disables reuse at the first mismatch, as does an unmarked change (sampled_*); quiet_hours had no marked province or countdown and carried every batch but the slice's"
+        "scope": "cumulative since attach; a batch of 64 rail slots is published from the held outputs of its last complete read (cooldown rows, building and selection inputs, indexed levels, RailEdges rows) without reading any slot when the hour's take returned the held capture's epoch, no hooked writer marked any of its provinces and the manager, rail table and province table headers are unchanged; the daily countdown (countdown_hours) marks every province on the held and the current cooldown lists, which are read every hour; in a batch read for a marked province an unmarked info whose identity, cooldown and pair header are those of its held read is carried; quiet_hours had no marked province or countdown and carried every batch"
     })
 }
 
@@ -604,7 +567,7 @@ mod tests {
         assert_eq!(take(&watches).0, None);
         watches.set_forwarder(true);
         assert_ne!(take(&watches).0, Some(epoch));
-        watches.mismatch();
+        watches.set.poison();
         assert!(watches.poisoned());
         assert_eq!(take(&watches).0, None);
     }

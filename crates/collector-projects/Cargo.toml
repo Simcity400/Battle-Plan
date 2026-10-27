@@ -14,7 +14,6 @@ test-support = ["collector-extended-support/test-support", "collector-observers/
 default = ["naval_tree_changes", "raid_intel_changes"]
 naval_tree_changes = []
 raid_intel_changes = ["naval_tree_changes"]
-raid_intel_verify = ["raid_intel_changes"]
 
 [dependencies]
 engine-scripts.workspace = true

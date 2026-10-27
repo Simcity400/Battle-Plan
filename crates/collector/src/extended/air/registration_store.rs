@@ -20,10 +20,9 @@
 //!
 //! Each held segment has an id, unique in the process, that the job reports
 //! for every base whose subtree in the hour's log is that segment's (carried,
-//! or read afresh and held); a fresh read that a comparison found equal to
-//! the held segment keeps its id. The decode worker keeps each base's walked
+//! or read afresh and held). The decode worker keeps each base's walked
 //! output under its segment's id ([`super::DecodedRegistrations`]).
-pub(crate) use crate::air_base_carry_changes::registration::{Counts, Difference};
+pub(crate) use crate::air_base_carry_changes::registration::Counts;
 use crate::raw::Span;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -210,12 +209,10 @@ impl RegistrationStore {
         self.counts.carried += 1;
     }
 
-    /// Holds `fresh` for `handle` under `certificate`, first comparing it
-    /// with the segment held under the same certificate when `compare`:
-    /// returns where they differ, a write no hook observed. A read with a
-    /// failed required span, or one without a certificate, is not held.
-    /// Failed optional summary spans are retained as absence until a writer
-    /// changes the certificate.
+    /// Holds `fresh` for `handle` under `certificate`. A read with a failed
+    /// required span, or one without a certificate, is not held. Failed
+    /// optional summary spans are retained as absence until a writer changes
+    /// the certificate.
     pub(crate) fn hold(
         &mut self,
         handle: u64,
@@ -223,12 +220,14 @@ impl RegistrationStore {
         certificate: Option<(u64, u64)>,
         planned: bool,
         fresh: &Fresh<'_>,
-        compare: bool,
-    ) -> Option<Difference> {
+    ) {
         self.counts.read += 1;
-        let previous = self.held.remove(&handle);
-        let certificate =
-            certificate.filter(|_| fresh.spans.iter().all(|span| span.ok || span.mask == 0))?;
+        self.held.remove(&handle);
+        let Some(certificate) =
+            certificate.filter(|_| fresh.spans.iter().all(|span| span.ok || span.mask == 0))
+        else {
+            return;
+        };
         let mut held = Held {
             pointer,
             certificate,
@@ -238,7 +237,7 @@ impl RegistrationStore {
             links: Vec::new(),
             demand: fresh.demand,
             pass: self.pass,
-            segment: 0,
+            segment: NEXT_SEGMENT.fetch_add(1, Ordering::Relaxed),
         };
         let spans = fresh.held().count();
         let bytes = fresh.held().map(|span| span.len as usize).sum::<usize>();
@@ -249,7 +248,7 @@ impl RegistrationStore {
             engine_allocation::reserve(&mut held.links, fresh.links.len())
         });
         if stored.is_err() {
-            return None;
+            return;
         }
         for span in fresh.held() {
             held.spans.push(Span {
@@ -259,24 +258,7 @@ impl RegistrationStore {
             fresh.consumed(span, &mut held.bytes);
         }
         held.links.extend_from_slice(fresh.links);
-        let compared = previous.filter(|previous| {
-            compare
-                && previous.pointer == pointer
-                && previous.certificate == certificate
-                && previous.planned == planned
-        });
-        self.counts.verified += u64::from(compared.is_some());
-        let difference = compared
-            .as_ref()
-            .and_then(|previous| difference(previous, &held));
-        self.counts.mismatches += u64::from(difference.is_some());
-        // An equal read is the held segment byte for byte as consumed.
-        held.segment = match compared {
-            Some(previous) if difference.is_none() => previous.segment,
-            _ => NEXT_SEGMENT.fetch_add(1, Ordering::Relaxed),
-        };
         self.held.insert(handle, held);
-        difference
     }
 
     /// The state bases the latest complete pass visited.
@@ -312,47 +294,4 @@ impl RegistrationStore {
                 })
                 .sum::<usize>();
     }
-}
-
-/// Where `fresh`, a read held as consumed, first differs from `held`.
-fn difference(held: &Held, fresh: &Held) -> Option<Difference> {
-    let whole = |what| Difference {
-        what,
-        address: 0,
-        len: 0,
-        byte: 0,
-    };
-    if held.demand != fresh.demand {
-        return Some(whole("registration and wing demand"));
-    }
-    if held.links != fresh.links {
-        return Some(whole("container country links"));
-    }
-    if held.spans.len() != fresh.spans.len() {
-        return Some(whole("span list"));
-    }
-    held.spans.iter().zip(&fresh.spans).find_map(|(old, new)| {
-        if (Span { start: 0, ..*old }) != (Span { start: 0, ..*new }) {
-            return Some(Difference {
-                what: "span",
-                address: new.addr,
-                len: new.len,
-                byte: 0,
-            });
-        }
-        let (old_bytes, new_bytes) = (
-            &held.bytes[old.start as usize..][..old.len as usize],
-            &fresh.bytes[new.start as usize..][..new.len as usize],
-        );
-        old_bytes
-            .iter()
-            .zip(new_bytes)
-            .position(|(old, new)| old != new)
-            .map(|byte| Difference {
-                what: "span bytes",
-                address: new.addr,
-                len: new.len,
-                byte,
-            })
-    })
 }

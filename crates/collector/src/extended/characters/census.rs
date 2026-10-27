@@ -53,16 +53,7 @@ pub(crate) struct RoleCensus {
     required: usize,
     /// The admitted content's [`Generation`]; zero for none.
     generation: u64,
-    /// The admitted rows' indices by `id % BURNED_IN_ROTATION`, and each
-    /// bucket's start, when storage allowed: a slice of either rotation
-    /// covers whole buckets ([`Admitted::covered`]).
-    by_key: Vec<u32>,
-    starts: [u32; BUCKETS + 1],
-    indexed: bool,
 }
-
-/// Buckets of the admitted rows' keys.
-const BUCKETS: usize = crate::sampled_verify::BURNED_IN_ROTATION as usize;
 
 /// Names the content of an admitted census: two censuses share a nonzero
 /// generation only when their scope, historical length, occurrence pointers
@@ -195,16 +186,11 @@ impl RoleCensus {
             complete: false,
             required: 0,
             generation: 0,
-            by_key: owned_vec(vec(capacity)),
-            starts: [0; BUCKETS + 1],
-            indexed: false,
         }
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.pointers.capacity() * size_of::<usize>()
-            + self.rows.capacity()
-            + self.by_key.capacity() * size_of::<u32>()
+        self.pointers.capacity() * size_of::<usize>() + self.rows.capacity()
     }
 
     pub fn needs_growth(&self) -> bool {
@@ -222,10 +208,6 @@ impl RoleCensus {
         if self.needs_growth() {
             let additional = self.required - self.pointers.len();
             if reserve_exact(&mut self.pointers, additional).is_err() {
-                return;
-            }
-            let additional = self.required - self.by_key.len();
-            if reserve_exact(&mut self.by_key, additional).is_err() {
                 return;
             }
             let Some(bytes) = self.required.checked_mul(ROW) else {
@@ -254,7 +236,6 @@ impl RoleCensus {
         self.scope = scope;
         self.complete = false;
         self.generation = 0;
-        self.indexed = false;
         self.required = census.len();
         LIVE_LEN.store(census.len(), std::sync::atomic::Ordering::Relaxed);
         self.historical = historical;
@@ -274,39 +255,8 @@ impl RoleCensus {
         self.complete = completed == census.len() * FIELDS.len();
         if self.complete {
             self.generation = generation_of(scope, historical, &self.pointers, rows);
-            self.indexed = self.index(growing);
         }
         self.complete
-    }
-
-    /// Buckets the admitted rows by key, unless storage cannot hold them
-    /// (only a growing worker allocates).
-    fn index(&mut self, growing: bool) -> bool {
-        let len = self.pointers.len();
-        let additional = len.saturating_sub(self.by_key.len());
-        if self.by_key.capacity() < len
-            && (!growing || reserve_exact(&mut self.by_key, additional).is_err())
-        {
-            return false;
-        }
-        self.by_key.clear();
-        self.by_key.resize(len, 0);
-        let rows = &self.rows[..len * ROW];
-        let key = |row: &[u8]| u32::from_le_bytes(row[..4].try_into().unwrap()) as usize % BUCKETS;
-        self.starts.fill(0);
-        for row in rows.chunks_exact(ROW) {
-            self.starts[key(row) + 1] += 1;
-        }
-        for bucket in 0..BUCKETS {
-            self.starts[bucket + 1] += self.starts[bucket];
-        }
-        let mut next = self.starts;
-        for (index, row) in rows.chunks_exact(ROW).enumerate() {
-            let at = &mut next[key(row)];
-            self.by_key[*at as usize] = index as u32;
-            *at += 1;
-        }
-        true
     }
 
     /// Whether this admitted census was gathered in `scope` from exactly
@@ -339,7 +289,6 @@ impl RoleCensus {
             rows: &self.rows[..self.pointers.len() * ROW],
             historical: self.historical,
             generation: self.generation,
-            index: self.indexed.then_some((&self.by_key[..], &self.starts)),
         })
     }
 }
@@ -351,32 +300,6 @@ pub(crate) struct Admitted<'a> {
     pub historical: usize,
     /// Equal nonzero generations name byte-identical censuses ([`History`]).
     pub generation: u64,
-    index: Option<(&'a [u32], &'a [u32; BUCKETS + 1])>,
-}
-
-impl<'a> Admitted<'a> {
-    /// The indices of the occurrences whose character id `check` covers: the
-    /// covered buckets' rows (`covers` depends only on a key's bucket, as
-    /// both rotations divide it), or every row filtered without an index.
-    pub fn covered(self, check: crate::sampled_verify::Check) -> impl Iterator<Item = usize> + 'a {
-        let indexed = self.index.map(move |(by_key, starts)| {
-            (0..BUCKETS)
-                .filter(move |&bucket| check.covers(bucket as u64))
-                .flat_map(move |bucket| {
-                    by_key[starts[bucket] as usize..starts[bucket + 1] as usize]
-                        .iter()
-                        .map(|&index| index as usize)
-                })
-        });
-        let filtered = self.index.is_none().then(|| {
-            (0..self.len())
-                .filter(move |&index| check.covers(u64::from(self.occurrence(index).id())))
-        });
-        indexed
-            .into_iter()
-            .flatten()
-            .chain(filtered.into_iter().flatten())
-    }
 }
 
 impl Admitted<'_> {
@@ -524,21 +447,13 @@ pub(crate) fn gather_sentinels(
 /// the census domain's token equals the one taken before the gather that
 /// admitted it and the hour's occurrences, ids, scope and historical length
 /// are the ones it was gathered from: no observed writer of a gathered field
-/// ran since. The hour's slice of its rows (by character id, every row in
-/// verify mode) is still gathered and compared; a difference poisons the
-/// domain and the hour gathers the whole census.
+/// ran since.
 pub(crate) struct CensusCarry {
     changes: &'static dyn crate::census_changes::Changes,
-    /// Tests: the slice; production follows the hour.
-    check: Option<crate::sampled_verify::Check>,
     /// Taken before the gather that admitted the held census.
     token: Option<(u64, u64)>,
     /// The portrait census stamp that gather read its occurrences from.
     stamp: Option<u64>,
-    /// The slice's rows, occurrences and fresh rows.
-    slice: Vec<u32>,
-    pointers: Vec<usize>,
-    rows: Vec<u8>,
 }
 
 impl std::fmt::Debug for CensusCarry {
@@ -552,35 +467,17 @@ impl std::fmt::Debug for CensusCarry {
 
 impl Default for CensusCarry {
     fn default() -> Self {
-        Self::with(&crate::census_changes::Observer, None)
+        Self::with(&crate::census_changes::Observer)
     }
 }
 
 impl CensusCarry {
-    pub(crate) fn with(
-        changes: &'static dyn crate::census_changes::Changes,
-        check: Option<crate::sampled_verify::Check>,
-    ) -> Self {
+    pub(crate) fn with(changes: &'static dyn crate::census_changes::Changes) -> Self {
         Self {
             changes,
-            check,
             token: None,
             stamp: None,
-            slice: Vec::new(),
-            pointers: Vec::new(),
-            rows: Vec::new(),
         }
-    }
-
-    pub(crate) fn allocated_bytes(&self) -> usize {
-        self.slice.capacity() * size_of::<u32>()
-            + self.pointers.capacity() * size_of::<usize>()
-            + self.rows.capacity()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_check(&mut self, check: crate::sampled_verify::Check) {
-        self.check = Some(check);
     }
 
     /// The roster job's gather of `census`, the rows of the portrait census
@@ -607,11 +504,7 @@ impl CensusCarry {
                 roles.holds(scope, census, historical)
             }
         };
-        if token.is_some()
-            && token == self.token
-            && same_occurrences()
-            && self.compare(memory, roles, &mut counts)
-        {
+        if token.is_some() && token == self.token && same_occurrences() {
             counts.carried = true;
             return (true, counts);
         }
@@ -620,65 +513,5 @@ impl CensusCarry {
         self.token = token.filter(|_| admitted);
         self.stamp = admitted.then_some(stamp);
         (admitted, counts)
-    }
-
-    /// Gathers the slice's rows afresh and compares them with the held ones.
-    /// False at a difference, which poisons the domain, or when the slice
-    /// cannot be gathered.
-    fn compare(
-        &mut self,
-        memory: &impl Memory,
-        roles: &RoleCensus,
-        counts: &mut crate::census_changes::Counts,
-    ) -> bool {
-        let check = self.check.unwrap_or_else(|| {
-            crate::sampled_verify::current_burned_in(crate::census_changes::VERIFY)
-        });
-        let Some(held) = roles.admitted(roles.scope.0, roles.scope.1) else {
-            return false;
-        };
-        self.slice.clear();
-        let covered = held.covered(check).count();
-        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.slice, covered))
-            .is_err()
-        {
-            return false;
-        }
-        self.slice
-            .extend(held.covered(check).map(|index| index as u32));
-        let len = self.slice.len();
-        self.pointers.clear();
-        let stored = engine_allocation::advisory(|| {
-            engine_allocation::reserve(&mut self.pointers, len)?;
-            engine_allocation::resize_default(&mut self.rows, len * ROW)
-        });
-        if stored.is_err() {
-            return false;
-        }
-        self.pointers.extend(
-            self.slice
-                .iter()
-                .map(|&index| roles.pointers[index as usize]),
-        );
-        let fresh = &mut self.rows[..len * ROW];
-        if memory.copy_records(RecordSources::Pointers(&self.pointers), &LAYOUT, fresh)
-            != len * FIELDS.len()
-        {
-            return false;
-        }
-        counts.compared = len as u64;
-        counts.mismatches = self
-            .slice
-            .iter()
-            .zip(fresh.chunks_exact(ROW))
-            .filter(|&(&index, fresh)| {
-                roles.rows[index as usize * ROW + 4..][..ROW - 4] != fresh[4..]
-            })
-            .count() as u64;
-        if counts.mismatches != 0 {
-            self.changes.mismatch();
-            self.token = None;
-        }
-        counts.mismatches == 0
     }
 }

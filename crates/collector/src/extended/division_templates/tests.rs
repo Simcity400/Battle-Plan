@@ -1353,9 +1353,6 @@ impl crate::template_changes::Changes for CoreChanges {
     fn core_dependencies(&self) -> Option<(u64, u64)> {
         crate::local_subunit_changes::Changes::quiet(&self.locals)
     }
-    fn mismatch(&self) {
-        crate::template_changes::Changes::mismatch(&self.templates);
-    }
 }
 
 #[test]
@@ -1474,7 +1471,6 @@ fn tracked_variant_replacement_with_an_unchanged_header_invalidates_template_cor
     let site = MUTATIONS
         .iter()
         .position(|(site, _)| site.name == "update_template_tracked_variant");
-    crate::sampled_verify::begin_hour(1);
     let changes = CoreChanges::new();
     let mut source = fixture();
     let pointers = [0x7500_usize, 0x7700, 0x7900];
@@ -1534,7 +1530,6 @@ fn tracked_variant_replacement_with_an_unchanged_header_invalidates_template_cor
 
 #[test]
 fn unnotified_custom_icon_edit_is_read_from_the_fresh_fixed_record() {
-    crate::sampled_verify::begin_hour(1);
     let changes = CoreChanges::new();
     let mut source = fixture();
     let mut captured = Captured::with_capacities(&capacity());
@@ -1547,45 +1542,6 @@ fn unnotified_custom_icon_edit_is_read_from_the_fresh_fixed_record() {
     assert_eq!(captured.tables(), fresh.tables());
     let row = displayed(captured.table_inputs());
     assert_eq!((row.custom_icon, row.custom_icon_nato), (17, 1));
-}
-
-#[test]
-fn template_core_sample_publishes_fresh_values_and_poisoning_withdraws_carry() {
-    let changes = CoreChanges::new();
-    let mut source = fixture();
-    let mut capture = Captured::with_capacities(&capacity());
-    capture.capture_original(&source, 0, 0x1000, 0, false, &changes);
-    // Deliberately omit the writer: the rotating sample must detect it.
-    source.bytes[0x6008..0x600c].copy_from_slice(&11_i32.to_le_bytes());
-    let hour = (u32::MAX as u64 % crate::sampled_verify::BURNED_IN_ROTATION) as i32;
-    crate::sampled_verify::begin_hour(hour);
-    capture.capture_original(&source, 0, 0x1000, hour, false, &changes);
-    assert!(changes.templates.poisoned());
-    let mut fresh = Captured::with_capacities(&capacity());
-    fresh.capture_original(&source, 0, 0x1000, hour, true, &changes);
-    assert_eq!(capture.tables(), fresh.tables());
-}
-
-#[test]
-fn template_speed_key_sample_publishes_fresh_keys_and_poisoning_withdraws_carry() {
-    let changes = CoreChanges::new();
-    let mut source = fixture();
-    let key = 0x7000 + subunit::SPEED_MODIFIER_KEY;
-    source.bytes[key..key + 4].copy_from_slice(&155_u32.to_le_bytes());
-    let mut capture = Captured::with_capacities(&capacity());
-    capture.capture_original(&source, 0, 0x1000, 0, false, &changes);
-    assert_eq!(capture.speed_keys, [155]);
-    capture.capture_original(&source, 0, 0x1000, 1, false, &changes);
-    assert_eq!(capture.speed_keys, [155]);
-    source.bytes[key..key + 4].copy_from_slice(&222_u32.to_le_bytes());
-    let hour = (u32::MAX as u64 % crate::sampled_verify::BURNED_IN_ROTATION) as i32;
-    crate::sampled_verify::begin_hour(hour);
-    capture.capture_original(&source, 0, 0x1000, hour, false, &changes);
-    assert_eq!(capture.speed_keys, [222]);
-    assert!(changes.templates.poisoned());
-    let mut fresh = Captured::with_capacities(&capacity());
-    fresh.capture_original(&source, 0, 0x1000, hour, true, &changes);
-    assert_eq!(capture.tables(), fresh.tables());
 }
 
 #[test]
@@ -1602,7 +1558,7 @@ fn missing_local_certificate_withdraws_a_held_core_without_withholding_fresh_mod
     assert_eq!(capture.tables(), fresh.tables());
     assert!(
         !changes.templates.poisoned(),
-        "missing certification is not a mismatch"
+        "missing certification does not poison"
     );
     drop(running);
 }

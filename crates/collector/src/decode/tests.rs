@@ -1243,8 +1243,6 @@ fn worker_relations_mixed_payload_keeps_hourly_tuples_and_skips_opinions() {
     for opinions_active in [false, true, false] {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let captured = frame.extended.relations_pilot();
-        let opinion_cap = captured.opinion_rows_cap();
-        let tuple_cap = captured.tuple_rows_cap();
         let mut direct = kit::direct(&memory, 2, 2);
         if !opinions_active {
             direct.opinion_rows.clear();
@@ -1259,8 +1257,6 @@ fn worker_relations_mixed_payload_keeps_hourly_tuples_and_skips_opinions() {
                 base: kit::BASE,
                 game_state: kit::GS,
                 active: [opinions_active, true],
-                opinion_cap,
-                tuple_cap,
                 epoch: 0,
             },
             &mut payload,

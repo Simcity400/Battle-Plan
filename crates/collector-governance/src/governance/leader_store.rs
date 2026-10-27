@@ -16,16 +16,10 @@
 //! insert lists. Registration precedes every read it certifies: a party
 //! before its leader vector, a character before its identity and leader map.
 //!
-//! Each hour also reads the carryable countries of its sampled slice
-//! ([`crate::sampled_verify`], keyed by country id; every one under
-//! `party_leader_verify`) afresh, publishes the fresh rows and poisons reuse
-//! on a difference. The store follows the Governance job's loan and
-//! holds only the countries of the latest complete walk. Allocation is
-//! advisory: a country whose rows cannot be held is read afresh next hour.
-use crate::{
-    party_leader_changes::{Changes, Counts},
-    sampled_verify::Check,
-};
+//! The store follows the Governance job's loan and holds only the countries
+//! of the latest complete walk. Allocation is advisory: a country whose rows
+//! cannot be held is read afresh next hour.
+use crate::party_leader_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_native::{
     cpolitical_party::LeaderRow, cpolitical_status::LeaderCarry, cpolitical_status::Parties,
@@ -115,7 +109,7 @@ impl Held {
 struct Pending {
     token: usize,
     parties: Option<Parties>,
-    /// The carryable held entry this read verifies.
+    /// The carryable held entry.
     held: Option<usize>,
     /// `false` once a party or character could not be registered.
     certified: bool,
@@ -172,13 +166,10 @@ impl LeaderStore {
 pub struct LeaderReuse<'a> {
     store: &'a mut LeaderStore,
     changes: &'a dyn Changes,
-    /// Which carryable countries this hour reads afresh and compares, by
-    /// country id.
-    pub check: Check,
 }
 
 impl<'a> LeaderReuse<'a> {
-    pub fn begin(store: &'a mut LeaderStore, changes: &'a dyn Changes, check: Check) -> Self {
+    pub fn begin(store: &'a mut LeaderStore, changes: &'a dyn Changes) -> Self {
         if std::mem::take(&mut store.forgotten) {
             store.current.clear();
             store.previous.clear();
@@ -188,11 +179,7 @@ impl<'a> LeaderReuse<'a> {
         store.counts = Counts::default();
         store.planned = 0;
         store.parties = 0;
-        Self {
-            store,
-            changes,
-            check,
-        }
+        Self { store, changes }
     }
 
     /// Keeps this walk's countries only when every country was read or
@@ -275,12 +262,10 @@ impl LeaderCarry for LeaderReuse<'_> {
         pending.certified = true;
         pending.party_certificates.clear();
         pending.characters.clear();
-        match held {
-            Some(index) if !self.check.covers(u64::from(parties.country)) => {
-                (token, Some(self.store.previous.entries[index].rows.len()))
-            }
-            _ => (token, None),
-        }
+        (
+            token,
+            held.map(|index| self.store.previous.entries[index].rows.len()),
+        )
     }
 
     fn carry(&mut self, token: usize, rows: &mut [LeaderRow]) {
@@ -335,14 +320,6 @@ impl LeaderCarry for LeaderReuse<'_> {
         let Some(parties) = store.pending.parties.take() else {
             return;
         };
-        if let Some(index) = store.pending.held {
-            store.counts.verified += 1;
-            let entry = &store.previous.entries[index];
-            if store.previous.rows[entry.rows.clone()] != *rows {
-                store.counts.mismatches += 1;
-                self.changes.mismatch();
-            }
-        }
         if store.pending.certified
             && store.pending.party_certificates.len() == parties.count as usize
         {

@@ -2231,7 +2231,6 @@ fn copy_characters_inner(
             ctx.game_state,
             census,
             &crate::character_changes::Observer,
-            crate::sampled_verify::current_burned_in(crate::character_changes::VERIFY),
         );
         job.leader_charge.set(crate::raw_memory::Capacity {
             auxiliary_vectors: cache.allocated_bytes(),

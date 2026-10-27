@@ -73,69 +73,6 @@ pub fn walk_portraits_growing(
     )
 }
 
-/// Sampled verification of reusable portrait entries. Each entry the cache's
-/// previous walk certified whose character `sample` names, whose array no
-/// observed writer touched since (`changes.revision`) and whose header reads
-/// the same (another header is read afresh by the walk anyway) is read afresh
-/// and compared with its descriptors at their arena position in `entries`.
-/// Returns `[compared, differing]` characters; a read that fails compares
-/// nothing.
-pub fn sample_reused_portraits<T: crate::capture_text::Value>(
-    memory: &impl Memory,
-    cache: &crate::portrait_cache::Cache,
-    entries: &[crate::character_portrait_entry::Row<T>],
-    changes: &dyn crate::portrait_cache::Changes,
-    sample: impl Fn(u32) -> bool,
-) -> [u64; 2] {
-    let mut counts = [0; 2];
-    for key in cache.certified().filter(|key| sample(key.character)) {
-        let Some(array) = key.pointer.checked_add(PORTRAIT_DATA) else {
-            continue;
-        };
-        if changes.revision(array) != key.revision
-            || read::<[u8; 16]>(memory, array) != Some(key.header)
-        {
-            continue;
-        }
-        let Some(a) = crate::cpdx_array::Array::from_header(
-            key.header,
-            crate::character_portrait_entry::STRIDE,
-        ) else {
-            continue;
-        };
-        let Some(held) = key
-            .start
-            .checked_add(a.count as usize)
-            .and_then(|end| entries.get(key.start..end))
-        else {
-            continue;
-        };
-        let mut same = Some(true);
-        for (n, held) in (0..a.count).zip(held) {
-            let mut current = crate::character_portrait_entry::Row::default();
-            let read = a
-                .element(n, crate::character_portrait_entry::STRIDE)
-                .ok_or("character portrait entry overflow")
-                .and_then(|entry| {
-                    crate::character_portrait_entry::read_buffer(memory, entry, &mut current)
-                });
-            if read.is_err() {
-                same = None;
-                break;
-            }
-            if current != *held {
-                same = Some(false);
-                break;
-            }
-        }
-        if let Some(same) = same {
-            counts[0] += 1;
-            counts[1] += u64::from(!same);
-        }
-    }
-    counts
-}
-
 fn walk_portraits_buffer<T: crate::capture_text::Value>(
     memory: &impl Memory,
     base: usize,
@@ -229,9 +166,6 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
             let hit = observation
                 .as_ref()
                 .is_some_and(|(cache, _)| cache.matches((index - first) as usize, key));
-            let verify = observation
-                .as_ref()
-                .is_some_and(|(_, changes)| changes.verify());
             if let Some((cache, _)) = observation.as_mut() {
                 if hit {
                     cache.counts.reused_characters += 1;
@@ -242,7 +176,7 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
             }
             let mut hinted = 0;
             for n in 0..a.count {
-                if hit && !verify {
+                if hit {
                     used += 1;
                     continue;
                 }
@@ -269,10 +203,6 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
                         .ok_or("character portrait entry overflow")?,
                     &mut current,
                 )?;
-                if hit && let Some((cache, _)) = observation.as_mut() {
-                    cache.counts.verified_entries += 1;
-                    cache.counts.mismatches += u64::from(current != entries[used]);
-                }
                 entries[used] = current;
                 used += 1;
             }

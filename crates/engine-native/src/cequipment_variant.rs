@@ -691,16 +691,11 @@ pub const ORGANISATION_BONUSES: usize = 0x498;
 pub const ORGANISATION_TRAIT_COUNT: usize = 0x4b0;
 /// Receiver certificates are checked only in the existing daily detail walk.
 pub trait OrganisationCarry {
-    fn fresh(
-        &mut self,
-        index: usize,
-        source: &RegistryRow,
-        old: &Organisation,
-    ) -> Result<bool, &'static str>;
-    fn read(&mut self, _index: usize, _source: &RegistryRow, _row: &Organisation) {}
+    fn fresh(&mut self, index: usize, source: &RegistryRow) -> Result<bool, &'static str>;
+    fn read(&mut self, _index: usize, _source: &RegistryRow) {}
 }
 impl OrganisationCarry for () {
-    fn fresh(&mut self, _: usize, _: &RegistryRow, _: &Organisation) -> Result<bool, &'static str> {
+    fn fresh(&mut self, _: usize, _: &RegistryRow) -> Result<bool, &'static str> {
         Ok(true)
     }
 }
@@ -814,12 +809,12 @@ pub fn walk_stats_carried(
                 for (value, bytes) in values.iter_mut().zip(field.chunks_exact(8)) {
                     *value = i64::from_le_bytes(bytes.try_into().unwrap());
                 }
-                if carry.fresh(len, source, &output[len].organisation)? {
+                if carry.fresh(len, source)? {
                     read_organisation(memory, source.pointer(), &mut output[len].organisation)?;
                 }
                 output[len].variant = source.id;
                 output[len].values = values;
-                carry.read(len, source, &output[len].organisation);
+                carry.read(len, source);
                 len += 1;
             }
         }

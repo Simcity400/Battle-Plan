@@ -8,8 +8,8 @@
 //! any navy. Each input fails alone, except that one diplomacy pass produces
 //! both RelationLinks and CountryWars; the viewer derives fog per country.
 //! CountryVisibility carries only an unmarked country's raw modifier entry
-//! under the country input set's held epoch and census identity. The sampled
-//! slice compares that raw entry; effective definition metadata is read hourly.
+//! under the country input set's held epoch and census identity; effective
+//! definition metadata is read hourly.
 mod carry;
 use crate::{
     clock::qpc,
@@ -398,10 +398,8 @@ impl Captured {
             };
             held.settle(
                 Domain::RegionAccess,
-                changes,
                 plan.read(Domain::RegionAccess, changes),
                 read.is_some(),
-                |rows| read.is_some_and(|read| rows[..] != *read),
                 |rows| read.is_some_and(|read| changes::assign(rows, read)),
             );
         }
@@ -495,16 +493,12 @@ impl Captured {
                         .then(|| HELD_VISIBILITY.try_lock().ok())
                         .flatten();
                     (self.countries.outcome, self.slots) = if let Some(mut held) = held {
-                        use crate::country_input_changes::{Changes, Observer, Table};
                         held.capture(
                             memory,
                             base,
                             game_state,
                             engine_native::walk::Buffer::Growing(&mut self.countries.rows),
-                            &Observer,
-                            crate::sampled_verify::current_burned_in(
-                                Observer.every(Table::Visibility),
-                            ),
+                            &crate::country_input_changes::Observer,
                             force_full,
                         )
                         .0

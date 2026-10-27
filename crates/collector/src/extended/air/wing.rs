@@ -530,13 +530,9 @@ fn walk_air_part(
     let mut equipment_required = 0_usize;
     let mut store = job.wing_store.take();
     let changes = job.carry_changes.0;
-    let mut reuse = store.as_deref_mut().map(|store| {
-        super::WingReuse::begin(
-            store,
-            changes,
-            crate::sampled_verify::Check::burned_in(ctx.hour, crate::wing_changes::VERIFY),
-        )
-    });
+    let mut reuse = store
+        .as_deref_mut()
+        .map(|store| super::WingReuse::begin(store, changes));
     let mut cumulative = if job.cumulative_active {
         Outcome::Rows { len: 0 }
     } else {

@@ -22,21 +22,16 @@
 //! is carried: its row is its native state at its last read, which playback prunes
 //! ([`replay_derive::air_region_derive`]).
 //!
-//! Each hour reads the carried holders of its sampled slice (by country and
-//! region) whole and compares them with the held rows: the fresh records must
-//! be the held ones less a leading run dated before the hour's latest cutoff.
-//! A difference is a missed write: it is recorded, poisons the family for the
-//! attachment (every later hour reads every holder), and the fresh rows are
-//! published. `air_record_verify` reads every carried holder instead.
+//! A touched holder that cannot be spliced, or that its owner's table does
+//! not name, poisons the family: every later hour reads every holder.
 use crate::hook::Hook;
 use engine_air_history::{air_record_mutations::MUTATIONS, cair_region_combat_data as native};
 use engine_native::Memory;
 use replay_data::{
     rows::AirCombatDamage, rows::AirCombatRecord, rows::AirRegionCombatRow, rows::TableRows,
 };
-use replay_derive::air_region_derive;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ops::Range,
     sync::{
         Arc, Mutex,
@@ -44,25 +39,17 @@ use std::{
     },
 };
 
-/// `air_record_verify`: compare every carried holder every hour.
-pub const VERIFY: bool = cfg!(feature = "air_record_verify");
-
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static TOUCHED: Touched = Touched::new();
 static STORE: Mutex<Option<Store>> = Mutex::new(None);
 static POISONED: AtomicBool = AtomicBool::new(false);
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "a carried holder differs from a fresh read",
-    "a touched holder's older records differ from the held row",
-    "a touched holder is missing from its owner's table",
-]);
 /// Hours that read every holder, by cause: no held capture, an invalidating
 /// hour, a lost interval, a poisoned family, a difference found while
 /// carrying.
 static FULL: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 /// Carried hours, holders read for a touch, records those reads took,
-/// holders found new, sampled holders read whole, holders carried.
-static COUNTS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+/// holders found new, holders carried.
+static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 
 /// Smallest touched-holder set: a set grows from live demand, never caps it.
 const MIN_SLOTS: usize = 1024;
@@ -230,7 +217,6 @@ struct Store {
     holders: Vec<Held>,
     by_address: HashMap<usize, usize>,
     touched: Vec<usize>,
-    touched_index: HashSet<usize>,
     /// The sample hour of the latest complete capture.
     hour: Option<i32>,
     /// The table published for `holders`; rebuilt only when a row changed.
@@ -318,19 +304,10 @@ fn splice(
     Some(changed)
 }
 
-/// `fresh` is `held` less a leading run of records dated before `cutoff`.
-fn pruned_from(held: &[AirCombatRecord], fresh: &[AirCombatRecord], cutoff: Option<i32>) -> bool {
-    let Some(removed) = held.len().checked_sub(fresh.len()) else {
-        return false;
-    };
-    held[removed..] == *fresh
-        && cutoff.is_none_or(|cutoff| held[..removed].iter().all(|record| record.date < cutoff))
-}
-
 /// Why an hour cannot carry: a capture-local difference poisons the family.
 enum Refusal {
     Native(&'static str),
-    Mismatch(usize),
+    Mismatch,
 }
 
 impl From<&'static str> for Refusal {
@@ -389,7 +366,7 @@ impl Store {
         let held = &mut self.holders[index];
         let holder = native::read_holder(memory, base, held.address, Some(since))?;
         if holder.owner != held.row.owner {
-            return Err(Refusal::Mismatch(1));
+            return Err(Refusal::Mismatch);
         }
         COUNTS[1].fetch_add(1, Ordering::Relaxed);
         let [own, foreign] = holder.sides;
@@ -398,7 +375,7 @@ impl Store {
             let first = side.first as usize;
             let tail = side.records.into_iter().map(convert);
             let Some(changed) = splice(records, since, first, tail) else {
-                return Err(Refusal::Mismatch(1));
+                return Err(Refusal::Mismatch);
             };
             self.changed |= changed;
         }
@@ -416,7 +393,7 @@ impl Store {
     ) -> Result<(), Refusal> {
         let holder = native::read_holder(memory, base, address, None)?;
         let Some(root) = native::locate(memory, base, state, holder.owner, address)? else {
-            return Err(Refusal::Mismatch(2));
+            return Err(Refusal::Mismatch);
         };
         COUNTS[3].fetch_add(1, Ordering::Relaxed);
         let row = row(root.country, root.region, holder);
@@ -434,47 +411,13 @@ impl Store {
         Ok(())
     }
 
-    /// Read the carried holders the check covers whole and compare.
-    fn sample(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        check: crate::sampled_verify::Check,
-        cutoff: Option<i32>,
-    ) -> Result<(u64, u64), &'static str> {
-        let mut verified = 0;
-        let mut mismatches = 0;
-        for held in &mut self.holders {
-            let key = (u64::from(held.row.country) << 32) | u64::from(held.row.region);
-            if self.touched_index.contains(&held.address) || !check.covers(key) {
-                continue;
-            }
-            COUNTS[4].fetch_add(1, Ordering::Relaxed);
-            let holder = native::read_holder(memory, base, held.address, None)?;
-            let fresh = row(held.row.country, held.row.region, holder);
-            verified += 1;
-            if fresh.owner != held.row.owner
-                || !pruned_from(&held.row.own, &fresh.own, cutoff)
-                || !pruned_from(&held.row.foreign, &fresh.foreign, cutoff)
-            {
-                mismatches += 1;
-            }
-            if fresh != held.row {
-                held.row = fresh;
-                self.changed = true;
-            }
-        }
-        Ok((verified, mismatches))
-    }
-
-    /// The hour's carry: touched holders, then the sampled slice.
+    /// The hour's carry: the touched holders are read, the rest carried.
     fn carry(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
         since: i32,
-        hour: i32,
         touched: &[usize],
     ) -> Result<(), Refusal> {
         for &address in touched {
@@ -483,23 +426,10 @@ impl Store {
                 None => self.discover(memory, base, state, address)?,
             }
         }
-        self.touched_index.clear();
-        self.touched_index.extend(touched.iter().copied());
-        // The game's own timeout bounds what a pass may have removed.
-        let cutoff = base
-            .checked_add(native::LOG_TIMEOUT_RVA)
-            .and_then(|at| engine_native::read::<i32>(memory, at))
-            .zip(air_region_derive::last_pass(hour))
-            .map(|(timeout, pass)| air_region_derive::cutoff(pass, timeout));
-        let check = crate::sampled_verify::current_burned_in(VERIFY);
-        let (verified, mismatches) = self.sample(memory, base, check, cutoff)?;
-        COUNTS[5].fetch_add(
-            (self.holders.len() as u64).saturating_sub(self.touched_index.len() as u64),
+        COUNTS[4].fetch_add(
+            (self.holders.len() as u64).saturating_sub(touched.len() as u64),
             Ordering::Relaxed,
         );
-        if SAMPLED.record(verified, mismatches, 0) {
-            POISONED.store(true, Ordering::SeqCst);
-        }
         Ok(())
     }
 
@@ -573,13 +503,12 @@ pub fn capture(
         _ => None,
     };
     let result = match (full_cause, store.hour) {
-        (None, Some(since)) => match store.carry(memory, base, state, since, hour, &touched) {
+        (None, Some(since)) => match store.carry(memory, base, state, since, &touched) {
             Ok(()) => {
                 COUNTS[0].fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
-            Err(Refusal::Mismatch(reason)) => {
-                SAMPLED.record(1, 1, reason);
+            Err(Refusal::Mismatch) => {
                 POISONED.store(true, Ordering::SeqCst);
                 FULL[4].fetch_add(1, Ordering::Relaxed);
                 store.full(memory, base, state)
@@ -616,7 +545,6 @@ pub fn status() -> impl serde::Serialize {
     let counts = COUNTS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "air_record_changes"),
-        "verify": VERIFY,
         "poisoned": POISONED.load(Ordering::SeqCst),
         "calls": TOUCHED.calls.load(Ordering::Relaxed),
         "unrecorded_calls": TOUCHED.lost_calls.load(Ordering::Relaxed),
@@ -625,8 +553,7 @@ pub fn status() -> impl serde::Serialize {
         "touched_holders_read": counts[1],
         "touched_records_read": counts[2],
         "new_holders": counts[3],
-        "sampled_holders_read": counts[4],
-        "carried_holders": counts[5],
+        "carried_holders": counts[4],
         "full_hours": {
             "first": full[0],
             "invalidation": full[1],
@@ -634,11 +561,7 @@ pub fn status() -> impl serde::Serialize {
             "poisoned": full[3],
             "difference": full[4],
         },
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
-        "scope": "cumulative since attach; calls are update_record entries (unrecorded ones lose their interval, and that hour reads every holder); a carried hour reads each touched holder's records dated from the previous capture's hour and carries the rest; every hour also reads the carried holders of its slice whole (every carried holder in verify mode), publishes them and disables reuse at the first difference (sampled_*)"
+        "scope": "cumulative since attach; calls are update_record entries (unrecorded ones lose their interval, and that hour reads every holder); a carried hour reads each touched holder's records dated from the previous capture's hour and carries the rest; a touched holder that cannot be spliced or located disables reuse (difference)"
     })
 }
 

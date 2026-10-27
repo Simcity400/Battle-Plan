@@ -79,14 +79,7 @@ std::thread_local! {
 /// any hook is enabled.
 static BASE: AtomicUsize = AtomicUsize::new(0);
 /// Per [`Family`] and [`Counts`] field, cumulative.
-static READS: [[AtomicU64; 7]; 4] = [const { [const { AtomicU64::new(0) }; 7] }; 4];
-/// The family's sampled comparisons; the reason index is the [`Family`].
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "an unmarked state's raid inputs differ from its previous read",
-    "an unmarked country's building resource overrides differ from its previous read",
-    "an unmarked country's raid air sites differ from its previous read",
-    "an unmarked country's trade routes differ from its previous read",
-]);
+static READS: [[AtomicU64; 5]; 4] = [const { [const { AtomicU64::new(0) }; 5] }; 4];
 /// Ids of the latest complete census per [`Family`] (state slots, country
 /// link ids), for off-thread sizing.
 static IDS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
@@ -377,9 +370,6 @@ pub trait Changes: Sync {
     /// The single consumer's hourly take of `family`'s marked ids
     /// ([`DirtySet::take`]); `None` certifies nothing.
     fn take(&self, family: Family, visit: &mut dyn FnMut(usize)) -> Option<u64>;
-    /// A fresh read disagreed with an unmarked owner's previous read:
-    /// `family` certifies nothing for the rest of the attachment.
-    fn mismatch(&self, family: Family);
 }
 
 impl Changes for Watches {
@@ -400,9 +390,6 @@ impl Changes for Watches {
         }
         epoch
     }
-    fn mismatch(&self, family: Family) {
-        self.sets()[family as usize].poison();
-    }
 }
 
 /// The hooks' domain.
@@ -411,14 +398,7 @@ impl Changes for Observer {
     fn take(&self, family: Family, visit: &mut dyn FnMut(usize)) -> Option<u64> {
         WATCHES.take(family, visit)
     }
-    fn mismatch(&self, family: Family) {
-        WATCHES.mismatch(family);
-    }
 }
-
-/// Whether every hour reads every owner and compares each unmarked one with
-/// its previous read, rather than the hour's slice ([`crate::sampled_verify`]).
-pub const VERIFY: bool = cfg!(feature = "raid_verify");
 
 /// What a site's arguments name.
 fn target(receiver: Receiver, first: usize, second: usize, third: usize) -> Target {
@@ -567,13 +547,8 @@ pub struct Counts {
     pub read: u64,
     /// Owners read only because a take marked them.
     pub early: u64,
-    /// Every owner read: the take did not certify the previous read's epoch,
-    /// or verify mode.
+    /// Every owner read: the take did not certify the previous read's epoch.
     pub full: bool,
-    /// Unmarked owners compared with their previous read, and those that
-    /// differed (each poisons the family).
-    pub verified: u64,
-    pub mismatches: u64,
 }
 
 /// A worker publishes one hour's counts and, after a complete census, the
@@ -585,12 +560,9 @@ pub fn record(family: Family, counts: &Counts, ids: Option<usize>) {
         counts.read,
         counts.early,
         u64::from(counts.full),
-        counts.verified,
-        counts.mismatches,
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, family as usize);
     if let Some(ids) = ids {
         IDS[family as usize].store(ids, Ordering::Relaxed);
     }
@@ -613,19 +585,12 @@ pub fn status() -> impl serde::Serialize {
             "read_owners": reads[2],
             "early_owners": reads[3],
             "full_reads": reads[4],
-            "verified_owners": reads[5],
-            "mismatches": reads[6],
             "poisoned": WATCHES.sets()[family as usize].poisoned(),
             "set": WATCHES.sets()[family as usize].status(),
         })
     };
     crate::status::status!({
         "configured": cfg!(feature = "raid_changes"),
-        "verify": VERIFY,
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "states": family(Family::States),
         "countries": family(Family::Countries),
         "sites": family(Family::Sites),
@@ -638,7 +603,7 @@ pub fn status() -> impl serde::Serialize {
         "certified_daily_passes": WATCHES.daily_passes[0].load(Ordering::Relaxed),
         "per_call_daily_passes": WATCHES.daily_passes[1].load(Ordering::Relaxed),
         "untimed_certified_capacities": WATCHES.untimed_capacities.load(Ordering::Relaxed),
-        "scope": "cumulative since attach; each hour the RaidState job reads its daily slice of states and countries, and the RaidLaunch job its daily slice of RaidAirSites countries, and every owner a hooked writer marked since the previous hour (early_owners; the capacity setter marks only a store that changes the value, unchanged_capacities counts the others; a daily capacity pass whose every store keeps its value and that withdraws no base is read once before it runs and its stores skip the setter's own read (certified_daily_passes), while any other pass leaves each store to the setter (per_call_daily_passes)); untimed_certified_capacities counts the certified stores omitted from hook_timing on normally returned daily passes, not a measurement of zero cost, so the raid state rows, CountryBuildingResources, RaidAirSites and TradeRoutes equal the game's at every hour (changed route membership, storage or market endpoint demand marks its census owner too; supply port-to-port updates and origin inline clears mark their route owners), except StateResourceInputs.supply_route, which follows the hourly supply rebuild and is read with its state; an hour whose take does not return the previous read's epoch (disabled, poisoned, an unnamed writer, an id beyond the bitmap, an invalidating hour) reads every owner (full_reads); every hour compares each unmarked owner it read (its slice; every owner in verify mode) with its previous read and disables the family at the first difference (sampled_*)"
+        "scope": "cumulative since attach; each hour the RaidState job reads its daily slice of states and countries, and the RaidLaunch job its daily slice of RaidAirSites countries, and every owner a hooked writer marked since the previous hour (early_owners; the capacity setter marks only a store that changes the value, unchanged_capacities counts the others; a daily capacity pass whose every store keeps its value and that withdraws no base is read once before it runs and its stores skip the setter's own read (certified_daily_passes), while any other pass leaves each store to the setter (per_call_daily_passes)); untimed_certified_capacities counts the certified stores omitted from hook_timing on normally returned daily passes, not a measurement of zero cost, so the raid state rows, CountryBuildingResources, RaidAirSites and TradeRoutes equal the game's at every hour (changed route membership, storage or market endpoint demand marks its census owner too; supply port-to-port updates and origin inline clears mark their route owners), except StateResourceInputs.supply_route, which follows the hourly supply rebuild and is read with its state; an hour whose take does not return the previous read's epoch (disabled, poisoned, an unnamed writer, an id beyond the bitmap, an invalidating hour) reads every owner (full_reads)"
     })
 }
 
@@ -1464,7 +1429,7 @@ mod tests {
 
     /// Without the building family's forwarder the state set certifies
     /// nothing, as an infrastructure write could go unseen; the country set
-    /// still observes. A mismatch poisons only its own set.
+    /// still observes. Poisoning the state set leaves the others observing.
     #[test]
     fn the_state_set_observes_only_with_the_forwarder() {
         let watches = Watches::enabled(64, 64);
@@ -1479,7 +1444,7 @@ mod tests {
         assert_eq!(take(&watches, Family::Countries).0, Some(countries));
         watches.set_forwarder(true);
         assert_ne!(take(&watches, Family::States).0, Some(states));
-        watches.mismatch(Family::States);
+        watches.states.poison();
         assert!(watches.poisoned(Family::States));
         assert!(!watches.poisoned(Family::Countries));
         assert_eq!(take(&watches, Family::States).0, None);

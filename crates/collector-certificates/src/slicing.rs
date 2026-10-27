@@ -34,9 +34,7 @@
 //! writer marked since the previous hour ([`SliceSelection::mark`]). Its
 //! take's epoch must be the one the store's previous hour was read under
 //! ([`SliceSelection::certify`]); otherwise an owner outside this hour's read
-//! may have changed unseen, and every owner is read. Each owner read and not
-//! marked is compared with its previous read ([`SliceSelection::compare`]):
-//! a difference is a write no hook saw.
+//! may have changed unseen, and every owner is read.
 
 use replay_data::rows::TableId;
 use std::collections::HashMap;
@@ -453,8 +451,7 @@ impl SliceSelection {
 
     /// [`Self::scan`] for a family whose fingerprint is a certificate of
     /// every recorded field (the naval mission inputs): an owner whose
-    /// certificate changed is marked ([`Self::mark`]), so that
-    /// [`Self::compare`] compares only owners whose certificate held.
+    /// certificate changed is marked ([`Self::mark`]).
     pub fn scan_marking(
         &mut self,
         fingerprints: &mut SliceFingerprints,
@@ -534,8 +531,8 @@ impl SliceSelection {
     }
 
     /// A hooked native writer touched `owner` since the previous take: it
-    /// joins this hour's read and is not compared with its previous read.
-    /// Storage grows on the same worker before publication.
+    /// joins this hour's read. Storage grows on the same worker before
+    /// publication.
     pub fn mark(&mut self, owner: u32) {
         let new = self.marked.binary_search(&owner).is_err();
         if !insert_owner(&mut self.marked, owner) {
@@ -552,17 +549,11 @@ impl SliceSelection {
     /// End this hour's take of the family's hook marks; `epoch` is the
     /// take's, `None` when it certified nothing. Unless it is the epoch under
     /// which the store's previous hour was read, an owner outside this
-    /// hour's read may have changed unseen: every owner is read, and the
-    /// contents held under the other epoch compare with nothing. `every`
-    /// (the family's verify mode) reads every owner too. The store then holds
-    /// `epoch`, so the next hour's take can certify this hour's read.
-    pub fn certify(&mut self, store: &mut SliceFingerprints, epoch: Option<u64>, every: bool) {
-        let held = epoch.is_some() && epoch == store.marks;
-        if !held {
-            store.content.clear();
-            self.force_full = true;
-        }
-        if every {
+    /// hour's read may have changed unseen: every owner is read. The store
+    /// then holds `epoch`, so the next hour's take can certify this hour's
+    /// read.
+    pub fn certify(&mut self, store: &mut SliceFingerprints, epoch: Option<u64>) {
+        if epoch.is_none() || epoch != store.marks {
             self.force_full = true;
         }
         store.marks = epoch;
@@ -574,41 +565,6 @@ impl SliceSelection {
             .iter()
             .filter(|&&owner| !self.in_slice(owner, false))
             .count() as u32
-    }
-
-    /// Compare each owner this hour read with its previous read and hold its
-    /// content. `hashes` holds every read owner's content hash, ascending, for
-    /// a complete read; `None`, an incomplete one, holds nothing, so its
-    /// owners compare with nothing until read again. A marked owner's held
-    /// content is dropped whether or not this hour read it (a walker may
-    /// skip a selected owner, as the overrides skip a country that controls
-    /// nothing). Returns the unmarked owners compared and how many differed:
-    /// a difference is a write no hooked writer marked.
-    pub fn compare(
-        &self,
-        store: &mut SliceFingerprints,
-        hashes: Option<&[(u32, u64)]>,
-    ) -> (u64, u64) {
-        let Some(hashes) = hashes else {
-            store.content.clear();
-            return (0, 0);
-        };
-        for owner in &self.marked {
-            store.content.remove(owner);
-        }
-        if engine_allocation::reserve_map(&mut store.content, hashes.len()).is_err() {
-            store.content.clear();
-            return (0, 0);
-        }
-        let (mut verified, mut mismatches) = (0, 0);
-        for &(owner, hash) in hashes {
-            if let Some(&held) = store.content.get(&owner) {
-                verified += 1;
-                mismatches += u64::from(held != hash);
-            }
-            store.content.insert(owner, hash);
-        }
-        (verified, mismatches)
     }
 
     /// This hour's walker reports the owners it read (`mark_read`); only
@@ -691,9 +647,6 @@ pub struct SliceFingerprints {
     /// The hook marks' epoch the family's latest hour was read under
     /// ([`SliceSelection::certify`]); `None` before a certified take.
     marks: Option<u64>,
-    /// Each owner's content hash at its latest complete read under `marks`
-    /// ([`SliceSelection::compare`]).
-    content: HashMap<u32, u64>,
     /// The research and technology rows of each owner's last complete read
     /// that a certified slice carries ([`crate::drift`]).
     pub drift: crate::drift::Store,
@@ -717,7 +670,6 @@ impl SliceFingerprints {
             stale_slices: 0,
             held: Held::default(),
             marks: None,
-            content: HashMap::new(),
             drift: Default::default(),
         }
     }
@@ -729,21 +681,12 @@ impl SliceFingerprints {
         self.stale_slices = 0;
         self.held = Held::default();
         self.marks = None;
-        self.content.clear();
         self.drift.clear();
     }
 
     /// Forget every owner a complete census did not see.
     fn keep_only(&mut self, seen: &[u32]) {
         self.values
-            .retain(|owner, _| seen.binary_search(owner).is_ok());
-        self.held
-            .digests
-            .retain(|owner, _| seen.binary_search(owner).is_ok());
-        self.held
-            .groups
-            .retain(|owner, _| seen.binary_search(owner).is_ok());
-        self.content
             .retain(|owner, _| seen.binary_search(owner).is_ok());
         self.drift.retain(seen);
     }
@@ -799,26 +742,15 @@ impl SliceFingerprints {
 /// marked keeps the rows of its last read only while the hour's take returns
 /// the epoch held here (every write since the last take was marked) and the
 /// per-read globals every row carries hash as held; otherwise the hour reads
-/// every owner. Each full read of an owner no writer marked is also a
-/// comparison: a digest of its writer-certified rows must equal the one its
-/// last read held, or a writer was missed. (A family that carries an owner's
-/// daily drift from its held rows, [`crate::drift`],
-/// reads in full only the owners its sampled check covers.)
+/// every owner. (A family that carries an owner's daily drift from its held
+/// rows, [`crate::drift`], reads only that drift at such an owner's slice.)
 #[derive(Default)]
 pub struct Held {
     /// The dirty-set epoch the latest take returned.
     epoch: Option<u64>,
     /// The hash of the globals the latest read's rows carry.
     context: Option<u64>,
-    /// Per owner, the digest of the writer-certified rows of its last read.
-    digests: HashMap<u32, u64>,
-    /// Per owner, the digest of each field group of its last read, for a
-    /// family that names the group a difference is in ([`Changed::read_groups`]).
-    groups: HashMap<u32, [u64; GROUPS]>,
 }
-
-/// The most field groups a family digests separately ([`Changed::read_groups`]).
-pub const GROUPS: usize = 110;
 
 mod digest;
 pub use digest::Digest;
@@ -830,9 +762,6 @@ pub struct Changed {
     marked: Vec<u32>,
     /// The take certified every unmarked owner's held rows.
     pub certified: bool,
-    /// Reads compared with a held digest, and those that differed.
-    pub verified: u64,
-    pub mismatches: u64,
 }
 
 impl Changed {
@@ -840,8 +769,6 @@ impl Changed {
     pub fn reset(&mut self) {
         self.marked.clear();
         self.certified = false;
-        self.verified = 0;
-        self.mismatches = 0;
     }
 
     pub fn marked(&self) -> usize {
@@ -854,67 +781,9 @@ impl Changed {
         self.certified && self.marked.binary_search(&owner).is_err()
     }
 
-    /// A worker read `owner` with `digest` of its writer-certified rows:
-    /// compares it with the held digest when no writer marked the owner in
-    /// a certified hour, then holds it. True when they differ: a writer the
-    /// family does not observe changed the owner.
-    pub fn read(&mut self, store: &mut SliceFingerprints, owner: u32, digest: u64) -> bool {
-        let compared = self.certified && self.marked.binary_search(&owner).is_err();
-        let held = store.held.digests.get(&owner).copied();
-        let differs = compared && held.is_some_and(|held| held != digest);
-        if compared && held.is_some() {
-            self.verified += 1;
-            self.mismatches += u64::from(differs);
-        }
-        if held.is_some() || engine_allocation::reserve_map(&mut store.held.digests, 1).is_ok() {
-            store.held.digests.insert(owner, digest);
-        }
-        differs
-    }
-
-    /// [`Self::read`] over one digest per field group (unused groups zero):
-    /// the owner's digest is that of its groups. When the read differs, also
-    /// the first group that differs from the held read, `None` when its
-    /// groups were not held.
-    pub fn read_groups(
-        &mut self,
-        store: &mut SliceFingerprints,
-        owner: u32,
-        groups: &[u64; GROUPS],
-    ) -> Option<Option<usize>> {
-        self.read_groups_with(store, owner, groups, |held| {
-            held.and_then(|held| held.iter().zip(groups).position(|(a, b)| a != b))
-        })
-    }
-
-    /// Report every required difference against the previous groups before
-    /// replacing them. The callback runs only for a certified mismatch and
-    /// borrows the retained entry, without allocating another snapshot.
-    pub fn read_groups_with<R>(
-        &mut self,
-        store: &mut SliceFingerprints,
-        owner: u32,
-        groups: &[u64; GROUPS],
-        report: impl FnOnce(Option<&[u64; GROUPS]>) -> R,
-    ) -> Option<R> {
-        let mut digest = Digest::new();
-        for &group in groups {
-            digest.u64(group);
-        }
-        let differs = self.read(store, owner, digest.finish());
-        let held = store.held.groups.get(&owner);
-        let detail = differs.then(|| report(held));
-        if held.is_some() || engine_allocation::reserve_map(&mut store.held.groups, 1).is_ok() {
-            store.held.groups.insert(owner, *groups);
-        }
-        detail
-    }
-
-    /// A worker's read of `owner` did not complete: hold no digest, so its
-    /// next read is held without a comparison.
+    /// A worker's read of `owner` did not complete: hold none of its drift
+    /// rows, so its next slice reads it whole.
     pub fn unread(&mut self, store: &mut SliceFingerprints, owner: u32) {
-        store.held.digests.remove(&owner);
-        store.held.groups.remove(&owner);
         store.drift.forget(owner);
     }
 }
@@ -922,16 +791,13 @@ impl Changed {
 /// After the hour's census scan ([`SliceSelection::scan`]), the family's
 /// hourly take of its marks: selects each marked owner, and reads every
 /// owner unless `take` returned the epoch the store holds and `context`
-/// (the hash of the globals every row carries) equals the held one. `every`
-/// (the family's `*_verify` feature) reads every owner while still
-/// comparing each unmarked one.
+/// (the hash of the globals every row carries) equals the held one.
 pub fn select_changed(
     selection: &mut SliceSelection,
     store: &mut SliceFingerprints,
     changed: &mut Changed,
     take: impl FnOnce(&mut dyn FnMut(usize)) -> Option<u64>,
     context: u64,
-    every: bool,
 ) {
     changed.reset();
     let marked = &mut changed.marked;
@@ -956,7 +822,7 @@ pub fn select_changed(
         && epoch.is_some()
         && epoch == store.held.epoch
         && store.held.context == Some(context);
-    if !changed.certified || every {
+    if !changed.certified {
         selection.force_full = true;
     }
     store.held.epoch = if overflow { None } else { epoch };
@@ -1010,28 +876,25 @@ mod tests {
         }
     }
 
-    /// A certificate family marks each owner whose certificate changed, so
-    /// that only owners whose certificate held are compared with their
-    /// previous read, and a held certificate over changed rows is a mismatch.
+    /// A certificate family marks each owner whose certificate changed,
+    /// including one seen for the first time.
     #[test]
-    fn certificate_scans_compare_only_owners_whose_certificate_held() {
+    fn certificate_scans_mark_owners_whose_certificate_changed() {
         let mut store = SliceFingerprints::new();
-        let hour = |store: &mut SliceFingerprints, prints: [u64; 3], hashes: [u64; 3]| {
+        let hour = |store: &mut SliceFingerprints, prints: [u64; 3]| {
             let mut selection = SliceSelection::new(true);
             selection.reset(0, true);
             for (owner, print) in (1..).zip(prints) {
                 selection.scan_marking(store, owner, Some(print));
             }
             selection.finish_census(store);
-            let hashes: Vec<(u32, u64)> = (1..).zip(hashes).collect();
-            selection.compare(store, Some(&hashes))
+            selection.marked.clone()
         };
-        // First sight: every owner is new, nothing is compared.
-        assert_eq!(hour(&mut store, [1, 1, 1], [10, 20, 30]), (0, 0));
-        // Owner 2's certificate moved with its rows; the others held.
-        assert_eq!(hour(&mut store, [1, 2, 1], [10, 21, 30]), (2, 0));
-        // Owner 3's rows changed under a held certificate: a missed write.
-        assert_eq!(hour(&mut store, [1, 2, 1], [10, 21, 31]), (3, 1));
+        // First sight: every owner is new.
+        assert_eq!(hour(&mut store, [1, 1, 1]), [1, 2, 3]);
+        // Owner 2's certificate moved; the others held.
+        assert_eq!(hour(&mut store, [1, 2, 1]), [2]);
+        assert!(hour(&mut store, [1, 2, 1]).is_empty());
     }
 
     #[test]
@@ -1262,8 +1125,8 @@ mod tests {
 
     /// A hook-marked owner joins the hour's read outside its slice. Only a
     /// take in the epoch the store's previous hour was read under keeps the
-    /// slice: a refused take, another epoch, a forgotten store and verify
-    /// mode read every owner.
+    /// slice: a refused take, another epoch and a forgotten store read every
+    /// owner.
     #[test]
     fn marked_owners_join_the_read_and_an_uncertified_take_reads_everyone() {
         let mut store = SliceFingerprints::new();
@@ -1278,7 +1141,7 @@ mod tests {
         // The first take certifies no earlier read.
         selection.reset(0, false);
         census(&mut selection, &mut store);
-        selection.certify(&mut store, Some(7), false);
+        selection.certify(&mut store, Some(7));
         assert!(selection.force_full);
         // The same epoch: hour 2's slice and the marked owner 3, nobody else.
         selection.reset(2, false);
@@ -1286,7 +1149,7 @@ mod tests {
         selection.mark(3);
         selection.mark(3);
         selection.mark(2);
-        selection.certify(&mut store, Some(7), false);
+        selection.certify(&mut store, Some(7));
         assert!(!selection.force_full);
         assert!(selection.contains(2) && selection.contains(3));
         assert!(!selection.contains(1) && !selection.contains(30));
@@ -1296,69 +1159,19 @@ mod tests {
         for epoch in [None, Some(8)] {
             selection.reset(4, false);
             census(&mut selection, &mut store);
-            selection.certify(&mut store, epoch, false);
+            selection.certify(&mut store, epoch);
             assert!(selection.force_full && selection.contains(1), "{epoch:?}");
         }
         selection.reset(5, false);
         census(&mut selection, &mut store);
-        selection.certify(&mut store, Some(8), false);
+        selection.certify(&mut store, Some(8));
         assert!(!selection.force_full);
-        // Verify mode reads everyone, in the held epoch too.
-        selection.reset(6, false);
-        census(&mut selection, &mut store);
-        selection.certify(&mut store, Some(8), true);
-        assert!(selection.force_full);
         // A forgotten store holds no epoch.
         store.forget();
         selection.reset(7, false);
         census(&mut selection, &mut store);
-        selection.certify(&mut store, Some(8), false);
+        selection.certify(&mut store, Some(8));
         assert!(selection.force_full);
-    }
-
-    /// Each unmarked owner a complete read covers is compared with its
-    /// previous read in the same epoch; a marked owner's change was seen.
-    #[test]
-    fn unmarked_owners_are_compared_with_their_previous_read() {
-        let mut store = SliceFingerprints::new();
-        let mut selection = SliceSelection::new(true);
-        selection.reset(0, false);
-        selection.certify(&mut store, Some(1), false);
-        let first = [(1, 10), (2, 20), (3, 30)];
-        assert_eq!(selection.compare(&mut store, Some(&first)), (0, 0));
-        // Owner 2 was marked; owner 3 changed without a mark.
-        selection.reset(1, false);
-        selection.mark(2);
-        selection.certify(&mut store, Some(1), false);
-        let second = [(1, 10), (2, 21), (3, 31)];
-        assert_eq!(selection.compare(&mut store, Some(&second)), (2, 1));
-        // A marked owner the walker skipped compares with nothing later.
-        selection.reset(2, false);
-        selection.mark(1);
-        selection.certify(&mut store, Some(1), false);
-        assert_eq!(selection.compare(&mut store, Some(&[(3, 31)])), (1, 0));
-        selection.reset(3, false);
-        selection.certify(&mut store, Some(1), false);
-        assert_eq!(
-            selection.compare(&mut store, Some(&[(1, 99), (3, 31)])),
-            (1, 0)
-        );
-        // An incomplete read holds nothing.
-        selection.reset(2, false);
-        selection.certify(&mut store, Some(1), false);
-        assert_eq!(selection.compare(&mut store, None), (0, 0));
-        assert_eq!(selection.compare(&mut store, Some(&[(1, 10)])), (0, 0));
-        assert_eq!(selection.compare(&mut store, Some(&[(1, 11)])), (1, 1));
-        // Contents held under another epoch compare with nothing.
-        selection.reset(3, false);
-        selection.certify(&mut store, Some(2), false);
-        assert_eq!(selection.compare(&mut store, Some(&[(1, 12)])), (0, 0));
-        // A complete census forgets the contents of owners it did not see.
-        selection.reset(4, false);
-        selection.scan(&mut store, 2, Some(0));
-        store.finish_scan();
-        selection.finish_census(&mut store);
-        assert!(store.content.is_empty());
     }
 
     #[test]
@@ -1380,7 +1193,6 @@ mod tests {
 
     /// One change-driven hour over `owners`: the census scan, then the take
     /// of `marks` returning `epoch`.
-    #[allow(clippy::too_many_arguments)]
     fn changed_hour(
         store: &mut SliceFingerprints,
         changed: &mut Changed,
@@ -1389,7 +1201,6 @@ mod tests {
         marks: &[usize],
         epoch: Option<u64>,
         context: u64,
-        every: bool,
     ) -> SliceSelection {
         let mut selection = SliceSelection::new(true);
         selection.reset(hour, false);
@@ -1409,7 +1220,6 @@ mod tests {
                 epoch
             },
             context,
-            every,
         );
         selection
     }
@@ -1423,48 +1233,27 @@ mod tests {
         let mut store = SliceFingerprints::new();
         let mut changed = Changed::default();
         // First hour: nothing is held, so everyone is read.
-        let first = changed_hour(&mut store, &mut changed, 5, &owners, &[], Some(7), 1, false);
+        let first = changed_hour(&mut store, &mut changed, 5, &owners, &[], Some(7), 1);
         assert!(first.force_full && !changed.certified);
         // Same epoch and globals: only the slice (5, 29) and the marked 2.
-        let next = changed_hour(
-            &mut store,
-            &mut changed,
-            5,
-            &owners,
-            &[2],
-            Some(7),
-            1,
-            false,
-        );
+        let next = changed_hour(&mut store, &mut changed, 5, &owners, &[2], Some(7), 1);
         assert!(changed.certified && !next.force_full);
         assert_eq!(changed.marked(), 1);
         assert!(next.contains(2) && next.contains(29) && !next.contains(1) && !next.contains(3));
         // A quiet hour reads the slice alone.
-        let quiet = changed_hour(&mut store, &mut changed, 6, &owners, &[], Some(7), 1, false);
+        let quiet = changed_hour(&mut store, &mut changed, 6, &owners, &[], Some(7), 1);
         assert!(!quiet.force_full && (1..=3).all(|owner| !quiet.contains(owner)));
         // A moved epoch, a refused take or changed globals read everyone.
         for (epoch, context) in [(Some(8), 1), (None, 1), (Some(7), 2)] {
             let mut store = SliceFingerprints::new();
-            changed_hour(&mut store, &mut changed, 5, &owners, &[], Some(7), 1, false);
-            let hour = changed_hour(
-                &mut store,
-                &mut changed,
-                6,
-                &owners,
-                &[],
-                epoch,
-                context,
-                false,
-            );
+            changed_hour(&mut store, &mut changed, 5, &owners, &[], Some(7), 1);
+            let hour = changed_hour(&mut store, &mut changed, 6, &owners, &[], epoch, context);
             assert!(hour.force_full && !changed.certified, "{epoch:?} {context}");
         }
         // A forgotten store holds nothing: the next hour reads everyone.
         store.forget();
-        let forgotten = changed_hour(&mut store, &mut changed, 6, &owners, &[], Some(7), 1, false);
+        let forgotten = changed_hour(&mut store, &mut changed, 6, &owners, &[], Some(7), 1);
         assert!(forgotten.force_full);
-        // Verify mode reads everyone, still certified for comparisons.
-        let every = changed_hour(&mut store, &mut changed, 7, &owners, &[], Some(7), 1, true);
-        assert!(every.force_full && changed.certified);
     }
 
     /// An hour whose read was not published spent marks of owners it may not
@@ -1475,97 +1264,14 @@ mod tests {
         let owners = [1, 2, 3];
         let mut store = SliceFingerprints::new();
         let mut changed = Changed::default();
-        changed_hour(&mut store, &mut changed, 5, &owners, &[], Some(7), 1, false);
-        let marked = changed_hour(
-            &mut store,
-            &mut changed,
-            6,
-            &owners,
-            &[2],
-            Some(7),
-            1,
-            false,
-        );
+        changed_hour(&mut store, &mut changed, 5, &owners, &[], Some(7), 1);
+        let marked = changed_hour(&mut store, &mut changed, 6, &owners, &[2], Some(7), 1);
         assert!(changed.certified && marked.contains(2));
         marked.invalidate(&mut store);
-        let next = changed_hour(&mut store, &mut changed, 7, &owners, &[], Some(7), 1, false);
+        let next = changed_hour(&mut store, &mut changed, 7, &owners, &[], Some(7), 1);
         assert!(next.force_full && !changed.certified);
-        let settled = changed_hour(&mut store, &mut changed, 8, &owners, &[], Some(7), 1, false);
+        let settled = changed_hour(&mut store, &mut changed, 8, &owners, &[], Some(7), 1);
         assert!(!settled.force_full && changed.certified);
-    }
-
-    /// Each read of an unmarked owner in a certified hour compares the
-    /// digest of its writer-certified rows with the one its last read held;
-    /// a marked owner, an uncertified hour or a first read only holds it.
-    #[test]
-    fn unmarked_reads_compare_their_digest_with_the_held_one() {
-        let owners = [1, 2];
-        let mut store = SliceFingerprints::new();
-        let mut changed = Changed::default();
-        changed_hour(&mut store, &mut changed, 0, &owners, &[], Some(3), 9, false);
-        // Uncertified: held, never compared.
-        assert!(!changed.read(&mut store, 1, 100));
-        assert!(!changed.read(&mut store, 2, 200));
-        assert_eq!(changed.verified, 0);
-        changed_hour(&mut store, &mut changed, 1, &owners, &[2], Some(3), 9, true);
-        // Owner 1 is unmarked: equal digests verify, a different one is a
-        // missed writer. Owner 2 is marked: its new digest is just held.
-        assert!(!changed.read(&mut store, 1, 100));
-        assert!(!changed.read(&mut store, 2, 201));
-        assert_eq!((changed.verified, changed.mismatches), (1, 0));
-        changed_hour(&mut store, &mut changed, 2, &owners, &[], Some(3), 9, true);
-        assert!(changed.read(&mut store, 1, 101));
-        assert!(!changed.read(&mut store, 2, 201));
-        assert_eq!((changed.verified, changed.mismatches), (2, 1));
-        // An owner a complete census no longer sees loses its digest.
-        changed_hour(&mut store, &mut changed, 3, &[2], &[], Some(3), 9, true);
-        assert!(!store.held.digests.contains_key(&1));
-    }
-
-    /// A read over field groups names the first group that differs from the
-    /// held read when the comparison fails, and none when it passes or the
-    /// owner was marked.
-    #[test]
-    fn grouped_reads_name_the_first_differing_group() {
-        let owners = [1, 2];
-        let mut store = SliceFingerprints::new();
-        let mut changed = Changed::default();
-        let mut groups = [0_u64; GROUPS];
-        groups[..3].copy_from_slice(&[10, 20, 30]);
-        changed_hour(&mut store, &mut changed, 0, &owners, &[], Some(3), 9, false);
-        assert_eq!(changed.read_groups(&mut store, 1, &groups), None);
-        assert_eq!(changed.read_groups(&mut store, 2, &groups), None);
-        changed_hour(&mut store, &mut changed, 1, &owners, &[2], Some(3), 9, true);
-        assert_eq!(changed.read_groups(&mut store, 1, &groups), None);
-        let mut moved = groups;
-        moved[1] = 21;
-        moved[2] = 31;
-        // Marked: held without a comparison.
-        assert_eq!(changed.read_groups(&mut store, 2, &moved), None);
-        changed_hour(&mut store, &mut changed, 2, &owners, &[], Some(3), 9, true);
-        assert_eq!(changed.read_groups(&mut store, 1, &moved), Some(Some(1)));
-        assert_eq!(changed.read_groups(&mut store, 2, &moved), None);
-        // This hour's comparisons: both owners, owner 1 differing.
-        assert_eq!((changed.verified, changed.mismatches), (2, 1));
-        // The detailed reporter sees the old entry before replacement, even
-        // when differences span both ends of the group array.
-        let mut latest = moved;
-        latest[0] += 1;
-        latest[GROUPS - 1] += 1;
-        assert_eq!(
-            crate::test_support::with_allocations_denied(|| {
-                changed.read_groups_with(&mut store, 1, &latest, |held| {
-                    let held = held.unwrap();
-                    assert_eq!(*held, moved);
-                    (held[0], held[GROUPS - 1])
-                })
-            }),
-            Some((moved[0], moved[GROUPS - 1]))
-        );
-        assert_eq!(changed.read_groups(&mut store, 1, &latest), None);
-        // An unread owner holds no groups.
-        changed.unread(&mut store, 1);
-        assert!(!store.held.groups.contains_key(&1));
     }
 
     /// A daily family reads every owner at the first hour after the daily

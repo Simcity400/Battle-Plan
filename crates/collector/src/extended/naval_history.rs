@@ -328,10 +328,6 @@ impl RailPart {
                 let mut reuse = RailReuse::begin(
                     store,
                     &crate::rail_changes::Observer,
-                    crate::sampled_verify::Check::burned_in(
-                        current_hour,
-                        crate::rail_changes::VERIFY,
-                    ),
                     |list| crailway_manager::cooldown_list(memory, base, game_state, list),
                 );
                 let complete = self.walk(memory, base, game_state, &mut reuse);

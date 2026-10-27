@@ -29,12 +29,8 @@ static WATCHES: Watches = Watches::new();
 static MAP_ORIGINAL: [AtomicUsize; MAP_MUTATIONS.len()] =
     [const { AtomicUsize::new(0) }; MAP_MUTATIONS.len()];
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused, read, verified and mismatched wings; reused and read rows.
-static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-/// The family's sampled comparisons.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried WingEquipment rows differ from a fresh read",
-]);
+/// Reused and read wings; reused and read rows.
+static READS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// Wings the latest complete capture walked, for off-thread sizing.
 static WINGS: AtomicUsize = AtomicUsize::new(0);
 
@@ -142,17 +138,11 @@ pub trait Changes: Sync {
     /// be observed. Equal values across hours prove that no observed writer
     /// touched it.
     fn sequence(&self, pool: usize) -> Option<(u64, u64)>;
-    /// A fresh read disagreed with carried rows: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
 }
 
 impl Changes for Watches {
     fn sequence(&self, pool: usize) -> Option<(u64, u64)> {
         self.registry.sequence(pool)
-    }
-    fn mismatch(&self) {
-        self.registry.poison();
     }
 }
 
@@ -162,13 +152,8 @@ impl Changes for Observer {
     fn sequence(&self, pool: usize) -> Option<(u64, u64)> {
         WATCHES.sequence(pool)
     }
-    fn mismatch(&self) {
-        WATCHES.mismatch();
-    }
 }
 
-/// Whether captures read every carryable wing afresh and compare, rather
-/// than the hour's sampled slice ([`crate::sampled_verify`]).
 /// A flag receiver is its inline address, distinct from any equipment pool.
 /// These notifications never invalidate WingEquipment certificates.
 pub fn map_sequence(address: usize) -> Option<(u64, u64)> {
@@ -178,8 +163,6 @@ pub fn map_sequence(address: usize) -> Option<(u64, u64)> {
 pub fn map_quiet() -> Option<(u64, u64)> {
     WATCHES.registry.quiet()
 }
-
-pub const VERIFY: bool = cfg!(feature = "wing_verify");
 
 /// Notifications running now.
 pub fn active() -> usize {
@@ -232,8 +215,6 @@ pub fn collect() {
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     pub reused_rows: u64,
     pub read_rows: u64,
 }
@@ -243,8 +224,6 @@ impl Counts {
     pub fn add(&mut self, other: &Counts) {
         self.reused += other.reused;
         self.read += other.read;
-        self.verified += other.verified;
-        self.mismatches += other.mismatches;
         self.reused_rows += other.reused_rows;
         self.read_rows += other.read_rows;
     }
@@ -256,14 +235,11 @@ pub fn record(counts: &Counts, wings: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         counts.reused_rows,
         counts.read_rows,
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
     if let Some(wings) = wings {
         WINGS.store(wings, Ordering::Relaxed);
     }
@@ -279,24 +255,17 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "wing_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_wings": reads[0],
         "read_wings": reads[1],
-        "verified_wings": reads[2],
-        "mismatches": reads[3],
-        "reused_rows": reads[4],
-        "read_rows": reads[5],
+        "reused_rows": reads[2],
+        "read_rows": reads[3],
         "events": events,
         "replacement_preference": crate::wing_preferences::status(),
         "kill_airplanes": WATCHES.kills.load(Ordering::Relaxed),
         "kills_observed": WATCHES.kills_observed.load(Ordering::SeqCst),
         "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a WingEquipment wing's rows are carried when it is the wing held at the same address with the same id and no hooked writer touched its equipment pool since its read; the wing census is read every hour; every hour also reads the carryable wings of its slice afresh (one in rotation_hours by wing id; every one in verify mode), publishes the fresh rows and disables reuse at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; a WingEquipment wing's rows are carried when it is the wing held at the same address with the same id and no hooked writer touched its equipment pool since its read; the wing census is read every hour"
     })
 }
 

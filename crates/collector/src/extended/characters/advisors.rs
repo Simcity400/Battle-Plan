@@ -1,15 +1,7 @@
 //! Advisor definitions retained only under uninterrupted mutation observation.
 //! Double-buffered owned arenas let one changed character grow without moving
 //! later cache keys or forcing the rest of the roster to be reacquired.
-//!
-//! Before each section's capture, the held characters in the hour's
-//! sampled-verification slice ([`crate::sampled_verify`], keyed by character
-//! id) whose map no observed writer touched are read afresh and compared with
-//! their held rows ([`Section::sample`]); a difference poisons reuse and the
-//! capture reads every character afresh. Verify mode ([`Check::Every`])
-//! instead reads every hit afresh inside the capture.
 use super::*;
-use crate::sampled_verify::Check;
 use engine_allocation::{default_vec, owned_vec, reserve, reserve_exact, resize, vec};
 use std::cell::Cell;
 #[cfg(feature = "advisor_profile")]
@@ -20,8 +12,6 @@ pub(crate) mod profile;
 pub(crate) trait Changes {
     fn quiet(&self) -> Option<(u64, u64)>;
     fn revision(&self, map: usize) -> Option<(u64, u64)>;
-    /// The held characters this hour reads afresh and compares.
-    fn check(&self) -> Check;
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Counts {
@@ -29,8 +19,6 @@ pub(crate) struct Counts {
     pub reused: u64,
     pub read: u64,
     pub roles: u64,
-    pub verified: u64,
-    pub mismatches: u64,
 }
 #[derive(Clone, Debug)]
 struct Entry {
@@ -82,8 +70,6 @@ struct Section {
     pub(super) counts: Counts,
     characters: usize,
     charge: crate::raw_memory::Charge,
-    /// This hour's slice, compared by a quiet hour that then read afresh.
-    presampled: Option<[u64; 2]>,
 }
 impl Section {
     /// Every held character of this census-sourced section was certified
@@ -117,7 +103,6 @@ impl Section {
             counts: Counts::default(),
             characters: 0,
             charge: Default::default(),
-            presampled: None,
         };
         cache.update_charge();
         cache
@@ -247,75 +232,6 @@ impl Section {
         self.capture_section_mode(memory, context, observer, source, count_only, false)
     }
 
-    /// This hour's sampled comparison: each held character `check` covers
-    /// whose map no observed writer touched and whose map header and
-    /// sentinel read the same (another is read afresh by the capture anyway)
-    /// is read afresh from the raw `memory`, outside the prepared program's
-    /// trace, into the spare arena, and compared with its held rows. Returns
-    /// `[compared, differing]` characters; a read that fails or does not fit
-    /// compares nothing.
-    fn sample(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        observer: &dyn Changes,
-        check: Check,
-    ) -> [u64; 2] {
-        let Self {
-            current, previous, ..
-        } = self;
-        let mut counts = [0; 2];
-        for entry in &current.entries {
-            if !check.covers(u64::from(entry.id))
-                || entry.revision.is_none()
-                || observer.revision(entry.pointer + ccharacter::ADVISOR_MAP_HEAD) != entry.revision
-            {
-                continue;
-            }
-            let Ok(map) = cadvisor::MapView::read(memory, entry.pointer) else {
-                continue;
-            };
-            if map.header != entry.header || map.sentinel != entry.sentinel {
-                continue;
-            }
-            let held = &current.rows[entry.rows.clone()];
-            let country = held.first().map_or(0, |row| row.country);
-            let fresh = cadvisor::walk_definitions_entry_buffer(
-                &map,
-                base,
-                ccharacter_manager::Entry {
-                    pointer: entry.pointer,
-                    id: entry.id,
-                    country,
-                    roster: 0,
-                    ordinal: 0,
-                },
-                engine_native::walk::Buffer::Fixed(&mut previous.rows),
-                engine_native::walk::Buffer::Fixed(&mut previous.bytes),
-            );
-            let Outcome::Rows { len } = fresh.outcome else {
-                continue;
-            };
-            let same = len == held.len()
-                && previous.bytes[..fresh.bytes_len] == current.bytes[entry.bytes.clone()]
-                && previous.rows[..len].iter().zip(held).all(|(new, old)| {
-                    let mut old = *old;
-                    for start in [
-                        &mut old.key_start,
-                        &mut old.idea_start,
-                        &mut old.slot_start,
-                        &mut old.modifier_start,
-                    ] {
-                        *start -= entry.bytes.start;
-                    }
-                    *new == old
-                });
-            counts[0] += 1;
-            counts[1] += u64::from(!same);
-        }
-        counts
-    }
-
     fn capture_section_mode(
         &mut self,
         memory: &impl Memory,
@@ -329,24 +245,6 @@ impl Section {
             self.plan.enable_worker_growth();
         }
         let scope = (context.base, context.game_state);
-        let check = observer.check();
-        let verify = check == Check::Every;
-        let mut sampled = [0; 2];
-        if let Some(presampled) = self.presampled.take() {
-            // A quiet hour already compared this hour's slice.
-            sampled = presampled;
-            if sampled[1] != 0 {
-                self.valid = false;
-                self.plan.invalidate();
-            }
-        } else if check.sampled() && self.valid && self.scope == scope && !count_only {
-            sampled = self.sample(memory, context.base, observer, check);
-            if sampled[1] != 0 {
-                // Nothing certifies reuse: this capture reads every character.
-                self.valid = false;
-                self.plan.invalidate();
-            }
-        }
         let before = observer.quiet();
         let counted = Counted::new(memory);
         let same_source = || match &source {
@@ -372,7 +270,6 @@ impl Section {
         let certified = self.valid
             && self.scope == scope
             && !count_only
-            && !verify
             && before.is_some()
             && same_source()
             && (self.observation == before
@@ -381,11 +278,7 @@ impl Section {
                         && observer.revision(entry.pointer + ccharacter::ADVISOR_MAP_HEAD)
                             == entry.revision
                 }));
-        self.counts = Counts {
-            verified: sampled[0],
-            mismatches: sampled[1],
-            ..Counts::default()
-        };
+        self.counts = Counts::default();
         if self.plan.begin(&counted, certified) {
             #[cfg(feature = "advisor_profile")]
             {
@@ -444,11 +337,7 @@ impl Section {
         self.census = matches!(source, Source::Census { .. });
         std::mem::swap(&mut self.current, &mut self.previous);
         self.current.entries.clear();
-        self.counts = Counts {
-            verified: sampled[0],
-            mismatches: sampled[1],
-            ..Counts::default()
-        };
+        self.counts = Counts::default();
         let reuse = self.valid && self.scope == scope && before.is_some();
         self.valid = false;
         self.scope = scope;
@@ -531,7 +420,7 @@ impl Section {
                         });
                     let row_start = batch.len;
                     let byte_start = batch.bytes_len;
-                    if hit && !verify {
+                    if hit {
                         let entry = previous.unwrap();
                         let rows = entry.rows.len();
                         let bytes = entry.bytes.len();
@@ -581,34 +470,6 @@ impl Section {
                             },
                         );
                         self.counts.read += 1;
-                        if hit {
-                            self.counts.verified += 1;
-                            let old = previous.unwrap();
-                            let same = batch.failure.is_none()
-                                && batch.unread == 0
-                                && batch.len - row_start == old.rows.len()
-                                && batch.bytes[byte_start..batch.bytes_len]
-                                    == self.previous.bytes[old.bytes.clone()]
-                                && batch.rows[row_start..batch.len]
-                                    .iter()
-                                    .zip(&self.previous.rows[old.rows.clone()])
-                                    .all(|(new, old_row)| {
-                                        let mut old_row = *old_row;
-                                        old_row.country = character.country;
-                                        old_row.key_start =
-                                            old_row.key_start - old.bytes.start + byte_start;
-                                        old_row.idea_start =
-                                            old_row.idea_start - old.bytes.start + byte_start;
-                                        old_row.slot_start =
-                                            old_row.slot_start - old.bytes.start + byte_start;
-                                        old_row.modifier_start =
-                                            old_row.modifier_start - old.bytes.start + byte_start;
-                                        *new == old_row
-                                    });
-                            if !same {
-                                self.counts.mismatches += 1;
-                            }
-                        }
                     }
                     if self.current.entries.len() < self.current.entries.capacity() {
                         self.current.entries.push(Entry {
@@ -731,9 +592,7 @@ impl Section {
                     .current
                     .entries
                     .iter()
-                    .all(|entry| entry.revision.is_some())
-                && self.counts.mismatches == 0
-                && !verify,
+                    .all(|entry| entry.revision.is_some()),
         ) {
             self.result = ReadResult::rows(Outcome::Unavailable {
                 reason: "advisor plan prefix differs",
@@ -742,8 +601,7 @@ impl Section {
         self.raw_bytes = counted.bytes.get();
         self.valid = matches!(self.result.outcome, Outcome::Rows { .. })
             && before.is_some()
-            && self.current.entries.len() == self.characters
-            && self.counts.mismatches == 0;
+            && self.current.entries.len() == self.characters;
         self.observation = before;
     }
 }
@@ -773,8 +631,6 @@ struct ModifierSpan {
     tooltip_failure: Option<&'static str>,
     /// Taken before this row's read; certifies holding it for a later hour.
     certificate: Option<RoleCertificate>,
-    /// The previous capture holds this row under the same certificate.
-    held: bool,
     /// Published from the held row without reading the role.
     carried: bool,
 }
@@ -790,40 +646,24 @@ struct RoleCertificate {
     sequence: u64,
 }
 
-/// The certificates' source and which held rows are read afresh anyway.
+/// The certificates' source.
 #[derive(Clone, Copy)]
 pub(super) struct RoleObservation {
     changes: &'static dyn crate::character_changes::Changes,
-    /// Tests: the roles' sampled comparison; otherwise the hour's
-    /// ([`crate::sampled_verify::current`]).
-    check: Option<Check>,
 }
 impl RoleObservation {
-    pub(super) fn with(
-        changes: &'static dyn crate::character_changes::Changes,
-        check: Option<Check>,
-    ) -> Self {
-        Self { changes, check }
-    }
-
-    /// The held roles this capture reads afresh and compares, by character id.
-    fn check(&self) -> Check {
-        self.check.unwrap_or_else(|| {
-            crate::sampled_verify::current_burned_in(crate::character_changes::VERIFY)
-        })
+    pub(super) fn with(changes: &'static dyn crate::character_changes::Changes) -> Self {
+        Self { changes }
     }
 }
 impl Default for RoleObservation {
     fn default() -> Self {
-        Self::with(&crate::character_changes::Observer, None)
+        Self::with(&crate::character_changes::Observer)
     }
 }
 impl std::fmt::Debug for RoleObservation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RoleObservation")
-            .field("check", &self.check)
-            .finish()
+        formatter.debug_struct("RoleObservation").finish_non_exhaustive()
     }
 }
 
@@ -937,11 +777,7 @@ pub(super) fn record_modifiers(rows: &[cadvisor::Row]) {
 /// the same call; a factory's role is a new object. Coverage is described in
 /// [`engine_mutations::character_role_mutations`]. A role whose character is not
 /// observed (disabled, poisoned, refused registration, a running writer, a
-/// new epoch after a load, gap or recovery) is read afresh. Every hour also
-/// reads the held roles of its sampled-verification slice afresh
-/// ([`crate::sampled_verify`], keyed by the role's character id; verify mode
-/// takes every held role), publishes the fresh bytes and poisons the
-/// character watches on a difference.
+/// new epoch after a load, gap or recovery) is read afresh.
 #[derive(Debug)]
 struct Modifiers {
     spans: Vec<ModifierSpan>,
@@ -957,11 +793,6 @@ struct Modifiers {
     roles: RoleObservation,
     role_counts: crate::character_changes::Counts,
     charge: crate::raw_memory::Charge,
-    /// This hour's slice `[compared, differing]`, compared by a quiet hour
-    /// that then read afresh.
-    presampled: [u64; 2],
-    /// A sampled role's fresh bytes.
-    scratch: Vec<u8>,
 }
 
 impl Modifiers {
@@ -977,51 +808,6 @@ impl Modifiers {
                     && span.tooltip_recorded
                     && span.tooltip_failure.is_none()
             })
-    }
-
-    /// A quiet hour's slice: each role whose character `check` covers is
-    /// read afresh, its cache and keys as the capture reads them, and
-    /// compared with its recorded bytes. `[compared, differing]`; `None`
-    /// when a read fails or its bytes cannot be held, which a capture would
-    /// meet too.
-    fn sample<'a>(
-        &mut self,
-        memory: &impl Memory,
-        rows: impl Iterator<Item = &'a cadvisor::Row>,
-        check: Check,
-    ) -> Option<[u64; 2]> {
-        let mut counts = [0; 2];
-        for (index, row) in rows.enumerate() {
-            if !check.covers(u64::from(row.character)) {
-                continue;
-            }
-            let span = *self.spans.get(index)?;
-            let array = cadvisor::modifier_entries(memory, row.pointer).ok()?;
-            let len = (array.count as usize).checked_mul(engine_native::modifier_entry::STRIDE)?;
-            let scratch = &mut self.scratch;
-            let read = engine_allocation::advisory(|| {
-                resize(scratch, len, 0).ok()?;
-                cadvisor::copy_modifier_entries(memory, array, &mut scratch[..len]).ok()?;
-                cadvisor::copy_tooltip_keys_buffer(
-                    memory,
-                    row.pointer,
-                    engine_native::walk::Buffer::GrowingFrom(scratch, len),
-                )
-                .ok()
-            })?;
-            if !read.recorded {
-                return None;
-            }
-            counts[0] += 1;
-            let same = self.scratch[..len] == self.bytes[span.start..span.start + span.len]
-                && self.scratch[len..len + read.len]
-                    == self.bytes[span.tooltip_start..span.tooltip_start + span.tooltip_len];
-            if !same {
-                counts[1] += 1;
-                return Some(counts);
-            }
-        }
-        Some(counts)
     }
 
     fn with_demand(demand: cadvisor::ModifierDemand) -> Self {
@@ -1041,8 +827,6 @@ impl Modifiers {
             roles: RoleObservation::default(),
             role_counts: Default::default(),
             charge: Default::default(),
-            presampled: [0; 2],
-            scratch: Vec::new(),
         };
         value.update_charge();
         value
@@ -1053,8 +837,7 @@ impl Modifiers {
             payload_vectors: crate::raw_memory::vector_bytes(&self.spans)
                 + crate::raw_memory::vector_bytes(&self.bytes)
                 + crate::raw_memory::vector_bytes(&self.held.spans)
-                + crate::raw_memory::vector_bytes(&self.held.bytes)
-                + crate::raw_memory::vector_bytes(&self.scratch),
+                + crate::raw_memory::vector_bytes(&self.held.bytes),
             ..Default::default()
         });
     }
@@ -1162,7 +945,6 @@ impl Modifiers {
         self.shortfall = 0;
         self.failure = None;
         self.role_counts = Default::default();
-        let check = self.roles.check();
         self.spans.fill(ModifierSpan::default());
         let result = (|| {
             // Acquire every pre-existing numeric cache before appended keys
@@ -1179,8 +961,7 @@ impl Modifiers {
                     })
                 });
                 let index = self.required_rows;
-                let held = self.held_span(index, certificate);
-                let carried = held.filter(|_| !check.covers(u64::from(row.character)));
+                let carried = self.held_span(index, certificate);
                 let (array, len) = match carried {
                     Some(held) => (None, held.len),
                     None => {
@@ -1207,7 +988,6 @@ impl Modifiers {
                 }
                 let mut span = ModifierSpan {
                     certificate,
-                    held: held.is_some(),
                     carried: carried.is_some(),
                     ..ModifierSpan::default()
                 };
@@ -1296,40 +1076,11 @@ impl Modifiers {
         if let Err(reason) = result {
             self.failure.get_or_insert(reason);
         }
-        self.verify_held();
         self.complete = self.failure.is_none();
-        let [verified, mismatches] = std::mem::take(&mut self.presampled);
-        self.role_counts.verified += verified;
-        self.role_counts.mismatches += mismatches;
         crate::character_changes::record(
             crate::character_changes::Table::AdvisorRoles,
             &self.role_counts,
         );
-    }
-
-    /// Each role a held certificate matched that this hour's check covers was
-    /// read afresh; a difference from its held bytes disables reuse for the
-    /// attachment.
-    fn verify_held(&mut self) {
-        if self.failure.is_some() {
-            return;
-        }
-        let rows = self.required_rows.min(self.spans.len());
-        for (index, span) in self.spans[..rows].iter().enumerate() {
-            if !span.held || span.carried || !span.recorded || !span.tooltip_recorded {
-                continue;
-            }
-            let held = self.held.spans[index];
-            self.role_counts.verified += 1;
-            let same = self.bytes[span.start..span.start + span.len]
-                == self.held.bytes[held.start..held.start + held.len]
-                && self.bytes[span.tooltip_start..span.tooltip_start + span.tooltip_len]
-                    == self.held.bytes[held.tooltip_start..held.tooltip_start + held.tooltip_len];
-            if !same {
-                self.role_counts.mismatches += 1;
-                self.roles.changes.mismatch();
-            }
-        }
     }
 }
 
@@ -1361,8 +1112,7 @@ fn fresh_content() -> u64 {
 /// capture, so neither family's observed writers ran, and the census has
 /// that capture's generation, so every occurrence, identity, country and map
 /// header is the one read then. That capture certified every character and
-/// role. Only the sampled slices are read and compared; a difference poisons
-/// its family and the hour reads afresh.
+/// role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Quiet {
     scope: (usize, usize),
@@ -1423,87 +1173,36 @@ impl Cache {
         }
     }
 
-    /// A quiet hour, after `quiet` matched: compare both slices and, when
-    /// they read as held, carry the table. `false` reads afresh, with what
-    /// the slices compared kept for the capture's counts.
-    fn carry_quiet(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        observer: &dyn Changes,
-        check: Check,
-        before: Option<(u64, u64)>,
-    ) -> bool {
-        let mut sampled = [[0_u64; 2]; 2];
-        if check.sampled() {
-            for (section, sampled) in self.sections.iter_mut().zip(&mut sampled) {
-                *sampled = section.sample(memory, base, observer, check);
-            }
+    /// A quiet hour, after `quiet` matched: carry the table unless a writer
+    /// ran since `before`, which leaves the hour to a capture.
+    fn carry_quiet(&mut self, observer: &dyn Changes, before: Option<(u64, u64)>) -> bool {
+        if before != observer.quiet() {
+            return false;
         }
-        let differs = sampled.iter().any(|sampled| sampled[1] != 0);
-        let roles = if differs {
-            Some([0; 2])
-        } else {
-            let Self {
-                sections,
-                modifiers,
-                ..
-            } = self;
-            modifiers.sample(
-                memory,
-                sections
-                    .iter()
-                    .flat_map(|section| &section.current.rows[..section.result.outcome.len()]),
-                check,
-            )
+        let rows = self.result.outcome.len() as u64;
+        self.counts = Counts {
+            reused: self
+                .sections
+                .iter()
+                .map(|section| section.characters as u64)
+                .sum(),
+            roles: rows,
+            ..Counts::default()
         };
-        // A writer that ran while the slices were read leaves the hour to a
-        // capture, which fails it as mutated.
-        if !differs && roles.is_some_and(|roles| roles[1] == 0) && before == observer.quiet() {
-            let [roles, _] = roles.unwrap();
-            let rows = self.result.outcome.len() as u64;
-            self.counts = Counts {
-                reused: self
-                    .sections
-                    .iter()
-                    .map(|section| section.characters as u64)
-                    .sum(),
-                roles: rows,
-                verified: sampled.iter().map(|sampled| sampled[0]).sum(),
-                ..Counts::default()
-            };
-            crate::character_changes::record(
-                crate::character_changes::Table::AdvisorRoles,
-                &crate::character_changes::Counts {
-                    reused: rows - roles,
-                    read: roles,
-                    verified: roles,
-                    mismatches: 0,
-                    quiet: true,
-                },
-            );
-            return true;
-        }
-        // Read afresh: a difference poisons its family first.
-        for (section, sampled) in self.sections.iter_mut().zip(sampled) {
-            section.presampled = Some(sampled);
-        }
-        if let Some(roles) = roles {
-            if roles[1] != 0 {
-                self.modifiers.roles.changes.mismatch();
-            }
-            self.modifiers.presampled = roles;
-        }
-        false
+        crate::character_changes::record(
+            crate::character_changes::Table::AdvisorRoles,
+            &crate::character_changes::Counts {
+                reused: rows,
+                quiet: true,
+                ..Default::default()
+            },
+        );
+        true
     }
-    /// Tests: the roles' certificates and slice come from `changes`.
+    /// Tests: the roles' certificates come from `changes`.
     #[cfg(test)]
-    pub(super) fn observe_roles(
-        &mut self,
-        changes: &'static dyn crate::character_changes::Changes,
-        check: Option<Check>,
-    ) {
-        self.modifiers.roles = RoleObservation::with(changes, check);
+    pub(super) fn observe_roles(&mut self, changes: &'static dyn crate::character_changes::Changes) {
+        self.modifiers.roles = RoleObservation::with(changes);
     }
     pub fn needs_growth(&self) -> bool {
         self.sections.iter().any(Section::needs_growth) || self.modifiers.needs_growth()
@@ -1558,14 +1257,13 @@ impl Cache {
         // Taken before any registration or read this capture certifies.
         let before = observer.quiet();
         let characters = self.modifiers.roles.changes.quiet();
-        let check = observer.check();
         let scope = (context.base, context.game_state);
         let quiet =
             loaned
                 .zip(before)
                 .zip(characters)
                 .and_then(|((roles, advisors), characters)| {
-                    (roles.generation != 0 && check != Check::Every).then_some(Quiet {
+                    (roles.generation != 0).then_some(Quiet {
                         scope,
                         advisors,
                         characters,
@@ -1574,7 +1272,7 @@ impl Cache {
                 });
         if quiet.is_some()
             && self.quiet == quiet
-            && self.carry_quiet(&counted, context.base, observer, check, before)
+            && self.carry_quiet(observer, before)
         {
             self.raw_bytes = counted.bytes.get();
             return;
@@ -1636,8 +1334,6 @@ impl Cache {
                 self.counts.reused += section.counts.reused;
                 self.counts.read += section.counts.read;
                 self.counts.roles += section.counts.roles;
-                self.counts.verified += section.counts.verified;
-                self.counts.mismatches += section.counts.mismatches;
                 match section.result.outcome {
                     Outcome::Rows { len: n } => len += n,
                     Outcome::Truncated {
@@ -1723,11 +1419,9 @@ impl Cache {
             .sum::<u64>()
             + counted.bytes.get();
         // Everything this capture published was certified from the census,
-        // with no difference and no writer running: later quiet hours carry it.
+        // with no writer running: later quiet hours carry it.
         self.quiet = quiet.filter(|_| {
             matches!(self.result.outcome, Outcome::Rows { .. })
-                && self.counts.mismatches == 0
-                && self.modifiers.role_counts.mismatches == 0
                 && self
                     .sections
                     .iter()

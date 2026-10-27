@@ -10,16 +10,9 @@
 //! ones and either the family's quiet token is the one taken before that capture or no hooked
 //! writer touched the template since it registered (every run-time writer of the key is a hooked
 //! site, [`engine_mutations::template_mutations`]). Every other template's names are read afresh. A capture
-//! is held only when it completed and the quiet token stood still across it. The carryable keys of
-//! the hour's [`crate::sampled_verify`] slice (by template id) are read afresh instead and compared
-//! with the held ones. After all name reads and an acquire fence, an unchanged final certificate
-//! permits a mismatch verdict; an overlapping writer withdraws the capture without poisoning. A key
-//! mismatch poisons the key domain. Allocation is advisory: a capture that cannot be held reads
-//! every such key again next hour.
-use crate::{
-    sampled_verify::Check,
-    template_changes::{Changes, Counts},
-};
+//! is held only when it completed and the quiet token stood still across it. Allocation is advisory:
+//! a capture that cannot be held reads every such key again next hour.
+use crate::template_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_native::{creferenced_division_template as native, walk::Outcome};
 use std::{
@@ -132,7 +125,6 @@ pub(crate) fn derive(
     names: &[u8],
     store: &mut KeyStore,
     changes: &dyn Changes,
-    check: Check,
     rows: &mut Vec<native::Row>,
     bytes: &mut Vec<u8>,
 ) -> Outcome {
@@ -144,7 +136,6 @@ pub(crate) fn derive(
         quiet,
         ..Counts::default()
     };
-    let mut withdrawn = false;
     let derived = (|| -> Result<(), &'static str> {
         if let Outcome::Unavailable { reason } = outcome {
             return Err(reason);
@@ -171,7 +162,6 @@ pub(crate) fn derive(
             }
             let kept = finder.find(icon.pointer, icon.template).filter(|kept| {
                 kept.certificate.is_some()
-                    && !withdrawn
                     && (quiet || kept.certificate == changes.sequence(icon.pointer))
             });
             let display = icon.display_name.and_then(|display| {
@@ -181,17 +171,6 @@ pub(crate) fn derive(
                     None => Some((literal, None)),
                 }
             });
-            // Quiet tokens spare ordinary carry lookups, but a sampled read
-            // needs its own certificate immediately before acquiring names.
-            let sampled = kept.is_some() && check.covers(icon.template >> 32);
-            let verify_before = kept.filter(|_| sampled).and_then(|kept| {
-                changes
-                    .sequence(icon.pointer)
-                    .filter(|certificate| Some(*certificate) == kept.certificate)
-            });
-            if sampled && verify_before.is_none() {
-                withdrawn = true;
-            }
             let (name, name_key, certificate) = match (display, kept) {
                 // The walk read both names this hour.
                 (Some((literal, Some(key))), _) => (
@@ -199,7 +178,7 @@ pub(crate) fn derive(
                     append(bytes, key)?,
                     changes.sequence(icon.pointer),
                 ),
-                (Some((literal, None)), Some(kept)) if !sampled => {
+                (Some((literal, None)), Some(kept)) => {
                     counts.reused += 1;
                     let key = &keys[kept.key.clone()];
                     (
@@ -212,28 +191,9 @@ pub(crate) fn derive(
                     counts.read += 1;
                     let start = bytes.len();
                     let names = native::copy_names_growing(memory, icon.pointer, bytes, start);
-                    // The reads precede the fenced final certificate: a writer
-                    // during any of them, failed reads included, withdraws
-                    // rather than poisons.
+                    // The reads precede the fenced certificate held with the key.
                     fence(Ordering::Acquire);
                     let certificate = changes.sequence(icon.pointer);
-                    if let Some(before) = verify_before {
-                        counts.verified += 1;
-                        if certificate != Some(before) {
-                            withdrawn = true;
-                        } else if match &names {
-                            Ok([_, key]) => {
-                                text(bytes, *key) != Some(&keys[kept.unwrap().key.clone()])
-                            }
-                            // A failed acquisition already refuses the key
-                            // table and forgets the store. It supplies no key
-                            // bytes to compare (allocation failure included).
-                            Err(_) => false,
-                        } {
-                            counts.mismatches += 1;
-                            changes.mismatch();
-                        }
-                    }
                     let [name, name_key] = names?;
                     (name, name_key, certificate)
                 }
@@ -272,7 +232,7 @@ pub(crate) fn derive(
     // Held only when the capture completed and no hooked writer ran across it.
     fence(Ordering::Acquire);
     match (derived, before) {
-        (Outcome::Rows { .. }, Some(before)) if !withdrawn && changes.quiet() == Some(before) => {
+        (Outcome::Rows { .. }, Some(before)) if changes.quiet() == Some(before) => {
             std::mem::swap(&mut store.held, &mut store.next);
             std::mem::swap(&mut store.keys, &mut store.next_keys);
             store.sorted.clear();

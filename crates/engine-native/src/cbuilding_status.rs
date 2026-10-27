@@ -382,7 +382,7 @@ pub fn roots(memory: &impl Memory, game_state: usize) -> Option<[[u8; 16]; 2]> {
     (copied == 2).then_some([states, provinces])
 }
 
-/// What [`reread`] gathers from a held status: its vtable, then the identity
+/// What [`refresh`] gathers from a held status: its vtable, then the identity
 /// and the building, index and active vector headers in [`Location::header`]
 /// order.
 const HELD_FIELDS: [RecordField; 5] = [
@@ -416,23 +416,6 @@ const HELD_BYTES: usize = 8 + HEADER_BYTES;
 const HELD_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&HELD_FIELDS, HELD_BYTES).expect("valid record layout");
 
-/// Held statuses read afresh, for a sampled comparison with rows a caller
-/// carries without walking the locations: each status's vtable, identity and
-/// building, index and active vector headers must still be those of its held
-/// [`Location`], and its rows are then read exactly as [`walk_carried`] reads
-/// a location's buildings, in `held` order, into `output` from index 0.
-/// Returns the number of rows read. The first status that no longer matches
-/// its held read, or whose buildings do not read, fails the call: a caller
-/// cannot certify its other held rows from it.
-pub fn reread(
-    memory: &impl Memory,
-    base: usize,
-    held: &[Location],
-    output: &mut Vec<cbuilding::Row>,
-) -> Result<usize, &'static str> {
-    read_held(memory, base, held, None, output)
-}
-
 /// Held statuses a hooked writer touched since their held read, read afresh
 /// without walking their locations. Each status's vtable and identity (flags,
 /// location id, country), which only its constructor writes
@@ -450,17 +433,6 @@ pub fn refresh(
     output: &mut Vec<cbuilding::Row>,
 ) -> Result<usize, &'static str> {
     debug_assert_eq!(held.len(), fresh.len());
-    read_held(memory, base, held, Some(fresh), output)
-}
-
-/// [`reread`], or [`refresh`] when `fresh` takes the headers as they read.
-fn read_held(
-    memory: &impl Memory,
-    base: usize,
-    held: &[Location],
-    mut fresh: Option<&mut [Location]>,
-    output: &mut Vec<cbuilding::Row>,
-) -> Result<usize, &'static str> {
     let expected = base
         .checked_add(VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
@@ -486,31 +458,22 @@ fn read_held(
                 return Err("held building status vtable unreadable or changed");
             }
             let header: [u8; HEADER_BYTES] = record[8..].try_into().unwrap();
-            let unchanged = match fresh {
-                Some(_) => header[..12] == location.header[..12],
-                None => header == location.header,
-            };
-            if completed != HELD_FIELDS.len() || !unchanged {
+            if completed != HELD_FIELDS.len() || header[..12] != location.header[..12] {
                 return Err("held building status differs from its held read");
             }
             let identity = Identity::from_fields(header[..12].try_into().unwrap());
             let buildings = Array::from_header(header[12..28].try_into().unwrap(), 8)
-                .filter(|buildings| {
-                    fresh.is_some() || buildings.count as usize == location.buildings
-                })
                 .ok_or("held building pointer vector invalid")?;
             let indices = Array::from_header(header[28..44].try_into().unwrap(), 4)
                 .ok_or("held building index vector invalid")?;
             let active = Array::from_header(header[44..60].try_into().unwrap(), 8)
                 .ok_or("held active building vector invalid")?;
             let count = buildings.count as usize;
-            if let Some(fresh) = fresh.as_deref_mut() {
-                fresh[first + slot] = Location {
-                    header,
-                    buildings: count,
-                    ..*location
-                };
-            }
+            fresh[first + slot] = Location {
+                header,
+                buildings: count,
+                ..*location
+            };
             staged[slot] = cbuilding::LocationBuildings {
                 buildings,
                 status: location.status,

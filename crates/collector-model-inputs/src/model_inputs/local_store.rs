@@ -18,16 +18,9 @@
 //!
 //! Every other country is read afresh. A walk is held only when it was
 //! complete and the quiet token stood still across it, so no certificate
-//! taken during it can postdate a write it missed. A carryable country is
-//! read afresh instead once in [`crate::sampled_verify::ROTATION`] days, at
-//! the hour and on the day of the rotation its id names ([`verified`]: a
-//! daily comparison would cost a whole walk a day, the old daily cost), and
-//! compared with its held rows; a difference poisons the domain. Allocation
-//! is advisory: a walk that cannot be held is read again next hour.
-use crate::{
-    local_subunit_changes::{Changes, Counts},
-    sampled_verify::Check,
-};
+//! taken during it can postdate a write it missed. Allocation is advisory: a
+//! walk that cannot be held is read again next hour.
+use crate::local_subunit_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_deployment::{
     cdeployment_status as native, cdeployment_status::Deployment,
@@ -59,9 +52,6 @@ pub struct LocalStore {
     requirements: Vec<LocalRequirement>,
     /// This walk's countries, swapped in when the walk is held.
     next: Vec<HeldCountry>,
-    /// This walk's fresh reads of certified countries: the held entry and
-    /// the fresh rows it is compared with.
-    verify: Vec<(usize, Range<usize>)>,
 }
 
 impl LocalStore {
@@ -72,14 +62,12 @@ impl LocalStore {
         self.rows.clear();
         self.requirements.clear();
         self.next.clear();
-        self.verify.clear();
     }
 
     pub fn allocated_bytes(&self) -> usize {
         (self.countries.capacity() + self.next.capacity()) * size_of::<HeldCountry>()
             + self.rows.capacity() * size_of::<LocalSubunitRow>()
             + self.requirements.capacity() * size_of::<LocalRequirement>()
-            + self.verify.capacity() * size_of::<(usize, Range<usize>)>()
     }
 
     /// Holds a complete walk taken under `quiet`, with its countries in
@@ -121,46 +109,14 @@ fn held<'a>(
     }
 }
 
-/// A row's requirements in `requirements`.
-fn entries<'a>(
-    row: &LocalSubunitRow,
-    requirements: &'a [LocalRequirement],
-) -> Option<&'a [LocalRequirement]> {
-    let span = row.requirements;
-    requirements.get(span.start..span.start.checked_add(span.len)?)
-}
-
-/// Whether `country`'s carryable rows are read and compared this hour: once in
-/// a rotation of days, at its hour of the day.
-fn verified(check: Check, country: u32) -> bool {
-    let key = u64::from(country);
-    check.covers(key) && check.covers_daily(key)
-}
-
-/// Whether two countries' rows record the same clones.
-fn same(
-    held: HeldLocalSubunits<'_>,
-    fresh: &[LocalSubunitRow],
-    fresh_requirements: &[LocalRequirement],
-) -> bool {
-    held.rows.len() == fresh.len()
-        && held.rows.iter().zip(fresh).all(|(kept, row)| {
-            (kept.country, kept.token) == (row.country, row.token)
-                && entries(kept, held.requirements).is_some()
-                && entries(kept, held.requirements) == entries(row, fresh_requirements)
-        })
-}
-
 /// One hour's CountryLocalSubunits into `rows` and `requirements`, carrying
 /// what the store and the domain certify. Records the hour's counts.
-#[allow(clippy::too_many_arguments)]
 pub fn capture(
     memory: &impl engine_native::Memory,
     base: usize,
     game_state: usize,
     store: &mut LocalStore,
     changes: &dyn Changes,
-    check: Check,
     rows: &mut Vec<LocalSubunitRow>,
     requirements: &mut Vec<LocalRequirement>,
 ) -> LocalSubunitWalk {
@@ -175,18 +131,15 @@ pub fn capture(
         rows: held_rows,
         requirements: held_requirements,
         next,
-        verify,
         ..
     } = &mut *store;
     let (held_countries, held_rows, held_requirements) =
         (&*held_countries, &*held_rows, &*held_requirements);
     next.clear();
-    verify.clear();
     // Held countries are in walk order, so one cursor finds each one's entry.
     let cursor = Cell::new(0);
-    // The walked country's held entry, and whether its rows are certified
-    // (a verified country is read instead of carried).
-    let current = Cell::new(None::<(usize, bool)>);
+    // The walked country's held entry.
+    let current = Cell::new(None::<usize>);
     let mut stored = Ok(());
     let walk = native::walk_local_subunits_selected_growing(
         memory,
@@ -210,13 +163,13 @@ pub fn capture(
             }) else {
                 return LocalSelection::Read;
             };
+            current.set(Some(index));
             let certified = entry.certificate.is_some()
                 && (quiet || entry.certificate == changes.sequence(entry.deployment.status));
-            current.set(Some((index, certified)));
             let kept = held(entry, held_rows, held_requirements);
-            match (certified, verified(check, country.id)) {
-                (false, _) | (true, true) => LocalSelection::Read,
-                (true, false) if quiet => LocalSelection::Carry(kept),
+            match (certified, quiet) {
+                (false, _) => LocalSelection::Read,
+                (true, true) => LocalSelection::Carry(kept),
                 (true, false) => LocalSelection::Confirm {
                     deployment: entry.deployment,
                     held: kept,
@@ -224,19 +177,13 @@ pub fn capture(
             }
         },
         |visit| {
-            let entry = current.get().map(|(index, _)| &held_countries[index]);
+            let entry = current.get().map(|index| &held_countries[index]);
             let Some(deployment) = visit.deployment.or(entry.map(|entry| entry.deployment)) else {
                 unreachable!("only a held country is carried");
             };
             let certificate = if visit.read {
                 counts.read += 1;
                 counts.read_rows += visit.rows.len() as u64;
-                if let Some((index, true)) = current.get()
-                    && visit.deployment == Some(held_countries[index].deployment)
-                    && allocation::advisory(|| allocation::reserve(verify, 1)).is_ok()
-                {
-                    verify.push((index, visit.rows.clone()));
-                }
                 changes.sequence(deployment.status)
             } else {
                 counts.reused += 1;
@@ -264,16 +211,6 @@ pub fn capture(
             .zip(requirements.get(..walk.requirements_len)),
         _ => None,
     };
-    if let Some((walked, walked_requirements)) = complete {
-        for (index, range) in verify.iter().cloned() {
-            counts.verified += 1;
-            let kept = held(&held_countries[index], held_rows, held_requirements);
-            if !same(kept, &walked[range], walked_requirements) {
-                counts.mismatches += 1;
-                changes.mismatch();
-            }
-        }
-    }
     // Held only when no hooked writer ran across the walk.
     match (complete, before) {
         (Some((walked, walked_requirements)), Some(before))

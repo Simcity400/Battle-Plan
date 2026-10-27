@@ -12,10 +12,7 @@
 //! commander, and reads a commander's blocks only when no held read carries
 //! its certificate (no forwarded writer touched it since; same epoch). The
 //! held bans live in a [`Store`] the capture takes and returns; a capture
-//! that does not complete forgets it. Every hour also reads the held
-//! commanders of its sampled slice afresh ([`crate::sampled_verify`]); a
-//! difference poisons reuse for the attachment. `retreat_ban_verify`, for
-//! diagnosis, reads every commander afresh.
+//! that does not complete forgets it.
 use crate::watch_registry::{Notification, WatchRegistry};
 use engine_native::carmy_leader::RetreatBans;
 use std::{
@@ -29,19 +26,12 @@ use std::{
 static WATCHES: WatchRegistry = WatchRegistry::new();
 /// Forwarded writer calls.
 static CALLS: AtomicU64 = AtomicU64::new(0);
-/// Reused, read, verified and mismatched commanders; refused certificates;
-/// failed captures.
-static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "a held commander's retreat bans differ from a fresh read",
-]);
+/// Reused and read commanders; refused certificates; failed captures.
+static READS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// Peak commanders reached by capture or the existing group sizing census.
 static LEADERS: AtomicUsize = AtomicUsize::new(0);
 /// The held bans, between the Presentation job's captures.
 static STORE: Mutex<Option<Box<Store>>> = Mutex::new(None);
-
-/// Read every reached commander afresh each hour and compare the held ones.
-pub const VERIFY: bool = cfg!(feature = "retreat_ban_verify");
 
 /// Notifications running now.
 pub fn active() -> usize {
@@ -145,48 +135,38 @@ pub fn return_store(store: Box<Store>) {
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     /// Commanders whose certificate could not be taken, read afresh.
     pub refused: u64,
     /// Commanders reached, carried or read.
     pub leaders: u64,
 }
 
-/// One capture's use of the store: which commanders it carries, which it
-/// reads under which certificate, and what each fresh read must match.
+/// One capture's use of the store: which commanders it carries and which it
+/// reads under which certificate.
 pub struct Leaders<'a> {
     store: &'a mut Store,
     changes: &'a dyn Changes,
-    check: crate::sampled_verify::Check,
-    /// Commanders read this capture: their certificate and, when sampled,
-    /// the held bans the read must match. Ascending once [`Self::finish`]
-    /// sorts it.
-    pending: Vec<(usize, (u64, u64), Option<RetreatBans>)>,
+    /// Commanders read this capture and their certificate. Ascending once
+    /// [`Self::finish`] sorts it.
+    pending: Vec<(usize, (u64, u64))>,
     /// Commanders carried this capture.
     carried: Vec<usize>,
     counts: Counts,
 }
 
 impl<'a> Leaders<'a> {
-    pub fn new(
-        store: &'a mut Store,
-        changes: &'a dyn Changes,
-        check: crate::sampled_verify::Check,
-    ) -> Self {
+    pub fn new(store: &'a mut Store, changes: &'a dyn Changes) -> Self {
         Self {
             store,
             changes,
-            check,
             pending: Vec::new(),
             carried: Vec::new(),
             counts: Counts::default(),
         }
     }
 
-    /// The held bans of `leader` when its certificate still holds and it is
-    /// not in this hour's sampled slice; otherwise `None`, and the walk reads
-    /// it.
+    /// The held bans of `leader` when its certificate still holds; otherwise
+    /// `None`, and the walk reads it.
     pub fn held(&mut self, leader: usize) -> Option<RetreatBans> {
         self.counts.leaders += 1;
         let Some(certificate) = self.changes.sequence(leader) else {
@@ -199,7 +179,7 @@ impl<'a> Leaders<'a> {
             .get(&leader)
             .filter(|held| held.certificate == certificate)
             .map(|held| held.bans);
-        if held.is_some() && !self.check.covers((leader >> 4) as u64) {
+        if held.is_some() {
             if engine_allocation::reserve(&mut self.carried, 1).is_ok() {
                 self.carried.push(leader);
                 self.counts.reused += 1;
@@ -208,15 +188,14 @@ impl<'a> Leaders<'a> {
             return None;
         }
         if engine_allocation::reserve(&mut self.pending, 1).is_ok() {
-            self.pending.push((leader, certificate, held));
+            self.pending.push((leader, certificate));
         }
         None
     }
 
     /// After a complete walk: hold each fresh read under the certificate
-    /// taken before it, compare the sampled ones with their held bans, and
-    /// forget every commander the walk did not reach or could not read.
-    /// Returns the counts; a mismatch is in `mismatches`.
+    /// taken before it, and forget every commander the walk did not reach or
+    /// could not read.
     pub fn finish(
         mut self,
         results: impl Iterator<Item = Result<Option<RetreatBans>, &'static str>>,
@@ -231,12 +210,8 @@ impl<'a> Leaders<'a> {
             else {
                 continue;
             };
-            let (leader, certificate, held) = self.pending[at];
+            let (leader, certificate) = self.pending[at];
             self.counts.read += 1;
-            if let Some(held) = held {
-                self.counts.verified += 1;
-                self.counts.mismatches += u64::from(held != bans);
-            }
             if engine_allocation::reserve(&mut fresh, 1).is_ok() {
                 fresh.push((leader, Held { certificate, bans }));
             }
@@ -252,20 +227,13 @@ impl<'a> Leaders<'a> {
     }
 }
 
-/// A worker publishes one capture's counts; a mismatch disables reuse for
-/// the attachment.
+/// A worker publishes one capture's counts.
 pub fn record(counts: &Counts) {
-    for (target, value) in READS.iter().zip([
-        counts.reused,
-        counts.read,
-        counts.verified,
-        counts.mismatches,
-        counts.refused,
-    ]) {
+    for (target, value) in READS
+        .iter()
+        .zip([counts.reused, counts.read, counts.refused])
+    {
         target.fetch_add(value, Ordering::Relaxed);
-    }
-    if SAMPLED.record(counts.verified, counts.mismatches, 0) {
-        WATCHES.poison();
     }
     if counts.leaders != 0 {
         LEADERS.fetch_max(counts.leaders as usize, Ordering::Relaxed);
@@ -274,35 +242,27 @@ pub fn record(counts: &Counts) {
 
 /// A capture that did not complete: its store was forgotten.
 pub fn failed() {
-    READS[5].fetch_add(1, Ordering::Relaxed);
+    READS[3].fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "retreat_ban_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "forwarded_writes": CALLS.load(Ordering::Relaxed),
         "reused_commanders": reads[0],
         "read_commanders": reads[1],
-        "verified_commanders": reads[2],
-        "mismatches": reads[3],
-        "refused_commanders": reads[4],
-        "failed_captures": reads[5],
+        "refused_commanders": reads[2],
+        "failed_captures": reads[3],
         "watches": WATCHES.status(),
-        "scope": "cumulative since attach; each hour DivisionRetreatBans reads every division's group and commander, and carries a commander's bans while its certificate holds (no forwarded naval-tree commander writer touched it since the held read, same epoch); every other commander's two blocks are read; every hour also reads the carried commanders of its slice afresh (one in rotation_hours by address; every one in verify mode), publishes the fresh bans and disables reuse at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; each hour DivisionRetreatBans reads every division's group and commander, and carries a commander's bans while its certificate holds (no forwarded naval-tree commander writer touched it since the held read, same epoch); every other commander's two blocks are read"
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sampled_verify::Check;
 
     /// Certificates from a test registry.
     struct Registry(WatchRegistry);
@@ -333,11 +293,10 @@ mod tests {
     fn capture(
         store: &mut Store,
         changes: &dyn Changes,
-        check: Check,
         reached: &[usize],
         walk: impl Fn(usize) -> RetreatBans,
     ) -> (Counts, Vec<RetreatBans>) {
-        let mut leaders = Leaders::new(store, changes, check);
+        let mut leaders = Leaders::new(store, changes);
         let mut answers = Vec::new();
         let mut results = Vec::new();
         for &leader in reached {
@@ -357,28 +316,22 @@ mod tests {
         let mut store = Store::default();
         WATCHES.set_enabled(true);
         let reached = [0x100, 0x200, 0x300];
-        let (counts, answers) = capture(&mut store, &Observer, Check::Nothing, &reached, |l| {
-            bans(l, 4)
-        });
+        let (counts, answers) = capture(&mut store, &Observer, &reached, |l| bans(l, 4));
         assert_eq!((counts.leaders, counts.refused), (3, 3));
         assert_eq!(answers, reached.map(|l| bans(l, 4)));
         assert!(store.held.is_empty());
         record(&counts);
         presize();
         boundary(false);
-        let (counts, _) = capture(&mut store, &Observer, Check::Nothing, &reached, |l| {
-            bans(l, 4)
-        });
+        let (counts, _) = capture(&mut store, &Observer, &reached, |l| bans(l, 4));
         assert_eq!((counts.leaders, counts.read, counts.refused), (3, 3, 0));
-        let (counts, answers) = capture(&mut store, &Observer, Check::Nothing, &reached, |_| {
+        let (counts, answers) = capture(&mut store, &Observer, &reached, |_| {
             panic!("quiet commanders must carry")
         });
         assert_eq!((counts.leaders, counts.reused), (3, 3));
         assert_eq!(answers, reached.map(|l| bans(l, 4)));
         drop(forwarded(0x200));
-        let (counts, answers) = capture(&mut store, &Observer, Check::Nothing, &reached, |l| {
-            bans(l, 8)
-        });
+        let (counts, answers) = capture(&mut store, &Observer, &reached, |l| bans(l, 8));
         assert_eq!((counts.read, counts.reused), (1, 2));
         assert_eq!(answers, [bans(0x100, 4), bans(0x200, 8), bans(0x300, 4)]);
     }
@@ -390,45 +343,28 @@ mod tests {
     fn untouched_commanders_are_carried_and_touched_ones_read() {
         let changes = registry();
         let mut store = Store::default();
-        let (counts, _) = capture(&mut store, &changes, Check::Nothing, &[0x100, 0x200], |l| {
-            bans(l, 4)
-        });
+        let (counts, _) = capture(&mut store, &changes, &[0x100, 0x200], |l| bans(l, 4));
         assert_eq!((counts.read, counts.reused), (2, 0));
         drop(changes.0.notify(0x200));
-        let (counts, answers) =
-            capture(&mut store, &changes, Check::Nothing, &[0x100, 0x200], |l| {
-                bans(l, 8)
-            });
+        let (counts, answers) = capture(&mut store, &changes, &[0x100, 0x200], |l| bans(l, 8));
         assert_eq!((counts.read, counts.reused), (1, 1));
         assert_eq!(answers, [bans(0x100, 4), bans(0x200, 8)]);
-        capture(&mut store, &changes, Check::Nothing, &[0x200], |l| {
-            bans(l, 8)
-        });
+        capture(&mut store, &changes, &[0x200], |l| bans(l, 8));
         assert!(!store.held.contains_key(&0x100));
         // An invalidating hour certifies nothing held before it.
         changes.0.boundary(true);
-        let (counts, _) = capture(&mut store, &changes, Check::Nothing, &[0x200], |l| {
-            bans(l, 8)
-        });
+        let (counts, _) = capture(&mut store, &changes, &[0x200], |l| bans(l, 8));
         assert_eq!((counts.read, counts.reused), (1, 0));
     }
 
-    /// A sampled commander is read although carried, and a read differing
-    /// from its held bans is a mismatch; an unobserved commander is read
-    /// every hour and never held.
+    /// An unobserved commander is read every hour and never held.
     #[test]
-    fn sampled_commanders_are_compared_and_unobserved_ones_read() {
+    fn unobserved_commanders_are_read_and_never_held() {
         let changes = registry();
         let mut store = Store::default();
-        capture(&mut store, &changes, Check::Nothing, &[0x100], |l| {
-            bans(l, 4)
-        });
-        let (counts, _) = capture(&mut store, &changes, Check::Every, &[0x100], |l| bans(l, 8));
-        assert_eq!((counts.verified, counts.mismatches), (1, 1));
+        capture(&mut store, &changes, &[0x100], |l| bans(l, 4));
         changes.0.poison();
-        let (counts, _) = capture(&mut store, &changes, Check::Nothing, &[0x100], |l| {
-            bans(l, 8)
-        });
+        let (counts, _) = capture(&mut store, &changes, &[0x100], |l| bans(l, 8));
         assert_eq!((counts.refused, counts.read, counts.reused), (1, 0, 0));
         assert!(store.held.is_empty());
     }

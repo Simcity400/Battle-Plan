@@ -8,11 +8,11 @@
 //! without reading any of its slots, provinces, infos or buildings, only
 //! when all of these hold: the take returned the epoch of the held complete
 //! walk; no marked province lies in the batch; the manager, rail table and
-//! province table headers are those of the held walk; the batch's last
-//! read held every info it found; and the hour's sampled slice does not
-//! cover the batch. The daily countdown marks [`COUNTDOWN`]: every province
-//! on the held list and on this hour's list (duplicates included) is then
-//! marked, since the countdown writes the info of each occurrence. Outside
+//! province table headers are those of the held walk; and the batch's last
+//! read held every info it found. The daily countdown marks [`COUNTDOWN`]:
+//! every province on the held list and on this hour's list (duplicates
+//! included) is then marked, since the countdown writes the info of each
+//! occurrence. Outside
 //! a countdown the two lists may differ only in marked provinces; any other
 //! difference is an unobserved write.
 //!
@@ -20,22 +20,14 @@
 //! header are gathered, and an unmarked info whose gathered location is
 //! that of its held read is carried without reading its pairs, levels or
 //! building. An unmarked info that changed, or that a whole held batch had
-//! and this read did not find, is an unobserved write: it is counted as a
-//! mismatch, poisons the domain and the rest of the walk reads afresh. A
-//! read batch replaces its held outputs. Each hour reads the batches of its
-//! sampled slice ([`crate::sampled_verify`], keyed by batch; every batch
-//! under `rail_verify`) and compares each carryable info, publishing the
-//! fresh outputs; a difference poisons reuse and the rest of the hour reads
-//! afresh.
+//! and this read did not find, is an unobserved write: the rest of the walk
+//! reads afresh. A read batch replaces its held outputs.
 //!
 //! The store follows the Late job's loan. A walk that does not complete, a
 //! refused take or a failed hold keeps nothing for the next hour, which
 //! then reads every batch. Allocation is advisory: an info whose outputs
 //! cannot be held leaves its batch to be read next hour.
-use crate::{
-    rail_changes::{COUNTDOWN, Changes, Counts},
-    sampled_verify::Check,
-};
+use crate::rail_changes::{COUNTDOWN, Changes, Counts};
 use engine_allocation as allocation;
 use engine_railways::{
     cprovince_railway_info as info, crailway_manager::HeldBatch, crailway_manager::InfoOutputs,
@@ -175,7 +167,7 @@ impl Batch {
 }
 
 /// One planned info of the batch being read: its location and, when it may
-/// be carried or compared, its index in the held batch.
+/// be carried, its index in the held batch.
 #[derive(Clone, Copy)]
 struct Plan {
     location: RailLocation,
@@ -202,7 +194,7 @@ pub(crate) struct RailStore {
     listed_now: bool,
     /// Provinces marked this hour, sorted.
     marked: Vec<u32>,
-    /// Held batches may be carried and compared.
+    /// Held batches may be carried.
     observing: bool,
     /// A read batch could not be held: keep nothing.
     lost: bool,
@@ -263,10 +255,7 @@ impl RailStore {
     }
 
     /// An unmarked info or list changed: a write no hook saw.
-    fn unmarked(&mut self, changes: &dyn Changes) {
-        self.counts.mismatches += 1;
-        self.counts.unmarked = true;
-        changes.mismatch();
+    fn unmarked(&mut self) {
         self.observing = false;
     }
 }
@@ -295,9 +284,6 @@ fn lists_agree(held: &[u32], now: &[u32], marked: &[u32]) -> bool {
 /// One walk's view of the store and the observation that certifies reuse.
 pub(crate) struct RailReuse<'a> {
     store: &'a mut RailStore,
-    changes: &'a dyn Changes,
-    /// Which batches this hour reads afresh and compares.
-    check: Check,
 }
 
 impl<'a> RailReuse<'a> {
@@ -306,8 +292,7 @@ impl<'a> RailReuse<'a> {
     /// slot.
     pub(crate) fn begin(
         store: &'a mut RailStore,
-        changes: &'a dyn Changes,
-        check: Check,
+        changes: &dyn Changes,
         read_list: impl FnOnce(&mut Vec<u32>) -> Result<(), &'static str>,
     ) -> Self {
         if std::mem::take(&mut store.forgotten) {
@@ -375,14 +360,10 @@ impl<'a> RailReuse<'a> {
                 store.observing = false;
             }
         } else if store.observing && !lists_agree(&store.list, &store.list_now, &store.marked) {
-            store.unmarked(changes);
+            store.unmarked();
         }
         store.counts.marked = store.marked.len() as u64;
-        Self {
-            store,
-            changes,
-            check,
-        }
+        Self { store }
     }
 
     /// Ends the walk: `complete` when the cooldown, edge and building tables
@@ -435,7 +416,7 @@ impl RailCarry for RailReuse<'_> {
         store.batch = (first / BATCH) as usize;
         store.plans.clear();
         store.scratch.reset();
-        if !store.observing || self.check.covers(store.batch as u64) {
+        if !store.observing {
             return None;
         }
         let end = first.saturating_add(count);
@@ -484,16 +465,15 @@ impl RailCarry for RailReuse<'_> {
                     held = Some(index)
                 }
                 // Changed, or new where the held read found every info.
-                Some((Some(_), _)) | Some((None, true)) => store.unmarked(self.changes),
+                Some((Some(_), _)) | Some((None, true)) => store.unmarked(),
                 _ => {}
             }
         }
-        let carry = held.is_some() && !self.check.covers(store.batch as u64);
         store.plans.push(Plan {
             location: *location,
             held,
         });
-        (token, carry)
+        (token, held.is_some())
     }
 
     fn held(&self, token: usize) -> Option<InfoOutputs<'_>> {
@@ -533,15 +513,6 @@ impl RailCarry for RailReuse<'_> {
             store.scratch.whole = false;
             return;
         };
-        if let (Some(index), Some(batch)) = (plan.held, store.batches.get(store.batch)) {
-            store.counts.verified += 1;
-            if batch.outputs(index) != outputs {
-                store.counts.mismatches += 1;
-                self.changes.mismatch();
-                // A write no hook saw: the rest of the hour reads afresh.
-                store.observing = false;
-            }
-        }
         if !store.scratch.hold(plan.location, &outputs) {
             store.scratch.whole = false;
         }
@@ -576,7 +547,7 @@ impl RailCarry for RailReuse<'_> {
             }
         }
         if vanished {
-            store.unmarked(self.changes);
+            store.unmarked();
         }
         match store.batches.get_mut(store.batch) {
             Some(batch) => std::mem::swap(batch, &mut store.scratch),

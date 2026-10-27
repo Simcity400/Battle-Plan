@@ -52,8 +52,7 @@
 //!   two families never take each other's marks.
 //!
 //! A marked country is read within the hour; an unmarked one keeps the rows
-//! of its last read until its daily slice, which also compares it with that
-//! read. Writers whose address another family patches are forwarded by that
+//! of its last read until its daily slice. Writers whose address another family patches are forwarded by that
 //! family ([`forwarded`], [`Forward`]), and a set observes only while the
 //! domain's own hooks and the patches of every family forwarding a writer
 //! of that set are enabled ([`forwarder`]). A receiver that names no
@@ -125,22 +124,9 @@ static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
 /// ([`sites::of_link`]); stored before any hook is enabled.
 static BASE: AtomicUsize = AtomicUsize::new(0);
 /// Per [`Table`] and [`Counts`] field, cumulative.
-static READS: [[AtomicU64; 5]; SETS] = [const { [const { AtomicU64::new(0) }; 5] }; SETS];
+static READS: [[AtomicU64; 3]; SETS] = [const { [const { AtomicU64::new(0) }; 3] }; SETS];
 /// Countries carried by a per-country input store.
 static CARRIED: [AtomicU64; SETS] = [const { AtomicU64::new(0) }; SETS];
-/// The family's comparisons; the reason index is the [`Table`].
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "an unmarked country's stability rows differ from its last read",
-    "an unmarked country's research rows differ from its last read",
-    "an unmarked country's technology rows differ from its last read",
-    "an unmarked country's focus rows differ from its last read",
-    "an unmarked country's project rows differ from its last read",
-    "an unmarked country's appearance row differs from its last read",
-    "an unmarked country's counter row differs from its last read",
-    "an unmarked country's visibility accumulator differs from its last read",
-    "an unmarked country's equipment design modifiers differ from its last read",
-    "an unmarked country's unit speed entries differ from its last read",
-]);
 /// Country id bound of the latest complete census, for off-thread sizing.
 static IDS: AtomicUsize = AtomicUsize::new(0);
 
@@ -161,25 +147,6 @@ pub enum Table {
 
 /// One set per [`Table`].
 const SETS: usize = 10;
-
-/// Per [`Table`], whether captures read every country every hour, still
-/// comparing each unmarked one with its last read, rather than the hour's
-/// slice (each set's burn-in): `country_input_verify` for stability and
-/// research, `technology_verify`, `focus_verify`, `projects_verify`,
-/// `appearance_verify`, `counter_verify` (the counter and unit speed sets) and
-/// `visibility_verify` for their sets.
-pub const VERIFY: [bool; SETS] = [
-    cfg!(feature = "country_input_verify"),
-    cfg!(feature = "country_input_verify"),
-    cfg!(feature = "technology_verify"),
-    cfg!(feature = "focus_verify"),
-    cfg!(feature = "projects_verify"),
-    cfg!(feature = "appearance_verify"),
-    cfg!(feature = "counter_verify"),
-    cfg!(feature = "visibility_verify"),
-    false,
-    cfg!(feature = "counter_verify"),
-];
 
 /// Per [`Table`], whether its marks select countries at all
 /// (`technology_changes`, `focus_changes`, `projects_changes`,
@@ -493,58 +460,8 @@ pub struct Domain {
     /// observation ([`Self::apply`]).
     hooks: AtomicBool,
     forwarders: [AtomicBool; Forwarder::ALL.len()],
-    /// Per [`Table`], read every country every hour ([`VERIFY`]).
-    every: [bool; SETS],
     /// Per [`Table`], the hours its family recorded ([`record`]).
     hours: [AtomicU64; SETS],
-    /// Per [`Table`], the first and the latest comparison that differed.
-    mismatches: [std::sync::Mutex<Mismatches>; SETS],
-}
-
-/// Where an unmarked country's read differed from its last read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Mismatch {
-    /// The country's native id.
-    pub country: u32,
-    /// The table and field group that differed, as the family names it.
-    pub field: &'static str,
-}
-
-/// Research modifier wire kinds, including the sharing-roster kind used by
-/// the integrated collector. Numeric arrays keep every kind separate.
-pub const RESEARCH_MODIFIER_KINDS: usize = 32;
-
-/// Observed rows and acquisition mode of a research comparison. Constructed
-/// from acquired rows on the worker; native writers only mark dirty owners.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct ResearchMismatch {
-    pub previous_counts: Option<[u64; 3]>,
-    pub current_counts: [u64; 3],
-    pub previous_modifier_counts: Option<[u64; RESEARCH_MODIFIER_KINDS]>,
-    pub current_modifier_counts: [u64; RESEARCH_MODIFIER_KINDS],
-    pub modifier_identity_differences: u32,
-    pub modifier_value_differences: u32,
-    pub take_available: bool,
-    pub certified: bool,
-    pub force_full: bool,
-    pub selection_force_full: bool,
-}
-
-/// A [`Mismatch`] and the attachment hour its family recorded it in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct MismatchDetail {
-    pub country: u32,
-    pub field: &'static str,
-    /// Hours the family recorded before this one in the attachment.
-    pub hour: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub research: Option<ResearchMismatch>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Mismatches {
-    pub first: Option<MismatchDetail>,
-    pub last: Option<MismatchDetail>,
 }
 
 type Sets<'a> = [Option<&'a DirtySet>; SETS];
@@ -659,22 +576,8 @@ impl Domain {
             weather_writes: AtomicU64::new(0),
             hooks: AtomicBool::new(false),
             forwarders: [const { AtomicBool::new(false) }; Forwarder::ALL.len()],
-            every: VERIFY,
             hours: [const { AtomicU64::new(0) }; SETS],
-            mismatches: [const {
-                std::sync::Mutex::new(Mismatches {
-                    first: None,
-                    last: None,
-                })
-            }; SETS],
         }
-    }
-
-    /// The first and the latest comparison of `table` that differed.
-    pub fn mismatches(&self, table: Table) -> Mismatches {
-        *self.mismatches[table as usize]
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn set(&self, table: Table) -> &DirtySet {
@@ -967,14 +870,10 @@ impl Domain {
         });
     }
 
-    /// An enabled domain with bitmaps for `ids` countries installed, reading
-    /// slices (no verify).
+    /// An enabled domain with bitmaps for `ids` countries installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(ids: usize) -> Self {
-        let domain = Self {
-            every: [false; SETS],
-            ..Self::new()
-        };
+        let domain = Self::new();
         for set in &domain.sets {
             set.offer(ids);
             set.boundary(false);
@@ -1024,17 +923,6 @@ pub trait Changes: Sync {
     /// The single consumer's hourly take of the countries marked for `table`
     /// ([`DirtySet::take`]); `None` certifies nothing.
     fn take(&self, table: Table, visit: &mut dyn FnMut(usize)) -> Option<u64>;
-    /// A read of an unmarked country differed from its last read: disable
-    /// reuse of `table` for the attachment and keep where it differed.
-    fn mismatch(&self, table: Table, at: Mismatch);
-    /// A research mismatch with its complete per-list/per-kind comparison.
-    /// Other consumers may keep only the common mismatch envelope.
-    fn research_mismatch(&self, at: Mismatch, _detail: ResearchMismatch) {
-        self.mismatch(Table::Research, at);
-    }
-    /// Read every country of `table` every hour, still comparing each
-    /// unmarked one ([`VERIFY`]).
-    fn every(&self, table: Table) -> bool;
 }
 
 impl Changes for Domain {
@@ -1044,32 +932,6 @@ impl Changes for Domain {
         }
         self.set(table).take(visit)
     }
-    fn mismatch(&self, table: Table, at: Mismatch) {
-        self.keep_mismatch(table, at, None);
-    }
-    fn research_mismatch(&self, at: Mismatch, detail: ResearchMismatch) {
-        self.keep_mismatch(Table::Research, at, Some(detail));
-    }
-    fn every(&self, table: Table) -> bool {
-        self.every[table as usize]
-    }
-}
-
-impl Domain {
-    fn keep_mismatch(&self, table: Table, at: Mismatch, research: Option<ResearchMismatch>) {
-        self.set(table).poison();
-        let detail = MismatchDetail {
-            country: at.country,
-            field: at.field,
-            hour: self.hours[table as usize].load(Ordering::Relaxed),
-            research,
-        };
-        let mut held = self.mismatches[table as usize]
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        held.first.get_or_insert(detail);
-        held.last = Some(detail);
-    }
 }
 
 /// The hooks' domain.
@@ -1077,15 +939,6 @@ pub struct Observer;
 impl Changes for Observer {
     fn take(&self, table: Table, visit: &mut dyn FnMut(usize)) -> Option<u64> {
         DOMAIN.take(table, visit)
-    }
-    fn mismatch(&self, table: Table, at: Mismatch) {
-        DOMAIN.mismatch(table, at);
-    }
-    fn research_mismatch(&self, at: Mismatch, detail: ResearchMismatch) {
-        DOMAIN.research_mismatch(at, detail);
-    }
-    fn every(&self, table: Table) -> bool {
-        DOMAIN.every(table)
     }
 }
 
@@ -1418,10 +1271,6 @@ pub struct Counts {
     pub marked: u64,
     /// Countries read.
     pub read: u64,
-    /// Reads of unmarked countries compared with their last read, and those
-    /// that differed.
-    pub verified: u64,
-    pub mismatches: u64,
     /// The take certified nothing: every country was read.
     pub full: bool,
 }
@@ -1432,16 +1281,11 @@ pub fn record(table: Table, counts: &Counts, ids: Option<usize>) {
     for (total, value) in READS[table as usize].iter().zip([
         counts.marked,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         u64::from(counts.full),
     ]) {
         total.fetch_add(value, Ordering::Relaxed);
     }
     DOMAIN.hours[table as usize].fetch_add(1, Ordering::Relaxed);
-    if counts.verified != 0 {
-        SAMPLED.record(counts.verified, counts.mismatches, table as usize);
-    }
     if let Some(ids) = ids {
         IDS.fetch_max(ids, Ordering::Relaxed);
     }
@@ -1475,30 +1319,20 @@ pub fn status() -> impl serde::Serialize {
         let reads = READS[table as usize]
             .each_ref()
             .map(|value| value.load(Ordering::Relaxed));
-        let mismatches = DOMAIN.mismatches(table);
         crate::status::status!({
             "carried_countries": CARRIED[table as usize].load(Ordering::Relaxed),
             "marked_countries": reads[0],
             "read_countries": reads[1],
-            "verified_countries": reads[2],
-            "mismatched_countries": reads[3],
-            "full_reads": reads[4],
+            "full_reads": reads[2],
             "hours": DOMAIN.hours[table as usize].load(Ordering::Relaxed),
-            "first_mismatch": mismatches.first,
-            "last_mismatch": mismatches.last,
             "set": DOMAIN.set(table).status(),
         })
     };
     crate::status::status!({
         "configured": cfg!(feature = "country_input_changes"),
-        "verify": DOMAIN.every,
         "sets_configured": CONFIGURED,
         "observed": DOMAIN.hooks.load(Ordering::Relaxed),
         "poisoned": DOMAIN.sets.iter().any(|set| set.poisoned()),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "stability": table(Table::Stability),
         "research": table(Table::Research),
         "technologies": table(Table::Technologies),
@@ -1520,7 +1354,7 @@ pub fn status() -> impl serde::Serialize {
         "weather": weather_carry::status(),
         "changed_faction_sharing_bases": DOMAIN.rebased.load(Ordering::Relaxed),
         "changed_leader_rosters": DOMAIN.removed_leaders.load(Ordering::Relaxed),
-        "scope": "cumulative since attach; the stability, research, technology, appearance, counter and visibility families read, beside their daily slice (the focus and projects families: every country after the daily tick), every country a hooked or forwarded writer marked since the previous hour (marked_countries); an unmarked country keeps the rows of its last read only while the hour's take returned the held epoch and the per-read globals are unchanged (visibility holds raw accumulator presence/value and recomputes the effective value hourly), and otherwise every country is read (full_reads); each full read of an unmarked country (the research and technology families carry an unmarked drifting country at its slice and read it in full only when the sampled check covers it) compares a digest of its rows without the daily drift (popularity, coastal protection, the interception window, research progress and banked days) with its last read's (verified_countries; every country every hour in verify mode) and disables reuse of that family at the first difference (sampled_*); a family's set observes only while the hooks and every family forwarding one of its writers are enabled (forwarders)"
+        "scope": "cumulative since attach; the stability, research, technology, appearance, counter and visibility families read, beside their daily slice (the focus and projects families: every country after the daily tick), every country a hooked or forwarded writer marked since the previous hour (marked_countries); an unmarked country keeps the rows of its last read only while the hour's take returned the held epoch and the per-read globals are unchanged (visibility holds raw accumulator presence/value and recomputes the effective value hourly), and otherwise every country is read (full_reads); the research and technology families carry an unmarked drifting country at its slice, reading only its daily drift afresh; a family's set observes only while the hooks and every family forwarding one of its writers are enabled (forwarders)"
     })
 }
 

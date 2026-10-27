@@ -1,7 +1,5 @@
 //! Session and map name capture: the session's world tension tables and dynamic modifiers, and province names and naval region access, published from their held reads while no world input writer ran. The host owns dispatch, loans and table assembly.
 
-#[cfg(test)]
-use collector_certificates::sampled_verify;
 use collector_extended_support::outcomes::failed_capture;
 use collector_memory::read_accounting;
 use collector_observers::world_input_changes;

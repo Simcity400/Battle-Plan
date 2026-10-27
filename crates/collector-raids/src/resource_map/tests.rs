@@ -96,7 +96,6 @@ fn select(
         &mut Stores {
             routes: store,
             changes: watches,
-            verify: false,
         },
         true,
         &Some,
@@ -119,9 +118,9 @@ fn slice(hour: i32) -> Vec<u32> {
 }
 
 /// Client removal is observed by the hourly census, without a route-object
-/// writer. It must invalidate the old content hash as well as select a read.
+/// writer: the changed census reads its owner outside its slice.
 #[test]
-fn removing_a_supply_client_marks_the_changed_census_without_poisoning_carry() {
+fn removing_a_supply_client_marks_the_changed_census() {
     let watches = Watches::enabled(64, 64);
     let mut captured = Captured::with_capacities(&Capacities);
     let mut store = SliceFingerprints::new();
@@ -130,47 +129,11 @@ fn removing_a_supply_client_marks_the_changed_census_without_poisoning_carry() {
         (key(5, native::SUPPLY_ROUTE_CLASS, 10), 0x200),
     ];
     select(&mut captured, &mut store, &watches, 0, &census);
-    assert_eq!(
-        captured.selection.compare(&mut store, Some(&[(5, 111)])),
-        (0, 0)
-    );
     let hour = (1..24).find(|&hour| !slice(hour).contains(&5)).unwrap();
     let (full, owners) = select(&mut captured, &mut store, &watches, hour, &census[..1]);
     assert!(!full);
     assert!(owners.contains(&5));
-    // The row disappeared because the census saw its client leave: an observed
-    // change. Old coverage incorrectly compares its new content with 111.
-    assert_eq!(
-        captured.selection.compare(&mut store, Some(&[(5, 222)])),
-        (0, 0)
-    );
-    // Quiet membership still verifies. A route changing under that same
-    // census without a writer mark remains a mismatch.
-    let quiet_hour = (hour + 1..hour + 25)
-        .find(|&hour| slice(hour).contains(&5))
-        .unwrap();
-    select(
-        &mut captured,
-        &mut store,
-        &watches,
-        quiet_hour,
-        &census[..1],
-    );
-    assert_eq!(
-        captured.selection.compare(&mut store, Some(&[(5, 222)])),
-        (1, 0)
-    );
-    select(
-        &mut captured,
-        &mut store,
-        &watches,
-        quiet_hour,
-        &census[..1],
-    );
-    assert_eq!(
-        captured.selection.compare(&mut store, Some(&[(5, 333)])),
-        (1, 1)
-    );
+    assert!(!watches.poisoned(crate::raid_changes::Family::Routes));
 }
 
 /// Supply repathing keeps the client and route addresses. Its writer must
@@ -337,7 +300,7 @@ fn the_route_census_is_in_key_order_with_one_row_per_route() {
 }
 
 #[test]
-fn market_endpoint_demand_changes_select_the_owner_and_endpoint_values_change_its_hash() {
+fn market_endpoint_demand_changes_select_the_owner() {
     let watches = Watches::enabled(64, 64);
     let mut captured = Captured::with_capacities(&Capacities);
     let mut store = SliceFingerprints::new();
@@ -350,25 +313,9 @@ fn market_endpoint_demand_changes_select_the_owner_and_endpoint_values_change_it
         &mut Stores {
             routes: &mut store,
             changes: &watches,
-            verify: false,
         },
         true,
         &Some,
     );
     assert!(captured.selection.contains(5));
-    captured.routes = vec![native::RouteRow {
-        key: key(5, 1, 7),
-        source_state: Some(10),
-        destination_state: Some(20),
-        ..Default::default()
-    }];
-    assert!(captured.route_hashes());
-    let initial = captured.hashes.clone();
-    captured.routes[0].source_state = Some(11);
-    assert!(captured.route_hashes());
-    assert_ne!(captured.hashes, initial);
-    let source_changed = captured.hashes.clone();
-    captured.routes[0].destination_state = Some(21);
-    assert!(captured.route_hashes());
-    assert_ne!(captured.hashes, source_changed);
 }

@@ -17,16 +17,11 @@
 //!
 //! The same certificates key the naval mission country and commander rows
 //! ([`crate::extended::naval_mission_inputs`]): a country whose own and
-//! whose leaders' certificates moved is read within the hour, and each daily
-//! slice read of a country whose certificates held is compared with its
-//! previous read ([`missions`]).
+//! whose leaders' certificates moved is read within the hour ([`missions`]).
 //!
 //! The held trees live in a [`Store`] that the naval combat part takes at the
 //! start of its capture and returns at its end; a capture that does not
-//! complete forgets it. Every hour also reads the carryable trees of its
-//! sampled slice afresh, by owner ([`crate::sampled_verify`]); a difference
-//! poisons reuse for the attachment. `naval_tree_verify`, for diagnosis, reads
-//! every carryable tree afresh instead.
+//! complete forgets it.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -50,12 +45,9 @@ const PATCHED_SITES: usize = SITES - COUNTRY_SITES;
 static WATCHES: WatchRegistry = WatchRegistry::new();
 static CALLS: [AtomicU64; SITES] = [const { AtomicU64::new(0) }; SITES];
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused, read, verified and mismatched trees; read trees of the kinds that
-/// are never carried; failed captures.
-static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "a carried country or commander tree differs from a fresh read",
-]);
+/// Reused and read trees; read trees of the kinds that are never carried;
+/// failed captures.
+static READS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 /// Country and commander receivers the latest capture reached, for
 /// off-thread sizing: the watches must exist before any tree is held.
 static RECEIVERS: AtomicUsize = AtomicUsize::new(0);
@@ -73,19 +65,8 @@ static RESERVE_RECEIVERS: AtomicUsize = AtomicUsize::new(0);
 /// Countries the latest RaidIntelInputs walk keyed
 /// ([`crate::extended::raid_intel_carry`]).
 static RAID_INTEL_RECEIVERS: AtomicUsize = AtomicUsize::new(0);
-/// Naval mission countries whose certificates held, compared with their
-/// previous read, and how many differed.
-static MISSIONS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
-static MISSIONS_SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::new(&[
-    "a naval mission country whose certificates held differs from its previous read",
-]);
-/// The counter walk's fresh ETA censuses served from a held capture,
-/// compared with a fresh read, and how many differed.
-static CENSUSES: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
-static CENSUSES_SAMPLED: crate::sampled_verify::Sampled =
-    crate::sampled_verify::Sampled::burned_in(&[
-        "a counter-walk census whose certificate held differs from a fresh read",
-    ]);
+/// The counter walk's fresh ETA censuses served from a held capture.
+static CENSUSES: AtomicU64 = AtomicU64::new(0);
 /// The held trees, between the naval combat part's captures.
 static STORE: Mutex<Option<Box<Store>>> = Mutex::new(None);
 /// This family's commander-site patches are enabled.
@@ -93,8 +74,6 @@ static PATCHED: AtomicBool = AtomicBool::new(false);
 /// Each country site's forwarding family has its patch enabled.
 static FORWARDERS: [AtomicBool; COUNTRY_SITES] = [const { AtomicBool::new(false) }; COUNTRY_SITES];
 
-/// Compare every carryable tree each hour, for diagnosis.
-pub const VERIFY: bool = cfg!(feature = "naval_tree_verify");
 /// Diagnostic oracle: also read every reached source's tree afresh and record
 /// it in NavalModifierTreeSamples.
 pub const ORACLE: bool = cfg!(feature = "naval_tree_oracle");
@@ -156,13 +135,6 @@ pub fn raid_intel(receivers: usize) {
     }
 }
 
-/// A country whose certificate held differed from a fresh read of what it
-/// certifies: a write no hook saw. Disables every certificate (trees,
-/// mission rows and everything keyed on them) for the attachment.
-pub fn missed_write() {
-    WATCHES.poison();
-}
-
 /// A complete ShipModels capture over `task_forces` task forces, whose
 /// terms key each one's country and fleet leader.
 pub fn ship_models(task_forces: usize) {
@@ -206,30 +178,15 @@ pub fn observed_sequence(receiver: usize) -> Option<(u64, u64)> {
 
 /// One counter walk's certified censuses (a roster country's or fleet
 /// leader's modifier tree in the fresh ETA graph): `served` from a held
-/// capture, `verified` compared with a fresh read, `mismatches` of them
-/// differing. A mismatch is a write no hook saw: it disables every
-/// certificate for the attachment.
-pub fn censuses(served: u64, verified: u64, mismatches: u64) {
-    for (target, value) in CENSUSES.iter().zip([served, verified, mismatches]) {
-        target.fetch_add(value, Ordering::Relaxed);
-    }
-    if CENSUSES_SAMPLED.record(verified, mismatches, 0) {
-        WATCHES.poison();
-    }
+/// capture.
+pub fn censuses(served: u64) {
+    CENSUSES.fetch_add(served, Ordering::Relaxed);
 }
 
-/// One naval mission read: `receivers` keyed, `verified` countries whose
-/// certificates held compared with their previous read, `mismatches` of them
-/// differing. A mismatch is a write no hook saw: it disables reuse of every
-/// certificate (trees and mission rows) for the attachment.
-pub fn missions(receivers: usize, verified: u64, mismatches: u64) {
-    MISSIONS[0].fetch_add(verified, Ordering::Relaxed);
-    MISSIONS[1].fetch_add(mismatches, Ordering::Relaxed);
+/// One naval mission read: `receivers` keyed.
+pub fn missions(receivers: usize) {
     if receivers != 0 {
         MISSION_RECEIVERS.store(receivers, Ordering::Relaxed);
-    }
-    if MISSIONS_SAMPLED.record(verified, mismatches, 0) {
-        WATCHES.poison();
     }
 }
 
@@ -278,28 +235,19 @@ pub fn return_store(store: Box<Store>) {
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     /// Trees of the kinds that are never carried, read afresh.
     pub uncarried: u64,
     /// Country and commander receivers reached, carried or read.
     pub receivers: u64,
 }
 
-/// A worker publishes one capture's counts; a mismatch disables reuse for
-/// the attachment.
+/// A worker publishes one capture's counts.
 pub fn record(counts: &Counts) {
-    for (target, value) in READS.iter().zip([
-        counts.reused,
-        counts.read,
-        counts.verified,
-        counts.mismatches,
-        counts.uncarried,
-    ]) {
+    for (target, value) in READS
+        .iter()
+        .zip([counts.reused, counts.read, counts.uncarried])
+    {
         target.fetch_add(value, Ordering::Relaxed);
-    }
-    if SAMPLED.record(counts.verified, counts.mismatches, 0) {
-        WATCHES.poison();
     }
     if counts.receivers != 0 {
         RECEIVERS.store(counts.receivers as usize, Ordering::Relaxed);
@@ -308,7 +256,7 @@ pub fn record(counts: &Counts) {
 
 /// A capture that refused: its store was forgotten.
 pub fn failed() {
-    READS[5].fetch_add(1, Ordering::Relaxed);
+    READS[3].fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn status() -> impl serde::Serialize {
@@ -321,38 +269,25 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "naval_tree_changes"),
-        "verify": VERIFY,
         "oracle": ORACLE,
         "poisoned": WATCHES.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_trees": reads[0],
         "read_trees": reads[1],
-        "verified_trees": reads[2],
-        "mismatches": reads[3],
-        "uncarried_trees": reads[4],
-        "failed_captures": reads[5],
+        "uncarried_trees": reads[2],
+        "failed_captures": reads[3],
         "missions": crate::status::status!({
-            "verified_countries": MISSIONS[0].load(Ordering::Relaxed),
-            "mismatches": MISSIONS[1].load(Ordering::Relaxed),
-            "last_mismatch": MISSIONS_SAMPLED.last_mismatch(),
             "receivers": MISSION_RECEIVERS.load(Ordering::Relaxed),
             "ship_model_receivers": SHIP_MODEL_RECEIVERS.load(Ordering::Relaxed),
             "raid_intel_receivers": RAID_INTEL_RECEIVERS.load(Ordering::Relaxed),
-            "scope": "cumulative since attach; a naval mission country is read within the hour its certificate (its own and its fleet leaders' tree certificates, its navy's stored hubs and its headquarters commanders' skill objects) moves, and its daily slice read is compared with its previous read when it held (verify mode reads every country every hour); the first mismatch disables every certificate",
+            "scope": "cumulative since attach; a naval mission country is read within the hour its certificate (its own and its fleet leaders' tree certificates, its navy's stored hubs and its headquarters commanders' skill objects) moves",
         }),
         "counter_censuses": crate::status::status!({
-            "served": CENSUSES[0].load(Ordering::Relaxed),
-            "verified": CENSUSES[1].load(Ordering::Relaxed),
-            "mismatches": CENSUSES[2].load(Ordering::Relaxed),
-            "last_mismatch": CENSUSES_SAMPLED.last_mismatch(),
-            "scope": "cumulative since attach; the task-force counter walk's fresh ETA censuses of roster countries' and fleet leaders' modifier trees served from the frame's held capture while the receiver's certificate is still the one taken before the held census was read, outside the sampled slice (one in rotation_hours by receiver); a covered receiver is read afresh and compared when both reads had the same certificate and it still holds, and a difference disables every certificate; a failed Ordinary family holds none",
+            "served": CENSUSES.load(Ordering::Relaxed),
+            "scope": "cumulative since attach; the task-force counter walk's fresh ETA censuses of roster countries' and fleet leaders' modifier trees served from the frame's held capture while the receiver's certificate is still the one taken before the held census was read; a failed Ordinary family holds none",
         }),
         "events": events,
         "watches": WATCHES.status(),
-        "scope": "cumulative since attach; a country's or commander's modifier tree a live naval combat reaches is carried while its receiver's certificate holds (no hooked writer touched it since the held read, same accumulator); every other reached tree (uncarried_trees) is read each hour a live combat reaches it; every hour also reads the carryable trees of its slice afresh (one in rotation_hours by owner; every one in verify mode), publishes the fresh tree and disables reuse at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; a country's or commander's modifier tree a live naval combat reaches is carried while its receiver's certificate holds (no hooked writer touched it since the held read, same accumulator); every other reached tree (uncarried_trees) is read each hour a live combat reaches it"
     })
 }
 

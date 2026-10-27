@@ -232,23 +232,6 @@ impl Inputs {
         Ok(())
     }
 
-    pub fn same_parts(&self, other: &Self, parts: [bool; 2]) -> bool {
-        (!parts[0]
-            || (self.goals == other.goals
-                && self
-                    .targets
-                    .iter()
-                    .filter(|r| r.kind != 4)
-                    .eq(other.targets.iter().filter(|r| r.kind != 4))))
-            && (!parts[1]
-                || (self.justifications == other.justifications
-                    && self
-                        .targets
-                        .iter()
-                        .filter(|r| r.kind == 4)
-                        .eq(other.targets.iter().filter(|r| r.kind == 4))))
-    }
-
     // Each target list supplies its source layout and destination identity explicitly.
     #[allow(clippy::too_many_arguments)]
     fn copy_targets(

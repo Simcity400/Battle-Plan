@@ -6,11 +6,10 @@
 //! first division, owned/controlled/core states, army and navy leaders,
 //! neighbours and MIO policies) and its relation suffix (co-belligerents,
 //! zero war, zero subject and forward visibility) are read afresh only when a
-//! hooked writer marked it since the previous take, it is in the hour's
-//! sampled slice ([`crate::sampled_verify::current`], keyed by native id), it
-//! is new to the census or its last read was not held. Every other country's
-//! row is copied from its held read, with its roster and co-belligerent
-//! entries placed in the hour's arenas where a full read puts them
+//! hooked writer marked it since the previous take, it is new to the census
+//! or its last read was not held. Every other country's row is copied from
+//! its held read, with its roster and co-belligerent entries placed in the
+//! hour's arenas where a full read puts them
 //! ([`ccountry::CarriedRosters::append`]), so the published table equals a
 //! full read of the same memory.
 //!
@@ -26,22 +25,15 @@
 //! census resolution of its id and its cell of the reserved country's reverse
 //! visibility matrix (with no forward observation to share).
 //!
-//! A slice read of an unmarked country that would have been carried is
-//! compared with its held read (every recorded field and roster); a
-//! difference is a missed write, which poisons the set
-//! ([`Changes::mismatch`]), and the fresh rows are published. Under
-//! `counter_verify` every country is read every hour and each unmarked one
-//! compared. A sent-reference refusal carries independently and its availability
-//! recovery is not a missed writer. Other required read refusals prevent holding
-//! the row (a native null
-//! production status is not a refusal), and only from a complete walk and
-//! relation pass under a take that returned an epoch: a failed or incomplete
-//! read, or a failed job, holds nothing, so the next hour reads every
-//! country. Storage is advisory and worker-only.
+//! A sent-reference refusal is held with the row; other required read
+//! refusals prevent holding it (a native null production status is not a
+//! refusal). Rows are held only from a complete walk and relation pass under
+//! a take that returned an epoch: a failed or incomplete read, or a failed
+//! job, holds nothing, so the next hour reads every country. Storage is
+//! advisory and worker-only.
 use super::{Captured, RelationRow, valid_span};
 use crate::{
-    country_input_changes::{self as changes, Changes, Counts, Mismatch, Table},
-    sampled_verify::Check,
+    country_input_changes::{self as changes, Changes, Counts, Table},
     table_capture::Arena,
 };
 use engine_allocation as allocation;
@@ -123,9 +115,6 @@ struct Hour {
     complete: bool,
     /// Held reads may be carried this hour.
     certified: bool,
-    /// `counter_verify`: read and compare every country.
-    every: bool,
-    check: Check,
 }
 
 /// What the hour did with one walked country, in walk (row) order.
@@ -136,16 +125,11 @@ struct Walked {
     words: Option<[u64; 3]>,
     /// The held entry its row was copied from.
     carried: Option<usize>,
-    /// The held entry it would have been carried from had the hour's check
-    /// not covered it: its fresh read is compared with that entry.
-    compared: Option<usize>,
 }
 
 /// The Ordinary counter part's held rows and scratch.
 pub struct CounterStore {
     changes: &'static dyn Changes,
-    /// Tests fix the comparison; production takes the hour's.
-    check: Option<Check>,
     held: Held,
     hour: Hour,
     /// Set on the game thread; the next capture drops every held row.
@@ -162,7 +146,6 @@ impl CounterStore {
     pub fn new(changes: &'static dyn Changes) -> Self {
         Self {
             changes,
-            check: None,
             held: Held::default(),
             hour: Hour::default(),
             forgotten: false,
@@ -176,12 +159,6 @@ impl CounterStore {
     /// The hooks' domain.
     pub fn observed() -> Self {
         Self::new(&changes::Observer)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_check(mut self, check: Check) -> Self {
-        self.check = Some(check);
-        self
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -229,7 +206,6 @@ impl CounterStore {
         if allocation::advisory(|| allocation::reserve(&mut self.walked, slots)).is_err() {
             complete = false;
         }
-        let every = changes.every(Table::Counters);
         let certified = complete
             && epoch.is_some()
             && epoch == self.held.epoch
@@ -239,10 +215,6 @@ impl CounterStore {
             arrays,
             complete,
             certified,
-            every,
-            check: self
-                .check
-                .unwrap_or_else(|| crate::sampled_verify::current_burned_in(every)),
         };
     }
 
@@ -261,7 +233,7 @@ impl CounterStore {
         effects: &mut ccountry::EffectRosters<'_>,
     ) -> Option<CounterInputsRow> {
         if self.walked.len() == self.walked.capacity() {
-            // Unrecorded: nothing later is carried, compared or held.
+            // Unrecorded: nothing later is carried or held.
             self.hour.complete = false;
             self.hour.certified = false;
             return None;
@@ -280,16 +252,11 @@ impl CounterStore {
             country,
             words,
             carried: None,
-            compared: None,
         };
         let mut row = None;
         if let Some(index) = self.certified_entry(country, words) {
-            if self.hour.every || self.hour.check.covers(u64::from(country.id)) {
-                walked.compared = Some(index);
-            } else {
-                row = self.place(index, rosters, effects);
-                walked.carried = row.is_some().then_some(index);
-            }
+            row = self.place(index, rosters, effects);
+            walked.carried = row.is_some().then_some(index);
         }
         self.walked.push(walked);
         row
@@ -382,9 +349,8 @@ impl CounterStore {
         Some((entry.relation, targets))
     }
 
-    /// Worker, after the relation pass: compares each read of a certified
-    /// country with its held read, holds a complete read, and records the
-    /// hour.
+    /// Worker, after the relation pass: holds a complete read and records
+    /// the hour.
     pub(super) fn finish(&mut self, capture: &Captured) {
         let len = capture.rows.outcome.len();
         let tracked = self.walked.len() == len;
@@ -399,29 +365,6 @@ impl CounterStore {
             full: !self.hour.certified,
             ..Counts::default()
         };
-        if tracked && capture.relations.len == len {
-            for (index, walked) in self.walked.iter().enumerate() {
-                let Some(entry) = walked.compared.map(|entry| &self.held.entries[entry]) else {
-                    continue;
-                };
-                let row = &capture.rows.rows[index];
-                let relation = &capture.relations.first[index];
-                if row.country != walked.country.id || !clean(row, relation) {
-                    continue;
-                }
-                self.counts.verified += 1;
-                if let Some(field) = difference(capture, row, relation, &self.held, entry) {
-                    self.counts.mismatches += 1;
-                    self.changes.mismatch(
-                        Table::Counters,
-                        Mismatch {
-                            country: walked.country.id,
-                            field,
-                        },
-                    );
-                }
-            }
-        }
         self.hold(capture, tracked);
         let ids = self.hour.arrays.map(|[_, links]| {
             self.walked
@@ -577,120 +520,6 @@ fn within(capture: &Captured, row: &CounterInputsRow, relation: &RelationRow) ->
         .co_belligerents
         .is_some_and(|span| valid_span(&capture.co_belligerents, span.start, span.count));
     states && sent && leaders && neighbors && policies && co_belligerents
-}
-
-/// The first recorded field in which a fresh read differs from the held
-/// read of the same country.
-fn difference(
-    capture: &Captured,
-    row: &CounterInputsRow,
-    relation: &RelationRow,
-    held: &Held,
-    entry: &Entry,
-) -> Option<&'static str> {
-    let old = &entry.row;
-    if row.pride_of_the_fleet != old.pride_of_the_fleet {
-        return Some("pride_of_the_fleet");
-    }
-    if row.recruitment_modifiers != old.recruitment_modifiers {
-        return Some("recruitment_modifiers");
-    }
-    if row.attack_modifiers != old.attack_modifiers {
-        return Some("attack_modifiers");
-    }
-    if row.mines_effect_reduction != old.mines_effect_reduction {
-        return Some("mines_effect_reduction");
-    }
-    if row.naval_detection != old.naval_detection {
-        return Some("naval_detection");
-    }
-    if row.air_modifiers != old.air_modifiers {
-        return Some("air_modifiers");
-    }
-    if row.air_combat_modifiers != old.air_combat_modifiers {
-        return Some("air_combat_modifiers");
-    }
-    if row.movement_modifiers != old.movement_modifiers {
-        return Some("movement_modifiers");
-    }
-    if row.owned_state_count != old.owned_state_count {
-        return Some("owned_state_count");
-    }
-    if row.controlled_state_count != old.controlled_state_count {
-        return Some("controlled_state_count");
-    }
-    if row.first_division != old.first_division {
-        return Some("first_division");
-    }
-    for (list, name) in ["owned_states", "controlled_states", "core_states"]
-        .into_iter()
-        .enumerate()
-    {
-        let fresh = row.state_rosters.map(|spans| spans[list]);
-        let previous = old.state_rosters.map(|spans| spans[list]);
-        if fresh_list(&capture.states, fresh) != held_list(&held.states, previous) {
-            return Some(name);
-        }
-    }
-    // Refusal or recovery changes availability, not a proved stored value.
-    if let (Some(fresh), Some(previous)) = (
-        row.sent_expeditionaries
-            .and_then(|range| arena_list(&capture.leaders, range)),
-        old.sent_expeditionaries
-            .and_then(|range| span(&held.leaders, range)),
-    ) && fresh != previous
-    {
-        return Some("sent_expeditionaries");
-    }
-    for (list, name) in ["army_leaders", "navy_leaders"].into_iter().enumerate() {
-        let fresh = row
-            .leader_rosters
-            .and_then(|spans| arena_list(&capture.leaders, spans[list]));
-        let previous = old
-            .leader_rosters
-            .and_then(|spans| span(&held.leaders, spans[list]));
-        if fresh != previous {
-            return Some(name);
-        }
-    }
-    if fresh_list(&capture.neighbors, row.neighbors) != held_list(&held.neighbors, old.neighbors) {
-        return Some("neighbors");
-    }
-    if row.policy_reason != old.policy_reason
-        || fresh_list(&capture.policies, row.mio_policies)
-            != held_list(&held.policies, old.mio_policies)
-    {
-        return Some("mio_policies");
-    }
-    let previous = &entry.relation;
-    if fresh_list(&capture.co_belligerents, relation.co_belligerents)
-        != held_list(&held.co_belligerents, previous.co_belligerents)
-    {
-        return Some("co_belligerents");
-    }
-    if relation.zero_war != previous.zero_war {
-        return Some("zero_war");
-    }
-    if relation.zero_subject != previous.zero_subject {
-        return Some("zero_subject");
-    }
-    if relation.forward_visibility != previous.forward_visibility {
-        return Some("forward_visibility");
-    }
-    None
-}
-
-/// A capture arena's entries under `span`, when it is filled.
-fn arena_list<T>(arena: &Arena<T>, span: RosterSpan) -> Option<&[T]> {
-    valid_span(arena, span.start, span.count).then(|| &arena.first[span.start..][..span.count])
-}
-
-fn fresh_list(arena: &Arena<u32>, span: Option<RosterSpan>) -> Option<&[u32]> {
-    arena_list(arena, span?)
-}
-
-fn held_list(arena: &[u32], span: Option<RosterSpan>) -> Option<&[u32]> {
-    self::span(arena, span?)
 }
 
 #[cfg(test)]

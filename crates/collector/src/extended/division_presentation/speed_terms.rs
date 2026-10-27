@@ -22,8 +22,7 @@
 //! CountryUnitSpeedEntries are carried across hours under the unit speed set
 //! ([`Table::UnitSpeeds`]), which every writer of the counter set marks: a
 //! country unmarked since its held read keeps its held entries; a marked or new
-//! country, one needing a key its held read lacks, or one in the hour's sampled
-//! slice is read afresh, and a sampled difference poisons the set.
+//! country, or one needing a key its held read lacks, is read afresh.
 //!
 //! A refused read is that row's counted refusal; a mover whose key cannot be
 //! formed (its location, state, route or template unreadable) has no row, and
@@ -49,7 +48,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering::Relaxed},
 };
 
-use crate::country_input_changes::{self as changes, Changes, Counts, Mismatch, Table};
+use crate::country_input_changes::{self as changes, Changes, Counts, Table};
 
 mod owned;
 
@@ -1114,8 +1113,6 @@ impl SpeedTerms {
         countries: &Result<ccountry::Reader<'_, impl Memory>, &'static str>,
         take: Take,
     ) -> Outcome {
-        let every = self.changes.every(Table::UnitSpeeds);
-        let check = crate::sampled_verify::current_burned_in(every);
         let arrays = countries.as_ref().ok().map(|reader| reader.arrays());
         let certified = take.complete
             && take.epoch.is_some()
@@ -1185,12 +1182,9 @@ impl SpeedTerms {
                         && group.iter().all(|(_, key)| keys.binary_search(key).is_ok()))
                     .then_some(held)
                 });
-                let compared = held.is_some_and(|_| {
-                    country.is_ok_and(|country| every || check.covers(u64::from(country.id)))
-                });
-                let read = match (held, compared) {
-                    (Some(_), false) => Ok(values.len()),
-                    _ => country.and_then(|country| {
+                let read = match held {
+                    Some(_) => Ok(values.len()),
+                    None => country.and_then(|country| {
                         let at = country
                             .pointer
                             .checked_add(ccountry::MODIFIER_ACCUMULATOR)
@@ -1206,7 +1200,6 @@ impl SpeedTerms {
                     owner,
                     country,
                     held,
-                    compared,
                     start,
                     end,
                     read,

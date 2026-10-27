@@ -67,19 +67,8 @@ const UNIT_TYPE_SITE: usize = 23;
 static WATCHES: Watches = Watches::new();
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused, read and verified keys, mismatches and quiet captures.
-static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-/// The family's sampled comparisons.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "a carried DivisionTemplates name key differs from a fresh read",
-]);
-static CORE_SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "a carried DivisionTemplateIcons core or speed key differs from a fresh read",
-]);
-
-pub(crate) fn record_core_comparison(mismatch: bool) {
-    CORE_SAMPLED.record(1, u64::from(mismatch), 0);
-}
+/// Reused and read keys and quiet captures.
+static READS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
 /// Live sizing or captured template demand, for off-thread watch sizing.
 static TEMPLATES: AtomicUsize = AtomicUsize::new(0);
@@ -178,9 +167,6 @@ pub(crate) trait Changes: Sync {
     fn core_dependencies(&self) -> Option<(u64, u64)> {
         None
     }
-    /// A fresh read disagreed with a carried key: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
 }
 
 impl Changes for Watches {
@@ -189,9 +175,6 @@ impl Changes for Watches {
     }
     fn sequence(&self, template: usize) -> Option<(u64, u64)> {
         self.registry.sequence(template)
-    }
-    fn mismatch(&self) {
-        self.registry.poison();
     }
 }
 
@@ -227,14 +210,7 @@ impl Changes for Observer {
     fn core_dependencies(&self) -> Option<(u64, u64)> {
         crate::local_subunit_changes::Changes::quiet(&crate::local_subunit_changes::Observer)
     }
-    fn mismatch(&self) {
-        WATCHES.mismatch();
-    }
 }
-
-/// Whether captures read every carryable key afresh and compare, rather than
-/// the hour's sampled slice ([`crate::sampled_verify`]).
-pub(crate) const VERIFY: bool = cfg!(feature = "template_verify");
 
 /// Notifications running now.
 pub fn active() -> usize {
@@ -301,8 +277,6 @@ pub fn collect() {
 pub(crate) struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     /// The capture's certificates held by the domain's unchanged quiet token,
     /// without a per-template lookup.
     pub quiet: bool,
@@ -311,16 +285,12 @@ pub(crate) struct Counts {
 /// A worker publishes one capture's counts and, when it held its templates,
 /// their number for sizing.
 pub(crate) fn record(counts: &Counts, templates: Option<usize>) {
-    for (target, value) in READS.iter().zip([
-        counts.reused,
-        counts.read,
-        counts.verified,
-        counts.mismatches,
-        u64::from(counts.quiet),
-    ]) {
+    for (target, value) in READS
+        .iter()
+        .zip([counts.reused, counts.read, u64::from(counts.quiet)])
+    {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
     if let Some(templates) = templates {
         TEMPLATES.store(templates, Ordering::Relaxed);
     }
@@ -337,25 +307,15 @@ pub fn status() -> impl serde::Serialize {
     crate::status::status!({
         "configured": cfg!(feature = "template_changes"),
         "fresh_only": Observer.fresh_only(),
-        "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
-        "icon_core_verified": CORE_SAMPLED.verified(),
-        "icon_core_mismatches": CORE_SAMPLED.mismatches(),
-        "icon_core_last_mismatch": CORE_SAMPLED.last_mismatch(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_keys": reads[0],
         "read_keys": reads[1],
-        "verified_keys": reads[2],
-        "mismatches": reads[3],
-        "quiet_hours": reads[4],
+        "quiet_hours": reads[2],
         "unchanged_unit_type_writes": WATCHES.unchanged_unit_type_writes.load(Ordering::Relaxed),
         "events": events,
         "watches": WATCHES.registry.status(),
         "hq_source_bytes": HQ_SOURCE_BYTES.load(Ordering::Relaxed),
-        "scope": "cumulative since attach; DivisionTemplates is derived every hour from the template icon walk, which reads each template's handle, owner, literal name and unit-type operands; a template's fallback name key, read by that walk only behind an empty literal, is carried (reused_keys) when the template object and handle are those of the held capture and either the domain's quiet token is unchanged since before that capture (quiet_hours) or no hooked writer touched the template since it registered; every other key is read afresh with its literal (read_keys); a capture is held only when no hooked writer ran during it; every hour also reads the carryable keys of its slice afresh (one in rotation_hours by template id; every one in verify mode), publishes the fresh names and, after an acquire fence, withdraws the key capture if its final certificate moved; a key difference under an unchanged certificate disables key reuse for the attachment (sampled_*); failed key reads refuse the table and forget the store"
+        "scope": "cumulative since attach; DivisionTemplates is derived every hour from the template icon walk, which reads each template's handle, owner, literal name and unit-type operands; a template's fallback name key, read by that walk only behind an empty literal, is carried (reused_keys) when the template object and handle are those of the held capture and either the domain's quiet token is unchanged since before that capture (quiet_hours) or no hooked writer touched the template since it registered; every other key is read afresh with its literal (read_keys); a capture is held only when no hooked writer ran during it; failed key reads refuse the table and forget the store"
     })
 }
 

@@ -15,17 +15,9 @@ use engine_native::ccharacter;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static WATCHES: Watches = Watches::new();
-/// Reused, read, verified and mismatched characters and quiet hours, per
-/// carried table.
-static READS: [[AtomicU64; 5]; TABLES.len()] =
-    [const { [const { AtomicU64::new(0) }; 5] }; TABLES.len()];
-/// The family's sampled comparisons; a reason per carried table.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried CharacterRoleTraits rows differ from a fresh read",
-    "carried CountryLeaderRoles rows differ from a fresh read",
-    "carried Characters rows differ from a fresh read",
-    "carried AdvisorRoles modifier caches or tooltip keys differ from a fresh read",
-]);
+/// Reused and read characters and quiet hours, per carried table.
+static READS: [[AtomicU64; 3]; TABLES.len()] =
+    [const { [const { AtomicU64::new(0) }; 3] }; TABLES.len()];
 
 /// The tables whose rows a capture carries per character.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,8 +44,6 @@ pub struct Watches {
     /// Tests: stands in for the scientist domain ([`crate::roster_changes`]).
     #[cfg(any(test, feature = "test-support"))]
     scientists: WatchRegistry,
-    #[cfg(any(test, feature = "test-support"))]
-    scientist_verify: std::sync::atomic::AtomicBool,
 }
 
 impl Default for Watches {
@@ -71,8 +61,6 @@ impl Watches {
             unnamed: AtomicU64::new(0),
             #[cfg(any(test, feature = "test-support"))]
             scientists: WatchRegistry::new(),
-            #[cfg(any(test, feature = "test-support"))]
-            scientist_verify: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -129,13 +117,6 @@ impl Watches {
         drop(self.scientists.notify(0));
     }
 
-    /// Tests: quiet hours read their scientist rows afresh and compare them
-    /// (`roster_verify`).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_scientist_verify(&self, verify: bool) {
-        self.scientist_verify.store(verify, Ordering::Relaxed);
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub fn scientists_poisoned(&self) -> bool {
         self.scientists.poisoned()
@@ -158,18 +139,10 @@ pub trait Changes: Sync {
     /// cannot be observed. Equal values across hours prove that no observed
     /// writer touched its role rows.
     fn sequence(&self, character: usize) -> Option<(u64, u64)>;
-    /// A fresh read disagreed with carried rows: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
     /// The scientist domain's token ([`crate::roster_changes::scientists`]):
     /// equal values prove that no scientist role was built, attached or
     /// cleared and no scientist trait array was written in between.
     fn scientists(&self) -> Option<(u64, u64)>;
-    /// Carried scientist rows disagreed with a fresh read.
-    fn scientist_mismatch(&self);
-    /// A quiet hour reads its scientist rows afresh and compares them with
-    /// the held ones instead of carrying them (`roster_verify`).
-    fn scientist_verify(&self) -> bool;
 }
 
 impl Changes for Watches {
@@ -179,9 +152,6 @@ impl Changes for Watches {
     fn sequence(&self, character: usize) -> Option<(u64, u64)> {
         self.registry.sequence(character)
     }
-    fn mismatch(&self) {
-        self.registry.poison();
-    }
     #[cfg(any(test, feature = "test-support"))]
     fn scientists(&self) -> Option<(u64, u64)> {
         self.scientists.quiet()
@@ -189,22 +159,6 @@ impl Changes for Watches {
     #[cfg(not(any(test, feature = "test-support")))]
     fn scientists(&self) -> Option<(u64, u64)> {
         crate::roster_changes::scientists()
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    fn scientist_mismatch(&self) {
-        self.scientists.poison();
-    }
-    #[cfg(not(any(test, feature = "test-support")))]
-    fn scientist_mismatch(&self) {
-        crate::roster_changes::mismatch();
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    fn scientist_verify(&self) -> bool {
-        self.scientist_verify.load(Ordering::Relaxed)
-    }
-    #[cfg(not(any(test, feature = "test-support")))]
-    fn scientist_verify(&self) -> bool {
-        crate::roster_changes::VERIFY
     }
 }
 
@@ -246,17 +200,8 @@ impl Changes for Counting {
         self.lookups.fetch_add(1, Ordering::Relaxed);
         self.watches.sequence(character)
     }
-    fn mismatch(&self) {
-        self.watches.mismatch();
-    }
     fn scientists(&self) -> Option<(u64, u64)> {
         self.watches.scientists()
-    }
-    fn scientist_mismatch(&self) {
-        self.watches.scientist_mismatch();
-    }
-    fn scientist_verify(&self) -> bool {
-        self.watches.scientist_verify()
     }
 }
 
@@ -269,17 +214,8 @@ impl Changes for Observer {
     fn sequence(&self, character: usize) -> Option<(u64, u64)> {
         WATCHES.sequence(character)
     }
-    fn mismatch(&self) {
-        WATCHES.mismatch();
-    }
     fn scientists(&self) -> Option<(u64, u64)> {
         crate::roster_changes::scientists()
-    }
-    fn scientist_mismatch(&self) {
-        crate::roster_changes::mismatch();
-    }
-    fn scientist_verify(&self) -> bool {
-        crate::roster_changes::VERIFY
     }
 }
 
@@ -287,10 +223,6 @@ impl Changes for Observer {
 pub fn quiet() -> Option<(u64, u64)> {
     WATCHES.quiet()
 }
-
-/// Whether captures read every certified character afresh and compare,
-/// rather than the hour's sampled slice ([`crate::sampled_verify`]).
-pub const VERIFY: bool = cfg!(feature = "character_verify");
 
 /// Hook path: a writer of `site` ([`MUTATIONS`]) is about to change the
 /// character it names.
@@ -363,27 +295,22 @@ pub unsafe fn release() {
     unsafe { WATCHES.registry.release() };
 }
 
-/// One capture's characters. `verified` carried characters were read afresh
-/// for the sampled comparison, `mismatches` of them differing. `quiet` marks
-/// a capture that carried its whole table from a quiet domain and an
-/// unchanged census, reading only its sampled slice.
+/// One capture's characters. `quiet` marks a capture that carried its whole
+/// table from a quiet domain and an unchanged census.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     pub quiet: bool,
 }
 
-/// The capture already poisoned reuse at a mismatch ([`Changes::mismatch`]).
-/// Carried, read, verified and mismatched CharacterOperatives links
+/// Carried and read CharacterOperatives links
 /// ([`crate::extended::character_inputs`]).
-static OPERATIVES: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static OPERATIVES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
 /// One CharacterInputs walk's operative links.
-pub fn record_operatives(carried: u64, read: u64, verified: u64, mismatches: u64) {
-    for (target, value) in OPERATIVES.iter().zip([carried, read, verified, mismatches]) {
+pub fn record_operatives(carried: u64, read: u64) {
+    for (target, value) in OPERATIVES.iter().zip([carried, read]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
 }
@@ -392,25 +319,20 @@ pub fn record(table: Table, counts: &Counts) {
     for (target, value) in READS[table as usize].iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         u64::from(counts.quiet),
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, table as usize);
 }
 
 pub fn status() -> impl serde::Serialize {
-    let [carried, read, verified, mismatches] = OPERATIVES
+    let [carried, read] = OPERATIVES
         .each_ref()
         .map(|value| value.load(Ordering::Relaxed));
     let operatives = crate::status::status!({
         "carried": carried,
         "read": read,
-        "verified": verified,
-        "mismatches": mismatches,
-        "scope": "CharacterOperatives links: carried without reading their leader while both of its certificates (unit leader and trait domains) hold and the slice does not cover the character; read otherwise, and verified when a carryable link was read in the slice"
+        "scope": "CharacterOperatives links: carried without reading their leader while both of its certificates (unit leader and trait domains) hold; read otherwise"
     });
     let events = crate::status::map(
         MUTATIONS
@@ -425,26 +347,19 @@ pub fn status() -> impl serde::Serialize {
             crate::status::status!({
                 "reused_characters": reads[0],
                 "read_characters": reads[1],
-                "sampled_verified": reads[2],
-                "sampled_mismatches": reads[3],
-                "quiet_hours": reads[4],
+                "quiet_hours": reads[2],
             }),
         )
     }));
     crate::status::status!({
         "configured": cfg!(feature = "character_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "tables": tables,
         "events": events,
         "advisor_family_events": WATCHES.advisor_calls.load(Ordering::Relaxed),
         "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
         "operative_links": operatives,
         "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; CharacterRoleTraits carries a character's country-leader and advisor rows, and CountryLeaderRoles its country-leader roles with the census country, and Characters its names, gender and template with this hour's identity, country and roster position, when no hooked writer touched it since its read and its census map headers are unchanged, and AdvisorRoles each role's modifier cache and tooltip keys (counted per role) when the role, its character and the character's certificate repeat at the same position; scientist rows and CharacterOperatives are read every hour; every hour also reads the carried characters (and AdvisorRoles roles) of its slice afresh (one in rotation_hours by character id; every carried one in verify mode) and compares them with the held rows: CharacterRoleTraits, CountryLeaderRoles and AdvisorRoles publish the fresh rows, and a Characters difference drops the carried set so the hour reads every name afresh; the first mismatch disables reuse (sampled_*); quiet_hours counts captures certified by the domain's unchanged quiet token alone, without a per-character lookup: CharacterRoleTraits, CountryLeaderRoles and AdvisorRoles then carry the whole table (after a capture that certified every occurrence, with its census generation), reading only the slice, while Characters still reads every identity, country and roster position"
+        "scope": "cumulative since attach; CharacterRoleTraits carries a character's country-leader and advisor rows, and CountryLeaderRoles its country-leader roles with the census country, and Characters its names, gender and template with this hour's identity, country and roster position, when no hooked writer touched it since its read and its census map headers are unchanged, and AdvisorRoles each role's modifier cache and tooltip keys (counted per role) when the role, its character and the character's certificate repeat at the same position; scientist rows and CharacterOperatives are read every hour; quiet_hours counts captures certified by the domain's unchanged quiet token alone, without a per-character lookup: CharacterRoleTraits, CountryLeaderRoles and AdvisorRoles then carry the whole table (after a capture that certified every occurrence, with its census generation), while Characters still reads every identity, country and roster position"
     })
 }

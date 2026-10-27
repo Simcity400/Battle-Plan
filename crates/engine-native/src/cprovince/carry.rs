@@ -39,12 +39,9 @@
 //!
 //! A province is carried only when the hour's take returned the epochs of the
 //! held complete walk, the table header and province slot pointer are the held
-//! ones, neither the province nor its held state is marked, its held row is in
-//! no conflict and it is not in the hour's sampled slice. Every other province
-//! is read exactly as a full walk reads it. A carryable province of the slice
-//! (every one under verification) is read afresh and compared with its held
-//! row; a difference poisons the store. A walk that does not complete, or an
-//! uncertified take, holds nothing.
+//! ones, neither the province nor its held state is marked and its held row is
+//! in no conflict. Every other province is read exactly as a full walk reads
+//! it. A walk that does not complete, or an uncertified take, holds nothing.
 use super::*;
 use crate::controller_areas::Pointers;
 
@@ -67,10 +64,6 @@ pub struct Counts {
     pub read: u64,
     /// Carried rows whose [`Row::fort_bunker`] was read again.
     pub refreshed: u64,
-    /// Carryable rows read afresh and compared with the store.
-    pub verified: u64,
-    /// Of those, the ones that differed.
-    pub mismatches: u64,
     /// Nothing was marked.
     pub quiet: bool,
     /// Every row was read: nothing held certified the walk.
@@ -91,7 +84,6 @@ pub struct RowStore {
     state_marks: Vec<u32>,
     /// The row indices whose area pointers this walk took from `held`.
     carried: Vec<u32>,
-    poisoned: bool,
     counts: Counts,
     /// [`Self::allocated_bytes`] as of the latest walk.
     bytes: usize,
@@ -116,16 +108,6 @@ impl RowStore {
         self.marks.clear();
         self.state_marks.clear();
         self.carried.clear();
-    }
-
-    /// A carried row differed from a fresh read: every later walk reads every
-    /// province.
-    pub fn poison(&mut self) {
-        self.poisoned = true;
-    }
-
-    pub fn poisoned(&self) -> bool {
-        self.poisoned
     }
 
     /// Whether a complete walk is held.
@@ -242,10 +224,6 @@ pub(super) struct Hour<'a> {
     pub store: &'a mut RowStore,
     /// The territory take's epochs; None when it refused.
     pub take: Option<[u64; 2]>,
-    /// The sampled slice, by province id.
-    pub covers: &'a dyn Fn(u64) -> bool,
-    /// Read every province and compare every carryable one.
-    pub verify: bool,
 }
 
 /// The walk over the province table `array`, its output already sized:
@@ -263,7 +241,7 @@ pub(super) fn walk(
     conflict: &mut ConflictState,
     states: &mut StateCache,
 ) -> Outcome {
-    let (take, covers, verify) = (hour.take, hour.covers, hour.verify);
+    let take = hour.take;
     let store = &mut *hour.store;
     let required = array.count as usize - 1;
     store.counts = Counts::default();
@@ -273,8 +251,7 @@ pub(super) fn walk(
         marks.dedup();
     }
     let force_full = std::mem::take(&mut store.force_full);
-    let eligible = !store.poisoned
-        && !force_full
+    let eligible = !force_full
         && take.is_some()
         && take == store.epochs
         && store.header == array
@@ -285,8 +262,7 @@ pub(super) fn walk(
             .is_ok();
     let outcome = if eligible {
         carry(
-            store, covers, verify, memory, base, game_state, array, output, areas, conflicts,
-            conflict, states,
+            store, memory, base, game_state, array, output, areas, conflicts, conflict, states,
         )
     } else {
         let outcome = read_rows(
@@ -311,9 +287,6 @@ pub(super) fn walk(
         store.header = array;
     } else {
         store.forget();
-    }
-    if store.counts.mismatches != 0 {
-        store.poisoned = true;
     }
     store.marks.clear();
     store.state_marks.clear();
@@ -353,11 +326,8 @@ fn hold(store: &mut RowStore, array: Array, rows: &[Row], areas: &[Pointers]) ->
 #[derive(Clone, Copy)]
 enum Kind {
     Carried,
-    /// Read into body `body`; `compare` when the store could have carried it.
-    Read {
-        body: usize,
-        compare: bool,
-    },
+    /// Read into body `body`.
+    Read { body: usize },
 }
 
 /// [`read_rows`] for an hour the store certifies: the batch's carried rows
@@ -367,8 +337,6 @@ enum Kind {
 #[allow(clippy::too_many_arguments)]
 fn carry(
     store: &mut RowStore,
-    covers: &dyn Fn(u64) -> bool,
-    verify: bool,
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -415,15 +383,12 @@ fn carry(
                 && held.row.move_gate & Row::MOVE_BORDER_CONFLICT == 0;
             let index = len - admitted;
             provinces[index] = id;
-            kinds[index] = if carryable && !verify && !covers(u64::from(id)) {
+            kinds[index] = if carryable {
                 Kind::Carried
             } else {
                 bodies[staged] = pointer;
                 staged += 1;
-                Kind::Read {
-                    body: staged - 1,
-                    compare: carryable,
-                }
+                Kind::Read { body: staged - 1 }
             };
             len += 1;
         }
@@ -475,7 +440,7 @@ fn carry(
                     store.carried.push(at as u32);
                     store.counts.carried += 1;
                 }
-                Kind::Read { body, compare } => {
+                Kind::Read { body } => {
                     let (fields, pointer) = (fields[body], bodies[body]);
                     row.fort_positive = u8::from(fields.fort_sum > 0);
                     row.fort_bunker = if fields.fort_sum > 0 && (row.controller as i32) > 0 {
@@ -501,18 +466,6 @@ fn carry(
                     areas[at] = fresh;
                     if fields.move_gate & Row::MOVE_BORDER_CONFLICT != 0 {
                         conflict.record(memory, base, pointer, row.id, conflicts);
-                    }
-                    if compare {
-                        // fort_bunker is read every hour; the rest is what
-                        // the carry would have published.
-                        store.counts.verified += 1;
-                        let carried = Row {
-                            fort_bunker: row.fort_bunker,
-                            ..held.row
-                        };
-                        if carried != *row || held.areas.definition != fresh.definition {
-                            store.counts.mismatches += 1;
-                        }
                     }
                     *held = Held {
                         pointer,

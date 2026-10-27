@@ -20,13 +20,8 @@ use std::{
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused, read, verified and mismatched managers; reused and read rows;
-/// quiet hours.
-static READS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
-/// The family's sampled comparisons.
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
-    "carried ScriptFlags rows differ from a fresh read",
-]);
+/// Reused and read managers; reused and read rows; quiet hours.
+static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 /// Scopes observed by the complete sizing census or capture, for off-thread sizing.
 static SCOPES: AtomicUsize = AtomicUsize::new(0);
 static EMBEDDED_SCOPES: AtomicUsize = AtomicUsize::new(0);
@@ -101,16 +96,6 @@ impl Watches {
     pub fn roster_write(&self) {
         drop(self.roster.notify(0));
     }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn roster_poisoned(&self) -> bool {
-        self.roster.poisoned()
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn poisoned(&self) -> bool {
-        self.registry.poisoned()
-    }
 }
 
 /// What a capture sees of the notifications.
@@ -119,9 +104,6 @@ pub trait Changes: Sync {
     /// cannot be observed. Equal values across hours prove that no observed
     /// writer touched it.
     fn sequence(&self, manager: usize) -> Option<(u64, u64)>;
-    /// A fresh read disagreed with carried rows: disable reuse for the
-    /// attachment.
-    fn mismatch(&self);
     /// `(epoch, revision)` of the structure token while it is observed and
     /// no writer runs: equal values across hours prove that no flag manager
     /// was built, released, destroyed, cleared or replaced whole in between,
@@ -135,18 +117,11 @@ pub trait Changes: Sync {
     /// The character roster's token ([`crate::roster_changes::roster`]):
     /// equal values prove the roster's occurrences, order and ids unchanged.
     fn roster(&self) -> Option<(u64, u64)>;
-    /// A quiet hour's held scopes disagreed with a fresh walk: disable reuse
-    /// of the flag and roster domains for the attachment.
-    fn scope_mismatch(&self);
 }
 
 impl Changes for Watches {
     fn sequence(&self, manager: usize) -> Option<(u64, u64)> {
         self.registry.sequence(manager)
-    }
-    fn mismatch(&self) {
-        self.registry.poison();
-        self.structure.poison();
     }
     fn structure(&self) -> Option<(u64, u64)> {
         self.structure.quiet()
@@ -164,16 +139,6 @@ impl Changes for Watches {
     fn roster(&self) -> Option<(u64, u64)> {
         crate::roster_changes::roster()
     }
-    #[cfg(any(test, feature = "test-support"))]
-    fn scope_mismatch(&self) {
-        self.mismatch();
-        self.roster.poison();
-    }
-    #[cfg(not(any(test, feature = "test-support")))]
-    fn scope_mismatch(&self) {
-        self.mismatch();
-        crate::roster_changes::mismatch();
-    }
 }
 
 /// The hooks' domain.
@@ -181,9 +146,6 @@ pub struct Observer;
 impl Changes for Observer {
     fn sequence(&self, manager: usize) -> Option<(u64, u64)> {
         WATCHES.sequence(manager)
-    }
-    fn mismatch(&self) {
-        WATCHES.mismatch();
     }
     fn structure(&self) -> Option<(u64, u64)> {
         WATCHES.structure()
@@ -194,15 +156,7 @@ impl Changes for Observer {
     fn roster(&self) -> Option<(u64, u64)> {
         crate::roster_changes::roster()
     }
-    fn scope_mismatch(&self) {
-        WATCHES.mismatch();
-        crate::roster_changes::mismatch();
-    }
 }
-
-/// Whether captures read every carryable manager afresh and compare,
-/// rather than the hour's sampled slice ([`crate::sampled_verify`]).
-pub const VERIFY: bool = cfg!(feature = "flag_verify");
 
 /// The writers that build, release, destroy, clear or replace a whole
 /// Manager  ([`MUTATIONS`] indices: the save reader, clear flags, the row
@@ -271,8 +225,6 @@ pub fn collect() {
 pub struct Counts {
     pub reused: u64,
     pub read: u64,
-    pub verified: u64,
-    pub mismatches: u64,
     pub reused_rows: u64,
     pub read_rows: u64,
     /// The walk published the held rows of a quiet hour without walking a
@@ -286,15 +238,12 @@ pub fn record(counts: &Counts, scopes: Option<usize>) {
     for (target, value) in READS.iter().zip([
         counts.reused,
         counts.read,
-        counts.verified,
-        counts.mismatches,
         counts.reused_rows,
         counts.read_rows,
         u64::from(counts.quiet),
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
-    SAMPLED.record(counts.verified, counts.mismatches, 0);
     if let Some(scopes) = scopes {
         SCOPES.store(scopes, Ordering::Relaxed);
     }
@@ -310,22 +259,15 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "flag_changes"),
-        "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned() || WATCHES.structure.poisoned(),
-        "sampled_verified": SAMPLED.verified(),
-        "sampled_mismatches": SAMPLED.mismatches(),
-        "last_mismatch": SAMPLED.last_mismatch(),
-        "slice": SAMPLED.slice(),
         "reused_managers": reads[0],
         "read_managers": reads[1],
-        "verified_managers": reads[2],
-        "mismatches": reads[3],
-        "reused_rows": reads[4],
-        "read_rows": reads[5],
-        "quiet_hours": reads[6],
+        "reused_rows": reads[2],
+        "read_rows": reads[3],
+        "quiet_hours": reads[4],
         "events": events,
         "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a ScriptFlags scope's rows are carried when its manager is the one held for the same scope and no hooked writer touched it since its read; scope identities and manager roots are read every hour unless the hour is quiet: when the flag domain's structure token (the manager constructor, release, destructor, clear, row assignment and save reader, and so every scope root writer), the character roster's token (crate::roster_changes) and the country census equal those taken before the latest complete walk and the hour's take of the marked managers returned its epoch, the walk publishes that walk's rows without reading any scope (quiet_hours), reading afresh only the managers a writer marked, whose rows replace the held ones, and the slice's managers; the daily expiry notifies (and counts in events) only for a manager holding a positive remaining duration, the only one it writes; every hour also reads the carryable managers of its slice afresh (one in rotation_hours by scope kind and id; every one in verify mode), publishes the fresh rows and disables reuse at the first mismatch (sampled_*)"
+        "scope": "cumulative since attach; a ScriptFlags scope's rows are carried when its manager is the one held for the same scope and no hooked writer touched it since its read; scope identities and manager roots are read every hour unless the hour is quiet: when the flag domain's structure token (the manager constructor, release, destructor, clear, row assignment and save reader, and so every scope root writer), the character roster's token (crate::roster_changes) and the country census equal those taken before the latest complete walk and the hour's take of the marked managers returned its epoch, the walk publishes that walk's rows without reading any scope (quiet_hours), reading afresh only the managers a writer marked, whose rows replace the held ones; the daily expiry notifies (and counts in events) only for a manager holding a positive remaining duration, the only one it writes"
     })
 }
 

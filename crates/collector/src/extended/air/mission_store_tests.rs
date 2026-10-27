@@ -3,13 +3,9 @@
 //! read no active-region id, regional vector or mission pointer and publish
 //! a fresh walk's rows; a hooked registration re-reads only its country; an
 //! invalidation re-reads every country; a census disagreement reads the
-//! country afresh and its outcome stands; verify catches a write no hook saw
-//! and poisons reuse.
+//! country afresh and its outcome stands.
 use super::*;
-use crate::{
-    mission_changes::{Counts, Watches},
-    sampled_verify::{Check, ROTATION},
-};
+use crate::mission_changes::{Counts, Watches};
 use engine_native::{
     cair_regional_mission::FailureContext, cair_regional_mission::Row,
     cair_regional_mission::walk_carried, cair_regional_mission::walk_with_diagnostic,
@@ -229,13 +225,12 @@ fn walk_with(
     census: &[WingIdentity],
     store: &mut MissionStore,
     watches: &Watches,
-    check: Check,
 ) -> Hour {
     let memory = Traced {
         bytes: &world.bytes,
         regional: Default::default(),
     };
-    let mut reuse = MissionReuse::begin(store, watches, check);
+    let mut reuse = MissionReuse::begin(store, watches);
     let mut rows = Vec::new();
     let mut failure = FailureContext::default();
     let outcome = walk_carried(
@@ -258,8 +253,8 @@ fn walk_with(
     }
 }
 
-fn walk(world: &World, store: &mut MissionStore, watches: &Watches, check: Check) -> Hour {
-    walk_with(world, &world.sorted_census(), store, watches, check)
+fn walk(world: &World, store: &mut MissionStore, watches: &Watches) -> Hour {
+    walk_with(world, &world.sorted_census(), store, watches)
 }
 
 /// What a fresh walk publishes.
@@ -283,7 +278,7 @@ fn fresh(world: &World, census: &[WingIdentity]) -> (Outcome, Vec<Row>) {
 /// The first hour reads and holds every country; this is what the old
 /// behaviour does every hour.
 fn first_hour(world: &World, store: &mut MissionStore, watches: &Watches) -> Hour {
-    let first = walk(world, store, watches, Check::Nothing);
+    let first = walk(world, store, watches);
     assert_eq!(first.rows, world.rows());
     assert_eq!(
         first.outcome,
@@ -320,7 +315,7 @@ fn quiet_hours_read_no_regional_vector_and_publish_a_fresh_walks_rows() {
     let mut store = MissionStore::new();
     let first = first_hour(&world, &mut store, &watches);
     for _ in 0..3 {
-        let quiet = walk(&world, &mut store, &watches, Check::Nothing);
+        let quiet = walk(&world, &mut store, &watches);
         assert_eq!(quiet.rows, first.rows);
         assert_eq!(quiet.outcome, first.outcome);
         assert_eq!(
@@ -371,14 +366,13 @@ fn all_active_order_is_read_only_on_certified_changes_and_failures_are_carried()
         world: &World,
         store: &mut MissionStore,
         watches: &Watches,
-        check: Check,
     ) -> (Vec<mission_store::OrderLabel>, [usize; SLOTS + 1]) {
         let memory = Traced {
             bytes: &world.bytes,
             regional: Default::default(),
         };
         let census = world.sorted_census();
-        let mut reuse = MissionReuse::begin(store, watches, check);
+        let mut reuse = MissionReuse::begin(store, watches);
         let mut rows = Vec::new();
         let result = walk_carried(
             &memory,
@@ -402,7 +396,7 @@ fn all_active_order_is_read_only_on_certified_changes_and_failures_are_carried()
     }
     let watches = Watches::enabled(16);
     let mut store = MissionStore::new();
-    let (first, _) = ordered(&world, &mut store, &watches, Check::Nothing);
+    let (first, _) = ordered(&world, &mut store, &watches);
     for slot in 1..=SLOTS as u32 {
         let mut expected: Vec<_> = world.countries[slot as usize]
             .iter()
@@ -421,10 +415,10 @@ fn all_active_order_is_read_only_on_certified_changes_and_failures_are_carried()
         );
     }
     watches.boundary(false);
-    let (quiet, reads) = ordered(&world, &mut store, &watches, Check::Nothing);
+    let (quiet, reads) = ordered(&world, &mut store, &watches);
     assert_eq!(quiet, first);
     assert_eq!(reads, [0; SLOTS + 1]);
-    // A certification-preserving sampled regional check must not poll all-active pointers.
+    // A certification-preserving re-read of the regional vectors must not poll all-active pointers.
     let bad = window(1) + 0x900;
     world.u64(bad, 0);
     // Carrier combat can list an empty ordinary region and change that
@@ -441,21 +435,22 @@ fn all_active_order_is_read_only_on_certified_changes_and_failures_are_carried()
         ordinary as u32,
         64,
     );
-    let (verified, _) = ordered(&world, &mut store, &watches, Check::Every);
-    assert_eq!(verified, first);
+    let (moved, reads) = ordered(&world, &mut store, &watches);
+    assert_eq!(moved, first);
+    assert!(reads[1] > 0);
     // Notification revokes that order. The independently failed read stays unknown.
     drop(watches.notify(air(1), 0));
     watches.boundary(false);
-    let (failed, _) = ordered(&world, &mut store, &watches, Check::Nothing);
+    let (failed, _) = ordered(&world, &mut store, &watches);
     assert!(failed.len() < first.len());
     active(&mut world, 1, false);
     watches.boundary(false);
-    let (still_unknown, reads) = ordered(&world, &mut store, &watches, Check::Nothing);
+    let (still_unknown, reads) = ordered(&world, &mut store, &watches);
     assert_eq!(still_unknown, failed);
     assert_eq!(reads, [0; SLOTS + 1]);
     drop(watches.notify(air(1), 0));
     watches.boundary(false);
-    let (restored, reads) = ordered(&world, &mut store, &watches, Check::Nothing);
+    let (restored, reads) = ordered(&world, &mut store, &watches);
     assert_eq!(restored.len(), first.len());
     assert!(reads[1] > 0);
     assert!(reads[2..].iter().all(|&n| n == 0));
@@ -476,14 +471,14 @@ fn a_hooked_registration_rereads_only_its_country() {
         world.countries[2].push((4, vec![wing]));
     });
     watches.boundary(false);
-    let hour = walk(&world, &mut store, &watches, Check::Nothing);
+    let hour = walk(&world, &mut store, &watches);
     assert_eq!(hour.read(), [2]);
     assert_eq!((hour.counts.read, hour.counts.reused), (1, 3));
     assert!(!hour.counts.quiet);
     assert_eq!(hour.rows, world.rows());
     // The re-read country is carried again from the next quiet hour.
     watches.boundary(false);
-    let quiet = walk(&world, &mut store, &watches, Check::Nothing);
+    let quiet = walk(&world, &mut store, &watches);
     assert!(quiet.read().is_empty());
     assert_eq!(quiet.rows, world.rows());
 }
@@ -507,7 +502,7 @@ fn a_writer_that_keeps_every_header_is_still_seen() {
     });
     assert_eq!(headers(&world), before);
     watches.boundary(false);
-    let hour = walk(&world, &mut store, &watches, Check::Nothing);
+    let hour = walk(&world, &mut store, &watches);
     assert_eq!(hour.read(), [3]);
     assert_eq!(hour.rows, world.rows());
 }
@@ -520,14 +515,14 @@ fn an_invalidating_hour_or_a_forgotten_store_rereads_every_country() {
     let first = first_hour(&world, &mut store, &watches);
     // Load, gap or recovery.
     watches.boundary(true);
-    let hour = walk(&world, &mut store, &watches, Check::Nothing);
+    let hour = walk(&world, &mut store, &watches);
     assert_eq!((hour.counts.read, hour.counts.reused), (SLOTS as u64, 0));
     assert_eq!(hour.read(), [1, 2, 3, 4]);
     assert_eq!(hour.rows, first.rows);
     // A failed AirMissions job forgets the store.
     watches.boundary(false);
     store.forget();
-    let forgotten = walk(&world, &mut store, &watches, Check::Nothing);
+    let forgotten = walk(&world, &mut store, &watches);
     assert_eq!(
         (forgotten.counts.read, forgotten.counts.reused),
         (SLOTS as u64, 0)
@@ -545,7 +540,7 @@ fn an_unhooked_carrier_region_moves_the_header_and_rereads() {
     first_hour(&world, &mut store, &watches);
     world.countries[4].insert(0, (1, Vec::new()));
     world.layout(4);
-    let hour = walk(&world, &mut store, &watches, Check::Nothing);
+    let hour = walk(&world, &mut store, &watches);
     assert_eq!(hour.read(), [4]);
     assert_eq!(hour.rows, world.rows());
 }
@@ -567,7 +562,7 @@ fn a_census_disagreement_reads_the_country_afresh_with_the_fresh_outcome() {
     missing.remove(wing);
     for mut census in [foreign, missing] {
         census.sort_unstable_by_key(|wing| wing.mission_pointer);
-        let hour = walk_with(&world, &census, &mut store, &watches, Check::Nothing);
+        let hour = walk_with(&world, &census, &mut store, &watches);
         let mut failure = Default::default();
         let expected = walk_with_diagnostic(
             &SliceMemory {
@@ -591,55 +586,16 @@ fn a_census_disagreement_reads_the_country_afresh_with_the_fresh_outcome() {
         assert_eq!(hour.counts.reused, 2);
         watches.boundary(false);
         // The failed walk holds nothing: the next hour reads every country.
-        let after = walk(&world, &mut store, &watches, Check::Nothing);
+        let after = walk(&world, &mut store, &watches);
         assert_eq!((after.counts.read, after.counts.reused), (SLOTS as u64, 0));
         watches.boundary(false);
     }
 }
 
 #[test]
-fn verify_catches_an_unobserved_write_poisons_and_publishes_the_fresh_rows() {
-    let mut world = World::new();
-    let watches = Watches::enabled(16);
-    let mut store = MissionStore::new();
-    first_hour(&world, &mut store, &watches);
-    let agreed = walk(&world, &mut store, &watches, Check::Every);
-    assert_eq!(
-        (
-            agreed.counts.read,
-            agreed.counts.verified,
-            agreed.counts.mismatches
-        ),
-        (SLOTS as u64, SLOTS as u64, 0)
-    );
-    assert!(!watches.poisoned());
-    watches.boundary(false);
-    // A write no hook observed: slot 1's region 5 lists another wing.
-    let replacement = world.wing(1, 5);
-    world.countries[1][1].1[0] = replacement;
-    world.layout(1);
-    let caught = walk(&world, &mut store, &watches, Check::Every);
-    // The first country's mismatch poisons at once: those after it are no
-    // longer carryable, so they are read but not verified.
-    assert_eq!(
-        (
-            caught.counts.read,
-            caught.counts.verified,
-            caught.counts.mismatches
-        ),
-        (SLOTS as u64, 1, 1)
-    );
-    assert!(watches.poisoned());
-    assert_eq!(caught.rows, world.rows());
-    watches.boundary(false);
-    let after = walk(&world, &mut store, &watches, Check::Nothing);
-    assert_eq!((after.counts.read, after.counts.reused), (SLOTS as u64, 0));
-}
-
-#[test]
-fn an_unobserved_write_without_verify_is_carried_stale() {
+fn an_unobserved_write_is_carried_stale() {
     // Guards the premise of the family: only hooked writers move a
-    // certificate, so a missed writer would be carried until verify or an
+    // certificate, so a missed writer would be carried until an
     // invalidation, which is why both writer sites are hooked.
     let mut world = World::new();
     let watches = Watches::enabled(16);
@@ -648,33 +604,7 @@ fn an_unobserved_write_without_verify_is_carried_stale() {
     let replacement = world.wing(1, 5);
     world.countries[1][1].1[0] = replacement;
     world.layout(1);
-    let stale = walk(&world, &mut store, &watches, Check::Nothing);
+    let stale = walk(&world, &mut store, &watches);
     assert_eq!(stale.counts.reused, SLOTS as u64);
     assert_eq!(stale.rows, first.rows);
-}
-
-#[test]
-fn an_hourly_slice_verifies_only_its_countries_and_carries_the_rest() {
-    let world = World::new();
-    let watches = Watches::enabled(16);
-    let mut store = MissionStore::new();
-    first_hour(&world, &mut store, &watches);
-    let mut verified = 0;
-    for hour in 0..ROTATION as i32 {
-        let check = Check::Slice { hour };
-        let sampled = walk(&world, &mut store, &watches, check);
-        let due = (1..=SLOTS as u64)
-            .filter(|&slot| check.covers(slot))
-            .count() as u64;
-        assert_eq!(
-            (sampled.counts.verified, sampled.counts.reused),
-            (due, SLOTS as u64 - due)
-        );
-        assert_eq!(sampled.counts.mismatches, 0);
-        assert_eq!(sampled.read().len() as u64, due);
-        assert_eq!(sampled.rows, world.rows());
-        verified += due;
-        watches.boundary(false);
-    }
-    assert_eq!(verified, SLOTS as u64);
 }

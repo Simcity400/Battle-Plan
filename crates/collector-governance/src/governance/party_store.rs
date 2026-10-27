@@ -21,14 +21,9 @@
 //! of the held read, taken in the current epoch: a row is the slot's
 //! `CIdea` definition token, which the idea database fixes for the session.
 //!
-//! Each hour also reads the carryable countries of its sampled slice
-//! ([`crate::sampled_verify`], keyed by country id; every one under
-//! `party_verify`) afresh, publishes the fresh rows and poisons reuse on a
-//! difference. A fresh read whose pointers differ from the held read's is a
-//! change, not a comparison. The store follows the Governance job's loan and
-//! holds only the countries of the latest complete walk of each table.
-//! Allocation is advisory: a country whose rows cannot be held is read afresh
-//! next hour.
+//! The store follows the Governance job's loan and holds only the countries
+//! of the latest complete walk of each table. Allocation is advisory: a
+//! country whose rows cannot be held is read afresh next hour.
 //!
 //! The store also holds the latest complete walk's four politics tables for
 //! a quiet politics hour ([`super::politics_hour`]), with every listed party
@@ -36,10 +31,7 @@
 //! carried. A quiet hour neither begins nor finishes a walk, so the
 //! per-country rows above stay as the latest walk left them.
 use super::politics_hour::{QuietWalk, Visit};
-use crate::{
-    party_changes::{Changes, Counts},
-    sampled_verify::Check,
-};
+use crate::party_changes::{Changes, Counts};
 use engine_allocation as allocation;
 use engine_native::{
     cpolitical_party::Row, cpolitical_status::IdeaCarry, cpolitical_status::IdeaRow,
@@ -251,8 +243,6 @@ struct Pending {
     token: usize,
     /// The held entry whose certificates are all current.
     held: Option<usize>,
-    /// The fresh read's pointers equal the held entry's so far.
-    same: bool,
     /// Every fresh party registered.
     certified: bool,
     /// The read's party pointers and certificates, or idea pointers.
@@ -377,7 +367,6 @@ impl PartyStore {
         let pending = &mut self.pending[table];
         pending.token = self.next_token;
         pending.held = None;
-        pending.same = true;
         pending.certified = true;
         pending.parties.clear();
         pending.ideas.clear();
@@ -392,18 +381,12 @@ impl PartyStore {
 pub struct PoliticsReuse<'a> {
     store: &'a mut PartyStore,
     changes: &'a dyn Changes,
-    /// Which carryable countries this hour reads afresh and compares.
-    check: Check,
 }
 
 impl<'a> PoliticsReuse<'a> {
-    pub fn begin(store: &'a mut PartyStore, changes: &'a dyn Changes, check: Check) -> Self {
+    pub fn begin(store: &'a mut PartyStore, changes: &'a dyn Changes) -> Self {
         store.begin();
-        Self {
-            store,
-            changes,
-            check,
-        }
+        Self { store, changes }
     }
 
     /// Ends the walk: each flag says whether every country of that table was
@@ -435,9 +418,9 @@ fn push<T>(values: &mut Vec<T>, value: T) -> bool {
 }
 
 impl PartyCarry for PoliticsReuse<'_> {
-    /// Carryable when the held read of the same status and array header
-    /// lists parties whose certificates are all still current, and carried
-    /// without a read unless the hour's [`Check`] covers the country.
+    /// Carryable, and carried without a read, when the held read of the same
+    /// status and array header lists parties whose certificates are all
+    /// still current.
     fn plan(&mut self, parties: &Parties) -> (usize, Option<(usize, usize)>) {
         let token = self.store.start(PARTIES);
         self.store.quiet.start_country();
@@ -450,12 +433,10 @@ impl PartyCarry for PoliticsReuse<'_> {
         let pending = &mut self.store.pending[PARTIES];
         pending.held = held;
         pending.parties_header = Some(*parties);
-        let carry = held
-            .filter(|_| !self.check.covers(u64::from(parties.country)))
-            .map(|index| {
-                let entry = &self.store.previous.parties.entries[index];
-                (entry.rows.len(), entry.text.len())
-            });
+        let carry = held.map(|index| {
+            let entry = &self.store.previous.parties.entries[index];
+            (entry.rows.len(), entry.text.len())
+        });
         (token, carry)
     }
 
@@ -507,17 +488,9 @@ impl PartyCarry for PoliticsReuse<'_> {
         let certificate = self.changes.sequence(party);
         self.store.receivers += 1;
         self.store.quiet.fresh_party(party);
-        let PartyStore {
-            previous, pending, ..
-        } = &mut *self.store;
-        let pending = &mut pending[PARTIES];
+        let pending = &mut self.store.pending[PARTIES];
         if pending.token != token || token == 0 {
             return;
-        }
-        let ordinal = pending.parties.len();
-        if let Some(index) = pending.held {
-            let held = &previous.parties.pointers[previous.parties.entries[index].pointers.clone()];
-            pending.same &= held.get(ordinal).is_some_and(|&(held, _)| held == party);
         }
         match certificate {
             Some(certificate) => {
@@ -527,12 +500,9 @@ impl PartyCarry for PoliticsReuse<'_> {
         }
     }
 
-    /// A fresh read: compared with the held rows when it lists the held
-    /// parties (a difference poisons reuse) and held for the next hour.
+    /// A fresh read, held for the next hour.
     fn read(&mut self, token: usize, outcome: Outcome, rows: &[Row], text: &[u8]) {
-        let changes = self.changes;
         let PartyStore {
-            previous,
             current,
             pending,
             counts,
@@ -550,32 +520,6 @@ impl PartyCarry for PoliticsReuse<'_> {
         counts.read += 1;
         counts.read_rows += rows.len() as u64;
         let complete = matches!(outcome, Outcome::Rows { .. });
-        if let Some(index) = pending.held
-            && pending.same
-            && pending.parties.len() == rows.len()
-        {
-            let entry = &previous.parties.entries[index];
-            if entry.pointers.len() == rows.len() {
-                counts.verified += 1;
-                let differs = !complete
-                    || previous.parties.text[entry.text.clone()] != *text
-                    || previous.parties.rows[entry.rows.clone()]
-                        .iter()
-                        .zip(rows)
-                        .any(|(held, row)| {
-                            *held
-                                != Row {
-                                    popularity: 0,
-                                    is_ruling: 0,
-                                    ..*row
-                                }
-                        });
-                if differs {
-                    counts.mismatches += 1;
-                    changes.mismatch();
-                }
-            }
-        }
         if complete
             && pending.certified
             && let Some(header) = pending.parties_header
@@ -586,9 +530,8 @@ impl PartyCarry for PoliticsReuse<'_> {
 }
 
 impl IdeaCarry for PoliticsReuse<'_> {
-    /// Carryable when the held read of the same status and array header was
-    /// taken in this epoch, and carried without a read unless the hour's
-    /// [`Check`] covers the country.
+    /// Carryable, and carried without a read, when the held read of the same
+    /// status and array header was taken in this epoch.
     fn plan(&mut self, ideas: &Ideas) -> (usize, Option<(usize, usize)>) {
         let token = self.store.start(IDEAS);
         let certificate = self.changes.sequence(ideas.status);
@@ -602,12 +545,10 @@ impl IdeaCarry for PoliticsReuse<'_> {
         pending.held = held;
         pending.certificate = certificate;
         pending.ideas_header = Some(*ideas);
-        let carry = held
-            .filter(|_| !self.check.covers(u64::from(ideas.country)))
-            .map(|index| {
-                let entry = &self.store.previous.ideas.entries[index];
-                (entry.rows.len(), entry.text.len())
-            });
+        let carry = held.map(|index| {
+            let entry = &self.store.previous.ideas.entries[index];
+            (entry.rows.len(), entry.text.len())
+        });
         (token, carry)
     }
 
@@ -651,27 +592,16 @@ impl IdeaCarry for PoliticsReuse<'_> {
 
     /// Records a slot's stored pointer before the idea is read.
     fn idea(&mut self, token: usize, slot: usize) {
-        let PartyStore {
-            previous, pending, ..
-        } = &mut *self.store;
-        let pending = &mut pending[IDEAS];
+        let pending = &mut self.store.pending[IDEAS];
         if pending.token != token || token == 0 {
             return;
-        }
-        let ordinal = pending.ideas.len();
-        if let Some(index) = pending.held {
-            let held = &previous.ideas.pointers[previous.ideas.entries[index].pointers.clone()];
-            pending.same &= held.get(ordinal) == Some(&slot);
         }
         pending.certified &= push(&mut pending.ideas, slot);
     }
 
-    /// A fresh read: compared with the held rows when it lists the held
-    /// slots (a difference poisons reuse) and held for the next hour.
+    /// A fresh read, held for the next hour.
     fn read(&mut self, token: usize, outcome: Outcome, rows: &[IdeaRow], text: &[u8]) {
-        let changes = self.changes;
         let PartyStore {
-            previous,
             current,
             pending,
             counts,
@@ -685,20 +615,6 @@ impl IdeaCarry for PoliticsReuse<'_> {
         counts.read += 1;
         counts.read_rows += rows.len() as u64;
         let complete = matches!(outcome, Outcome::Rows { .. });
-        if let Some(index) = pending.held
-            && pending.same
-            && pending.ideas.len() == previous.ideas.entries[index].pointers.len()
-        {
-            let entry = &previous.ideas.entries[index];
-            counts.verified += 1;
-            if !complete
-                || previous.ideas.rows[entry.rows.clone()] != *rows
-                || previous.ideas.text[entry.text.clone()] != *text
-            {
-                counts.mismatches += 1;
-                changes.mismatch();
-            }
-        }
         if complete
             && pending.certified
             && let (Some(header), Some(certificate)) = (pending.ideas_header, pending.certificate)

@@ -940,8 +940,6 @@ fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
             base: 0,
             game_state: usize::MAX,
             active: [true; 2],
-            opinion_cap: 4,
-            tuple_cap: 4,
             epoch: 0,
         },
         payload,
