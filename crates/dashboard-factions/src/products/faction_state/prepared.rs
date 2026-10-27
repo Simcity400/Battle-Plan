@@ -4,6 +4,7 @@ use dashboard_base::{
     Source, catalogue,
     metadata::check_cancel,
     prepared::{
+        facts::{Credit, MemoryBudget},
         frame_changes::FrameChanges,
         prefix::Prefix,
         series::{self, Accumulator, CatalogueWriter, Reader},
@@ -17,7 +18,8 @@ use dashboard_base::{
 use replay_data::rows::{RowCodec, TableId, TableSchema, tables};
 use replay_frame::frame::{DecodedFrame, SharedView, TableView};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap, btree_map},
+    hash::{DefaultHasher, Hash, Hasher},
     io,
     sync::atomic::AtomicBool,
 };
@@ -39,7 +41,7 @@ pub fn state_section(branch: u64) -> String {
 pub fn section(branch: u64) -> String {
     format!("faction-state-{branch}")
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum Kind {
     Share,
@@ -239,7 +241,7 @@ fn narrow_accounts(
         });
     }
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct Choice {
     token: Option<String>,
     name: Option<String>,
@@ -340,6 +342,191 @@ pub struct Prepared {
     /// Scripted goal texts' inputs, by faction; held, they need whole frames.
     #[serde(skip)]
     goal_inputs: BTreeMap<u64, reuse::Inputs>,
+    #[serde(skip)]
+    index: Index,
+}
+
+fn digest(value: &impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+const LANE_ENTRY: usize = std::mem::size_of::<(u64, u64)>();
+const CHOICE_ENTRY: usize = std::mem::size_of::<((u64, u64), usize)>();
+
+/// An upper bound of the bytes a hash table able to hold `entries` allocates.
+fn map_bytes(entries: usize, entry: usize) -> usize {
+    let buckets = match entries {
+        0 => return 0,
+        1..4 => 4,
+        4..8 => 8,
+        _ => (entries.saturating_mul(8) / 7).next_power_of_two(),
+    };
+    buckets.saturating_mul(entry + 1).saturating_add(16)
+}
+
+/// An upper bound of a `BTreeSet<u64>`'s nodes: each non-root node holds at least 5 keys.
+fn set_bytes(keys: usize) -> usize {
+    const NODE: usize = 200;
+    if keys == 0 {
+        return 0;
+    }
+    NODE.saturating_mul(keys.div_ceil(5).saturating_add(2))
+}
+
+#[derive(Default)]
+enum Held {
+    #[default]
+    Unbuilt,
+    Held,
+    /// Its memory was refused: every lookup reads the catalogue, as without the index.
+    Dropped,
+}
+
+enum Position {
+    At(usize),
+    New,
+    Unknown,
+}
+
+/// Lane keys, choice positions and owning factions, credited to the preparation's owner.
+#[derive(Default)]
+struct Index {
+    held: Held,
+    lanes: HashMap<u64, u64>,
+    factions: BTreeSet<u64>,
+    choices: HashMap<(u64, u64), usize>,
+    credit: Option<Credit>,
+}
+
+impl Index {
+    /// The tables' allocations now, by their capacity rather than their entries.
+    fn held_bytes(&self) -> usize {
+        map_bytes(self.lanes.capacity(), LANE_ENTRY)
+            .saturating_add(map_bytes(self.choices.capacity(), CHOICE_ENTRY))
+            .saturating_add(set_bytes(self.factions.len()))
+    }
+
+    /// Raises the credit to `bytes` before an allocation needs it; it never falls while held.
+    fn admit(&mut self, bytes: usize) -> bool {
+        if let Some(credit) = &mut self.credit {
+            return credit.bytes() >= bytes || credit.resize(bytes).is_ok();
+        }
+        match MemoryBudget::preparation().admit(bytes) {
+            Ok(credit) => {
+                self.credit = Some(credit);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Credits the old and new tables together when one more entry would grow `map`.
+    fn admit_entry(&mut self, len: usize, capacity: usize, entry: usize) -> bool {
+        let growth = if len < capacity {
+            0
+        } else {
+            map_bytes(len + 1, entry)
+        };
+        self.admit(self.held_bytes().saturating_add(growth))
+    }
+
+    fn drop_all(&mut self) {
+        *self = Self {
+            held: Held::Dropped,
+            ..Self::default()
+        };
+    }
+
+    fn build(&mut self, catalogue: &Catalogue) {
+        if !matches!(self.held, Held::Unbuilt) {
+            return;
+        }
+        let lanes = catalogue.lanes.len();
+        let choices = catalogue
+            .lanes
+            .values()
+            .map(|lane| lane.choices.len())
+            .sum();
+        let bytes = map_bytes(lanes, LANE_ENTRY)
+            .saturating_add(map_bytes(choices, CHOICE_ENTRY))
+            .saturating_add(set_bytes(lanes));
+        if !self.admit(bytes)
+            || self.lanes.try_reserve(lanes).is_err()
+            || self.choices.try_reserve(choices).is_err()
+        {
+            return self.drop_all();
+        }
+        for (&key, lane) in &catalogue.lanes {
+            self.lanes
+                .entry(digest(&(lane.faction, lane.kind, lane.identity.as_str())))
+                .or_insert(key);
+            if lane.faction != 0 {
+                self.factions.insert(lane.faction);
+            }
+            for (index, choice) in lane.choices.iter().enumerate() {
+                self.choices.entry((key, digest(choice))).or_insert(index);
+            }
+        }
+        self.held = Held::Held;
+    }
+
+    fn lane(&self, digest: u64) -> Option<u64> {
+        match self.held {
+            Held::Held => self.lanes.get(&digest).copied(),
+            _ => None,
+        }
+    }
+
+    fn add_lane(&mut self, digest: u64, key: u64, faction: u64) {
+        if !matches!(self.held, Held::Held) {
+            return;
+        }
+        // A digest another lane holds adds no entry, so nothing grows.
+        if !self.lanes.contains_key(&digest) {
+            if !self.admit_entry(self.lanes.len(), self.lanes.capacity(), LANE_ENTRY)
+                || self.lanes.try_reserve(1).is_err()
+            {
+                return self.drop_all();
+            }
+            self.lanes.insert(digest, key);
+        }
+        if faction != 0 && !self.factions.contains(&faction) {
+            let bytes = self
+                .held_bytes()
+                .saturating_add(set_bytes(self.factions.len() + 1))
+                .saturating_sub(set_bytes(self.factions.len()));
+            if !self.admit(bytes) {
+                return self.drop_all();
+            }
+            self.factions.insert(faction);
+        }
+    }
+
+    fn factions(&self) -> Option<&BTreeSet<u64>> {
+        matches!(self.held, Held::Held).then_some(&self.factions)
+    }
+
+    fn choice(&self, lane: u64, digest: u64) -> Position {
+        match (&self.held, self.choices.get(&(lane, digest))) {
+            (Held::Held, Some(&index)) => Position::At(index),
+            (Held::Held, None) => Position::New,
+            _ => Position::Unknown,
+        }
+    }
+
+    fn add_choice(&mut self, lane: u64, digest: u64, index: usize) {
+        if !matches!(self.held, Held::Held) || self.choices.contains_key(&(lane, digest)) {
+            return;
+        }
+        if !self.admit_entry(self.choices.len(), self.choices.capacity(), CHOICE_ENTRY)
+            || self.choices.try_reserve(1).is_err()
+        {
+            return self.drop_all();
+        }
+        self.choices.insert((lane, digest), index);
+    }
 }
 impl Prepared {
     fn dynamic_name(
@@ -500,20 +687,36 @@ impl Prepared {
         holder: Option<(u32, u32)>,
         (slot, group): (u32, u32),
     ) -> u64 {
-        let name =
-            serde_json::to_string(&(faction.to_string(), kind, identity)).expect("string identity");
-        let next = self.keys.len() as u64;
-        let key = *self.keys.entry(name).or_insert(next);
-        self.catalogue.lanes.entry(key).or_insert_with(|| Lane {
-            faction,
-            kind,
-            identity: identity.into(),
-            tag: tag.into(),
-            holder,
-            slot,
-            group,
-            choices: Vec::new(),
+        self.index.build(&self.catalogue);
+        let digest = digest(&(faction, kind, identity));
+        // A digest two lanes share resolves the second through its JSON name.
+        let indexed = self.index.lane(digest).filter(|key| {
+            self.catalogue.lanes.get(key).is_some_and(|lane| {
+                lane.faction == faction && lane.kind == kind && lane.identity == identity
+            })
         });
+        let key = match indexed {
+            Some(key) => key,
+            None => {
+                let name = serde_json::to_string(&(faction.to_string(), kind, identity))
+                    .expect("string identity");
+                let next = self.keys.len() as u64;
+                *self.keys.entry(name).or_insert(next)
+            }
+        };
+        if let btree_map::Entry::Vacant(entry) = self.catalogue.lanes.entry(key) {
+            self.index.add_lane(digest, key, faction);
+            entry.insert(Lane {
+                faction,
+                kind,
+                identity: identity.into(),
+                tag: tag.into(),
+                holder,
+                slot,
+                group,
+                choices: Vec::new(),
+            });
+        }
         key
     }
     fn value(&mut self, key: u64, hour: i32, value: i128, starts: bool) {
@@ -530,19 +733,29 @@ impl Prepared {
         if unknown {
             self.unknown_choices.insert(key);
         }
+        self.index.build(&self.catalogue);
+        let digest = digest(&choice);
         let choices = &mut self
             .catalogue
             .lanes
             .get_mut(&key)
             .expect("registered lane")
             .choices;
-        let value = choices
-            .iter()
-            .position(|old| *old == choice)
-            .unwrap_or_else(|| {
+        // A repeated choice keeps its first position; a shared digest falls back to the scan.
+        let found = match self.index.choice(key, digest) {
+            Position::At(index) if choices[index] == choice => Some(index),
+            Position::New => None,
+            _ => choices.iter().position(|old| *old == choice),
+        };
+        let value = match found {
+            Some(index) => index,
+            None => {
                 choices.push(choice);
-                choices.len() - 1
-            });
+                let index = choices.len() - 1;
+                self.index.add_choice(key, digest, index);
+                index
+            }
+        };
         self.value(key, hour, value as i128, starts || recovering);
     }
     fn known(
@@ -620,17 +833,21 @@ impl Prepared {
             .as_ref()
             .and_then(|options| catalogue::catalogue(source, options).ok());
         let witnessed = selectors::owners(frame);
-        let owners: BTreeSet<u64> = witnessed
-            .iter()
-            .copied()
-            .chain(
-                self.catalogue
-                    .lanes
-                    .values()
-                    .filter(|lane| lane.faction != 0)
-                    .map(|lane| lane.faction),
-            )
-            .collect();
+        self.index.build(&self.catalogue);
+        let owners: BTreeSet<u64> = match self.index.factions() {
+            Some(factions) => witnessed.iter().chain(factions).copied().collect(),
+            None => witnessed
+                .iter()
+                .copied()
+                .chain(
+                    self.catalogue
+                        .lanes
+                        .values()
+                        .filter(|lane| lane.faction != 0)
+                        .map(|lane| lane.faction),
+                )
+                .collect(),
+        };
         let dirty = self.changed(frame, changes, continues);
         self.goal_dictionary(frame);
         if dirty.refresh {
