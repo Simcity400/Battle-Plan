@@ -212,6 +212,7 @@ pub struct Reader {
     replay: Arc<Replay>,
     selected: Vec<TableId>,
     decoder: FrameDecoder,
+    change_budget: Option<engine_allocation::credit::MemoryBudget>,
     cursor: Option<Position>,
     block: Option<Block>,
     requested: Option<(BranchId, Hour)>,
@@ -272,6 +273,7 @@ impl Reader {
             replay,
             selected: selected.to_vec(),
             decoder: FrameDecoder::for_tables(selected),
+            change_budget: None,
             cursor: None,
             block: None,
             requested: None,
@@ -430,6 +432,62 @@ impl Reader {
         Ok((before, reads))
     }
 
+    pub fn with_change_facts(mut self, budget: engine_allocation::credit::MemoryBudget) -> Self {
+        self.decoder = std::mem::take(&mut self.decoder).with_change_facts(budget.clone());
+        self.change_budget = Some(budget);
+        self
+    }
+
+    fn bind_decoder(&self, decoder: FrameDecoder) -> FrameDecoder {
+        match &self.change_budget {
+            Some(budget) => decoder.with_change_facts(budget.clone()),
+            None => decoder,
+        }
+    }
+
+    pub fn read_cancellable(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        mut passed: impl FnMut(&DecodedFrame),
+        continue_forward: bool,
+        materialize: bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<Option<Current>> {
+        self.read_shared_cancellable(branch, hour, |frame| passed(frame), continue_forward, materialize, cancelled)
+    }
+
+    pub fn read_shared_cancellable(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        passed: impl FnMut(&Arc<DecodedFrame>),
+        continue_forward: bool,
+        materialize: bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<Option<Current>> {
+        if cancelled() {
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
+        let handled = if continue_forward {
+            self.advance_native_cancellable(branch, hour, passed, cancelled)?
+        } else {
+            self.seek_native(branch, hour, passed, cancelled)?
+        };
+        if !handled {
+            return Ok(None);
+        }
+        if materialize {
+            self.current_at(branch, hour).map(Some)
+        } else {
+            Ok(Some(Current::Gap {
+                branch,
+                hour,
+                reason: "hour has not been decoded".into(),
+            }))
+        }
+    }
+
     pub fn seek(&mut self, branch: BranchId, hour: Hour) -> io::Result<Option<Current>> {
         self.seek_with(branch, hour, |_| {})
     }
@@ -440,9 +498,9 @@ impl Reader {
         &mut self,
         branch: BranchId,
         hour: Hour,
-        passed: impl FnMut(&DecodedFrame),
+        mut passed: impl FnMut(&DecodedFrame),
     ) -> io::Result<Option<Current>> {
-        if self.seek_native(branch, hour, passed)? {
+        if self.seek_native(branch, hour, |frame| passed(frame), &|| false)? {
             self.current_at(branch, hour).map(Some)
         } else {
             Ok(None)
@@ -453,7 +511,8 @@ impl Reader {
         &mut self,
         branch: BranchId,
         hour: Hour,
-        passed: impl FnMut(&DecodedFrame),
+        passed: impl FnMut(&Arc<DecodedFrame>),
+        cancelled: &dyn Fn() -> bool,
     ) -> io::Result<bool> {
         self.reset_metrics();
         self.prefetch = None;
@@ -462,9 +521,9 @@ impl Reader {
         }
         let (before, reads) = self.find_before(branch, hour)?;
         self.checkpoint_reads = reads;
-        self.page_cursor = false;
         let Some((range, checkpoint_hour)) = before else {
-            self.decoder = FrameDecoder::for_tables(&self.selected);
+            self.decoder = self.bind_decoder(FrameDecoder::for_tables(&self.selected));
+            self.page_cursor = false;
             self.cursor = None;
             self.requested = Some((branch, hour));
             self.gap(branch, hour)?;
@@ -477,9 +536,22 @@ impl Reader {
             return Err(invalid("map checkpoint search differs from its header"));
         }
         self.validate_checkpoint(branch, &checkpoint)?;
+        let decoder = match &self.change_budget {
+            Some(budget) => FrameDecoder::resume_for_tables_with_change_facts_cancellable(
+                &self.selected,
+                checkpoint.frame,
+                budget.clone(),
+                cancelled,
+            )?,
+            None => FrameDecoder::resume_for_tables(&self.selected, checkpoint.frame)?,
+        };
+        if cancelled() {
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
+        self.decoder = decoder;
         self.cursor = Some(checkpoint.position);
-        self.decoder = FrameDecoder::resume_for_tables(&self.selected, checkpoint.frame)?;
-        self.advance_to(branch, hour, passed, Load::RequestedPrefix)?;
+        self.page_cursor = false;
+        self.advance_to(branch, hour, passed, Load::RequestedPrefix, cancelled)?;
         self.requested = Some((branch, hour));
         Ok(true)
     }
@@ -507,7 +579,17 @@ impl Reader {
         &mut self,
         branch: BranchId,
         hour: Hour,
-        passed: impl FnMut(&DecodedFrame),
+        mut passed: impl FnMut(&DecodedFrame),
+    ) -> io::Result<bool> {
+        self.advance_native_cancellable(branch, hour, |frame| passed(frame), &|| false)
+    }
+
+    fn advance_native_cancellable(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        passed: impl FnMut(&Arc<DecodedFrame>),
+        cancelled: &dyn Fn() -> bool,
     ) -> io::Result<bool> {
         self.reset_metrics();
         let ahead = self.prefetch.take().filter(|ahead| {
@@ -522,10 +604,10 @@ impl Reader {
             return Ok(false);
         }
         if !self.continues(branch, hour) {
-            return self.seek_native(branch, hour, passed);
+            return self.seek_native(branch, hour, passed, cancelled);
         }
         let load = self.load(branch, hour);
-        self.advance_to(branch, hour, passed, load)?;
+        self.advance_to(branch, hour, passed, load, cancelled)?;
         self.requested = Some((branch, hour));
         self.prefetch = ahead;
         Ok(true)
@@ -617,7 +699,7 @@ impl Reader {
         }
         self.decoder = attempt.decoder;
         match attempt.tail {
-            Some(tail) => self.apply_admitted(hour, tail, &mut visit)?,
+            Some(tail) => self.apply_admitted(hour, tail, |frame| visit(frame), &|| false)?,
             None => {
                 self.cursor = Some(attempt.cursor);
                 self.page_cursor = true;
@@ -826,8 +908,15 @@ impl Reader {
                     #[cfg(test)]
                     live,
                 } = payload;
-                let reached =
-                    decoder.advance_endpoint_parallel(step, self.page_workers, &on_worker)?;
+                let reached = {
+                    let wanted = std::cell::RefCell::new(&mut *wanted);
+                    decoder.advance_endpoint_parallel_cancellable(
+                        step,
+                        self.page_workers,
+                        &on_worker,
+                        &|| !(*wanted.borrow_mut())(),
+                    )?
+                };
                 #[cfg(test)]
                 drop(live);
                 Self::validate_campaign(&self.replay.campaign_id, reached)?;
@@ -991,7 +1080,7 @@ impl Reader {
     fn current_at(&self, branch: BranchId, hour: Hour) -> io::Result<Current> {
         match self.decoder.current() {
             Some(frame) if frame.branch == branch && frame.hour == hour => {
-                Ok(Current::Frame(Arc::new(frame.clone())))
+                Ok(Current::Frame(Arc::clone(self.decoder.shared_current().expect("current frame"))))
             }
             _ => self.gap(branch, hour),
         }
@@ -1035,8 +1124,9 @@ impl Reader {
         &mut self,
         branch: BranchId,
         hour: Hour,
-        passed: impl FnMut(&DecodedFrame),
+        passed: impl FnMut(&Arc<DecodedFrame>),
         load: Load,
+        cancelled: &dyn Fn() -> bool,
     ) -> io::Result<()> {
         if self
             .decoder
@@ -1052,7 +1142,7 @@ impl Reader {
         };
         let previous = self.decoder.current().map(|frame| frame.hour);
         let admitted = self.admit(branch, hour, previous, cursor, self.page_cursor, load)?;
-        self.apply_admitted(hour, admitted, passed)
+        self.apply_admitted(hour, admitted, passed, cancelled)
     }
 
     fn admit(
@@ -1199,13 +1289,36 @@ impl Reader {
         &mut self,
         hour: Hour,
         admitted: Admitted,
-        mut passed: impl FnMut(&DecodedFrame),
+        mut passed: impl FnMut(&Arc<DecodedFrame>),
+        cancelled: &dyn Fn() -> bool,
     ) -> io::Result<()> {
         for (block, range) in admitted.frames {
             for offset in range {
-                let decoded = self.decoder.advance(&block.frames[offset])?;
-                Self::validate_campaign(&self.replay.campaign_id, decoded)?;
+                let applied = self
+                    .decoder
+                    .advance_cancellable(&block.frames[offset], cancelled)
+                    .and_then(|decoded| Self::validate_campaign(&self.replay.campaign_id, decoded));
+                if let Err(error) = applied {
+                    if error.kind() != io::ErrorKind::Interrupted
+                        && !FrameDecoder::change_fact_admission_refused(&error)
+                    {
+                        // Real application errors may consume the baseline; reseek the pair.
+                        self.decoder = self.bind_decoder(FrameDecoder::for_tables(&self.selected));
+                        self.cursor = None;
+                        self.page_cursor = false;
+                        self.requested = None;
+                        self.prefetch = None;
+                    }
+                    return Err(error);
+                }
+                let decoded = self.decoder.current().expect("applied frame");
                 self.applied_frames += 1;
+                // Commit each successful cursor before a visitor or cancellable next admission.
+                self.cursor = Some(Position {
+                    block: block.index,
+                    next_frame: offset + 1,
+                });
+                self.page_cursor = false;
                 if decoded.hour == hour {
                     self.cursor = Some(Position {
                         block: block.index,
@@ -1214,7 +1327,7 @@ impl Reader {
                     self.page_cursor = false;
                     return Ok(());
                 }
-                passed(decoded);
+                passed(self.decoder.shared_current().expect("applied frame"));
             }
         }
         self.cursor = Some(admitted.cursor);

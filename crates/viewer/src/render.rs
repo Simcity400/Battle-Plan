@@ -24,14 +24,14 @@ use std::{fs::File, io, io::BufWriter, path::Path, sync::Arc};
 use eframe::wgpu;
 
 use {
+    map_display_data::buildings::Buildings as PreparedBuildings,
     viewer_foundation::map::gpu_contract::OUTPUT_FORMAT,
     viewer_foundation::map::gpu_contract::invalid,
     viewer_foundation::map::ribbon_content::OrderAssets,
     viewer_foundation::map::ribbon_content::OrderField, viewer_foundation::map::textures::IntelMap,
     viewer_world::map::border_pass::BorderAssets, viewer_world::map::border_pass::StraitVertex,
     viewer_world::map::borders::BorderMeshes, viewer_world::map::demilitarized::Zone,
-    viewer_world::map::map_buildings::MapBuildingAssets,
-    viewer_world::map::map_buildings::PreparedBuildings, viewer_world::map::mapframe::FrameAssets,
+    viewer_world::map::map_buildings::MapBuildingAssets, viewer_world::map::mapframe::FrameAssets,
     viewer_world::map::political::PoliticalLayers, viewer_world::map::railways::Bridges,
     viewer_world::map::railways::RailAssets, viewer_world::map::railways::RailMesh,
     viewer_world::map::rivers::RiverAssets, viewer_world::map::rivers::RiverMesh,
@@ -557,7 +557,7 @@ fn dump_frame(
 ) -> io::Result<()> {
     // Province owners, icon manager, then draw; a hidden interface still steps.
     overlay.present(request.animation_time)?;
-    scene.set_air_assignment(queue, overlay.prepared().province_stripes());
+    scene.set_air_assignment(queue, overlay.prepared().province_stripes())?;
     let sprites = overlay.shown();
     scene.render(
         device,

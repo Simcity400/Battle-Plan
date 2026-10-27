@@ -183,7 +183,7 @@ impl Fixture {
             device,
             queue,
             d.weather_effects.clone(),
-            viewer_world::map::weather_effects::field(d.frame()?)?,
+            d.hour()?.weather_field()?,
         )?;
         let snow = Arc::new(d.snow_mud()?);
         scene.set_snow_mud(device, queue, &snow, Continuity::Reset)?;

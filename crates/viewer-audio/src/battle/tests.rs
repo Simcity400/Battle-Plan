@@ -1,6 +1,7 @@
 use super::*;
 use installed_content_core::test_support::Stack;
 use installed_content_sound::combat_sounds::{BattleDefines, Layers};
+use std::collections::BTreeMap;
 
 fn battle(key: u64, center: [f32; 2], radius: f32, divisions: usize, infantry: usize) -> Battle {
     Battle {

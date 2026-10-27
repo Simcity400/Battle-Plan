@@ -87,7 +87,7 @@ pub struct MapAssets {
     /// One flag per `map/terrain.bmp` pixel, rows top-down: whether the pixel's
     /// terrain type carries `spawn_city`. This supplies the city-sprawl footprint; the city bitmap
     /// selects architecture. See [`terrain_flag_mask`].
-    pub spawn_city: Vec<bool>,
+    pub spawn_city: Arc<Vec<bool>>,
     /// The heightmap's sight pyramid, which free-eye map icons test their anchors against;
     /// built on first use ([`MapAssets::terrain_sight`]).
     pub sight: std::sync::OnceLock<viewer_foundation::map::terrain_sight::TerrainSight>,

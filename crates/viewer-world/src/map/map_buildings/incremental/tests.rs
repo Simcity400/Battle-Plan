@@ -395,7 +395,7 @@ fn step(
     let full = assets.build(&frame, &vision, &city, Err("reference"), &mut spans());
     let patched = assets.build(&frame, &vision, &city, base.ok_or("no base"), &mut spans());
     match (full, patched) {
-        (Ok(full), Ok(patched)) => {
+        (Ok(full), Ok(mut patched)) => {
             assert!(
                 patched.prepared.bit_eq(&full.prepared),
                 "hour {}",
@@ -405,7 +405,7 @@ fn step(
             assert_eq!(patched.tallies, full.tallies, "hour {}", hour.hour);
             assert_eq!(patched.totals, full.totals, "hour {}", hour.hour);
             assert_eq!(patched.damage_refused, full.damage_refused);
-            let next = patched.base(assets, &frame, &vision, assets.city_bits(&city));
+            let next = patched.base(assets, &vision, assets.city_bits(&city).unwrap());
             let links = hour.links.iter().copied().collect();
             let reread = GateInputs::reread(&frame, &links, vision.ours()).unwrap();
             assert_eq!(*next.gates, reread, "hour {}", hour.hour);
@@ -590,11 +590,7 @@ fn patched_fields_equal_full_builds_hour_by_hour_and_fall_back_where_they_must()
         },
         patched(0),
     );
-    run(
-        &mut hour,
-        &|h| h.links.push((102, 2)),
-        full("the country links changed"),
-    );
+    run(&mut hour, &|h| h.links.push((102, 2)), patched(0));
     let viewer = full("the viewing slot or the fog switch changed");
     run(&mut hour, &|h| h.player = 101, viewer.clone());
     run(&mut hour, &|h| h.fog = None, viewer.clone());
@@ -676,15 +672,32 @@ fn cached_plan_inputs_match_expected_sites_and_changes() {
         height: 4,
         spawn_city: &COLUMN,
     };
-    assert_eq!(assets.city_bits(&city), vec![true, false]);
-    assert_eq!(assets.city_bits(&terrain(false)), vec![false, false]);
-    assert_eq!(assets.city_bits(&terrain(true)), vec![true, true]);
+    assert_eq!(*assets.city_bits(&city).unwrap(), vec![true, false]);
+    assert_eq!(
+        *assets.city_bits(&terrain(false)).unwrap(),
+        vec![false, false]
+    );
+    assert_eq!(*assets.city_bits(&terrain(true)).unwrap(), vec![true, true]);
     let old = BTreeMap::from([(1, 1), (2, 2), (4, 4), (6, 6), (9, 9)]);
     let new = BTreeMap::from([(2, 2), (3, 3), (4, 5), (7, 7), (9, 9)]);
-    assert_eq!(changed_entries(&old, &new), vec![1, 3, 4, 6, 7]);
-    assert_eq!(changed_entries(&new, &new), Vec::<u32>::new());
-    assert_eq!(changed_entries(&BTreeMap::new(), &new), vec![2, 3, 4, 7, 9]);
-    assert_eq!(changed_entries(&old, &BTreeMap::new()), vec![1, 2, 4, 6, 9]);
+    let changes = |old: &BTreeMap<u32, i32>, new: &BTreeMap<u32, i32>| {
+        let mut keys = Vec::new();
+        changed_entries(
+            old,
+            new,
+            |a, b| a == b,
+            |key| {
+                keys.push(key);
+                Ok(())
+            },
+        )
+        .unwrap();
+        keys
+    };
+    assert_eq!(changes(&old, &new), vec![1, 3, 4, 6, 7]);
+    assert_eq!(changes(&new, &new), Vec::<u32>::new());
+    assert_eq!(changes(&BTreeMap::new(), &new), vec![2, 3, 4, 7, 9]);
+    assert_eq!(changes(&old, &BTreeMap::new()), vec![1, 2, 4, 6, 9]);
     assert_eq!(assets.sites().slots.len(), WIDE as usize + 6);
     assert_eq!(assets.slot_count(), WIDE as usize + 7);
 }
@@ -812,25 +825,29 @@ fn patched_chunks_keep_untouched_chunks_and_replace_the_tail() {
     assert_eq!(values.len(), size * 2 + 3);
     assert!((0..size * 2 + 3).all(|id| values[id] == id as u32));
     let patched = values
-        .patched(&[(5, 1_000)], size * 2 + 1, &[7, 8])
+        .patched(&[(5, 1_000)], size * 2 + 1, &[7, 8], |a, b| a == b)
+        .unwrap()
         .unwrap();
     assert_eq!(patched[5], 1_000);
     assert!((0..size * 2 + 1).all(|id| id == 5 || patched[id] == id as u32));
     assert_eq!((patched[size * 2 + 1], patched[size * 2 + 2]), (7, 8));
     assert_eq!(patched.shared_chunks(&values), 1);
-    assert!(values.patched(&[], 1, &[]).is_none(), "another length");
+    assert!(
+        values
+            .patched(&[], 1, &[], |a, b| a == b)
+            .unwrap()
+            .is_none(),
+        "another length"
+    );
 }
 
 #[test]
-fn a_building_base_keeps_only_its_plan_tables_and_vision_operands() {
-    use replay_frame::frame::SharedView;
-    use viewer_foundation::map::memo::NOT_AN_INPUT;
+fn a_building_base_keeps_closed_operands_without_source_pins() {
     let assets = assets();
     let hour = Hour::first();
-    let mut frame = hour.frame();
-    frame.metrics.total_ns = 123;
+    let frame = hour.frame();
     let vision = hour.vision(&frame);
-    let built = assets
+    let mut built = assets
         .build(
             &frame,
             &vision,
@@ -840,48 +857,21 @@ fn a_building_base_keeps_only_its_plan_tables_and_vision_operands() {
         )
         .unwrap();
     let holders = Arc::strong_count(&vision);
-    let base = built.base(&assets, &frame, &vision, assets.city_bits(&terrain(false)));
+    let base = built.base(&assets, &vision, assets.city_bits(&terrain(false)).unwrap());
     assert_eq!(Arc::strong_count(&vision), holders);
     assert_eq!(
-        (base.frame.branch, base.frame.hour),
+        (base.observation.branch, base.observation.hour),
         (frame.branch, frame.hour)
     );
-    assert_eq!(base.frame.metrics, Metrics::default());
-    let retained = [
-        TableId::StateBuildings,
-        TableId::ProvinceBuildings,
-        TableId::CountryLinks,
-        TableId::NavalBases,
-        TableId::RaidTargetStatuses,
-    ];
-    for (index, table) in base.frame.tables.iter().enumerate() {
-        if retained.iter().any(|id| id.index() == index) {
-            assert!(SharedView::ptr_eq(table, &frame.tables[index]));
-            assert_eq!(table, &frame.tables[index]);
-        } else {
-            assert!(
-                matches!(&**table, TableView::Unavailable { reason } if reason == NOT_AN_INPUT)
-            );
-            assert!(!SharedView::ptr_eq(table, &frame.tables[index]));
-        }
-    }
     assert_eq!(base.vision.ours, vision.ours());
     assert_eq!(base.vision.fog, vision.fog());
-    assert_eq!(
-        base.vision.visibility_gap,
-        vision.visibility_gap().is_some()
-    );
     assert_eq!(base.vision.provinces.as_deref(), vision.province_fog());
-    let last = assets.last_tokens.lock().unwrap();
-    let (tokens, _) = last.as_ref().unwrap();
-    for (index, table) in tokens.tables.iter().enumerate() {
-        if index == TableId::LexicalTokens.index() {
-            assert!(SharedView::ptr_eq(table, &frame.tables[index]));
-        } else {
-            assert!(
-                matches!(&**table, TableView::Unavailable { reason } if reason == NOT_AN_INPUT)
-            );
-        }
+    drop(vision);
+    for view in frame.tables {
+        assert!(
+            view.try_unwrap().is_ok(),
+            "building products must not pin a source table"
+        );
     }
 }
 
@@ -920,4 +910,507 @@ fn retained_fog_bytes_preserve_the_province_object_predicate() {
     let gap = hour.vision(&hour.frame());
     let operands = VisionOperands::read(&gap);
     assert!(operands.fog && operands.visibility_gap && operands.provinces.is_none());
+}
+
+#[test]
+fn compact_building_observations_patch_changed_keys_and_share_unrelated_paths() {
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
+    let defines = Defines {
+        shrink_distance: 1.0,
+        popup_speed: 1.0,
+        destroyed: 0,
+        recovered: 1,
+        damaged: 50000,
+        max_levels: 20,
+    };
+    let mut hour = Hour::first();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new().with_change_facts(display_products().clone());
+    let raw = encoder.encode(hour.frame(), true).unwrap();
+    let frame = decoder.advance(&raw).unwrap();
+    let first = Observation::read(frame, &defines, 0, None).unwrap();
+    hour.hour += 1;
+    hour.state_rows[0].ordinal += 1;
+    let raw = encoder.encode(hour.frame(), false).unwrap();
+    let frame = decoder.advance(&raw).unwrap();
+    let quiet = Observation::read(frame, &defines, 0, Some(&first)).unwrap();
+    assert!(quiet.state_buildings.ptr_eq(&first.state_buildings));
+    assert!(quiet.building_changes[0].is_empty());
+    hour.hour += 1;
+    hour.state_rows[0].level += 1;
+    let raw = encoder.encode(hour.frame(), false).unwrap();
+    let frame = decoder.advance(&raw).unwrap();
+    let changed = Observation::read(frame, &defines, 0, Some(&quiet)).unwrap();
+    let expected: BTreeMap<_, _> = hour
+        .state_rows
+        .iter()
+        .map(|row| (row_key(row), slot_read(row, &defines)))
+        .collect();
+    assert_eq!(
+        changed.state_buildings.iter().collect::<Vec<_>>(),
+        expected.iter().collect::<Vec<_>>()
+    );
+    assert_eq!(changed.building_changes[0], [row_key(&hour.state_rows[0])]);
+    assert!(changed.building_tokens[0].ptr_eq(&quiet.building_tokens[0]));
+    assert!(changed.province_buildings.ptr_eq(&quiet.province_buildings));
+    assert!(changed.building_changes[1].is_empty());
+    drop(decoder);
+}
+#[test]
+fn changed_detection_rows_preserve_last_ordinal_scope_winners_and_ignore_other_fields() {
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
+    let defines = Defines {
+        shrink_distance: 1.0,
+        popup_speed: 1.0,
+        destroyed: 0,
+        recovered: 1,
+        damaged: 50000,
+        max_levels: 20,
+    };
+    let mut hour = Hour::first();
+    let mut duplicate = raid(0);
+    duplicate.ordinal = 9;
+    hour.raids = vec![raid(1), duplicate];
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new().with_change_facts(display_products().clone());
+    let raw = encoder.encode(hour.frame(), true).unwrap();
+    let frame = decoder.advance(&raw).unwrap();
+    let mut previous = Observation::read(frame, &defines, 0, None).unwrap();
+    let scope = (BUNKER, 9, 1, 0);
+    assert_eq!(
+        previous.targets.as_ref().unwrap().winners.get(&scope),
+        Some(&false)
+    );
+    for change in 0..4 {
+        hour.hour += 1;
+        match change {
+            0 => hour.raids[0].detected[0] = 0,
+            1 => hour.raids[1].valid = 0,
+            2 => {
+                hour.raids.pop();
+            }
+            _ => hour.provinces[0].2 += 1,
+        }
+        let raw = encoder.encode(hour.frame(), false).unwrap();
+        let frame = decoder.advance(&raw).unwrap();
+        let next = Observation::read(frame, &defines, 0, Some(&previous)).unwrap();
+        let expected: BTreeMap<_, _> = raid_targets(frame)
+            .unwrap()
+            .into_iter()
+            .map(|(scope, bits)| (scope, bits.first().is_some_and(|bits| bits & 1 != 0)))
+            .collect();
+        assert_eq!(
+            next.targets
+                .as_ref()
+                .unwrap()
+                .winners
+                .iter()
+                .collect::<Vec<_>>(),
+            expected.iter().collect::<Vec<_>>()
+        );
+        assert!(next.targets.as_ref().unwrap().changes.is_empty());
+        if change == 1 {
+            assert!(
+                next.targets
+                    .as_ref()
+                    .unwrap()
+                    .rows
+                    .values
+                    .ptr_eq(&previous.targets.as_ref().unwrap().rows.values)
+            );
+        }
+        if change == 3 {
+            assert_eq!(next.controllers[0].changes, [hour.provinces[0].0]);
+            assert!(
+                next.controllers[1]
+                    .values
+                    .ptr_eq(&previous.controllers[1].values)
+            );
+        }
+        previous = next;
+    }
+}
+
+#[test]
+fn persistent_slot_chunks_do_not_coalesce_signed_zero_or_nan_payloads() {
+    let make = |x| PreparedSlot {
+        source: None,
+        id: 0,
+        drawn_at_distance: Some(false),
+        entity: Some(PreparedEntity {
+            healthy: Selection {
+                admitted: true,
+                mesh: 1,
+                definition: 1,
+                variant: 0,
+            },
+            ruined: Selection {
+                admitted: true,
+                mesh: 1,
+                definition: 1,
+                variant: 0,
+            },
+            destroyed: false,
+            uncertain: false,
+            damaged: false,
+            disable_grow_animation: false,
+            instance: ModelInstance {
+                position: [x, 0.0, 0.0],
+                ..Default::default()
+            },
+        }),
+    };
+    let original = Chunked::from_values(vec![make(0.0)]).unwrap();
+    let signed = original
+        .patched(&[(0, make(-0.0))], 1, &[], PreparedSlot::same_bits)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        signed[0].entity.as_ref().unwrap().instance.position[0].to_bits(),
+        (-0.0f32).to_bits()
+    );
+    assert_eq!(
+        original[0].entity.as_ref().unwrap().instance.position[0].to_bits(),
+        0.0f32.to_bits()
+    );
+    let nan = f32::from_bits(0x7fc0_1234);
+    let first = signed
+        .patched(&[(0, make(nan))], 1, &[], PreparedSlot::same_bits)
+        .unwrap()
+        .unwrap();
+    let same = first
+        .patched(&[(0, make(nan))], 1, &[], PreparedSlot::same_bits)
+        .unwrap()
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        first.chunks.get(0).unwrap(),
+        same.chunks.get(0).unwrap()
+    ));
+    let other = first
+        .patched(
+            &[(0, make(f32::from_bits(0x7fc0_4321)))],
+            1,
+            &[],
+            PreparedSlot::same_bits,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        other[0].entity.as_ref().unwrap().instance.position[0].to_bits(),
+        0x7fc0_4321
+    );
+}
+
+#[test]
+fn immutable_city_bank_reuses_hub_operands_and_rejects_replaced_bank() {
+    let assets = assets();
+    let hour = Hour::first();
+    let frame = hour.frame();
+    let vision = hour.vision(&frame);
+    let mut pixels = Arc::new(vec![false; 64]);
+    let city = CityTerrain {
+        width: 16,
+        height: 4,
+        spawn_city: &pixels,
+    };
+    let binding = CityBank::new(&city, &pixels).unwrap();
+    let mut built = assets
+        .build(
+            &frame,
+            &vision,
+            &city,
+            Err("cold"),
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+        .unwrap();
+    let first = built.city.take().unwrap();
+    let mut base = built.base(&assets, &vision, first.clone());
+    base.city_bank = Some(binding);
+    let same = CityBank::new(&city, &pixels).unwrap();
+    assert!(first.ptr_eq(base.city_for(&same, assets.id).unwrap()));
+    assert!(base.city_for(&same, assets.id.wrapping_add(1)).is_none());
+    drop(city);
+    Arc::make_mut(&mut pixels)[0] = true;
+    let replaced = CityTerrain {
+        width: 16,
+        height: 4,
+        spawn_city: &pixels,
+    };
+    let binding = CityBank::new(&replaced, &pixels).unwrap();
+    assert!(base.city_for(&binding, assets.id).is_none());
+    assert!(CityBank::new(&terrain(false), &pixels).is_err());
+}
+
+#[test]
+fn floating_source_folds_preserve_first_ordinal_completeness_and_unrelated_paths() {
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
+    let mut hour = Hour::first();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new().with_change_facts(display_products().clone());
+    let mut supply = ProvinceSupplyRow {
+        province: SEA,
+        controller_index: 2,
+        flags: 1,
+        ..Default::default()
+    };
+    let mut deployments: Vec<_> = (0..1501)
+        .map(|ordinal| FloatingHarborDeploymentRow {
+            country: 2,
+            ordinal,
+            province: if ordinal < 2 {
+                SEA as i32
+            } else {
+                ordinal as i32 + 100
+            },
+            status: u8::from(ordinal != 0),
+        })
+        .collect();
+    let mut previous: Option<FloatingInputs> = None;
+    for step in 0..8 {
+        hour.hour += 1;
+        match step {
+            1 => supply.capital_country_index = 7,
+            2 => deployments[0].status = 1,
+            3 => {
+                deployments.remove(0);
+            }
+            4 => deployments[0].province = -1,
+            5 => supply.flags = 0,
+            6 => supply.flags = 1,
+            _ => {}
+        }
+        let mut frame = hour.frame();
+        frame.tables[TableId::ProvinceSupply.index()] =
+            TableView::Complete(TableRows::ProvinceSupply(vec![supply.clone()])).into();
+        let complete = step != 6;
+        frame.tables[TableId::FloatingHarborDeployments.index()] = if complete {
+            TableView::Complete(TableRows::FloatingHarborDeployments(deployments.clone()))
+        } else {
+            TableView::Truncated {
+                rows: TableRows::FloatingHarborDeployments(deployments.clone()),
+                missing: 1,
+            }
+        }
+        .into();
+        let raw = encoder.encode(frame, step == 0).unwrap();
+        let frame = decoder.advance(&raw).unwrap();
+        let folded = FloatingInputs::read(frame, previous.as_ref()).unwrap();
+        for province in [SEA, 100, 101, 500, u32::MAX] {
+            let row = (province == SEA).then_some(&supply);
+            assert_eq!(
+                folded.deployed(province),
+                floating_harbor_deployed(province, row, true, &deployments, complete),
+                "step {step}, province {province}"
+            );
+        }
+        if step == 1 {
+            let old = previous.as_ref().unwrap();
+            assert!(folded.supply.values.ptr_eq(&old.supply.values));
+            assert!(folded.deployments.values.ptr_eq(&old.deployments.values));
+            assert!(
+                folded
+                    .by_country_province_ordinal
+                    .ptr_eq(&old.by_country_province_ordinal)
+            );
+        }
+        previous = Some(folded);
+    }
+}
+
+fn reference_floating(
+    assets: &MapBuildingAssets,
+    frame: &DecodedFrame,
+    vision: &Vision,
+) -> (Vec<PreparedSlot>, MapBuildingSummary) {
+    let supply = rows::<tables::ProvinceSupply>(frame).unwrap();
+    let deployments = rows::<tables::FloatingHarborDeployments>(frame).unwrap();
+    let mut summary = MapBuildingSummary::default();
+    let mut harbors = Vec::new();
+    let ordinary_slots = assets.ordinary_slot_count();
+    for (position, _) in &assets.floating {
+        let id = (ordinary_slots + harbors.len()) as u32;
+        let entity = (|| {
+            // The seventh field must be a positive province: the fog byte and the
+            // deployment are that province's.
+            let province = position.adjacent_sea;
+            if (province as i32) <= 0 {
+                return None;
+            }
+            match vision
+                .province_byte(province)
+                .map(|byte| byte >= FLOATING_HARBOR_VISIBILITY)
+            {
+                Some(true) => {}
+                Some(false) => {
+                    summary.fogged += 1;
+                    return None;
+                }
+                None => {
+                    *summary
+                        .unknown_floating_harbors
+                        .entry("the fog byte of the harbour's sea province is unknown")
+                        .or_default() += 1;
+                    return None;
+                }
+            }
+            let deployed = floating_harbor_deployed(
+                province,
+                supply.rows().iter().find(|row| row.province == province),
+                supply.is_complete(),
+                deployments.rows(),
+                deployments.is_complete(),
+            );
+            if deployed.is_none() {
+                *summary
+                    .unknown_floating_harbors
+                    .entry("the controller's floating-harbour deployment is unknown")
+                    .or_default() += 1;
+            }
+            let mesh = assets.floating_mesh.filter(|_| deployed == Some(true))?;
+            summary.placed += 1;
+            // The reserved slot has no damage states or variants: one entity definition,
+            // variant selector 0 from the default request.
+            let selection = Selection {
+                admitted: true,
+                mesh,
+                definition: mesh,
+                variant: 0,
+            };
+            Some(PreparedEntity {
+                healthy: selection,
+                ruined: selection,
+                destroyed: false,
+                uncertain: false,
+                damaged: false,
+                // The reserved slot receives a null template,
+                // which grows unless its template explicitly suppresses popup growth.
+                disable_grow_animation: false,
+                instance: ModelInstance {
+                    position: [position.x, position.y, position.z],
+                    rotation: position.rotation,
+                    scale: 1.0,
+                    animation_seed: id,
+                    ..ModelInstance::default()
+                },
+            })
+        })();
+        harbors.push(PreparedSlot {
+            source: None,
+            id,
+            // The reserved slot copies no template's distance flag.
+            drawn_at_distance: Some(false),
+            entity,
+        });
+    }
+    (harbors, summary)
+}
+
+#[test]
+fn floating_output_delta_and_tail_patch_match_the_frozen_scalar_reference() {
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
+    let assets = assets();
+    let mut hour = Hour::first();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new().with_change_facts(display_products().clone());
+    let mut base: Option<BuildingsBase> = None;
+    for step in 0..10 {
+        hour.hour += 1;
+        match step {
+            2 => hour.deployed = 0,
+            3 => {
+                hour.bytes().insert(SEA, 0);
+            }
+            4 => {
+                hour.bytes().remove(&SEA);
+            }
+            5 => {
+                hour.bytes().insert(SEA, 255);
+                hour.deployed = 1;
+            }
+            6 => hour.fog = Some(None),
+            7 => hour.fog = None,
+            8 => hour.fog = Some(Some(bytes())),
+            _ => {}
+        }
+        let encoded = encoder.encode(hour.frame(), step == 0).unwrap();
+        let frame = decoder.advance(&encoded).unwrap();
+        let vision = hour.vision(frame);
+        let city = terrain(false);
+        let (expected, expected_summary) = reference_floating(&assets, frame, &vision);
+        let mut built = assets
+            .build(
+                frame,
+                &vision,
+                &city,
+                base.as_ref().ok_or("cold"),
+                &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            )
+            .unwrap();
+        let output = built.floating_output.as_ref().unwrap();
+        assert!(output.iter().zip(&expected).all(|(a, b)| a.same_bits(b)));
+        let mut summary = MapBuildingSummary::default();
+        output.apply(&mut summary);
+        assert_eq!(summary, expected_summary);
+        let ordinary = assets.ordinary_slot_count();
+        for (offset, expected) in expected.iter().enumerate() {
+            assert!(built.prepared.slots[ordinary + offset].same_bits(expected));
+        }
+        if step == 1 {
+            assert!(output.changes.is_empty());
+            assert!(built.prepared.slots.ptr_eq(&base.as_ref().unwrap().slots));
+        }
+        let city_bits = built.city.take().unwrap();
+        base = Some(built.base(&assets, &vision, city_bits));
+    }
+}
+
+#[test]
+fn fog_changes_preserve_unknowns_and_only_dirty_native_visibility_boundaries() {
+    let mut hour = Hour::first();
+    let assets = assets();
+    let frame = hour.frame();
+    let vision = hour.vision(&frame);
+    let mut built = assets
+        .build(
+            &frame,
+            &vision,
+            &terrain(hour.cities),
+            Err("reference"),
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+        .unwrap();
+    let city = built.city.take().unwrap();
+    let mut base = built.base(&assets, &vision, city);
+    let mut previous = BTreeMap::from([
+        (1, 0),
+        (2, MAP_OBJECT_VISIBILITY - 1),
+        (3, MAP_OBJECT_VISIBILITY),
+        (4, FLOATING_HARBOR_VISIBILITY - 1),
+        (5, FLOATING_HARBOR_VISIBILITY),
+        (6, u8::MAX),
+        (7, 0),
+    ]);
+    base.vision.provinces = Some(Arc::new(previous.clone()));
+    let mut next = (*vision).clone();
+    previous.remove(&7);
+    previous.insert(1, MAP_OBJECT_VISIBILITY - 1);
+    previous.insert(2, MAP_OBJECT_VISIBILITY);
+    previous.insert(3, FLOATING_HARBOR_VISIBILITY - 1);
+    previous.insert(4, FLOATING_HARBOR_VISIBILITY);
+    previous.insert(5, u8::MAX);
+    previous.insert(6, FLOATING_HARBOR_VISIBILITY - 1);
+    previous.insert(8, 0);
+    next.set_visibility(previous);
+    let changed = fog_changes(Some(&base), &next).unwrap().unwrap();
+    assert_eq!(
+        changed.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+        vec![2, 4, 6, 7, 8]
+    );
+    assert_eq!(base.vision.sees_province_object(7), Some(false));
+    assert_eq!(next.sees_province_object(7, false), None);
+    assert_eq!(base.vision.sees_province_object(8), None);
+    assert_eq!(next.sees_province_object(8, false), Some(false));
+    hour.fog = None;
+    let without_fog = hour.vision(&frame);
+    assert!(fog_changes(Some(&base), &without_fog).unwrap().is_none());
 }

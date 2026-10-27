@@ -1,5 +1,9 @@
 //! Incremental province colour pixels, using the political pass's immutable ID image.
 use super::*;
+use map_display_data::{
+    credit::{Credit, display_products},
+    value_index::ValueIndex,
+};
 use std::collections::BTreeMap;
 use viewer_foundation::map::textures::Bound;
 
@@ -15,13 +19,30 @@ pub(crate) struct ProvinceColors {
     params: [u32; 8],
     pending: bool,
     dirty: Vec<bool>,
-    last: BTreeMap<u32, [u8; 4]>,
+    last: ValueIndex<u32, u32>,
+    dirty_tiles: Vec<[u32; 2]>,
+    _credit: Credit,
 }
 
 impl ProvinceColors {
     pub(crate) fn new(device: &wgpu::Device, source: &Static) -> io::Result<Self> {
         let source = &source.strategic;
         let p = source.params;
+        let tile_count = (p.columns as usize)
+            .checked_mul(p.rows as usize)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        let bytes = source
+            .provinces
+            .len()
+            .checked_mul(size_of::<u32>())
+            .and_then(|n| {
+                tile_count
+                    .checked_mul(size_of::<bool>() + size_of::<[u32; 2]>())
+                    .and_then(|tiles| n.checked_add(tiles))
+            })
+            .and_then(|n| n.checked_add(size_of::<Self>()))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        let credit = display_products().admit_item(bytes)?;
         let colors = vec![0_u32; source.provinces.len()];
         let palette = buffer(
             device,
@@ -125,59 +146,66 @@ impl ProvinceColors {
             provinces: Arc::clone(&source.provinces),
             params,
             pending: false,
-            dirty: vec![false; (p.columns * p.rows) as usize],
-            last: BTreeMap::new(),
+            dirty: vec![false; tile_count],
+            last: ValueIndex::default(),
+            dirty_tiles: Vec::with_capacity(tile_count),
+            _credit: credit,
         })
     }
 
-    pub(crate) fn update(&mut self, queue: &wgpu::Queue, values: &BTreeMap<u32, [u8; 4]>) {
-        if self.last == *values {
-            return;
+    pub(crate) fn update(
+        &mut self,
+        queue: &wgpu::Queue,
+        values: &BTreeMap<u32, [u8; 4]>,
+    ) -> io::Result<()> {
+        let mut next = self.last.clone();
+        for (&id, _) in self.last.iter() {
+            if !values.contains_key(&id) {
+                next = next.removed(&id)?;
+            }
         }
-        self.last.clone_from(values);
-        let columns = self.params[0].div_ceil(GRID_CELL);
-
-        for (id, (color, province)) in self
-            .colors
-            .iter_mut()
-            .zip(self.provinces.iter())
-            .enumerate()
-        {
-            let next = values
-                .get(&(id as u32))
-                .copied()
-                .map(u32::from_le_bytes)
-                .unwrap_or(0);
-            if next == *color {
+        for (&id, &color) in values {
+            if (id as usize) >= self.colors.len() {
                 continue;
             }
-            *color = next;
+            let color = u32::from_le_bytes(color);
+            next = if color == 0 {
+                next.removed(&id)?
+            } else {
+                next.inserted(id, color)?
+            };
+        }
+        if next.ptr_eq(&self.last) {
+            return Ok(());
+        }
+        let columns = self.params[0].div_ceil(GRID_CELL);
+        next.visit_changes(&self.last, |&id, _, new| {
+            let color = new.copied().unwrap_or(0);
+            self.colors[id as usize] = color;
+            queue.write_buffer(&self.palette, u64::from(id) * 4, bytemuck::bytes_of(&color));
+            let province = &self.provinces[id as usize];
             if province.pixels == 0 {
-                continue;
+                return;
             }
             for y in province.bounds[1]..=province.bounds[3] {
                 for x in province.bounds[0]..=province.bounds[2] {
-                    self.dirty[(y * columns + x) as usize] = true;
+                    let at = (y * columns + x) as usize;
+                    if !self.dirty[at] {
+                        self.dirty[at] = true;
+                        self.dirty_tiles.push([x, y]);
+                    }
                 }
             }
+        });
+        self.last = next;
+        if self.dirty_tiles.is_empty() {
+            return Ok(());
         }
-        let tiles: Vec<[u32; 2]> = self
-            .dirty
-            .iter()
-            .enumerate()
-            .filter_map(|(at, changed)| {
-                changed.then_some([at as u32 % columns, at as u32 / columns])
-            })
-            .collect();
-        if tiles.is_empty() {
-            return;
-        }
-        // Keep preceding dirty tiles when several updates precede a submission.
-        self.params[3] = tiles.len() as u32;
-        queue.write_buffer(&self.palette, 0, bytemuck::cast_slice(&self.colors));
-        queue.write_buffer(&self.tiles, 0, bytemuck::cast_slice(&tiles));
+        self.params[3] = self.dirty_tiles.len() as u32;
+        queue.write_buffer(&self.tiles, 0, bytemuck::cast_slice(&self.dirty_tiles));
         queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&self.params));
         self.pending = true;
+        Ok(())
     }
 
     pub(crate) fn encode(&mut self, encoder: &mut wgpu::CommandEncoder) {
@@ -194,7 +222,10 @@ impl ProvinceColors {
         let stride = self.params[4];
         pass.dispatch_workgroups(count.min(stride), count.div_ceil(stride), 1);
         self.pending = false;
-        self.dirty.fill(false);
+        let columns = self.params[0].div_ceil(GRID_CELL);
+        for [x, y] in self.dirty_tiles.drain(..) {
+            self.dirty[(y * columns + x) as usize] = false;
+        }
     }
 }
 

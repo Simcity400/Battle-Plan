@@ -82,7 +82,7 @@ use {
 use crate::map::railways::RailFade;
 use {
     crate::map::map_buildings::BUILDING_TILE, crate::map::map_buildings::BuildingHistory,
-    crate::map::map_buildings::MapBuildingAssets, crate::map::map_buildings::PreparedBuildings,
+    crate::map::map_buildings::MapBuildingAssets,
 };
 use {
     crate::map::models::ModelField, crate::map::models::ModelFrame, crate::map::models::ModelPass,
@@ -1507,18 +1507,20 @@ impl Scene {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         assets: &MapBuildingAssets,
-        prepared: PreparedBuildings,
-        passed: Option<&[&PreparedBuildings]>,
+        prepared: map_display_data::buildings::Buildings,
+        passed: Option<&[&map_display_data::buildings::Buildings]>,
     ) -> io::Result<()> {
         self.warm_map_buildings(device, queue, assets)?;
         for hour in passed.unwrap_or_default() {
-            self.building_history.advance(hour);
+            let installed = self.building_history.install_display(hour, assets)?;
+            self.building_history.advance(&installed);
             if let Some(presentation) = &mut self.city_presentation {
-                presentation.advance_shared(&hour.city_damage);
+                presentation.advance_shared(&installed.city_damage);
             }
         }
         self.set_city_damage(&prepared, passed.is_none());
-        if self.building_history.set(prepared, passed.is_some())
+        let installed = self.building_history.install_display(&prepared, assets)?;
+        if self.building_history.set(installed, passed.is_some())
             && let Some(pass) = &mut self.map_buildings
         {
             pass.reset_animation();
@@ -1544,12 +1546,18 @@ impl Scene {
         Ok(())
     }
 
-    pub fn set_city_damage(&mut self, prepared: &PreparedBuildings, reset: bool) {
+    pub fn set_city_damage(
+        &mut self,
+        prepared: &map_display_data::buildings::Buildings,
+        reset: bool,
+    ) {
         if let Some(presentation) = &mut self.city_presentation {
             if reset {
                 presentation.reset();
             }
-            presentation.set_shared_damage(&prepared.city_damage);
+            presentation.set_shared_damage(&Arc::new(crate::map::sprawl::Damage::from_display(
+                &prepared.city_damage,
+            )));
         }
         if reset && let Some(pass) = &mut self.sprawl {
             pass.reset_animation();
@@ -1694,10 +1702,11 @@ impl Scene {
         &mut self,
         queue: &wgpu::Queue,
         field: &super::air_assignment::Field,
-    ) {
+    ) -> io::Result<()> {
         if let Some(colors) = &mut self.province_colors {
-            colors.update(queue, &field.provinces);
+            colors.update(queue, &field.provinces)?;
         }
+        Ok(())
     }
 
     /// Apply this view's local Navy selection without copying province or

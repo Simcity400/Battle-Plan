@@ -802,6 +802,10 @@ macro_rules! define_tables {
                 match self { $(Self::$table(rows) => RowIter::$table(rows.iter())),+ }
             }
             pub fn get(&self, index: usize) -> Option<RowRef<'_>> { self.iter().nth(index) }
+            pub fn contains_key(&self, key: u128) -> bool {
+                match self { $(Self::$table(rows) => rows.binary_search_by_key(&key, |row| row.key()).is_ok()),+ }
+            }
+
             pub fn first(&self) -> Option<RowRef<'_>> { self.iter().next() }
             pub fn validate_keys(&self) -> io::Result<()> {
                 match self { $(Self::$table(rows) => validate_typed(rows)),+ }

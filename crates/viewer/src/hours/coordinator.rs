@@ -27,29 +27,45 @@ struct History {
     key: (BranchId, Hour),
     // None means pool-accepted; retain the credit until its terminal reply.
     work: Option<Box<dyn FnOnce() + Send>>,
+    pending: Option<(u64, Instant)>,
 }
-struct Driver<B: BuildTarget = Coordinator> {
+pub(super) struct Driver<B: BuildTarget = Coordinator> {
     core: B,
     ledger: Ledger<(BranchId, Hour)>,
     decode: Option<DispatchPlan>,
     reading: Option<Reading>,
     history: Option<History>,
     source: Arc<SourceMailbox>,
+    source_retry: Option<SourceRetry>,
+    attempted_retry: Option<(u64, Option<i64>, usize)>,
+    pressure_notice: bool,
     targets: BTreeMap<u64, PreparedTarget>,
     slot_tickets: BTreeMap<(BranchId, Hour), u64>,
     sending: BTreeSet<u64>,
     capacity: CapacityListener,
+    product_space: Option<map_display_data::credit::ReleaseListener>,
+    retries: BTreeMap<(u64, u8), (u64, Instant, HeldJob)>,
     pool_blocked: bool,
     output_blocked: bool,
     started: Instant,
 }
 
-pub(super) fn run(core: Coordinator, inbox: Receiver<Event>) {
+struct SourceRetry {
+    ticket: u64,
+    pressure: DecodePressure,
+    // Snapshot after unwinding: its own staging releases cannot trigger a retry loop.
+    needs_release: bool,
+}
+
+pub(super) fn start(core: Coordinator) -> io::Result<Driver> {
     let source = match &core.shared_decoder {
         Some(decoder) => decoder.client(),
         None => core.lane.as_ref().expect("campaign source").client(),
     };
-    let mut driver = Driver::new(core, source);
+    Driver::new(core, source, map_display_data::credit::display_products())
+}
+
+pub(super) fn run(mut driver: Driver, inbox: Receiver<Event>) {
     let mut next = None;
     loop {
         if let Some(event) = next.take()
@@ -73,22 +89,72 @@ pub(super) fn run(core: Coordinator, inbox: Receiver<Event>) {
         match driver.turn() {
             Turn::Stop => return,
             Turn::Progress => {} // service inbox again before another admission
-            Turn::Park => match inbox.recv() {
-                Ok(event) => next = Some(event),
-                Err(_) => return,
-            },
+            Turn::Park => {
+                // Recheck a failed multi-allocation attempt even if its staging release
+                // raced the final failure snapshot; there is no completion deadline.
+                let timeout = (!driver.pool_blocked)
+                    .then(|| {
+                        driver
+                            .retries
+                            .values()
+                            .map(|(_, at, _)| *at)
+                            .chain(
+                                driver
+                                    .history
+                                    .as_ref()
+                                    .filter(|history| {
+                                        driver.ledger.dependencies_complete(history.ticket)
+                                    })
+                                    .and_then(|history| history.pending.map(|(_, at)| at)),
+                            )
+                            .min()
+                            .map(|at| at.saturating_duration_since(Instant::now()))
+                    })
+                    .flatten();
+                match timeout {
+                    Some(timeout) => match inbox.recv_timeout(timeout) {
+                        Ok(event) => next = Some(event),
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    },
+                    None => match inbox.recv() {
+                        Ok(event) => next = Some(event),
+                        Err(_) => return,
+                    },
+                }
+            }
         }
     }
 }
 
 impl<B: BuildTarget> Driver<B> {
-    fn new(core: B, source: Arc<SourceMailbox>) -> Self {
+    fn new(
+        core: B,
+        source: Arc<SourceMailbox>,
+        owner: &engine_allocation::credit::MemoryBudget,
+    ) -> io::Result<Self> {
         let events = core.events.clone();
         // Register before admission; callbacks only post nonblocking wakes.
         let capacity = core.pool.listen_capacity(move || {
             let _ = events.send(Event::PoolSpace);
         });
-        Self {
+        let events = core.events.clone();
+        let product_space = owner
+            .listen(move || {
+                let _ = events.send(Event::ProductSpace);
+            })
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("display credit release notification unavailable: {error}"),
+                )
+            })?;
+        Ok(Self {
+            product_space: Some(product_space),
+            source_retry: None,
+            attempted_retry: None,
+            pressure_notice: false,
+            retries: BTreeMap::new(),
             ledger: Ledger::new(core.parallel),
             core,
             source,
@@ -102,13 +168,65 @@ impl<B: BuildTarget> Driver<B> {
             pool_blocked: false,
             output_blocked: false,
             started: Instant::now(),
-        }
+        })
     }
 
     fn event(&mut self, event: Event) -> bool {
         match event {
             Event::Shutdown => return false,
             Event::PoolSpace => self.pool_blocked = false,
+            Event::ProductSpace => {
+                if !self.core.refusal.is_empty() {
+                    self.core.refusal.wake();
+                }
+            }
+            Event::RetryColour {
+                ticket,
+                key,
+                generation,
+                reason,
+                work,
+            } => {
+                if let Some(history) = self.history.as_mut().filter(|history| {
+                    history.ticket == ticket && history.key == key && history.work.is_none()
+                }) {
+                    history.work = Some(work);
+                    history.pending =
+                        Some((generation, Instant::now() + Duration::from_millis(100)));
+                    self.publish_pressure(
+                        ticket,
+                        PressureStage::Colour,
+                        format!(
+                            "display colour fold at branch {} hour {} awaits credit: {reason}",
+                            key.0, key.1
+                        ),
+                    );
+                }
+            }
+            Event::RetryPart {
+                ticket,
+                generation,
+                reason,
+                job,
+            } => {
+                if self.ledger.get(ticket).is_some() {
+                    let rank = lap_rank(job.name) - 1;
+                    let name = job.name;
+                    assert!(
+                        self.retries
+                            .insert(
+                                (ticket, rank),
+                                (generation, Instant::now() + Duration::from_millis(100), job)
+                            )
+                            .is_none()
+                    );
+                    self.publish_pressure(
+                        ticket,
+                        PressureStage::Part(rank),
+                        format!("display {name} awaits credit: {reason}"),
+                    );
+                }
+            }
             Event::ResultSpace => {
                 // Clear coalescing before retry: a subsequent UI receive must
                 // be able to post another wake, including across a Full result.
@@ -150,12 +268,35 @@ impl<B: BuildTarget> Driver<B> {
                     self.retarget();
                     return true;
                 }
+                if let source_mailbox::Reply::Pressure(pressure) = reply {
+                    assert!(self.ledger.source_finished(ticket));
+                    let needs_release =
+                        self.attempted_retry.is_some_and(|(owner, cursor, bytes)| {
+                            owner == ticket && cursor == pressure.cursor && bytes == pressure.bytes
+                        });
+                    let flight = self.ledger.get(ticket).expect("pending source target");
+                    self.core.refusal.set(
+                        ticket,
+                        flight.epoch,
+                        flight.key,
+                        pressure.reason.clone(),
+                    );
+                    self.source_retry = Some(SourceRetry {
+                        ticket,
+                        pressure,
+                        needs_release,
+                    });
+                    self.pressure_notice = true;
+                    return true;
+                }
+                self.clear_source_pressure(ticket);
                 let Some(plan) = &mut self.decode else {
                     return true;
                 };
                 assert_eq!(plan.ticket, ticket);
                 let (current, sample) = match reply {
                     source_mailbox::Reply::Ready { value, sample } => (value, sample),
+                    source_mailbox::Reply::Pressure(_) => unreachable!("handled before the plan"),
                     source_mailbox::Reply::Cancelled => {
                         assert!(self.ledger.source_finished(ticket));
                         return true;
@@ -183,6 +324,7 @@ impl<B: BuildTarget> Driver<B> {
                             ticket,
                             key,
                             work: Some(work),
+                            pending: None,
                         });
                         self.reading = Some(reading);
                     }
@@ -221,6 +363,7 @@ impl<B: BuildTarget> Driver<B> {
                 }) {
                     return true;
                 }
+                self.clear_pressure(ticket, Some(PressureStage::Colour));
                 self.history = None;
                 self.reading = None;
                 assert!(self.ledger.source_finished(ticket));
@@ -245,6 +388,7 @@ impl<B: BuildTarget> Driver<B> {
                     .get(ticket)
                     .is_some_and(|f| f.epoch == epoch && f.key == (branch, hour));
                 if valid && self.ledger.completed(ticket, part_rank(&part)) {
+                    self.clear_pressure(ticket, Some(PressureStage::Part(part_rank(&part))));
                     let Some(PreparedTarget::Parts(pending, _)) = self.targets.get_mut(&ticket)
                     else {
                         return false;
@@ -264,6 +408,8 @@ impl<B: BuildTarget> Driver<B> {
             self.core.epoch,
         );
         for ticket in cancelled {
+            self.clear_source_pressure(ticket);
+            self.clear_pressure(ticket, None);
             let key = self.targets.get(&ticket).map(|target| match target {
                 PreparedTarget::Parts(pending, _) => match &pending.current {
                     Current::Frame(f) => (f.branch, f.hour),
@@ -306,10 +452,27 @@ impl<B: BuildTarget> Driver<B> {
     }
 
     fn turn(&mut self) -> Turn {
+        // Arm releases only while credit is awaited; idle drops stay coalesced.
+        let product_generation = if self.source_retry.is_some()
+            || !self.retries.is_empty()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.pending.is_some())
+        {
+            self.product_space
+                .as_ref()
+                .map(|listener| listener.acknowledge())
+        } else {
+            None
+        }
+        .unwrap_or_else(|| map_display_data::credit::display_products().generation());
         let mut progress = false;
         for ticket in self.ledger.terminal_retired() {
             self.targets.remove(&ticket);
+            self.retries.retain(|(owner, _), _| *owner != ticket);
             self.sending.remove(&ticket);
+            self.clear_pressure(ticket, None);
             assert!(self.ledger.release(ticket));
             progress = true;
         }
@@ -344,9 +507,11 @@ impl<B: BuildTarget> Driver<B> {
                 if self.sending.insert(ticket) {
                     trace.sending();
                 }
-                match self.core.outbox.try_send(*built) {
+                match self.core.outbox.try_send(Output::Hour(*built)) {
                     Ok(()) => {
                         trace.sent();
+                        self.clear_pressure(ticket, None);
+                        self.core.refusal.wake();
                         let order = self.core.sends;
                         self.core.sent.insert(key, order);
                         self.core.note_sent(built_epoch, key, order, usable);
@@ -355,13 +520,52 @@ impl<B: BuildTarget> Driver<B> {
                         assert!(self.ledger.release(ticket));
                         progress = true;
                     }
-                    Err(mpsc::TrySendError::Full(built)) => {
+                    Err(mpsc::TrySendError::Full(Output::Hour(built))) => {
                         self.targets
                             .insert(ticket, PreparedTarget::Ready(Box::new(built)));
                         self.output_blocked = true;
                         break;
                     }
+                    Err(mpsc::TrySendError::Full(Output::Pressure)) => unreachable!(),
                     Err(mpsc::TrySendError::Disconnected(_)) => return Turn::Stop,
+                }
+            }
+        }
+        if self.pressure_notice && !self.output_blocked {
+            match self.core.outbox.try_send(Output::Pressure) {
+                Ok(()) => {
+                    self.pressure_notice = false;
+                    progress = true;
+                }
+                Err(mpsc::TrySendError::Full(_)) => self.output_blocked = true,
+                Err(mpsc::TrySendError::Disconnected(_)) => return Turn::Stop,
+            }
+        }
+        if !self.pool_blocked {
+            let generation = product_generation;
+            if let Some(key) = self
+                .retries
+                .iter()
+                .find(|(_, (failed, at, _))| *failed != generation || Instant::now() >= *at)
+                .map(|(key, _)| *key)
+            {
+                let (failed, at, job) = self.retries.remove(&key).expect("retry job");
+                let before = self.capacity.acknowledge();
+                let HeldJob { name, work } = job;
+                match self.core.pool.try_submit_status(work) {
+                    Ok(()) => return Turn::Progress,
+                    Err(TrySubmitError::Full(work)) => {
+                        self.retries
+                            .insert(key, (failed, at, HeldJob { name, work }));
+                        self.pool_blocked = self.capacity.generation() == before;
+                        if !self.pool_blocked {
+                            return Turn::Progress;
+                        }
+                    }
+                    Err(TrySubmitError::Disconnected(work)) => {
+                        drop(work);
+                        return Turn::Stop;
+                    }
                 }
             }
         }
@@ -397,11 +601,18 @@ impl<B: BuildTarget> Driver<B> {
         }
         if !self.pool_blocked
             && let Some(history) = &mut self.history
+            && self.ledger.dependencies_complete(history.ticket)
+            && history.pending.is_none_or(|(generation, at)| {
+                generation != product_generation || Instant::now() >= at
+            })
             && let Some(work) = history.work.take()
         {
             let before = self.capacity.acknowledge();
             match self.core.pool.try_submit_status(work) {
-                Ok(()) => return Turn::Progress,
+                Ok(()) => {
+                    history.pending = None;
+                    return Turn::Progress;
+                }
                 Err(TrySubmitError::Full(work)) => {
                     history.work = Some(work);
                     self.pool_blocked = self.capacity.generation() == before;
@@ -416,9 +627,17 @@ impl<B: BuildTarget> Driver<B> {
             }
         }
         if self.reading.is_none()
+            && self.source_retry.as_ref().is_none_or(|retry| {
+                retry.pressure.available()
+                    && (!retry.needs_release
+                        || retry.pressure.budget.released_since(retry.pressure.release))
+            })
             && let Some(plan) = &self.decode
         {
             let ticket = plan.ticket;
+            if let Some(retry) = self.source_retry.take() {
+                self.attempted_retry = Some((ticket, retry.pressure.cursor, retry.pressure.bytes));
+            }
             let key = (plan.want.branch, plan.next_source);
             let requested = trace::now(plan.trace.enabled());
             let events = self.core.events.clone();
@@ -453,6 +672,39 @@ impl<B: BuildTarget> Driver<B> {
             return Turn::Progress;
         }
         if progress { Turn::Progress } else { Turn::Park }
+    }
+
+    fn clear_source_pressure(&mut self, ticket: u64) {
+        if self
+            .source_retry
+            .as_ref()
+            .is_some_and(|retry| retry.ticket == ticket)
+        {
+            self.source_retry = None;
+        }
+        if self
+            .attempted_retry
+            .is_some_and(|(owner, ..)| owner == ticket)
+        {
+            self.attempted_retry = None;
+        }
+        self.clear_pressure(ticket, Some(PressureStage::Source));
+    }
+
+    fn publish_pressure(&mut self, ticket: u64, stage: PressureStage, reason: String) {
+        if let Some(flight) = self.ledger.get(ticket) {
+            self.core
+                .refusal
+                .set_stage(ticket, stage, flight.epoch, flight.key, reason);
+            self.pressure_notice = true;
+        }
+    }
+
+    fn clear_pressure(&mut self, ticket: u64, stage: Option<PressureStage>) {
+        self.core.refusal.clear(ticket, stage);
+        if self.core.refusal.is_empty() {
+            self.pressure_notice = false;
+        }
     }
 
     fn next_hour(&self) -> Option<Hour> {

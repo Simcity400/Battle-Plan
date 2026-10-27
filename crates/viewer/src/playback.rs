@@ -19,8 +19,8 @@ struct CachedBlock {
 }
 
 impl CachedBlock {
-    fn reset(&mut self) {
-        self.decoder = FrameDecoder::new();
+    fn reset(&mut self, budget: &engine_allocation::credit::MemoryBudget) {
+        self.decoder = display_decoder(budget);
         self.next = 0;
         self.applied_hour = None;
         self.failure = None;
@@ -35,6 +35,7 @@ pub struct Playback {
     current: Current,
     materialized: bool,
     cache: Option<CachedBlock>,
+    change_budget: engine_allocation::credit::MemoryBudget,
     /// Reads blocks ahead of this playback and frees passed ones elsewhere;
     /// without one, blocks are read and freed on the calling thread.
     reader: Option<Arc<BlockReader>>,
@@ -76,6 +77,7 @@ impl Playback {
             current: gap(branch, hour, "hour has not been decoded".into()),
             materialized: false,
             cache: None,
+            change_budget: engine_allocation::credit::display_products().clone(),
             reader: None,
             checkpoints: None,
             checkpoint_source: None,
@@ -86,6 +88,31 @@ impl Playback {
             #[cfg(test)]
             block_loads: 0,
         })
+    }
+
+    pub fn with_display_changes(mut self) -> Self {
+        let budget = &self.change_budget;
+        if let Some(cache) = &mut self.cache {
+            cache.decoder = std::mem::take(&mut cache.decoder).with_change_facts(budget.clone());
+        }
+        self.checkpoints = self
+            .checkpoints
+            .take()
+            .map(|reader| reader.with_change_facts(budget.clone()));
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_change_budget(
+        mut self,
+        budget: engine_allocation::credit::MemoryBudget,
+    ) -> Self {
+        self.change_budget = budget;
+        self.with_display_changes()
+    }
+
+    pub(crate) fn change_memory_owner(&self) -> &engine_allocation::credit::MemoryBudget {
+        &self.change_budget
     }
 
     pub fn replay(&self) -> &Replay {
@@ -108,7 +135,7 @@ impl Playback {
     ) -> Self {
         debug_assert!(Arc::ptr_eq(checkpoints.replay_handle(), &self.replay));
         checkpoints.set_page_workers(self.page_workers);
-        self.checkpoints = Some(checkpoints);
+        self.checkpoints = Some(checkpoints.with_change_facts(self.change_budget.clone()));
         self
     }
 
@@ -161,7 +188,7 @@ impl Playback {
         match source.open() {
             Ok(Some(mut checkpoints)) => {
                 checkpoints.set_page_workers(self.page_workers);
-                self.checkpoints = Some(checkpoints);
+                self.checkpoints = Some(checkpoints.with_change_facts(self.change_budget.clone()));
             }
             Ok(None) => {}
             Err(error) => {
@@ -351,9 +378,9 @@ impl Playback {
         &mut self,
         branch: BranchId,
         hour: Hour,
-        passed: impl FnMut(&DecodedFrame),
+        mut passed: impl FnMut(&DecodedFrame),
     ) -> io::Result<()> {
-        self.seek_to(branch, hour, passed, true)?;
+        self.seek_to(branch, hour, |frame| passed(frame), true, &|| false)?;
         self.materialized = true;
         Ok(())
     }
@@ -361,7 +388,42 @@ impl Playback {
     /// Applies a cancellation walk's endpoint without keeping an owned output
     /// alive across the next native update. Earlier passed hours stay borrowed.
     pub fn advance_without_output(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
-        self.seek_to(branch, hour, |_| {}, false)?;
+        self.seek_to(branch, hour, |_| {}, false, &|| false)?;
+        self.materialized = false;
+        Ok(())
+    }
+
+    pub fn seek_cancellable(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        mut passed: impl FnMut(&DecodedFrame),
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<()> {
+        self.seek_to(branch, hour, |frame| passed(frame), true, cancelled)?;
+        self.materialized = true;
+        Ok(())
+    }
+
+    pub fn seek_shared_cancellable(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        passed: impl FnMut(&Arc<DecodedFrame>),
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<()> {
+        self.seek_to(branch, hour, passed, true, cancelled)?;
+        self.materialized = true;
+        Ok(())
+    }
+
+    pub fn advance_cancellable(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<()> {
+        self.seek_to(branch, hour, |_| {}, false, cancelled)?;
         self.materialized = false;
         Ok(())
     }
@@ -393,16 +455,16 @@ impl Playback {
         hour: Hour,
         visit_from: Hour,
         mut wanted: impl FnMut() -> bool,
-    ) -> ControlFlow<(), Option<Hour>> {
+    ) -> io::Result<ControlFlow<(), Option<Hour>>> {
         if !wanted() {
-            return ControlFlow::Break(());
+            return Ok(ControlFlow::Break(()));
         }
         self.refresh_checkpoints(branch, hour);
         let Some(checkpoints) = self.checkpoints.as_mut() else {
-            return ControlFlow::Continue(None);
+            return Ok(ControlFlow::Continue(None));
         };
         let reached = match checkpoints.advance_pages(branch, hour, visit_from, &mut wanted) {
-            Ok(ControlFlow::Break(())) => return ControlFlow::Break(()),
+            Ok(ControlFlow::Break(())) => return Ok(ControlFlow::Break(())),
             Ok(ControlFlow::Continue(Some(reached))) => {
                 if let Some(passed) = checkpoints.release_passed_source() {
                     match &self.reader {
@@ -419,7 +481,11 @@ impl Playback {
                 Some(reached)
             }
             Ok(ControlFlow::Continue(None)) => None,
-            Err(_) if !wanted() => return ControlFlow::Break(()),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                return Ok(ControlFlow::Break(()));
+            }
+            Err(error) if resource_pending(&error) => return Err(error),
+            Err(_) if !wanted() => return Ok(ControlFlow::Break(())),
             Err(error) => {
                 // Prepared files are disposable, as on every other route.
                 eprintln!("Map checkpoint unavailable: {error}; using the replay reader");
@@ -427,16 +493,20 @@ impl Playback {
                 None
             }
         };
-        ControlFlow::Continue(reached)
+        Ok(ControlFlow::Continue(reached))
     }
 
     fn seek_to(
         &mut self,
         branch: BranchId,
         hour: Hour,
-        mut passed: impl FnMut(&DecodedFrame),
+        mut passed: impl FnMut(&Arc<DecodedFrame>),
         materialize: bool,
+        cancelled: &dyn Fn() -> bool,
     ) -> io::Result<()> {
+        if cancelled() {
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
         if !self.replay.branches.iter().any(|entry| entry.id == branch) {
             return Err(unknown_branch(branch));
         }
@@ -451,17 +521,14 @@ impl Playback {
             self.materialized = false;
         }
         if let Some(checkpoints) = &mut self.checkpoints {
-            let prepared = if !materialize {
-                checkpoints
-                    .advance_without_output(branch, hour, &mut passed)
-                    .map(|handled| {
-                        handled.then(|| gap(branch, hour, "hour has not been decoded".into()))
-                    })
-            } else if self.branch == branch && self.hour <= hour {
-                checkpoints.advance(branch, hour, &mut passed)
-            } else {
-                checkpoints.seek_with(branch, hour, &mut passed)
-            };
+            let prepared = checkpoints.read_shared_cancellable(
+                branch,
+                hour,
+                &mut passed,
+                self.branch == branch && self.hour <= hour,
+                materialize,
+                cancelled,
+            );
             match prepared {
                 Ok(Some(current)) => {
                     self.branch = branch;
@@ -472,6 +539,7 @@ impl Playback {
                     return Ok(());
                 }
                 Ok(None) => {}
+                Err(error) if resource_pending(&error) => return Err(error),
                 Err(error) => {
                     // Prepared files are disposable. Their disappearance or a
                     // rejected cache page cannot refuse a readable recording.
@@ -517,7 +585,7 @@ impl Playback {
             let passed = self.cache.replace(CachedBlock {
                 index,
                 frames,
-                decoder: FrameDecoder::new(),
+                decoder: display_decoder(&self.change_budget),
                 next: 0,
                 applied_hour: None,
                 failure: None,
@@ -538,7 +606,7 @@ impl Playback {
                 .as_ref()
                 .is_some_and(|(failed, _)| hour < *failed)
         {
-            cache.reset();
+            cache.reset(&self.change_budget);
         }
         let frames = match &cache.frames {
             Ok(frames) => frames,
@@ -551,19 +619,22 @@ impl Playback {
             self.current = gap(branch, hour, reason.clone());
             return Ok(());
         }
-        if let Some(decoded) = cache
+        if cache
             .decoder
             .current()
-            .filter(|decoded| decoded.hour == hour)
+            .is_some_and(|decoded| decoded.hour == hour)
         {
             if materialize {
-                self.current = Current::Frame(Arc::new(decoded.clone()));
+                self.current = Current::Frame(Arc::clone(
+                    cache.decoder.shared_current().expect("decoded current"),
+                ));
             }
             return Ok(());
         }
         while let Some(frame) = frames.get(cache.next).filter(|frame| frame.hour <= hour) {
-            let decoded = match cache.decoder.advance(frame) {
+            let decoded = match cache.decoder.advance_cancellable(frame, cancelled) {
                 Ok(decoded) => decoded,
+                Err(error) if resource_pending(&error) => return Err(error),
                 Err(error) => {
                     let reason = format!("invalid frame baseline at hour {}: {error}", frame.hour);
                     cache.failure = Some((frame.hour, reason.clone()));
@@ -586,14 +657,15 @@ impl Playback {
             cache.next += 1;
             cache.applied_hour = Some(frame.hour);
             if frame.hour == hour {
-                // The decoder shares every table this hour left unchanged, so
-                // the copy is one reference per table, not the rows.
+                // The host shares the decoder output, not another frame directory.
                 if materialize {
-                    self.current = Current::Frame(Arc::new(decoded.clone()));
+                    self.current = Current::Frame(Arc::clone(
+                        cache.decoder.shared_current().expect("decoded current"),
+                    ));
                 }
                 return Ok(());
             }
-            passed(decoded);
+            passed(cache.decoder.shared_current().expect("applied frame"));
         }
         self.current = gap(branch, hour, self.gap_reason(branch, hour));
         Ok(())
@@ -1089,6 +1161,118 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn native_seek_retained_visitors_refuse_credit_and_retry_without_a_cached_failure() {
+        let mut records = vec![
+            Record::SessionStart(session(1)),
+            Record::BranchStart(BranchStart {
+                id: 1,
+                session: 1,
+                loaded_hour: Some(-1),
+                first_hour: 0,
+                parent: Parentage::Unknown,
+                reason: BranchReason::SessionStart,
+            }),
+        ];
+        let mut encoder = FrameEncoder::new();
+        for hour in 0..=3 {
+            let mut frame = source(1, hour);
+            frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+                (1..=40)
+                    .map(|id| CountryRow {
+                        id,
+                        canonical_slot: id,
+                        tag: format!("{id:03}").into_bytes(),
+                        command_power_raw: if hour == 2 && id != 1 {
+                            1
+                        } else {
+                            i64::from(hour)
+                        },
+                        ..Default::default()
+                    })
+                    .collect(),
+            ))
+            .into();
+            records.push(Record::Frame(encoder.encode(frame, hour == 0).unwrap()));
+        }
+        let replay = Replay::from_records(b"campaign".to_vec(), &[records]).unwrap();
+        let mut playback = Playback::new(replay).unwrap();
+        let budget = engine_allocation::credit::MemoryBudget::new(4608);
+        let cache = playback.cache.as_mut().unwrap();
+        cache.decoder = FrameDecoder::resume_for_tables_with_change_facts(
+            &[TableId::Countries],
+            cache.decoder.current().unwrap().clone(),
+            budget.clone(),
+        )
+        .unwrap();
+        let initial =
+            cache.decoder.current().unwrap().tables[TableId::Countries.index()].identity();
+        let mut passed = Vec::new();
+        let checks = std::cell::Cell::new(0);
+        let error = playback
+            .seek_shared_cancellable(1, 3, |frame| passed.push(Arc::clone(frame)), &|| {
+                checks.set(checks.get() + 1);
+                assert!(
+                    checks.get() <= 7,
+                    "admission must not wait on retained seek visitors"
+                );
+                false
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+        assert!(FrameDecoder::change_fact_admission_refused(&error));
+        assert_eq!(
+            error.to_string(),
+            "display change-fact working set remains pinned; common paging is required"
+        );
+        assert_eq!(checks.get(), 7);
+        assert_eq!(
+            passed.iter().map(|frame| frame.hour).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(
+            passed[0].tables[TableId::Countries.index()]
+                .changes_since(&initial)
+                .unwrap()
+                .changed()
+                .len(),
+            40
+        );
+        assert_eq!(
+            passed[1].tables[TableId::Countries.index()]
+                .changes_since(&passed[0].tables[TableId::Countries.index()].identity())
+                .unwrap()
+                .changed()
+                .len(),
+            1
+        );
+        let cache = playback.cache.as_ref().unwrap();
+        assert_eq!(cache.decoder.current().unwrap().hour, 2);
+        assert_eq!(cache.applied_hour, Some(2));
+        assert_eq!(cache.next, 3);
+        assert!(cache.failure.is_none());
+        drop(passed);
+        drop(initial);
+        let mut visited = Vec::new();
+        playback
+            .seek_shared_cancellable(1, 3, |frame| visited.push(frame.hour), &|| false)
+            .unwrap();
+        assert!(visited.is_empty());
+        let frame = playback.frame().unwrap();
+        assert_eq!(frame.hour, 3);
+        let rows = frame.complete::<tables::Countries>().unwrap();
+        assert_eq!(rows.len(), 40);
+        assert_eq!((rows[0].id, rows[39].id), (1, 40));
+        assert!(rows.iter().all(|row| row.command_power_raw == 3));
+        assert_eq!(playback.block_loads, 1);
+        let cache = playback.cache.as_ref().unwrap();
+        assert_eq!(cache.next, 4);
+        assert!(cache.failure.is_none());
+        assert!(budget.peak() <= 4608);
+        drop(playback);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
     fn seeks_share_one_block_and_match_the_shared_reader_through_holes() {
         let mut playback = Playback::new(fixture()).unwrap();
         assert_eq!(playback.block_loads, 1);
@@ -1480,4 +1664,14 @@ mod damaged_recording_tests {
             assert_eq!(playback.frame().unwrap(), expected.as_ref());
         }
     }
+}
+
+fn display_decoder(budget: &engine_allocation::credit::MemoryBudget) -> FrameDecoder {
+    FrameDecoder::new().with_change_facts(budget.clone())
+}
+fn resource_pending(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+    ) || FrameDecoder::change_fact_admission_refused(error)
 }

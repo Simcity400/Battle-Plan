@@ -392,7 +392,7 @@ fn placed_name(text: &str, glyphs: usize) -> WorldName {
 
 #[test]
 fn a_placed_area_is_reused_until_the_byte_bound_evicts_the_oldest() {
-    let key = |area: u32| ("GER".to_owned(), "Germany".to_owned(), vec![area]);
+    let key = |area: u32| ("GER".to_owned(), "Germany".to_owned(), vec![area], false);
     let one = area_bytes(&key(1), Some(&placed_name("Germany", 7)));
     // Room for three areas; an overflow evicts down to three quarters.
     let placed = PlacedAreas::with_limit(one * 3);

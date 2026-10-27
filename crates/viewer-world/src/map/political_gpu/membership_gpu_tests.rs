@@ -70,8 +70,7 @@ pub(super) fn retained_membership_keeps_exact_bytes_areas_and_refusals_across_ho
         if hour == 7 || hour == 10 {
             gpu.refill();
         }
-        gpu.update(&harness.device, &harness.queue, &layer)
-            .unwrap();
+        gpu.update(&harness.device, &harness.queue, &layer).unwrap();
         assert_eq!(gpu.source_keys, keys[..5], "hour {hour}");
         let areas = gpu
             .keys

@@ -43,6 +43,11 @@ impl EndpointRows {
     pub fn is_empty(&self) -> bool {
         self.edits.is_empty()
     }
+    pub fn edits(&self) -> impl ExactSizeIterator<Item = (u128, u64, bool)> + '_ {
+        self.edits
+            .iter()
+            .map(|edit| (edit.key, edit.mask, edit.replace))
+    }
     pub fn inserts(&self) -> bool {
         self.edits.iter().any(|edit| edit.replace)
     }

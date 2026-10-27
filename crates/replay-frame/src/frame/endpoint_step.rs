@@ -192,6 +192,106 @@ impl EndpointStep {
         })
     }
 
+    pub(super) fn replaced_change_tables(&self) -> [bool; TABLE_COUNT] {
+        let mut replaced = [false; TABLE_COUNT];
+        for section in &self.sections {
+            replaced[section.table.index()] =
+                !matches!(section.operation, Operation::Carry) || !section.boundaries.is_empty();
+        }
+        replaced
+    }
+
+    pub(super) fn prepare_change_facts(
+        &self,
+        previous: Option<&DecodedFrame>,
+        budget: &allocation::credit::MemoryBudget,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<(
+        [Option<Arc<ChangeFacts>>; TABLE_COUNT],
+        [Option<Arc<FieldStamp>>; TABLE_COUNT],
+    )> {
+        use super::decoder::{change_bytes, field_stamp, stamp_bytes};
+        if self.from != previous.map(Point::of) {
+            return Err(invalid("endpoint baseline differs"));
+        }
+        let mut required = 0;
+        for section in &self.sections {
+            let bytes = match &section.operation {
+                Operation::Complete(_) => stamp_bytes(),
+                Operation::Patch { rows, deleted } => {
+                    allocation::add(stamp_bytes(), change_bytes(rows.len(), deleted.len())?)?
+                }
+                Operation::Carry if !section.boundaries.is_empty() => stamp_bytes(),
+                _ => 0,
+            };
+            required = allocation::add(required, bytes)?;
+        }
+        let mut credit = super::decoder::change_credit(budget, required, Some(cancelled))?;
+        let mut changes = std::array::from_fn(|_| None);
+        let mut stamps = std::array::from_fn(|_| None);
+        for section in &self.sections {
+            let index = section.table.index();
+            let before = previous.map(|frame| &frame.tables[index]);
+            let reset = section
+                .boundaries
+                .iter()
+                .any(|boundary| !matches!(boundary.kind, BoundaryKind::Delta));
+            match &section.operation {
+                Operation::Complete(_) => {
+                    stamps[index] = Some(field_stamp(
+                        None,
+                        None,
+                        self.to.hour,
+                        credit.split_off(stamp_bytes()),
+                    )?);
+                }
+                Operation::Carry if !section.boundaries.is_empty() => {
+                    stamps[index] = Some(field_stamp(
+                        None,
+                        None,
+                        self.to.hour,
+                        credit.split_off(stamp_bytes()),
+                    )?);
+                }
+                Operation::Patch { rows, deleted } => {
+                    let before = before.ok_or_else(|| invalid("endpoint patch has no baseline"))?;
+                    let facts_credit = credit.split_off(change_bytes(rows.len(), deleted.len())?);
+                    let mut facts = ChangeFacts {
+                        previous: before.identity(),
+                        changed: allocation::vec(rows.len())?,
+                        deleted: allocation::copy_vec(deleted)?,
+                        fields: 0,
+                        membership: !deleted.is_empty()
+                            || section.boundaries.iter().any(|boundary| {
+                                !boundary.inserted.is_empty() || !boundary.deleted.is_empty()
+                            }),
+                        _credit: facts_credit,
+                    };
+                    for (key, fields, inserted) in rows.edits() {
+                        facts.fields |= fields;
+                        facts.membership |= inserted;
+                        facts.changed.push(RowChange {
+                            key,
+                            fields,
+                            inserted,
+                        });
+                    }
+                    stamps[index] = Some(field_stamp(
+                        (!reset).then_some(before.3.as_deref()).flatten(),
+                        Some(&facts),
+                        self.to.hour,
+                        credit.split_off(stamp_bytes()),
+                    )?);
+                    if !reset {
+                        changes[index] = Some(Arc::new(facts));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok((changes, stamps))
+    }
+
     pub fn apply(self, previous: Option<&DecodedFrame>) -> io::Result<DecodedFrame> {
         if self.from != previous.map(Point::of) {
             return Err(invalid("endpoint baseline differs"));
@@ -256,11 +356,36 @@ impl EndpointStep {
         if self.from != previous.as_ref().map(Point::of) {
             return Err(invalid("endpoint baseline differs"));
         }
-        let hour = self.to.hour;
-        let mut held: [Option<SharedView>; TABLE_COUNT] = match previous {
+        let held = match previous {
             Some(previous) => previous.tables.map(Some),
             None => std::array::from_fn(|_| None),
         };
+        self.apply_tables_parallel(held, workers, on_worker)
+    }
+
+    pub(super) fn apply_shared_parallel(
+        self,
+        previous: Option<Arc<DecodedFrame>>,
+        workers: usize,
+        on_worker: &(dyn Fn() + Sync),
+    ) -> io::Result<DecodedFrame> {
+        if self.from != previous.as_deref().map(Point::of) {
+            return Err(invalid("endpoint baseline differs"));
+        }
+        let held = match previous {
+            Some(previous) => super::split_shared_tables(previous).1.map(Some),
+            None => std::array::from_fn(|_| None),
+        };
+        self.apply_tables_parallel(held, workers, on_worker)
+    }
+
+    fn apply_tables_parallel(
+        self,
+        mut held: [Option<SharedView>; TABLE_COUNT],
+        workers: usize,
+        on_worker: &(dyn Fn() + Sync),
+    ) -> io::Result<DecodedFrame> {
+        let hour = self.to.hour;
         let mut tables = std::array::from_fn(|_| not_selected());
         let threads = workers.clamp(1, self.sections.len().max(1));
         if threads == 1 {

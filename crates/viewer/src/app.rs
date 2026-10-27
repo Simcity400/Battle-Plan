@@ -2415,6 +2415,15 @@ impl Viewer {
         self.error = Some(error);
     }
 
+    fn hour_error(&mut self, error: Option<&std::io::Error>, ctx: &egui::Context) {
+        self.map_error = error.map(ToString::to_string);
+        if let Some(error) = error
+            && error.kind() != std::io::ErrorKind::WouldBlock
+        {
+            self.failed_window_capture(&error.to_string(), ctx);
+        }
+    }
+
     /// A window dump cannot write an unavailable map. Surface its failure to
     /// the caller instead of leaving a capture parked on an error view.
     fn failed_window_capture(&mut self, error: &str, ctx: &egui::Context) {
@@ -3382,10 +3391,8 @@ impl Viewer {
         }
         // The scene arrives with the document from the loading thread
         // (`load_scene`); only hour data uploads per frame from here.
-        self.map_error = self
-            .refresh_hour(state, document, &mut laps)
-            .err()
-            .map(|error| error.to_string());
+        let hour_error = self.refresh_hour(state, document, &mut laps, ui.ctx()).err();
+        self.hour_error(hour_error.as_ref(), ui.ctx());
         // An error view otherwise stops repainting; a paused seek away from it
         // still needs to poll the asynchronous builders until its hour arrives.
         if self
@@ -3395,7 +3402,6 @@ impl Viewer {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
         if let Some(error) = self.map_error.clone() {
-            self.failed_window_capture(&error, ui.ctx());
             self.rendered = None;
             ui.centered_and_justified(|ui| {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
@@ -7471,6 +7477,76 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn credit_pressure_names_the_refusal_and_keeps_a_window_capture_armed_until_recovery() {
+        let failure = Arc::new(Mutex::new(None));
+        let mut viewer = Viewer::create(
+            Config::default(),
+            Options {
+                out: Some("pressure.png".into()),
+                window_dump: true,
+                ..Default::default()
+            },
+            None,
+            Arc::clone(&failure),
+            None,
+            None,
+        );
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            viewer.hour_error(
+                Some(&std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "display change-fact working set remains pinned; common paging is required",
+                )),
+                ui.ctx(),
+            );
+        });
+        output.textures_delta.clear();
+        assert_eq!(
+            viewer.map_error.as_deref(),
+            Some("display change-fact working set remains pinned; common paging is required")
+        );
+        assert!(
+            viewer
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.exit && capture.path == Path::new("pressure.png"))
+        );
+        assert!(failure.lock().unwrap().is_none());
+        assert!(!output.viewport_output.values().any(|viewport| {
+            viewport
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Close))
+        }));
+        viewer.hour_error(None, &ctx);
+        assert!(viewer.map_error.is_none());
+        assert!(viewer.capture.is_some());
+        assert!(failure.lock().unwrap().is_none());
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            viewer.hour_error(
+                Some(&std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "hour was not recorded",
+                )),
+                ui.ctx(),
+            );
+        });
+        output.textures_delta.clear();
+        assert!(viewer.capture.is_none());
+        assert_eq!(
+            failure.lock().unwrap().as_deref(),
+            Some("Capture pressure.png failed: hour was not recorded")
+        );
+        assert!(output.viewport_output.values().any(|viewport| {
+            viewport
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Close))
+        }));
     }
 
     #[test]

@@ -65,6 +65,13 @@ fn defines() -> ModeDefines {
 
 pub(super) fn content(scripted: MapModes) -> Content {
     Content {
+        _credit: map_display_data::credit::display_products()
+            .admit_item(size_of::<Content>() + 2 * size_of::<usize>() + align_of::<Content>())
+            .unwrap(),
+        memberships: Default::default(),
+        styles: Default::default(),
+        scripts: Default::default(),
+        id: crate::map::next_projection_id(),
         defines: defines(),
         ideologies: Arc::new(installed_content_core::ideologies::Ideologies::default()),
         category_colors: BTreeMap::from([
@@ -251,7 +258,7 @@ pub(super) fn frame() -> DecodedFrame {
 }
 
 fn run(mode: MapMode, content: &Content, selected: Option<u32>) -> ModeFill {
-    fill(
+    checked_fill(
         &mode,
         &Inputs {
             content,
@@ -360,7 +367,7 @@ fn states_take_their_category_colour_and_name_what_they_cannot_draw() {
                     .collect(),
             ))
             .into();
-        fill(
+        checked_fill(
             &MapMode::Stock(Stock::States),
             &Inputs {
                 content: &content(MapModes::default()),
@@ -498,7 +505,7 @@ fn manpower_blends_each_states_population_over_the_range_and_clamps_it() {
                 .collect(),
         ))
         .into();
-        fill(
+        checked_fill(
             &MapMode::Stock(Stock::Manpower),
             &Inputs {
                 content: &content(MapModes::default()),
@@ -578,7 +585,7 @@ fn operatives_colour_the_selected_countrys_network_states_its_targets_control() 
         .into();
     let content = content(MapModes::default());
     let run = |frame: &DecodedFrame, selected| {
-        fill(
+        checked_fill(
             &MapMode::Stock(Stock::Operatives),
             &Inputs {
                 content: &content,
@@ -819,7 +826,7 @@ fn a_scripted_mode_shows_two_game_layers_or_one_in_both_channels() {
     frame.tables[TableId::RelationOpinions.index()] =
         TableView::Complete(TableRows::RelationOpinions(Vec::new())).into();
     let run = |name: &str| {
-        fill(
+        checked_fill(
             &MapMode::Scripted(name.into()),
             &Inputs {
                 content: &content,
@@ -935,7 +942,7 @@ fn colour_scripts_paint_each_target_their_callback_colours() {
     );
     let map = map();
     let run = |name: &str| {
-        fill(
+        checked_fill(
             &MapMode::Scripted(name.into()),
             &Inputs {
                 content: &content,
@@ -1070,7 +1077,7 @@ fn scripted_politics_refuses_uncertified_sharing_rosters_by_name_and_target_coun
             f,
             with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
         );
-        fill(
+        checked_fill(
             &MapMode::Scripted("politics".into()),
             &Inputs {
                 content: &content,
@@ -1916,7 +1923,7 @@ fn scripted_forced_refresh_refuses_inherited_temps_without_guessing_zero() {
             frame,
             with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
         );
-        fill(
+        checked_fill(
             &MapMode::Scripted(name.into()),
             &Inputs {
                 content: &content,
@@ -2052,7 +2059,7 @@ fn scripted_scheduled_refresh_preserves_unknown_event_context() {
             frame,
             with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
         );
-        fill(
+        checked_fill(
             &MapMode::Scripted(name.into()),
             &Inputs {
                 content: &content,
@@ -2296,15 +2303,16 @@ fn colour_borders_keep_their_colour_until_their_provinces_change() {
 fn the_terrain_mode_draws_its_layer_under_the_countries() {
     let mut content = content(MapModes::default());
     let layer = ModeLayer {
-        region_of: vec![0, 1, 2],
-        styles: BTreeMap::from([(
+        region_of: vec![0, 1, 2].into(),
+        styles: map_display_data::value_index::ValueIndex::try_from_iter([(
             1,
             Style {
                 color: [10, 20, 30, 127],
                 pulse: false,
                 fill: 1.0,
             },
-        )]),
+        )])
+        .unwrap(),
         thickness: Some(0.0),
         gradient: Some(terrain::TERRAIN_GRADIENT),
         channel: [0.39, 0.973],
@@ -2383,7 +2391,7 @@ fn infrastructure_fill(infrastructure: infrastructure::Content, frame: &DecodedF
         infrastructure,
         ..content(MapModes::default())
     };
-    fill(
+    checked_fill(
         &MapMode::Stock(Stock::Infrastructure),
         &Inputs {
             content: &content,
@@ -2948,7 +2956,7 @@ fn every_mode_a_map_recording_offers_fills_from_recorded_tables() {
         .filter(|stock| stock.unavailable_in(CaptureMode::Map).is_none())
     {
         let filled = assert_reads_recorded(&frame, &[], || {
-            fill(
+            checked_fill(
                 &MapMode::Stock(stock),
                 &Inputs {
                     content: &content,
@@ -2966,6 +2974,359 @@ fn every_mode_a_map_recording_offers_fills_from_recorded_tables() {
                 !error.to_string().contains("not recorded"),
                 "{stock:?}: {error}"
             );
+        }
+    }
+}
+
+fn checked_fill(mode: &MapMode, inputs: &Inputs) -> io::Result<ModeFill> {
+    let actual = super::fill(mode, inputs);
+    let expected = match mode {
+        MapMode::Stock(stock) => super::stock_oracle::stock_fill(*stock, inputs),
+        MapMode::Scripted(name) => super::scripted_oracle::fill(name, inputs),
+    };
+    match (&actual, &expected) {
+        (Ok(actual), Ok(expected)) => assert_eq!(
+            product_codec::encode(actual).unwrap(),
+            product_codec::encode(expected).unwrap(),
+            "{}",
+            mode.token()
+        ),
+        (Err(actual), Err(expected)) => assert_eq!(
+            (actual.kind(), actual.to_string()),
+            (expected.kind(), expected.to_string())
+        ),
+        _ => panic!(
+            "{}: candidate {actual:?}; frozen reference {expected:?}",
+            mode.token()
+        ),
+    }
+    actual
+}
+
+#[test]
+fn every_stock_mode_and_perspective_keeps_its_independent_reference() {
+    let content = content(MapModes::default());
+    let map = map();
+    let frame = frame();
+    for stock in Stock::ALL {
+        for selected in [None, Some(0), Some(1), Some(2), Some(1501)] {
+            let inputs = Inputs {
+                content: &content,
+                map: &map,
+                frame: &frame,
+                selected,
+                world: None,
+                colour: None,
+            };
+            let _ = checked_fill(&MapMode::Stock(stock), &inputs);
+        }
+    }
+}
+
+#[test]
+fn persistent_membership_rebinds_immutable_map_banks_and_style_membership() {
+    let content = content(MapModes::default());
+    let frame = frame();
+    let mut map = Arc::new(map());
+    content.bind_membership_map(&map);
+    let inputs = Inputs {
+        content: &content,
+        map: &map,
+        frame: &frame,
+        selected: Some(0),
+        world: None,
+        colour: None,
+    };
+    let first = membership::plane(
+        &inputs,
+        0,
+        &map_display_data::value_index::ValueIndex::try_from_iter([(1, style([1.0; 4]))]).unwrap(),
+    )
+    .unwrap();
+    let same = membership::plane(
+        &inputs,
+        0,
+        &map_display_data::value_index::ValueIndex::try_from_iter([(1, style([0.0; 4]))]).unwrap(),
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(&first.0, &same.0));
+    assert_eq!(first[1], 1);
+    assert_eq!(first[3], 0);
+    let replacement = Arc::make_mut(&mut map);
+    replacement.definitions.get_mut(&1).unwrap().kind = ProvinceKind::Sea;
+    content.bind_membership_map(&map);
+    let inputs = Inputs {
+        content: &content,
+        map: &map,
+        frame: &frame,
+        selected: Some(0),
+        world: None,
+        colour: None,
+    };
+    let second = membership::plane(
+        &inputs,
+        0,
+        &map_display_data::value_index::ValueIndex::try_from_iter([(1, style([1.0; 4]))]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(second[1], 0);
+    assert_eq!(second[2], 1);
+    assert_eq!(first[1], 1);
+}
+
+#[test]
+fn state_membership_does_not_validate_unread_controller_links() {
+    let content = content(MapModes::default());
+    let map = Arc::new(map());
+    content.bind_membership_map(&map);
+    let mut frame = frame();
+    frame.tables[TableId::CountryLinks.index()] = replay_frame::frame::TableView::Unavailable {
+        reason: "unused country links".into(),
+    }
+    .into();
+    let inputs = Inputs {
+        content: &content,
+        map: &map,
+        frame: &frame,
+        selected: Some(0),
+        world: None,
+        colour: None,
+    };
+    let _ = checked_fill(&MapMode::Stock(Stock::States), &inputs);
+    let _ = checked_fill(&MapMode::Stock(Stock::Manpower), &inputs);
+    let styles =
+        map_display_data::value_index::ValueIndex::try_from_iter([(8, style([1.0; 4]))]).unwrap();
+    let state = membership::plane(&inputs, 1, &styles).unwrap();
+    assert_eq!(
+        state.len(),
+        region_table_len(
+            &map,
+            core::<tables::Provinces>(&frame)
+                .unwrap()
+                .iter()
+                .map(|row| row.id)
+        )
+    );
+    assert!(membership::plane(&inputs, 0, &styles).is_err());
+}
+
+#[test]
+fn country_membership_keeps_distinct_slot_root_on_quiet_reads() {
+    let content = content(MapModes::default());
+    let map = Arc::new(map());
+    content.bind_membership_map(&map);
+    let frame = frame();
+    let inputs = Inputs {
+        content: &content,
+        map: &map,
+        frame: &frame,
+        selected: Some(0),
+        world: None,
+        colour: None,
+    };
+    let (plane, slots) = membership::countries(&inputs).unwrap();
+    let (again, same_slots) = membership::countries(&inputs).unwrap();
+    assert!(slots.shares(&same_slots));
+    assert!(Arc::ptr_eq(&plane.0, &again.0));
+    let (reference, expected_slots) =
+        controller_regions(&map, &frame, &Countries::read(&frame).unwrap()).unwrap();
+    assert_eq!(plane, reference);
+    assert_eq!(
+        (&slots).into_iter().copied().collect::<BTreeSet<_>>(),
+        expected_slots
+    );
+}
+
+#[test]
+fn sparse_stock_folds_keep_quiet_roots_and_match_the_oracle_after_remaps() {
+    let content = content(MapModes::default());
+    let map = Arc::new(map());
+    content.bind_membership_map(&map);
+    let mut frame = frame();
+    for step in 0..8 {
+        if step == 2 {
+            let TableView::Complete(TableRows::CountryAppearance(rows)) =
+                &mut *frame.tables[TableId::CountryAppearance.index()]
+            else {
+                unreachable!()
+            };
+            rows[1].red = (-0.0f32).to_bits();
+            rows[1].green = f32::from_bits(0x7fc01234).to_bits();
+        }
+        if step == 3 {
+            let TableView::Complete(TableRows::CountryLinks(rows)) =
+                &mut *frame.tables[TableId::CountryLinks.index()]
+            else {
+                unreachable!()
+            };
+            rows[1].canonical_slot = 2;
+        }
+        if step == 4 {
+            let TableView::Complete(TableRows::Provinces(rows)) =
+                &mut *frame.tables[TableId::Provinces.index()]
+            else {
+                unreachable!()
+            };
+            rows[0].controller = 300;
+        }
+        if step == 5 {
+            let TableView::Complete(TableRows::LexicalTokens(rows)) =
+                &mut *frame.tables[TableId::LexicalTokens.index()]
+            else {
+                unreachable!()
+            };
+            if let Some(row) = rows.first_mut() {
+                row.literal = b"rural".to_vec();
+            }
+        }
+        if step == 6 {
+            let TableView::Complete(TableRows::States(rows)) =
+                &mut *frame.tables[TableId::States.index()]
+            else {
+                unreachable!()
+            };
+            rows[0].population = Recorded::NotRecorded;
+        }
+        for selected in [Some(0), Some(1), Some(1501), Some(2)] {
+            for stock in [
+                Stock::Factions,
+                Stock::Players,
+                Stock::Ideology,
+                Stock::States,
+                Stock::Manpower,
+            ] {
+                let inputs = Inputs {
+                    content: &content,
+                    map: &map,
+                    frame: &frame,
+                    selected,
+                    world: None,
+                    colour: None,
+                };
+                let result = checked_fill(&MapMode::Stock(stock), &inputs);
+                if let Ok(first) = result {
+                    let second = checked_fill(&MapMode::Stock(stock), &inputs).unwrap();
+                    if let (Some(first), Some(second)) = (first.draw, second.draw) {
+                        for (a, b) in [(first.country, second.country), (first.layer, second.layer)]
+                        {
+                            if let (Some(a), Some(b)) = (a, b) {
+                                assert!(a.styles.ptr_eq(&b.styles));
+                                assert!(Arc::ptr_eq(&a.region_of.0, &b.region_of.0));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        frame.hour += 1;
+    }
+}
+
+#[test]
+fn selected_state_folds_match_independent_network_and_occupation_outputs_after_deltas() {
+    use replay_data::rows::StateResistanceRow;
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
+    let content = content(MapModes::default());
+    let map = Arc::new(map());
+    content.bind_membership_map(&map);
+    let mut input = frame();
+    input.tables[TableId::StateResistance.index()] =
+        TableView::Complete(TableRows::StateResistance(
+            (1..=3)
+                .map(|state| StateResistanceRow {
+                    state,
+                    country: 100,
+                    level: i64::from(state) * 500_000,
+                    compliance: i64::from(state) * 800_000,
+                    ..Default::default()
+                })
+                .collect(),
+        ))
+        .into();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder =
+        FrameDecoder::new().with_change_facts(map_display_data::credit::display_products().clone());
+    for step in 0..10 {
+        input.hour += 1;
+        if step == 2 || step == 3 {
+            let TableView::Complete(TableRows::CountryLinks(rows)) =
+                &mut *input.tables[TableId::CountryLinks.index()]
+            else {
+                unreachable!()
+            };
+            rows[1].canonical_slot = if step == 2 { 0 } else { 1 };
+        }
+        if step == 4 {
+            let TableView::Complete(TableRows::States(rows)) =
+                &mut *input.tables[TableId::States.index()]
+            else {
+                unreachable!()
+            };
+            rows[1].controller = 100;
+        }
+        if step == 5 {
+            let TableView::Complete(TableRows::IntelNetworks(rows)) =
+                &mut *input.tables[TableId::IntelNetworks.index()]
+            else {
+                unreachable!()
+            };
+            if let Some(row) = rows.first_mut() {
+                row.local_strength_raw += 250_000;
+                row.local_quiet ^= 1;
+            }
+        }
+        if step == 6 {
+            let TableView::Complete(TableRows::StateResistance(rows)) =
+                &mut *input.tables[TableId::StateResistance.index()]
+            else {
+                unreachable!()
+            };
+            rows.remove(0);
+        }
+        if step == 7 {
+            let TableView::Complete(TableRows::IntelNetworks(rows)) =
+                &mut *input.tables[TableId::IntelNetworks.index()]
+            else {
+                unreachable!()
+            };
+            rows.push(IntelNetworkRow {
+                owner_country: 100,
+                target_country: 200,
+                state_id: -1,
+                local_strength_raw: 100_000,
+                ..Default::default()
+            });
+            rows.sort_by_key(replay_data::rows::RowCodec::key);
+        }
+        let encoded = encoder.encode(input.clone(), step == 0).unwrap();
+        let frame = decoder.advance(&encoded).unwrap();
+        let inputs = Inputs {
+            content: &content,
+            map: &map,
+            frame,
+            selected: Some(0),
+            world: None,
+            colour: None,
+        };
+        for stock in [Stock::Operatives, Stock::Resistance, Stock::Compliance] {
+            let first = checked_fill(&MapMode::Stock(stock), &inputs).unwrap();
+            let again = checked_fill(&MapMode::Stock(stock), &inputs).unwrap();
+            let (Some(first), Some(again)) = (
+                first.draw.and_then(|draw| draw.layer),
+                again.draw.and_then(|draw| draw.layer),
+            ) else {
+                continue;
+            };
+            assert!(first.styles.ptr_eq(&again.styles));
+            assert!(Arc::ptr_eq(&first.region_of.0, &again.region_of.0));
+        }
+        if step == 9 {
+            for selected in [None, Some(1), Some(1501), Some(0)] {
+                let inputs = Inputs { selected, ..inputs };
+                for stock in [Stock::Operatives, Stock::Resistance, Stock::Compliance] {
+                    let _ = checked_fill(&MapMode::Stock(stock), &inputs);
+                }
+            }
         }
     }
 }

@@ -196,9 +196,9 @@ fn isolated_land_is_hidden_before_authored_adjacencies_are_loaded() {
 /// country 2.
 fn regions() -> Regions {
     Regions {
-        country_of: vec![0, 2, 1, 2, 2, 0],
-        owner_of: vec![0, 1, 1, 1, 2, 0],
-        state_of: vec![0, 7, 7, 8, 9, 0],
+        country_of: vec![0, 2, 1, 2, 2, 0].into(),
+        owner_of: vec![0, 1, 1, 1, 2, 0].into(),
+        state_of: vec![0, 7, 7, 8, 9, 0].into(),
         country_colors: Default::default(),
         warnings: Vec::new(),
         strategic_attributes: Default::default(),

@@ -42,13 +42,13 @@ fn occupy_output(f: &mut RealDriver) {
     f.driver
         .core
         .outbox
-        .try_send(gap_built(99, "occupy output"))
+        .try_send(Output::Hour(gap_built(99, "occupy output")))
         .ok()
         .unwrap();
 }
 
 fn free_output(f: &mut RealDriver) {
-    assert_eq!(f.results.try_recv().unwrap().hour, 99);
+    assert_eq!(f.take_output().hour, 99);
     f.driver.core.result_space.store(true, Ordering::Release);
     assert!(f.driver.event(Event::ResultSpace));
 }
@@ -71,7 +71,7 @@ fn the_grid_driver_builds_an_anchor_once_and_keeps_it_sent_until_the_window_rece
         .wanted_hours(f.driver.core.want.as_ref().unwrap(), (100, 820));
     assert_eq!(wanted, [101, 120, 140]);
     assert_eq!(f.driver.next_hour(), Some(140));
-    let built = f.results.try_recv().unwrap();
+    let built = f.take_output();
     assert_eq!((built.epoch, built.hour), (0, 101));
     let received = Want {
         received: 1,
@@ -115,6 +115,7 @@ fn an_old_epochs_anchor_flight_is_never_sent_and_never_acknowledges_a_new_seeks_
     let sent: Vec<_> = f
         .results
         .try_iter()
+        .map(output_hour)
         .map(|built| (built.epoch, built.hour))
         .collect();
     assert_eq!(sent, [(1, 101)], "only the new epoch's anchor is sent");
@@ -140,7 +141,12 @@ fn an_accepted_target_newer_than_the_hour_installed_drains_to_the_window() {
         post(&mut f, 0, later);
         f.finish_parts();
         assert!(matches!(f.driver.turn(), Turn::Progress));
-        let sent: Vec<_> = f.results.try_iter().map(|built| built.hour).collect();
+        let sent: Vec<_> = f
+            .results
+            .try_iter()
+            .map(output_hour)
+            .map(|built| built.hour)
+            .collect();
         let expected = if installed.is_none() {
             vec![120]
         } else {
@@ -165,7 +171,12 @@ fn a_ready_result_nothing_accepted_waits_out_a_full_output_and_is_delivered() {
         post(&mut f, 0, later);
         free_output(&mut f);
         f.driver.turn();
-        let sent: Vec<_> = f.results.try_iter().map(|built| built.hour).collect();
+        let sent: Vec<_> = f
+            .results
+            .try_iter()
+            .map(output_hour)
+            .map(|built| built.hour)
+            .collect();
         let expected = if installed.is_none() {
             vec![120]
         } else {
@@ -190,7 +201,7 @@ fn an_immediate_off_grid_capture_is_requested_and_delivered_after_the_anchor_com
     assert_eq!(reading(&f), Some((1, 101)));
     f.reply(fixed_gap(101, "unrecorded"));
     assert!(matches!(f.driver.turn(), Turn::Progress));
-    assert_eq!(f.results.try_recv().unwrap().hour, 101);
+    assert_eq!(f.take_output().hour, 101);
 
     let active = Want {
         received: 1,
@@ -239,7 +250,7 @@ fn an_immediate_off_grid_capture_is_requested_and_delivered_after_the_anchor_com
     assert_eq!(reading(&f), Some((1, 120)));
     f.reply(fixed_gap(120, "unrecorded"));
     assert!(matches!(f.driver.turn(), Turn::Progress));
-    assert_eq!(f.results.try_recv().unwrap().hour, 120);
+    assert_eq!(f.take_output().hour, 120);
     assert!(matches!(f.driver.turn(), Turn::Progress));
     assert_eq!(reading(&f), Some((1, 137)));
     let expected = super::super::super::tests::sized_frame(137, 1);
@@ -250,6 +261,7 @@ fn an_immediate_off_grid_capture_is_requested_and_delivered_after_the_anchor_com
     let captured = f
         .results
         .try_recv()
+        .map(output_hour)
         .expect("the exact capture cannot wait on another Want");
     assert_eq!(
         (captured.epoch, captured.branch, captured.hour),

@@ -39,7 +39,9 @@ impl CheckpointSource {
             prepared_map::selected_tables(),
         )
         .map(|map| {
-            let (map, bound) = map.with_committed_pages_reporting();
+            let (map, bound) = map
+                .with_change_facts(engine_allocation::credit::display_products().clone())
+                .with_committed_pages_reporting();
             if viewer_foundation::profile_writer::profiling() {
                 viewer_foundation::profile_writer::profile_print(bind_line(&map, &bound));
             }

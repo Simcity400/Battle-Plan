@@ -109,23 +109,7 @@ pub fn filled_alpha(alpha: u8, fill: f32) -> u8 {
     (a - band).clamp(0, 255) as u8
 }
 
-/// Native per-region FX bytes and optional constant gradient.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Attributes {
-    pub control: u8,
-    pub contested: u8,
-    pub gradient: Option<u8>,
-}
-
-impl Attributes {
-    pub(crate) fn packed(self) -> u32 {
-        u32::from(self.control)
-            | (u32::from(self.contested) << 8)
-            | self
-                .gradient
-                .map_or(0, |value| (1 << 24) | (u32::from(value) << 16))
-    }
-}
+pub use map_display_data::landscape::Attributes;
 
 /// One gradient layer's geometry, colour and dynamic attributes.
 pub struct Layer<'a> {

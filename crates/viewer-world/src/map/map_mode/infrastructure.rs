@@ -557,7 +557,7 @@ impl Content {
             Some(defines.state_thickness),
             Some(LEVEL_GRADIENT),
             [0.0, defines.state_channel[1]],
-        )))
+        )?))
     }
 }
 

@@ -82,6 +82,7 @@ fn sources_built(with_ocean: bool) -> Built {
         },
         &DEFINES,
     )
+    .unwrap()
 }
 
 #[test]

@@ -1,6 +1,11 @@
+pub use engine_allocation::credit;
 pub use replay_data::codec::{Decoder, invalid_static as invalid, put_count64, put_fixed};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, io, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    sync::Arc,
+};
 
 pub trait Product: Sized {
     const MIN_BYTES: usize;
@@ -213,6 +218,32 @@ impl<K: Product + Ord, V: Product> Product for BTreeMap<K, V> {
         schema.field("BTreeMap");
         K::schema(schema);
         V::schema(schema);
+    }
+}
+impl<T: Product + Ord> Product for BTreeSet<T> {
+    const MIN_BYTES: usize = 8;
+    fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        put_count64(out, self.len())?;
+        for value in self {
+            value.encode(out)?;
+        }
+        Ok(())
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        let count = input.count64(T::MIN_BYTES)?;
+        let mut values = BTreeSet::new();
+        for _ in 0..count {
+            let value = T::decode(input)?;
+            if values.last().is_some_and(|last| *last >= value) {
+                return Err(invalid("product set members are not strictly ordered"));
+            }
+            values.insert(value);
+        }
+        Ok(values)
+    }
+    fn schema(schema: &mut Schema) {
+        schema.field("BTreeSet");
+        T::schema(schema);
     }
 }
 impl<T: Product> Product for Arc<T> {

@@ -21,17 +21,23 @@
 
 #[cfg(test)]
 use replay_data::rows::SubjectRow;
+#[cfg(test)]
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     io,
     time::{Duration, Instant},
 };
-use viewer_foundation::map::color_inheritance::{active_subject, inheritance, slot_of};
+use viewer_foundation::map::color_inheritance::inheritance;
+#[cfg(test)]
+use viewer_foundation::map::color_inheritance::{active_subject, slot_of};
 
 use installed_content_core::{map::MapData, map::ProvinceKind};
 use installed_content_regions::regions::StrategicRegion;
-use replay_data::{rows::CountryRow, rows::ProvinceRow, rows::tables};
+#[cfg(test)]
+use replay_data::rows::CountryRow;
+use replay_data::{rows::ProvinceRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
 use {
@@ -50,38 +56,16 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// The region keys and colours of the country layer, indexed by province id.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Regions {
-    /// Layer 2 region key per province id: the controller's canonical slot plus one, or
-    /// [`gradient::NO_REGION`].
-    pub country_of: Vec<u32>,
-    /// Border material key is the canonical state-owner slot plus one; CountryLinks resolves owner
-    /// identity.
-    pub owner_of: Vec<u32>,
-    /// State id per province id, for the border classifier.
-    pub state_of: Vec<u32>,
-    /// Colour per layer 2 region key.
-    pub country_colors: HashMap<u32, [u8; 3]>,
-    /// Limitations at this hour, in the same style as `document::Palette`.
-    pub warnings: Vec<String>,
-    /// Political naval attributes indexed by the strategic layer's nonzero region keys.
-    pub strategic_attributes: BTreeMap<u32, super::gradient::Attributes>,
-    /// What the map mode draws in the two channels; `None` draws the political channels.
-    pub mode: Option<Arc<super::map_mode::Draw>>,
-}
-
-impl Regions {
-    /// Colour of a region, black for a key no country claims.
-    pub fn country_color(&self, key: u32) -> [u8; 3] {
-        self.country_colors.get(&key).copied().unwrap_or([0, 0, 0])
-    }
-}
+pub use map_display_data::landscape::Regions;
+mod fold;
+pub(crate) mod relations;
+pub use fold::TerritoryFold;
 
 /// The identity of one political frame: everything [`build`] reads out of it.
 ///
 /// Country identities, links, active subject relations and colours all change the fill without
 /// changing any province's controller. The links also canonicalize the border owner keys.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameKey {
     /// `(id, state, owner, controller)` per recorded province, in the table's own order.
@@ -99,6 +83,7 @@ pub struct FrameKey {
     mode: Option<super::map_mode::ModeFill>,
 }
 
+#[cfg(test)]
 impl FrameKey {
     pub fn with_naval(mut self, naval: &super::naval_dominance::Fill) -> Self {
         self.naval = Some(naval.clone());
@@ -192,137 +177,20 @@ impl PoliticalLayers {
 /// (`viewer_foundation::map::tables`), a recorded province the map does not define, a dangling country link, or
 /// province ids that overflow the key tables.
 pub fn regions(map: &MapData, frame: &DecodedFrame) -> io::Result<Regions> {
-    let countries = core::<tables::Countries>(frame)?
-        .iter()
-        .map(|country| (country.canonical_slot, country))
-        .collect::<BTreeMap<_, _>>();
-    let links = core::<tables::CountryLinks>(frame)?
-        .iter()
-        .map(|link| (link.id, link.canonical_slot))
-        .collect::<BTreeMap<_, _>>();
-    let provinces = core::<tables::Provinces>(frame)?;
-    let count = province_table_len(map, provinces)?;
-    let mut result = Regions {
-        country_of: vec![NO_REGION; count],
-        owner_of: vec![NO_REGION; count],
-        state_of: vec![NO_REGION; count],
-        country_colors: HashMap::new(),
-        warnings: Vec::new(),
-        strategic_attributes: BTreeMap::new(),
-        mode: None,
-    };
-    let mut unresolved = Vec::new();
-    let mut uncoloured = BTreeSet::new();
-    let mut observed = BTreeSet::new();
-    let inherited = inherited_colors(map, frame, &links, &mut result.warnings)?;
-    // Stored primary colour is already cosmetic-resolved and HSV-modified; pass it directly to the
-    // gradient builder.
-    let appearance = rows::<tables::CountryAppearance>(frame)?;
-    let gap = match &appearance {
-        Available::Complete(_) => "CountryAppearance has no row for them".to_owned(),
-        Available::Truncated { missing, .. } => {
-            format!("CountryAppearance is truncated ({missing} missing rows)")
-        }
-        Available::Unavailable { reason } => format!("CountryAppearance is unavailable: {reason}"),
-        Available::NotRecorded { mode } => {
-            format!("CountryAppearance is not recorded in a {mode} recording")
-        }
-    };
-    let recorded = appearance
-        .rows()
-        .iter()
-        .map(|r| (r.country, r.map_color()))
-        .collect::<BTreeMap<_, _>>();
-    let mut colors = HashMap::new();
-    for province in provinces {
-        let definition = map.definitions.get(&province.id).ok_or_else(|| {
-            invalid(format!(
-                "recorded province {} is absent from map/definition.csv",
-                province.id
-            ))
-        })?;
-        observed.insert(province.id);
-        // Owned/controller lakes belong to the country field. Province-region lookup has no terrain-
-        // kind exclusion. Treating these lakes as sea adds false shore borders; unassigned lakes
-        // remain outside the layer.
-        if definition.kind == ProvinceKind::Sea
-            || (definition.kind == ProvinceKind::Lake && province.controller == 0)
-        {
-            continue;
-        }
-        let index = province.id as usize;
-        if province.owner != 0 {
-            result.owner_of[index] = slot_of(&links, province.owner, "owner")?
-                .checked_add(1)
-                .ok_or_else(|| invalid("owner country slot exceeds the border key range"))?;
-        }
-        result.state_of[index] = province.state;
-        if province.controller == 0 {
-            unresolved.push(province.id);
-            continue;
-        }
-        let slot = slot_of(&links, province.controller, "controller")?;
-        let country = countries.get(&slot).ok_or_else(|| {
-            invalid(format!(
-                "political fill country link {} resolves to missing country slot {slot}",
-                province.controller
-            ))
-        })?;
-        let color = match colors.get(&slot) {
-            Some(&color) => color,
-            None => {
-                let color = color_of(slot, &countries, &inherited, &recorded)?;
-                colors.insert(slot, color);
-                color
-            }
-        };
-        let color = color.unwrap_or_else(|| {
-            uncoloured.insert(String::from_utf8_lossy(&country.tag).into_owned());
-            UNAVAILABLE_COLOR
-        });
-        // `NO_REGION` is zero, so a region key is the slot plus one and slot zero stays addressable.
-        let key = slot
-            .checked_add(1)
-            .ok_or_else(|| invalid("country slot exceeds the gradient border region key range"))?;
-        result.country_colors.insert(key, color);
-        result.country_of[index] = key;
-    }
-    // A Provinces table that parses can still be short of the map; nothing downstream would notice,
-    // so a province the hour never mentions is refused here rather than drawn unfilled.
-    for &id in map.definitions.keys() {
-        if id != 0 && !observed.contains(&id) {
-            return Err(invalid(format!(
-                "hour {} has no recorded row for map province {id}",
-                frame.hour
-            )));
-        }
-    }
-    if !unresolved.is_empty() {
-        result.warnings.push(format!(
-            "{} land provinces have a zero controller reference and take no political fill; province ids {}",
-            unresolved.len(),
-            examples(unresolved.iter().map(u32::to_string))
-        ));
-    }
-    if !uncoloured.is_empty() {
-        result.warnings.push(format!(
-            "{} countries have no recorded colour this hour ({gap}) and are filled grey: {}",
-            uncoloured.len(),
-            examples(uncoloured.into_iter())
-        ));
-    }
-    Ok(result)
+    TerritoryFold::default()
+        .read(map, frame)
+        .map(|value| value.paint.as_ref().clone())
 }
 
-fn examples(items: impl Iterator<Item = String>) -> String {
-    let items = items.collect::<Vec<_>>();
-    let mut text = items
-        .iter()
-        .take(12)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(", ");
-    if items.len() > 12 {
+fn examples(mut items: impl Iterator<Item = String>) -> String {
+    let mut text = String::new();
+    for (at, item) in items.by_ref().take(12).enumerate() {
+        if at != 0 {
+            text.push_str(", ");
+        }
+        text.push_str(&item);
+    }
+    if items.next().is_some() {
         text.push_str(", …");
     }
     text
@@ -366,6 +234,7 @@ pub fn color_source(slot: u32, inherited: &BTreeMap<u32, u32>) -> io::Result<u32
     Ok(source)
 }
 
+#[cfg(test)]
 fn color_of(
     slot: u32,
     countries: &BTreeMap<u32, &CountryRow>,
@@ -441,6 +310,7 @@ pub fn build(map: &MapData, frame: &DecodedFrame) -> io::Result<PoliticalLayers>
 
 /// Country and perspective-dependent naval fields of one recorded frame, and the map mode's
 /// country channel.
+#[cfg(test)]
 pub fn build_with_naval(
     map: &MapData,
     frame: &DecodedFrame,
@@ -466,3 +336,6 @@ pub fn build_with_naval(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod oracle;

@@ -51,10 +51,7 @@ use dashboard::Config;
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use {
-    viewer_foundation::map::camera::Camera, viewer_foundation::map::frame::DayNight,
-    viewer_world::map::political,
-};
+use {viewer_foundation::map::camera::Camera, viewer_foundation::map::frame::DayNight};
 // names
 use replay_data::{BranchId, Hour};
 use std::{
@@ -1240,12 +1237,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {line}");
         }
         println!("Map mode: {}", options.map_mode.token());
-        let layers = political::build_with_naval(
-            &document.map,
-            document.frame()?,
-            hour.naval_fill(&options.perspective)?,
-            mode,
-        )?;
+        let layers = hour
+            .political_product(&options.map_mode, &options.perspective, None)?
+            .layers;
         let mut omitted = options.layers;
         omitted.borders |= options.debug_borders;
         omitted.gradient |= options.debug_borders;
@@ -1326,7 +1320,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if visibility.fog_of_war {
             println!(
                 "{}",
-                intel_map.line(&camera.defines, camera.height, options.perspective.fog)
+                viewer_foundation::map::textures::intel_line(
+                    &intel_map,
+                    &camera.defines,
+                    camera.height,
+                    options.perspective.fog
+                )
             );
         } else {
             println!(
@@ -1479,7 +1478,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 order_assets: &document.orders,
                 order_field: &order_field,
                 weather_assets: document.weather_effects.clone(),
-                weather_field: viewer_world::map::weather_effects::field(document.frame()?)?,
+                weather_field: document.hour()?.weather_field()?,
                 // trees
                 tree_assets: &document.tree_assets,
                 tree_geometry: &document.tree_geometry,
@@ -1561,7 +1560,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<String>()
             };
             let [x, y] = point;
-            match dump_overlay.prepared().intel_at(point, dump_overlay.looks()) {
+            match dump_overlay
+                .prepared()
+                .intel_at(point, dump_overlay.looks())
+            {
                 None => println!("Intel hover at {x},{y}: no intel entry takes the point"),
                 Some(hit) => {
                     println!("Intel hover at {x},{y}:\n{}", escaped(&hit.tooltip.title));

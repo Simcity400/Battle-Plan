@@ -255,7 +255,6 @@ fn previous_inputs(
         map_text: events::Content::new(&buildings),
         audio: audio.map(|source| Arc::clone(&source.content)),
         triggers: Arc::new(triggers),
-        vision_memo: Arc::new(Keyed::new(perspective::VISION_TABLES, 8)),
     })
 }
 

@@ -776,69 +776,46 @@ pub fn clear_intel_map(map: &MapData) -> io::Result<IntelMap> {
         width: map.width,
         height: map.height,
     });
-    Ok(IntelMap::new(vec![0; width as usize * height as usize], false))
+    Ok(IntelMap::new(
+        vec![0; width as usize * height as usize],
+        false,
+    ))
 }
 
 /// One hour's `IntelMap` grid and whether it is a recorded fog or the all-clear
 /// stand-in; [`IntelCells::intel_map`] builds recorded fog grids.
-pub struct IntelMap {
-    /// [`fow_size`] texels, one byte each, rows bottom-up.
-    pub texels: Vec<u8>,
-    /// Whether this frame draws fog of war at all, which is what
-    /// `map::frame::fow_fade_factor` gates on.
-    pub fog: bool,
-    fogged_texels: usize,
-}
+pub use map_display_data::Intel as IntelMap;
 
-impl IntelMap {
-    /// An immutable hour grid, with its diagnostic count computed from the
-    /// same texels. Content-owned cells count while producing their bytes.
-    pub fn new(texels: Vec<u8>, fog: bool) -> Self {
-        let fogged_texels = texels.iter().filter(|&&byte| byte > 0).count();
-        Self {
-            texels,
-            fog,
-            fogged_texels,
-        }
-    }
-
-    /// Number of nonzero texels in this prepared grid.
-    pub fn fogged_texels(&self) -> usize {
-        self.fogged_texels
-    }
-
-    /// The dump's one-line report, beside the weather grid's and the
-    /// perspective's. `switch` is the fog-of-war switch the frame was asked for.
-    pub fn line(
-        &self,
-        defines: &super::camera::MapDefines,
-        camera_height: f32,
-        switch: bool,
-    ) -> String {
-        if !switch {
-            return "Fog of war: switched off, so none is drawn, as the game's fow console \
+/// The dump's one-line report, beside the weather grid's and the
+/// perspective's. `switch` is the fog-of-war switch the frame was asked for.
+pub fn intel_line(
+    intel: &IntelMap,
+    defines: &super::camera::MapDefines,
+    camera_height: f32,
+    switch: bool,
+) -> String {
+    if !switch {
+        return "Fog of war: switched off, so none is drawn, as the game's fow console \
                     switch draws none"
-                .into();
-        }
-        if !self.fog {
-            return "Fog of war: none drawn; this frame has no recorded per-province visibility \
-                    for its viewing country"
-                .into();
-        }
-        let fogged = self.texels.iter().filter(|&&b| b > 0).count();
-        let mean = self.texels.iter().map(|&b| f64::from(b)).sum::<f64>()
-            / self.texels.len().max(1) as f64;
-        format!(
-            "Fog of war: {fogged} of {} intel texels carry fog ({:.1}% of the map), mean intel \
-             {:.3}; FOWFadeFactor {:.4} at camera height {camera_height:.1}",
-            self.texels.len(),
-            100.0 * fogged as f64 / self.texels.len().max(1) as f64,
-            mean / 255.0,
-            super::frame::fow_fade_factor(defines, camera_height, true),
-        )
+            .into();
     }
+    if !intel.fog {
+        return "Fog of war: none drawn; this frame has no recorded per-province visibility \
+                    for its viewing country"
+            .into();
+    }
+    let fogged = intel.texels.iter().filter(|&&b| b > 0).count();
+    let mean =
+        intel.texels.iter().map(|&b| f64::from(b)).sum::<f64>() / intel.texels.len().max(1) as f64;
+    format!(
+        "Fog of war: {fogged} of {} intel texels carry fog ({:.1}% of the map), mean intel \
+             {:.3}; FOWFadeFactor {:.4} at camera height {camera_height:.1}",
+        intel.texels.len(),
+        100.0 * fogged as f64 / intel.texels.len().max(1) as f64,
+        mean / 255.0,
+        super::frame::fow_fade_factor(defines, camera_height, true),
+    )
 }
-
 fn intel_image_size(map: &MapData) -> io::Result<[usize; 2]> {
     let (width, height) = (map.width as usize, map.height as usize);
     if width.checked_mul(height) != Some(map.province_ids.len()) || width == 0 || height == 0 {

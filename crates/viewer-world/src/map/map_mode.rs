@@ -62,15 +62,29 @@ use replay_data::{
     scope::{self, CaptureMode},
 };
 use replay_frame::frame::DecodedFrame;
+#[cfg(test)]
+use viewer_foundation::map::color_inheritance::slot_of;
 use viewer_foundation::map::{
-    color_inheritance::{active_subject, slot_of},
+    color_inheritance::active_subject,
     directed_wars,
     tables::{Available, core, rows},
 };
 
+#[cfg(test)]
 use super::political::{color_source, inherited_colors};
 
+#[cfg(test)]
+mod colour_oracle;
 mod colour_script;
+mod country_fold;
+mod membership;
+pub mod resolved;
+#[cfg(test)]
+mod scripted_oracle;
+mod state_fold;
+#[cfg(test)]
+mod stock_oracle;
+mod style_fold;
 pub use colour_script::ColourState;
 pub mod infrastructure;
 pub mod strategic;
@@ -236,7 +250,7 @@ impl MapMode {
 pub const SUPPLY_UNAVAILABLE: &str = "Not available in replays: the game computes this map mode from the supply network's per-province sources and hourly hub amounts, which recordings do not hold.";
 
 /// A view's map mode.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MapMode {
     Stock(Stock),
     /// A content mode by its declared name.
@@ -274,138 +288,8 @@ impl MapMode {
 
 /// One region's presentation in the country channel. Floats compare by their bits, so hours
 /// share a fill only when it is bit-identical.
-#[derive(Clone, Copy, Debug)]
-pub struct Style {
-    pub color: [u8; 4],
-    pub pulse: bool,
-    pub fill: f32,
-}
-
-/// What one channel of the political fill shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Source {
-    /// The strategic regions with their naval effects.
-    #[default]
-    Strategic,
-    /// The country layer: the political fill, or [`Draw::country`]'s variant.
-    Country,
-    /// The mode's own layer, [`Draw::layer`].
-    Mode,
-    /// A scripted mode's second game layer, [`Draw::second`], when both its channels take
-    /// layers of their own. It never shows beside the country layer.
-    Second,
-    /// Nothing.
-    Empty,
-}
-
-/// The political channels' pair.
+pub use map_display_data::landscape::{Draw, ModeFill, ModeLayer, Source, Style};
 pub const POLITICAL: [Source; 2] = [Source::Strategic, Source::Country];
-
-/// What a mode draws in the two channels.
-#[derive(Clone, Debug)]
-pub struct Draw {
-    pub channels: [Source; 2],
-    /// The strategic layer's per-mode membership and colours. Its naval FX
-    /// remain the independently derived strategic attributes.
-    pub strategic: Option<strategic::Layer>,
-    /// The country layer's variant colouring; `None` keeps the political fill.
-    pub country: Option<ModeLayer>,
-    /// The mode's own layer.
-    pub layer: Option<ModeLayer>,
-    /// A scripted mode's second game layer.
-    pub second: Option<ModeLayer>,
-    /// The political country layer's camera override and outline cutoff, which it takes into
-    /// whichever channel shows it.
-    pub political: [f32; 2],
-}
-
-impl PartialEq for Draw {
-    fn eq(&self, other: &Self) -> bool {
-        self.channels == other.channels
-            && self.strategic == other.strategic
-            && self.country == other.country
-            && self.layer == other.layer
-            && self.second == other.second
-            && self.political.map(f32::to_bits) == other.political.map(f32::to_bits)
-    }
-}
-
-impl Eq for Draw {}
-
-impl Draw {
-    fn of(channels: [Source; 2], political: [f32; 2]) -> Self {
-        Self {
-            channels,
-            strategic: None,
-            country: None,
-            layer: None,
-            second: None,
-            political,
-        }
-    }
-
-    /// Each channel's camera-distance override and outline cutoff: its layer's own. `None`
-    /// keeps the content's defines for that channel's political layer (the strategic regions
-    /// in channel 1, the countries in channel 2), and for an empty channel.
-    pub fn channel_constants(&self) -> [Option<[f32; 2]>; 2] {
-        self.channels.map(|source| match source {
-            Source::Country => Some(
-                self.country
-                    .as_ref()
-                    .map_or(self.political, |layer| layer.channel),
-            ),
-            Source::Mode => self.layer.as_ref().map(|layer| layer.channel),
-            Source::Second => self.second.as_ref().map(|layer| layer.channel),
-            Source::Strategic | Source::Empty => None,
-        })
-    }
-}
-
-/// One layer's regions and presentation.
-#[derive(Clone, Debug)]
-pub struct ModeLayer {
-    /// Region key per province id; zero leaves the province out.
-    pub region_of: Vec<u32>,
-    pub styles: BTreeMap<u32, Style>,
-    /// A fixed thickness for every region; `None` keeps the area rule.
-    pub thickness: Option<f32>,
-    /// A constant gradient byte for every region.
-    pub gradient: Option<u8>,
-    /// The channel's camera-distance override and outline cutoff.
-    pub channel: [f32; 2],
-}
-
-impl PartialEq for Style {
-    fn eq(&self, other: &Self) -> bool {
-        self.color == other.color
-            && self.pulse == other.pulse
-            && self.fill.to_bits() == other.fill.to_bits()
-    }
-}
-
-impl Eq for Style {}
-
-impl PartialEq for ModeLayer {
-    fn eq(&self, other: &Self) -> bool {
-        self.region_of == other.region_of
-            && self.styles == other.styles
-            && self.thickness.map(f32::to_bits) == other.thickness.map(f32::to_bits)
-            && self.gradient == other.gradient
-            && self.channel.map(f32::to_bits) == other.channel.map(f32::to_bits)
-    }
-}
-
-impl Eq for ModeLayer {}
-
-/// What a mode draws and what it cannot.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ModeFill {
-    /// `None` draws the political channels.
-    pub draw: Option<Draw>,
-    pub warnings: Vec<String>,
-    /// A scripted mode's kept colour-script borders after this hour.
-    pub colour: Option<Arc<ColourState>>,
-}
 
 /// A colour define of four components, as f32.
 fn color4(defines: &Defines, section: &str, name: &str) -> io::Result<[f32; 4]> {
@@ -636,6 +520,11 @@ pub fn pack(color: [f32; 4]) -> [u8; 4] {
 
 /// Immutable inputs of every mode for one content stack.
 pub struct Content {
+    _credit: map_display_data::credit::Credit,
+    id: u64,
+    memberships: std::sync::Mutex<membership::Memberships>,
+    styles: std::sync::Mutex<style_fold::Styles>,
+    scripts: std::sync::Mutex<colour_script::Fold>,
     pub defines: ModeDefines,
     ideologies: Arc<installed_content_core::ideologies::Ideologies>,
     /// Each declared category's colour by folded name: `Ok(None)` for one without a colour.
@@ -652,6 +541,39 @@ pub struct Content {
 }
 
 impl Content {
+    pub fn evict_memberships(&self) {
+        self.strategic.evict();
+        *self
+            .scripts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Default::default();
+        *self
+            .styles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Default::default();
+        *self
+            .memberships
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Default::default();
+    }
+    pub fn bind_membership_map(&self, map: &Arc<MapData>) {
+        self.strategic.bind(map);
+        self.scripts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .bind(map);
+        self.styles
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .bind(map);
+        self.memberships
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .bind(map);
+    }
+    pub fn projection_id(&self) -> u64 {
+        self.id
+    }
     #[allow(clippy::too_many_arguments)] // One argument per content source, read separately by the caller.
     pub fn new(
         defines: &Defines,
@@ -664,14 +586,24 @@ impl Content {
         infrastructure: infrastructure::Content,
         strategic: strategic::Content,
     ) -> io::Result<Self> {
+        let credit = map_display_data::credit::display_products()
+            .admit_item(size_of::<Self>() + 2 * size_of::<usize>() + align_of::<Self>())?;
         let defines = ModeDefines::load(defines)?;
-        let terrain = terrain.map(|sources| terrain::build(&sources, &defines.terrain));
+        let terrain = match terrain {
+            Ok(sources) => Ok(terrain::build(&sources, &defines.terrain)?),
+            Err(reason) => Err(reason),
+        };
         let category_colors = categories
             .names
             .iter()
             .map(|name| (name.to_ascii_lowercase(), categories.color(name)))
             .collect();
         Ok(Self {
+            _credit: credit,
+            id: super::next_projection_id(),
+            memberships: Default::default(),
+            styles: Default::default(),
+            scripts: Default::default(),
             defines,
             ideologies,
             category_colors,
@@ -874,6 +806,7 @@ impl Countries {
 }
 
 /// The controller region keys the political fill uses: the controller's slot plus one.
+#[cfg(test)]
 fn controller_regions(
     map: &MapData,
     frame: &DecodedFrame,
@@ -909,11 +842,12 @@ fn region_table_len(map: &MapData, ids: impl Iterator<Item = u32>) -> usize {
 }
 
 /// The subject-resolved recorded colours, as f32, of the given slots.
-fn subject_colors(
+#[cfg(test)]
+fn subject_colors<'a>(
     map: &MapData,
     frame: &DecodedFrame,
     countries: &Countries,
-    slots: &BTreeSet<u32>,
+    slots: impl IntoIterator<Item = &'a u32>,
     warnings: &mut Vec<String>,
 ) -> io::Result<BTreeMap<u32, [f32; 4]>> {
     let inherited = inherited_colors(map, frame, &countries.links, warnings)?;
@@ -1000,7 +934,9 @@ pub struct Inputs<'a, 'w> {
 pub fn fill(mode: &MapMode, inputs: &Inputs) -> io::Result<ModeFill> {
     match mode {
         MapMode::Stock(stock) => stock_fill(*stock, inputs),
-        MapMode::Scripted(name) => scripted_fill(name, inputs),
+        MapMode::Scripted(_) => {
+            resolved::project(mode, inputs).and_then(|value| resolved::apply(&value, inputs.colour))
+        }
     }
 }
 
@@ -1058,7 +994,12 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
                 },
                 political,
             );
-            draw.strategic = Some(inputs.content.strategic.layer(stock, inputs, &mut warnings));
+            draw.strategic = Some(
+                inputs
+                    .content
+                    .strategic
+                    .layer(stock, inputs, &mut warnings)?,
+            );
             if stock == Stock::StrategicAir {
                 warnings.push(unbuilt(stock).to_owned());
             }
@@ -1173,165 +1114,12 @@ fn country_variant(
     inputs: &Inputs,
     warnings: &mut Vec<String>,
 ) -> io::Result<Option<ModeLayer>> {
-    let Inputs {
-        content,
-        map,
-        frame,
-        selected,
-        ..
-    } = inputs;
-    let defines = &content.defines;
-    let countries = Countries::read(frame)?;
-    let (region_of, slots) = controller_regions(map, frame, &countries)?;
-    let colors = subject_colors(map, frame, &countries, &slots, warnings)?;
-    let mut styles = BTreeMap::new();
-    let channel = if variant == Variant::Factions {
-        defines.factions_channel
-    } else {
-        defines.country_channel
-    };
-    match variant {
-        Variant::Country => {
-            for (&slot, &color) in &colors {
-                styles.insert(slot + 1, style(color));
-            }
-        }
-        Variant::Factions => {
-            let members = match complete::<tables::FactionMembers>(frame, "factions") {
-                Ok(rows) => rows,
-                Err(why) => {
-                    warnings.push(why);
-                    return Ok(None);
-                }
-            };
-            let factions = match complete::<tables::Factions>(frame, "factions") {
-                Ok(rows) => rows,
-                Err(why) => {
-                    warnings.push(why);
-                    return Ok(None);
-                }
-            };
-            let faction_colors = factions
-                .iter()
-                .map(|row| {
-                    (
-                        row.id,
-                        [
-                            row.color_red,
-                            row.color_green,
-                            row.color_blue,
-                            row.color_alpha,
-                        ]
-                        .map(f32::from_bits),
-                    )
-                })
-                .collect::<HashMap<_, _>>();
-            let membership = members
-                .iter()
-                .filter_map(|row| Some((countries.slot(row.country)?, row.faction)))
-                .collect::<HashMap<_, _>>();
-            for &slot in &slots {
-                let color = match membership
-                    .get(&slot)
-                    .and_then(|faction| faction_colors.get(faction))
-                {
-                    Some(&color) => with_alpha(color, defines.factions_member_alpha),
-                    None => defines.factions_not_member,
-                };
-                styles.insert(slot + 1, style(color));
-            }
-        }
-        Variant::Players => {
-            let players = match complete::<tables::Players>(frame, "players") {
-                Ok(rows) => rows,
-                Err(why) => {
-                    warnings.push(why);
-                    return Ok(None);
-                }
-            };
-            let human = players
-                .iter()
-                .filter_map(|row| countries.slot(row.country))
-                .collect::<BTreeSet<_>>();
-            for (&slot, &color) in &colors {
-                let color = if human.contains(&slot) {
-                    color
-                } else {
-                    with_alpha(color, defines.players_other_alpha)
-                };
-                let mut region = style(color);
-                if Some(slot) == *selected {
-                    region.pulse = true;
-                    region.fill = defines.selected_fill;
-                }
-                styles.insert(slot + 1, region);
-            }
-        }
-        Variant::Ideology => {
-            let politics = match complete::<tables::Politics>(frame, "ideology") {
-                Ok(rows) => rows,
-                Err(why) => {
-                    warnings.push(why);
-                    return Ok(None);
-                }
-            };
-            let parties = match complete::<tables::PoliticalParties>(frame, "ideology") {
-                Ok(rows) => rows,
-                Err(why) => {
-                    warnings.push(why);
-                    return Ok(None);
-                }
-            };
-            let ruling = politics
-                .iter()
-                .filter_map(|row| Some((countries.slot(row.country)?, row.ruling_party?)))
-                .collect::<HashMap<_, _>>();
-            let mut unknown = BTreeSet::new();
-            for (&slot, &color) in &colors {
-                let party = ruling.get(&slot).and_then(|&party| {
-                    parties
-                        .iter()
-                        .find(|row| row.id == party && countries.slot(row.country) == Some(slot))
-                });
-                let color = match party {
-                    None => Some(color),
-                    Some(party) => {
-                        let token = String::from_utf8_lossy(&party.token);
-                        let group = match content.ideologies.get(&token) {
-                            Ok(Some(group)) => Ok(Some(group)),
-                            Ok(None) => content.ideologies.group_of(&token),
-                            Err(gap) => Err(gap),
-                        };
-                        match group {
-                            Ok(Some(group)) => match &group.color {
-                                Ok(group_color) => {
-                                    Some(with_alpha(*group_color, defines.ideology_alpha))
-                                }
-                                Err(_) => {
-                                    unknown.insert(token.into_owned());
-                                    None
-                                }
-                            },
-                            _ => {
-                                unknown.insert(token.into_owned());
-                                None
-                            }
-                        }
-                    }
-                };
-                if let Some(color) = color {
-                    styles.insert(slot + 1, style(color));
-                }
-            }
-            if !unknown.is_empty() {
-                warnings.push(format!(
-                    "The ideology map mode leaves countries unfilled whose ruling ideology has no readable content colour: {}",
-                    unknown.into_iter().collect::<Vec<_>>().join(", ")
-                ));
-            }
-        }
-    }
-    Ok(Some(finish(region_of, styles, None, None, channel)))
+    inputs
+        .content
+        .styles
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .country(variant, inputs, warnings)
 }
 
 /// Drops provinces of regions without a style, so a refused region draws nothing.
@@ -1341,19 +1129,19 @@ fn finish(
     thickness: Option<f32>,
     gradient: Option<u8>,
     channel: [f32; 2],
-) -> ModeLayer {
+) -> io::Result<ModeLayer> {
     for key in &mut region_of {
         if *key != 0 && !styles.contains_key(key) {
             *key = 0;
         }
     }
-    ModeLayer {
-        region_of,
-        styles,
+    Ok(ModeLayer {
+        region_of: region_of.into(),
+        styles: map_display_data::value_index::ValueIndex::try_from_iter(styles)?,
         thickness,
         gradient,
         channel,
-    }
+    })
 }
 
 /// Every state, coloured by its live category.
@@ -1366,72 +1154,22 @@ fn states(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<Mode
             return Ok(None);
         }
     };
-    let names = viewer_foundation::table_access::TokenNames::new(inputs.frame)?;
-    let mut styles = BTreeMap::new();
-    let (mut unread, mut unnamed, mut uncoloured) = (0, 0, 0);
-    for state in states {
-        let token = match state.category {
-            replay_data::rows::Recorded::Value(Some(token)) => token,
-            replay_data::rows::Recorded::Value(None) => {
-                unread += 1;
-                continue;
-            }
-            replay_data::rows::Recorded::NotRecorded => {
-                warnings.push(
-                    "The states map mode needs each state's live category, which this recording does not hold".to_owned(),
-                );
-                return Ok(None);
-            }
-        };
-        let Ok(name) = names.name(token) else {
-            unnamed += 1;
-            continue;
-        };
-        match inputs
-            .content
-            .category_colors
-            .get(name.to_ascii_lowercase().as_bytes())
-        {
-            Some(Ok(Some(color))) => {
-                styles.insert(state.id + 1, style(*color));
-            }
-            Some(Ok(None)) => {
-                styles.insert(state.id + 1, style(STATE_WITHOUT_CATEGORY));
-            }
-            Some(Err(_)) | None => uncoloured += 1,
-        }
-    }
-    for (count, why) in [
-        (unread, "whose category read was refused"),
-        (
-            unnamed,
-            "whose category token the recorded dictionary does not name",
-        ),
-        (
-            uncoloured,
-            "whose category the content does not declare or colour",
-        ),
-    ] {
-        if count != 0 {
-            warnings.push(format!(
-                "The states map mode leaves {count} states unfilled {why}"
-            ));
-        }
-    }
-    let provinces = core::<tables::Provinces>(inputs.frame)?;
-    let mut region_of = vec![0; region_table_len(inputs.map, provinces.iter().map(|row| row.id))];
-    for province in provinces {
-        if province.state != 0 {
-            region_of[province.id as usize] = province.state + 1;
-        }
-    }
-    Ok(Some(finish(
-        region_of,
+    let Some(styles) = inputs
+        .content
+        .styles
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .states(inputs, states, warnings)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(ModeLayer {
+        region_of: membership::plane(inputs, 1, &styles)?,
         styles,
-        Some(defines.state_thickness),
-        None,
-        defines.state_channel,
-    )))
+        thickness: Some(defines.state_thickness),
+        gradient: None,
+        channel: defines.state_channel,
+    }))
 }
 
 /// One country's relation to the selected country, as the diplomacy mode reads it.
@@ -1515,7 +1253,6 @@ fn war_goal_slots(
 fn diplomacy(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<ModeLayer>> {
     let Inputs {
         content,
-        map,
         frame,
         selected,
         ..
@@ -1543,7 +1280,7 @@ fn diplomacy(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<M
             return Ok(None);
         }
     };
-    let (region_of, slots) = controller_regions(map, frame, &countries)?;
+    let (_, slots) = membership::countries(inputs)?;
     let faction_of = members
         .iter()
         .filter_map(|row| Some((countries.slot(row.country)?, row.faction)))
@@ -1604,13 +1341,14 @@ fn diplomacy(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<M
             "The diplomacy map mode leaves {count} countries unfilled: {why}"
         ));
     }
-    Ok(Some(finish(
-        region_of,
+    let styles = map_display_data::value_index::ValueIndex::try_from_iter(styles)?;
+    Ok(Some(ModeLayer {
+        region_of: membership::plane(inputs, 0, &styles)?,
         styles,
-        Some(defines.diplomacy_thickness),
-        None,
-        defines.diplomacy_channel,
-    )))
+        thickness: Some(defines.diplomacy_thickness),
+        gradient: None,
+        channel: defines.diplomacy_channel,
+    }))
 }
 
 /// The manpower mode's colour for a state of `population`: the two colours blended by the
@@ -1631,34 +1369,22 @@ fn manpower(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<Mo
             return Ok(None);
         }
     };
-    let mut styles = BTreeMap::new();
-    for state in states {
-        match state.population {
-            replay_data::rows::Recorded::Value(population) => {
-                styles.insert(state.id + 1, style(manpower_color(defines, population)));
-            }
-            replay_data::rows::Recorded::NotRecorded => {
-                warnings.push(
-                    "The manpower map mode needs each state's population, which this recording does not hold".to_owned(),
-                );
-                return Ok(None);
-            }
-        }
-    }
-    let provinces = core::<tables::Provinces>(inputs.frame)?;
-    let mut region_of = vec![0; region_table_len(inputs.map, provinces.iter().map(|row| row.id))];
-    for province in provinces {
-        if province.state != 0 {
-            region_of[province.id as usize] = province.state + 1;
-        }
-    }
-    Ok(Some(finish(
-        region_of,
+    let Some(styles) = inputs
+        .content
+        .styles
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .manpower(inputs, states, warnings)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(ModeLayer {
+        region_of: membership::plane(inputs, 1, &styles)?,
         styles,
-        Some(defines.state_thickness),
-        Some(LEVEL_GRADIENT),
-        [0.0, defines.state_channel[1]],
-    )))
+        thickness: Some(defines.state_thickness),
+        gradient: Some(LEVEL_GRADIENT),
+        channel: [0.0, defines.state_channel[1]],
+    }))
 }
 
 /// Network strengths are fixed5 percentages.
@@ -1687,68 +1413,22 @@ fn operatives(inputs: &Inputs, warnings: &mut Vec<String>) -> io::Result<Option<
         warnings.push("The operatives map mode needs a viewing country".to_owned());
         return Ok(None);
     };
-    let frame = inputs.frame;
-    let networks = match complete::<tables::IntelNetworks>(frame, "operatives") {
-        Ok(rows) => rows,
-        Err(why) => {
-            warnings.push(why);
-            return Ok(None);
-        }
+    let Some(styles) = inputs
+        .content
+        .styles
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .operatives(inputs, selected, warnings)?
+    else {
+        return Ok(None);
     };
-    let countries = Countries::read(frame)?;
-    let controllers = core::<tables::States>(frame)?
-        .iter()
-        .map(|state| (state.id, state.controller))
-        .collect::<HashMap<_, _>>();
-    let mut styles = BTreeMap::new();
-    let mut unknown_states = 0;
-    for row in networks {
-        if countries.slot(row.owner_country) != Some(selected) || row.local_strength_raw <= 0 {
-            continue;
-        }
-        let Ok(state) = u32::try_from(row.state_id) else {
-            unknown_states += 1;
-            continue;
-        };
-        let Some(&controller) = controllers.get(&state) else {
-            unknown_states += 1;
-            continue;
-        };
-        // The network covers the state only while its target controls it.
-        if controller == 0
-            || countries.slot(controller).is_none()
-            || countries.slot(controller) != countries.slot(row.target_country)
-        {
-            continue;
-        }
-        styles.insert(
-            state + 1,
-            style(network_color(
-                defines,
-                row.local_strength_raw,
-                row.local_quiet != 0,
-            )),
-        );
-    }
-    if unknown_states != 0 {
-        warnings.push(format!(
-            "The operatives map mode leaves {unknown_states} network states unfilled that are not recorded states"
-        ));
-    }
-    let provinces = core::<tables::Provinces>(frame)?;
-    let mut region_of = vec![0; region_table_len(inputs.map, provinces.iter().map(|row| row.id))];
-    for province in provinces {
-        if province.state != 0 {
-            region_of[province.id as usize] = province.state + 1;
-        }
-    }
-    Ok(Some(finish(
-        region_of,
+    Ok(Some(ModeLayer {
+        region_of: membership::plane(inputs, 1, &styles)?,
         styles,
-        Some(defines.state_thickness),
-        Some(LEVEL_GRADIENT),
-        [0.0, defines.state_channel[1]],
-    )))
+        thickness: Some(defines.state_thickness),
+        gradient: Some(LEVEL_GRADIENT),
+        channel: [0.0, defines.state_channel[1]],
+    }))
 }
 
 fn occupation(
@@ -1766,185 +1446,22 @@ fn occupation(
         warnings.push(format!("The {mode} map mode needs a viewing country"));
         return Ok(None);
     };
-    let frame = inputs.frame;
-    let countries = Countries::read(frame)?;
-    let resistance = match complete::<tables::StateResistance>(frame, mode) {
-        Ok(rows) => rows,
-        Err(why) => {
-            warnings.push(why);
-            return Ok(None);
-        }
+    let Some(styles) = inputs
+        .content
+        .styles
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .occupation(inputs, selected, compliance, warnings)?
+    else {
+        return Ok(None);
     };
-    let by_state = resistance
-        .iter()
-        .map(|row| (row.state, row))
-        .collect::<HashMap<_, _>>();
-    // The selected country's controlled states, occupied ones included.
-    let owned = core::<tables::States>(frame)?
-        .iter()
-        .filter(|state| countries.slot(state.controller) == Some(selected))
-        .map(|state| state.id)
-        .collect::<BTreeSet<_>>();
-    let provinces = core::<tables::Provinces>(frame)?;
-    let len = region_table_len(inputs.map, provinces.iter().map(|row| row.id));
-    let mut region_of = vec![0; len];
-    for province in provinces {
-        if owned.contains(&province.state) {
-            region_of[province.id as usize] = province.state + 1;
-        }
-    }
-    let mut styles = BTreeMap::new();
-    let mut missing = 0;
-    for &state in &owned {
-        let Some(row) = by_state.get(&state) else {
-            missing += 1;
-            continue;
-        };
-        let color = if row.country as i32 > 0 {
-            let (list, level) = if compliance {
-                (&defines.compliance_colors, row.compliance)
-            } else {
-                (&defines.resistance_colors, row.level)
-            };
-            list.color(level as f32 / RESISTANCE_SCALE)
-        } else {
-            defines.resistance_uninitialised
-        };
-        styles.insert(state + 1, style(color));
-    }
-    if missing != 0 {
-        warnings.push(format!(
-            "The {mode} map mode leaves {missing} controlled states unfilled without a StateResistance row"
-        ));
-    }
-    warnings.push(format!(
-        "The {mode} map mode shows the recording's sampled StateResistance values"
-    ));
-    Ok(Some(finish(
-        region_of,
+    Ok(Some(ModeLayer {
+        region_of: membership::plane(inputs, 1, &styles)?,
         styles,
-        Some(defines.resistance_thickness),
-        Some(LEVEL_GRADIENT),
-        [0.0, defines.resistance_cutoff],
-    )))
-}
-
-fn scripted_fill(name: &str, inputs: &Inputs) -> io::Result<ModeFill> {
-    let Some(mode) = inputs.content.scripted.get(name) else {
-        return Ok(refusal(vec![format!(
-            "The scripted map mode {name} is not declared by this recording's content"
-        )]));
-    };
-    let mut warnings = Vec::new();
-    let previous = inputs.colour.filter(|state| state.mode == name);
-    let scheduled = colour_script::refreshes(previous, mode.update_daily, inputs.frame.hour);
-    let forced = if scheduled {
-        Ok(false)
-    } else {
-        colour_script::forced_refresh(name, inputs)
-    };
-    let refresh = scheduled || forced.as_ref().is_ok_and(|value| *value);
-    let mut kept: [colour_script::LayerState; 2] = Default::default();
-    let mut coloured = false;
-    let political = inputs.content.defines.country_channel;
-    let mut draw = Draw::of([Source::Empty; 2], political);
-    // The game layer each mode slot holds, so a layer both sides name shows in both.
-    let mut held: Vec<(GameLayer, Source)> = Vec::new();
-    // The bottom layer is channel 1 and the top layer channel 2. The country layer is one
-    // object, so when both sides choose a variant of it, the top's variant shows in both.
-    for (channel, (side, layer)) in [("bottom", &mode.bottom), ("top", &mode.top)]
-        .into_iter()
-        .enumerate()
-    {
-        draw.channels[channel] = match layer.kind {
-            LayerType::None => Source::Empty,
-            LayerType::Game(game) => {
-                let variant = match game {
-                    GameLayer::Country => Some(Variant::Country),
-                    GameLayer::Players => Some(Variant::Players),
-                    GameLayer::Factions => Some(Variant::Factions),
-                    GameLayer::Ideology => Some(Variant::Ideology),
-                    GameLayer::States | GameLayer::Diplomacy => None,
-                };
-                match variant {
-                    Some(variant) => {
-                        let country = country_variant(variant, inputs, &mut warnings)?;
-                        let source = built(&country, Source::Country);
-                        if channel == 1 && draw.channels[0] == Source::Country {
-                            draw.channels[0] = source;
-                        }
-                        draw.country = country;
-                        source
-                    }
-                    // The same game layer in both channels is one layer shown twice.
-                    None if held.iter().any(|(layer, _)| *layer == game) => held
-                        .iter()
-                        .find_map(|&(layer, source)| (layer == game).then_some(source))
-                        .unwrap_or(Source::Empty),
-                    None => {
-                        let layer = if game == GameLayer::States {
-                            states(inputs, &mut warnings)?
-                        } else {
-                            diplomacy(inputs, &mut warnings)?
-                        };
-                        // A second distinct layer takes the country layer's place, which then
-                        // shows in neither channel.
-                        let (slot, source) = if draw.layer.is_none() {
-                            (&mut draw.layer, Source::Mode)
-                        } else {
-                            (&mut draw.second, Source::Second)
-                        };
-                        let source = built(&layer, source);
-                        *slot = layer;
-                        held.push((game, source));
-                        source
-                    }
-                }
-            }
-            LayerType::Country | LayerType::State | LayerType::StateController => {
-                coloured = true;
-                let borders = if let Err(why) = &forced {
-                    warnings.push(why.clone());
-                    colour_script::LayerState {
-                        borders: BTreeMap::new(),
-                        refusals: vec![why.clone()],
-                        refused: true,
-                    }
-                } else {
-                    colour_script::borders(
-                        name,
-                        side,
-                        layer,
-                        inputs,
-                        previous.map(|state| &state.layers[channel]),
-                        refresh,
-                        &mut warnings,
-                    )
-                };
-                let built_layer = (!borders.refused)
-                    .then(|| colour_script::layer(layer, &borders.borders, inputs));
-                kept[channel] = borders;
-                let (slot, source) = if draw.layer.is_none() {
-                    (&mut draw.layer, Source::Mode)
-                } else {
-                    (&mut draw.second, Source::Second)
-                };
-                let source = built(&built_layer, source);
-                *slot = built_layer;
-                source
-            }
-        };
-    }
-    Ok(ModeFill {
-        draw: Some(draw),
-        warnings,
-        colour: coloured.then(|| {
-            Arc::new(ColourState {
-                mode: name.to_owned(),
-                layers: kept,
-            })
-        }),
-    })
+        thickness: Some(defines.resistance_thickness),
+        gradient: Some(LEVEL_GRADIENT),
+        channel: [0.0, defines.resistance_cutoff],
+    }))
 }
 
 pub mod visibility;

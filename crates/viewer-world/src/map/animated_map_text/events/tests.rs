@@ -1018,3 +1018,70 @@ fn fresh_context_same_hour_does_not_reemit_but_branch_and_perspective_reset_do()
     assert!(batch.reset);
     assert_eq!(batch.popups.len(), 1);
 }
+
+#[test]
+fn closed_display_round_trip_keeps_order_unknowns_refusals_and_impact_bits() {
+    let family = MapEventFamily::ALL[0];
+    let prepared = Prepared {
+        view: 1500,
+        interval: Ok(PreparedInterval {
+            boundary: Boundary {
+                branch: 7,
+                epoch: 3,
+                from_hour: 39,
+                to_hour: 40,
+                first: 9,
+                next: 12,
+            },
+            in_flight: true,
+            coverage: std::array::from_fn(|i| i % 2 == 0),
+            coverage_refusals: vec!["synthetic gap B".into(), "synthetic gap A".into()],
+            events: vec![
+                PreparedEvent {
+                    sequence: 11,
+                    family,
+                    popup: Err("synthetic popup refusal".into()),
+                    explosion: Some(Err("synthetic anchor refusal".into())),
+                },
+                PreparedEvent {
+                    sequence: 9,
+                    family,
+                    popup: Ok(Some(Popup {
+                        sequence: 9,
+                        family,
+                        province: 44,
+                        style: Style::SiegeInfo,
+                        text: b"synthetic text".to_vec(),
+                    })),
+                    explosion: Some(Ok(Impact {
+                        id: 9,
+                        province: 44,
+                        effect: Effect::CriticalBombardment,
+                        position: [-0.0, f32::from_bits(0x7fc00123), 1.0],
+                        bounds: [-1.0, 0.0, 2.0, 3.0],
+                    })),
+                },
+                PreparedEvent {
+                    sequence: 10,
+                    family,
+                    popup: Ok(None),
+                    explosion: None,
+                },
+            ],
+        }),
+    };
+    let before = prepared.display();
+    let bytes = product_codec::encode(&before).unwrap();
+    let restored = Prepared::from_display(product_codec::decode(&bytes).unwrap()).unwrap();
+    assert_eq!(product_codec::encode(&restored.display()).unwrap(), bytes);
+    assert_eq!(format!("{restored:?}"), format!("{prepared:?}"));
+    let unavailable = Prepared::unavailable(1500, "synthetic source is unavailable".into());
+    let wire = product_codec::encode(&unavailable.display()).unwrap();
+    let restored = Prepared::from_display(product_codec::decode(&wire).unwrap()).unwrap();
+    assert_eq!(format!("{restored:?}"), format!("{unavailable:?}"));
+    let mut invalid = before;
+    if let map_display_data::MapTextResult::Value { interval } = &mut invalid.interval {
+        interval.coverage.pop();
+    }
+    assert!(Prepared::from_display(invalid).is_err());
+}

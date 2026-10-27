@@ -39,9 +39,10 @@ fn full_pool_does_not_prevent_older_completion_or_retarget() {
     admit_all(&mut ledger, 1);
     plan(&mut ledger, 2, 0, 11, &[1]);
     assert!(ledger.decoded(2, 0));
-    // Adapter receives Full for this closure and keeps it without calling accepted.
-    assert_eq!(ledger.next_admission(), Some((2, 0)));
+    // A byte-credit retry of1 must not wait behind workers occupied by2.
+    assert_eq!(ledger.next_admission(), None);
     finish_all(&mut ledger, 1);
+    assert_eq!(ledger.next_admission(), Some((2, 0)));
     assert_eq!(ledger.ready(), [1]);
     // A new Want can supersede wholly unaccepted2 while1 remains deliverable.
     assert_eq!(ledger.retarget(|_, key| key.1 == 10), [2]);

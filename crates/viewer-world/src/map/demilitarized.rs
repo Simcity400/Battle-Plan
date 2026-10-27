@@ -521,7 +521,6 @@ pub fn parse_states(value: &str) -> io::Result<BTreeSet<u32>> {
 mod tests {
     use super::*;
     use installed_content_core::{map::CountryColors, map::ProvinceDefinition};
-    use std::collections::HashMap;
 
     #[test]
     fn hidden_zones_draw_their_edges_as_ordinary_borders_or_not_at_all() {
@@ -650,10 +649,10 @@ mod tests {
 
     fn regions(state_of: &[u32]) -> Regions {
         Regions {
-            country_of: vec![0; state_of.len()],
-            owner_of: vec![0; state_of.len()],
-            state_of: state_of.to_vec(),
-            country_colors: HashMap::new(),
+            country_of: vec![0; state_of.len()].into(),
+            owner_of: vec![0; state_of.len()].into(),
+            state_of: state_of.to_vec().into(),
+            country_colors: Default::default(),
             warnings: Vec::new(),
             strategic_attributes: Default::default(),
             mode: None,

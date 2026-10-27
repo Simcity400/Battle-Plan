@@ -14,17 +14,31 @@ pub(super) struct DecoderState {
 }
 impl DecoderState {
     fn seed(&mut self, playback: Playback) {
+        self.frames.clear();
         if let Current::Frame(frame) = playback.current() {
             self.frames
                 .insert((frame.branch, frame.hour), Arc::downgrade(frame));
         }
-        self.playback = playback;
+        self.playback = playback.with_display_changes();
     }
+    #[cfg(test)]
     fn frame(&mut self, branch: BranchId, hour: Hour) -> io::Result<Current> {
+        self.frame_cancellable(branch, hour, &|| false)
+    }
+    fn frame_cancellable(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<Current> {
+        if cancelled() {
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
         if let Some(frame) = self.frames.get(&(branch, hour)).and_then(Weak::upgrade) {
             return Ok(Current::Frame(frame));
         }
-        self.playback.seek(branch, hour)?;
+        self.playback
+            .seek_cancellable(branch, hour, |_| {}, cancelled)?;
         let current = self.playback.current().clone();
         self.frames.retain(|_, frame| frame.strong_count() > 0);
         if let Current::Frame(frame) = &current {
@@ -36,7 +50,7 @@ impl DecoderState {
 impl SharedDecoder {
     pub(super) fn new(replay: Arc<Replay>) -> io::Result<Self> {
         let state = Arc::new(Mutex::new(DecoderState {
-            playback: Playback::unloaded(replay)?,
+            playback: Playback::unloaded(replay)?.with_display_changes(),
             frames: BTreeMap::new(),
         }));
         let actor = Actor::start(state.clone())?;
@@ -84,6 +98,7 @@ struct Clients {
 struct Actor {
     events: Sender<Command>,
     clients: Arc<Mutex<Clients>>,
+    closing: Arc<AtomicBool>,
 }
 struct Exit(Arc<Mutex<Clients>>);
 impl Drop for Exit {
@@ -159,6 +174,8 @@ impl Actor {
         let clients = Arc::new(Mutex::new(Clients::default()));
         let registry = clients.clone();
         let events_for_thread = events.clone();
+        let closing = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&closing);
         thread::Builder::new()
             .name("map source decoder".into())
             .spawn(move || {
@@ -188,11 +205,44 @@ impl Actor {
                             let clock = trace::DecodeClock::start(
                                 viewer_foundation::profile_writer::profiling(),
                             );
-                            let result = state
+                            let owner = state
                                 .lock()
-                                .map_err(|_| stopped())
-                                .and_then(|mut state| state.frame(branch, hour));
+                                .unwrap_or_else(|p| p.into_inner())
+                                .playback
+                                .change_memory_owner()
+                                .clone();
+                            let releases = owner.track_releases();
+                            let attempt = owner.release_token();
+                            let result =
+                                state.lock().map_err(|_| stopped()).and_then(|mut state| {
+                                    state.frame_cancellable(branch, hour, &|| {
+                                        read.cancelled() || stopping.load(Ordering::Acquire)
+                                    })
+                                });
                             let sample = clock.finish(branch, hour);
+                            if result
+                                .as_ref()
+                                .is_err_and(|error| error.kind() == io::ErrorKind::Interrupted)
+                            {
+                                drop(read);
+                                continue;
+                            }
+                            if let Err(error) = &result
+                                && source_pressure(error)
+                            {
+                                let state = state.lock().unwrap_or_else(|p| p.into_inner());
+                                let pressure = DecodePressure::from_error(
+                                    error,
+                                    state.playback.walk_start(branch, hour),
+                                    state.playback.change_memory_owner(),
+                                    attempt,
+                                )
+                                .expect("resource pressure");
+                                drop(state);
+                                drop(releases);
+                                read.pressure(pressure);
+                                continue;
+                            }
                             read.ready(
                                 result.unwrap_or_else(|error| Current::Gap {
                                     branch,
@@ -205,11 +255,16 @@ impl Actor {
                     }
                 }
             })?;
-        Ok(Self { events, clients })
+        Ok(Self {
+            events,
+            clients,
+            closing,
+        })
     }
 }
 impl Drop for Actor {
     fn drop(&mut self) {
+        self.closing.store(true, Ordering::Release);
         let _ = self.events.send(Command::Shutdown);
     }
 }

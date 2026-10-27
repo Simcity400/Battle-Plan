@@ -6,7 +6,7 @@ use installed_content_core::{
     parser::{self, Value},
 };
 use installed_content_regions::regions::StrategicRegion;
-use std::{collections::BTreeMap, io, sync::Arc};
+use std::{collections::BTreeMap, io};
 
 const SNOW_FIXED_POINT: f32 = 100_000.0;
 pub const BAND_EPSILON: f32 = 0.001;
@@ -104,7 +104,7 @@ pub struct SnowRecord {
 }
 
 /// One winter factor per box volume, prepared in the content's volume order.
-pub type SnowFactors = Arc<[Option<f32>]>;
+pub use map_display_data::winter::SnowFactors;
 
 #[derive(Clone, Debug)]
 pub struct BoxVolume {

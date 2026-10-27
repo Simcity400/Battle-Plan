@@ -353,14 +353,25 @@ impl Vision {
         choice: &Choice,
         fog: Result<&FogContent, &'static str>,
     ) -> io::Result<Self> {
-        let (ours, resolution) = viewer(frame, links, tags, &choice.country)?;
+        let resolved = viewer(frame, links, tags, &choice.country)?;
+        Self::read_resolved(frame, links, tags, choice.fog, resolved, fog)
+    }
+
+    pub fn read_resolved(
+        frame: &DecodedFrame,
+        links: &BTreeMap<u32, u32>,
+        tags: &BTreeMap<u32, String>,
+        fog_enabled: bool,
+        (ours, resolution): (u32, Resolution),
+        fog: Result<&FogContent, &'static str>,
+    ) -> io::Result<Self> {
         let unrecorded = FOG_TABLES
             .iter()
             .any(|table| matches!(*frame.tables[table.index()], TableView::NotRecorded { .. }));
         let mut vision = Self {
             ours,
             resolution,
-            fog: choice.fog && !unrecorded,
+            fog: fog_enabled && !unrecorded,
             ..Self::default()
         };
 

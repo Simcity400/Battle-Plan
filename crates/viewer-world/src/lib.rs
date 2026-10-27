@@ -6,6 +6,13 @@
 static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod map {
+    pub(crate) fn next_projection_id() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .expect("projection identity space exhausted")
+    }
+
     pub mod adjacency_icons;
     pub mod air_assignment;
     pub mod air_orders;
@@ -50,6 +57,7 @@ pub mod map {
     pub mod political;
     pub mod political_gpu;
     pub mod post;
+    pub mod projection_fold;
     pub mod radar_symbols;
     pub mod rail_shader;
     pub mod railways;

@@ -352,6 +352,10 @@ fn scripted_refusals_and_child_prefixes_keep_fixed_part_priority() {
 // Driver::event/turn, its real bounded Pool, mailboxes, ledger and output.
 struct TestBuilder {
     state: CoordinatorState,
+    fill: fn(
+        &replay_frame::frame::DecodedFrame,
+        Option<&viewer_world::map::map_mode::ColourState>,
+    ) -> io::Result<dispatch_plan::Colour>,
     colours: Arc<Mutex<Vec<Result<dispatch_plan::Colour, String>>>>,
 }
 impl std::ops::Deref for TestBuilder {
@@ -401,7 +405,7 @@ fn gap_built(hour: Hour, reason: &str) -> Built {
 }
 impl BuildTarget for TestBuilder {
     fn colour_work(&self, plan: &mut DispatchPlan, current: Current) -> Box<dyn FnOnce() + Send> {
-        plan.colour_work(current, self.events.clone(), colour_fill)
+        plan.colour_work(current, self.events.clone(), self.fill)
     }
     fn prepare(&mut self, plan: DispatchPlan, current: Current) -> PreparedTarget {
         if let Current::Gap { reason, .. } = &current {
@@ -412,7 +416,7 @@ impl BuildTarget for TestBuilder {
         }
         if let Some(colour) = plan.colour {
             let colour =
-                colour.and_then(|colour| carry_colour(colour, [current.clone()], colour_fill));
+                colour.and_then(|colour| carry_colour(colour, [current.clone()], self.fill));
             self.colours
                 .lock()
                 .unwrap()
@@ -452,17 +456,36 @@ impl BuildTarget for TestBuilder {
         PreparedTarget::Parts(Box::new(pending), jobs)
     }
 }
+fn output_hour(output: Output) -> Built {
+    match output {
+        Output::Hour(built) => built,
+        Output::Pressure => panic!("unexpected pressure notice"),
+    }
+}
 struct RealDriver {
     driver: Driver<TestBuilder>,
     inbox: Receiver<Event>,
-    results: Receiver<Built>,
+    results: Receiver<Output>,
 }
 impl RealDriver {
     fn new(pool: Arc<Pool>) -> Self {
-        let replay = Arc::new(crate::playback::tests::fixture());
+        Self::over(
+            pool,
+            Arc::new(crate::playback::tests::fixture()),
+            SourceMailbox::new(|_| true),
+            map_display_data::credit::display_products(),
+        )
+    }
+    fn over(
+        pool: Arc<Pool>,
+        replay: Arc<Replay>,
+        source: Arc<SourceMailbox>,
+        owner: &engine_allocation::credit::MemoryBudget,
+    ) -> Self {
         let (events, inbox) = mpsc::channel();
         let (outbox, results) = mpsc::sync_channel(1);
         let core = TestBuilder {
+            fill: colour_fill,
             colours: Default::default(),
             state: CoordinatorState {
                 device: Default::default(),
@@ -488,16 +511,19 @@ impl RealDriver {
                 events,
                 outbox,
                 result_space: Default::default(),
+                refusal: Default::default(),
             },
         };
-        let source = SourceMailbox::new(|_| true);
         let mut fixture = Self {
-            driver: Driver::new(core, source),
+            driver: Driver::new(core, source, owner).unwrap(),
             inbox,
             results,
         };
         fixture.want(0, 100, false);
         fixture
+    }
+    fn take_output(&self) -> Built {
+        output_hour(self.results.try_recv().unwrap())
     }
     fn want(&mut self, epoch: u64, hour: Hour, scripted: bool) {
         let want = Want {
@@ -611,7 +637,7 @@ fn real_driver_pool_space_retries_owned_jobs_and_result_space_releases_complete_
     f.driver
         .core
         .outbox
-        .try_send(gap_built(99, "occupy output"))
+        .try_send(Output::Hour(gap_built(99, "occupy output")))
         .ok()
         .unwrap();
     assert!(matches!(f.driver.turn(), Turn::Progress));
@@ -621,12 +647,12 @@ fn real_driver_pool_space_retries_owned_jobs_and_result_space_releases_complete_
         f.driver.targets[&ticket],
         PreparedTarget::Ready(_)
     ));
-    assert_eq!(f.results.try_recv().unwrap().hour, 99);
+    assert_eq!(f.take_output().hour, 99);
     f.driver.core.result_space.store(true, Ordering::Release);
     assert!(f.driver.event(Event::ResultSpace));
     assert!(!f.driver.core.result_space.load(Ordering::Acquire));
     f.driver.turn();
-    let built = f.results.try_recv().unwrap();
+    let built = f.take_output();
     assert_eq!((built.branch, built.hour), (1, 100));
     assert_eq!(
         built.layers.err().unwrap(),
@@ -650,7 +676,7 @@ fn real_driver_assembles_completed_parts_while_the_next_source_reply_is_withheld
     let reading = f.driver.reading.as_ref().unwrap().ticket;
     f.finish_parts();
     f.driver.turn();
-    assert_eq!(f.results.try_recv().unwrap().hour, 100);
+    assert_eq!(f.take_output().hour, 100);
     assert_eq!(f.driver.reading.as_ref().unwrap().ticket, reading);
     f.want(1, 105, false); // actual in-flight cancellation acknowledgement
     while f.driver.reading.is_some() {
@@ -672,7 +698,6 @@ fn real_driver_native_colour_folds_release_each_frame_and_match_collected_refere
         // predecessor; the colour starts cold, exactly as before.
         let slots = Slots::new();
         Fill(slots.political.clone()).set(None);
-        slots.without_buildings_state();
         let plan = f.driver.decode.as_mut().unwrap();
         plan.previous = Some((99, slots));
         plan.next_source = 100;
@@ -785,7 +810,7 @@ fn real_driver_retired_accepted_colour_fold_keeps_credit_until_its_reply() {
     f.plan_and_request();
     f.reply(fixed_gap(105, "new epoch"));
     f.driver.turn();
-    let built = f.results.try_recv().unwrap();
+    let built = f.take_output();
     assert_eq!(
         (built.epoch, built.hour, built.layers.err().unwrap()),
         (1, 105, "new epoch".into())
@@ -828,4 +853,789 @@ fn real_driver_unaccepted_colour_fold_releases_its_frame_on_supersession() {
     release.send(()).unwrap();
 }
 
+mod credit_pressure;
 mod grid;
+
+#[test]
+fn original_ticket_is_completed_once_after_a_byte_credit_retry() {
+    let pool = Arc::new(Pool::new(1).unwrap());
+    let mut f = RealDriver::new(pool);
+    f.plan_and_request();
+    f.reply(super::super::tests::sized_frame(100, 1));
+    let ticket = *f.driver.targets.keys().next().unwrap();
+    let Some(PreparedTarget::Parts(_, jobs)) = f.driver.targets.get_mut(&ticket) else {
+        panic!("parts")
+    };
+    let original = jobs.pop_front().unwrap();
+    let events = f.driver.core.events.clone();
+    jobs.push_front(HeldJob {
+        name: original.name,
+        work: Box::new(move || {
+            let generation = map_display_data::credit::display_products().generation();
+            events
+                .send(Event::RetryPart {
+                    ticket,
+                    generation,
+                    reason: "synthetic part bytes pinned".into(),
+                    job: original,
+                })
+                .unwrap();
+        }),
+    });
+    f.admit_parts();
+    loop {
+        let complete = match f.driver.targets.get(&ticket).unwrap() {
+            PreparedTarget::Parts(pending, _) => pending.received == 7,
+            _ => false,
+        };
+        if complete && !f.driver.retries.is_empty() {
+            break;
+        }
+        f.next_event();
+    }
+    assert!(f.driver.ledger.ready().is_empty());
+    f.driver.pool_blocked = true;
+    assert!(matches!(f.driver.turn(), Turn::Progress));
+    assert!(matches!(f.results.try_recv().unwrap(), Output::Pressure));
+    assert_eq!(
+        f.driver
+            .core
+            .refusal
+            .for_target(0, (1, 100))
+            .unwrap_err()
+            .to_string(),
+        "display political awaits credit: synthetic part bytes pinned"
+    );
+    assert!(f.driver.event(Event::ResultSpace));
+    f.driver.pool_blocked = false;
+    let retry = f.driver.retries.values_mut().next().unwrap();
+    retry.0 = map_display_data::credit::display_products()
+        .generation()
+        .wrapping_sub(1);
+    assert!(matches!(f.driver.turn(), Turn::Progress));
+    while f.driver.ledger.ready().is_empty() {
+        f.next_event();
+    }
+    assert!(f.driver.retries.is_empty());
+    assert!(matches!(f.driver.turn(), Turn::Progress));
+    assert_eq!(f.take_output().hour, 100);
+    assert!(f.results.try_recv().is_err());
+}
+
+#[test]
+fn product_releases_without_waiters_stay_coalesced() {
+    let pool = Arc::new(Pool::new(1).unwrap());
+    let mut f = RealDriver::new(pool);
+    let owner = map_display_data::credit::MemoryBudget::new(8192);
+    let wakes = Arc::new(AtomicU64::new(0));
+    let callback = Arc::clone(&wakes);
+    f.driver.product_space = Some(
+        owner
+            .listen(move || {
+                callback.fetch_add(1, Ordering::Relaxed);
+            })
+            .unwrap(),
+    );
+    drop(owner.admit_item(1).unwrap());
+    assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    assert!(f.driver.event(Event::ProductSpace));
+    f.driver.turn();
+    for _ in 0..1500 {
+        drop(owner.admit_item(1).unwrap());
+    }
+    assert_eq!(wakes.load(Ordering::Relaxed), 1, "no per-node idle wake");
+    let generation = f.driver.product_space.as_ref().unwrap().acknowledge();
+    drop(owner.admit_item(1).unwrap());
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        2,
+        "a waiter can rearm releases"
+    );
+    assert_ne!(generation, owner.generation());
+}
+
+fn kept_border_fill(
+    frame: &replay_frame::frame::DecodedFrame,
+    previous: Option<&viewer_world::map::map_mode::ColourState>,
+) -> io::Result<dispatch_plan::Colour> {
+    use map_display_data::landscape::{
+        self, ColourOp, ColourState, LayerProgram, ProvinceIds, Style, TargetId, TargetOp,
+        TargetPrograms,
+    };
+    let provinces = ProvinceIds([1, 2].into_iter().try_fold(
+        Default::default(),
+        |ids: map_display_data::value_index::ValueIndex<u32, ()>, id| ids.inserted(id, ()),
+    )?);
+    let id = TargetId::Country(1);
+    let target = map_display_data::retained::Retained::build(0, || TargetOp {
+        id,
+        provinces,
+        operation: if frame.hour == 10 || frame.hour == 100 {
+            ColourOp::Set {
+                style: Style {
+                    color: [7, 19, 31, 255],
+                    pulse: false,
+                    fill: 0.5,
+                },
+            }
+        } else {
+            ColourOp::Keep {}
+        },
+    })?;
+    let program = LayerProgram {
+        targets: TargetPrograms(Default::default())
+            .0
+            .inserted(id, target)
+            .map(TargetPrograms)?,
+        ..Default::default()
+    };
+    Ok(Some(Arc::new(ColourState {
+        mode: format!(
+            "{}:{}",
+            previous.map_or("border", |colour| colour.mode.as_str()),
+            frame.hour
+        ),
+        layers: [
+            landscape::apply_layer(&program, previous.map(|colour| &colour.layers[0])),
+            Default::default(),
+        ],
+    })))
+}
+
+// The real source actors and Driver pump run here; only authored colour/body work is synthetic.
+enum PressureSource {
+    Lane(DecodeLane),
+    Shared(SharedDecoder),
+}
+impl PressureSource {
+    fn client(&self) -> Arc<SourceMailbox> {
+        match self {
+            Self::Lane(lane) => lane.client(),
+            Self::Shared(actor) => actor.client(),
+        }
+    }
+}
+struct PressureFixture {
+    pump: RealDriver,
+    source: PressureSource,
+    owner: engine_allocation::credit::MemoryBudget,
+    prepared: Option<(std::path::PathBuf, uuid::Uuid)>,
+}
+impl PressureFixture {
+    fn new(prepared: bool, shared: bool) -> Self {
+        Self::span(prepared, shared, 10, 15, 15)
+    }
+    fn span(prepared: bool, shared: bool, first: Hour, last: Hour, endpoint: Hour) -> Self {
+        let replay = Arc::new(
+            Replay::from_records(
+                b"campaign".to_vec(),
+                &[crate::playback::tests::records(
+                    1,
+                    &(first..=last).collect::<Vec<_>>(),
+                )],
+            )
+            .unwrap(),
+        );
+        let owner = engine_allocation::credit::MemoryBudget::new(1_000_000);
+        let mut playback = Playback::unloaded(replay.clone())
+            .unwrap()
+            .with_change_budget(owner.clone());
+        let prepared = if prepared {
+            let (map, path, id) = super::super::tests::paged_map(&replay);
+            playback = playback.with_checkpoints(map);
+            Some((path, id))
+        } else {
+            None
+        };
+        playback.seek(1, first).unwrap();
+        let Current::Frame(initial) = playback.current() else {
+            panic!("recorded first frame")
+        };
+        let colour = kept_border_fill(initial, None).unwrap();
+        let source = if shared {
+            let actor = SharedDecoder::new(replay.clone()).unwrap();
+            actor.seed(playback).unwrap();
+            PressureSource::Shared(actor)
+        } else {
+            PressureSource::Lane(DecodeLane::start(playback).unwrap())
+        };
+        let mut pump = RealDriver::over(
+            Arc::new(Pool::new(1).unwrap()),
+            replay,
+            source.client(),
+            &owner,
+        );
+        pump.driver.core.fill = kept_border_fill;
+        pump.want(0, endpoint, true);
+        assert!(matches!(pump.driver.turn(), Turn::Progress));
+        let plan = pump.driver.decode.as_mut().unwrap();
+        plan.next_source = first + 1;
+        plan.colour = Some(Ok(colour));
+        Self {
+            pump,
+            source,
+            owner,
+            prepared,
+        }
+    }
+    fn source_reply(&mut self) {
+        loop {
+            let event = self
+                .pump
+                .inbox
+                .recv_timeout(crate::map::test_support::TEST_HANG_GUARD)
+                .unwrap();
+            let frame = matches!(event, Event::Frame { .. });
+            assert!(self.pump.driver.event(event));
+            if frame {
+                return;
+            }
+        }
+    }
+    fn fold(&mut self, hour: Hour) {
+        assert_eq!(self.pump.driver.decode.as_ref().unwrap().next_source, hour);
+        assert!(matches!(self.pump.driver.turn(), Turn::Progress));
+        self.source_reply();
+        assert!(self.pump.driver.history.is_some());
+        assert!(matches!(self.pump.driver.turn(), Turn::Progress));
+        while self.pump.driver.history.is_some() {
+            self.pump.next_event();
+        }
+        assert_eq!(
+            self.pump.driver.decode.as_ref().unwrap().next_source,
+            hour + 1
+        );
+    }
+    fn pressure(&mut self, hour: Hour) -> engine_allocation::credit::Credit {
+        let held = self
+            .owner
+            .admit(self.owner.limit() - self.owner.used())
+            .unwrap();
+        assert!(matches!(self.pump.driver.turn(), Turn::Progress));
+        self.source_reply();
+        let driver = &mut self.pump.driver;
+        let plan = driver.decode.as_ref().unwrap();
+        assert_eq!((plan.hour, plan.next_source), (15, hour));
+        assert!(driver.source_retry.is_some());
+        assert!(driver.history.is_none());
+        assert!(driver.targets.is_empty());
+        assert!(driver.core.sent.is_empty());
+        assert_eq!(driver.core.sends, 0);
+        assert!(driver.core.slots.is_empty());
+        assert_eq!(
+            driver.ledger.get(plan.ticket).unwrap().phase,
+            flow::Phase::Decode
+        );
+        assert_eq!(
+            driver
+                .core
+                .refusal
+                .current
+                .lock()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .reason,
+            "display change-fact working set remains pinned; common paging is required"
+        );
+        if let PressureSource::Lane(lane) = &self.source {
+            let state = DecodeLane::lock(&lane.shared);
+            assert!(!state.frames.contains_key(&(1, hour)));
+            assert_eq!(state.pressure, Some((1, hour)));
+        }
+        held
+    }
+    fn park_and_release(&mut self, held: engine_allocation::credit::Credit) {
+        // A named notice travels outside Built; taking it never acknowledges an hour.
+        assert!(matches!(self.pump.driver.turn(), Turn::Progress));
+        assert!(matches!(
+            self.pump.results.try_recv().unwrap(),
+            Output::Pressure
+        ));
+        assert!(self.pump.driver.event(Event::ResultSpace));
+        assert!(matches!(self.pump.driver.turn(), Turn::Park));
+        assert!(self.pump.driver.reading.is_none());
+        while let Ok(event) = self.pump.inbox.try_recv() {
+            assert!(self.pump.driver.event(event));
+        }
+        self.pump
+            .driver
+            .product_space
+            .as_ref()
+            .unwrap()
+            .acknowledge();
+        drop(held);
+        assert!(matches!(
+            self.pump
+                .inbox
+                .recv_timeout(crate::map::test_support::TEST_HANG_GUARD)
+                .unwrap(),
+            Event::ProductSpace
+        ));
+        // No Want, timer or polling: the owner release is the only wake.
+        assert!(self.pump.driver.event(Event::ProductSpace));
+        assert!(matches!(self.pump.driver.turn(), Turn::Progress));
+        self.source_reply();
+        assert!(self.pump.driver.source_retry.is_none());
+        assert!(
+            self.pump
+                .driver
+                .core
+                .refusal
+                .current
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    fn finish(mut self) {
+        let actual = self
+            .pump
+            .driver
+            .core
+            .colours
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        use map_display_data::landscape::{Border, Style, TargetId};
+        assert_eq!(actual.mode, "border:10:11:12:13:14:15");
+        assert_eq!(
+            actual.layers[0].borders,
+            BTreeMap::from([(
+                TargetId::Country(1),
+                Border {
+                    provinces: vec![1, 2],
+                    style: Some(Style {
+                        color: [7, 19, 31, 255],
+                        pulse: false,
+                        fill: 0.5
+                    })
+                }
+            )])
+        );
+        assert!(!actual.layers[0].refused);
+        self.pump.admit_parts();
+        self.pump.finish_parts();
+        self.pump.driver.turn();
+        let built = self.pump.take_output();
+        assert_eq!((built.epoch, built.branch, built.hour), (0, 1, 15));
+        assert!(matches!(built.current, Current::Frame(ref frame) if frame.hour == 15));
+        assert_eq!(self.pump.driver.core.sends, 1);
+        assert_eq!(
+            self.pump
+                .driver
+                .core
+                .sent
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            [(1, 15)]
+        );
+        assert!(self.pump.results.try_recv().is_err());
+        self.close();
+    }
+    fn close(mut self) {
+        drop(self.pump);
+        drop(self.source);
+        if let Some((path, id)) = self.prepared.take() {
+            let _ = store::Store::local(id).unwrap().clear();
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[test]
+fn intermediate_pressure_through_lane_and_coordinator_preserves_keep_borders_for_both_readers() {
+    for prepared in [false, true] {
+        for shared in [false, true] {
+            let mut f = PressureFixture::new(prepared, shared);
+            f.fold(11);
+            let pin = super::super::tests::source_frame(&f.source.client(), 1, 11);
+            let before = f
+                .pump
+                .driver
+                .decode
+                .as_ref()
+                .unwrap()
+                .colour
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .clone();
+            let held = f.pressure(12);
+            let after = f
+                .pump
+                .driver
+                .decode
+                .as_ref()
+                .unwrap()
+                .colour
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .clone();
+            assert!(Arc::ptr_eq(
+                before.as_ref().unwrap(),
+                after.as_ref().unwrap()
+            ));
+            assert_eq!(after.unwrap().mode, "border:10:11");
+            f.park_and_release(held);
+            assert!(f.pump.driver.history.is_some());
+            assert!(matches!(f.pump.driver.turn(), Turn::Progress));
+            while f.pump.driver.history.is_some() {
+                f.pump.next_event();
+            }
+            assert_eq!(f.pump.driver.decode.as_ref().unwrap().next_source, 13);
+            f.fold(13);
+            f.fold(14);
+            assert!(matches!(f.pump.driver.turn(), Turn::Progress));
+            f.source_reply();
+            drop(pin);
+            f.finish();
+        }
+    }
+}
+
+#[test]
+fn endpoint_pressure_through_lane_and_coordinator_is_retried_and_never_cached_for_both_readers() {
+    for prepared in [false, true] {
+        for shared in [false, true] {
+            let mut f = PressureFixture::new(prepared, shared);
+            for hour in 11..=14 {
+                f.fold(hour);
+            }
+            let pin = super::super::tests::source_frame(&f.source.client(), 1, 14);
+            let held = f.pressure(15);
+            // A second client receives pressure, not a cached completed gap.
+            let (send, done) = mpsc::channel();
+            let second = f.source.client();
+            let _handle = second.post(next_id(), (1, 15), move |_, reply| {
+                send.send(reply).unwrap();
+            });
+            assert!(matches!(
+                done.recv_timeout(crate::map::test_support::TEST_HANG_GUARD)
+                    .unwrap(),
+                source_mailbox::Reply::Pressure(_)
+            ));
+            f.park_and_release(held);
+            assert!(f.pump.driver.decode.is_none());
+            let retry = super::super::tests::source_frame(&f.source.client(), 1, 15);
+            assert!(matches!(retry, Current::Frame(ref frame) if frame.hour == 15));
+            drop((pin, retry));
+            f.finish();
+        }
+    }
+}
+
+#[test]
+fn source_pressure_raced_release_retries_without_a_second_wake_and_supersession_clears_the_notice()
+{
+    let mut f = RealDriver::new(Arc::new(Pool::new(1).unwrap()));
+    let owner = engine_allocation::credit::MemoryBudget::new(8192);
+    let events = f.driver.core.events.clone();
+    f.driver.product_space = Some(
+        owner
+            .listen(move || {
+                let _ = events.send(Event::ProductSpace);
+            })
+            .unwrap(),
+    );
+    f.plan_and_request();
+    let ticket = f.driver.decode.as_ref().unwrap().ticket;
+    let held = owner.admit(owner.limit() - owner.used()).unwrap();
+    f.driver.source.take().unwrap().pressure(DecodePressure {
+        budget: owner.clone(),
+        bytes: 128,
+        cursor: Some(99),
+        release: owner.release_token(),
+        reason: "synthetic pinned working set".into(),
+    });
+    let reply = f
+        .inbox
+        .recv_timeout(crate::map::test_support::TEST_HANG_GUARD)
+        .unwrap();
+    drop(held); // release before the coordinator receives the pressure continuation
+    assert!(f.driver.event(reply));
+    assert!(matches!(f.driver.turn(), Turn::Progress));
+    assert!(f.driver.reading.is_some());
+    assert_eq!(f.driver.decode.as_ref().unwrap().ticket, ticket);
+    assert!(f.driver.core.sent.is_empty());
+    // A repeated synchronous refusal at the same cursor cannot spin on its own staging drops.
+    f.driver.source.take().unwrap().pressure(DecodePressure {
+        budget: owner.clone(),
+        bytes: 128,
+        cursor: Some(99),
+        release: owner.release_token(),
+        reason: "synthetic pinned working set".into(),
+    });
+    while f.driver.reading.is_some() {
+        f.next_event();
+    }
+    f.driver.turn();
+    assert!(f.driver.source_retry.as_ref().unwrap().needs_release);
+    assert!(matches!(f.driver.turn(), Turn::Park));
+    assert!(f.driver.reading.is_none());
+    assert_eq!(
+        f.driver
+            .core
+            .refusal
+            .current
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .reason,
+        "synthetic pinned working set"
+    );
+    drop(owner.admit(1).unwrap()); // even a net-zero allocation/release must wake this continuation
+    assert!(matches!(f.driver.turn(), Turn::Progress));
+    assert!(f.driver.reading.is_some());
+    f.want(1, 105, false);
+    while f.driver.reading.is_some() {
+        f.next_event();
+    }
+    assert!(f.driver.source_retry.is_none());
+    assert!(f.driver.core.refusal.current.lock().unwrap().is_empty());
+    assert!(f.driver.ledger.get(ticket).is_none());
+}
+
+#[test]
+fn repeated_admission_keeps_release_between_failure_and_error_conversion() {
+    use replay_data::rows::TableId;
+    use replay_frame::frame::FrameDecoder;
+    let mut f = RealDriver::new(Arc::new(Pool::new(1).unwrap()));
+    let owner = engine_allocation::credit::MemoryBudget::new(8192);
+    let events = f.driver.core.events.clone();
+    f.driver.product_space = Some(
+        owner
+            .listen(move || {
+                let _ = events.send(Event::ProductSpace);
+            })
+            .unwrap(),
+    );
+    let replay = Replay::from_records(
+        b"campaign".to_vec(),
+        &[crate::playback::tests::records(1, &[10, 11])],
+    )
+    .unwrap();
+    let replay::container::SeekResult::Frame(initial) = replay.seek(1, 10).unwrap() else {
+        panic!("recorded first hour")
+    };
+    let frames = replay.read_block(&replay.index[0]).unwrap();
+    assert_eq!(frames[1].hour, 11);
+    let mut decoder = FrameDecoder::resume_for_tables_with_change_facts(
+        &[TableId::Clock],
+        *initial,
+        owner.clone(),
+    )
+    .unwrap();
+    f.plan_and_request();
+    let held = owner.admit(owner.limit() - owner.used()).unwrap();
+    let scope = owner.track_releases();
+    let attempt = owner.release_token();
+    let error = decoder.advance(&frames[1]).unwrap_err();
+    assert!(FrameDecoder::change_fact_admission_refused(&error));
+    let pressure = DecodePressure::from_error(&error, Some(10), &owner, attempt).unwrap();
+    drop(scope);
+    f.driver.source.take().unwrap().pressure(pressure);
+    while f.driver.reading.is_some() {
+        f.next_event();
+    }
+    f.driver.turn();
+    assert!(matches!(f.results.try_recv().unwrap(), Output::Pressure));
+    f.driver.event(Event::ResultSpace);
+    drop(held);
+    assert!(matches!(f.driver.turn(), Turn::Progress));
+    assert!(f.driver.reading.is_some());
+
+    let mut held = owner.admit(owner.limit() - owner.used()).unwrap();
+    let cleanup = held.split_off(1);
+    let scope = owner.track_releases();
+    let attempt = owner.release_token();
+    let error = decoder.advance(&frames[1]).unwrap_err();
+    // Exact r5 interval: independent release after failure, before error conversion.
+    std::thread::spawn(move || drop(held)).join().unwrap();
+    drop(cleanup);
+    let pressure = DecodePressure::from_error(&error, Some(10), &owner, attempt).unwrap();
+    assert!(owner.released_since(pressure.release));
+    drop(scope);
+    f.driver.source.take().unwrap().pressure(pressure);
+    while f.driver.reading.is_some() {
+        f.next_event();
+    }
+    assert!(f.driver.source_retry.as_ref().unwrap().needs_release);
+    f.driver.turn();
+    assert!(
+        f.driver.reading.is_some(),
+        "queued ProductSpace must retry without a third release"
+    );
+    assert!(f.driver.source_retry.is_none());
+    assert_eq!(f.driver.decode.as_ref().unwrap().next_source, 100);
+    assert!(f.driver.core.sent.is_empty());
+    assert_eq!(decoder.current().unwrap().hour, 10);
+}
+
+#[test]
+fn a_paused_pressure_notice_repaints_on_release_and_completed_delivery() {
+    let mut f = RealDriver::new(Arc::new(Pool::new(1).unwrap()));
+    f.driver.core.want.as_mut().unwrap().playing = false;
+    let owner = engine_allocation::credit::MemoryBudget::new(8192);
+    let events = f.driver.core.events.clone();
+    f.driver.product_space = Some(
+        owner
+            .listen(move || {
+                let _ = events.send(Event::ProductSpace);
+            })
+            .unwrap(),
+    );
+    let context = eframe::egui::Context::default();
+    let wakes = Arc::new(AtomicU64::new(0));
+    let seen = wakes.clone();
+    context.set_request_repaint_callback(move |_| {
+        seen.fetch_add(1, Ordering::Relaxed);
+    });
+    f.driver.core.refusal.bind(&context);
+    f.plan_and_request();
+    let held = owner.admit(owner.limit() - owner.used()).unwrap();
+    f.driver.source.take().unwrap().pressure(DecodePressure {
+        budget: owner.clone(),
+        bytes: 128,
+        cursor: Some(99),
+        release: owner.release_token(),
+        reason: "paused display credit pinned".into(),
+    });
+    while f.driver.reading.is_some() {
+        f.next_event();
+    }
+    assert_eq!(
+        f.driver
+            .core
+            .refusal
+            .for_target(0, (1, 100))
+            .unwrap_err()
+            .to_string(),
+        "paused display credit pinned"
+    );
+    f.driver.turn();
+    let _ = f.results.try_recv().unwrap();
+    f.driver.event(Event::ResultSpace);
+    f.driver.turn();
+    while let Ok(event) = f.inbox.try_recv() {
+        f.driver.event(event);
+    }
+    // Settle egui's initial repaint requests; no timer or playing clock remains.
+    for _ in 0..3 {
+        context.run_ui(Default::default(), |_| {});
+    }
+    wakes.store(0, Ordering::Relaxed);
+    f.driver.product_space.as_ref().unwrap().acknowledge();
+    drop(held);
+    assert!(matches!(
+        f.inbox
+            .recv_timeout(crate::map::test_support::TEST_HANG_GUARD)
+            .unwrap(),
+        Event::ProductSpace
+    ));
+    f.driver.event(Event::ProductSpace);
+    assert!(
+        wakes.load(Ordering::Relaxed) > 0,
+        "release wakes a paused presentation"
+    );
+    f.driver.turn();
+    f.reply(super::super::tests::sized_frame(100, 1));
+    assert!(f.driver.core.refusal.for_target(0, (1, 100)).is_ok());
+    f.admit_parts();
+    f.finish_parts();
+    for _ in 0..3 {
+        context.run_ui(Default::default(), |_| {});
+    }
+    wakes.store(0, Ordering::Relaxed);
+    f.driver.turn();
+    assert!(
+        wakes.load(Ordering::Relaxed) > 0,
+        "delivery also wakes after the source recovered"
+    );
+    assert_eq!(f.take_output().hour, 100);
+}
+
+#[test]
+fn an_exact_wait_reports_the_retained_decode_that_blocks_its_new_target() {
+    let mut f = RealDriver::new(Arc::new(Pool::new(1).unwrap()));
+    let (outbox, results) = mpsc::sync_channel(2);
+    f.driver.core.outbox = outbox;
+    f.results = results;
+    f.want(0, 102, false);
+    f.plan_and_request();
+    let ticket = f.driver.decode.as_ref().unwrap().ticket;
+    let owner = engine_allocation::credit::MemoryBudget::new(8192);
+    let held = owner.admit(8192).unwrap();
+    f.driver.source.take().unwrap().pressure(DecodePressure {
+        budget: owner.clone(),
+        bytes: 128,
+        cursor: Some(101),
+        release: owner.release_token(),
+        reason: "display credit remains pinned".into(),
+    });
+    while f.driver.reading.is_some() {
+        f.next_event();
+    }
+    f.driver
+        .core
+        .outbox
+        .try_send(Output::Hour(gap_built(101, "queued completed hour")))
+        .ok()
+        .unwrap();
+    f.driver.turn(); // the completed hour is followed by the pressure notice
+    f.want(0, 103, false);
+    assert_eq!(f.driver.decode.as_ref().unwrap().ticket, ticket);
+    assert_eq!(f.driver.decode.as_ref().unwrap().hour, 102);
+    assert_eq!(
+        f.driver.ledger.get(ticket).unwrap().phase,
+        flow::Phase::Decode
+    );
+    assert!(!f.driver.ledger.can_plan());
+    assert_eq!(f.driver.next_hour(), Some(103));
+    assert!(f.driver.core.refusal.for_target(0, (1, 103)).is_ok());
+    let completed = Completions::new(
+        f.results,
+        f.driver.core.refusal.clone(),
+        f.driver.core.result_space.clone(),
+        f.driver.core.events.clone(),
+    );
+    let rescue = f.driver.core.outbox.clone();
+    let (send, done) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let queued = completed.wait(0, (1, 103)).map(|built| built.hour);
+        let refusal = completed.wait(0, (1, 103));
+        let _ = send.send((queued, refusal, completed.received.get()));
+    });
+    let reply = done.recv_timeout(crate::map::test_support::TEST_HANG_GUARD);
+    if reply.is_err() {
+        // Unpark the old recv path before failing, so the regression cannot strand a thread.
+        let _ = rescue.try_send(Output::Hour(gap_built(103, "hang-guard rescue")));
+    }
+    waiter.join().unwrap();
+    let (queued, refusal, received) =
+        reply.expect("retained pressure must return without another release/result");
+    assert_eq!(queued.unwrap(), 101);
+    assert_eq!(
+        received, 1,
+        "a pressure notice is never counted as delivered data"
+    );
+    let error = refusal.err().expect("retained decode refusal");
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(
+        error.to_string(),
+        "branch 1 hour 102 blocks exact branch 1 hour 103: display credit remains pinned"
+    );
+    assert_eq!(f.driver.decode.as_ref().unwrap().hour, 102);
+    assert!(f.driver.core.sent.is_empty());
+    drop(held);
+}

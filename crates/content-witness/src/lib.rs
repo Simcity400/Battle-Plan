@@ -1,5 +1,6 @@
 use installed_content_core::ResolvedLayers;
 use installed_content_core::content::{ContentRead, LayerSource, ReadOutcome};
+use product_codec::Product;
 use sha2::{Digest, Sha256};
 use std::{cmp::Ordering, collections::BTreeSet, sync::Mutex};
 use std::{io, sync::Arc};
@@ -57,6 +58,7 @@ pub struct Recorder {
     roster: Arc<[Layer]>,
     sources: Arc<[(LayerSource, Layer)]>,
     entries: Arc<Mutex<BTreeSet<Canonical>>>,
+    shards: Arc<Mutex<std::collections::BTreeMap<Vec<String>, Witness>>>,
 }
 impl Recorder {
     pub fn new(layers: &ResolvedLayers) -> Self {
@@ -74,6 +76,7 @@ impl Recorder {
                 .collect(),
             roster: roster.into(),
             entries: Arc::new(Mutex::new(entries)),
+            shards: Default::default(),
         }
     }
     // Presentation and fallback indices differ for the same recorded layers.
@@ -111,6 +114,7 @@ impl Recorder {
             roster,
             sources: Arc::clone(&self.sources),
             entries: Arc::clone(&self.entries),
+            shards: Arc::clone(&self.shards),
         }
     }
     fn roster(layers: &ResolvedLayers) -> Vec<Layer> {
@@ -146,10 +150,21 @@ impl Recorder {
         });
     }
     fn record(&self, entry: Entry) {
-        self.entries
+        let mut entries = self
+            .entries
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(Canonical(entry));
+            .unwrap_or_else(|error| error.into_inner());
+        let entry = Canonical(entry);
+        let mut shards = self
+            .shards
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !entries.contains(&entry) {
+            shards.retain(|purposes, _| {
+                !purposes.iter().any(|wanted| wanted == entry.0.location().1)
+            });
+            entries.insert(entry);
+        }
     }
     pub fn record_read(&self, read: ContentRead) {
         let outcome = match read.outcome {
@@ -191,16 +206,61 @@ impl Recorder {
                 .unwrap_or_default(),
         });
     }
+    pub fn snapshot_for(&self, purposes: &[&str]) -> io::Result<Witness> {
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut shards = self
+            .shards
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((_, witness)) = shards.iter().find(|(key, _)| {
+            key.len() == purposes.len()
+                && key.iter().map(String::as_str).eq(purposes.iter().copied())
+        }) {
+            return Ok(witness.clone());
+        }
+        let selected = || {
+            entries.iter().filter(|entry| {
+                matches!(entry.0, Entry::Roster { .. }) || purposes.contains(&entry.0.location().1)
+            })
+        };
+        let credit = witness_credit(selected().map(|entry| &entry.0), purposes)?;
+        let mut records = engine_allocation::vec(selected().count())?;
+        let mut hash = witness_hash();
+        for entry in selected() {
+            let mut bytes = engine_allocation::vec(entry_bytes(&entry.0)?)?;
+            entry.0.encode(&mut bytes)?;
+            hash_entry(&mut hash, &bytes)?;
+            records.push(bytes);
+        }
+        let witness = Witness {
+            digest: hash.finalize().into(),
+            entries: u64::try_from(records.len())
+                .map_err(|_| invalid("content shard count overflows"))?,
+            records: records.into(),
+            _credit: Some(Arc::new(credit)),
+        };
+        shards.insert(
+            purposes.iter().map(|value| value.to_string()).collect(),
+            witness.clone(),
+        );
+        Ok(witness)
+    }
+
     /// Snapshots the content-bounded set; retained product readers may keep using this recorder.
     pub fn snapshot(&self) -> io::Result<Witness> {
         let entries = self
             .entries
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let credit = witness_credit(entries.iter().map(|entry| &entry.0), &[])?;
         let mut records = engine_allocation::vec(entries.len())?;
         let mut hash = witness_hash();
         for entry in entries.iter() {
-            let bytes = product_codec::encode(&entry.0)?;
+            let mut bytes = engine_allocation::vec(entry_bytes(&entry.0)?)?;
+            entry.0.encode(&mut bytes)?;
             hash_entry(&mut hash, &bytes)?;
             records.push(bytes);
         }
@@ -209,7 +269,77 @@ impl Recorder {
             entries: u64::try_from(records.len())
                 .map_err(|_| invalid("content witness count overflows"))?,
             records: records.into(),
+            _credit: Some(Arc::new(credit)),
         })
+    }
+}
+
+fn witness_credit<'a>(
+    mut entries: impl Iterator<Item = &'a Entry>,
+    purposes: &[&str],
+) -> io::Result<engine_allocation::credit::Credit> {
+    use engine_allocation::{add, mul};
+    let bytes = entries.try_fold(256usize, |bytes, entry| {
+        add(
+            bytes,
+            add(mul(entry_bytes(entry)?, 2)?, 2 * size_of::<Vec<u8>>())?,
+        )
+    })?;
+    let bytes = if purposes.is_empty() {
+        bytes
+    } else {
+        add(
+            bytes,
+            12 * (size_of::<Vec<String>>() + size_of::<Witness>() + size_of::<usize>()) + 128,
+        )?
+    };
+    let bytes = purposes
+        .iter()
+        .try_fold(bytes, |bytes, purpose| add(bytes, add(64, purpose.len())?))?;
+    engine_allocation::credit::display_products().admit(bytes)
+}
+fn layer_bytes(layer: &Layer) -> io::Result<usize> {
+    layer.replace_paths.iter().try_fold(
+        engine_allocation::add(25, layer.id.len())?,
+        |bytes, path| engine_allocation::add(bytes, engine_allocation::add(8, path.len())?),
+    )
+}
+fn entry_bytes(entry: &Entry) -> io::Result<usize> {
+    use engine_allocation::add;
+    match entry {
+        Entry::Roster { layers } => layers
+            .iter()
+            .try_fold(9, |bytes, layer| add(bytes, layer_bytes(layer)?)),
+        Entry::Read {
+            path,
+            purpose,
+            layer,
+            outcome,
+        } => {
+            let base = add(
+                add(add(18, path.len())?, purpose.len())?,
+                layer.as_ref().map_or(Ok(0), layer_bytes)?,
+            )?;
+            let outcome = match outcome {
+                Outcome::Bytes { .. } => 41,
+                Outcome::Probe { .. } => 2,
+                Outcome::Error {
+                    kind,
+                    message,
+                    payload,
+                } => add(
+                    add(18 + 40 * usize::from(payload.is_some()), kind.len())?,
+                    message.len(),
+                )?,
+            };
+            add(base, outcome)
+        }
+        Entry::Result {
+            purpose,
+            kind,
+            message,
+            ..
+        } => add(add(add(26, purpose.len())?, kind.len())?, message.len()),
     }
 }
 
@@ -226,18 +356,28 @@ fn hash_entry(hash: &mut Sha256, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Witness {
     pub digest: [u8; 32],
     pub entries: u64,
     records: Arc<[Vec<u8>]>,
+    _credit: Option<Arc<engine_allocation::credit::Credit>>,
 }
+impl PartialEq for Witness {
+    fn eq(&self, other: &Self) -> bool {
+        self.digest == other.digest
+            && self.entries == other.entries
+            && self.records == other.records
+    }
+}
+impl Eq for Witness {}
 impl Default for Witness {
     fn default() -> Self {
         Self {
             digest: witness_hash().finalize().into(),
             entries: 0,
             records: Arc::from([]),
+            _credit: None,
         }
     }
 }
@@ -295,4 +435,165 @@ pub fn verify<T>(
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn read(purpose: &str, outcome: Outcome) -> Entry {
+        Entry::Read {
+            path: b"gfx/test".to_vec(),
+            purpose: purpose.into(),
+            layer: None,
+            outcome,
+        }
+    }
+    #[test]
+    fn purpose_shards_are_immutable_and_late_negative_and_error_reads_invalidate_only_dependents() {
+        let recorder = Recorder::new(&ResolvedLayers::default());
+        recorder.record(read(
+            "map",
+            Outcome::Bytes {
+                length: 4,
+                digest: [1; 32],
+            },
+        ));
+        let first = recorder.snapshot_for(&["map"]).unwrap();
+        let copy = recorder.snapshot_for(&["map"]).unwrap();
+        assert!(Arc::ptr_eq(&first.records, &copy.records));
+        recorder.record(read("audio", Outcome::Probe { present: false }));
+        assert!(Arc::ptr_eq(
+            &first.records,
+            &recorder.snapshot_for(&["map"]).unwrap().records
+        ));
+        recorder.record(read("map", Outcome::Probe { present: false }));
+        let negative = recorder.snapshot_for(&["map"]).unwrap();
+        assert_ne!(negative.digest, first.digest);
+        assert_eq!(first.records.len() + 1, negative.records.len());
+        recorder.record(read(
+            "map",
+            Outcome::Error {
+                kind: "InvalidData".into(),
+                message: "named refusal".into(),
+                payload: Some(Payload {
+                    length: 3,
+                    digest: [7; 32],
+                }),
+            },
+        ));
+        let failed = recorder.snapshot_for(&["map"]).unwrap();
+        assert_ne!(failed.digest, negative.digest);
+        assert_eq!(first, copy);
+        let mut records = Vec::new();
+        failed
+            .visit(|_, bytes| {
+                records.push(bytes.to_vec());
+                Ok(())
+            })
+            .unwrap();
+        verify(
+            failed.digest,
+            failed.entries,
+            |ordinal| Ok(records.get(ordinal as usize).cloned()),
+            Ok,
+            || Ok(()),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn encoded_size_census_covers_every_entry_variant() {
+        let layer = Layer {
+            index: 123,
+            id: "test-λ".into(),
+            kind: 1,
+            replace_paths: vec![b"common/test".to_vec(), vec![]],
+        };
+        for entry in [
+            Entry::Roster {
+                layers: vec![layer.clone()],
+            },
+            read("map", Outcome::Probe { present: true }),
+            Entry::Read {
+                path: vec![255, 0, 9],
+                purpose: "heightmap".into(),
+                layer: Some(layer),
+                outcome: Outcome::Bytes {
+                    length: 900,
+                    digest: [1; 32],
+                },
+            },
+            read(
+                "trigger",
+                Outcome::Error {
+                    kind: "kind".into(),
+                    message: "some error".into(),
+                    payload: None,
+                },
+            ),
+            read(
+                "trigger",
+                Outcome::Error {
+                    kind: "kind".into(),
+                    message: "some error".into(),
+                    payload: Some(Payload {
+                        length: 123,
+                        digest: [2; 32],
+                    }),
+                },
+            ),
+            Entry::Result {
+                purpose: "source".into(),
+                status: 1,
+                kind: "error".into(),
+                message: "λ".into(),
+            },
+        ] {
+            assert_eq!(
+                entry_bytes(&entry).unwrap(),
+                product_codec::encode(&entry).unwrap().len()
+            );
+        }
+    }
+    #[test]
+    fn canonical_order_and_ordered_mod_roster_are_independent_of_read_order() {
+        fn recorder(layers: Vec<Layer>) -> Recorder {
+            let mut entries = BTreeSet::new();
+            entries.insert(Canonical(Entry::Roster {
+                layers: layers.clone(),
+            }));
+            Recorder {
+                roster: layers.into(),
+                sources: Arc::from([]),
+                entries: Arc::new(Mutex::new(entries)),
+                shards: Default::default(),
+            }
+        }
+        let a = Layer {
+            index: 0,
+            id: "a".into(),
+            kind: 0,
+            replace_paths: vec![b"gfx".to_vec()],
+        };
+        let b = Layer {
+            index: 1,
+            id: "b".into(),
+            kind: 1,
+            replace_paths: vec![],
+        };
+        let first = recorder(vec![a.clone(), b.clone()]);
+        let second = recorder(vec![a.clone(), b.clone()]);
+        first.record(read("map", Outcome::Probe { present: false }));
+        first.record(read("map", Outcome::Probe { present: true }));
+        second.record(read("map", Outcome::Probe { present: true }));
+        second.record(read("map", Outcome::Probe { present: false }));
+        assert_eq!(
+            first.snapshot_for(&["map"]).unwrap(),
+            second.snapshot_for(&["map"]).unwrap()
+        );
+        let reordered = recorder(vec![Layer { index: 0, ..b }, Layer { index: 1, ..a }]);
+        assert_ne!(
+            first.snapshot_for(&["unused"]).unwrap().digest,
+            reordered.snapshot_for(&["unused"]).unwrap().digest
+        );
+    }
 }

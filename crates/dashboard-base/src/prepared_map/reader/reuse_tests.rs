@@ -473,14 +473,10 @@ fn accepted_reuse_future_campaign_failure_is_deferred_to_original_apply_hour() {
             );
             visitors(&passed, &expected, 125..200);
             assert_eq!(map.applied_frames, 75);
-            assert_eq!(map.requested, Some((1, 124)));
-            assert_eq!(
-                map.cursor,
-                Some(Position {
-                    block: 0,
-                    next_frame: 25
-                })
-            );
+            assert_eq!(map.requested, None);
+            assert_eq!(map.cursor, None);
+            assert!(map.decoder.current().is_none());
+            assert!(!map.page_cursor);
         }
     }
 }
@@ -614,7 +610,14 @@ fn admitted_source_is_loaded_without_applying_or_advancing_the_published_cursor(
     drop(map.seek(1, 100).unwrap());
     let cursor = map.cursor.unwrap();
     let admitted = map
-        .admit(1, 124, Some(100), cursor, false, Load::AcceptedBlockOrPrefix)
+        .admit(
+            1,
+            124,
+            Some(100),
+            cursor,
+            false,
+            Load::AcceptedBlockOrPrefix,
+        )
         .unwrap();
     assert_eq!(map.decoder.current().unwrap().hour, 100);
     assert_eq!(map.cursor, Some(cursor));
@@ -630,8 +633,13 @@ fn admitted_source_is_loaded_without_applying_or_advancing_the_published_cursor(
         }
     );
     let mut passed = Vec::new();
-    map.apply_admitted(124, admitted, |f| passed.push((f.hour, canonical(f))))
-        .unwrap();
+    map.apply_admitted(
+        124,
+        admitted,
+        |f| passed.push((f.hour, canonical(f))),
+        &|| false,
+    )
+    .unwrap();
     visitors(&passed, &expected, 101..124);
     assert_eq!(
         canonical(map.decoder.current().unwrap()),
@@ -882,4 +890,317 @@ fn accepted_reuse_refuses_a_later_block_before_applying_any_admitted_prefix() {
     );
     assert_eq!(map.requested, Some((1, 124)));
     assert_eq!(map.applied_frames, 0);
+}
+
+#[test]
+fn cancelled_backward_checkpoint_restore_keeps_the_forward_decoder_cursor_pair() {
+    let replay = recording(80..141);
+    let (fixture, progress) = prepared(&replay, 140, TABLES);
+    let budget = engine_allocation::credit::MemoryBudget::new(1 << 20);
+    let mut map = reader(&fixture, &progress, &replay, TABLES, false).with_change_facts(budget);
+    drop(map.seek(1, 120).unwrap());
+    assert_eq!(map.decoder.current().unwrap().hour, 120);
+    assert_eq!(
+        map.cursor,
+        Some(Position {
+            block: 0,
+            next_frame: 41
+        })
+    );
+    let checks = std::cell::Cell::new(0);
+    let error = map
+        .read_shared_cancellable(
+            1,
+            85,
+            |_| panic!("cancelled restore published"),
+            false,
+            true,
+            &|| {
+                checks.set(checks.get() + 1);
+                checks.get() == 2
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert_eq!(checks.get(), 2);
+    assert_eq!(map.decoder.current().unwrap().hour, 120);
+    assert_eq!(
+        map.cursor,
+        Some(Position {
+            block: 0,
+            next_frame: 41
+        })
+    );
+    assert!(!map.page_cursor);
+    assert_eq!(map.requested, Some((1, 120)));
+    let Current::Frame(frame) = map
+        .advance(1, 121, |_| panic!("adjacent request has no passed hour"))
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("prepared forward frame");
+    };
+    assert_eq!(frame.hour, 121);
+    let TableView::Complete(TableRows::Clock(rows)) = &*frame.tables[TableId::Clock.index()] else {
+        panic!("complete clock");
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].hour, 121);
+    assert_eq!(
+        map.cursor,
+        Some(Position {
+            block: 0,
+            next_frame: 42
+        })
+    );
+    assert_eq!(map.applied_frames, 1);
+}
+
+#[test]
+fn intermediate_campaign_failure_after_backward_resume_invalidates_the_decoder_cursor_pair() {
+    let replay = recording(80..141);
+    let (fixture, progress) = prepared(&replay, 140, TABLES);
+    let budget = engine_allocation::credit::MemoryBudget::new(1 << 20);
+    let mut map = reader(&fixture, &progress, &replay, TABLES, false).with_change_facts(budget);
+    drop(map.seek(1, 120).unwrap());
+    let frames = Arc::make_mut(&mut map.block.as_mut().unwrap().frames);
+    assert_eq!(frames[3].hour, 83);
+    frames[3].tables[TableId::Campaign.index()] =
+        TableUpdate::Snapshot(TableRows::Campaign(vec![replay_data::rows::CampaignRow {
+            id: b"wrong campaign at intermediate hour 83".to_vec(),
+        }]));
+    let mut visited = Vec::new();
+    let error = map
+        .read_shared_cancellable(
+            1,
+            85,
+            |frame| visited.push(frame.hour),
+            false,
+            true,
+            &|| false,
+        )
+        .unwrap_err();
+    refusal(error, "frame campaign identity differs from replay header");
+    assert_eq!(visited, [81, 82]);
+    assert!(map.decoder.current().is_none());
+    assert_eq!(map.cursor, None);
+    assert!(!map.page_cursor);
+    assert_eq!(map.requested, None);
+    assert_eq!(map.applied_frames, 2);
+    // Retry from the unchanged source, not the injected corrupt retained block.
+    map.block = None;
+    map.retained_source_frames = 0;
+    let Current::Frame(frame) = map.advance(1, 121, |_| {}).unwrap().unwrap() else {
+        panic!("prepared forward frame after reseek");
+    };
+    assert_eq!(frame.hour, 121);
+    let TableView::Complete(TableRows::Clock(rows)) = &*frame.tables[TableId::Clock.index()] else {
+        panic!("complete clock");
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].hour, 121);
+    assert_eq!(map.checkpoint_reads, 1);
+    assert_eq!(map.applied_frames, 41);
+    assert_eq!(
+        map.cursor,
+        Some(Position {
+            block: 0,
+            next_frame: 42,
+        })
+    );
+}
+
+#[test]
+fn retained_seek_visitors_refuse_credit_without_losing_the_committed_prepared_cursor() {
+    let selected = &[TableId::Countries];
+    let frames = (0..=3)
+        .map(|hour| {
+            let mut frame = scale_frame(1, hour, 40);
+            frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+                (1..=40)
+                    .map(|id| replay_data::rows::CountryRow {
+                        id,
+                        canonical_slot: id,
+                        tag: format!("{id:03}").into_bytes(),
+                        command_power_raw: if hour == 2 && id != 1 {
+                            1
+                        } else {
+                            i64::from(hour)
+                        },
+                        ..Default::default()
+                    })
+                    .collect(),
+            ))
+            .into();
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let (fixture, progress) = prepared(&replay, 3, selected);
+    let budget = engine_allocation::credit::MemoryBudget::new(4608);
+    let mut map =
+        reader(&fixture, &progress, &replay, selected, false).with_change_facts(budget.clone());
+    drop(map.seek(1, 0).unwrap());
+    let initial = map.decoder.current().unwrap().tables[TableId::Countries.index()].identity();
+    let mut passed = Vec::new();
+    let checks = std::cell::Cell::new(0);
+    let error = map
+        .read_shared_cancellable(
+            1,
+            3,
+            |frame| passed.push(Arc::clone(frame)),
+            true,
+            true,
+            &|| {
+                checks.set(checks.get() + 1);
+                assert!(
+                    checks.get() <= 7,
+                    "admission must not wait on retained seek visitors"
+                );
+                false
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+    assert!(FrameDecoder::change_fact_admission_refused(&error));
+    assert_eq!(
+        error.to_string(),
+        "display change-fact working set remains pinned; common paging is required"
+    );
+    assert_eq!(checks.get(), 7);
+    assert_eq!(
+        passed.iter().map(|frame| frame.hour).collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert_eq!(
+        passed[0].tables[TableId::Countries.index()]
+            .changes_since(&initial)
+            .unwrap()
+            .changed()
+            .len(),
+        40
+    );
+    assert_eq!(
+        passed[1].tables[TableId::Countries.index()]
+            .changes_since(&passed[0].tables[TableId::Countries.index()].identity())
+            .unwrap()
+            .changed()
+            .len(),
+        1
+    );
+    assert_eq!(map.decoder.current().unwrap().hour, 2);
+    assert_eq!(
+        map.cursor,
+        Some(Position {
+            block: 0,
+            next_frame: 3
+        })
+    );
+    assert_eq!(map.applied_frames, 2);
+    assert!(!map.page_cursor);
+    drop(passed);
+    drop(initial);
+    let mut visited = Vec::new();
+    let Current::Frame(frame) = map
+        .read_shared_cancellable(1, 3, |frame| visited.push(frame.hour), true, true, &|| {
+            false
+        })
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("prepared retry frame");
+    };
+    assert_eq!(frame.hour, 3);
+    assert!(visited.is_empty());
+    assert_eq!(map.checkpoint_reads, 0);
+    assert_eq!(map.applied_frames, 1);
+    assert_eq!(
+        map.cursor,
+        Some(Position {
+            block: 0,
+            next_frame: 4
+        })
+    );
+    let rows = frame
+        .complete::<replay_data::rows::tables::Countries>()
+        .unwrap();
+    assert_eq!(rows.len(), 40);
+    assert_eq!((rows[0].id, rows[39].id), (1, 40));
+    assert!(rows.iter().all(|row| row.command_power_raw == 3));
+    assert!(budget.peak() <= 4608);
+    drop(frame);
+    drop(map);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn mid_walk_cancellation_keeps_hour_122_and_retry_visits_only_123_and_124() {
+    let replay = recording(80..141);
+    let (fixture, progress) = prepared(&replay, 140, TABLES);
+    let budget = engine_allocation::credit::MemoryBudget::new(1 << 20);
+    let mut map = reader(&fixture, &progress, &replay, TABLES, false).with_change_facts(budget);
+    drop(map.seek(1, 120).unwrap());
+    let cancelled = std::cell::Cell::new(false);
+    let mut visited = Vec::new();
+    let error = map
+        .read_shared_cancellable(
+            1,
+            125,
+            |frame| {
+                visited.push(frame.hour);
+                if frame.hour == 122 {
+                    cancelled.set(true);
+                }
+            },
+            true,
+            true,
+            &|| cancelled.get(),
+        )
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert_eq!(visited, [121, 122]);
+    assert_eq!(map.decoder.current().unwrap().hour, 122);
+    assert_eq!(
+        map.cursor,
+        Some(Position {
+            block: 0,
+            next_frame: 43
+        })
+    );
+    assert!(!map.page_cursor);
+    assert_eq!(map.requested, Some((1, 120)));
+    assert_eq!(map.applied_frames, 2);
+    visited.clear();
+    let Current::Frame(frame) = map
+        .read_shared_cancellable(
+            1,
+            125,
+            |frame| visited.push(frame.hour),
+            true,
+            true,
+            &|| false,
+        )
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("prepared retry frame");
+    };
+    assert_eq!(frame.hour, 125);
+    assert_eq!(visited, [123, 124]);
+    assert_eq!(map.decoder.current().unwrap().hour, 125);
+    assert_eq!(
+        map.cursor,
+        Some(Position {
+            block: 0,
+            next_frame: 46
+        })
+    );
+    assert_eq!(map.checkpoint_reads, 0);
+    assert_eq!(map.applied_frames, 3);
+    assert_eq!(map.requested, Some((1, 125)));
+    let rows = frame
+        .complete::<replay_data::rows::tables::Clock>()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].hour, 125);
 }

@@ -32,10 +32,10 @@ fn local_strategic_styles_split_shared_views_and_rejoin_after_clearing(fallback:
         )
         .unwrap();
     let regions = Arc::new(Regions {
-        country_of: vec![0; 3],
-        owner_of: Vec::new(),
-        state_of: Vec::new(),
-        country_colors: HashMap::new(),
+        country_of: vec![0; 3].into(),
+        owner_of: Vec::new().into(),
+        state_of: Vec::new().into(),
+        country_colors: Default::default(),
         warnings: Vec::new(),
         strategic_attributes: BTreeMap::from([
             (
@@ -235,22 +235,25 @@ fn province_colors_keep_dirty_tiles_until_submission_and_clear_old_selection(fal
         let red = [255, 0, 0, 127];
         let blue = [0, 0, 255, 255];
         let green = [0, 255, 0, 64];
-        pass.update(&harness.queue, &BTreeMap::from([(1, red), (second, blue)]));
+        pass.update(&harness.queue, &BTreeMap::from([(1, red), (second, blue)]))
+            .unwrap();
         let mut encoder = harness.device.create_command_encoder(&Default::default());
         pass.encode(&mut encoder);
         let got = harness.read(encoder, [&pass.bound.texture; 2], 0);
         for (at, color) in got.channel1.iter().enumerate() {
             assert_eq!(*color, if at % 32 < 16 { red } else { blue });
         }
-        pass.update(&harness.queue, &BTreeMap::from([(second, green)]));
-        pass.update(&harness.queue, &BTreeMap::from([(1, red), (second, green)]));
+        pass.update(&harness.queue, &BTreeMap::from([(second, green)]))
+            .unwrap();
+        pass.update(&harness.queue, &BTreeMap::from([(1, red), (second, green)]))
+            .unwrap();
         let mut encoder = harness.device.create_command_encoder(&Default::default());
         pass.encode(&mut encoder);
         let got = harness.read(encoder, [&pass.bound.texture; 2], 0);
         for (at, color) in got.channel1.iter().enumerate() {
             assert_eq!(*color, if at % 32 < 16 { red } else { green });
         }
-        pass.update(&harness.queue, &BTreeMap::new());
+        pass.update(&harness.queue, &BTreeMap::new()).unwrap();
         let mut encoder = harness.device.create_command_encoder(&Default::default());
         pass.encode(&mut encoder);
         let got = harness.read(encoder, [&pass.bound.texture; 2], 0);
@@ -292,10 +295,10 @@ fn political_gpu_fallback_naval_attributes_change_shared_fill(fallback: &Fallbac
         .unwrap();
     let tables = |value| {
         Arc::new(Regions {
-            country_of: vec![0; 3],
-            owner_of: Vec::new(),
-            state_of: Vec::new(),
-            country_colors: HashMap::new(),
+            country_of: vec![0; 3].into(),
+            owner_of: Vec::new().into(),
+            state_of: Vec::new().into(),
+            country_colors: Default::default(),
             warnings: Vec::new(),
             strategic_attributes: [
                 (
@@ -721,10 +724,17 @@ fn political_gpu_fallback_exactness(fallback: &Fallback) {
         let mut country_of = strategic_keys.clone();
         country_of[1] = key;
         Arc::new(super::super::political::Regions {
-            country_colors: (0..6).map(|key| (key, color(key))).collect(),
-            country_of,
-            owner_of: Vec::new(),
-            state_of: Vec::new(),
+            country_colors: (0..6)
+                .try_fold(
+                    Default::default(),
+                    |tree: map_display_data::value_index::ValueIndex<_, _>, key| {
+                        tree.inserted(key, color(key))
+                    },
+                )
+                .unwrap(),
+            country_of: country_of.into(),
+            owner_of: Vec::new().into(),
+            state_of: Vec::new().into(),
             warnings: Vec::new(),
             strategic_attributes: Default::default(),
             mode: None,
@@ -914,10 +924,17 @@ fn grid_fixture(
 fn country_tables(country_of: Vec<u32>) -> Arc<Regions> {
     let color = |key: u32| [(key * 41) as u8, (key * 87) as u8, (key * 13) as u8];
     Arc::new(Regions {
-        country_colors: (0..8).map(|key| (key, color(key))).collect(),
-        country_of,
-        owner_of: Vec::new(),
-        state_of: Vec::new(),
+        country_colors: (0..8)
+            .try_fold(
+                Default::default(),
+                |tree: map_display_data::value_index::ValueIndex<_, _>, key| {
+                    tree.inserted(key, color(key))
+                },
+            )
+            .unwrap(),
+        country_of: country_of.into(),
+        owner_of: Vec::new().into(),
+        state_of: Vec::new().into(),
         warnings: Vec::new(),
         strategic_attributes: Default::default(),
         mode: None,

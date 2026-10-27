@@ -98,6 +98,7 @@ fn prepared(hour: Hour, health: i128, landmark: bool) -> PreparedBuildings {
         shrink_distance: 180.0,
         popup_speed: 5.0,
         slots: Chunked::from(vec![PreparedSlot {
+            source: None,
             id: 0,
             drawn_at_distance: Some(landmark),
             entity: Some(PreparedEntity {
@@ -953,12 +954,25 @@ fn foreign_detection_needs_the_viewers_bit() {
         ..Default::default()
     };
     let detection = |ours| Detection::read(&frame, &links, ours).unwrap();
-    assert_eq!(detection(1).detected(&row), Some(true), "our own building");
-    assert_eq!(detection(0).detected(&row), Some(false));
-    assert_eq!(detection(2).detected(&row), Some(true));
+    assert_eq!(
+        detection(1).detected(&available::BuildingInput::from(&row)),
+        Some(true),
+        "our own building"
+    );
+    assert_eq!(
+        detection(0).detected(&available::BuildingInput::from(&row)),
+        Some(false)
+    );
+    assert_eq!(
+        detection(2).detected(&available::BuildingInput::from(&row)),
+        Some(true)
+    );
     let mut incomplete = detection(0);
     incomplete.targets = None;
-    assert_eq!(incomplete.detected(&row), None);
+    assert_eq!(
+        incomplete.detected(&available::BuildingInput::from(&row)),
+        None
+    );
 }
 
 #[test]
@@ -993,13 +1007,15 @@ fn tokens_name_building_types_under_the_lexers_fold() {
     let types = token_types(&frame, &assets.facts.keys, &assets.facts.index).unwrap();
     // Token 0 names no one key; case folds; two keys under one fold are
     // refused; a token naming no type is left for the rows to word.
-    assert!(!types.contains_key(&0));
-    assert_eq!(types[&3], Ok(0));
+    assert!(types.get(&0).is_none());
+    assert_eq!(types.get(&3), Some(&Ok(0)));
     assert_eq!(
-        types[&4],
-        Err("token bunker names several content keys: BUNKER, Bunker".to_owned())
+        types.get(&4),
+        Some(&Err(
+            "token bunker names several content keys: BUNKER, Bunker".to_owned()
+        ))
     );
-    assert!(!types.contains_key(&5));
+    assert!(types.get(&5).is_none());
 }
 
 /// Assets over `ordered`, in that declaration order, with no slots.
@@ -1547,6 +1563,323 @@ fn damaged_only_building_meshes_supply_definition_fallback_per_slot() {
         assert_eq!(
             bytemuck::bytes_of(&entity.instance),
             bytemuck::bytes_of(&expected)
+        );
+    }
+}
+
+#[test]
+fn symbolic_buildings_preserve_the_independent_local_history_schedule() {
+    use map_display_data::buildings as wire;
+    let key = |slot: usize| {
+        Arc::new(wire::AssetKey::Selected {
+            entity: format!("synthetic-{slot}"),
+            namespace: Vec::new(),
+            role: 0,
+            contract: 1,
+            force_pow2_textures: false,
+        })
+    };
+    let authored = Arc::new(vec![wire::AuthoredSlot {
+        id: 0,
+        location: 1,
+        bucket: "synthetic".into(),
+        order: 0,
+        province: Some(1),
+        position: [0.0; 3],
+        rotation: 0.0,
+        floating: false,
+    }]);
+    let mut original = BuildingHistory::default();
+    let mut restored = BuildingHistory::default();
+    let view = camera([0.0, 0.0], 60.0);
+    for (index, health) in [10_000_000, 5_000_000, 7_000_000, 10_000_000]
+        .into_iter()
+        .enumerate()
+    {
+        let mut source = prepared(10 + index as i32, health, false);
+        source.slots.get_mut(0).drawn_at_distance = (index != 2).then_some(false);
+        let closed = source
+            .display_with(
+                [9; 32],
+                1501,
+                true,
+                vec!["second warning".into(), "first warning".into()],
+                |slot| Ok(key(slot)),
+                &[],
+                Arc::clone(&authored),
+                None,
+            )
+            .unwrap();
+        let bytes = product_codec::encode(&closed).unwrap();
+        let closed: wire::Buildings = product_codec::decode(&bytes).unwrap();
+        assert_eq!(closed.perspective, 1501);
+        assert_eq!(
+            closed.slots[0][0].drawn_at_distance,
+            source.slots[0].drawn_at_distance
+        );
+        assert_eq!(closed.warnings, ["second warning", "first warning"]);
+        let installed = PreparedBuildings::install(
+            &closed,
+            &source.groups,
+            |asset| {
+                [1, 2]
+                    .into_iter()
+                    .find(|&slot| key(slot).as_ref() == asset)
+                    .ok_or_else(|| io::Error::other("unexpected symbolic key"))
+            },
+            None,
+        )
+        .unwrap();
+        assert!(source.bit_eq(&installed));
+        original.set(source, index != 0);
+        restored.set(installed, index != 0);
+        assert_eq!(
+            original.update(view, [1024, 768], index as f32, true),
+            restored.update(view, [1024, 768], index as f32, true)
+        );
+    }
+}
+
+#[test]
+fn quiet_tail_reuse_compares_bits_not_float_equality() {
+    let source = prepared(10, 10_000_000, false);
+    let mut tail = source.slots[0].clone();
+    tail.entity.as_mut().unwrap().instance.position[0] = -0.0;
+    assert_eq!(
+        tail.entity.as_ref().unwrap().instance.position[0],
+        source.slots[0].entity.as_ref().unwrap().instance.position[0]
+    );
+    assert_ne!(tail, source.slots[0]);
+    let changed = source
+        .slots
+        .patched(&[], 0, &[tail.clone()], PreparedSlot::same_bits)
+        .unwrap()
+        .expect("unchanged slot count");
+    assert!(!changed.ptr_eq(&source.slots));
+    assert_eq!(
+        changed[0].entity.as_ref().unwrap().instance.position[0].to_bits(),
+        (-0.0f32).to_bits()
+    );
+    let same = changed
+        .patched(&[], 0, &[tail], PreparedSlot::same_bits)
+        .unwrap()
+        .expect("unchanged slot count");
+    assert!(same.ptr_eq(&changed));
+}
+
+#[test]
+fn symbolic_building_chunk_updates_share_untouched_directory_paths() {
+    use map_display_data::buildings as data;
+    let mut source = prepared(10, 100_000_000, false);
+    let sample = source.slots[0].clone();
+    source.slots = incremental::Chunked::from_values(
+        (0..193)
+            .map(|id| PreparedSlot {
+                id,
+                ..sample.clone()
+            })
+            .collect(),
+    )
+    .unwrap();
+    let authored = Arc::new(
+        (0..193)
+            .map(|id| data::AuthoredSlot {
+                id,
+                location: 1,
+                bucket: "fixture".into(),
+                order: id as usize,
+                province: Some(1),
+                position: [0.0; 3],
+                rotation: 0.0,
+                floating: false,
+            })
+            .collect(),
+    );
+    let key = |_| Ok(Arc::new(data::AssetKey::Unbound {}));
+    let before = source
+        .display_with(
+            [7; 32],
+            1,
+            true,
+            Vec::new(),
+            key,
+            &[],
+            Arc::clone(&authored),
+            None,
+        )
+        .unwrap();
+    let installed = PreparedBuildings::install(&before, &source.groups, |_| Ok(1), None).unwrap();
+    let mut change = source.slots[73].clone();
+    change.entity.as_mut().unwrap().instance.position[0] = -0.0;
+    let mut next = source.clone();
+    next.slots = source
+        .slots
+        .patched(&[(73, change)], 193, &[], PreparedSlot::same_bits)
+        .unwrap()
+        .unwrap();
+    let after = next
+        .display_with(
+            [7; 32],
+            1,
+            true,
+            Vec::new(),
+            key,
+            &[],
+            authored,
+            Some((&source.slots, &before)),
+        )
+        .unwrap();
+    assert!(before.slots[0].ptr_eq(&after.slots[0]));
+    assert!(!before.slots[1].ptr_eq(&after.slots[1]));
+    assert!(before.slots[2].ptr_eq(&after.slots[2]));
+    let updated = PreparedBuildings::install(
+        &after,
+        &source.groups,
+        |_| Ok(1),
+        Some((&before, &installed)),
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(
+        installed.slots.chunks.get(0).unwrap(),
+        updated.slots.chunks.get(0).unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        installed.slots.chunks.get(2).unwrap(),
+        updated.slots.chunks.get(2).unwrap()
+    ));
+    assert_eq!(
+        updated.slots[73].entity.as_ref().unwrap().instance.position[0].to_bits(),
+        (-0.0f32).to_bits()
+    );
+    let bytes = product_codec::encode(&after).unwrap();
+    assert_eq!(
+        product_codec::encode(&product_codec::decode::<data::Buildings>(&bytes).unwrap()).unwrap(),
+        bytes
+    );
+}
+
+#[test]
+fn symbolic_buildings_validate_authored_group_order_not_bucket_slot_ids() {
+    use map_display_data::buildings as data;
+    let mut source = prepared(10, 10_000_000, false);
+    let sample = source.slots[0].clone();
+    source.slots = (0..4)
+        .map(|id| PreparedSlot {
+            id,
+            ..sample.clone()
+        })
+        .collect();
+    source.groups = Arc::from([
+        ProvinceSlots {
+            province: 9,
+            bounds: [0.0, 0.0, 2.0, 2.0],
+            slots: vec![2, 0, 1],
+        },
+        ProvinceSlots {
+            province: 18,
+            bounds: [2.0, 0.0, 4.0, 2.0],
+            slots: vec![3],
+        },
+    ]);
+    let authored = Arc::new(
+        (0..4)
+            .map(|id| data::AuthoredSlot {
+                id,
+                location: 1,
+                bucket: format!("bucket-{id}"),
+                order: 0,
+                province: Some(if id == 3 { 18 } else { 9 }),
+                position: [0.0; 3],
+                rotation: 0.0,
+                floating: id == 3,
+            })
+            .collect(),
+    );
+    let value = source
+        .display_with(
+            [7; 32],
+            1,
+            true,
+            Vec::new(),
+            |slot| {
+                Ok(Arc::new(data::AssetKey::Selected {
+                    entity: slot.to_string(),
+                    namespace: Vec::new(),
+                    role: 0,
+                    contract: 1,
+                    force_pow2_textures: false,
+                }))
+            },
+            &[],
+            authored,
+            None,
+        )
+        .unwrap();
+    let bytes = product_codec::encode(&value).unwrap();
+    let value: data::Buildings = product_codec::decode(&bytes).unwrap();
+    assert_eq!(value.groups[0].slots, [2, 0, 1]);
+    let binding = |key: &data::AssetKey| match key {
+        data::AssetKey::Selected { entity, .. } => entity.parse().map_err(io::Error::other),
+        data::AssetKey::Unbound {} => Err(io::Error::other("fixture asset is unbound")),
+    };
+    let installed = PreparedBuildings::install(&value, &source.groups, binding, None).unwrap();
+    assert!(source.bit_eq(&installed));
+    assert_eq!(&*installed.groups, &*source.groups);
+    assert_eq!(product_codec::encode(&value).unwrap(), bytes);
+    let mut original = BuildingHistory::default();
+    let mut restored = BuildingHistory::default();
+    original.set(source.clone(), false);
+    restored.set(installed, false);
+    let camera = camera([0.0, 0.0], 60.0);
+    assert_eq!(
+        original.update(camera, [1024, 768], 0.0, true),
+        restored.update(camera, [1024, 768], 0.0, true)
+    );
+
+    let invalid_groups = [
+        vec![
+            data::Group {
+                slots: vec![0, 1, 2],
+                ..value.groups[0].clone()
+            },
+            value.groups[1].clone(),
+        ],
+        vec![
+            data::Group {
+                slots: vec![2, 0, 0],
+                ..value.groups[0].clone()
+            },
+            value.groups[1].clone(),
+        ],
+        vec![
+            data::Group {
+                slots: vec![2, 0, 4],
+                ..value.groups[0].clone()
+            },
+            value.groups[1].clone(),
+        ],
+        vec![value.groups[0].clone(), value.groups[0].clone()],
+        vec![value.groups[1].clone(), value.groups[0].clone()],
+        vec![value.groups[0].clone()],
+        vec![
+            data::Group {
+                bounds: [-0.0, 0.0, 2.0, 2.0],
+                ..value.groups[0].clone()
+            },
+            value.groups[1].clone(),
+        ],
+    ];
+    for groups in invalid_groups {
+        let malformed = data::Buildings {
+            groups: Arc::new(groups),
+            ..value.clone()
+        };
+        let error =
+            PreparedBuildings::install(&malformed, &source.groups, binding, None).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "building projection group order is invalid"
         );
     }
 }

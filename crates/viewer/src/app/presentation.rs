@@ -76,7 +76,7 @@ type HourEvents = (
 /// What a forward skip carries from a built hour it passed: its buildings,
 /// whose history continues, and its events, whose effects and text start.
 type SkippedHour = (
-    Arc<hours::Shared<viewer_world::map::map_buildings::PreparedBuildings>>,
+    Arc<hours::Shared<map_display_data::buildings::Buildings>>,
     HourEvents,
 );
 
@@ -152,6 +152,7 @@ impl Viewer {
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
         laps: &mut Laps,
+        context: &eframe::egui::Context,
     ) -> Result<(), std::io::Error> {
         laps.lap("before_hour");
         // The hour builders lay counters and icons out with the map mode's visibility.
@@ -313,6 +314,7 @@ impl Viewer {
         // Everything this frame lets go of, freed off the frame path at its end.
         let mut retired = Retired::default();
         let pipeline = self.hours.as_mut().expect("started above");
+        pipeline.bind_presentation(context);
         pipeline.note_grid(activation, playhead.hour);
         let epoch = pipeline.want(want)?;
         if epoch != self.epoch {
@@ -323,130 +325,20 @@ impl Viewer {
             self.dropper = Some(Arc::new(Dropper::new()?));
         }
         let target = (playhead.branch, playhead.hour);
-        let mut passed = BTreeMap::new();
-        let applied = (|| {
-            let pipeline = self.hours.as_ref().expect("started above");
-            for built in pipeline.take()? {
-                feed_raids(&self.raid_lane, &built);
-                if built.epoch == epoch {
-                    if let Some(old) = self.ready.insert((built.branch, built.hour), built) {
-                        retired.push(old);
-                    }
-                } else {
-                    retired.push(built);
-                }
-            }
-            let fallback = self
-                .playing
-                .then(|| {
-                    latest_built_key(&self.ready, (playhead.branch, playhead.hour), |built| {
-                        built.layers.is_ok()
-                    })
-                })
-                .flatten();
-            let (keep, gone): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.ready)
-                .into_iter()
-                .partition(|(key, _)| {
-                    keeps_ready(
-                        *key,
-                        (playhead.branch, playhead.hour),
-                        (behind, ahead),
-                        fallback,
-                    )
-                });
-            self.ready = keep;
-            passed = gone;
-            laps.lap("hours_poll");
-            let shown_at = self
-                .shown
-                .as_ref()
-                .filter(|shown| shown.epoch == epoch)
-                .map(|shown| (shown.branch, shown.hour));
-            let mut next = None;
-            // A seek to the hour on screen takes it again, rebuilt (see `have`),
-            // to start a fresh animation history. The fallback below still moves
-            // only forward from the hour on screen.
-            if self.animation_seek || shown_at != Some(target) {
-                next = self.ready.remove(&target);
-                // A capture names its hour, and waits for it.
-                if next.is_none() && wait {
-                    let pipeline = self.hours.as_ref().expect("started above");
-                    next = Some(wait_for_hour(
-                        &self.raid_lane,
-                        (target, epoch),
-                        || pipeline.wait(),
-                        &mut self.ready,
-                        |built| retired.push(built),
-                    )?);
-                }
-                if next.is_none() && self.playing {
-                    // The newest hour on the way from the one on screen.
-                    let on_the_way = fallback.filter(|key| {
-                        shown_at.is_none_or(|shown| shown.0 != key.0 || shown.1 < key.1)
-                    });
-                    if let Some(key) = on_the_way {
-                        next = self.ready.remove(&key);
-                        let later = self.ready.split_off(&key);
-                        passed.extend(std::mem::replace(&mut self.ready, later));
-                    }
-                }
-            }
-            match next {
-                Some(built) => {
-                    // The hour on screen of any epoch: a perspective change starts
-                    // a new build epoch, but the scene's building history does not
-                    // depend on the viewing country, so it continues across it.
-                    let on_screen = self.shown.as_ref().map(|shown| (shown.branch, shown.hour));
-                    // Hours the builders passed over to keep up with the clock
-                    // continue the history, also on the catch-up after a pause; a
-                    // seek or a gap in the recording does not.
-                    let passes_unbuilt = !self.animation_seek
-                        && on_screen.is_some_and(|(_, from)| {
-                            !crosses_gap(
-                                &document.playback.replay().gaps,
-                                built.branch,
-                                from,
-                                built.hour,
-                            )
-                        });
-                    let skipped = skipped_hours(
-                        on_screen,
-                        (built.branch, built.hour),
-                        passes_unbuilt,
-                        |hour| {
-                            let key = (built.branch, hour);
-                            let passed_hour = self.ready.get(&key).or_else(|| passed.get(&key))?;
-                            let layers = passed_hour.layers.as_ref().ok();
-                            Some(layers.map(|layers| {
-                                (
-                                    Arc::clone(&layers.buildings),
-                                    (Arc::clone(&layers.impacts), Arc::clone(&layers.map_text)),
-                                )
-                            }))
-                        },
-                    );
-                    self.apply_hour(state, document, built, skipped, &mut retired, laps)
-                }
-                None => Ok(()),
-            }
-        })();
-        if !passed.is_empty() {
-            retired.push(passed);
-        }
-        finish_hour_poll(
-            &mut document.playback,
-            self.dropper.as_ref().expect("created before polling"),
+        poll_presentation(&mut NativePresentation {
+            viewer: self,
+            document,
+            render: state,
+            laps,
+            epoch,
+            target,
+            behind,
+            ahead,
+            wait,
+            fraction: playhead.fraction as f32,
             retired,
-            applied,
-        )?;
-        // The frame sits past the playhead's hour only when it is the hour on
-        // screen.
-        document.hour_fraction = if (document.playback.branch(), document.playback.hour()) == target
-        {
-            playhead.fraction as f32
-        } else {
-            0.0
-        };
+            passed: BTreeMap::new(),
+        })?;
         if let Some(error) = self
             .shown
             .as_ref()
@@ -614,7 +506,7 @@ impl Viewer {
         laps.lap("apply_start");
         let uploaded = &mut self.uploaded;
         if uploaded.rails != Some(rails.id) {
-            let (mesh, bridges) = &rails.value;
+            let map_products::landscape::RailProduct(mesh, bridges, _) = rails.value.as_ref();
             {
                 let _rail_span = viewer_foundation::profiling::span("rail_geometry");
                 let geometry = viewer_world::map::railways::PreparedRailGeometry::for_install(
@@ -946,6 +838,205 @@ impl Viewer {
             .cancel_pending();
         retired.push((political, borders, rails, buildings, snow_mud, intel));
         laps.lap("apply_end");
+        Ok(())
+    }
+}
+
+type HourKey = (replay_data::BranchId, replay_data::Hour);
+
+trait HourPresentation {
+    fn completed(&self) -> &hours::Completions;
+    fn target(&self) -> (u64, HourKey);
+    fn install(&mut self, arrivals: Vec<hours::Built>) -> std::io::Result<()>;
+    fn retire(&mut self, result: std::io::Result<()>) -> std::io::Result<()>;
+}
+
+fn poll_presentation(presentation: &mut impl HourPresentation) -> std::io::Result<()> {
+    let arrivals = presentation.completed().take();
+    let installed = arrivals.and_then(|arrivals| presentation.install(arrivals));
+    presentation.retire(installed)?;
+    let (epoch, target) = presentation.target();
+    presentation.completed().pressure_for(epoch, target)
+}
+
+fn retain_ready<T>(
+    ready: &mut BTreeMap<HourKey, T>,
+    target: HourKey,
+    window: (i32, i32),
+    fallback: Option<HourKey>,
+) -> BTreeMap<HourKey, T> {
+    let (keep, gone) = std::mem::take(ready)
+        .into_iter()
+        .partition(|(key, _)| keeps_ready(*key, target, window, fallback));
+    *ready = keep;
+    gone
+}
+
+fn select_ready<T>(
+    ready: &mut BTreeMap<HourKey, T>,
+    target: HourKey,
+    shown: Option<HourKey>,
+    seek: bool,
+    playing: bool,
+    fallback: Option<HourKey>,
+    passed: &mut BTreeMap<HourKey, T>,
+) -> Option<T> {
+    if !seek && shown == Some(target) {
+        return None;
+    }
+    if let Some(next) = ready.remove(&target) {
+        return Some(next);
+    }
+    if playing
+        && let Some(key) =
+            fallback.filter(|key| shown.is_none_or(|shown| shown.0 != key.0 || shown.1 < key.1))
+    {
+        let next = ready.remove(&key);
+        let later = ready.split_off(&key);
+        passed.extend(std::mem::replace(ready, later));
+        return next;
+    }
+    None
+}
+
+struct NativePresentation<'a> {
+    viewer: &'a mut Viewer,
+    document: &'a mut Document,
+    render: &'a eframe::egui_wgpu::RenderState,
+    laps: &'a mut Laps,
+    epoch: u64,
+    target: HourKey,
+    behind: i32,
+    ahead: i32,
+    wait: bool,
+    fraction: f32,
+    retired: Retired,
+    passed: BTreeMap<HourKey, hours::Built>,
+}
+impl HourPresentation for NativePresentation<'_> {
+    fn completed(&self) -> &hours::Completions {
+        self.viewer
+            .hours
+            .as_ref()
+            .expect("started above")
+            .completed()
+    }
+    fn target(&self) -> (u64, HourKey) {
+        (self.epoch, self.target)
+    }
+    fn install(&mut self, arrivals: Vec<hours::Built>) -> std::io::Result<()> {
+        let viewer = &mut *self.viewer;
+        let document = &mut *self.document;
+        let state = self.render;
+        let laps = &mut *self.laps;
+        let retired = &mut self.retired;
+        let passed = &mut self.passed;
+        let (epoch, target, behind, ahead, wait) =
+            (self.epoch, self.target, self.behind, self.ahead, self.wait);
+        for built in arrivals {
+            feed_raids(&viewer.raid_lane, &built);
+            if built.epoch == epoch {
+                if let Some(old) = viewer.ready.insert((built.branch, built.hour), built) {
+                    retired.push(old);
+                }
+            } else {
+                retired.push(built);
+            }
+        }
+        let fallback = viewer
+            .playing
+            .then(|| latest_built_key(&viewer.ready, target, |built| built.layers.is_ok()))
+            .flatten();
+        *passed = retain_ready(&mut viewer.ready, target, (behind, ahead), fallback);
+        laps.lap("hours_poll");
+        let shown_at = viewer
+            .shown
+            .as_ref()
+            .filter(|shown| shown.epoch == epoch)
+            .map(|shown| (shown.branch, shown.hour));
+        let mut next = select_ready(
+            &mut viewer.ready,
+            target,
+            shown_at,
+            viewer.animation_seek,
+            viewer.playing && !wait,
+            fallback,
+            passed,
+        );
+        if next.is_none() && wait && (viewer.animation_seek || shown_at != Some(target)) {
+            let completed = viewer.hours.as_ref().expect("started above").completed();
+            next = Some(wait_for_hour(
+                &viewer.raid_lane,
+                (target, epoch),
+                || completed.wait(epoch, target),
+                &mut viewer.ready,
+                |built| retired.push(built),
+            )?);
+        }
+        match next {
+            Some(built) => {
+                // The hour on screen of any epoch: a perspective change starts
+                // a new build epoch, but the scene's building history does not
+                // depend on the viewing country, so it continues across it.
+                let on_screen = viewer
+                    .shown
+                    .as_ref()
+                    .map(|shown| (shown.branch, shown.hour));
+                // Hours the builders passed over to keep up with the clock
+                // continue the history, also on the catch-up after a pause; a
+                // seek or a gap in the recording does not.
+                let passes_unbuilt = !viewer.animation_seek
+                    && on_screen.is_some_and(|(_, from)| {
+                        !crosses_gap(
+                            &document.playback.replay().gaps,
+                            built.branch,
+                            from,
+                            built.hour,
+                        )
+                    });
+                let skipped = skipped_hours(
+                    on_screen,
+                    (built.branch, built.hour),
+                    passes_unbuilt,
+                    |hour| {
+                        let key = (built.branch, hour);
+                        let passed_hour = viewer.ready.get(&key).or_else(|| passed.get(&key))?;
+                        let layers = passed_hour.layers.as_ref().ok();
+                        Some(layers.map(|layers| {
+                            (
+                                Arc::clone(&layers.buildings),
+                                (Arc::clone(&layers.impacts), Arc::clone(&layers.map_text)),
+                            )
+                        }))
+                    },
+                );
+                viewer.apply_hour(state, document, built, skipped, retired, laps)
+            }
+            None => Ok(()),
+        }
+    }
+    fn retire(&mut self, result: std::io::Result<()>) -> std::io::Result<()> {
+        if !self.passed.is_empty() {
+            self.retired.push(std::mem::take(&mut self.passed));
+        }
+        finish_hour_poll(
+            &mut self.document.playback,
+            self.viewer
+                .dropper
+                .as_ref()
+                .expect("created before polling"),
+            std::mem::take(&mut self.retired),
+            result,
+        )?;
+        self.document.hour_fraction = if (
+            self.document.playback.branch(),
+            self.document.playback.hour(),
+        ) == self.target
+        {
+            self.fraction
+        } else {
+            0.0
+        };
         Ok(())
     }
 }
@@ -1313,6 +1404,121 @@ mod tests {
             self.installed.push(key.1);
             self.shown = Some(key);
             self.ready.retain(|key, _| key.1 > self.shown.unwrap().1);
+        }
+    }
+
+    struct TestPresentation {
+        completed: hours::Completions,
+        target: HourKey,
+        playback: crate::playback::Playback,
+        ready: BTreeMap<HourKey, crate::playback::Current>,
+        passed: BTreeMap<HourKey, crate::playback::Current>,
+        retired: Retired,
+        dropper: Dropper,
+        installed: Vec<i32>,
+        retired_poll: bool,
+    }
+    impl HourPresentation for TestPresentation {
+        fn completed(&self) -> &hours::Completions {
+            &self.completed
+        }
+        fn target(&self) -> (u64, HourKey) {
+            (0, self.target)
+        }
+        fn install(&mut self, arrivals: Vec<hours::Built>) -> std::io::Result<()> {
+            assert!(arrivals.is_empty(), "the usable hour was already in ready");
+            let fallback = latest_built_key(&self.ready, self.target, |frame| {
+                matches!(frame, crate::playback::Current::Frame(_))
+            });
+            self.passed = retain_ready(&mut self.ready, self.target, (0, 2), fallback);
+            let shown = Some((self.playback.branch(), self.playback.hour()));
+            if let Some(current) = select_ready(
+                &mut self.ready,
+                self.target,
+                shown,
+                false,
+                true,
+                fallback,
+                &mut self.passed,
+            ) {
+                let crate::playback::Current::Frame(frame) = &current else {
+                    panic!("recorded ready frame")
+                };
+                let (branch, hour) = (frame.branch, frame.hour);
+                self.retired
+                    .push(self.playback.present(branch, hour, current));
+                self.installed.push(hour);
+            }
+            Ok(())
+        }
+        fn retire(&mut self, result: std::io::Result<()>) -> std::io::Result<()> {
+            self.retired.push(std::mem::take(&mut self.passed));
+            self.retired_poll = true;
+            finish_hour_poll(
+                &mut self.playback,
+                &self.dropper,
+                std::mem::take(&mut self.retired),
+                result,
+            )
+        }
+    }
+
+    #[test]
+    fn ahead_pressure_runs_the_production_take_install_retire_sequence() {
+        use crate::playback::{Current, Playback};
+        for target in [101, 102] {
+            let status = Arc::new(hours::SourceStatus::default());
+            status.set(7, 0, (1, 102), "display credit remains pinned".into());
+            assert!(status.for_target(1, (1, 102)).is_ok());
+            assert!(status.for_target(0, (2, 102)).is_ok());
+            let (send, receive) = std::sync::mpsc::sync_channel(1);
+            send.send(hours::Output::Pressure).ok().unwrap();
+            let playback = Playback::new(crate::playback::tests::fixture()).unwrap();
+            let replay::container::SeekResult::Frame(next) =
+                playback.replay().seek(1, 101).unwrap()
+            else {
+                panic!("recorded ready hour")
+            };
+            let ready = BTreeMap::from([
+                ((1, 100), playback.current().clone()),
+                ((1, 101), Current::Frame(Arc::from(next))),
+            ]);
+            let mut presentation = TestPresentation {
+                completed: hours::Completions::for_test(receive, status),
+                target: (1, target),
+                playback,
+                ready,
+                passed: BTreeMap::new(),
+                retired: Retired::default(),
+                dropper: Dropper::new().unwrap(),
+                installed: Vec::new(),
+                retired_poll: false,
+            };
+            let result = poll_presentation(&mut presentation);
+            assert_eq!(presentation.installed, [101]);
+            assert_eq!(
+                (presentation.playback.branch(), presentation.playback.hour()),
+                (1, 101)
+            );
+            assert!(presentation.ready.is_empty() && presentation.passed.is_empty());
+            assert!(presentation.retired_poll && !presentation.playback.holds_source());
+            let Current::Frame(frame) = presentation.playback.current() else {
+                panic!("installed ready frame")
+            };
+            assert_eq!(
+                frame
+                    .complete::<replay_data::rows::tables::Clock>()
+                    .unwrap()[0]
+                    .hour,
+                101
+            );
+            if target == 101 {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+                assert_eq!(error.to_string(), "display credit remains pinned");
+            }
         }
     }
 

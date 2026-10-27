@@ -17,14 +17,19 @@ use viewer_foundation::map::camera::MapDefines;
 use viewer_foundation::map::camera::MapSize;
 #[cfg(test)]
 use viewer_foundation::map::camera::Placement;
+#[cfg(test)]
 use viewer_foundation::map::tables::core;
+#[cfg(test)]
 use viewer_foundation::table_access::TokenNames;
 
 use installed_content_core::{ResolvedLayers, cities::Cities};
 use installed_content_image::{IndexedImage, native::Decode};
 
+#[cfg(test)]
 use installed_content_core::buildings::BuildingType;
+#[cfg(test)]
 use replay_data::{rows::BuildingRow, rows::ProvinceRow, rows::tables};
+#[cfg(test)]
 use replay_frame::frame::DecodedFrame;
 use {
     super::{
@@ -342,11 +347,32 @@ pub struct Sprawl {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Damage {
     /// None marks a known null province-state link rather than a missing recorded row.
-    health: BTreeMap<u32, Option<i64>>,
+    health: map_display_data::value_index::ValueIndex<u32, Option<i64>>,
     pub refused: Option<String>,
 }
 
 impl Damage {
+    pub(super) fn from_fold(
+        health: map_display_data::value_index::ValueIndex<u32, Option<i64>>,
+        refused: Option<String>,
+    ) -> Self {
+        Self { health, refused }
+    }
+
+    pub(super) fn display(&self) -> map_display_data::buildings::CityDamage {
+        map_display_data::buildings::CityDamage {
+            health: self.health.clone(),
+            refused: self.refused.clone(),
+        }
+    }
+
+    pub(super) fn from_display(value: &map_display_data::buildings::CityDamage) -> Self {
+        Self {
+            health: value.health.clone(),
+            refused: value.refused.clone(),
+        }
+    }
+    #[cfg(test)]
     pub fn read(
         frame: &DecodedFrame,
         types: &[BuildingType],
@@ -361,6 +387,7 @@ impl Damage {
     }
 
     /// The same damage read with explicit hour-builder child scopes.
+    #[cfg(test)]
     pub fn read_profiled(
         frame: &DecodedFrame,
         types: &[BuildingType],
@@ -395,6 +422,7 @@ impl Damage {
         })
     }
 
+    #[cfg(test)]
     fn from_rows(
         provinces: &[ProvinceRow],
         types: &[BuildingType],
@@ -458,7 +486,7 @@ impl Damage {
             health.insert(province.id, (province.state != 0).then_some(minimum));
         }
         Ok(Self {
-            health,
+            health: health.try_into()?,
             refused: None,
         })
     }
@@ -960,13 +988,11 @@ mod tests {
             Some("damaged"),
             "destroyed threshold is strict"
         );
-        Arc::make_mut(&mut player.damage)
-            .health
-            .insert(2, Some(29_999));
+        Arc::make_mut(&mut player.damage).health =
+            player.damage.health.inserted(2, Some(29_999)).unwrap();
         assert_eq!(player.state(2), Some("burning"));
-        Arc::make_mut(&mut player.damage)
-            .health
-            .insert(2, Some(80_000));
+        Arc::make_mut(&mut player.damage).health =
+            player.damage.health.inserted(2, Some(80_000)).unwrap();
         assert_eq!(player.state(2), Some("idle"), "damaged threshold is strict");
         player.destroyed = 90_000;
         assert_eq!(
@@ -985,9 +1011,10 @@ mod tests {
             &available,
         )
         .unwrap();
-        Arc::make_mut(&mut player.damage)
-            .health
-            .extend(stateless.health);
+        for (&key, &value) in stateless.health.iter() {
+            Arc::make_mut(&mut player.damage).health =
+                player.damage.health.inserted(key, value).unwrap();
+        }
         player.damaged = 110_000;
         assert_eq!(
             player.state(6_001),
@@ -1127,7 +1154,7 @@ mod tests {
             ..Default::default()
         };
         let mut scene = presentation(Damage {
-            health: BTreeMap::from([(7, Some(20_000))]),
+            health: BTreeMap::from([(7, Some(20_000))]).try_into().unwrap(),
             refused: None,
         });
         let cities = vec![City {
@@ -1183,9 +1210,8 @@ mod tests {
         );
         assert!((events[0].age - 0.1).abs() < 0.0001);
         events.clear();
-        Arc::make_mut(&mut scene.damage)
-            .health
-            .insert(7, Some(60_000));
+        Arc::make_mut(&mut scene.damage).health =
+            scene.damage.health.inserted(7, Some(60_000)).unwrap();
         scene.view = None;
         step(&mut scene, &mut player, 51.0, &mut events);
         assert!(events.is_empty());
@@ -1235,11 +1261,11 @@ mod tests {
             Some("synthetic_smoke")
         );
         scene.advance_shared(&Arc::new(Damage {
-            health: BTreeMap::from([(7, Some(20_000))]),
+            health: BTreeMap::from([(7, Some(20_000))]).try_into().unwrap(),
             refused: None,
         }));
         scene.advance_shared(&Arc::new(Damage {
-            health: BTreeMap::from([(7, Some(60_000))]),
+            health: BTreeMap::from([(7, Some(60_000))]).try_into().unwrap(),
             refused: None,
         }));
         assert_eq!(scene.actors[0].as_ref().unwrap().requests.len(), 4);
@@ -1249,7 +1275,7 @@ mod tests {
         );
         scene.reset();
         scene.set_shared_damage(&Arc::new(Damage {
-            health: BTreeMap::from([(7, Some(100_000))]),
+            health: BTreeMap::from([(7, Some(100_000))]).try_into().unwrap(),
             refused: None,
         }));
         let mut rig = rig;
@@ -1399,7 +1425,9 @@ mod tests {
                         };
                         (id, health)
                     })
-                    .collect(),
+                    .collect::<BTreeMap<_, _>>()
+                    .try_into()
+                    .unwrap(),
                 refused: hour
                     .is_multiple_of(3)
                     .then(|| "synthetic incomplete damage".into()),
@@ -1607,7 +1635,7 @@ mod tests {
             30_000,
         );
         let mut damage = Arc::new(Damage {
-            health: BTreeMap::from([(7, Some(100_000))]),
+            health: BTreeMap::from([(7, Some(100_000))]).try_into().unwrap(),
             refused: None,
         });
         scene.set_shared_damage(&damage);
@@ -1620,14 +1648,14 @@ mod tests {
         assert!(scene.update(camera, [1024, 768], true, 10.0).is_some());
         camera.center[0] += 0.01;
         assert!(scene.update(camera, [1024, 768], true, 10.1).is_none());
-        Arc::make_mut(&mut damage).health.insert(7, Some(20_000));
+        Arc::make_mut(&mut damage).health = damage.health.inserted(7, Some(20_000)).unwrap();
         scene.set_shared_damage(&damage);
         assert!(scene.update(camera, [1024, 768], true, 10.2).is_none());
         assert_eq!(
             scene.actors[0].as_ref().unwrap().requests[0].state,
             "burning"
         );
-        Arc::make_mut(&mut damage).health.clear();
+        Arc::make_mut(&mut damage).health = Default::default();
         scene.set_shared_damage(&damage);
         assert_eq!(
             scene.update(camera, [1024, 768], true, 10.3).unwrap()[0]
@@ -1635,7 +1663,7 @@ mod tests {
                 .animation,
             STOPPED
         );
-        Arc::make_mut(&mut damage).health.insert(7, Some(60_000));
+        Arc::make_mut(&mut damage).health = damage.health.inserted(7, Some(60_000)).unwrap();
         scene.advance_shared(&damage);
         // advance did not hand the new stream to the renderer. Like the original
         // path, the same view does nothing, but a changed view submits that stream.
@@ -1647,7 +1675,7 @@ mod tests {
                 .animation,
             BUILDING_IDLE
         );
-        Arc::make_mut(&mut damage).health.clear();
+        Arc::make_mut(&mut damage).health = Default::default();
         scene.advance_shared(&damage);
         scene.set_shared_damage(&damage);
         assert_eq!(
@@ -1681,7 +1709,9 @@ mod tests {
                 (3, Some(79_999)),
                 (4, Some(80_000)),
                 (6, Some(100_000)),
-            ]),
+            ])
+            .try_into()
+            .unwrap(),
             refused: Some("synthetic damage".into()),
         });
         let states = [
@@ -1756,7 +1786,7 @@ mod tests {
             // at the last presented time, without submitting their streams.
             for health in [100_000, 20_000, 60_000] {
                 scene.advance_shared(&Arc::new(Damage {
-                    health: BTreeMap::from([(1, Some(health))]),
+                    health: BTreeMap::from([(1, Some(health))]).try_into().unwrap(),
                     refused: None,
                 }));
             }

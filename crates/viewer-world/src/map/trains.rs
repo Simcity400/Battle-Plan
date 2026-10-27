@@ -62,6 +62,7 @@ use std::cell::Cell;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    sync::Arc,
 };
 use viewer_foundation::map::presentation::Continuity;
 use viewer_foundation::table_access::TokenNames;
@@ -599,6 +600,20 @@ impl TrainPlan {
         assets: &TrainAssets,
         cultures: &Cultures,
     ) -> io::Result<Self> {
+        Self::build_with_graph(frame, ours, rails, heights, assets, cultures, || {
+            super::railways::RailNetwork::read(frame).map(Arc::new)
+        })
+    }
+
+    pub fn build_with_graph(
+        frame: &DecodedFrame,
+        ours: u32,
+        rails: &super::railways::RailGeometry,
+        heights: &HeightField<'_>,
+        assets: &TrainAssets,
+        cultures: &Cultures,
+        graph: impl FnOnce() -> io::Result<Arc<super::railways::RailNetwork>>,
+    ) -> io::Result<Self> {
         let mut plan = Self {
             branch: frame.branch,
             hour: frame.hour,
@@ -629,8 +644,7 @@ impl TrainPlan {
             return Ok(plan);
         }
         // The same graph, spurs and harbour anchors the rail pass draws.
-        let network =
-            super::railways::RailNetwork::new(edges.rows(), supply.rows(), naval_bases.rows());
+        let network = graph()?;
         let Some(inventory) = inventory.rows().iter().find(|r| r.country == country.id) else {
             return Err(invalid("complete TrainInventory lacks viewing country"));
         };

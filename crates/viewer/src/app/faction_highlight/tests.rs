@@ -38,9 +38,9 @@ fn plan() -> FactionHighlight {
             one_pixel_provinces: vec![],
         },
         &Regions {
-            country_of: vec![],
-            owner_of: vec![],
-            state_of: vec![],
+            country_of: vec![].into(),
+            owner_of: vec![].into(),
+            state_of: vec![].into(),
             country_colors: Default::default(),
             warnings: vec![],
             strategic_attributes: Default::default(),

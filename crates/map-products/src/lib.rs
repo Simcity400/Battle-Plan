@@ -1,6 +1,11 @@
+mod country_index;
+mod dependency_index;
+pub mod display;
+pub mod landscape;
 pub mod loader;
 pub mod music_inputs;
 pub mod witness;
+mod zone_projection;
 
 use installed_content_core::{ResolvedLayers, map::MapData};
 use installed_content_localisation::localisation::Localisation;
@@ -10,13 +15,13 @@ use std::{
     cell::{OnceCell, RefCell},
     collections::BTreeMap,
     io,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 use viewer_counter_products::map::orders;
 use viewer_foundation::{
     map::{
-        memo::{Keyed, Recent},
-        perspective::{self, VisionKey, cached_vision},
+        memo::Recent,
+        perspective,
         tables::{self, Limitations},
         textures::{self, IntelMap},
         visibility::FogContent,
@@ -37,13 +42,20 @@ pub struct ProductInputs {
     pub map_text: events::Content,
     pub audio: Option<Arc<viewer_audio::Content>>,
     pub triggers: Arc<TriggerContent>,
-    pub vision_memo: Arc<Keyed<perspective::Vision, VisionKey>>,
 }
 
 pub struct ProductContent {
     pub reads: ContentReads,
     inputs: ProductInputs,
     intel_cells: Arc<textures::IntelCellsCache>,
+    snow: OnceLock<Result<display::SnowContent, (io::ErrorKind, String)>>,
+    snow_loader: Option<loader::Loader>,
+    landscape: landscape::Projections,
+    display_binding: Result<[u8; 32], String>,
+    visions: dependency_index::DependencyIndex<
+        (i32, bool, Option<witness::KeyText>),
+        perspective::Vision,
+    >,
 }
 
 impl std::ops::Deref for ProductContent {
@@ -64,11 +76,33 @@ impl ProductContent {
 
     pub fn from_inputs(reads: ContentReads, inputs: ProductInputs) -> Self {
         let intel_cells = textures::IntelCellsCache::prewarm(Arc::clone(&inputs.map));
+        let display_binding = reads
+            .witness()
+            .map(|witness| witness.digest)
+            .map_err(|error| error.to_string());
         Self {
             reads,
+            display_binding,
             inputs,
             intel_cells,
+            snow: OnceLock::new(),
+            snow_loader: None,
+            landscape: Default::default(),
+            visions: Default::default(),
         }
+    }
+
+    pub fn display_binding(&self) -> io::Result<[u8; 32]> {
+        self.display_binding
+            .as_ref()
+            .copied()
+            .map_err(|reason| io::Error::other(reason.clone()))
+    }
+
+    pub fn prepare_display_content(&self) -> io::Result<()> {
+        self.intel_cells.get_or_init()?;
+        let _ = self.snow_content();
+        Ok(())
     }
 
     pub fn intel_map_from_visibility(
@@ -94,10 +128,7 @@ impl ProductContent {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct Header {
-    pub viewing: Option<String>,
-}
+pub use map_display_data::Header;
 
 #[derive(Clone)]
 pub struct FogProduct {
@@ -129,6 +160,7 @@ pub const FOG_PART_RANK: u8 = 6;
 pub struct ProductHour<'a> {
     pub content: &'a ProductContent,
     pub frame: &'a DecodedFrame,
+    pub changes: replay_frame::frame::HourChanges<'a>,
     pub hour_fraction: f32,
     vision_cache: RefCell<Option<(perspective::Choice, Arc<perspective::Vision>)>>,
     trigger_world: OnceCell<dashboard_text::triggers::World<'a>>,
@@ -136,9 +168,15 @@ pub struct ProductHour<'a> {
 
 impl<'a> ProductHour<'a> {
     pub fn new(content: &'a ProductContent, frame: &'a DecodedFrame, hour_fraction: f32) -> Self {
+        Self::from_input(content, replay_frame::frame::HourInput::new(frame), hour_fraction)
+    }
+
+    pub fn from_input(content: &'a ProductContent, input: replay_frame::frame::HourInput<'a>, hour_fraction: f32) -> Self {
+        let frame = input.frame();
         Self {
             content,
             frame,
+            changes: input.changes(),
             hour_fraction,
             vision_cache: RefCell::new(None),
             trigger_world: OnceCell::new(),
@@ -157,13 +195,11 @@ impl<'a> ProductHour<'a> {
     }
 
     pub fn weather_field(&self) -> io::Result<weather_effects::Field> {
-        weather_effects::field(self.frame)
+        display::weather_field(self.frame)
     }
 
     pub fn nuclear_impacts(&self) -> io::Result<strike_effects::Impacts> {
-        strike_effects::Impacts::read(self.frame, |province| {
-            self.content.impact_place(province)
-        })
+        strike_effects::Impacts::read(self.frame, |province| self.content.impact_place(province))
     }
 
     pub fn map_text(
@@ -292,12 +328,32 @@ impl<'a> ProductHour<'a> {
         {
             return Ok(Arc::clone(vision));
         }
-        let vision = cached_vision(
-            self.frame,
-            perspective,
-            FogContent::loaded(&self.content.fog),
-            &self.content.vision_memo,
-        )?;
+        let _cost = replay_frame::cpu::scope("viewer", Some("fog"));
+        let vision = (|| {
+            let tag = match &perspective.country {
+                perspective::Country::Recorded => None,
+                perspective::Country::Tag(tag) => Some(witness::KeyText::new(tag)?),
+            };
+            self.content.visions.project(
+                self.frame,
+                (self.frame.hour, perspective.fog, tag),
+                dependency_index::Clock::Hour,
+                || {
+                    let (links, tags) = self.country_maps()?;
+                    perspective::Vision::read(
+                        self.frame,
+                        &links,
+                        &tags,
+                        perspective,
+                        FogContent::loaded(&self.content.fog),
+                    )
+                },
+            )
+        })()
+        .map_err(|error| {
+            map_display_data::credit::display_products()
+                .reclaim_failure(error, || self.content.visions.evict())
+        })?;
         *self.vision_cache.borrow_mut() = Some((perspective.clone(), Arc::clone(&vision)));
         Ok(vision)
     }
@@ -438,24 +494,22 @@ impl<'a> ProductHour<'a> {
         })?;
         let music = spans.measure("fog.music", |_| {
             self.music_chances_cached(vision.ours(), &memos.music)
-                .map(Arc::new)
         });
-        let battles = spans.measure("fog.battles", |_| self.battle_sounds().map(Arc::new));
-        Ok(Arc::new(FogProduct {
+        let battles = spans.measure("fog.battles", |_| self.battle_sounds());
+        let product = map_display_data::Fog {
             intel,
-            limitations,
-            header: spans.measure("fog.header", |_| {
-                Arc::new(Header {
-                    viewing: self
-                        .vision(choice)
-                        .and_then(|vision| self.viewing_tag(&vision))
-                        .ok(),
-                })
+            limitations: limitations.lines(),
+            header: spans.measure("fog.header", |_| Header {
+                viewing: self
+                    .vision(choice)
+                    .and_then(|vision| self.viewing_tag(&vision))
+                    .ok(),
             }),
-            map_text: spans.measure("fog.map_text", |_| Arc::new(self.map_text(&vision))),
+            map_text: spans.measure("fog.map_text", |_| self.map_text(&vision).display()),
             music,
             battles,
-        }))
+        };
+        FogProduct::from_display(product).map(Arc::new)
     }
 }
 
@@ -535,3 +589,9 @@ mod tests;
 
 #[cfg(test)]
 mod loader_tests;
+
+#[cfg(test)]
+mod display_oracle;
+
+#[cfg(test)]
+mod fog_oracle;

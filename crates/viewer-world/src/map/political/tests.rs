@@ -16,7 +16,7 @@ fn build_oracle(
     strategic: &LayerPlane,
     field: &FieldDefines,
 ) -> io::Result<OracleLayers> {
-    let regions = regions(map, frame)?;
+    let regions = super::oracle::regions(map, frame)?;
     let color = |key| regions.country_color(key);
     let country = gradient::build_layer(
         &ProvinceMap {
@@ -727,6 +727,338 @@ fn a_map_recording_holds_the_political_map_labels_and_weather() {
         };
         let cells = crate::map::weather::SnowCells::new(&weather, &[false; 32]).unwrap();
         crate::map::weather::grid_from_cells(&cells, &frame).unwrap();
-        crate::map::weather_effects::field(&frame).unwrap();
     });
+}
+
+#[test]
+fn resolved_territory_matches_frozen_owner_controller_colour_and_refusal_reference() {
+    let map = map();
+    let mut hour = frame(vec![
+        province(1, 1, 100, 100),
+        province(2, 1, 100, 200),
+        province(3, 2, 200, 200),
+        province(4, 2, 200, 0),
+        province(5, 0, 0, 0),
+    ]);
+    for table in [
+        None,
+        Some(TableId::CountryAppearance),
+        Some(TableId::Subjects),
+        Some(TableId::CountryLinks),
+    ] {
+        let saved = table.map(|table| (table, hour.tables[table.index()].clone()));
+        if let Some(table) = table {
+            hour.tables[table.index()] = TableView::Unavailable {
+                reason: format!("independent territory poison {table:?}"),
+            }
+            .into();
+        }
+        let (actual, expected) = (regions(&map, &hour), super::oracle::regions(&map, &hour));
+        match (actual, expected) {
+            (Ok(actual), Ok(expected)) => assert_eq!(
+                product_codec::encode(&actual).unwrap(),
+                product_codec::encode(&expected).unwrap()
+            ),
+            (Err(actual), Err(expected)) => assert_eq!(
+                (actual.kind(), actual.to_string()),
+                (expected.kind(), expected.to_string())
+            ),
+            values => panic!("territory candidate/reference mismatch: {values:?}"),
+        }
+        if let Some((table, view)) = saved {
+            hour.tables[table.index()] = view;
+        }
+    }
+}
+
+#[test]
+fn territory_changed_rows_match_frozen_regions_and_keep_untouched_planes() {
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
+    let map = Arc::new(map());
+    let mut source = occupied();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder =
+        FrameDecoder::new().with_change_facts(map_display_data::credit::display_products().clone());
+    let mut fold = TerritoryFold::default();
+    let raw = encoder.encode(source.clone(), true).unwrap();
+    let frame = decoder.advance(&raw).unwrap();
+    let mut previous = fold.read_shared(&map, frame).unwrap();
+    assert_eq!(
+        *previous.paint,
+        super::oracle::regions(&map, frame).unwrap()
+    );
+    for step in 0..4 {
+        source.hour += 1;
+        match step {
+            0 => {
+                let TableView::Complete(TableRows::CountryAppearance(rows)) =
+                    &mut *source.tables[TableId::CountryAppearance.index()]
+                else {
+                    unreachable!()
+                };
+                rows[0].red = 0.125f32.to_bits();
+            }
+            1 => {
+                let TableView::Complete(TableRows::Provinces(rows)) =
+                    &mut *source.tables[TableId::Provinces.index()]
+                else {
+                    unreachable!()
+                };
+                rows[0].controller = 200;
+            }
+            2 => {
+                let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *source.tables[TableId::Countries.index()]
+                else {
+                    unreachable!()
+                };
+                rows.push(CountryRow {
+                    id: 300,
+                    canonical_slot: 0,
+                    tag: b"NEW".to_vec(),
+                    ..Default::default()
+                });
+            }
+            _ => {
+                let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *source.tables[TableId::Countries.index()]
+                else {
+                    unreachable!()
+                };
+                rows.pop();
+            }
+        }
+        let raw = encoder.encode(source.clone(), false).unwrap();
+        let frame = decoder.advance(&raw).unwrap();
+        let next = fold.read_shared(&map, frame).unwrap();
+        assert_eq!(*next.paint, super::oracle::regions(&map, frame).unwrap());
+        if step == 0 {
+            assert!(Arc::ptr_eq(
+                &previous.paint.country_of.0,
+                &next.paint.country_of.0
+            ));
+        }
+        assert!(Arc::ptr_eq(
+            &previous.paint.owner_of.0,
+            &next.paint.owner_of.0
+        ));
+        assert!(Arc::ptr_eq(
+            &previous.paint.state_of.0,
+            &next.paint.state_of.0
+        ));
+        assert_eq!(
+            next.countries.get(&0).unwrap().native,
+            if step == 2 { 300 } else { 100 }
+        );
+        assert!(
+            next.countries
+                .iter()
+                .all(|(_, country)| country.observed_hour == source.hour)
+        );
+        previous = next;
+    }
+    drop(decoder);
+    let source = source
+        .tables
+        .into_iter()
+        .all(|table| table.try_unwrap().is_ok());
+    assert!(source);
+}
+#[test]
+fn territory_refusal_uses_first_province_before_missing_map_rows() {
+    let mut map = map();
+    map.country_colors
+        .use_overlord_color
+        .insert(b"inherited".to_vec(), true);
+    let mut frame = occupied();
+    let TableView::Complete(TableRows::CountryLinks(links)) =
+        &mut *frame.tables[TableId::CountryLinks.index()]
+    else {
+        unreachable!()
+    };
+    links.push(CountryLinkRow {
+        id: 300,
+        canonical_slot: 2,
+    });
+    frame.tables[TableId::Subjects.index()] =
+        TableView::Complete(TableRows::Subjects(vec![SubjectRow {
+            subject: 100,
+            overlord: 300,
+            ..Default::default()
+        }]))
+        .into();
+    frame.tables[TableId::Autonomy.index()] =
+        TableView::Complete(TableRows::Autonomy(vec![AutonomyRow {
+            subject: 100,
+            state: b"inherited".to_vec(),
+            ..Default::default()
+        }]))
+        .into();
+    let TableView::Complete(TableRows::Provinces(rows)) =
+        &mut *frame.tables[TableId::Provinces.index()]
+    else {
+        unreachable!()
+    };
+    rows[2].owner = 999;
+    rows.pop();
+    let expected = super::oracle::regions(&map, &frame).unwrap_err();
+    let actual = TerritoryFold::default().read(&map, &frame).unwrap_err();
+    assert_eq!(actual.kind(), expected.kind());
+    assert_eq!(actual.to_string(), expected.to_string());
+}
+
+#[test]
+fn territory_relation_delta_boundaries_and_link_aliases_match_independent_oracle() {
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
+    let mut map = map();
+    map.country_colors
+        .use_overlord_color
+        .insert(b"inherited".to_vec(), true);
+    map.country_colors
+        .use_overlord_color
+        .insert(b"own".to_vec(), false);
+    let map = Arc::new(map);
+    let mut source = occupied();
+    source.hour = 10;
+    source.tables[TableId::Subjects.index()] =
+        TableView::Complete(TableRows::Subjects(vec![SubjectRow {
+            subject: 100,
+            overlord: 200,
+            start_hour: 0,
+            end_hour: 12,
+            ..Default::default()
+        }]))
+        .into();
+    source.tables[TableId::Autonomy.index()] =
+        TableView::Complete(TableRows::Autonomy(vec![AutonomyRow {
+            subject: 100,
+            state: b"inherited".to_vec(),
+            ..Default::default()
+        }]))
+        .into();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder =
+        FrameDecoder::new().with_change_facts(map_display_data::credit::display_products().clone());
+    let mut fold = TerritoryFold::default();
+    for step in 0..9 {
+        source.hour = 10 + step;
+        match step {
+            3 => {
+                let TableView::Complete(TableRows::Subjects(rows)) =
+                    &mut *source.tables[TableId::Subjects.index()]
+                else {
+                    unreachable!()
+                };
+                rows[0].end_hour = 20;
+            }
+            4 => {
+                let TableView::Complete(TableRows::Autonomy(rows)) =
+                    &mut *source.tables[TableId::Autonomy.index()]
+                else {
+                    unreachable!()
+                };
+                rows[0].state = b"undefined".to_vec();
+            }
+            5 => {
+                let TableView::Complete(TableRows::Autonomy(rows)) =
+                    &mut *source.tables[TableId::Autonomy.index()]
+                else {
+                    unreachable!()
+                };
+                rows[0].state = b"inherited".to_vec();
+                rows.push(AutonomyRow {
+                    subject: 300,
+                    state: b"own".to_vec(),
+                    ..Default::default()
+                });
+                let TableView::Complete(TableRows::CountryLinks(rows)) =
+                    &mut *source.tables[TableId::CountryLinks.index()]
+                else {
+                    unreachable!()
+                };
+                rows.push(CountryLinkRow {
+                    id: 300,
+                    canonical_slot: 0,
+                });
+            }
+            6 => {
+                let TableView::Complete(TableRows::CountryLinks(rows)) =
+                    &mut *source.tables[TableId::CountryLinks.index()]
+                else {
+                    unreachable!()
+                };
+                rows.pop();
+            }
+            7 => {
+                source.tables[TableId::Autonomy.index()] = TableView::Truncated {
+                    rows: TableRows::Autonomy(Vec::new()),
+                    missing: 2,
+                }
+                .into();
+            }
+            8 => {
+                source.tables[TableId::Autonomy.index()] =
+                    TableView::Complete(TableRows::Autonomy(Vec::new())).into();
+            }
+            _ => {}
+        }
+        let raw = encoder.encode(source.clone(), step == 0).unwrap();
+        let frame = decoder.advance(&raw).unwrap();
+        match (
+            fold.read_shared(&map, frame),
+            super::oracle::regions(&map, frame),
+        ) {
+            (Ok(actual), Ok(expected)) => assert_eq!(*actual.paint, expected, "step {step}"),
+            (Err(actual), Err(expected)) => assert_eq!(
+                (actual.kind(), actual.to_string()),
+                (expected.kind(), expected.to_string()),
+                "step {step}"
+            ),
+            (actual, expected) => panic!(
+                "step {step}: {} / {expected:?}",
+                if actual.is_ok() { "value" } else { "error" }
+            ),
+        }
+    }
+}
+
+
+#[test]
+fn batched_territory_indexes_keep_repeated_links_counts_and_sorted_planes_exact() {
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
+    let mut map = map();
+    let mut source = occupied();
+    let TableView::Complete(TableRows::Provinces(provinces)) =
+        &mut *source.tables[TableId::Provinces.index()]
+    else { unreachable!() };
+    for id in 8..=1508 {
+        map.definitions.insert(id, ProvinceDefinition {
+            id, rgb: [0; 3], kind: ProvinceKind::Land, continent: 0,
+        });
+        provinces.push(ProvinceRow {
+            id, state: 1, owner: 100, controller: 100, ..Default::default()
+        });
+    }
+    let map = Arc::new(map);
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new()
+        .with_change_facts(map_display_data::credit::display_products().clone());
+    let mut fold = TerritoryFold::default();
+    for step in 0..4 {
+        if step != 0 {
+            source.hour += 1;
+            let TableView::Complete(TableRows::Provinces(provinces)) =
+                &mut *source.tables[TableId::Provinces.index()]
+            else { unreachable!() };
+            for row in provinces.iter_mut().filter(|row| row.id >= 8) {
+                row.controller = if step == 1 { 200 } else { 100 };
+                row.owner = if step == 2 { 200 } else { 100 };
+            }
+        }
+        let update = encoder.encode(source.clone(), step == 0).unwrap();
+        let frame = decoder.advance(&update).unwrap();
+        let actual = fold.read_shared(&map, frame).unwrap();
+        assert_eq!(*actual.paint, super::oracle::regions(&map, frame).unwrap());
+        assert_eq!(actual.provinces.0.len(), core::<tables::Provinces>(frame).unwrap().len());
+    }
 }

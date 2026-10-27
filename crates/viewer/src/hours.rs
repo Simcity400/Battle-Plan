@@ -68,25 +68,19 @@ use viewer_foundation::worker_priority::background_priority;
 
 use replay::container::Replay;
 use replay_data::{BranchId, Hour};
-use viewer_world::map::map_buildings::BuildingsBase;
 
 use {
     crate::document::Content, crate::document::Hour as HourView, crate::document::OverlayTables,
     crate::document::PreparedOverlay, crate::engaged_index::EngagedIndex, crate::playback::Current,
-    crate::playback::Playback, viewer_foundation::blocks::BlockReader,
-    viewer_foundation::map::camera::Camera, viewer_foundation::map::memo::Settled,
-    viewer_foundation::map::memo::Recent, viewer_foundation::map::name_draw::Placements,
-    viewer_foundation::map::perspective, viewer_foundation::map::ribbon_content::OrderField,
-    viewer_foundation::map::tables::Limitations,
-    viewer_foundation::map::textures::IntelMap, viewer_foundation::retirement::builder_count,
-    viewer_world::map::aircraft::AircraftPlan, viewer_world::map::border_pass::ClassPlan,
-    viewer_world::map::demilitarized::Zone, viewer_world::map::demilitarized::ZonePlan,
-    viewer_world::map::map_buildings::PreparedBuildings, viewer_world::map::models::ModelField,
-    viewer_world::map::name_pass::NameAreas, viewer_world::map::name_pass::PlacedAreas,
-    viewer_world::map::political, viewer_world::map::political::FrameKey,
-    viewer_world::map::political::PoliticalLayers, viewer_world::map::railways::RailMesh,
-    viewer_world::map::railways::RailNetwork, viewer_world::map::trains::TrainPlan,
-    viewer_world::map::unit_models::PreparedModels, viewer_world::map::weather,
+    crate::playback::Playback, map_display_data::buildings::Buildings as PreparedBuildings,
+    viewer_foundation::blocks::BlockReader, viewer_foundation::map::camera::Camera,
+    viewer_foundation::map::name_draw::Placements, viewer_foundation::map::perspective,
+    viewer_foundation::map::ribbon_content::OrderField,
+    viewer_foundation::map::tables::Limitations, viewer_foundation::map::textures::IntelMap,
+    viewer_foundation::retirement::builder_count, viewer_world::map::aircraft::AircraftPlan,
+    viewer_world::map::border_pass::ClassPlan, viewer_world::map::demilitarized::Zone,
+    viewer_world::map::demilitarized::ZonePlan, viewer_world::map::political::PoliticalLayers,
+    viewer_world::map::trains::TrainPlan, viewer_world::map::unit_models::PreparedModels,
     viewer_world::map::weather::SnowMud, viewer_world::map::weather_effects,
 };
 
@@ -361,18 +355,6 @@ fn carry_colour(
     Ok(colour)
 }
 
-/// Resolve dependent slots before claiming a single-flight cell. FIFO dequeue
-/// alone does not order workers' entry into the memo after preemption.
-fn memo_after_neighbours<K: PartialEq, V, T, E>(
-    memo: &viewer_foundation::map::memo::Recent<K, V>,
-    key: K,
-    neighbours: impl FnOnce() -> Vec<Arc<T>>,
-    build: impl FnOnce(Vec<Arc<T>>) -> Result<Arc<V>, E>,
-) -> Result<Arc<V>, E> {
-    let neighbours = neighbours();
-    memo.get_or_insert_with(key, || build(neighbours))
-}
-
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_id() -> u64 {
@@ -405,14 +387,14 @@ impl<T: PartialEq> Shared<T> {
 /// The railway mesh and the bridges placed on it.
 pub struct Rails {
     pub id: u64,
-    pub value: (RailMesh, ModelField),
+    pub value: Arc<map_products::landscape::RailProduct>,
     pub geometry: Option<Arc<viewer_world::map::railways::PreparedRailGeometry>>,
 }
 
 impl Rails {
     fn share(
         neighbours: Vec<Arc<Self>>,
-        value: (RailMesh, ModelField),
+        value: Arc<map_products::landscape::RailProduct>,
         device: Option<&eframe::wgpu::Device>,
     ) -> io::Result<Arc<Self>> {
         if let Some(same) = neighbours.into_iter().find(|near| near.value == value) {
@@ -428,10 +410,11 @@ impl Rails {
     }
 }
 
-/// An hour's political fill, shared by the hours whose [`FrameKey`] is equal.
+/// An hour's resolved political fill.
 pub struct Political {
     pub id: u64,
-    key: FrameKey,
+    colour: Option<Arc<viewer_world::map::map_mode::ColourState>>,
+    _projection: Arc<map_display_data::landscape::ModeProjection>,
     pub layers: PoliticalLayers,
 }
 
@@ -440,9 +423,37 @@ pub struct Political {
 pub struct Borders {
     pub id: u64,
     political: u64,
-    pub(crate) zone: Zone,
+    pub(crate) zone: map_display_data::retained::Retained<Zone>,
     pub classes: ClassPlan,
     pub highlighted: ZonePlan,
+}
+
+impl Borders {
+    fn reuse_or_build(
+        political: u64,
+        zone: map_display_data::retained::Retained<Zone>,
+        near: &[Arc<Self>],
+        build: impl FnOnce(&Zone) -> (ClassPlan, ZonePlan),
+    ) -> Arc<Self> {
+        if let Some(same) = near
+            .iter()
+            .find(|near| near.political == political && near.zone == zone)
+        {
+            return Arc::clone(same);
+        }
+        let _cost = replay_frame::cpu::scope("border plans", Some("territory"));
+        let (mut classes, highlighted) = build(&zone);
+        for near in near {
+            classes.share(&near.classes);
+        }
+        Arc::new(Self {
+            id: next_id(),
+            political,
+            zone,
+            classes,
+            highlighted,
+        })
+    }
 }
 
 /// The viewing country's own tag at an hour, which presentation continuity
@@ -640,7 +651,7 @@ pub struct Built {
     pub(crate) trace: trace::TargetTrace,
 }
 
-type PartWork = Box<dyn FnOnce(&HourView<'_>, &mut BuilderSpans) -> Part + Send>;
+type PartWork = Box<dyn FnMut(&HourView<'_>, &mut BuilderSpans) -> Part + Send>;
 
 enum Part {
     Political(io::Result<(Arc<Political>, Arc<Borders>)>),
@@ -675,6 +686,22 @@ struct Reusable {
 }
 
 impl Part {
+    fn resource_pending(&self) -> bool {
+        self.resource_error()
+            .is_some_and(|error| error.kind() == io::ErrorKind::WouldBlock)
+    }
+    fn resource_error(&self) -> Option<&io::Error> {
+        match self {
+            Self::Political(value) => value.as_ref().err(),
+            Self::Names(value) => value.as_ref().err(),
+            Self::Overlay(value) => value.as_ref().err(),
+            Self::Rails(value) => value.as_ref().err(),
+            Self::Buildings(value) => value.as_ref().err(),
+            Self::Movers(value) => value.as_ref().err(),
+            Self::Fog(value) => value.as_ref().err(),
+            Self::Snow(value) => value.as_ref().err(),
+        }
+    }
     /// The error an hour carries when its builder panicked.
     ///
     /// The failed part still arrives, so [`Pending::take`] can finish the hour
@@ -766,7 +793,6 @@ struct Slots {
     borders: Arc<Slot<Borders>>,
     rails: Arc<Slot<Rails>>,
     buildings: Arc<Slot<Shared<PreparedBuildings>>>,
-    buildings_state: Arc<Slot<BuildingsBase>>,
 }
 
 impl Slots {
@@ -776,13 +802,7 @@ impl Slots {
             borders: Slot::new(),
             rails: Slot::new(),
             buildings: Slot::new(),
-            buildings_state: Slot::new(),
         }
-    }
-
-    // Reused hours submit no building job, so explicitly release successor waits.
-    fn without_buildings_state(&self) {
-        Fill(Arc::clone(&self.buildings_state)).set(None);
     }
 }
 
@@ -790,15 +810,8 @@ impl Slots {
 /// were built from (`viewer_foundation::map::memo`). A hit hands back the same allocation, so the
 /// window, which remembers what it uploaded, uploads nothing for it.
 struct Memos {
-    /// Country names, by the areas and names they place.
-    names: Recent<NameAreas, Placements>,
-    /// Each country area's placed name, so a moved front re-places only the
-    /// areas it changed.
-    placed: PlacedAreas,
-    /// The railway, by the recorded network it is drawn from.
-    rails: Recent<Arc<RailNetwork>, Rails>,
     /// Equal snow grids share an allocation even when the weather table changes identity.
-    snow_shared: Settled<SnowMud>,
+    snow_shared: map_products::display::SnowMemo,
     /// The intel map, by the viewing country's rebuilt province bytes.
     fog: map_products::FogMemos,
 }
@@ -810,10 +823,7 @@ const MEMO_ENTRIES: usize = 8;
 impl Memos {
     fn new() -> Self {
         Self {
-            names: Recent::new(MEMO_ENTRIES),
-            placed: PlacedAreas::default(),
-            rails: Recent::new(MEMO_ENTRIES),
-            snow_shared: Settled::new(weather::TABLES, MEMO_ENTRIES),
+            snow_shared: map_products::display::SnowMemo::new(MEMO_ENTRIES),
             fog: map_products::FogMemos::new(MEMO_ENTRIES),
         }
     }
@@ -822,9 +832,31 @@ impl Memos {
 enum Event {
     Shutdown,
     PoolSpace,
+    ProductSpace,
+    RetryColour {
+        ticket: u64,
+        key: (BranchId, Hour),
+        generation: u64,
+        reason: String,
+        work: Box<dyn FnOnce() + Send>,
+    },
+    RetryPart {
+        ticket: u64,
+        generation: u64,
+        reason: String,
+        job: dispatch_plan::HeldJob,
+    },
     ResultSpace,
-    Frame { ticket: u64, key: (BranchId, Hour), reply: source_mailbox::Reply<Current, trace::DecodeSample> },
-    Colour { ticket: u64, key: (BranchId, Hour), folded: Box<dispatch_plan::ColourFolded> },
+    Frame {
+        ticket: u64,
+        key: (BranchId, Hour),
+        reply: source_mailbox::Reply<Current, trace::DecodeSample>,
+    },
+    Colour {
+        ticket: u64,
+        key: (BranchId, Hour),
+        folded: Box<dispatch_plan::ColourFolded>,
+    },
     Want,
     Part {
         ticket: u64,
@@ -1276,6 +1308,7 @@ struct LaneState {
     behind: i32,
     served: Option<(BranchId, Hour)>,
     urgent: Option<(BranchId, Hour)>,
+    decoded: Option<(BranchId, Hour)>,
     frames: FrameCache,
     decode_profile: Option<BTreeMap<(BranchId, Hour), trace::DecodeSample>>,
     stop: bool,
@@ -1285,6 +1318,7 @@ struct LaneState {
     throughput: Throughput,
     gate: Option<&'static str>,
     rewant: bool,
+    pressure: Option<(BranchId, Hour)>,
 }
 
 impl LaneState {
@@ -1302,6 +1336,9 @@ impl LaneState {
     }
 
     fn next(&self) -> Option<(BranchId, Hour)> {
+        if self.pressure.is_some() {
+            return None;
+        }
         self.urgent
             .filter(|key| !self.frames.contains_key(key))
             .or_else(|| {
@@ -1317,6 +1354,9 @@ impl LaneState {
     }
 
     fn set_want(&mut self, wanted: Vec<(BranchId, Hour)>, behind: i32, pool: usize) {
+        if self.pressure.is_some_and(|key| !wanted.contains(&key)) {
+            self.pressure = None;
+        }
         self.wanted = wanted;
         self.behind = behind;
         self.pool = pool.max(1);
@@ -1344,6 +1384,16 @@ impl LaneState {
 
     fn evict(&mut self, pending: Option<(BranchId, Hour)>) {
         let mut required: BTreeSet<_> = self.window().iter().copied().chain(self.urgent).collect();
+        // Shrinking admission must not discard wanted prefetch and rewind the decoder.
+        if let Some(decoded) = self.decoded {
+            required.extend(self.wanted.iter().copied().filter(|key| {
+                key.0 == decoded.0
+                    && key.1 <= decoded.1
+                    && self
+                        .served
+                        .is_none_or(|served| served.0 != key.0 || served.1 <= key.1)
+            }));
+        }
         required.extend(self.served);
         required.extend(pending);
         self.frames.retain_only(&required);
@@ -1362,7 +1412,9 @@ impl Drop for LaneExit<'_> {
     fn drop(&mut self) {
         DecodeLane::lock(self.0).dead = true;
         self.0.changed.notify_all();
-        if let Some(mailbox) = self.0.mailbox.get() { mailbox.stop(); }
+        if let Some(mailbox) = self.0.mailbox.get() {
+            mailbox.stop();
+        }
     }
 }
 
@@ -1393,7 +1445,7 @@ impl DecodeLane {
             .spawn(move || {
                 let _exit = LaneExit(&lane);
                 viewer_foundation::worker_priority::normal_priority();
-                Self::run(&lane, playback);
+                Self::run(&lane, playback.with_display_changes());
             })?;
         Ok(Self { shared })
     }
@@ -1439,6 +1491,7 @@ impl DecodeLane {
                             shared.changed.notify_all();
                             continue 'next;
                         }
+                        state.pressure = None;
                         state.urgent = Some(target);
                         break (target, state.behind, Some(read));
                     }
@@ -1455,28 +1508,68 @@ impl DecodeLane {
             let decode_clock =
                 trace::DecodeClock::start(viewer_foundation::profile_writer::profiling());
             let started = Instant::now();
-            let walked = if let Some(read) = &read {
-                Self::walk_for(shared, &mut playback, target, Some(read))
-            } else {
-                Self::walk(shared, &mut playback, target)
-            };
-            if !walked {
-                let mut state = Self::lock(shared);
-                if read.is_some() && state.urgent == Some(target) {
-                    state.urgent = None;
-                }
-                state.evict(Self::pending(shared));
-                drop(state);
-                drop(read); // terminal cancellation acknowledgement retains the credit until here
-                continue 'next;
-            }
+            let owner = playback.change_memory_owner().clone();
+            let releases = owner.track_releases();
+            let attempt = owner.release_token();
+            let walked = Self::walk_for(shared, &mut playback, target, read.as_ref());
             let mut passed = Vec::new();
-            let current = match playback.seek_with(branch, hour, |decoded| {
-                if hour - decoded.hour <= behind {
-                    passed.push((decoded.hour, Current::Frame(Arc::new(decoded.clone()))));
+            let cancelled = || {
+                #[cfg(test)]
+                tests::during_final_seek();
+                read.as_ref().is_some_and(|read| read.cancelled())
+                    || !Self::lock(shared).still_wanted(target)
+            };
+            let result = walked.and_then(|walked| {
+                if !walked {
+                    return Err(io::Error::from(io::ErrorKind::Interrupted));
                 }
-            }) {
+                playback.seek_shared_cancellable(
+                    branch,
+                    hour,
+                    |decoded| {
+                        if hour - decoded.hour <= behind {
+                            passed.push((decoded.hour, Current::Frame(Arc::clone(decoded))));
+                        }
+                    },
+                    &cancelled,
+                )
+            });
+            let current = match result {
                 Ok(()) => playback.current().clone(),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                    let mut state = Self::lock(shared);
+                    if read.is_some() && state.urgent == Some(target) {
+                        state.urgent = None;
+                    }
+                    state.evict(Self::pending(shared));
+                    drop(state);
+                    drop(read);
+                    continue 'next;
+                }
+                Err(error) if source_pressure(&error) => {
+                    drop(passed);
+                    let mut state = Self::lock(shared);
+                    // Prefetch is optional; release its pins before returning the continuation.
+                    state.frames.retain_only(&BTreeSet::new());
+                    state.decode_profile = None;
+                    state.pressure = Some(target);
+                    if state.urgent == Some(target) {
+                        state.urgent = None;
+                    }
+                    drop(state);
+                    let pressure = DecodePressure::from_error(
+                        &error,
+                        playback.walk_start(branch, hour),
+                        playback.change_memory_owner(),
+                        attempt,
+                    )
+                    .expect("resource pressure");
+                    drop(releases);
+                    if let Some(read) = read {
+                        read.pressure(pressure);
+                    }
+                    continue 'next;
+                }
                 Err(error) => Current::Gap {
                     branch,
                     hour,
@@ -1495,6 +1588,7 @@ impl DecodeLane {
                 }
             }
             state.frames.insert(target, current.clone());
+            state.decoded = Some(target);
             if let Some(sample) = &mut sample {
                 sample.ready = trace::now(true).expect("enabled");
                 let profile = state.decode_profile.get_or_insert_with(BTreeMap::new);
@@ -1527,8 +1621,9 @@ impl DecodeLane {
     /// Walks `playback` towards `target` in [`DECODE_STEP`]-hour steps, each
     /// ending with a check that the target is still wanted. False when the
     /// walk was abandoned; the last step is left to the caller.
+    #[cfg(test)]
     fn walk(shared: &LaneShared, playback: &mut Playback, target: (BranchId, Hour)) -> bool {
-        Self::walk_for(shared, playback, target, None)
+        Self::walk_for(shared, playback, target, None).expect("synthetic walk")
     }
 
     fn walk_for(
@@ -1536,9 +1631,9 @@ impl DecodeLane {
         playback: &mut Playback,
         target: (BranchId, Hour),
         read: Option<&SourceRead>,
-    ) -> bool {
+    ) -> io::Result<bool> {
         if read.is_some_and(|read| read.cancelled()) {
-            return false;
+            return Ok(false);
         }
         let (branch, hour) = target;
         let wanted = || {
@@ -1548,7 +1643,7 @@ impl DecodeLane {
         };
         if (playback.branch(), playback.hour()) == (branch, hour) {
             Self::note_page_route(target, playback, "held");
-            return true;
+            return Ok(true);
         }
         let behind = Self::lock(shared).behind;
         let visit_from = hour.saturating_sub(behind);
@@ -1557,9 +1652,9 @@ impl DecodeLane {
         } else {
             visit_from.saturating_sub(1)
         };
-        let mut paged = match playback.advance_pages(branch, hour, visit_from, &wanted) {
+        let mut paged = match playback.advance_pages(branch, hour, visit_from, &wanted)? {
             std::ops::ControlFlow::Continue(reached) => reached,
-            std::ops::ControlFlow::Break(()) => return false,
+            std::ops::ControlFlow::Break(()) => return Ok(false),
         };
         Self::note_page_route(
             target,
@@ -1567,11 +1662,11 @@ impl DecodeLane {
             if paged.is_some() { "pages" } else { "native" },
         );
         if !wanted() {
-            return false;
+            return Ok(false);
         }
         let mut from = match paged {
             Some(reached) if reached == hour => {
-                return true;
+                return Ok(true);
             }
             _ => playback.walk_start(branch, hour),
         };
@@ -1585,17 +1680,20 @@ impl DecodeLane {
                 let Ok(step) = Hour::try_from(step) else {
                     break;
                 };
-                if playback.advance_without_output(branch, step).is_err() {
+                if let Err(error) = playback.advance_cancellable(branch, step, &|| !wanted()) {
+                    if source_pressure(&error) || error.kind() == io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
                     break;
                 }
                 from = Some(i64::from(step));
                 if !wanted() {
-                    return false;
+                    return Ok(false);
                 }
             }
-            paged = match playback.advance_pages(branch, hour, visit_from, &wanted) {
+            paged = match playback.advance_pages(branch, hour, visit_from, &wanted)? {
                 std::ops::ControlFlow::Continue(reached) => reached,
-                std::ops::ControlFlow::Break(()) => return false,
+                std::ops::ControlFlow::Break(()) => return Ok(false),
             };
             Self::note_page_route(
                 target,
@@ -1607,11 +1705,11 @@ impl DecodeLane {
                 },
             );
             if !wanted() {
-                return false;
+                return Ok(false);
             }
             match paged {
                 Some(reached) if reached == hour => {
-                    return true;
+                    return Ok(true);
                 }
                 Some(reached) => from = Some(i64::from(reached)),
                 None => from = playback.walk_start(branch, hour),
@@ -1622,16 +1720,19 @@ impl DecodeLane {
             let Ok(step) = Hour::try_from(at + i64::from(DECODE_STEP)) else {
                 break;
             };
-            if playback.advance_without_output(branch, step).is_err() {
+            if let Err(error) = playback.advance_cancellable(branch, step, &|| !wanted()) {
+                if source_pressure(&error) || error.kind() == io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
                 break;
             }
             from = Some(i64::from(step));
             if read.is_some_and(|read| read.cancelled()) || !Self::lock(shared).still_wanted(target)
             {
-                return false;
+                return Ok(false);
             }
         }
-        true
+        Ok(true)
     }
 
     fn note_page_route((branch, hour): (BranchId, Hour), playback: &Playback, route: &str) {
@@ -1679,6 +1780,174 @@ type SourceMailbox = source_mailbox::Mailbox<(BranchId, Hour), Current, trace::D
 type SourceRead = source_mailbox::Read<(BranchId, Hour), Current, trace::DecodeSample>;
 type SourceHandle = source_mailbox::ReadHandle<(BranchId, Hour), Current, trace::DecodeSample>;
 
+fn source_pressure(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock
+        || replay_frame::frame::FrameDecoder::change_fact_admission_refused(error)
+}
+
+#[derive(Clone, Debug)]
+struct DecodePressure {
+    budget: engine_allocation::credit::MemoryBudget,
+    bytes: usize,
+    cursor: Option<i64>,
+    release: engine_allocation::credit::ReleaseToken,
+    reason: String,
+}
+impl DecodePressure {
+    fn from_error(
+        error: &io::Error,
+        cursor: Option<i64>,
+        owner: &engine_allocation::credit::MemoryBudget,
+        attempt: engine_allocation::credit::ReleaseToken,
+    ) -> Option<Self> {
+        let (budget, bytes, release) =
+            match replay_frame::frame::FrameDecoder::change_fact_pressure(error) {
+                Some(pressure) => pressure,
+                None if error.kind() == io::ErrorKind::WouldBlock => (owner, 1, attempt),
+                None => return None,
+            };
+        Some(Self {
+            budget: budget.clone(),
+            bytes,
+            cursor,
+            release: budget.after_cleanup(release),
+            reason: error.to_string(),
+        })
+    }
+    fn available(&self) -> bool {
+        self.budget.used() <= self.budget.limit().saturating_sub(self.bytes)
+    }
+}
+
+pub(crate) enum Output {
+    Hour(Built),
+    Pressure,
+}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PressureStage {
+    Source,
+    Colour,
+    Part(u8),
+}
+struct SourceRefusal {
+    epoch: u64,
+    key: (BranchId, Hour),
+    reason: String,
+}
+#[derive(Default)]
+pub(crate) struct SourceStatus {
+    current: Mutex<BTreeMap<(u64, PressureStage), SourceRefusal>>,
+    active: AtomicBool,
+    repaint: OnceLock<eframe::egui::Context>,
+}
+impl SourceStatus {
+    pub(crate) fn set(&self, ticket: u64, epoch: u64, key: (BranchId, Hour), reason: String) {
+        self.set_stage(ticket, PressureStage::Source, epoch, key, reason);
+    }
+    fn set_stage(
+        &self,
+        ticket: u64,
+        stage: PressureStage,
+        epoch: u64,
+        key: (BranchId, Hour),
+        reason: String,
+    ) {
+        let mut current = self.current.lock().unwrap_or_else(|p| p.into_inner());
+        current.insert((ticket, stage), SourceRefusal { epoch, key, reason });
+        self.active.store(true, Ordering::Release);
+        drop(current);
+        self.wake();
+    }
+    fn clear(&self, ticket: u64, stage: Option<PressureStage>) {
+        if self.is_empty() {
+            return;
+        }
+        let mut current = self.current.lock().unwrap_or_else(|p| p.into_inner());
+        let changed = match stage {
+            Some(stage) => current.remove(&(ticket, stage)).is_some(),
+            None => {
+                let before = current.len();
+                current.retain(|&(owner, _), _| owner != ticket);
+                before != current.len()
+            }
+        };
+        self.active.store(!current.is_empty(), Ordering::Release);
+        drop(current);
+        if changed {
+            self.wake();
+        }
+    }
+    fn is_empty(&self) -> bool {
+        !self.active.load(Ordering::Acquire)
+    }
+    fn bind(&self, context: &eframe::egui::Context) {
+        self.repaint.get_or_init(|| {
+            context.request_repaint();
+            context.clone()
+        });
+    }
+    fn wake(&self) {
+        if let Some(context) = self.repaint.get() {
+            context.request_repaint();
+        }
+    }
+    pub(crate) fn for_target(&self, epoch: u64, key: (BranchId, Hour)) -> io::Result<()> {
+        if self.is_empty() {
+            return Ok(());
+        }
+        match self
+            .current
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .find(|refusal| refusal.epoch == epoch && refusal.key == key)
+        {
+            Some(refusal) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                refusal.reason.clone(),
+            )),
+            _ => Ok(()),
+        }
+    }
+    fn for_wait(&self, epoch: u64, target: (BranchId, Hour)) -> io::Result<()> {
+        if self.is_empty() {
+            return Ok(());
+        }
+        match self
+            .current
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .next()
+        {
+            Some(refusal) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                if refusal.epoch != epoch {
+                    format!(
+                        "branch {} hour {} epoch {} blocks exact branch {} hour {} epoch {}: {}",
+                        refusal.key.0,
+                        refusal.key.1,
+                        refusal.epoch,
+                        target.0,
+                        target.1,
+                        epoch,
+                        refusal.reason
+                    )
+                } else if refusal.key == target {
+                    refusal.reason.clone()
+                } else {
+                    format!(
+                        "branch {} hour {} blocks exact branch {} hour {}: {}",
+                        refusal.key.0, refusal.key.1, target.0, target.1, refusal.reason
+                    )
+                },
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+type Refusal = Arc<SourceStatus>;
+
 type Requested = (u64, Want, Option<trace::Stamp>);
 
 struct Coordinator {
@@ -1718,16 +1987,21 @@ struct CoordinatorState {
     pool: Arc<Pool>,
     parallel: usize,
     events: Sender<Event>,
-    outbox: mpsc::SyncSender<Built>,
+    outbox: mpsc::SyncSender<Output>,
+    refusal: Refusal,
     result_space: Arc<AtomicBool>,
 }
 
 impl std::ops::Deref for Coordinator {
     type Target = CoordinatorState;
-    fn deref(&self) -> &Self::Target { &self.state }
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
 }
 impl std::ops::DerefMut for Coordinator {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.state }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
 }
 
 impl CoordinatorState {
@@ -1846,27 +2120,42 @@ impl CoordinatorState {
     }
 }
 
-impl Coordinator {
-    fn run(self, inbox: Receiver<Event>) {
-        coordinator::run(self, inbox);
-    }
-}
-
 impl coordinator::BuildTarget for Coordinator {
-    fn colour_work(&self, plan: &mut dispatch_plan::DispatchPlan, current: Current) -> Box<dyn FnOnce() + Send> {
+    fn colour_work(
+        &self,
+        plan: &mut dispatch_plan::DispatchPlan,
+        current: Current,
+    ) -> Box<dyn FnOnce() + Send> {
         let content = self.content.clone();
         let mode = plan.want.map_mode.clone();
         let perspective = plan.want.perspective.clone();
         plan.colour_work(current, self.events.clone(), move |frame, colour| {
-            Ok(HourView::new(&content, frame, 0.0).map_mode_fill(&mode, &perspective, colour)?.colour)
+            Ok(HourView::new(&content, frame, 0.0)
+                .map_mode_fill(&mode, &perspective, colour)?
+                .colour)
         })
     }
 
     /// Constructs the target's jobs. No decode, admission or slot wait here.
-    fn prepare(&mut self, plan: dispatch_plan::DispatchPlan, current: Current) -> dispatch_plan::PreparedTarget {
-        use dispatch_plan::{DispatchPlan, HeldJob, PreparedTarget};
-        let DispatchPlan { ticket, want, epoch, hour, started, trace, previous,
-            neighbours, colour, history_timing, .. } = plan;
+    fn prepare(
+        &mut self,
+        plan: dispatch_plan::DispatchPlan,
+        current: Current,
+    ) -> dispatch_plan::PreparedTarget {
+        use dispatch_plan::{DispatchPlan, PreparedTarget};
+        let DispatchPlan {
+            ticket,
+            want,
+            epoch,
+            hour,
+            started,
+            trace,
+            previous,
+            neighbours,
+            colour,
+            history_timing,
+            ..
+        } = plan;
         let branch = want.branch;
         let frame = match &current {
             Current::Frame(frame) => Arc::clone(frame),
@@ -1919,7 +2208,6 @@ impl coordinator::BuildTarget for Coordinator {
         }
         let slots = Slots::new();
         if let Some(parts) = &reusable {
-            slots.without_buildings_state();
             Fill(Arc::clone(&slots.rails)).set(Some(Arc::clone(&parts.rails)));
             Fill(Arc::clone(&slots.buildings)).set(Some(Arc::clone(&parts.buildings.0)));
         }
@@ -1937,63 +2225,22 @@ impl coordinator::BuildTarget for Coordinator {
             let alive = Arc::clone(&alive);
             let events = self.events.clone();
             trace.enqueue(name);
-            let job_trace = trace.clone();
             let worker_etas =
                 matches!(name, "overlay" | "movers").then(|| Arc::clone(&worker_etas));
-            jobs.push_back(HeldJob { name, work: Box::new(move || {
-                let _cost = replay_frame::cpu::scope("viewer", Some(match name {
-                    "political" => "territory",
-                    "names" => "world names",
-                    "overlay" | "movers" => "actors/units",
-                    "rails" => "rails",
-                    "buildings" => "buildings",
-                    "fog" => "fog",
-                    "snow" => "weather",
-                    _ => "other",
-                }));
-                job_trace.start(name);
-                if !alive.load(Ordering::Relaxed) {
-                    // Dropping `work` fills its slots with nothing.
-                    job_trace.finish(name, "cancelled");
-                    return;
-                }
-                let started = Instant::now();
-                let view = HourView::new(&content, &frame, 0.0).with_worker_etas(worker_etas);
-                let profiling = viewer_foundation::profile_writer::profiling();
-                let mut children = BuilderSpans::new(profiling);
-                let cpu_started = profiling
-                    .then(viewer_foundation::profiling::current_thread_cpu_time)
-                    .flatten();
-                // A panicking builder must not take its pool thread with it:
-                // enough dead threads would stall every later hour with the
-                // window waiting at the hour boundary. The panic becomes the
-                // hour's error instead, which the window shows.
-                let part = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    work(&view, &mut children)
-                })) {
-                    Ok(part) => part,
-                    Err(_) => Part::failed(name),
-                };
-                let cpu_ms = cpu_started.and_then(|start| {
-                    viewer_foundation::profiling::current_thread_cpu_time()?
-                        .checked_sub(start)
-                        .map(|used| used.as_secs_f64() * 1000.0)
-                });
-                job_trace.finish(name, "done");
-                let _ = events.send(Event::Part {
-                    ticket,
-                    epoch,
-                    branch,
-                    hour,
-                    name,
-                    timing: PartTiming {
-                        ms: started.elapsed().as_secs_f64() * 1000.0,
-                        cpu_ms,
-                    },
-                    children: children.into_records(),
-                    part: Box::new(part),
-                });
-            }) });
+            jobs.push_back(part_job(PartJob {
+                ticket,
+                epoch,
+                branch,
+                hour,
+                name,
+                content,
+                frame,
+                alive,
+                events,
+                trace: trace.clone(),
+                worker_etas,
+                work,
+            }));
         };
         {
             let fill = Fill(Arc::clone(&slots.political));
@@ -2012,82 +2259,57 @@ impl coordinator::BuildTarget for Coordinator {
                 "political",
                 Box::new(move |view, _spans| {
                     Part::Political((|| {
-                        let naval = view.naval_fill(&political_perspective)?;
-                        let colour = match colour {
-                            Some(colour) => colour?,
-                            None => previous.and_then(|slot| slot.wait())
-                                .and_then(|political| political.key.mode().and_then(|mode| mode.colour.clone())),
+                        let colour = match &colour {
+                            Some(colour) => colour
+                                .as_ref()
+                                .cloned()
+                                .map_err(|error| io::Error::new(error.kind(), error.to_string()))?,
+                            None => previous
+                                .as_ref()
+                                .and_then(|slot| slot.wait())
+                                .and_then(|political| political.colour.clone()),
                         };
-                        let mode = view.map_mode_fill(
+                        let product = view.political_product(
                             &map_mode,
                             &political_perspective,
                             colour.as_deref(),
                         )?;
-                        let key = FrameKey::new(view.frame)?
-                            .with_naval(&naval)
-                            .with_mode(&mode);
-                        let near = wait_all(near_regions);
-                        let political = match near.iter().find(|near| near.key == key) {
+                        let near = wait_all(near_regions.clone());
+                        let political = match near.iter().find(|near| {
+                            near.layers.regions == product.layers.regions
+                                && near.colour == product.colour
+                        }) {
                             Some(same) => Arc::clone(same),
-                            None => {
-                                let layers = political::build_with_naval(
-                                    &view.map, view.frame, naval, mode,
-                                )?;
-                                Arc::new(Political {
-                                    id: next_id(),
-                                    key,
-                                    layers,
-                                })
-                            }
-                        };
-                        fill.set(Some(Arc::clone(&political)));
-                        let zone =
-                            view.demilitarized_zone(&political.layers.regions, &BTreeSet::new())?;
-                        let near = wait_all(near_borders);
-                        let borders = match near
-                            .iter()
-                            .find(|near| near.political == political.id && near.zone == zone)
-                        {
-                            Some(same) => Arc::clone(same),
-                            None => Arc::new(Borders {
+                            None => Arc::new(Political {
                                 id: next_id(),
-                                political: political.id,
-                                classes: {
-                                    let mut classes = ClassPlan::new(
-                                        &view.border_meshes,
-                                        &political.layers.regions,
-                                        &zone,
-                                    );
-                                    for near in &near {
-                                        classes.share(&near.classes);
-                                    }
-                                    classes
-                                },
-                                highlighted: ZonePlan::new(
-                                    &view.border_meshes,
-                                    &political.layers.regions,
-                                    &zone,
-                                ),
-                                zone,
+                                layers: product.layers,
+                                colour: product.colour,
+                                _projection: product.projection,
                             }),
                         };
+                        fill.set(Some(Arc::clone(&political)));
+                        let zone = product.zone;
+                        let near = wait_all(near_borders.clone());
+                        let borders = Borders::reuse_or_build(political.id, zone, &near, |zone| {
+                            (
+                                ClassPlan::new(
+                                    &view.border_meshes,
+                                    &political.layers.regions,
+                                    zone,
+                                ),
+                                ZonePlan::new(&view.border_meshes, &political.layers.regions, zone),
+                            )
+                        });
                         fill_borders.set(Some(Arc::clone(&borders)));
                         Ok((political, borders))
                     })())
                 }),
             );
         }
-        let memos = Arc::clone(&self.memos);
         let names_mode = want.map_mode.clone();
         submit(
             "names",
-            Box::new(move |view, _spans| {
-                Part::Names(view.name_areas(&names_mode).and_then(|areas| {
-                    memos.names.get_or_insert_with(areas.clone(), || {
-                        Ok(Arc::new(view.place_name_areas(&areas, &memos.placed)))
-                    })
-                }))
-            }),
+            Box::new(move |view, _spans| Part::Names(view.shared_names(&names_mode))),
         );
         let (camera, viewport, ui_scale) =
             (want.view.camera, want.view.viewport, want.view.ui_scale);
@@ -2145,57 +2367,37 @@ impl coordinator::BuildTarget for Coordinator {
         {
             let fill = Fill(Arc::clone(&slots.rails));
             let near = slots_of(&neighbours, |slots| &slots.rails);
-            let memos = Arc::clone(&self.memos);
             let device = Arc::clone(&self.device);
             submit(
                 "rails",
                 Box::new(move |view, _spans| {
-                    Part::Rails(RailNetwork::read(view.frame).and_then(|network| {
-                        let network = Arc::new(network);
-                        let rails = memo_after_neighbours(
-                            &memos.rails,
-                            Arc::clone(&network),
-                            || wait_all(near),
-                            |near| {
-                                let mesh = view.rail_mesh_of(&network)?;
-                                let bridges = view.bridges.field(&mesh);
-                                Rails::share(near, (mesh, bridges), device.get())
-                            },
+                    Part::Rails((|| {
+                        let rails = Rails::share(
+                            wait_all(near.clone()),
+                            view.rail_product()?,
+                            device.get(),
                         )?;
                         fill.set(Some(Arc::clone(&rails)));
                         Ok(rails)
-                    }))
+                    })())
                 }),
             );
         }
         {
             let fill = Fill(Arc::clone(&slots.buildings));
-            let fill_state = Fill(Arc::clone(&slots.buildings_state));
             let near = slots_of(&neighbours, |slots| &slots.buildings);
-            // The predecessor was dispatched first, so this wait cannot form a cycle.
-            let base = previous
-                .as_ref()
-                .map(|(_, slots)| Arc::clone(&slots.buildings_state));
             let building_perspective = want.perspective.clone();
             submit(
                 "buildings",
                 Box::new(move |view, spans| {
-                    let base =
-                        spans.measure("buildings.base_wait", |_| base.and_then(|slot| slot.wait()));
-                    let field = view
-                        .map_building_field_patched(&building_perspective, base.as_deref(), spans)
-                        .map(|(field, summary, state)| {
-                            fill_state.set(Some(Arc::new(state)));
-                            (field, summary)
-                        });
-                    Part::Buildings(field.map(|(field, summary)| {
-                        let near = spans.measure("buildings.share_wait", |_| wait_all(near));
-                        let buildings =
-                            spans.measure("buildings.share", |_| Shared::share(near, field));
-                        fill.set(Some(Arc::clone(&buildings)));
-                        let warnings = spans.measure("buildings.warnings", |_| summary.warnings());
-                        (buildings, warnings)
-                    }))
+                    Part::Buildings(
+                        view.map_building_field_profiled(&building_perspective, spans)
+                            .map(|(field, summary)| {
+                                let buildings = Shared::share(wait_all(near.clone()), field);
+                                fill.set(Some(Arc::clone(&buildings)));
+                                (buildings, summary.warnings())
+                            }),
+                    )
                 }),
             );
         }
@@ -2264,11 +2466,7 @@ impl coordinator::BuildTarget for Coordinator {
             Box::new(move |view, _spans| {
                 let live = || {
                     let _cost = replay_frame::cpu::scope("viewer", Some("weather"));
-                    view.snow_cells().and_then(|cells| {
-                        memos.snow_shared.get_or_build(view.frame, |projected| {
-                            map_snow::build(cells, projected, &view.assets.post.volumes)
-                        })
-                    })
+                    view.snow_product(&memos.snow_shared)
                 };
                 Part::Snow(match view.map_export.reader(&snow_replay) {
                     Ok(exports) => {
@@ -2297,6 +2495,110 @@ impl coordinator::BuildTarget for Coordinator {
     }
 }
 
+struct PartJob {
+    ticket: u64,
+    epoch: u64,
+    branch: BranchId,
+    hour: Hour,
+    name: &'static str,
+    content: Arc<Content>,
+    frame: Arc<replay_frame::frame::DecodedFrame>,
+    alive: Arc<AtomicBool>,
+    events: Sender<Event>,
+    trace: trace::TargetTrace,
+    worker_etas: Option<Arc<viewer_foundation::movement_timing::WorkerEtas>>,
+    work: PartWork,
+}
+fn part_job(mut job: PartJob) -> dispatch_plan::HeldJob {
+    dispatch_plan::HeldJob {
+        name: job.name,
+        work: Box::new(move || {
+            let PartJob {
+                ticket,
+                epoch,
+                branch,
+                hour,
+                name,
+                ..
+            } = job;
+            let _cost = replay_frame::cpu::scope(
+                "viewer",
+                Some(match name {
+                    "political" => "territory",
+                    "names" => "world names",
+                    "overlay" | "movers" => "actors/units",
+                    "rails" => "rails",
+                    "buildings" => "buildings",
+                    "fog" => "fog",
+                    "snow" => "weather",
+                    _ => "other",
+                }),
+            );
+            job.trace.start(name);
+            if !job.alive.load(Ordering::Relaxed) {
+                job.trace.finish(name, "cancelled");
+                drop(job.work);
+                return;
+            }
+            let started = Instant::now();
+            let profiling = viewer_foundation::profile_writer::profiling();
+            let mut children = BuilderSpans::new(profiling);
+            let cpu_started = profiling
+                .then(viewer_foundation::profiling::current_thread_cpu_time)
+                .flatten();
+            let part = {
+                let view = HourView::from_input(
+                    &job.content,
+                    replay_frame::frame::HourInput::new(&job.frame),
+                    0.0,
+                )
+                .with_worker_etas(job.worker_etas.clone());
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    (job.work)(&view, &mut children)
+                })) {
+                    Ok(part) => part,
+                    Err(_) => Part::failed(name),
+                }
+            };
+            if part.resource_pending() {
+                let reason = part.resource_error().expect("pending error").to_string();
+                drop(part);
+                // Failed-attempt staging is gone before observing the release generation.
+                let generation = map_display_data::credit::display_products().generation();
+                job.trace.finish(name, "pending-credit");
+                let events = job.events.clone();
+                let _ = events.send(Event::RetryPart {
+                    ticket,
+                    generation,
+                    reason,
+                    job: part_job(job),
+                });
+                return;
+            }
+            let cpu_ms = cpu_started.and_then(|start| {
+                viewer_foundation::profiling::current_thread_cpu_time()?
+                    .checked_sub(start)
+                    .map(|used| used.as_secs_f64() * 1000.0)
+            });
+            job.trace.finish(name, "done");
+            let _ = job.events.send(Event::Part {
+                ticket,
+                epoch,
+                branch,
+                hour,
+                name,
+                timing: PartTiming {
+                    ms: started.elapsed().as_secs_f64() * 1000.0,
+                    cpu_ms,
+                },
+                children: children.into_records(),
+                part: Box::new(part),
+            });
+            drop(job.work);
+        }),
+    }
+}
+
 /// The client owns shutdown; internal result senders cannot keep an idle
 /// coordinator alive after the last window handle has gone.
 struct Requests(Sender<Event>);
@@ -2313,11 +2615,9 @@ pub struct Pipeline {
     content: Arc<Content>,
     replay: Arc<Replay>,
     events: Requests,
-    results: Receiver<Built>,
-    result_space: Arc<AtomicBool>,
+    completed: Completions,
     want: Option<Want>,
     epoch: u64,
-    received: Cell<u64>,
     seek_pending: bool,
     requested: Arc<Mutex<Option<Requested>>>,
     /// The engaged-flag index for the last perspective country asked for,
@@ -2418,6 +2718,7 @@ impl Pipeline {
         let (outbox, results) = mpsc::sync_channel(parallel);
         let requested = Arc::new(Mutex::new(None));
         let result_space = Arc::new(AtomicBool::new(false));
+        let refusal = Refusal::default();
         let workers = Workers::new(Arc::clone(&pool) as _);
         let lane = match shared_decoder {
             Some(_) => None,
@@ -2440,47 +2741,49 @@ impl Pipeline {
         let coordinator = Coordinator {
             content: Arc::clone(&content),
             state: CoordinatorState {
-            device: Arc::clone(&device),
-            playback: Playback::unloaded(Arc::clone(&replay))?,
-            shared_decoder,
-            lane,
-            requested: Arc::clone(&requested),
-            profile: trace::CoordinatorProfile::new(),
-            profile_want: None,
-            profile_received: None,
-            engaged: Arc::clone(&engaged),
-            want: None,
-            epoch: 0,
-            sent: BTreeMap::new(),
-            sends: 0,
-            usable_sent: BTreeSet::new(),
-            anchor: None,
-            slots: BTreeMap::new(),
-            memos: Arc::new(Memos::new()),
-            reusable: BTreeMap::new(),
-            pool: Arc::clone(&pool),
-            parallel,
-            events: events.clone(),
-            outbox,
-            result_space: result_space.clone(),
+                device: Arc::clone(&device),
+                playback: Playback::unloaded(Arc::clone(&replay))?,
+                shared_decoder,
+                lane,
+                requested: Arc::clone(&requested),
+                profile: trace::CoordinatorProfile::new(),
+                profile_want: None,
+                profile_received: None,
+                engaged: Arc::clone(&engaged),
+                want: None,
+                epoch: 0,
+                sent: BTreeMap::new(),
+                sends: 0,
+                usable_sent: BTreeSet::new(),
+                anchor: None,
+                slots: BTreeMap::new(),
+                memos: Arc::new(Memos::new()),
+                reusable: BTreeMap::new(),
+                pool: Arc::clone(&pool),
+                parallel,
+                events: events.clone(),
+                outbox,
+                result_space: result_space.clone(),
+                refusal: refusal.clone(),
             },
         };
+        let driver = coordinator::start(coordinator)?;
         thread::Builder::new()
             .name("hour coordinator".into())
             .spawn(move || {
+                let _cost = replay_frame::cpu::scope("hour coordinator", Some("other"));
                 background_priority();
-                coordinator.run(inbox)
+                coordinator::run(driver, inbox)
             })?;
+        let completed = Completions::new(results, refusal, result_space, events.clone());
         Ok(Self {
             device,
             content,
             replay,
             events: Requests(events),
-            results,
-            result_space,
+            completed,
             want: None,
             epoch: 0,
-            received: Cell::new(0),
             seek_pending: false,
             requested,
             engaged,
@@ -2563,7 +2866,7 @@ impl Pipeline {
     /// Tells the builders what the window wants now. Returns the epoch the
     /// window must keep built hours of: a new perspective begins one.
     pub fn want(&mut self, mut want: Want) -> io::Result<u64> {
-        want.received = self.received.get();
+        want.received = self.completed.received.get();
         let invalidates = want.discard_stale_have(self.want.as_ref(), self.seek_pending);
         self.grid_intent(&mut want);
         if self.want.as_ref() != Some(&want) || invalidates {
@@ -2640,34 +2943,109 @@ impl Pipeline {
         }
     }
 
+    pub(crate) fn completed(&self) -> &Completions {
+        &self.completed
+    }
+
+    pub fn wait(&self) -> io::Result<Built> {
+        let want = self.want.as_ref().ok_or_else(stopped)?;
+        self.completed.wait(self.epoch, (want.branch, want.hour))
+    }
+
+    pub(crate) fn bind_presentation(&self, context: &eframe::egui::Context) {
+        self.completed.bind_presentation(context);
+    }
+}
+
+pub(crate) struct Completions {
+    results: Receiver<Output>,
+    refusal: Refusal,
+    result_space: Arc<AtomicBool>,
+    received: Cell<u64>,
+    events: Sender<Event>,
+}
+impl Completions {
+    fn new(
+        results: Receiver<Output>,
+        refusal: Refusal,
+        result_space: Arc<AtomicBool>,
+        events: Sender<Event>,
+    ) -> Self {
+        Self {
+            results,
+            refusal,
+            result_space,
+            received: Cell::new(0),
+            events,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn for_test(results: Receiver<Output>, refusal: Arc<SourceStatus>) -> Self {
+        let (events, _) = mpsc::channel();
+        Self::new(results, refusal, Arc::new(AtomicBool::new(false)), events)
+    }
+
     /// Every hour finished since the last call, without waiting.
-    pub fn take(&self) -> io::Result<Vec<Built>> {
-        let built = poll_results(|| {
-            let hour = self.results.try_recv()?;
+    pub(crate) fn take(&self) -> io::Result<Vec<Built>> {
+        let (built, consumed) = poll_completed(&self.results)?;
+        for hour in &built {
             hour.trace.delivered();
             self.received.set(self.received.get() + 1);
-            Ok(hour)
-        })?;
-        if !built.is_empty() {
+        }
+        if consumed {
             self.results_freed();
         }
         Ok(built)
     }
 
-    /// The next hour to finish, waiting for it.
-    pub fn wait(&self) -> io::Result<Built> {
-        let built = self.results.recv().map_err(|_| stopped())?;
-        built.trace.delivered();
-        self.received.set(self.received.get() + 1);
-        self.results_freed();
-        Ok(built)
+    /// The next hour to finish, or a named resource refusal without a source gap.
+    pub(crate) fn wait(&self, epoch: u64, target: (BranchId, Hour)) -> io::Result<Built> {
+        loop {
+            let output = match self.results.try_recv() {
+                Ok(output) => output,
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Retired accepted jobs can also pin credit needed by this exact target.
+                    self.refusal.for_wait(epoch, target)?;
+                    self.results.recv().map_err(|_| stopped())?
+                }
+                Err(mpsc::TryRecvError::Disconnected) => return Err(stopped()),
+            };
+            self.results_freed();
+            if let Output::Hour(built) = output {
+                built.trace.delivered();
+                self.received.set(self.received.get() + 1);
+                return Ok(built);
+            }
+        }
+    }
+
+    pub(crate) fn bind_presentation(&self, context: &eframe::egui::Context) {
+        self.refusal.bind(context);
+    }
+
+    pub(crate) fn pressure_for(&self, epoch: u64, key: (BranchId, Hour)) -> io::Result<()> {
+        self.refusal.for_target(epoch, key)
     }
 
     fn results_freed(&self) {
         if !self.result_space.swap(true, Ordering::AcqRel) {
-            let _ = self.events.0.send(Event::ResultSpace);
+            let _ = self.events.send(Event::ResultSpace);
         }
     }
+}
+
+pub(crate) fn poll_completed(results: &Receiver<Output>) -> io::Result<(Vec<Built>, bool)> {
+    let mut consumed = false;
+    let built = poll_results(|| {
+        loop {
+            let output = results.try_recv()?;
+            consumed = true;
+            if let Output::Hour(built) = output {
+                return Ok(built);
+            }
+        }
+    })?;
+    Ok((built, consumed))
 }
 
 pub(crate) fn poll_results<T>(

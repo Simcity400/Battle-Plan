@@ -28,6 +28,7 @@ fn defines() -> RailDefines {
 }
 fn geography() -> RailGeometry {
     RailGeometry {
+        id: crate::map::next_projection_id(),
         identity: Arc::new(()),
         heightmap: heightmap(100),
         defines: defines(),
@@ -115,8 +116,15 @@ fn anchor_slots_fold_ascii_case_and_skip_ambiguous_slots() {
         b"buildings={Hub={supply_node=yes} hub={} Port={is_port=yes spawn_point=Harbour}} spawn_points={Harbour={} harbour={}}", &installed_content_core::key_names::KeyNames::default(),
     )
     .unwrap();
-    let geometry =
-        RailGeometry::new(&map, &positions, &ambiguous, &rivers, heightmap(100), defines()).unwrap();
+    let geometry = RailGeometry::new(
+        &map,
+        &positions,
+        &ambiguous,
+        &rivers,
+        heightmap(100),
+        defines(),
+    )
+    .unwrap();
     assert_ne!(geometry.anchors[&1], [4.0, 5.0, 6.0]);
     assert!(geometry.ports.is_empty());
 }
@@ -479,6 +487,7 @@ fn boundary(point: [i32; 2], kind: BridgeKind) -> Boundary {
 
 fn wide() -> RailGeometry {
     RailGeometry {
+        id: crate::map::next_projection_id(),
         identity: Arc::new(()),
         heightmap: heightmap(100),
         defines: defines(),
@@ -679,9 +688,8 @@ fn construction_keeps_immutable_heights_and_rejects_a_different_height_owner() {
     };
     let types = Buildings::default();
     let mut image = heightmap(100);
-    let make = |heightmap| {
-        RailGeometry::new(&map, &[], &types, &rivers, heightmap, defines()).unwrap()
-    };
+    let make =
+        |heightmap| RailGeometry::new(&map, &[], &types, &rivers, heightmap, defines()).unwrap();
     let first = make(Arc::clone(&image));
     assert!(Arc::ptr_eq(&first.heightmap, &image));
     let network = network(&[(1, 2, 2)], &[], &[]);

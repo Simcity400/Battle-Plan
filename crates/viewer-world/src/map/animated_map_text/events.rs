@@ -763,3 +763,158 @@ pub fn presentation_reset(
 #[cfg(test)]
 #[path = "events/tests.rs"]
 mod tests;
+
+impl Prepared {
+    pub fn display(&self) -> map_display_data::MapText {
+        use map_display_data as d;
+        let impact = |v: &Impact| d::Impact {
+            id: v.id,
+            province: v.province,
+            effect: v.effect as u8,
+            position: v.position,
+            bounds: v.bounds,
+        };
+        let popup = |v: &Popup| d::Popup {
+            sequence: v.sequence,
+            family: v.family as u8,
+            province: v.province,
+            style: match v.style {
+                Style::CombatLoss => 0,
+                Style::SiegeInfo => 1,
+            },
+            text: v.text.clone(),
+        };
+        d::MapText {
+            view: self.view,
+            interval: match &self.interval {
+                Err(reason) => d::MapTextResult::Unavailable {
+                    reason: reason.clone(),
+                },
+                Ok(i) => d::MapTextResult::Value {
+                    interval: d::Interval {
+                        branch: i.boundary.branch,
+                        epoch: i.boundary.epoch,
+                        from_hour: i.boundary.from_hour,
+                        to_hour: i.boundary.to_hour,
+                        first: i.boundary.first,
+                        next: i.boundary.next,
+                        in_flight: i.in_flight,
+                        coverage: i.coverage.to_vec(),
+                        coverage_refusals: i.coverage_refusals.clone(),
+                        events: i
+                            .events
+                            .iter()
+                            .map(|e| d::MapEvent {
+                                sequence: e.sequence,
+                                family: e.family as u8,
+                                popup: match &e.popup {
+                                    Ok(v) => d::PopupResult::Value {
+                                        popup: v.as_ref().map(popup),
+                                    },
+                                    Err(reason) => d::PopupResult::Refused {
+                                        reason: reason.clone(),
+                                    },
+                                },
+                                explosion: e.explosion.as_ref().map(|e| match e {
+                                    Ok(v) => d::ImpactResult::Value { impact: impact(v) },
+                                    Err(reason) => d::ImpactResult::Refused {
+                                        reason: reason.clone(),
+                                    },
+                                }),
+                            })
+                            .collect(),
+                    },
+                },
+            },
+        }
+    }
+
+    pub fn from_display(value: map_display_data::MapText) -> std::io::Result<Self> {
+        use map_display_data as d;
+        let invalid = || {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid map text display operand",
+            )
+        };
+        let family = |id| {
+            MapEventFamily::ALL
+                .into_iter()
+                .find(|f| *f as u8 == id)
+                .ok_or_else(invalid)
+        };
+        let impact = |v: d::Impact| -> std::io::Result<Impact> {
+            Ok(Impact {
+                id: v.id,
+                province: v.province,
+                effect: match v.effect {
+                    0 => Effect::Nuclear,
+                    1 => Effect::Thermonuclear,
+                    2 => Effect::CriticalBombardment,
+                    3 => Effect::MissileExplosion,
+                    _ => return Err(invalid()),
+                },
+                position: v.position,
+                bounds: v.bounds,
+            })
+        };
+        let popup = |v: d::Popup| -> std::io::Result<Popup> {
+            Ok(Popup {
+                sequence: v.sequence,
+                family: family(v.family)?,
+                province: v.province,
+                style: match v.style {
+                    0 => Style::CombatLoss,
+                    1 => Style::SiegeInfo,
+                    _ => return Err(invalid()),
+                },
+                text: v.text,
+            })
+        };
+        let interval = match value.interval {
+            d::MapTextResult::Unavailable { reason } => Err(reason),
+            d::MapTextResult::Value { interval: i } => Ok(PreparedInterval {
+                boundary: Boundary {
+                    branch: i.branch,
+                    epoch: i.epoch,
+                    from_hour: i.from_hour,
+                    to_hour: i.to_hour,
+                    first: i.first,
+                    next: i.next,
+                },
+                in_flight: i.in_flight,
+                coverage: i.coverage.try_into().map_err(|_| invalid())?,
+                coverage_refusals: i.coverage_refusals,
+                events: i
+                    .events
+                    .into_iter()
+                    .map(|e| {
+                        Ok(PreparedEvent {
+                            sequence: e.sequence,
+                            family: family(e.family)?,
+                            popup: match e.popup {
+                                d::PopupResult::Value { popup: v } => {
+                                    Ok(v.map(&popup).transpose()?)
+                                }
+                                d::PopupResult::Refused { reason } => Err(reason),
+                            },
+                            explosion: e
+                                .explosion
+                                .map(|e| -> std::io::Result<_> {
+                                    Ok(match e {
+                                        d::ImpactResult::Value { impact: v } => Ok(impact(v)?),
+                                        d::ImpactResult::Refused { reason } => Err(reason),
+                                    })
+                                })
+                                .transpose()?,
+                        })
+                    })
+                    .collect::<std::io::Result<_>>()?,
+            }),
+        };
+        Ok(Self {
+            view: value.view,
+            interval,
+        })
+    }
+}

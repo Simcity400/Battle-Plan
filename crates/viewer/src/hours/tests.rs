@@ -529,7 +529,10 @@ pub(super) fn source_frame(client: &Arc<SourceMailbox>, branch: BranchId, hour: 
     let _handle = client.post(next_id(), (branch, hour), move |_, reply| {
         let _ = send.send(reply);
     });
-    match result.recv_timeout(TEST_HANG_GUARD).expect("source replies") {
+    match result
+        .recv_timeout(TEST_HANG_GUARD)
+        .expect("source replies")
+    {
         source_mailbox::Reply::Ready { value, .. } => value,
         source_mailbox::Reply::Stopped => Current::Gap {
             branch,
@@ -537,6 +540,7 @@ pub(super) fn source_frame(client: &Arc<SourceMailbox>, branch: BranchId, hour: 
             reason: LANE_STOPPED.to_owned(),
         },
         source_mailbox::Reply::Cancelled => panic!("ordinary request is not cancelled"),
+        source_mailbox::Reply::Pressure(pressure) => panic!("{}", pressure.reason),
     }
 }
 
@@ -822,6 +826,44 @@ fn the_lane_window_retains_exactly_its_adaptive_required_hours() {
         state.frames.frames.keys().copied().collect::<Vec<_>>(),
         [(1, 10), (1, 11)]
     );
+}
+
+#[test]
+fn shrinking_decode_admission_keeps_already_decoded_wanted_hours() {
+    let mut state = LaneState::default();
+    state.set_want((100..108).map(|hour| (1, hour)).collect(), 0, 8);
+    state.ahead = 8;
+    state.served = Some((1, 100));
+    for hour in 100..108 {
+        state.frames.insert((1, hour), sized_frame(hour, 1));
+    }
+    state.decoded = Some((1, 107));
+    let bytes = state.frames.bytes;
+    state.gate = Some("physical");
+    state.resize(Instant::now());
+    assert_eq!(state.window(), &[(1, 100), (1, 101)]);
+    state.evict(None);
+    assert_eq!(state.frames.bytes, bytes);
+    assert_eq!(state.frames.frames.len(), 8);
+    for hour in 101..108 {
+        state.set_want((hour..hour + 8).map(|hour| (1, hour)).collect(), 0, 8);
+        state.evict(None);
+        assert!(state.frames.contains_key(&(1, hour)), "no source rewind at {hour}");
+        state.served = Some((1, hour));
+        state.evict(None);
+        assert_eq!(state.frames.frames.len(), (108 - hour) as usize);
+    }
+    assert_eq!(state.next(), Some((1, 108)), "only new work is admitted");
+    state.set_want(vec![(2, 200)], 0, 8);
+    state.served = None;
+    state.evict(None);
+    assert!(state.frames.frames.is_empty(), "a branch switch releases old prefetch");
+    assert_eq!(state.frames.bytes, 0);
+    state.set_want(vec![(1, 107)], 0, 8);
+    state.frames.insert((1, 108), sized_frame(108, 1));
+    state.decoded = Some((1, 108));
+    state.evict(None);
+    assert!(state.frames.frames.is_empty(), "a pause drops no-longer-wanted prefetch");
 }
 
 #[test]
@@ -1130,142 +1172,7 @@ fn target_trace_decode_metadata_follows_frame_cache_eviction() {
     );
 }
 
-#[test]
-fn railway_neighbour_wait_precedes_single_flight_ownership_after_reversed_worker_entry() {
-    let memo = Arc::new(viewer_foundation::map::memo::Recent::<u8, u32>::new(2));
-    let predecessor = Slot::new();
-    let (entered, waiting) = mpsc::channel();
-    let (done, result) = mpsc::channel();
-    let later_memo = memo.clone();
-    let near = predecessor.clone();
-    let later = thread::spawn(move || {
-        let value = memo_after_neighbours(
-            &later_memo,
-            1,
-            || {
-                entered.send(()).unwrap();
-                wait_all(vec![near])
-            },
-            |_| -> io::Result<_> { Ok(Arc::new(999)) },
-        )
-        .unwrap();
-        done.send(value).unwrap();
-    });
-    waiting.recv_timeout(TEST_HANG_GUARD).unwrap();
-    // B reached the dependency first. A has not entered the memo until now.
-    // If B claimed it before waiting, A and B would form the reported cycle.
-    let (built, first) = mpsc::channel();
-    let earlier = thread::spawn(move || {
-        let value = memo_after_neighbours(&memo, 1, Vec::<Arc<u32>>::new, |_| -> io::Result<_> {
-            Ok(Arc::new(42))
-        })
-        .unwrap();
-        Fill(predecessor).set(Some(value.clone()));
-        built.send(value).unwrap();
-    });
-    let first = first.recv_timeout(TEST_HANG_GUARD).unwrap();
-    let second = result.recv_timeout(TEST_HANG_GUARD).unwrap();
-    assert_eq!(*second, 42);
-    assert!(Arc::ptr_eq(&first, &second));
-    earlier.join().unwrap();
-    later.join().unwrap();
-}
-
-#[test]
-fn shared_rail_keys_follow_expected_networks_hour_by_hour() {
-    use replay_data::rows::{NavalBaseRow, ProvinceSupplyRow, RailEdgeRow, TableId, TableRows};
-    use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
-    let edge = |from, to, level| RailEdgeRow { from, to, level };
-    let frame = |hour, edges: Vec<RailEdgeRow>, complete: bool| {
-        let mut tables = std::array::from_fn(|_| TableView::Unavailable {
-            reason: "not needed".into(),
-        });
-        tables[TableId::RailEdges.index()] = TableView::Complete(TableRows::RailEdges(edges));
-        tables[TableId::ProvinceSupply.index()] =
-            TableView::Complete(TableRows::ProvinceSupply(vec![ProvinceSupplyRow {
-                province: 2,
-                supply_node_level: 1,
-                ..Default::default()
-            }]));
-        let bases = TableRows::NavalBases(vec![NavalBaseRow {
-            province: 3,
-            ..Default::default()
-        }]);
-        tables[TableId::NavalBases.index()] = if complete {
-            TableView::Complete(bases)
-        } else {
-            TableView::Truncated {
-                rows: bases,
-                missing: 1,
-            }
-        };
-        DecodedFrame {
-            branch: 1,
-            hour,
-            tables: tables.map(Into::into),
-            metrics: Metrics::default(),
-        }
-    };
-    let line = vec![edge(1, 2, 3), edge(2, 1, 3), edge(2, 3, 2)];
-    let hours = [
-        frame(1, line.clone(), true),
-        frame(2, line.clone(), true),
-        frame(3, vec![edge(1, 2, 3), edge(2, 1, 3), edge(2, 3, 1)], true),
-        frame(
-            4,
-            vec![edge(1, 2, 3), edge(2, 1, 3), edge(2, 3, 5), edge(2, 3, 1)],
-            true,
-        ),
-        frame(
-            5,
-            [line.clone(), vec![edge(3, 4, 0), edge(4, 4, 2)]].concat(),
-            true,
-        ),
-        frame(6, line.clone(), false),
-        frame(7, vec![edge(5, 6, 1)], false),
-        frame(8, line.clone(), true),
-    ];
-    let run = || {
-        let memo = Recent::<Arc<RailNetwork>, usize>::new(MEMO_ENTRIES);
-        let mut built = Vec::new();
-        let answers: Vec<usize> = hours
-            .iter()
-            .map(|frame| {
-                let network = Arc::new(RailNetwork::read(frame).unwrap());
-                *memo_after_neighbours(
-                    &memo,
-                    Arc::clone(&network),
-                    Vec::<Arc<()>>::new,
-                    |_| -> io::Result<_> {
-                        built.push(RailNetwork::clone(&network));
-                        Ok(Arc::new(built.len()))
-                    },
-                )
-                .unwrap()
-            })
-            .collect();
-        (answers, built)
-    };
-    let new = run();
-    assert_eq!(new.0, [1, 1, 2, 2, 1, 3, 3, 1]);
-    assert_eq!(new.1[0], RailNetwork::read(&hours[0]).unwrap());
-    assert_eq!(new.1[2], RailNetwork::new(&[], &[], &[]));
-}
-
-#[test]
-fn a_reused_hour_leaves_its_successor_no_buildings_state_to_wait_for() {
-    let slots = Slots::new();
-    let (done, waited) = mpsc::channel();
-    let successor = {
-        let state = Arc::clone(&slots.buildings_state);
-        thread::spawn(move || done.send(state.wait().is_none()).unwrap())
-    };
-    slots.without_buildings_state();
-    assert!(waited.recv_timeout(TEST_HANG_GUARD).unwrap());
-    successor.join().unwrap();
-}
-
-fn paged_map(
+pub(super) fn paged_map(
     replay: &Arc<Replay>,
 ) -> (
     crate::map_checkpoints::PreparedMap,
@@ -1581,4 +1488,157 @@ fn evicted_backward_and_branch_requests_match_independent_source_seeks() {
         };
         assert_eq!(actual, Current::Frame(Arc::from(expected)));
     }
+}
+
+#[test]
+fn resource_pressure_is_pending_not_a_terminal_part_failure() {
+    assert!(Part::Names(Err(io::Error::from(io::ErrorKind::WouldBlock))).resource_pending());
+    assert!(!Part::Names(Err(io::Error::other("named content refusal"))).resource_pending());
+    assert!(!Part::Names(Ok(Arc::new(Placements::default()))).resource_pending());
+}
+
+#[test]
+fn a_colour_credit_retry_does_not_advance_or_reapply_its_predecessor() {
+    let (events, inbox) = mpsc::channel();
+    let initial = Arc::new(viewer_world::map::map_mode::ColourState {
+        mode: "before".into(),
+        layers: Default::default(),
+    });
+    let mut calls = 0;
+    let work = dispatch_plan::colour_job(
+        11,
+        (1, 100),
+        sized_frame(100, 1),
+        events,
+        None,
+        Some(Ok(Some(initial))),
+        move |_, previous| {
+            calls += 1;
+            assert_eq!(previous.unwrap().mode, "before");
+            if calls == 1 {
+                return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            }
+            Ok(Some(Arc::new(viewer_world::map::map_mode::ColourState {
+                mode: "after".into(),
+                layers: Default::default(),
+            })))
+        },
+    );
+    work();
+    let retry = match inbox.recv().unwrap() {
+        Event::RetryColour {
+            ticket: 11,
+            key: (1, 100),
+            work,
+            ..
+        } => work,
+        _ => panic!("pressure is not a colour refusal"),
+    };
+    retry();
+    match inbox.recv().unwrap() {
+        Event::Colour {
+            ticket: 11,
+            key: (1, 100),
+            folded,
+        } => {
+            assert_eq!(folded.colour.unwrap().unwrap().mode, "after");
+        }
+        _ => panic!("one terminal result after retry"),
+    }
+    assert!(inbox.try_recv().is_err());
+}
+
+#[test]
+fn quiet_political_hours_never_rebuild_border_geometry() {
+    let zone = map_display_data::retained::Retained::build(0, Zone::default).unwrap();
+    let built = Cell::new(0);
+    let build = |_: &Zone| {
+        built.set(built.get() + 1);
+        (ClassPlan::default(), ZonePlan::default())
+    };
+    let first = Borders::reuse_or_build(7, zone.clone(), &[], build);
+    assert_eq!(built.get(), 1);
+    for _ in 0..1500 {
+        let same = Borders::reuse_or_build(7, zone.clone(), &[Arc::clone(&first)], |_| {
+            panic!("unchanged border operands must not visit the meshes")
+        });
+        assert!(Arc::ptr_eq(&same, &first));
+    }
+    let changed = Borders::reuse_or_build(8, zone.clone(), &[Arc::clone(&first)], build);
+    assert_eq!(built.get(), 2);
+    assert!(!Arc::ptr_eq(&first, &changed));
+    let same = Borders::reuse_or_build(8, zone.clone(), &[Arc::clone(&changed)], build);
+    assert!(Arc::ptr_eq(&same, &changed));
+    assert_eq!(built.get(), 2);
+}
+
+thread_local! {
+    static FINAL_SEEK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn during_final_seek() {
+    FINAL_SEEK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[test]
+fn cancellation_in_the_final_seek_clears_urgent_and_evicts_before_acknowledging() {
+    let replay = long_replay(&(10..=40).collect::<Vec<_>>());
+    let mut playback = Playback::unloaded(replay).unwrap();
+    playback.seek(1, 10).unwrap();
+    let shared = Arc::new(LaneShared {
+        mailbox: OnceLock::new(),
+        state: Mutex::new(LaneState::default()),
+        changed: Condvar::new(),
+    });
+    let mailbox = SourceMailbox::new(|_| true);
+    shared.mailbox.set(mailbox.clone()).ok().unwrap();
+    {
+        let mut state = DecodeLane::lock(&shared);
+        state.frames.insert((1, 10), playback.current().clone());
+        state.set_want(vec![(1, 10)], 0, 1);
+    }
+    let (send, reply) = mpsc::channel();
+    let handle = mailbox.post(7, (1, 20), move |id, result| {
+        send.send((id, result)).unwrap();
+    });
+    std::thread::scope(|scope| {
+        let run = Arc::clone(&shared);
+        let thread = scope.spawn(move || {
+            FINAL_SEEK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new({
+                    let shared = Arc::clone(&run);
+                    move || {
+                        handle.cancel();
+                        let mut state = DecodeLane::lock(&shared);
+                        state.set_want(vec![(1, 10)], 0, 1);
+                        state.frames.insert((1, 20), sized_frame(20, 1));
+                    }
+                }))
+            });
+            DecodeLane::run(&run, playback);
+        });
+        let reply = reply.recv_timeout(TEST_HANG_GUARD);
+        let (urgent, next, frames) = {
+            let mut state = DecodeLane::lock(&shared);
+            let snapshot = (
+                state.urgent,
+                state.next(),
+                state.frames.frames.keys().copied().collect::<Vec<_>>(),
+            );
+            state.stop = true;
+            snapshot
+        };
+        shared.changed.notify_all();
+        thread.join().unwrap();
+        let (id, result) = reply.unwrap();
+        assert_eq!(id, 7);
+        assert!(matches!(result, source_mailbox::Reply::Cancelled));
+        assert_eq!(urgent, None);
+        assert_eq!(next, None);
+        assert_eq!(frames, [(1, 10)]);
+    });
 }

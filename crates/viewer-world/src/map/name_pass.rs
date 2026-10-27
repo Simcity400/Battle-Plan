@@ -211,6 +211,7 @@ impl ProvinceGraph {
 
 /// The game content the name layers need, read once per document.
 pub struct NameContent {
+    id: u64,
     pub graph: ProvinceGraph,
     pub bounds: HashMap<u32, ProvinceBounds>,
     /// Sea and lake provinces: the ones a fitted baseline crosses without its
@@ -220,6 +221,9 @@ pub struct NameContent {
 }
 
 impl NameContent {
+    pub fn projection_id(&self) -> u64 {
+        self.id
+    }
     /// Reads the adjacency rows and the localisation in `language`, and scans the bounds.
     pub fn load(layers: &ResolvedLayers, map: &MapData, language: &str) -> io::Result<Self> {
         Self::load_with_localisation(layers, map, || {
@@ -246,6 +250,7 @@ impl NameContent {
             .map(|definition| definition.id)
             .collect();
         Ok(Self {
+            id: super::next_projection_id(),
             graph,
             bounds,
             bridged,
@@ -471,7 +476,7 @@ impl Default for PlacedAreas {
     }
 }
 
-type AreaKey = (String, String, Vec<u32>);
+type AreaKey = (String, String, Vec<u32>, bool);
 
 /// Bytes of placed names and their keys [`PlacedAreas`] keeps.
 const PLACED_AREA_BYTES: usize = 64 << 20;
@@ -624,7 +629,7 @@ pub fn place_areas(
             let name = match (placed, generation) {
                 (Some(placed), Some(generation)) => placed.place(
                     generation,
-                    (tag.clone(), text.clone(), component.clone()),
+                    (tag.clone(), text.clone(), component.clone(), *strategic),
                     || world_name(inputs, tag, text, &component, *strategic),
                 ),
                 _ => world_name(inputs, tag, text, &component, *strategic),

@@ -13,6 +13,7 @@ doctest = false
 test-support = ["viewer-foundation/test-support", "dashboard-text/test-support", "shader-pipeline/test-support"]
 
 [dependencies]
+map-display-data.workspace = true
 map-snow.workspace = true
 replay.workspace = true
 engine-air-history.workspace = true
@@ -40,6 +41,7 @@ eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "de
 bytemuck = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
+product-codec.workspace = true
 dashboard-text = { workspace = true, features = ["test-support"] }
 mimalloc.workspace = true
 installed-content-core = { workspace = true, features = ["test-support"] }

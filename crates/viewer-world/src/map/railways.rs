@@ -188,6 +188,7 @@ type RiverPoint = ([f32; 2], [f32; 2]);
 
 /// Static map input, cached once; per-hour work scales with that hour's edges.
 pub struct RailGeometry {
+    id: u64,
     identity: Arc<()>,
     heightmap: Arc<IndexedImage>,
     defines: RailDefines,
@@ -359,14 +360,15 @@ fn boundary_middle(points: &[[i32; 2]]) -> [i32; 2] {
 ///
 /// It is everything [`RailGeometry::build_network`] reads from an hour, so two
 /// hours with equal networks draw the same railway.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RailNetwork {
-    /// Directed neighbours and their levels (`RailEdges`).
-    graph: BTreeMap<u32, BTreeMap<u32, i32>>,
-    /// Provinces that get a terminal spur per neighbour.
-    sources: BTreeSet<u32>,
-    /// Provinces present in the strategic-navy base map, anchored at the harbour.
-    ports: BTreeSet<u32>,
+    resolved: Arc<map_display_data::landscape::RailGraph>,
+}
+impl std::ops::Deref for RailNetwork {
+    type Target = map_display_data::landscape::RailGraph;
+    fn deref(&self) -> &Self::Target {
+        &self.resolved
+    }
 }
 
 impl RailNetwork {
@@ -411,9 +413,23 @@ impl RailNetwork {
         // base has zero level.
         let ports = naval_bases.iter().map(|r| r.province).collect();
         Self {
-            graph,
-            sources,
-            ports,
+            resolved: Arc::new(map_display_data::landscape::RailGraph {
+                graph,
+                sources,
+                ports,
+            }),
+        }
+    }
+
+    pub fn display(&self) -> &map_display_data::landscape::RailGraph {
+        &self.resolved
+    }
+    pub fn shared_display(&self) -> Arc<map_display_data::landscape::RailGraph> {
+        Arc::clone(&self.resolved)
+    }
+    pub fn from_display(resolved: map_display_data::landscape::RailGraph) -> Self {
+        Self {
+            resolved: Arc::new(resolved),
         }
     }
 
@@ -447,6 +463,9 @@ pub struct TrainRoute {
 }
 
 impl RailGeometry {
+    pub fn projection_id(&self) -> u64 {
+        self.id
+    }
     /// Anchors come from the slots of the hub types (`supply_node`) and ports
     /// from the `is_port` spawn buckets, as content declares them.
     pub fn new(
@@ -650,6 +669,7 @@ impl RailGeometry {
             }
         }
         Ok(Self {
+            id: super::next_projection_id(),
             identity: Arc::new(()),
             heightmap,
             defines,
@@ -1114,7 +1134,7 @@ impl RailGeometry {
     /// The railway of one hour's network.
     pub fn build_network(&self, network: &RailNetwork) -> io::Result<RailMesh> {
         let heights = &self.heights();
-        let RailNetwork { graph, .. } = network;
+        let graph = &network.graph;
         let anchor = |id: u32| self.anchor(network, id);
         let mut crossings = BTreeMap::new();
         for (&from, neighbors) in graph {
@@ -1415,11 +1435,15 @@ impl RailAssets {
 /// Static model library; placement follows each recorded hour's edges.
 #[derive(Debug)]
 pub struct Bridges {
+    id: u64,
     pub library: ModelLibrary,
     /// `NGraphics.RAILWAY_BRIDGE_ENTITY` and `RAILWAY_BRIDGE_LARGE_ENTITY`.
     entities: [String; 2],
 }
 impl Bridges {
+    pub fn projection_id(&self) -> u64 {
+        self.id
+    }
     pub fn load(
         layers: &ResolvedLayers,
         decode: Decode,
@@ -1432,6 +1456,7 @@ impl Bridges {
         ];
         let roster = layers.descriptor_roster()?;
         Ok(Self {
+            id: super::next_projection_id(),
             library: ModelLibrary::load(layers, decode, &roster.descriptors, &entities, warnings)?,
             entities,
         })

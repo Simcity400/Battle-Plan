@@ -7,6 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+map-display-data.workspace = true
 installed-content-core.workspace = true
 installed-content-sound.workspace = true
 cpal = "0.18.2"
@@ -19,8 +20,9 @@ installed-content-core = { workspace = true, features = ["layer-fixtures"] }
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-engine-allocation = { workspace = true, features = ["test-support"] }
+engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 installed-content-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
+replay-data = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bytemuck = { workspace = true }

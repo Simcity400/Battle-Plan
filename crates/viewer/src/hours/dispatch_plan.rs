@@ -40,7 +40,7 @@ impl DispatchPlan {
         &mut self,
         current: Current,
         events: Sender<Event>,
-        mut fill: impl FnMut(
+        fill: impl FnMut(
             &replay_frame::frame::DecodedFrame,
             Option<&viewer_world::map::map_mode::ColourState>,
         ) -> io::Result<Colour>
@@ -54,35 +54,7 @@ impl DispatchPlan {
         let colour = self.colour.take();
         let ticket = self.ticket;
         let key = (self.want.branch, self.next_source);
-        Box::new(move || {
-            let enabled = viewer_foundation::profile_writer::profiling();
-            let started = enabled.then(Instant::now);
-            let cpu = enabled
-                .then(viewer_foundation::profiling::current_thread_cpu_time)
-                .flatten();
-            let colour = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let colour = match colour {
-                    Some(colour) => colour?,
-                    None => previous.and_then(|slot| slot.wait()).and_then(|political| {
-                        political.key.mode().and_then(|mode| mode.colour.clone())
-                    }),
-                };
-                carry_colour(colour, [current], &mut fill)
-            }))
-            .unwrap_or_else(|_| Err(io::Error::other("political: the hour builder panicked")));
-            let timing = started.map(|started| PartTiming {
-                ms: started.elapsed().as_secs_f64() * 1000.0,
-                cpu_ms: cpu
-                    .zip(viewer_foundation::profiling::current_thread_cpu_time())
-                    .and_then(|(before, after)| after.checked_sub(before))
-                    .map(|used| used.as_secs_f64() * 1000.0),
-            });
-            let _ = events.send(Event::Colour {
-                ticket,
-                key,
-                folded: Box::new(ColourFolded { colour, timing }),
-            });
-        })
+        colour_job(ticket, key, current, events, previous, colour, fill)
     }
 
     pub fn folded(&mut self, folded: ColourFolded) {
@@ -98,6 +70,85 @@ impl DispatchPlan {
         }
         self.next_source += 1; // a folded hour is strictly before the endpoint
     }
+}
+
+pub(super) fn colour_job<F>(
+    ticket: u64,
+    key: (BranchId, Hour),
+    current: Current,
+    events: Sender<Event>,
+    previous: Option<Arc<Slot<Political>>>,
+    colour: Option<io::Result<Colour>>,
+    mut fill: F,
+) -> Box<dyn FnOnce() + Send>
+where
+    F: FnMut(
+            &replay_frame::frame::DecodedFrame,
+            Option<&viewer_world::map::map_mode::ColourState>,
+        ) -> io::Result<Colour>
+        + Send
+        + 'static,
+{
+    Box::new(move || {
+        let enabled = viewer_foundation::profile_writer::profiling();
+        let started = enabled.then(Instant::now);
+        let cpu = enabled
+            .then(viewer_foundation::profiling::current_thread_cpu_time)
+            .flatten();
+        let initial = match colour {
+            Some(colour) => colour,
+            None => Ok(previous
+                .and_then(|slot| slot.wait())
+                .and_then(|political| political.colour.clone())),
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let colour = initial
+                .as_ref()
+                .cloned()
+                .map_err(|error| io::Error::new(error.kind(), error.to_string()))?;
+            carry_colour(colour, [current.clone()], &mut fill)
+        }))
+        .unwrap_or_else(|_| Err(io::Error::other("political: the hour builder panicked")));
+        if let Err(error) = &result
+            && error.kind() == io::ErrorKind::WouldBlock
+        {
+            let reason = error.to_string();
+            drop(result);
+            let generation = map_display_data::credit::display_products().generation();
+            let work = colour_job(
+                ticket,
+                key,
+                current,
+                events.clone(),
+                None,
+                Some(initial),
+                fill,
+            );
+            let _ = events.send(Event::RetryColour {
+                ticket,
+                key,
+                generation,
+                reason,
+                work,
+            });
+            return;
+        }
+        let timing = started.map(|started| PartTiming {
+            ms: started.elapsed().as_secs_f64() * 1000.0,
+            cpu_ms: cpu
+                .zip(viewer_foundation::profiling::current_thread_cpu_time())
+                .and_then(|(before, after)| after.checked_sub(before))
+                .map(|used| used.as_secs_f64() * 1000.0),
+        });
+        let _ = events.send(Event::Colour {
+            ticket,
+            key,
+            folded: Box::new(ColourFolded {
+                colour: result,
+                timing,
+            }),
+        });
+    })
 }
 
 impl CoordinatorState {

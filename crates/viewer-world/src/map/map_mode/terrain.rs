@@ -84,7 +84,7 @@ fn category(
 }
 
 /// Builds the layer from the content.
-pub fn build(sources: &Sources, defines: &Defines) -> Built {
+pub fn build(sources: &Sources, defines: &Defines) -> std::io::Result<Built> {
     let len = sources
         .provinces
         .last()
@@ -132,16 +132,16 @@ pub fn build(sources: &Sources, defines: &Defines) -> Built {
             )
         })
         .collect();
-    Built {
+    Ok(Built {
         layer: ModeLayer {
-            region_of,
-            styles,
+            region_of: region_of.into(),
+            styles: map_display_data::value_index::ValueIndex::try_from_iter(styles)?,
             thickness: Some(0.0),
             gradient: Some(TERRAIN_GRADIENT),
             channel: defines.channel,
         },
         warnings,
-    }
+    })
 }
 
 #[cfg(test)]

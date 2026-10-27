@@ -1,5 +1,5 @@
-use super::*;
 use super::tables;
+use super::*;
 use content_witness::{Entry, Outcome};
 use installed_content_core::{
     content::ResolvedLayers,
@@ -115,7 +115,6 @@ fn content(stack: &Stack) -> ProductContent {
                     ),
                 )),
                 triggers: Arc::new(trigger_content()),
-                vision_memo: Arc::new(Keyed::new(perspective::VISION_TABLES, 8)),
             })
         })
         .unwrap();
@@ -445,7 +444,7 @@ fn witness_changes_on_mod_order_replace_paths_and_a_new_higher_layer_file() {
         Entry::Read { layer: Some(layer), .. } if layer.id == "test1")));
 }
 
-// Frozen pre-extraction viewer builders are the independent oracle.
+// Frozen viewer builders; the independent fog branches live in fog_oracle.
 struct Original<'a> {
     content: &'a ProductContent,
     frame: &'a DecodedFrame,
@@ -458,7 +457,10 @@ impl std::ops::Deref for Original<'_> {
     }
 }
 impl Original<'_> {
-    fn vision(&self, choice: &perspective::Choice) -> io::Result<Arc<perspective::Vision>> {
+    fn ancillary_vision(
+        &self,
+        choice: &perspective::Choice,
+    ) -> io::Result<Arc<perspective::Vision>> {
         let links = tables::core::<row_tables::CountryLinks>(self.frame)?
             .iter()
             .map(|row| (row.id, row.canonical_slot))
@@ -481,11 +483,51 @@ impl Original<'_> {
         )
         .map(Arc::new)
     }
+    fn fog_vision(&self, choice: &perspective::Choice) -> io::Result<fog_oracle::Vision> {
+        let links = tables::core::<row_tables::CountryLinks>(self.frame)?
+            .iter()
+            .map(|row| (row.id, row.canonical_slot))
+            .collect();
+        let tags = tables::core::<row_tables::Countries>(self.frame)?
+            .iter()
+            .map(|row| {
+                (
+                    row.canonical_slot,
+                    String::from_utf8_lossy(&row.tag).into_owned(),
+                )
+            })
+            .collect();
+        fog_oracle::Vision::read(
+            self.frame,
+            &links,
+            &tags,
+            choice,
+            FogContent::loaded(&self.fog),
+        )
+    }
+    fn fog_display(&self, choice: &perspective::Choice) -> io::Result<map_display_data::Fog> {
+        assert!(self.frame.complete::<row_tables::MapEvents>()?.is_empty());
+        let vision = self.fog_vision(choice)?;
+        let intel = self.intel_map_from_visibility(vision.province_fog())?;
+        Ok(map_display_data::Fog {
+            limitations: self.limitations_with(choice, Some(&intel))?.lines(),
+            intel: Arc::new(intel),
+            header: Header {
+                viewing: Some(self.viewing_tag(vision.ours())?),
+            },
+            map_text: map_display_data::MapText {
+                view: vision.ours(),
+                interval: map_display_data::MapTextResult::Unavailable {
+                    reason: "map text interval unavailable or not a singleton; coverage unknown"
+                        .into(),
+                },
+            },
+            music: None,
+            battles: self.battle_sounds(),
+        })
+    }
     fn intel_map_from_visibility(&self, fog: Option<&BTreeMap<u32, u8>>) -> io::Result<IntelMap> {
-        match fog {
-            None => textures::clear_intel_map(&self.map),
-            Some(_) => Ok(textures::IntelCells::new(&self.map)?.intel_map(fog)),
-        }
+        Ok(fog_oracle::intel(&self.map, fog))
     }
     pub fn nuclear_impacts(&self) -> io::Result<viewer_world::map::strike_effects::Impacts> {
         viewer_world::map::strike_effects::Impacts::read(self.frame, |province| {
@@ -539,9 +581,9 @@ impl Original<'_> {
         for refused in self.nuclear_impacts()?.refused {
             out.note_field("Nuclear impact effects", &refused);
         }
-        let vision = self.vision(perspective)?;
+        let vision = self.fog_vision(perspective)?;
         out.note_perspective(&tables::Perspective {
-            tag: self.viewing_tag(&vision)?,
+            tag: self.viewing_tag(vision.ours())?,
             resolution: vision.resolution().clone(),
             fog: vision.fog(),
         });
@@ -611,8 +653,7 @@ impl Original<'_> {
         }
         Ok(out)
     }
-    pub fn viewing_tag(&self, vision: &perspective::Vision) -> io::Result<String> {
-        let ours = vision.ours();
+    pub fn viewing_tag(&self, ours: u32) -> io::Result<String> {
         Ok(tables::core::<row_tables::Countries>(self.frame)?
             .iter()
             .find(|country| country.canonical_slot == ours)
@@ -800,7 +841,7 @@ fn fog_vision_ancillary_and_error_bytes_match_the_pre_extraction_builder() {
             hour_fraction: 0.,
         };
         let hour = ProductHour::new(&content, &frame, 0.);
-        let vision = old.vision(&choice()).unwrap();
+        let vision = old.ancillary_vision(&choice()).unwrap();
         assert_eq!(*hour.vision(&choice()).unwrap(), *vision);
         let fog = hour
             .fog(&choice(), &FogMemos::new(8), &mut BuilderSpans::new(false))
@@ -843,7 +884,7 @@ fn fog_vision_ancillary_and_error_bytes_match_the_pre_extraction_builder() {
             .fog(&choice(), &FogMemos::new(8), &mut BuilderSpans::new(false))
             .err()
             .unwrap();
-        let expected = old.vision(&choice()).unwrap_err();
+        let expected = old.fog_vision(&choice()).unwrap_err();
         assert_eq!(actual.kind(), expected.kind());
         assert_eq!(actual.to_string(), expected.to_string());
         assert_eq!(
@@ -955,13 +996,13 @@ fn weather_delegates_the_existing_priority_field_including_unavailable_tables() 
         ProductHour::new(&content, &frame, 0.)
             .weather_field()
             .unwrap()
-            == weather_effects::field(&frame).unwrap()
+            == original_weather_field(&frame).unwrap()
     );
     frame.tables[TableId::WeatherRegions.index()] = TableView::Unavailable {
         reason: "fixture weather coverage".into(),
     }
     .into();
-    let expected = weather_effects::field(&frame);
+    let expected = original_weather_field(&frame);
     let actual = ProductHour::new(&content, &frame, 0.).weather_field();
     assert_eq!(actual.is_err(), expected.is_err());
     if let (Err(actual), Err(expected)) = (actual, expected) {
@@ -1032,7 +1073,7 @@ fn ancillary_preserves_named_unavailable_not_recorded_and_malformed_inputs() {
         hour.nuclear_impacts().unwrap().refused,
         ["NuclearStrikes not recorded in a map recording: impacts have no effect"]
     );
-    let vision = old.vision(&choice()).unwrap();
+    let vision = old.ancillary_vision(&choice()).unwrap();
     let actual = format!("{:?}", hour.map_text(&vision));
     assert_eq!(actual, format!("{:?}", old.map_text(&vision)));
     assert!(actual.contains("map text table malformed:"));
@@ -1071,4 +1112,1129 @@ fn startup_notes_and_errors_are_canonical_deduplicated_and_change_the_witness() 
         "fixture parse failure",
     ));
     assert_ne!(reads.witness().unwrap(), changed.witness().unwrap());
+}
+
+fn original_weather_field(frame: &DecodedFrame) -> io::Result<map_display_data::WeatherField> {
+    let mut out = map_display_data::WeatherField {
+        branch: frame.branch,
+        hour: frame.hour,
+        ..Default::default()
+    };
+    for row in viewer_foundation::table_access::rows::<row_tables::WeatherRegions>(frame)?.rows() {
+        if let Some(kind) = [
+            row.light_rain,
+            row.heavy_rain,
+            row.snow,
+            row.blizzard,
+            row.sandstorm,
+        ]
+        .iter()
+        .position(|value| *value != 0)
+        {
+            out.kinds.insert(row.id, kind);
+        }
+    }
+    Ok(out)
+}
+
+#[test]
+fn closed_fog_matches_independent_builder_for_countries_switches_and_source_gaps() {
+    let stack = fixture("products_closed_fog");
+    let content = content(&stack);
+    for count in [2, 1500, 5000] {
+        for status in 0..4 {
+            let mut frame = frame(count);
+            frame.tables[TableId::UnitIntel.index()] = match status {
+                0 => TableView::Complete(TableRows::UnitIntel(Vec::new())),
+                1 => TableView::Truncated {
+                    rows: TableRows::UnitIntel(Vec::new()),
+                    missing: 9,
+                },
+                2 => TableView::Unavailable {
+                    reason: "independent synthetic intel gap".into(),
+                },
+                _ => TableView::NotRecorded {
+                    mode: replay_data::scope::CaptureMode::Map,
+                },
+            }
+            .into();
+            for slot in [1, count] {
+                for fog in [false, true] {
+                    let choice = perspective::Choice {
+                        country: perspective::Country::Tag(format!("Z{slot}")),
+                        fog,
+                    };
+                    let old = Original {
+                        content: &content,
+                        frame: &frame,
+                        hour_fraction: 0.5,
+                    };
+                    let expected = old.fog_display(&choice).unwrap();
+                    let memos = FogMemos::new(8);
+                    let actual = ProductHour::new(&content, &frame, 0.5)
+                        .fog(&choice, &memos, &mut BuilderSpans::new(false))
+                        .unwrap();
+                    let wire = product_codec::encode(&actual.display()).unwrap();
+                    assert_eq!(wire, product_codec::encode(&expected).unwrap());
+                    let restored =
+                        FogProduct::from_display(product_codec::decode(&wire).unwrap()).unwrap();
+                    assert_eq!(product_codec::encode(&restored.display()).unwrap(), wire);
+                    assert_eq!(restored.limitations.lines(), actual.limitations.lines());
+                    let (_, reads) = replay_frame::frame::view_reads::record(|| {
+                        product_codec::encode(&restored.display()).unwrap()
+                    });
+                    assert!(reads.is_empty());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn exact_country_requests_do_not_alias_duplicate_tags_and_reject_absent_instances() {
+    let stack = fixture("products_closed_country");
+    let content = content(&stack);
+    let mut frame = frame(1500);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *frame.tables[TableId::Countries.index()]
+    {
+        for row in rows {
+            row.tag = b"SAME".to_vec();
+        }
+    }
+    let choice = perspective::Choice {
+        country: perspective::Country::Tag("SAME".into()),
+        fog: false,
+    };
+    let hour = ProductHour::new(&content, &frame, 0.0);
+    hour.seed_country(&choice, 1600, 1500).unwrap();
+    assert_eq!(hour.vision(&choice).unwrap().ours(), 1500);
+    assert!(hour.seed_country(&choice, 101, 1500).is_err());
+    assert!(hour.seed_country(&choice, 1601, 1501).is_err());
+}
+
+#[test]
+fn weather_wire_preserves_priority_order_and_each_availability_state() {
+    let stack = fixture("products_weather_closed");
+    let content = content(&stack);
+    let rows = vec![
+        WeatherRegionRow {
+            id: 4,
+            snow: 1,
+            ..Default::default()
+        },
+        WeatherRegionRow {
+            id: 4,
+            light_rain: 2,
+            sandstorm: 1,
+            ..Default::default()
+        },
+        WeatherRegionRow {
+            id: 90001,
+            blizzard: 1,
+            ..Default::default()
+        },
+    ];
+    for source in [
+        TableView::Complete(TableRows::WeatherRegions(rows.clone())),
+        TableView::Truncated {
+            rows: TableRows::WeatherRegions(rows),
+            missing: 3,
+        },
+        TableView::Unavailable {
+            reason: "synthetic failed weather read".into(),
+        },
+        TableView::NotRecorded {
+            mode: replay_data::scope::CaptureMode::Map,
+        },
+        TableView::Complete(TableRows::Countries(Vec::new())),
+    ] {
+        let mut frame = frame(2);
+        frame.tables[TableId::WeatherRegions.index()] = source.into();
+        let actual = ProductHour::new(&content, &frame, 0.0).weather_field();
+        let expected = original_weather_field(&frame);
+        match (actual, expected) {
+            (Ok(actual), Ok(expected)) => {
+                let bytes = product_codec::encode(&actual).unwrap();
+                assert_eq!(bytes, product_codec::encode(&expected).unwrap());
+                let decoded: map_display_data::WeatherField =
+                    product_codec::decode(&bytes).unwrap();
+                assert_eq!(decoded, actual);
+            }
+            (Err(actual), Err(expected)) => assert_eq!(
+                (actual.kind(), actual.to_string()),
+                (expected.kind(), expected.to_string())
+            ),
+            _ => panic!("weather availability changed"),
+        }
+    }
+}
+
+#[test]
+fn snow_product_is_owned_deduplicates_equal_outputs_and_keeps_refresh_identity() {
+    let stack = fixture("products_closed_snow");
+    let content = content(&stack);
+    let cells = map_snow::SnowCells::new(&content.map, &[false; 72]).unwrap();
+    let winter = map_snow::winter::Winter {
+        defines: map_snow::winter::SnowDefines {
+            per_province: [0.0, 1.0],
+            total: [0.0, 1.0],
+        },
+        records: vec![vec![map_snow::winter::SnowRecord {
+            province: 1,
+            weight: 1.0,
+        }]],
+    };
+    let memo = display::SnowMemo::new(8);
+    let mut frame = frame(2);
+    put(
+        &mut frame,
+        TableRows::WeatherProvinces(vec![WeatherProvinceRow {
+            id: 1,
+            snow: 50_000,
+            display_snow: 173,
+            display_mud: 9,
+            ..Default::default()
+        }]),
+    );
+    let original = display_oracle::snow(&content.map, &[false; 72], &frame, &winter).unwrap();
+    let first = ProductHour::new(&content, &frame, 0.0)
+        .snow(&cells, &winter, &memo)
+        .unwrap();
+    assert_eq!(first.texels, original.texels);
+    assert_eq!(first.province_snow, original.province_snow);
+    assert_eq!(first.summary, original.summary);
+    assert_eq!(
+        product_codec::encode(&*first).unwrap(),
+        product_codec::encode(&original).unwrap()
+    );
+    frame.hour += 1;
+    // A fresh source allocation is immaterial to the product identity.
+    frame.tables[TableId::WeatherProvinces.index()] = (*frame.tables
+        [TableId::WeatherProvinces.index()])
+    .clone()
+    .into();
+    let equal = ProductHour::new(&content, &frame, 0.0)
+        .snow(&cells, &winter, &memo)
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &equal));
+    let bytes = product_codec::encode(&*first).unwrap();
+    drop(frame);
+    assert_eq!(
+        product_codec::encode(&product_codec::decode::<map_display_data::Snow>(&bytes).unwrap())
+            .unwrap(),
+        bytes
+    );
+    assert!(first.province_snow[0].is_none());
+}
+
+#[test]
+fn snow_wire_and_status_match_the_frozen_scalar_for_gaps_edges_and_refresh() {
+    let stack = fixture("products_snow_oracle");
+    let content = content(&stack);
+    let mut perm = [false; 72];
+    perm[0..4].fill(true);
+    let cells = map_snow::SnowCells::new(&content.map, &perm).unwrap();
+    let winter = map_snow::winter::Winter {
+        defines: map_snow::winter::SnowDefines {
+            per_province: [0.0, 1.0],
+            total: [0.0, 1.0],
+        },
+        records: vec![
+            vec![map_snow::winter::SnowRecord {
+                province: 1,
+                weight: 1.0,
+            }],
+            vec![map_snow::winter::SnowRecord {
+                province: 0,
+                weight: 1.0,
+            }],
+        ],
+    };
+    let mut refresh_bytes = None;
+    for identity in [4, 5] {
+        for status in 0..4 {
+            let mut frame = frame(2);
+            let rows = vec![
+                WeatherProvinceRow {
+                    id: 0,
+                    display: Recorded::Value(Some(WeatherDisplay {
+                        width: 3,
+                        height: 1,
+                        refresh_interval: 6,
+                        refresh_identity: identity,
+                        edges: vec![31, 32, 33, 91, 92, 93],
+                    })),
+                    ..Default::default()
+                },
+                WeatherProvinceRow {
+                    id: 1,
+                    snow: 50_000,
+                    display_snow: 173,
+                    display_mud: 9,
+                    ..Default::default()
+                },
+            ];
+            frame.tables[TableId::WeatherProvinces.index()] = match status {
+                0 => TableView::Complete(TableRows::WeatherProvinces(rows)),
+                1 => TableView::Truncated {
+                    rows: TableRows::WeatherProvinces(rows),
+                    missing: 2,
+                },
+                2 => TableView::Unavailable {
+                    reason: "synthetic snow read failure".into(),
+                },
+                _ => TableView::NotRecorded {
+                    mode: replay_data::scope::CaptureMode::Map,
+                },
+            }
+            .into();
+            let actual = ProductHour::new(&content, &frame, 0.0)
+                .snow(&cells, &winter, &display::SnowMemo::new(8))
+                .unwrap();
+            let expected = display_oracle::snow(&content.map, &perm, &frame, &winter).unwrap();
+            let wire = product_codec::encode(&*actual).unwrap();
+            assert_eq!(wire, product_codec::encode(&expected).unwrap());
+            assert_eq!(actual.summary.line(), expected.summary.line());
+            assert_eq!(actual.refresh, expected.refresh);
+            if status == 0 {
+                if let Some((texels, old)) = &refresh_bytes {
+                    assert_eq!(actual.texels, *texels);
+                    assert_ne!(wire, *old);
+                }
+                refresh_bytes = Some((actual.texels.clone(), wire));
+            }
+        }
+    }
+}
+
+#[test]
+fn fog_products_and_memos_do_not_pin_their_source_tables() {
+    let stack = fixture("products_no_source_pins");
+    let content = content(&stack);
+    let frame = frame(1500);
+    let memos = FogMemos::new(8);
+    let product = ProductHour::new(&content, &frame, 0.0)
+        .fog(&choice(), &memos, &mut BuilderSpans::new(false))
+        .unwrap();
+    for table in frame.tables {
+        assert!(
+            table.try_unwrap().is_ok(),
+            "product retained a source allocation"
+        );
+    }
+    let bytes = product_codec::encode(&product.display()).unwrap();
+    let restored = FogProduct::from_display(product_codec::decode(&bytes).unwrap()).unwrap();
+    assert_eq!(product_codec::encode(&restored.display()).unwrap(), bytes);
+    drop(memos);
+}
+
+#[test]
+fn evidence_changes_without_inventing_a_value_or_a_new_country_lifetime() {
+    let mut frame = frame(2);
+    let table = TableId::WeatherProvinces;
+    frame.tables[table.index()] =
+        TableView::Complete(TableRows::WeatherProvinces(Vec::new())).into();
+    let empty = display::evidence(&frame, &[table]);
+    assert!(matches!(
+        empty[0].status,
+        map_display_data::Availability::KnownEmpty {}
+    ));
+    assert_eq!(empty[0].supplying_hour, None);
+    frame.tables[table.index()] = frame.tables[table.index()]
+        .clone()
+        .with_sampled_at(Some(39));
+    let read = display::evidence(&frame, &[table]);
+    assert_ne!(empty, read);
+    frame.tables[table.index()] = TableView::Unavailable {
+        reason: "unique poison: not empty".into(),
+    }
+    .into();
+    let failed = display::evidence(&frame, &[table]);
+    assert!(
+        matches!(&failed[0].status,map_display_data::Availability::Unavailable { reason,.. } if reason=="unique poison: not empty")
+    );
+    assert_ne!(failed, read);
+}
+
+#[test]
+fn weather_projection_reads_only_the_recorded_map_scope() {
+    use viewer_foundation::map::test_support::{
+        assert_reads_recorded, complete_frame, map_scoped, put_sample_campaign,
+    };
+    let mut frame = complete_frame(11, |table| {
+        replay_data::rows::sample_extended_table(table, 0)
+    });
+    put_sample_campaign(&mut frame);
+    let frame = map_scoped(frame);
+    assert_reads_recorded(&frame, &[], || {
+        display::weather_field(&frame).unwrap();
+    });
+}
+
+#[test]
+fn direct_owned_vision_keeps_the_old_keyed_source_census_and_decisions() {
+    let stack = fixture("products_vision_old_census");
+    let content = content(&stack);
+    let frame = frame(1500);
+    let memo = viewer_foundation::map::memo::Keyed::new(perspective::VISION_TABLES, 8);
+    for fog in [false, true] {
+        let choice = perspective::Choice {
+            country: perspective::Country::Tag("Z1500".into()),
+            fog,
+        };
+        let expected =
+            perspective::cached_vision(&frame, &choice, FogContent::loaded(&content.fog), &memo)
+                .unwrap();
+        let actual = ProductHour::new(&content, &frame, 0.0)
+            .vision(&choice)
+            .unwrap();
+        assert_eq!(*actual, *expected);
+    }
+}
+
+fn fog_content(stack: &Stack) -> ProductContent {
+    use viewer_foundation::map::visibility::{Defines, Topology};
+    let ProductContent {
+        reads, mut inputs, ..
+    } = content(stack);
+    inputs.map = Arc::new(MapData {
+        width: 18,
+        height: 6,
+        province_ids: (0..108).map(|at| (at % 18 / 6 + 1) as u32).collect(),
+        definitions: (1..=3)
+            .map(|id| {
+                (
+                    id,
+                    ProvinceDefinition {
+                        id,
+                        rgb: [id as u8, 0, 0],
+                        kind: ProvinceKind::Land,
+                        continent: 1,
+                    },
+                )
+            })
+            .collect(),
+        country_colors: Default::default(),
+    });
+    inputs.fog = Arc::new(Ok(FogContent {
+        topology: Topology {
+            land: [1, 2, 3].into(),
+            sea: Default::default(),
+            neighbors: [(1, vec![2]), (2, vec![1]), (3, vec![])].into(),
+        },
+        defines: Defines {
+            intel_maximums: [100_000; 4],
+            radar_effect: 25,
+            map_cutoffs: vec![50_000, 0, 100_000, 2_500_000],
+            air_icon_threshold: 30_000,
+            air_detail_thresholds: [0, 30_000, 70_000, 100_000],
+            air_plane_fuzzy_range: 100_000,
+            naval_detail_thresholds: [0, 30_000, 50_000, 70_000, 100_000],
+        },
+    }));
+    ProductContent::from_inputs(reads, inputs)
+}
+
+fn fog_frame(count: u32) -> DecodedFrame {
+    let mut frame = frame(count);
+    put(
+        &mut frame,
+        TableRows::LocalPlayer(vec![LocalPlayerRow {
+            country: 101,
+            observer_country: 0,
+        }]),
+    );
+    put(
+        &mut frame,
+        TableRows::Provinces(
+            (1..=3)
+                .map(|id| ProvinceRow {
+                    id,
+                    controller: id + 100,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    put(
+        &mut frame,
+        TableRows::Divisions(vec![DivisionRow {
+            id: 7,
+            roster_owner: 103,
+            logical_owner: 103,
+            province: 3,
+            ..Default::default()
+        }]),
+    );
+    put(
+        &mut frame,
+        TableRows::UnitIntel(vec![
+            UnitIntelRow {
+                unit: 8,
+                viewer: 1,
+                ordinal: 0,
+                level: 1,
+            },
+            UnitIntelRow {
+                unit: 8,
+                viewer: 1,
+                ordinal: 1,
+                level: 2,
+            },
+        ]),
+    );
+    put(
+        &mut frame,
+        TableRows::CountryIntel(vec![CountryIntelRow {
+            owner_country: 101,
+            target_index: 2,
+            army: 75_000,
+            ..Default::default()
+        }]),
+    );
+    frame
+}
+
+fn assert_frozen_fog(
+    content: &ProductContent,
+    frame: &DecodedFrame,
+    choice: &perspective::Choice,
+) -> map_display_data::Fog {
+    let old = Original {
+        content,
+        frame,
+        hour_fraction: 0.5,
+    };
+    let expected = old.fog_display(choice).unwrap();
+    let reference = old.fog_vision(choice).unwrap();
+    let hour = ProductHour::new(content, frame, 0.5);
+    let actual = hour
+        .fog(choice, &FogMemos::new(8), &mut BuilderSpans::new(false))
+        .unwrap();
+    assert_eq!(
+        product_codec::encode(&actual.display()).unwrap(),
+        product_codec::encode(&expected).unwrap()
+    );
+    let vision = hour.vision(choice).unwrap();
+    assert_eq!(
+        (vision.ours(), vision.resolution(), vision.fog()),
+        (reference.ours(), reference.resolution(), reference.fog())
+    );
+    assert_eq!(vision.province_fog(), reference.province_fog());
+    assert_eq!(vision.undecided(), reference.undecided());
+    assert_eq!(vision.visibility_gap(), reference.visibility_gap());
+    for province in 1..=3 {
+        assert_eq!(
+            vision.province_byte(province),
+            reference.province_byte(province)
+        );
+    }
+    for owner in 1..=3 {
+        assert_eq!(
+            vision.shares_vision_proven(owner),
+            reference.shares_vision_proven(owner)
+        );
+        for unit in [7, 8] {
+            assert_eq!(
+                vision.sees_land(unit, owner, 3),
+                reference.sees_land(unit, owner, 3)
+            );
+            assert_eq!(
+                vision.land_byte_known(unit, owner, 3),
+                reference.land_byte_known(unit, owner, 3)
+            );
+        }
+    }
+    expected
+}
+
+#[test]
+fn frozen_fog_covers_nonclear_perspectives_intel_and_directed_sharing() {
+    let stack = fixture("products_real_fog");
+    let content = fog_content(&stack);
+    for count in [3, 1500, 5000] {
+        for sharing in 0..4 {
+            let mut frame = fog_frame(count);
+            if sharing == 1 || sharing == 3 {
+                put(
+                    &mut frame,
+                    TableRows::FactionMembers(
+                        [101, 103]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(ordinal, country)| FactionMemberRow {
+                                faction: 9,
+                                country,
+                                ordinal: ordinal as u32,
+                            })
+                            .collect(),
+                    ),
+                );
+            }
+            if sharing == 2 {
+                put(
+                    &mut frame,
+                    TableRows::RelationLinks(vec![RelationLinkRow {
+                        country: 103,
+                        target_index: 1,
+                        links: RelationLinkRow::ATTACHE,
+                        ..Default::default()
+                    }]),
+                );
+            }
+            if sharing == 3 {
+                put(
+                    &mut frame,
+                    TableRows::WarRelations(vec![WarRelationRow {
+                        first_country: 101,
+                        second_country: 103,
+                        ..Default::default()
+                    }]),
+                );
+            }
+            let recorded = perspective::Choice::default();
+            let third = perspective::Choice {
+                country: perspective::Country::Tag("Z3".into()),
+                fog: true,
+            };
+            let old = Original {
+                content: &content,
+                frame: &frame,
+                hour_fraction: 0.5,
+            };
+            let first = old.fog_display(&recorded).unwrap();
+            let other = old.fog_display(&third).unwrap();
+            assert!(first.intel.fog && other.intel.fog);
+            assert!(first.intel.texels.iter().any(|byte| *byte > 0));
+            assert!(other.intel.texels.iter().any(|byte| *byte > 0));
+            assert_eq!(
+                first.intel.texels,
+                if sharing == 0 {
+                    vec![0, 80, 255]
+                } else {
+                    vec![0, 80, 0]
+                }
+            );
+            if sharing == 0 || sharing == 2 {
+                assert_eq!(other.intel.texels, [255, 255, 0]);
+                assert_ne!(first.intel.texels, other.intel.texels);
+            }
+            let first_vision = old.fog_vision(&recorded).unwrap();
+            assert_eq!(first_vision.shares_vision_proven(3), Ok(sharing == 1));
+            assert_eq!(
+                first_vision.land_byte_known(7, 3, 3),
+                Some(if sharing == 0 { 0 } else { 255 })
+            );
+            assert_eq!(
+                first_vision.sees_land(7, 3, 3),
+                if sharing == 0 {
+                    perspective::Sight::None
+                } else {
+                    perspective::Sight::Full
+                }
+            );
+            if sharing == 0 {
+                assert_eq!(first_vision.land_byte_known(8, 3, 3), Some(150));
+                assert_eq!(first_vision.sees_land(8, 3, 3), perspective::Sight::Partial);
+            }
+            for country in [
+                perspective::Country::Recorded,
+                perspective::Country::Tag("z2".into()),
+                third.country.clone(),
+                perspective::Country::Tag("ABSENT".into()),
+            ] {
+                for fog in [true, false] {
+                    assert_frozen_fog(
+                        &content,
+                        &frame,
+                        &perspective::Choice {
+                            country: country.clone(),
+                            fog,
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn frozen_fog_keeps_hidden_intel_distinct_from_missing_and_truncated_sources() {
+    let stack = fixture("products_real_fog_gaps");
+    let content = fog_content(&stack);
+    let choice = perspective::Choice::default();
+    let whole = fog_frame(3);
+    let hidden = assert_frozen_fog(&content, &whole, &choice);
+    let reference = Original {
+        content: &content,
+        frame: &whole,
+        hour_fraction: 0.5,
+    }
+    .fog_vision(&choice)
+    .unwrap();
+    assert_eq!(reference.land_byte_known(7, 3, 3), Some(0));
+    assert_eq!(reference.sees_land(7, 3, 3), perspective::Sight::None);
+    for table in [
+        TableId::UnitIntel,
+        TableId::CountryVisibility,
+        TableId::CountryIntel,
+        TableId::StateVisibility,
+        TableId::FactionMembers,
+    ] {
+        for status in 0..3 {
+            let mut frame = fog_frame(3);
+            let TableView::Complete(rows) = &*frame.tables[table.index()] else {
+                unreachable!()
+            };
+            frame.tables[table.index()] = match status {
+                0 => TableView::Truncated {
+                    rows: rows.clone(),
+                    missing: 1,
+                },
+                1 => TableView::Unavailable {
+                    reason: format!("synthetic {table:?} gap"),
+                },
+                _ => TableView::NotRecorded {
+                    mode: replay_data::scope::CaptureMode::Map,
+                },
+            }
+            .into();
+            let old = Original {
+                content: &content,
+                frame: &frame,
+                hour_fraction: 0.5,
+            };
+            let reference = old.fog_vision(&choice).unwrap();
+            let expected = assert_frozen_fog(&content, &frame, &choice);
+            assert_ne!(
+                product_codec::encode(&expected).unwrap(),
+                product_codec::encode(&hidden).unwrap()
+            );
+            if !reference.fog() {
+                assert_eq!(reference.land_byte_known(7, 3, 3), Some(255));
+                assert_eq!(reference.sees_land(7, 3, 3), perspective::Sight::Full);
+                assert!(!expected.intel.fog);
+            } else if table == TableId::UnitIntel && status == 0 {
+                assert_eq!(reference.land_byte_known(7, 3, 3), None);
+                assert_eq!(reference.land_byte_known(8, 3, 3), Some(150));
+                assert_eq!(reference.sees_land(7, 3, 3), perspective::Sight::None);
+                assert_eq!(expected.intel, hidden.intel);
+            } else {
+                assert_eq!(reference.land_byte_known(7, 3, 3), None);
+                assert_eq!(reference.sees_land(7, 3, 3), perspective::Sight::Full);
+                if table == TableId::CountryVisibility {
+                    assert_eq!(expected.intel, hidden.intel);
+                } else if table != TableId::UnitIntel {
+                    assert!(reference.visibility_gap().is_some());
+                    assert!(!expected.intel.fog);
+                    assert!(expected.intel.texels.iter().all(|byte| *byte == 0));
+                }
+            }
+            if table == TableId::FactionMembers {
+                assert!(matches!(
+                    reference.shares_vision_proven(3),
+                    Err(perspective::SharingUnknown::Relations("FactionMembers"))
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn snow_interior_matches_frozen_scalar_with_mixed_provinces_and_permanent_snow() {
+    let stack = fixture("products_snow_interior");
+    let ProductContent {
+        reads, mut inputs, ..
+    } = content(&stack);
+    inputs.map = Arc::new(MapData {
+        width: 16,
+        height: 16,
+        province_ids: (0..256).map(|at| if at % 4 < 2 { 1 } else { 2 }).collect(),
+        definitions: (1..=2)
+            .map(|id| {
+                (
+                    id,
+                    ProvinceDefinition {
+                        id,
+                        rgb: [id as u8, 0, 0],
+                        kind: ProvinceKind::Land,
+                        continent: 1,
+                    },
+                )
+            })
+            .collect(),
+        country_colors: Default::default(),
+    });
+    let content = ProductContent::from_inputs(reads, inputs);
+    let winter = map_snow::winter::Winter {
+        defines: map_snow::winter::SnowDefines {
+            per_province: [0.0, 1.0],
+            total: [0.0, 1.0],
+        },
+        records: vec![],
+    };
+    let mut frame = frame(2);
+    put(
+        &mut frame,
+        TableRows::WeatherProvinces(vec![
+            WeatherProvinceRow {
+                id: 1,
+                snow: 20_000,
+                display_snow: 64,
+                display_mud: 16,
+                ..Default::default()
+            },
+            WeatherProvinceRow {
+                id: 2,
+                snow: 80_000,
+                display_snow: 192,
+                display_mud: 80,
+                ..Default::default()
+            },
+        ]),
+    );
+    let interior = (4 + 1) * 4;
+    let mut previous = None;
+    for permanent in [false, true] {
+        let mut mask = vec![false; 256];
+        mask[(16 - 1 - 4) * 16 + 4] = permanent;
+        let expected = display_oracle::snow(&content.map, &mask, &frame, &winter).unwrap();
+        assert_eq!([expected.width, expected.height], [4, 4]);
+        assert_eq!(
+            &expected.texels[interior..interior + 4],
+            if permanent {
+                &[48, 139, 139, 48]
+            } else {
+                &[48, 128, 128, 48]
+            }
+        );
+        if let Some(previous) = &previous {
+            assert_ne!(previous, &expected.texels);
+        }
+        previous = Some(expected.texels.clone());
+        let cells = map_snow::SnowCells::new(&content.map, &mask).unwrap();
+        let actual = ProductHour::new(&content, &frame, 0.0)
+            .snow(&cells, &winter, &display::SnowMemo::new(8))
+            .unwrap();
+        assert_eq!(
+            product_codec::encode(&*actual).unwrap(),
+            product_codec::encode(&expected).unwrap()
+        );
+    }
+}
+
+#[test]
+fn territory_labels_and_shared_rail_graph_release_the_borrowed_host() {
+    use viewer_world::map::railways::RailNetwork;
+    let stack = fixture("landscape_closed_products");
+    let content = content(&stack);
+    let mut frame = frame(1501);
+    put(
+        &mut frame,
+        TableRows::Provinces(vec![ProvinceRow {
+            id: 1,
+            state: 1,
+            owner: 101,
+            controller: 102,
+            victory_points: 10,
+            ..Default::default()
+        }]),
+    );
+    put(
+        &mut frame,
+        TableRows::RailEdges(vec![
+            RailEdgeRow {
+                from: 1,
+                to: 2,
+                level: 3,
+            },
+            RailEdgeRow {
+                from: 1,
+                to: 2,
+                level: 1,
+            },
+            RailEdgeRow {
+                from: 2,
+                to: 1,
+                level: 3,
+            },
+        ]),
+    );
+    let (territory, labels, graph) = {
+        let hour = ProductHour::new(&content, &frame, 0.0);
+        let territory = hour.territory_projection().unwrap();
+        let labels = hour.labels(1).unwrap();
+        let network = hour.rail_graph().unwrap();
+        let projection = hour.rail_projection().unwrap();
+        assert!(Arc::ptr_eq(&network.shared_display(), &projection.graph));
+        assert_eq!(territory.facts.countries.len(), 1501);
+        assert_eq!(territory.facts.provinces[0].owner_slot, Some(1));
+        assert_eq!(territory.facts.provinces[0].controller_slot, Some(2));
+        assert_eq!(labels.candidates.len(), 1);
+        assert_eq!(network.display().graph[&1][&2], 1);
+        assert_eq!(network.display(), projection.graph.as_ref());
+        let decoded = product_codec::decode::<map_display_data::landscape::RailGraph>(
+            &product_codec::encode(projection.graph.as_ref()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(RailNetwork::from_display(decoded), *network);
+        (territory, labels, projection)
+    };
+    frame.hour += 1;
+    {
+        let hour = ProductHour::new(&content, &frame, 0.0);
+        assert!(Arc::ptr_eq(&territory.facts, &hour.territory().unwrap()));
+        assert!(Arc::ptr_eq(
+            &labels.candidates,
+            &hour.labels(2).unwrap().candidates
+        ));
+        assert!(Arc::ptr_eq(
+            &graph.graph,
+            &hour.rail_graph().unwrap().shared_display()
+        ));
+    }
+    for table in frame.tables {
+        assert!(
+            table.try_unwrap().is_ok(),
+            "a migrated product pinned source data"
+        );
+    }
+    assert_eq!(territory.facts.provinces[0].owner_raw, 101);
+    assert_eq!(labels.candidates[0].controller, Some(2));
+    assert_eq!(graph.graph.graph[&1][&2], 1);
+}
+
+#[test]
+fn a_rail_source_gap_is_not_certified_as_known_empty() {
+    let stack = fixture("landscape_rail_gap");
+    let content = content(&stack);
+    let mut frame = frame(1);
+    let complete = ProductHour::new(&content, &frame, 0.0)
+        .rail_projection()
+        .unwrap();
+    assert!(complete.graph.graph.is_empty());
+    frame.tables[TableId::RailEdges.index()] = TableView::Truncated {
+        rows: TableRows::RailEdges(Vec::new()),
+        missing: 2,
+    }
+    .into();
+    let missing = ProductHour::new(&content, &frame, 0.0)
+        .rail_projection()
+        .unwrap();
+    assert_eq!(complete.graph, missing.graph);
+    assert_ne!(complete.evidence, missing.evidence);
+    assert!(missing.evidence.iter().any(|evidence| {
+        matches!(
+            evidence.status,
+            map_display_data::Availability::Unknown { .. }
+        )
+    }));
+}
+
+#[test]
+fn rail_graph_ignores_unrelated_controllers_but_preserves_changed_source_evidence() {
+    let stack = fixture("landscape_rail_projection_changes");
+    let content = content(&stack);
+    let mut frame = frame(1);
+    put(
+        &mut frame,
+        TableRows::ProvinceSupply(vec![ProvinceSupplyRow {
+            province: 7,
+            ..Default::default()
+        }]),
+    );
+    let first = ProductHour::new(&content, &frame, 0.0)
+        .rail_graph()
+        .unwrap();
+    frame.hour += 1;
+    put(
+        &mut frame,
+        TableRows::ProvinceSupply(vec![ProvinceSupplyRow {
+            province: 7,
+            controller_index: 3,
+            ..Default::default()
+        }]),
+    );
+    let hour = ProductHour::new(&content, &frame, 0.0);
+    let same = hour.rail_graph().unwrap();
+    assert!(Arc::ptr_eq(&first, &same));
+    drop(hour);
+    frame.hour += 1;
+    put(
+        &mut frame,
+        TableRows::ProvinceSupply(vec![ProvinceSupplyRow {
+            province: 7,
+            naval_base_level: 1,
+            ..Default::default()
+        }]),
+    );
+    let changed = ProductHour::new(&content, &frame, 0.0)
+        .rail_graph()
+        .unwrap();
+    assert!(!Arc::ptr_eq(&first, &changed));
+    assert_eq!(changed.sources, std::collections::BTreeSet::from([7]));
+}
+
+#[test]
+fn display_dependent_witnesses_split_late_positive_negative_and_error_reads() {
+    let stack = fixture("display_dependent_shards");
+    let layers = stack.layers(&[]);
+    let reads = ContentReads::new(&layers);
+    let modes = reads.reader(&layers, "display/modes");
+    let buildings = reads.reader(&layers, "display/buildings");
+    let mode_before = reads
+        .dependent_binding("modes", &["display/modes"])
+        .unwrap();
+    let building_before = reads
+        .dependent_binding("buildings", &["display/buildings"])
+        .unwrap();
+    assert_ne!(
+        reads.dependent_binding("territory", &[]).unwrap(),
+        reads.dependent_binding("modes", &[]).unwrap()
+    );
+    modes.read("map/fixture.txt").unwrap();
+    let positive = reads
+        .dependent_binding("modes", &["display/modes"])
+        .unwrap();
+    assert_ne!(positive, mode_before);
+    assert_eq!(
+        building_before,
+        reads
+            .dependent_binding("buildings", &["display/buildings"])
+            .unwrap()
+    );
+    assert!(!modes.has_file("map/missing-mode.txt").unwrap());
+    let negative = reads
+        .dependent_binding("modes", &["display/modes"])
+        .unwrap();
+    assert_ne!(negative, positive);
+    assert!(modes.read("map/missing-mode.txt").is_err());
+    assert_ne!(
+        negative,
+        reads
+            .dependent_binding("modes", &["display/modes"])
+            .unwrap()
+    );
+    buildings.read("map/fixture.txt").unwrap();
+    assert_ne!(
+        building_before,
+        reads
+            .dependent_binding("buildings", &["display/buildings"])
+            .unwrap()
+    );
+    let mut reordered = layers.clone();
+    reordered.layers.reverse();
+    assert_ne!(
+        reads.dependent_binding("territory", &[]).unwrap(),
+        ContentReads::new(&reordered)
+            .dependent_binding("territory", &[])
+            .unwrap()
+    );
+}
+
+#[test]
+fn separate_product_jobs_share_vision_without_retaining_source_tables() {
+    let stack = fixture("products_shared_source_free_vision");
+    let content = content(&stack);
+    let mut frame = frame(3);
+    let roots: Vec<_> = frame.tables.iter().map(|view| view.identity()).collect();
+    let first = ProductHour::new(&content, &frame, 0.0)
+        .vision(&choice())
+        .unwrap();
+    let second = ProductHour::new(&content, &frame, 0.5)
+        .vision(&choice())
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &second));
+    assert!(roots.iter().all(|identity| identity.owner_count() == 1));
+    let next_choice = perspective::Choice {
+        country: perspective::Country::Tag("Z3".into()),
+        ..choice()
+    };
+    let other = ProductHour::new(&content, &frame, 0.0)
+        .vision(&next_choice)
+        .unwrap();
+    assert_eq!(other.ours(), 3);
+    assert!(!Arc::ptr_eq(&first, &other));
+    let again = ProductHour::new(&content, &frame, 0.0)
+        .vision(&choice())
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &again));
+    frame.hour += 1;
+    let next = ProductHour::new(&content, &frame, 0.0)
+        .vision(&choice())
+        .unwrap();
+    assert!(!Arc::ptr_eq(&first, &next));
+    put(&mut frame, TableRows::Campaign(vec![]));
+    let replaced = ProductHour::new(&content, &frame, 0.0)
+        .vision(&choice())
+        .unwrap();
+    assert!(!Arc::ptr_eq(&next, &replaced));
+    drop(frame);
+    assert!(roots.iter().all(|identity| !identity.is_alive()));
+    assert_eq!(first.ours(), 1);
+    assert_eq!(replaced.ours(), 1);
+}
+
+#[test]
+fn shared_vision_keeps_the_enforced_census_and_rejects_changed_same_hour_inputs() {
+    let stack = fixture("products_vision_shared_census");
+    let content = fog_content(&stack);
+    let mut frame = fog_frame(1500);
+    let choice = perspective::Choice::default();
+    let memo = viewer_foundation::map::memo::Keyed::new(perspective::VISION_TABLES, 8);
+    let expected =
+        perspective::cached_vision(&frame, &choice, FogContent::loaded(&content.fog), &memo)
+            .unwrap();
+    let (actual, reads) = replay_frame::frame::view_reads::record(|| {
+        ProductHour::new(&content, &frame, 0.0)
+            .vision(&choice)
+            .unwrap()
+    });
+    assert_eq!(*actual, *expected);
+    assert!(reads.iter().all(|identity| {
+        perspective::VISION_TABLES
+            .iter()
+            .any(|table| identity.is(&frame.tables[table.index()]))
+    }));
+    put(
+        &mut frame,
+        TableRows::Provinces(vec![ProvinceRow {
+            id: 1,
+            controller: 103,
+            ..Default::default()
+        }]),
+    );
+    let replaced = ProductHour::new(&content, &frame, 0.0)
+        .vision(&choice)
+        .unwrap();
+    let expected =
+        perspective::cached_vision(&frame, &choice, FogContent::loaded(&content.fog), &memo)
+            .unwrap();
+    assert!(!Arc::ptr_eq(&actual, &replaced));
+    assert_eq!(*replaced, *expected);
+}
+
+
+#[test]
+fn streaming_owned_content_witness_matches_buffered_bytes_and_refuses_partial_writes() {
+    use std::io::Write;
+    let stack = fixture("streamed_owned_content_witness");
+    let layers = stack.layers(&[]);
+    let buffered = crate::witness::ContentReads::new(&layers);
+    let streamed = crate::witness::ContentReads::new(&layers);
+    let bytes: Vec<_> = (0..70_001).map(|n| (n % 251) as u8).collect();
+    buffered.operand_bytes(b"synthetic-owned-content", &bytes);
+    streamed.operand_stream(b"synthetic-owned-content", |out| {
+        for piece in bytes.chunks(7) { out.write_all(piece)?; }
+        Ok(())
+    }).unwrap();
+    assert_eq!(buffered.entries(), streamed.entries());
+    let before = streamed.entries();
+    let error = streamed.operand_stream(b"partial", |out| {
+        out.write_all(b"not a complete operand")?;
+        Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+    }).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    assert_eq!(before, streamed.entries());
 }

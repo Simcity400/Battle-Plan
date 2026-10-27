@@ -109,11 +109,7 @@ pub fn pump(
 /// [`installed_content_sound::music::Music::songs`] order; `None` where the song's station
 /// is not enabled. Refusals name chance conditions the recording cannot
 /// answer; such a song keeps its base chance.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Chances {
-    pub weights: Vec<Option<f64>>,
-    pub refusals: Vec<String>,
-}
+pub use map_display_data::Music as Chances;
 
 #[derive(Debug)]
 struct Playing {

@@ -56,8 +56,8 @@ pub enum SceneInput<'a> {
     },
     SetMapBuildings {
         assets: &'a MapBuildingAssets,
-        prepared: PreparedBuildings,
-        passed: Option<&'a [&'a PreparedBuildings]>,
+        prepared: map_display_data::buildings::Buildings,
+        passed: Option<&'a [&'a map_display_data::buildings::Buildings]>,
     },
     SetTrains {
         assets: Arc<TrainAssets>,
@@ -430,7 +430,7 @@ impl Scene {
                 applied
             }
             SceneInput::SetAirAssignment(field) => {
-                self.set_air_assignment(queue, field);
+                self.set_air_assignment(queue, field)?;
                 applied
             }
             SceneInput::SetStrategicStyles(styles) => {

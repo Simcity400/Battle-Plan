@@ -15,7 +15,6 @@
 
 use crate::{Content, Emitter, Group};
 use std::{
-    collections::BTreeMap,
     hash::{Hash, Hasher},
     sync::Arc,
 };
@@ -24,30 +23,7 @@ use std::{
 pub const BATTLE_HEIGHT: f32 = 9.5;
 
 /// One recorded battle and what its member provinces' combats hold.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Battle {
-    /// The identity its sounds keep from hour to hour: a new key is a new
-    /// battle, whose sounds start afresh.
-    pub key: u64,
-    /// Member province ids in the recorded member order.
-    pub provinces: Vec<u32>,
-    /// World `(x, z)` of the recorded centre.
-    pub center: [f32; 2],
-    pub radius: f32,
-    /// Divisions in the member provinces' land combats, attackers and
-    /// defenders, summed over each member.
-    pub divisions: usize,
-    /// Those divisions' sub-units by type name: one per template slot.
-    pub sub_units: BTreeMap<String, usize>,
-}
-
-/// The hour's battles, in recorded order, and what the recording could not
-/// answer about them.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Battles {
-    pub battles: Vec<Battle>,
-    pub refusals: Vec<String>,
-}
+pub use map_display_data::{Battle, Battles};
 
 /// Why the content plays no battle ambience at all: its battle defines are
 /// unreadable, or the distant effect they name is not declared, in which

@@ -64,6 +64,10 @@ pub struct Limitations {
 }
 
 impl Limitations {
+    pub fn from_lines(lines: Vec<String>) -> Self {
+        Self { lines }
+    }
+
     fn push(&mut self, line: String) {
         self.lines.push(line);
     }

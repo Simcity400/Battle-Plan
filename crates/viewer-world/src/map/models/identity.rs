@@ -5,7 +5,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 #[derive(Clone, Debug, Default)]
@@ -18,6 +18,7 @@ struct Identity {
     role: Role,
     contract: (u32, bool),
     fingerprint: u64,
+    display: OnceLock<Arc<map_display_data::buildings::AssetKey>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -101,6 +102,7 @@ impl Identity {
             role,
             contract,
             fingerprint: hash.finish(),
+            display: OnceLock::new(),
         })))
     }
 
@@ -155,6 +157,35 @@ impl Hash for AssetKey {
 }
 
 impl AssetKey {
+    pub fn display(&self) -> Arc<map_display_data::buildings::AssetKey> {
+        use map_display_data::buildings::{AssetKey, AssetLayer};
+        match &self.0 {
+            None => Arc::new(AssetKey::Unbound {}),
+            Some(identity) => Arc::clone(identity.display.get_or_init(|| {
+                Arc::new(AssetKey::Selected {
+                    entity: identity.entity.to_string(),
+                    namespace: identity
+                        .namespace
+                        .iter()
+                        .map(|layer| AssetLayer {
+                            id: layer.id.clone(),
+                            source: layer.source.as_os_str().as_encoded_bytes().to_vec(),
+                            platform: std::env::consts::OS.into(),
+                            archive: layer.archive,
+                            replace_paths: layer.replace_paths.clone(),
+                        })
+                        .collect(),
+                    role: match identity.role {
+                        Role::Selected => 0,
+                        Role::RecordedRetry => 1,
+                        Role::RecordedCounterpart => 2,
+                    },
+                    contract: identity.contract.0,
+                    force_pow2_textures: identity.contract.1,
+                })
+            })),
+        }
+    }
     pub(super) fn selected(name: &str, namespace: Arc<[ContentLayer]>, decode: Decode) -> Self {
         Identity::key(
             name.into(),
@@ -188,6 +219,35 @@ impl AssetKey {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn wire_identity_preserves_roles_mount_order_and_decode_contract() {
+        let namespace: Arc<[ContentLayer]> = vec![ContentLayer {
+            id: "synthetic".into(),
+            source: PathBuf::from("synthetic/mod"),
+            archive: false,
+            replace_paths: vec![b"gfx/models".to_vec()],
+        }]
+        .into();
+        let mut selected =
+            AssetKey::selected("building", Arc::clone(&namespace), Decode::default());
+        let first = selected.display();
+        assert_eq!(
+            first,
+            AssetKey::selected("building", Arc::clone(&namespace), Decode::default()).display()
+        );
+        selected.recorded(false);
+        let retry = selected.display();
+        selected.recorded(true);
+        assert_ne!(first, retry);
+        assert_ne!(first, selected.display());
+        assert_ne!(retry, selected.display());
+        let bytes = product_codec::encode(&selected.display()).unwrap();
+        assert_eq!(
+            product_codec::decode::<Arc<map_display_data::buildings::AssetKey>>(&bytes).unwrap(),
+            selected.display()
+        );
+    }
 
     #[test]
     fn namespace_keeps_mount_order_source_kind_and_replace_paths() {

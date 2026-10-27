@@ -168,7 +168,16 @@ impl<K: Eq> Ledger<K> {
     }
 
     /// FIFO across held jobs, including retired targets. A later dependent
-    /// cannot occupy the pool while a required predecessor is still outside it.
+    /// cannot occupy a worker while a predecessor may need a byte-credit retry.
+    pub fn dependencies_complete(&self, ticket: Ticket) -> bool {
+        self.flights.get(&ticket).is_some_and(|flight| {
+            flight.dependencies.iter().all(|dependency| {
+                self.flights
+                    .get(dependency)
+                    .is_none_or(|before| before.complete == ALL_PARTS)
+            })
+        })
+    }
     pub fn next_admission(&self) -> Option<(Ticket, u8)> {
         let (&ticket, flight) = self.flights.iter().find(|(_, flight)| {
             flight.phase == Phase::Parts && flight.accepted | flight.complete != ALL_PARTS
@@ -176,7 +185,7 @@ impl<K: Eq> Ledger<K> {
         if flight.dependencies.iter().any(|dependency| {
             self.flights
                 .get(dependency)
-                .is_some_and(|before| before.accepted | before.complete != ALL_PARTS)
+                .is_some_and(|before| before.complete != ALL_PARTS)
         }) {
             return None;
         }

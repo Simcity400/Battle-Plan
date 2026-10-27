@@ -1186,3 +1186,65 @@ fn endpoint_transient_membership_keeps_boundaries_without_deleting_an_absent_bas
         );
     }
 }
+
+#[test]
+fn endpoint_changed_facts_are_predecessor_bound_and_cancel_before_consuming_baselines() {
+    let selected = &[TableId::Countries];
+    let budget = allocation::credit::MemoryBudget::new(1 << 20);
+    let mut encoder = FrameEncoder::new();
+    let mut source_decoder = FrameDecoder::for_tables(selected);
+    let mut writer = EndpointWriter::for_tables(selected);
+    let mut target = FrameDecoder::for_tables(selected).with_change_facts(budget.clone());
+    let raw = encoder.encode(source(0), true).unwrap();
+    let first = source_decoder.advance(&raw).unwrap();
+    writer.observe(&raw, first).unwrap();
+    let mut bytes = Vec::new();
+    writer.finish(first, &mut bytes).unwrap();
+    target
+        .advance_endpoint(EndpointStep::decode(&bytes).unwrap())
+        .unwrap();
+    let previous = target.current().unwrap().tables[TableId::Countries.index()].identity();
+    let raw = encoder.encode(source(1), false).unwrap();
+    let next = source_decoder.advance(&raw).unwrap();
+    writer.observe(&raw, next).unwrap();
+    bytes.clear();
+    writer.finish(next, &mut bytes).unwrap();
+    let held = budget.admit(budget.limit() - budget.used()).unwrap();
+    assert_eq!(
+        target
+            .advance_endpoint_parallel_cancellable(
+                EndpointStep::decode(&bytes).unwrap(),
+                1,
+                &|| {},
+                &|| true,
+            )
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::Interrupted
+    );
+    assert_eq!(target.current().unwrap().hour, first_hour());
+    drop(held);
+    let current = target
+        .advance_endpoint(EndpointStep::decode(&bytes).unwrap())
+        .unwrap();
+    assert_eq!(canonical(current), canonical(next));
+    let facts = current.tables[TableId::Countries.index()]
+        .changes_since(&previous)
+        .unwrap();
+    assert_eq!(facts.deleted(), &[u128::from(u32::MAX)]);
+    assert_eq!(
+        facts
+            .changed()
+            .iter()
+            .map(|row| row.key)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    assert!(facts.row(1).unwrap().fields != 0);
+    drop(target);
+    drop(previous);
+    assert_eq!(budget.used(), 0);
+    fn first_hour() -> i32 {
+        300
+    }
+}

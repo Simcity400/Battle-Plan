@@ -8,7 +8,9 @@ param(
     [ValidateRange(1, [int]::MaxValue)][int]$Repetitions = 20,
     [string]$Executable,
     [switch]$AllowUnverified,
-    [switch]$PrepareOnly
+    [switch]$PrepareOnly,
+    [switch]$DisplayProductsCost,
+    [switch]$DisplayProductsAllCountries
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,6 +70,8 @@ foreach ($pair in @(
 }
 if ($AllowUnverified) { $arguments.Add('--allow-unverified') }
 if ($PrepareOnly) { $arguments.Add('--prepare-only') }
+if ($DisplayProductsCost) { $arguments.Add('--display-products-cost') }
+if ($DisplayProductsAllCountries) { $arguments.Add('--display-products-all-countries') }
 
 # Windows argument quoting works with Windows PowerShell and PowerShell 7;
 # ProcessStartInfo.ArgumentList is unavailable in Windows PowerShell.

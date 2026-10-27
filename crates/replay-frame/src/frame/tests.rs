@@ -3604,3 +3604,384 @@ fn a_frame_refuses_a_mix_of_capture_modes_and_tables() {
         }
     );
 }
+
+#[test]
+fn changed_key_facts_and_field_stamps_keep_no_source_rows() {
+    let budget = allocation::credit::MemoryBudget::new(1 << 20);
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::for_tables(&[TableId::Campaign, TableId::Countries])
+        .with_change_facts(budget.clone());
+    let first = encoder.encode(source(1, 0), true).unwrap();
+    let first = decoder.apply(&first).unwrap();
+    let original = first.tables[TableId::Countries.index()].identity();
+    let slot_mask = 1;
+    let power_mask = 1 << 3;
+    let mut next = source(1, 1);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *next.tables[TableId::Countries.index()]
+    {
+        rows[0].command_power_raw = 99;
+    } else {
+        panic!("fixture countries");
+    }
+    let update = encoder.encode(next, false).unwrap();
+    let second = decoder.apply(&update).unwrap();
+    let view = &second.tables[TableId::Countries.index()];
+    let changes = view.changes_since(&original).unwrap();
+    assert_eq!(changes.changed().len(), 1);
+    assert_eq!(changes.row(7), changes.changed().first());
+    assert_eq!(changes.row(7).unwrap().fields, power_mask);
+    assert!(!changes.row(7).unwrap().inserted);
+    assert!(changes.deleted().is_empty());
+    assert!(!changes.touches(slot_mask));
+    assert!(original.fields_unchanged(view, slot_mask));
+    assert!(!original.fields_unchanged(view, power_mask));
+    let mut next = source(1, 2);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *next.tables[TableId::Countries.index()]
+    {
+        rows[0].command_power_raw = 100;
+    }
+    let update = encoder.encode(next, false).unwrap();
+    let third = decoder.apply(&update).unwrap();
+    let view = &third.tables[TableId::Countries.index()];
+    assert!(
+        view.changes_since(&original).is_none(),
+        "row facts are one exact predecessor, not a chain"
+    );
+    assert!(
+        original.fields_unchanged(view, slot_mask),
+        "field stamps span skipped unrelated deltas"
+    );
+    assert!(!original.fields_unchanged(view, power_mask));
+    let old = view.identity();
+    let mut next = source(1, 3);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *next.tables[TableId::Countries.index()]
+    {
+        rows.clear();
+        rows.push(CountryRow {
+            id: 8,
+            canonical_slot: 2,
+            tag: b"NEW".to_vec(),
+            ..Default::default()
+        });
+    }
+    let update = encoder.encode(next, false).unwrap();
+    let fourth = decoder.apply(&update).unwrap();
+    let view = &fourth.tables[TableId::Countries.index()];
+    let changes = view.changes_since(&old).unwrap();
+    assert_eq!(changes.deleted(), &[7]);
+    assert!(changes.row(8).unwrap().inserted);
+    assert!(changes.touches(0));
+    assert!(!old.fields_unchanged(view, 0));
+    drop(decoder);
+    drop(first);
+    drop(second);
+    drop(third);
+    for table in fourth.tables {
+        assert!(table.try_unwrap().is_ok());
+    }
+    drop(original);
+    drop(old);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn change_fact_backpressure_does_not_consume_the_decoder_baseline() {
+    let budget = allocation::credit::MemoryBudget::new(64 << 10);
+    let mut encoder = FrameEncoder::new();
+    let mut decoder =
+        FrameDecoder::for_tables(&[TableId::Countries]).with_change_facts(budget.clone());
+    let first = encoder.encode(source(1, 0), true).unwrap();
+    decoder.advance(&first).unwrap();
+    let held = budget.admit(budget.limit() - budget.used()).unwrap();
+    let mut next = source(1, 1);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *next.tables[TableId::Countries.index()]
+    {
+        rows[0].command_power_raw += 1;
+    }
+    let update = encoder.encode(next, false).unwrap();
+    assert_eq!(
+        decoder.advance(&update).unwrap_err().kind(),
+        io::ErrorKind::OutOfMemory
+    );
+    assert_eq!(decoder.current().unwrap().hour, 0);
+    drop(held);
+    assert_eq!(decoder.advance(&update).unwrap().hour, 1);
+    let old = decoder.current().unwrap().tables[TableId::Countries.index()].identity();
+    let replacement = encoder.encode(source(1, 2), true).unwrap();
+    let current = decoder.advance(&replacement).unwrap();
+    assert!(!old.fields_unchanged(&current.tables[TableId::Countries.index()], 0));
+    let mut mutable = current.tables[TableId::Countries.index()].clone();
+    let _ = &mut *mutable;
+    assert!(
+        !current.tables[TableId::Countries.index()]
+            .identity()
+            .fields_unchanged(&mutable, 0)
+    );
+}
+
+#[test]
+fn cancellable_change_admission_refuses_without_waiting_and_keeps_the_update_retryable() {
+    let budget = allocation::credit::MemoryBudget::new(64 << 10);
+    let mut encoder = FrameEncoder::new();
+    let mut decoder =
+        FrameDecoder::for_tables(&[TableId::Countries]).with_change_facts(budget.clone());
+    let first = encoder.encode(source(1, 0), true).unwrap();
+    decoder.advance(&first).unwrap();
+    let mut input = source(1, 1);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *input.tables[TableId::Countries.index()]
+    {
+        rows[0].command_power_raw += 5;
+    }
+    let update = encoder.encode(input, false).unwrap();
+    let held = budget.admit(budget.limit() - budget.used()).unwrap();
+    let checks = std::cell::Cell::new(0);
+    let error = decoder
+        .advance_cancellable(&update, &|| {
+            checks.set(checks.get() + 1);
+            assert!(checks.get() <= 2, "synchronous admission must not wait");
+            false
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+    assert!(FrameDecoder::change_fact_admission_refused(&error));
+    assert_eq!(checks.get(), 2);
+    assert_eq!(decoder.current().unwrap().hour, 0);
+    drop(held);
+    assert_eq!(
+        decoder
+            .advance_cancellable(&update, &|| false)
+            .unwrap()
+            .hour,
+        1
+    );
+    assert_eq!(decoder.current().unwrap().hour, 1);
+    let update = encoder.encode(source(1, 2), false).unwrap();
+    assert_eq!(
+        decoder
+            .advance_cancellable(&update, &|| true)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::Interrupted
+    );
+    assert_eq!(decoder.current().unwrap().hour, 1);
+    assert_eq!(decoder.advance(&update).unwrap().hour, 2);
+}
+
+#[test]
+fn relevant_edits_can_bridge_skipped_unrelated_deltas_but_not_skipped_membership_or_relevant_edits()
+{
+    let budget = allocation::credit::MemoryBudget::new(64 << 10);
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::for_tables(&[TableId::Countries]).with_change_facts(budget);
+    let slot_bit = (0..TableId::Countries.schema().len())
+        .find(|&i| TableId::Countries.field_name(i) == Some("canonical_slot"))
+        .unwrap();
+    let fields = 1 << slot_bit;
+    let mut input = source(1, 0);
+    let update = encoder.encode(input.clone(), true).unwrap();
+    let first = decoder.apply(&update).unwrap();
+    let identity = first.tables[TableId::Countries.index()].identity();
+    for hour in 1..=2 {
+        input.hour = hour;
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *input.tables[TableId::Countries.index()]
+        {
+            rows[0].command_power_raw += 1;
+        }
+        let update = encoder.encode(input.clone(), false).unwrap();
+        decoder.advance(&update).unwrap();
+    }
+    input.hour = 3;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *input.tables[TableId::Countries.index()]
+    {
+        rows[0].canonical_slot = 999;
+    }
+    let update = encoder.encode(input.clone(), false).unwrap();
+    let current = decoder.apply(&update).unwrap();
+    let view = &current.tables[TableId::Countries.index()];
+    assert!(view.changes_since(&identity).is_none());
+    let changes = view.changes_for(&identity, fields).unwrap();
+    assert_eq!(changes.changed().len(), 1);
+    assert!(changes.row(7).unwrap().fields & fields != 0);
+    input.hour = 4;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *input.tables[TableId::Countries.index()]
+    {
+        rows[0].canonical_slot = first.complete::<tables::Countries>().unwrap()[0].canonical_slot;
+    }
+    let update = encoder.encode(input.clone(), false).unwrap();
+    let current = decoder.apply(&update).unwrap();
+    assert!(
+        current.tables[TableId::Countries.index()]
+            .changes_for(&identity, fields)
+            .is_none()
+    );
+    input.hour = 5;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *input.tables[TableId::Countries.index()]
+    {
+        rows.clear();
+    }
+    let update = encoder.encode(input.clone(), false).unwrap();
+    decoder.advance(&update).unwrap();
+    input.hour = 6;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *input.tables[TableId::Countries.index()]
+    {
+        rows.push(CountryRow {
+            id: 7,
+            ..Default::default()
+        });
+    }
+    let update = encoder.encode(input, false).unwrap();
+    let current = decoder.apply(&update).unwrap();
+    assert!(
+        current.tables[TableId::Countries.index()]
+            .changes_for(&identity, 0)
+            .is_none()
+    );
+}
+
+#[test]
+fn hour_input_distinguishes_edits_quiet_and_discontinuities_without_owning_rows() {
+    use super::{ChangeDiscontinuity, HourInput, TableChanges};
+    let budget = allocation::credit::MemoryBudget::new(64 << 10);
+    let mut encoder = FrameEncoder::new();
+    let mut decoder =
+        FrameDecoder::for_tables(&[TableId::Countries]).with_change_facts(budget.clone());
+    let update = encoder.encode(source(1, 0), true).unwrap();
+    decoder.advance(&update).unwrap();
+    let first = Arc::clone(decoder.shared_current().unwrap());
+    assert!(matches!(
+        HourInput::new(&first)
+            .changes()
+            .since(TableId::Countries, None, u64::MAX),
+        TableChanges::Discontinuity(ChangeDiscontinuity::Initial)
+    ));
+    let mut identity = first.tables[TableId::Countries.index()].identity();
+    let mut input = source(1, 1);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *input.tables[TableId::Countries.index()]
+    {
+        rows[0].command_power_raw = 777;
+    }
+    let update = encoder.encode(input.clone(), false).unwrap();
+    decoder.advance(&update).unwrap();
+    let current = decoder.shared_current().unwrap();
+    assert!(Arc::ptr_eq(current, decoder.shared_current().unwrap()));
+    let TableChanges::Rows(changes) =
+        HourInput::new(current)
+            .changes()
+            .since(TableId::Countries, Some(&identity), u64::MAX)
+    else {
+        panic!("changed rows")
+    };
+    assert_eq!(changes.changed().len(), 1);
+    assert_eq!(changes.changed()[0].key, 7);
+    assert_eq!(changes.changed()[0].fields, 1 << 3);
+    assert!(changes.deleted().is_empty());
+    identity = current.tables[TableId::Countries.index()].identity();
+    input.hour = 2;
+    let update = encoder.encode(input.clone(), false).unwrap();
+    let current = decoder.advance(&update).unwrap();
+    assert!(matches!(
+        HourInput::new(current)
+            .changes()
+            .since(TableId::Countries, Some(&identity), u64::MAX),
+        TableChanges::Unchanged
+    ));
+    input.hour = 3;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *input.tables[TableId::Countries.index()]
+    {
+        rows.clear();
+    }
+    let update = encoder.encode(input.clone(), false).unwrap();
+    let current = decoder.advance(&update).unwrap();
+    let TableChanges::Rows(changes) =
+        HourInput::new(current)
+            .changes()
+            .since(TableId::Countries, Some(&identity), u64::MAX)
+    else {
+        panic!("deleted rows")
+    };
+    assert_eq!(changes.deleted(), &[7]);
+    for branch in [1, 2] {
+        let update = encoder.encode(source(branch, 4), true).unwrap();
+        let current = decoder.advance(&update).unwrap();
+        assert!(matches!(
+            HourInput::new(current)
+                .changes()
+                .since(TableId::Countries, Some(&identity), u64::MAX),
+            TableChanges::Discontinuity(_)
+        ));
+    }
+    let saved = decoder.current().unwrap().clone();
+    let restored_identity = saved.tables[TableId::Countries.index()].identity();
+    let resumed = FrameDecoder::resume_for_tables_with_change_facts(
+        &[TableId::Countries],
+        saved,
+        budget.clone(),
+    )
+    .unwrap();
+    assert!(matches!(
+        HourInput::new(resumed.current().unwrap()).changes().since(
+            TableId::Countries,
+            Some(&restored_identity),
+            u64::MAX
+        ),
+        TableChanges::Discontinuity(_)
+    ));
+    assert!(matches!(
+        HourInput::new(resumed.current().unwrap()).changes().since(
+            TableId::Countries,
+            Some(&identity),
+            u64::MAX
+        ),
+        TableChanges::Discontinuity(_)
+    ));
+    let mut gap = source(2, 5);
+    gap.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "synthetic source gap".into(),
+    }
+    .into();
+    let update = encoder.encode(gap, false).unwrap();
+    let current = decoder.advance(&update).unwrap();
+    assert!(matches!(
+        HourInput::new(current)
+            .changes()
+            .since(TableId::Countries, Some(&identity), u64::MAX),
+        TableChanges::Discontinuity(ChangeDiscontinuity::Unavailable)
+    ));
+    drop(first);
+    drop(decoder);
+    drop(resumed);
+    drop(identity);
+    drop(restored_identity);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn an_unread_hour_breaks_even_a_carried_tables_change_span() {
+    use super::{HourInput, TableChanges};
+    let mut encoder = FrameEncoder::new();
+    let budget = allocation::credit::MemoryBudget::new(64 << 10);
+    let mut decoder = FrameDecoder::for_tables(&[TableId::Countries]).with_change_facts(budget);
+    let update = encoder.encode(source(1, 0), true).unwrap();
+    let first = decoder.advance(&update).unwrap();
+    let previous = first.tables[TableId::Countries.index()].identity();
+    let update = encoder.encode(source(1, 2), false).unwrap();
+    let current = decoder.advance(&update).unwrap();
+    assert!(matches!(
+        HourInput::new(current)
+            .changes()
+            .since(TableId::Countries, Some(&previous), u64::MAX),
+        TableChanges::Discontinuity(_)
+    ));
+}

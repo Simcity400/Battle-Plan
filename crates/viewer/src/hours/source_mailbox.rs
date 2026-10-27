@@ -8,6 +8,7 @@ use std::sync::{
 
 pub(super) enum Reply<V, S> {
     Ready { value: V, sample: Option<S> },
+    Pressure(super::DecodePressure),
     Cancelled,
     Stopped,
 }
@@ -28,6 +29,10 @@ impl<K, V, S> Read<K, V, S> {
 
     pub fn ready(mut self, value: V, sample: Option<S>) {
         self.emit(Reply::Ready { value, sample });
+    }
+
+    pub fn pressure(mut self, pressure: super::DecodePressure) {
+        self.emit(Reply::Pressure(pressure));
     }
 
     fn emit(&mut self, reply: Reply<V, S>) {

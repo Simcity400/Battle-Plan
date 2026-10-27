@@ -5,8 +5,6 @@ use std::{collections::BTreeMap, io, path::Path, sync::Arc};
 use viewer_foundation::{
     errors::invalid,
     map::{
-        memo::Keyed,
-        perspective,
         province_geometry::ProvinceGeometry,
         province_map::{HeightField, ProvinceMap},
         visibility::FogContent,
@@ -255,9 +253,9 @@ impl Loader {
                 map_text: viewer_world::map::animated_map_text::events::Content::new(&buildings),
                 audio: audio.map(|source| Arc::clone(&source.content)),
                 triggers: Arc::new(triggers),
-                vision_memo: Arc::new(Keyed::new(perspective::VISION_TABLES, 8)),
             },
-        ))
+        )
+        .with_snow_loader(self.clone()))
     }
 }
 

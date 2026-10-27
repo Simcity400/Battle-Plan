@@ -1,4 +1,6 @@
-use std::{io, time::Duration, time::Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::{io, time::Instant};
 
 use installed_content_core::map::MapData;
 use replay_data::{rows::Recorded, rows::TableId, rows::WeatherProvinceRow};
@@ -30,95 +32,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// One hour's `SnowMudData` payload.
-#[derive(Clone, Debug)]
-pub struct SnowMud {
-    pub width: u32,
-    pub height: u32,
-    /// `width * height` RGBA8 texels, row 0 at world `z = 0`.
-    pub texels: Vec<u8>,
-    /// Raw winter-grading snow words by province; absent rows remain unknown.
-    pub province_snow: Vec<Option<i64>>,
-    /// Content-ordered winter factors, including unknown representatives.
-    pub post_factors: Option<winter::SnowFactors>,
-    /// Wall time of the rasterisation, for reporting.
-    pub build: Duration,
-    pub summary: Summary,
-    pub refresh: Option<Refresh>,
-}
-
-impl SnowMud {
-    pub fn owned_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.texels.capacity()
-            + self.province_snow.capacity() * std::mem::size_of::<Option<i64>>()
-            + self.post_factors.as_ref().map_or(0, |values| {
-                std::mem::size_of_val(&**values) + 2 * std::mem::size_of::<usize>()
-            })
-    }
-
-    /// Prepares winter grading independently of the view's snow/mud refresh clock.
-    pub fn prepare_post(&mut self, volumes: &impl winter::Factors) {
-        self.post_factors = Some(volumes.snow_factors(&self.province_snow));
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Refresh {
-    pub interval: i64,
-    pub identity: u64,
-}
-
-/// What the hour's weather table held, for the status line.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Summary {
-    /// Recorded `WeatherProvinces` rows.
-    pub provinces: usize,
-    /// Whether the table is whole; missing provinces draw bare ground.
-    pub complete: bool,
-    /// Rows whose native snow word is above zero.
-    pub with_snow: usize,
-    /// Rows with a nonzero snow display byte.
-    pub shown_snow: usize,
-    /// Rows with a nonzero mud display byte.
-    pub shown_mud: usize,
-    /// Retained native edge cells unavailable in this sample.
-    pub missing_edges: usize,
-}
-
-product_codec::product! {
-    impl Refresh { interval: i64, identity: u64 } default {}
-    impl Summary {
-        provinces: usize, with_snow: usize, shown_snow: usize,
-        shown_mud: usize, missing_edges: usize, complete: bool,
-    } default {}
-    impl SnowMud {
-        width: u32, height: u32, texels: Vec<u8>, province_snow: Vec<Option<i64>>,
-        post_factors: Option<winter::SnowFactors>, refresh: Option<Refresh>, summary: Summary,
-    } default { build: Duration::ZERO }
-}
-
-impl Summary {
-    /// One line for the status bar and the headless dump.
-    pub fn line(&self) -> String {
-        format!(
-            "{} provinces{}, {} with snow, {} drawn snowed, {} drawn muddy{}",
-            self.provinces,
-            if self.complete { "" } else { " (incomplete)" },
-            self.with_snow,
-            self.shown_snow,
-            self.shown_mud,
-            if self.missing_edges == 0 {
-                String::new()
-            } else {
-                format!(
-                    ", {} retained snow/mud edge cells unavailable",
-                    self.missing_edges
-                )
-            }
-        )
-    }
-}
+pub use map_display_data::{Refresh, SnowMud, Summary};
 
 /// `MAP_SIZE / 4`: the grid fills for a province image.
 pub fn grid_size(width: u32, height: u32) -> [u32; 2] {
@@ -707,35 +621,13 @@ mod tests {
     }
 }
 
-impl PartialEq for SnowMud {
-    fn eq(&self, other: &Self) -> bool {
-        self.width == other.width
-            && self.height == other.height
-            && self.texels == other.texels
-            && self.province_snow == other.province_snow
-            && self.summary == other.summary
-            && self.refresh == other.refresh
-            && match (&self.post_factors, &other.post_factors) {
-                (None, None) => true,
-                (Some(a), Some(b)) => {
-                    a.len() == b.len()
-                        && a.iter()
-                            .zip(b.iter())
-                            .all(|(a, b)| a.map(f32::to_bits) == b.map(f32::to_bits))
-                }
-                _ => false,
-            }
-    }
-}
-impl Eq for SnowMud {}
-
 pub fn build(
     cells: &SnowCells,
     frame: &DecodedFrame,
     winter: &impl winter::Factors,
 ) -> io::Result<SnowMud> {
     let mut snow = grid_from_cells(cells, frame)?;
-    snow.prepare_post(winter);
+    snow.post_factors = Some(winter.snow_factors(&snow.province_snow));
     Ok(snow)
 }
 

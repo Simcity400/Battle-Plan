@@ -2,21 +2,20 @@
 //! layer includes sea provinces and retains the ordinary naval-control FX.
 use std::{collections::BTreeMap, io};
 
-use super::{Inputs, Stock, Style, color4, style};
+use super::{Inputs, Stock, color4, style};
 use installed_content_core::{defines::Defines, map::ProvinceKind};
 use installed_content_regions::regions::StrategicRegion;
 use replay_data::{rows::RaidAirScoreRow, rows::tables};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Layer {
-    pub region_of: Vec<u32>,
-    pub styles: BTreeMap<u32, Style>,
-    /// Air does not draw naval-control artwork.
-    pub naval_fx: bool,
-}
+mod fold;
+#[cfg(test)]
+mod oracle;
+
+pub use map_display_data::landscape::StrategicLayer as Layer;
 
 pub struct Content {
     pub regions: BTreeMap<u32, StrategicRegion>,
+    fold: std::sync::Mutex<fold::Fold>,
     air: [[f32; 4]; 4],
     navy: [f32; 4],
 }
@@ -26,6 +25,7 @@ impl Content {
     pub(super) fn fixture() -> Self {
         Self {
             regions: BTreeMap::new(),
+            fold: Default::default(),
             air: [
                 [0.8, 0.0, 0.0, 1.0],
                 [0.0, 0.8, 0.0, 1.0],
@@ -38,6 +38,7 @@ impl Content {
     pub fn new(defines: &Defines, regions: &BTreeMap<u32, StrategicRegion>) -> io::Result<Self> {
         Ok(Self {
             regions: regions.clone(),
+            fold: Default::default(),
             air: [
                 color4(defines, "NGraphics", "STRATEGIC_AIR_COLOR_BAD")?,
                 color4(defines, "NGraphics", "STRATEGIC_AIR_COLOR_GOOD")?,
@@ -48,125 +49,25 @@ impl Content {
         })
     }
 
-    pub fn layer(&self, mode: Stock, inputs: &Inputs, warnings: &mut Vec<String>) -> Layer {
-        let air = mode == Stock::StrategicAir;
-        let mut layer = Layer {
-            region_of: vec![
-                0;
-                inputs
-                    .map
-                    .definitions
-                    .keys()
-                    .next_back()
-                    .map_or(1, |id| *id as usize + 1)
-            ],
-            naval_fx: !air,
-            ..Default::default()
-        };
-        // Hold/active highlights are supplied by each view's separate local
-        // task-force and fleet selection product, independently of supremacy.
-        let colors = if air {
-            self.air_colors(inputs)
-        } else {
-            Ok(BTreeMap::new())
-        };
-        let mut refused = BTreeMap::<String, usize>::new();
-        for (&id, region) in &self.regions {
-            let Some(key) = id.checked_add(1) else {
-                *refused
-                    .entry("region identity cannot be represented".into())
-                    .or_default() += 1;
-                continue;
-            };
-            for province in &region.provinces {
-                if inputs
-                    .map
-                    .definitions
-                    .get(province)
-                    .is_some_and(|p| air || p.kind == ProvinceKind::Sea)
-                {
-                    layer.region_of[*province as usize] = key;
-                }
-            }
-            match colors.as_ref().map_err(Clone::clone).and_then(|colors| {
-                colors
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or(Ok(if air { self.air[3] } else { self.navy }))
-            }) {
-                Ok(color) => {
-                    layer.styles.insert(key, style(color));
-                }
-                Err(reason) => {
-                    *refused.entry(reason).or_default() += 1;
-                }
-            }
-        }
-        for (reason, count) in refused {
-            warnings.push(format!(
-                "{} map mode: {count} strategic-region colours withheld: {reason}",
-                if air { "Air" } else { "Navy" }
-            ));
-        }
-        layer
+    pub fn bind(&self, map: &std::sync::Arc<installed_content_core::map::MapData>) {
+        self.fold
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .bank = Some(std::sync::Arc::downgrade(map));
     }
-
-    fn air_colors(
+    pub fn evict(&self) {
+        *self.fold.lock().unwrap_or_else(|error| error.into_inner()) = Default::default();
+    }
+    pub fn layer(
         &self,
+        mode: Stock,
         inputs: &Inputs,
-    ) -> Result<BTreeMap<u32, Result<[f32; 4], String>>, String> {
-        let selected = inputs.selected.ok_or("viewing country is absent")?;
-        let countries = super::Countries::read(inputs.frame).map_err(|e| e.to_string())?;
-        countries
-            .raw
-            .get(&selected)
-            .ok_or("viewing country has no Countries row")?;
-        let rows = inputs
-            .frame
-            .complete::<tables::RaidAirScores>()
-            .map_err(|e| e.to_string())?;
-        let mut counts_allowed = None;
-        let mut out = BTreeMap::new();
-        for row in rows
-            .iter()
-            .filter(|row| countries.slot(row.country) == Some(selected))
-        {
-            let friendly = if row.friendly == 0 && row.enemy == 0 && row.friendly_missions != 0 {
-                counts_allowed
-                    .get_or_insert_with(|| {
-                        let counter = inputs
-                            .frame
-                            .complete::<tables::CountryCounterInputs>()
-                            .map_err(|e| e.to_string())?
-                            .iter()
-                            .find(|row| countries.slot(row.country) == Some(selected))
-                            .ok_or("viewing country's owned-state count is absent")?;
-                        if counter.owned_state_count < 1 {
-                            return Ok(false);
-                        }
-                        if selected == 0 {
-                            return Err("Country0's enemy roster is not recorded".into());
-                        }
-                        Ok(!replay_derive::directed_war_derive::ReceiverWars::read(
-                            inputs.frame,
-                            selected,
-                        )?
-                        .targets()
-                        .is_empty())
-                    })
-                    .clone()
-            } else {
-                Ok(false)
-            };
-            let color = friendly.and_then(|counts| {
-                air_color(row, if counts { row.friendly_missions } else { 0 })
-                    .map(|index| self.air[index])
-            });
-            out.insert(row.region, color);
-        }
-        // A complete sparse table witnesses each air object's final region.
-        // With no object the game's null lookup supplies all zero operands.
-        Ok(out)
+        warnings: &mut Vec<String>,
+    ) -> io::Result<Layer> {
+        self.fold
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .read(self, mode, inputs, warnings)
     }
 }
 
@@ -223,6 +124,120 @@ mod tests {
     }
 
     #[test]
+    fn strategic_fold_matches_the_frozen_kernel_through_sparse_edits_and_clock_moves() {
+        use crate::map::map_mode::tests::{frame, map};
+        use replay_data::rows::{CountryLinkRow, TableId, TableRows, WarRelationRow};
+        use replay_frame::frame::TableView;
+        let mut content = Content::fixture();
+        for id in [0, 17, 30, u32::MAX] {
+            content.regions.insert(
+                id,
+                StrategicRegion {
+                    id,
+                    provinces: vec![1, 5],
+                    ..Default::default()
+                },
+            );
+        }
+        let parent = super::super::tests::content(Default::default());
+        let map = std::sync::Arc::new(map());
+        content.bind(&map);
+        let mut source = frame();
+        source.tables[TableId::WarRelations.index()] =
+            TableView::Complete(TableRows::WarRelations(vec![WarRelationRow {
+                first_country: 200,
+                second_country: 300,
+                start_hour: 10,
+                end_hour: 11,
+                ..Default::default()
+            }]))
+            .into();
+        for step in 0..9 {
+            source.hour = [9, 10, 11, 12, 11, 10, 13, 14, 15][step];
+            source.tables[TableId::RaidAirScores.index()] =
+                TableView::Complete(TableRows::RaidAirScores(vec![
+                    RaidAirScoreRow {
+                        country: 100,
+                        region: 17,
+                        friendly: step as i64,
+                        enemy: 30,
+                        ..Default::default()
+                    },
+                    RaidAirScoreRow {
+                        country: 200,
+                        region: 17,
+                        friendly_missions: 2,
+                        enemy_missions: 1,
+                        ..Default::default()
+                    },
+                    RaidAirScoreRow {
+                        country: 300,
+                        region: 30,
+                        friendly: 60,
+                        enemy: 40,
+                        ..Default::default()
+                    },
+                ]))
+                .into();
+            if step == 4 {
+                source.tables[TableId::CountryLinks.index()] =
+                    TableView::Complete(TableRows::CountryLinks(vec![
+                        CountryLinkRow {
+                            id: 100,
+                            canonical_slot: 0,
+                        },
+                        CountryLinkRow {
+                            id: 200,
+                            canonical_slot: 2,
+                        },
+                        CountryLinkRow {
+                            id: 300,
+                            canonical_slot: 2,
+                        },
+                    ]))
+                    .into();
+            }
+            if step == 6 {
+                source.tables[TableId::CountryCounterInputs.index()] = TableView::Unavailable {
+                    reason: "synthetic lazy gap".into(),
+                }
+                .into();
+            }
+            for selected in [None, Some(0), Some(1), Some(2), Some(1501)] {
+                let inputs = Inputs {
+                    content: &parent,
+                    map: &map,
+                    frame: &source,
+                    selected,
+                    world: None,
+                    colour: None,
+                };
+                for mode in [Stock::StrategicAir, Stock::StrategicNavy] {
+                    let mut actual_warnings = Vec::new();
+                    let mut expected_warnings = Vec::new();
+                    let actual = content.layer(mode, &inputs, &mut actual_warnings).unwrap();
+                    let expected = content.oracle_layer(mode, &inputs, &mut expected_warnings);
+                    assert_eq!(actual, expected);
+                    assert_eq!(actual_warnings, expected_warnings);
+                    let mut quiet_warnings = Vec::new();
+                    let quiet = content.layer(mode, &inputs, &mut quiet_warnings).unwrap();
+                    assert_eq!(quiet, actual);
+                    assert_eq!(quiet_warnings, actual_warnings);
+                    if !(mode == Stock::StrategicAir
+                        && selected.is_none_or(|slot| slot == 1501 || slot == 1 && step >= 4))
+                    {
+                        assert!(quiet.styles.ptr_eq(&actual.styles));
+                    }
+                    assert!(std::sync::Arc::ptr_eq(
+                        &quiet.region_of.0,
+                        &actual.region_of.0
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn air_covers_land_and_water_and_navy_keeps_only_sea_without_shifting_region_colours() {
         use crate::map::map_mode::tests::{frame, map};
         use replay_data::{rows::TableId, rows::TableRows};
@@ -257,12 +272,16 @@ mod tests {
             colour: None,
         };
         let mut warnings = Vec::new();
-        let air = content.layer(Stock::StrategicAir, &inputs, &mut warnings);
+        let air = content
+            .layer(Stock::StrategicAir, &inputs, &mut warnings)
+            .unwrap();
         assert_eq!((air.region_of[1], air.region_of[5]), (18, 18));
         assert_eq!(air.styles[&18].color, super::super::pack(content.air[1]));
         assert!(!air.naval_fx);
         assert!(warnings.is_empty());
-        let navy = content.layer(Stock::StrategicNavy, &inputs, &mut warnings);
+        let navy = content
+            .layer(Stock::StrategicNavy, &inputs, &mut warnings)
+            .unwrap();
         assert_eq!((navy.region_of[1], navy.region_of[5]), (0, 18));
         assert_eq!(navy.styles[&18].color, super::super::pack(content.navy));
         assert!(navy.naval_fx);
@@ -278,7 +297,9 @@ mod tests {
             world: None,
             colour: None,
         };
-        let refused = content.layer(Stock::StrategicAir, &absent, &mut warnings);
+        let refused = content
+            .layer(Stock::StrategicAir, &absent, &mut warnings)
+            .unwrap();
         assert!(refused.styles.is_empty());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("1 strategic-region colours withheld"));

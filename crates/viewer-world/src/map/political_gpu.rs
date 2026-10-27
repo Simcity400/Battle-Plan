@@ -699,7 +699,9 @@ impl View {
             };
             let mut layer = Layer::new(
                 gradient::LayerKind::Fixed(self.base.field.strategic_thickness),
-                mode.map_or(&self.base.strategic_keys, |mode| &mode.region_of),
+                mode.map_or(self.base.strategic_keys.as_slice(), |mode| {
+                    mode.region_of.as_slice()
+                }),
                 &navy,
                 &self.base.field,
             );

@@ -7,7 +7,6 @@ use crate::map_icons::MapIcons;
 use crate::map_views::CounterView;
 use crate::map_views::Views;
 use dashboard::naval_battle_name::battle_name_candidates;
-use std::sync::OnceLock;
 use viewer_combat as combat;
 use viewer_foundation::map::camera::MapSize;
 use viewer_foundation::map::camera::{MapDefines, motion::CameraLaw};
@@ -37,6 +36,8 @@ use viewer_foundation::movement_timing::MovementContent;
 use viewer_foundation::tooltip_painter::TooltipPosition;
 use viewer_foundation::tooltip_painter::draw as tooltip_painter_draw;
 use viewer_raids::map::raid_arrows;
+#[cfg(test)]
+use viewer_world::map::name_pass;
 use viewer_world::map::scene_content::MapAssets;
 
 use dashboard::content::check_verification;
@@ -59,8 +60,7 @@ use {
     viewer_world::map::border_pass::BorderAssets, viewer_world::map::border_pass::StraitVertex,
     viewer_world::map::border_pass::Topology, viewer_world::map::border_pass::strait_quads,
     viewer_world::map::borders, viewer_world::map::borders::BorderMeshes,
-    viewer_world::map::demilitarized, viewer_world::map::demilitarized::Zone,
-    viewer_world::map::political::Regions,
+    viewer_world::map::demilitarized::Zone, viewer_world::map::political::Regions,
 };
 // rivers
 use {
@@ -89,8 +89,7 @@ use {
     viewer_foundation::map::camera::Camera, viewer_foundation::map::name_draw::Placements,
     viewer_foundation::map::sprites::Batch, viewer_world::map::labels,
     viewer_world::map::labels::LabelContent, viewer_world::map::labels::LabelReport,
-    viewer_world::map::name_pass, viewer_world::map::name_pass::NameContent,
-    viewer_world::map::name_pass::PlacementInputs,
+    viewer_world::map::name_pass::NameContent, viewer_world::map::name_pass::PlacementInputs,
 };
 // counters
 use viewer_counters::map::counters::{self, CounterContent, CounterInputs, CounterReport};
@@ -391,8 +390,6 @@ pub struct Content {
     /// ([`counters::type_tint::Memo`]).
     type_tint_memo: counters::type_tint::Memo,
     mission_memo: counters::MissionMemo,
-    /// Which provinces each snow and mud cell reads, built on first use.
-    snow_cells: OnceLock<Result<weather::SnowCells, (io::ErrorKind, String)>>,
     /// The content-derived movement map and defines behind route points,
     /// stack kinds and ETAs; `None` when the content could not be derived, in
     /// which case moving units stand at their province and have no ETA.
@@ -425,6 +422,7 @@ const MISSION_MEMO: usize = 8;
 pub struct Hour<'a> {
     pub content: &'a Content,
     pub frame: &'a DecodedFrame,
+    pub changes: replay_frame::frame::HourChanges<'a>,
     /// See [`Document::hour_fraction`].
     pub hour_fraction: f32,
     /// The last perspective read for this hour; several builders need it.
@@ -1779,6 +1777,8 @@ impl Document {
             });
             // The infrastructure map mode's limit operands: locations and enabling technologies.
             let h_infrastructure_reads = scope.spawn(|| -> io::Result<_> {
+                let mode_layers = product_loader.reader(layers, "display/modes");
+                let layers = &mode_layers;
                 let locations = installed_content_core::strategic_locations::read(layers)?;
                 let technologies = layers
                     .key_names()
@@ -1861,8 +1861,15 @@ impl Document {
             let h_mapbuildings = scope.spawn(|| -> io::Result<_> {
                 layers.artwork("map buildings", |stack| {
                     let mut warnings = Vec::new();
-                    MapBuildingAssets::load(stack, decode, &map, defines_for(stack), &mut warnings)
-                        .map(|map_buildings| (map_buildings, warnings))
+                    let building_layers = product_loader.reader(stack, "display/buildings");
+                    MapBuildingAssets::load(
+                        &building_layers,
+                        decode,
+                        &map,
+                        defines_for(stack),
+                        &mut warnings,
+                    )
+                    .map(|map_buildings| (map_buildings, warnings))
                 })
             });
             let h_geometry = scope.spawn(|| {
@@ -2318,13 +2325,14 @@ impl Document {
         // Raid `is_coastal` reads the movement map's static province terrain.
         raid_assets.trigger_content.terrain = movement.clone();
         let map_modes = {
-            let scripted_modes = installed_content_core::scripted_map_modes::read(&content.layers)?;
+            let mode_layers = product_loader.reader(&content.layers, "display/modes");
+            let scripted_modes = installed_content_core::scripted_map_modes::read(&mode_layers)?;
             for (field, count) in scripted_modes.refusal_counts() {
                 warnings.push(format!(
                     "Scripted map modes: {count} unread entries {field}"
                 ));
             }
-            let categories = installed_content_state_categories::state_categories::read(&content.layers)?;
+            let categories = installed_content_state_categories::state_categories::read(&mode_layers)?;
             let infrastructure = viewer_world::map::map_mode::infrastructure::Content::new(
                 &building_types,
                 &defines,
@@ -2342,7 +2350,7 @@ impl Document {
             // The map modes' colours and ranges are graphics defines: the mods' where they read.
             let ideologies = Arc::new(counters.ideologies.clone());
             Arc::new(crate::map_assets::graphics_define(
-                &content.layers,
+                &mode_layers,
                 "map modes",
                 &art_defines,
                 &defines,
@@ -2366,7 +2374,7 @@ impl Document {
                         Arc::clone(&ideologies),
                         &categories,
                         scripted_modes.clone(),
-                        content.layers.faction_templates(),
+                        mode_layers.faction_templates(),
                         recorded_language.clone(),
                         terrain,
                         infrastructure.clone(),
@@ -2674,8 +2682,11 @@ impl Document {
             viewer_world::map::air_transfers::color,
         )
         .map_err(|error| error.to_string());
-        let snow_cells = weather::SnowCells::new(&map, &assets.perm_snow)
-            .map_err(|error| (error.kind(), error.to_string()));
+        let snow_content = map_products::display::SnowContent::new(
+            &map,
+            &assets.perm_snow,
+            assets.post.volumes.winter(),
+        );
         let products = map_products::ProductContent::from_inputs(
             product_loader.reads.clone(),
             map_products::ProductInputs {
@@ -2690,9 +2701,9 @@ impl Document {
                 ),
                 audio: audio.as_ref().map(|source| Arc::clone(&source.content)),
                 triggers: Arc::new(icons.raids.trigger_content.clone()),
-                vision_memo: Arc::clone(&vision_memo),
             },
-        );
+        )
+        .with_snow(snow_content);
         let content = Content {
             products,
             map_export: Default::default(),
@@ -2775,7 +2786,6 @@ impl Document {
             trade_route_memo: Recent::new(ORDER_MEMO),
             type_tint_memo: Keyed::new(counters::type_tint::TABLES, TYPE_TINT_MEMO),
             mission_memo: Recent::new(MISSION_MEMO),
-            snow_cells: OnceLock::from(snow_cells),
             movement,
             province_geometry,
             province_geometry_build,
@@ -2833,12 +2843,7 @@ impl Document {
                             "snow export: visual-mod post-processing is unsupported",
                         ));
                     }
-                    let cells = content
-                        .snow_cells
-                        .get()
-                        .ok_or_else(|| invalid("snow cells not loaded"))?
-                        .as_ref()
-                        .map_err(|(kind, message)| io::Error::new(*kind, message.clone()))?;
+                    let cells = &content.products.snow_content()?.cells;
                     let winter = content.assets.post.volumes.winter();
                     let inputs =
                         dashboard_base::map_export::Inputs::load(&content.map_export_layers)?;
@@ -2938,7 +2943,7 @@ impl Document {
         &self,
         perspective: &perspective::Choice,
     ) -> io::Result<(
-        viewer_world::map::map_buildings::PreparedBuildings,
+        map_display_data::buildings::Buildings,
         viewer_world::map::map_buildings::MapBuildingSummary,
     )> {
         self.hour()?.map_building_field(perspective)
@@ -3062,7 +3067,7 @@ impl Document {
 pub(crate) struct OverlayTables {
     counters: counters::HourTables,
     vision: PreparedVision,
-    labels: Arc<labels::LabelTables>,
+    labels: Arc<map_display_data::landscape::Labels>,
     radar: Arc<viewer_world::map::radar_symbols::Field>,
     air: Arc<std::sync::Mutex<OverlayAir>>,
     /// The full-build empty selection products, before per-view Air mutation.
@@ -3240,11 +3245,17 @@ impl<'a> Hour<'a> {
         )
     }
     pub fn new(content: &'a Content, frame: &'a DecodedFrame, hour_fraction: f32) -> Self {
+        Self::from_input(content, replay_frame::frame::HourInput::new(frame), hour_fraction)
+    }
+
+    pub fn from_input(content: &'a Content, input: replay_frame::frame::HourInput<'a>, hour_fraction: f32) -> Self {
+        let frame = input.frame();
         Self {
             content,
             frame,
             hour_fraction,
-            product_hour: map_products::ProductHour::new(&content.products, frame, hour_fraction),
+            changes: input.changes(),
+            product_hour: map_products::ProductHour::from_input(&content.products, input, hour_fraction),
             pool_limits: Default::default(),
             worker_etas: None,
         }
@@ -3286,12 +3297,11 @@ impl<'a> Hour<'a> {
 
     /// Build only the current hour's railway graph; static geography is cached.
     pub fn rail_mesh(&self) -> io::Result<RailMesh> {
-        self.rail_mesh_of(&Arc::new(rail_layer::RailNetwork::read(self.frame)?))
+        Ok(self.rail_product()?.0.clone())
     }
 
-    /// The railway of a network read from an hour ([`rail_layer::RailNetwork::read`]).
-    pub fn rail_mesh_of(&self, network: &Arc<rail_layer::RailNetwork>) -> io::Result<RailMesh> {
-        self.rail_geometry.build(network)
+    pub fn rail_product(&self) -> io::Result<Arc<map_products::landscape::RailProduct>> {
+        self.product_hour.rails(&self.rail_geometry, &self.bridges)
     }
 
     #[cfg(test)]
@@ -3699,7 +3709,7 @@ impl<'a> Hour<'a> {
         &self,
         perspective: &perspective::Choice,
     ) -> io::Result<(
-        viewer_world::map::map_buildings::PreparedBuildings,
+        map_display_data::buildings::Buildings,
         viewer_world::map::map_buildings::MapBuildingSummary,
     )> {
         self.map_building_field_profiled(
@@ -3714,43 +3724,14 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         spans: &mut viewer_foundation::profiling::BuilderSpans,
     ) -> io::Result<(
-        viewer_world::map::map_buildings::PreparedBuildings,
+        map_display_data::buildings::Buildings,
         viewer_world::map::map_buildings::MapBuildingSummary,
-    )> {
-        let vision = spans.measure("buildings.vision", |_| self.vision(perspective))?;
-        self.map_buildings.field_profiled(
-            self.frame,
-            &vision,
-            &viewer_world::map::map_buildings::CityTerrain {
-                width: self.map.width,
-                height: self.map.height,
-                spawn_city: &self.assets.spawn_city,
-            },
-            spans,
-        )
-    }
-
-    pub fn map_building_field_patched(
-        &self,
-        perspective: &perspective::Choice,
-        base: Option<&viewer_world::map::map_buildings::BuildingsBase>,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
-    ) -> io::Result<(
-        viewer_world::map::map_buildings::PreparedBuildings,
-        viewer_world::map::map_buildings::MapBuildingSummary,
-        viewer_world::map::map_buildings::BuildingsBase,
     )> {
         let _cost = replay_frame::cpu::scope("viewer", Some("buildings"));
-        let vision = spans.measure("buildings.vision", |_| self.vision(perspective))?;
-        self.map_buildings.field_patched(
-            self.frame,
-            &vision,
-            &viewer_world::map::map_buildings::CityTerrain {
-                width: self.map.width,
-                height: self.map.height,
-                spawn_city: &self.assets.spawn_city,
-            },
-            base,
+        self.product_hour.buildings(
+            &self.map_buildings,
+            perspective,
+            &self.assets.spawn_city,
             spans,
         )
     }
@@ -3989,13 +3970,14 @@ impl<'a> Hour<'a> {
             height: self.assets.heightmap.height,
             values: self.assets.heightmap_texels(),
         };
-        viewer_world::map::trains::TrainPlan::build(
+        viewer_world::map::trains::TrainPlan::build_with_graph(
             self.frame,
             self.vision(perspective)?.ours(),
             &self.rail_geometry,
             &heights,
             &self.trains,
             &self.trains.cultures,
+            || self.product_hour.rail_graph(),
         )
     }
 
@@ -4008,17 +3990,6 @@ impl<'a> Hour<'a> {
         self.product_hour.limitations(perspective)
     }
 
-    /// Political naval FX uses the same viewing country as fog and counters.
-    pub fn naval_fill(
-        &self,
-        choice: &perspective::Choice,
-    ) -> io::Result<viewer_world::map::naval_dominance::Fill> {
-        let _cost = replay_frame::cpu::scope("viewer", Some("air/naval source choices"));
-        Ok(self
-            .naval_dominance
-            .read(self.frame, self.vision(choice)?.ours()))
-    }
-
     /// The map mode's country channel this hour; the viewing country is its selected country.
     /// `colour` is a scripted mode's borders as the previous hour kept them.
     pub fn map_mode_fill(
@@ -4028,20 +3999,22 @@ impl<'a> Hour<'a> {
         colour: Option<&viewer_world::map::map_mode::ColourState>,
     ) -> io::Result<viewer_world::map::map_mode::ModeFill> {
         let _cost = replay_frame::cpu::scope("viewer", Some("modes/styles"));
-        use viewer_world::map::map_mode;
-        if *mode == map_mode::MapMode::default() {
-            return Ok(map_mode::ModeFill::default());
-        }
-        map_mode::fill(
+        self.product_hour
+            .mode(&self.map_modes, mode, choice, colour)
+    }
+
+    pub fn political_product(
+        &self,
+        mode: &viewer_world::map::map_mode::MapMode,
+        choice: &perspective::Choice,
+        colour: Option<&viewer_world::map::map_mode::ColourState>,
+    ) -> io::Result<map_products::landscape::PoliticalProduct> {
+        self.product_hour.political(
+            &self.map_modes,
+            &self.naval_dominance,
             mode,
-            &map_mode::Inputs {
-                content: &self.map_modes,
-                map: &self.map,
-                frame: self.frame,
-                selected: Some(self.vision(choice)?.ours()),
-                world: Some(self.trigger_world()),
-                colour,
-            },
+            choice,
+            colour,
         )
     }
 
@@ -4083,120 +4056,52 @@ impl<'a> Hour<'a> {
     /// override, empty everywhere else; it only ever *adds* to the recorded set, so an hour that
     /// records the flag is drawn from the recording whatever the command line says.
     pub fn demilitarized_zone(&self, regions: &Regions, extra: &BTreeSet<u32>) -> io::Result<Zone> {
-        let mut states = demilitarized::recorded_states(self.frame)?;
-        states.extend(extra.iter().copied());
-        Ok(Zone::new(&self.map, regions, &states))
+        self.product_hour.zone(regions, extra)
     }
 
     // names
-    /// Places the country name layer, as `mode`'s layer names it.
     pub fn place_names(
         &self,
         mode: &viewer_world::map::map_mode::MapMode,
     ) -> io::Result<Placements> {
-        Ok(name_pass::place_areas(
-            &self.placement_inputs(),
-            &self.name_areas(mode)?,
-            None,
-        ))
+        Ok((*self.shared_names(mode)?).clone())
     }
-
-    /// What this hour's name placement reads in `mode`, for callers that reuse
-    /// placements across hours ([`name_pass::NameAreas`]).
+    pub fn shared_names(
+        &self,
+        mode: &viewer_world::map::map_mode::MapMode,
+    ) -> io::Result<Arc<Placements>> {
+        self.product_hour.names(&self.name_inputs(), mode)
+    }
+    #[cfg(test)]
     pub fn name_areas(
         &self,
         mode: &viewer_world::map::map_mode::MapMode,
     ) -> io::Result<name_pass::NameAreas> {
-        let _cost = replay_frame::cpu::scope("viewer", Some("labels"));
-        use viewer_world::map::map_mode::NameLayer;
-        let layers = self.map_modes.name_layers(mode);
-        let far = self.layer_areas(layers.far)?;
-        Ok(match layers.near {
-            NameLayer::Nothing => far,
-            near => far.with_near(self.layer_areas(near)?),
-        })
+        let _cost = replay_frame::cpu::scope("viewer", Some("world names"));
+        self.product_hour.name_areas(&self.name_inputs(), mode)
     }
-
-    /// The areas one name layer writes.
-    fn layer_areas(
-        &self,
-        layer: viewer_world::map::map_mode::NameLayer,
-    ) -> io::Result<name_pass::NameAreas> {
-        use viewer_world::map::map_mode::{self, NameLayer};
-        let groups = match layer {
-            NameLayer::Nothing => {
-                return Ok(name_pass::NameAreas::default());
-            }
-            NameLayer::StrategicRegions => {
-                return Ok(name_pass::NameAreas::strategic(
-                    &self.map,
-                    &self.strategic_regions,
-                    |region| {
-                        viewer_foundation::tooltip_text::localise(
-                            &self.names.localisation,
-                            &region.name_key,
-                            &[],
-                        )
-                    },
-                ));
-            }
-            NameLayer::States => {
-                let content = &self.counter_content;
-                return name_pass::NameAreas::states(&self.map, self.frame, |state| {
-                    viewer_foundation::tooltip_text::state_name(
-                        &content.localisation,
-                        &content.recorded_language,
-                        state.id,
-                        &state.custom_name,
-                        &state.owner_name,
-                        || {
-                            let key = content
-                                .state_name_keys
-                                .get(&state.id)
-                                .ok_or("state content name absent")?
-                                .as_ref()
-                                .map_err(Clone::clone)?;
-                            viewer_foundation::tooltip_text::localise(
-                                &content.localisation,
-                                key,
-                                &[],
-                            )
-                        },
-                    )
-                });
-            }
-            NameLayer::Factions => Some(map_mode::faction_labels(
-                &self.map_modes,
-                self.frame,
-                &self.names.localisation,
-            )),
-            NameLayer::Players => Some(map_mode::player_labels(self.frame)),
-            NameLayer::Countries => None,
-        };
-        name_pass::NameAreas::read(
-            &self.map,
-            &self.names.localisation,
-            self.frame,
-            groups.as_ref(),
-        )
-    }
-
-    /// Places `areas`, reusing the names of areas `placed` already holds.
+    #[cfg(test)]
     pub fn place_name_areas(
         &self,
         areas: &name_pass::NameAreas,
         placed: &name_pass::PlacedAreas,
     ) -> Placements {
         let _cost = replay_frame::cpu::scope("viewer", Some("world names"));
-        name_pass::place_areas(&self.placement_inputs(), areas, Some(placed))
+        name_pass::place_areas(&self.name_inputs().placement, areas, Some(placed))
     }
-
-    fn placement_inputs(&self) -> PlacementInputs<'_> {
-        PlacementInputs {
-            map: &self.map,
+    fn name_inputs(&self) -> map_products::landscape::NameInputs<'_> {
+        map_products::landscape::NameInputs {
+            content: &self.map_modes,
+            names: &self.names,
+            regions: &self.strategic_regions,
             heightmap: &self.assets.heightmap,
-            content: &self.names,
-            font: &self.icons.fonts.map,
+            counter: &self.counter_content,
+            placement: PlacementInputs {
+                map: &self.map,
+                heightmap: &self.assets.heightmap,
+                content: &self.names,
+                font: &self.icons.fonts.map,
+            },
         }
     }
 
@@ -4257,7 +4162,7 @@ impl<'a> Hour<'a> {
         let ours = vision.ours();
         let labels = spans.measure("overlay.tables.labels", |_| {
             let _cost = replay_frame::cpu::scope("viewer", Some("labels"));
-            labels::LabelTables::read(self.frame, ours, &self.names.localisation)
+            self.product_hour.labels(ours)
         })?;
         // Checked first: coverage that arrives during the build costs one
         // rebuild, never a stale flag.
@@ -4308,7 +4213,7 @@ impl<'a> Hour<'a> {
                     spans,
                 )
             })?,
-            labels: Arc::new(labels),
+            labels,
             raids: raids::RaidIcons::carried(raids, self.frame.branch, self.frame.hour, ours),
             intel: spans.measure("overlay.tables.intel", |_| {
                 Arc::new(intel_icons::icons(
@@ -4516,7 +4421,7 @@ impl<'a> Hour<'a> {
             let labels = {
                 let _span = viewer_foundation::profiling::span("p_labels");
                 let _cost = replay_frame::cpu::scope("viewer", Some("labels"));
-                labels::prepare(&label_inputs, frame, &tables.labels)?
+                labels::prepare(&label_inputs, &tables.labels)?
             };
             let label_report = labels.report.clone();
             let label_anchor = |province| hour.labels.anchors.get(&province).copied();
@@ -4867,20 +4772,22 @@ impl<'a> Hour<'a> {
     // weather
     /// Builds this hour's `SnowMudData` grid from its recorded display bytes.
     pub fn snow_mud(&self) -> io::Result<SnowMud> {
-        weather::grid_from_cells(self.snow_cells()?, self.frame)
+        self.product_hour.snow_grid(self.snow_cells()?)
+    }
+
+    pub(crate) fn snow_product(
+        &self,
+        memo: &map_products::display::SnowMemo,
+    ) -> io::Result<Arc<SnowMud>> {
+        let content = self.products.snow_content()?;
+        self.product_hour
+            .snow(&content.cells, &content.winter, memo)
     }
 
     /// The map's snow and mud cell composition ([`weather::SnowCells`]),
     /// built once for the content on first use.
     pub fn snow_cells(&self) -> io::Result<&weather::SnowCells> {
-        self.content
-            .snow_cells
-            .get_or_init(|| {
-                weather::SnowCells::new(&self.map, &self.assets.perm_snow)
-                    .map_err(|error| (error.kind(), error.to_string()))
-            })
-            .as_ref()
-            .map_err(|(kind, error)| io::Error::new(*kind, error.clone()))
+        Ok(&self.products.snow_content()?.cells)
     }
 
     // fog of war

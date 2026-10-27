@@ -1,5 +1,7 @@
 //! Checked heap growth shared by native capture and its replay writer.
 
+pub mod credit;
+
 use std::alloc::{Layout, alloc};
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hash};

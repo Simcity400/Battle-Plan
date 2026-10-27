@@ -34,6 +34,8 @@ use std::{
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[path = "dashboard-acceptance/display_products.rs"]
+mod display_products;
 #[path = "dashboard-acceptance/readiness_probe.rs"]
 mod readiness_probe;
 
@@ -78,6 +80,8 @@ struct Options {
     progressive: Option<String>,
     prefix_blocks: usize,
     measurements: Option<PathBuf>,
+    display_products_cost: bool,
+    display_products_all_countries: bool,
     readiness: bool,
     readiness_limit: Duration,
     readiness_table: Option<PathBuf>,
@@ -98,11 +102,21 @@ fn options() -> io::Result<Options> {
     let mut progressive = None;
     let mut prefix_blocks = 13;
     let mut measurements = None;
+    let mut display_products_cost = false;
+    let mut display_products_all_countries = false;
     let mut readiness = false;
     let mut readiness_limit = Duration::from_secs(20 * 60);
     let mut readiness_table = None;
     let mut readiness_cold_content = false;
     while let Some(arg) = args.next() {
+        if arg == "--display-products-cost" {
+            display_products_cost = true;
+            continue;
+        }
+        if arg == "--display-products-all-countries" {
+            display_products_all_countries = true;
+            continue;
+        }
         if arg == "--readiness" {
             readiness = true;
             continue;
@@ -179,6 +193,8 @@ fn options() -> io::Result<Options> {
         progressive,
         prefix_blocks,
         measurements,
+        display_products_cost,
+        display_products_all_countries,
         readiness,
         readiness_limit,
         readiness_table,
@@ -2071,6 +2087,9 @@ fn progressive_measure(options: Options, path: &Path) -> io::Result<bool> {
 
 fn run(options: Options) -> io::Result<bool> {
     let path = isolated(&options.evidence)?;
+    if options.display_products_cost {
+        return display_products::run(&options, &path);
+    }
     if options.readiness {
         let (Some(game), Some(user)) = (options.game, options.user) else {
             return Err(invalid(

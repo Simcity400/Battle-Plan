@@ -92,6 +92,7 @@ type Page = (usize, [f32; 2]);
 /// its colour.
 #[derive(Clone, Debug)]
 pub struct Font {
+    projection_id: u64,
     /// The `interface/*.gfx` name, such as `hoi_20bs`.
     pub name: String,
     /// The family's first file, for reporting.
@@ -109,9 +110,20 @@ pub struct Font {
     color: [f32; 4],
 }
 
+fn next_font_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 impl Font {
+    pub fn projection_id(&self) -> u64 {
+        self.projection_id
+    }
+
     fn empty(name: &str) -> Self {
         Self {
+            projection_id: next_font_id(),
             name: name.to_owned(),
             stem: String::new(),
             glyphs: GlyphSet::default(),
@@ -329,6 +341,7 @@ pub fn load(
     }
     let [blue, green, red, alpha] = font.facts.color.to_le_bytes();
     Ok(Font {
+        projection_id: next_font_id(),
         name: name.to_owned(),
         stem: family
             .files
@@ -747,6 +760,7 @@ mod tests {
             },
         );
         Font {
+            projection_id: next_font_id(),
             name: "test".into(),
             stem: "test".into(),
             glyphs: GlyphSet {

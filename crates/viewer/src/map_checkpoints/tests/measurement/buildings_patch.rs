@@ -41,7 +41,19 @@ fn children(spans: BuilderSpans) -> Children {
 fn full(view: &HourView<'_>, choice: &perspective::Choice) -> (Field, f64, Children) {
     let mut spans = BuilderSpans::new(true);
     let started = thread_ms();
-    let field = view.map_building_field_profiled(choice, &mut spans);
+    let field = (|| {
+        let vision = spans.measure("buildings.vision", |_| view.vision(choice))?;
+        view.map_buildings.field_profiled(
+            view.frame,
+            &vision,
+            &viewer_world::map::map_buildings::CityTerrain {
+                width: view.map.width,
+                height: view.map.height,
+                spawn_city: &view.assets.spawn_city,
+            },
+            &mut spans,
+        )
+    })();
     (field, thread_ms() - started, children(spans))
 }
 
@@ -54,7 +66,20 @@ fn patched(
 ) -> (Patched, f64, Children) {
     let mut spans = BuilderSpans::new(true);
     let started = thread_ms();
-    let field = view.map_building_field_patched(choice, base, &mut spans);
+    let field = (|| {
+        let vision = spans.measure("buildings.vision", |_| view.vision(choice))?;
+        view.map_buildings.field_patched(
+            view.frame,
+            &vision,
+            &viewer_world::map::map_buildings::CityTerrain {
+                width: view.map.width,
+                height: view.map.height,
+                spawn_city: &view.assets.spawn_city,
+            },
+            base,
+            &mut spans,
+        )
+    })();
     (field, thread_ms() - started, children(spans))
 }
 

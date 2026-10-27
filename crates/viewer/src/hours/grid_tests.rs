@@ -27,6 +27,7 @@ fn state() -> CoordinatorState {
         events,
         outbox,
         result_space: Default::default(),
+        refusal: Default::default(),
     }
 }
 

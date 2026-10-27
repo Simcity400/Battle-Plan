@@ -27,7 +27,6 @@ use std::sync::OnceLock;
 use viewer_foundation::map::presentation::Continuity;
 use viewer_foundation::map::province_admission::side_planes;
 use viewer_foundation::map::province_admission::views as province_admission_views;
-use viewer_foundation::map::tables::rows;
 use viewer_foundation::map::textures::load_file;
 use viewer_foundation::map::{
     camera::Camera,
@@ -41,8 +40,6 @@ use installed_content_core::{ResolvedLayers, parser, parser::Item, parser::Value
 use installed_content_image::{dds, native::Decode};
 pub(crate) use native::EntitySimulations;
 pub use native::Inputs as NativeInputs;
-use replay_data::rows::tables;
-use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io, sync::Arc};
 
 fn invalid(s: impl Into<String>) -> io::Error {
@@ -650,28 +647,7 @@ impl Assets {
 
 /// Hourly flags. Weather is global simulation state; the engine's dispatch
 /// has no country/intel predicate, so every recorded perspective uses it.
-#[derive(Clone, Default, PartialEq)]
-pub struct Field {
-    branch: replay_data::BranchId,
-    hour: i32,
-    kinds: BTreeMap<u32, usize>,
-}
-pub fn field(frame: &DecodedFrame) -> io::Result<Field> {
-    let mut out = Field {
-        branch: frame.branch,
-        hour: frame.hour,
-        ..Default::default()
-    };
-    for r in rows::<tables::WeatherRegions>(frame)?.rows() {
-        if let Some(kind) = [r.light_rain, r.heavy_rain, r.snow, r.blizzard, r.sandstorm]
-            .iter()
-            .position(|v| *v != 0)
-        {
-            out.kinds.insert(r.id, kind);
-        }
-    }
-    Ok(out)
-}
+pub use map_display_data::WeatherField as Field;
 
 /// The alpha of the authored `entity` (the zoom fade), of the
 /// `fading_entity` (drawn only in the far band) and the playback rate.

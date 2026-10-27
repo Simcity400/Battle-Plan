@@ -196,7 +196,9 @@ pub fn load_with_products(
         // weather
         perm_snow: map_snow::permanent_mask(definitions, &terrain).into(),
         // close zoom
-        spawn_city: terrain_flag_mask(definitions, &terrain, |kind| kind.spawn_city),
+        spawn_city: Arc::new(terrain_flag_mask(definitions, &terrain, |kind| {
+            kind.spawn_city
+        })),
         sight: Default::default(),
     })
 }

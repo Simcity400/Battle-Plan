@@ -193,6 +193,7 @@ fn stalled_actor_keeps_one_wake_and_does_not_retain_cancelled_clients() {
     let actor = Actor {
         events,
         clients: Default::default(),
+        closing: Arc::new(AtomicBool::new(false)),
     };
     let live = actor.client();
     let (tx, rx) = mpsc::channel();
@@ -300,4 +301,29 @@ fn the_shared_registry_keeps_every_live_frame_and_prunes_dead_entries_on_decode(
     };
     assert_eq!(current, Current::Frame(Arc::from(expected)));
     assert_eq!(state.frames.keys().copied().collect::<Vec<_>>(), [(1, 228)]);
+}
+
+
+#[test]
+fn the_shared_host_hands_forward_edits_and_explicit_seek_and_gap_boundaries() {
+    use replay_data::rows::TableId;
+    use replay_frame::frame::{HourInput, TableChanges};
+    let replay = Arc::new(Replay::from_records(
+        b"campaign".to_vec(), &[crate::playback::tests::records(1, &[100, 103, 104])],
+    ).unwrap());
+    let mut state = DecoderState { playback: Playback::unloaded(replay).unwrap().with_display_changes(), frames: BTreeMap::new() };
+    let Current::Frame(first) = state.frame(1, 100).unwrap() else { panic!("first hour") };
+    let identity = first.tables[TableId::Countries.index()].identity();
+    let Current::Frame(after_gap) = state.frame(1, 103).unwrap() else { panic!("after gap") };
+    assert!(matches!(HourInput::new(&after_gap).changes().since(TableId::Countries, Some(&identity), u64::MAX), TableChanges::Discontinuity(_)));
+    let identity = after_gap.tables[TableId::Countries.index()].identity();
+    let Current::Frame(next) = state.frame(1, 104).unwrap() else { panic!("next hour") };
+    let TableChanges::Rows(changes) = HourInput::new(&next).changes().since(TableId::Countries, Some(&identity), u64::MAX) else { panic!("forward changed rows") };
+    assert_eq!(changes.changed().len(), 1);
+    assert_eq!(changes.changed()[0].key, 1);
+    assert!(changes.deleted().is_empty());
+    let identity = next.tables[TableId::Countries.index()].identity();
+    drop(first);
+    let Current::Frame(sought) = state.frame(1, 100).unwrap() else { panic!("seek hour") };
+    assert!(matches!(HourInput::new(&sought).changes().since(TableId::Countries, Some(&identity), u64::MAX), TableChanges::Discontinuity(_)));
 }

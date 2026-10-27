@@ -13,6 +13,8 @@ use std::{
 
 pub(crate) mod checkpoint;
 mod decoder;
+mod hour_input;
+pub use hour_input::{ChangeDiscontinuity, HourChanges, HourInput, TableChanges};
 mod encoder;
 pub mod endpoint_step;
 mod provenance;
@@ -124,7 +126,12 @@ pub enum TableView {
 /// through `Deref`; a write (`DerefMut`) copies the table first when another
 /// hour still shares it.
 #[derive(Clone, Debug)]
-pub struct SharedView(Arc<TableView>, Option<Hour>);
+pub struct SharedView(
+    Arc<TableView>,
+    Option<Hour>,
+    Option<Arc<ChangeFacts>>,
+    Option<Arc<FieldStamp>>,
+);
 
 impl SharedView {
     /// Last complete acquisition witnessed by this table's own read timing.
@@ -134,11 +141,24 @@ impl SharedView {
         self.1
     }
 
+    pub fn changes_since(&self, previous: &ViewIdentity) -> Option<&ChangeFacts> {
+        self.2
+            .as_deref()
+            .filter(|facts| facts.previous.same(previous))
+    }
+
+    /// The latest edits also apply after skipped deltas that left these fields and membership unchanged.
+    pub fn changes_for(&self, previous: &ViewIdentity, fields: u64) -> Option<&ChangeFacts> {
+        self.2
+            .as_deref()
+            .filter(|facts| previous.fields_same(&facts.previous, fields))
+    }
+
     /// This allocation with another last acquisition: the view a frame of a
     /// later hour holds when the table was carried there unchanged, read or
     /// not (as a quiet hour of `Replay::read_block_changes` reports it).
     pub fn with_sampled_at(self, hour: Option<Hour>) -> Self {
-        Self(self.0, hour)
+        Self(self.0, hour, self.2, self.3)
     }
 
     /// Whether two views are the same allocation, not just equal rows.
@@ -153,7 +173,7 @@ impl SharedView {
 
     /// The view when this is its only holder; the shared view otherwise.
     pub fn try_unwrap(self) -> Result<TableView, Self> {
-        Arc::try_unwrap(self.0).map_err(|shared| Self(shared, self.1))
+        Arc::try_unwrap(self.0).map_err(|shared| Self(shared, self.1, self.2, self.3))
     }
 
     /// The allocation's address, for counting distinct tables.
@@ -163,7 +183,7 @@ impl SharedView {
 
     /// This allocation's identity, which does not keep its rows alive.
     pub fn identity(&self) -> ViewIdentity {
-        ViewIdentity(Arc::downgrade(&self.0))
+        ViewIdentity(Arc::downgrade(&self.0), self.3.clone())
     }
 }
 
@@ -175,11 +195,53 @@ impl PartialEq for SharedView {
 
 impl Eq for SharedView {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowChange {
+    pub key: u128,
+    pub fields: u64,
+    pub inserted: bool,
+}
+
+#[derive(Debug)]
+pub struct ChangeFacts {
+    previous: ViewIdentity,
+    changed: Vec<RowChange>,
+    deleted: Vec<u128>,
+    fields: u64,
+    membership: bool,
+    _credit: allocation::credit::Credit,
+}
+impl ChangeFacts {
+    pub fn changed(&self) -> &[RowChange] {
+        &self.changed
+    }
+    pub fn deleted(&self) -> &[u128] {
+        &self.deleted
+    }
+    pub fn row(&self, key: u128) -> Option<&RowChange> {
+        self.changed
+            .binary_search_by_key(&key, |row| row.key)
+            .ok()
+            .map(|at| &self.changed[at])
+    }
+    pub fn touches(&self, fields: u64) -> bool {
+        self.membership || self.fields & fields != 0
+    }
+}
+
 /// A [`SharedView`]'s allocation, named without holding its rows: the
 /// allocation's address cannot be reused while the identity exists, so it
 /// matches only views of that allocation, whether or not they are alive.
 #[derive(Clone, Debug)]
-pub struct ViewIdentity(Weak<TableView>);
+pub struct ViewIdentity(Weak<TableView>, Option<Arc<FieldStamp>>);
+
+#[derive(Debug)]
+struct FieldStamp {
+    epoch: Arc<()>,
+    fields: [i64; 64],
+    membership: i64,
+    _credit: allocation::credit::Credit,
+}
 
 impl ViewIdentity {
     #[cfg(any(test, feature = "test-support"))]
@@ -195,17 +257,57 @@ impl ViewIdentity {
     /// Whether `view` is the named allocation.
     pub fn is(&self, view: &SharedView) -> bool {
         std::ptr::eq(self.0.as_ptr(), Arc::as_ptr(&view.0))
+            && Self::same_epoch(self.1.as_deref(), view.3.as_deref())
+    }
+
+    pub fn fields_unchanged(&self, view: &SharedView, fields: u64) -> bool {
+        self.is(view) || Self::stamps_same(self.1.as_deref(), view.3.as_deref(), fields)
+    }
+
+    fn same_epoch(previous: Option<&FieldStamp>, current: Option<&FieldStamp>) -> bool {
+        match (previous, current) {
+            (None, None) => true,
+            (Some(previous), Some(current)) => Arc::ptr_eq(&previous.epoch, &current.epoch),
+            _ => false,
+        }
+    }
+
+    fn fields_same(&self, other: &Self, fields: u64) -> bool {
+        self.same(other) || Self::stamps_same(self.1.as_deref(), other.1.as_deref(), fields)
+    }
+
+    fn stamps_same(
+        previous: Option<&FieldStamp>,
+        current: Option<&FieldStamp>,
+        mut fields: u64,
+    ) -> bool {
+        let (Some(previous), Some(current)) = (previous, current) else {
+            return false;
+        };
+        if !Arc::ptr_eq(&previous.epoch, &current.epoch)
+            || previous.membership != current.membership
+        {
+            return false;
+        }
+        while fields != 0 {
+            let bit = fields.trailing_zeros() as usize;
+            if previous.fields[bit] != current.fields[bit] {
+                return false;
+            }
+            fields &= fields - 1;
+        }
+        true
     }
 
     /// Whether both name one allocation.
     pub fn same(&self, other: &Self) -> bool {
-        self.0.ptr_eq(&other.0)
+        self.0.ptr_eq(&other.0) && Self::same_epoch(self.1.as_deref(), other.1.as_deref())
     }
 }
 
 impl PartialEq for ViewIdentity {
     fn eq(&self, other: &Self) -> bool {
-        Weak::ptr_eq(&self.0, &other.0)
+        self.same(other)
     }
 }
 
@@ -333,13 +435,15 @@ pub mod view_reads {
 impl std::ops::DerefMut for SharedView {
     fn deref_mut(&mut self) -> &mut TableView {
         self.1 = None;
+        self.2 = None;
+        self.3 = None;
         Arc::make_mut(&mut self.0)
     }
 }
 
 impl From<TableView> for SharedView {
     fn from(view: TableView) -> Self {
-        Self(Arc::new(view), None)
+        Self(Arc::new(view), None, None, None)
     }
 }
 
@@ -361,6 +465,20 @@ pub struct DecodedFrame {
     pub hour: Hour,
     pub tables: [SharedView; TABLE_COUNT],
     pub metrics: Metrics,
+}
+
+fn split_shared_tables(
+    frame: Arc<DecodedFrame>,
+) -> (endpoint_step::Point, [SharedView; TABLE_COUNT]) {
+    let point = endpoint_step::Point {
+        branch: frame.branch,
+        hour: frame.hour,
+    };
+    let tables = match Arc::try_unwrap(frame) {
+        Ok(frame) => frame.tables,
+        Err(frame) => std::array::from_fn(|index| frame.tables[index].clone()),
+    };
+    (point, tables)
 }
 
 /// Encoder-only input. Compared rows describe the current acquisition boundary
