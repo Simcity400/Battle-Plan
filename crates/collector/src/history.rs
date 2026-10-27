@@ -219,13 +219,22 @@ impl PreparedCampaigns {
     }
 
     /// Let go of a prepared campaign's history file while the recorder saves it.
+    #[cfg(test)]
     pub fn release(&mut self, id: &str) {
         if let Some(Ok(prepared)) = self.entries.get_mut(&id.to_ascii_lowercase()) {
             prepared.lease = None;
         }
     }
 
+    pub(crate) fn exchange_lease(&mut self, id: &str, mut file: Option<File>) -> Option<File> {
+        if let Some(Ok(prepared)) = self.entries.get_mut(&id.to_ascii_lowercase()) {
+            std::mem::swap(&mut prepared.lease, &mut file);
+        }
+        file
+    }
+
     /// Hold a prepared campaign's history file again, as the recorder saved it.
+    #[cfg(test)]
     pub fn retake(&mut self, id: &str, file: Option<File>) {
         if let Some(Ok(prepared)) = self.entries.get_mut(&id.to_ascii_lowercase()) {
             prepared.lease = file;
@@ -234,6 +243,7 @@ impl PreparedCampaigns {
 
     /// The file that holds a campaign's history now: its unsaved recording, else its saved one
     /// found by its header.
+    #[cfg(test)]
     pub fn history_path(&self, id: &str) -> io::Result<Option<PathBuf>> {
         match recording_files::unsaved_recording(&self.directory, id.as_bytes())? {
             Some(unsaved) => Ok(Some(unsaved)),

@@ -77,6 +77,7 @@ pub(crate) use collector_observers::event_feed_observer;
 #[cfg(test)]
 use collector_observers::event_ledger;
 mod extended;
+mod frame_fence;
 pub(crate) use collector_intel::flag_changes;
 pub(crate) use collector_metadata::fixed_layout;
 #[cfg(all(test, feature = "tap-foreign-probe"))]

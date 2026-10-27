@@ -1180,15 +1180,50 @@ fn spawn<'scope, 'env>(
     run: &'env (dyn Fn() + Sync),
 ) -> bool {
     let priority = job_priority::JobPriority::current();
+    let progress = crate::progress::Progress::current();
     #[cfg(test)]
     let settings = grouped::written_settings();
     std::thread::Builder::new()
         .name(name.into())
         .spawn_scoped(scope, move || {
+            let _progress = progress.map(crate::progress::Progress::install);
             #[cfg(test)]
             grouped::write_with(settings);
             priority.enter(job_priority::Level::Normal);
             run()
         })
         .is_ok()
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn both_legacy_workers_report_chunks_outside_the_packing_budget() {
+        use std::{
+            io::Read,
+            sync::{Arc, atomic::AtomicU64},
+        };
+        let ticks = Arc::new(AtomicU64::new(0));
+        let observed = Arc::clone(&ticks);
+        let _progress = crate::progress::Progress::new(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+        })
+        .install();
+        assert!(!Packing::active());
+        for (worker, name) in ["replay keyframes", "replay block writer"]
+            .into_iter()
+            .enumerate()
+        {
+            let run = || {
+                let mut input = Budgeted::new(io::Cursor::new(vec![1; 192 * 1024]));
+                input.read_exact(&mut vec![0; 192 * 1024]).unwrap();
+            };
+            std::thread::scope(|scope| {
+                assert!(spawn(scope, name, &run));
+            });
+            assert_eq!(ticks.load(Ordering::Relaxed), (worker as u64 + 1) * 3);
+        }
+    }
 }

@@ -206,7 +206,9 @@ impl ReplayStream {
             let (sender, receiver) = mpsc::sync_channel(1);
             let priority = job_priority::Caller::current();
             let cpu = replay_frame::cpu::Context::capture();
+            let progress = crate::progress::Progress::current();
             let worker = std::thread::Builder::new().spawn_scoped(scope, move || {
+                let _progress = progress.map(crate::progress::Progress::install);
                 let _cpu = cpu.enter("walk decode");
                 priority.enter();
                 let check = || {
@@ -460,6 +462,38 @@ mod tests {
     use crate::{frame::FrameEncoder, rows::SunkShipsRow};
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn parallel_walk_decode_inherits_the_callers_chunk_progress() {
+        use std::sync::atomic::AtomicUsize;
+        let replay =
+            Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap());
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&ticks);
+        let _progress = crate::progress::Progress::new(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+        })
+        .install();
+        let mut stream = ReplayStream::new(&TableId::ALL).unwrap();
+        stream.on_read = Some(Arc::new(|_| {
+            assert!(crate::progress::Progress::current().is_some());
+        }));
+        let mut hours = Vec::new();
+        assert!(
+            stream
+                .next_block_recorded_parallel_with(
+                    &replay,
+                    |raw, _| {
+                        hours.push(raw.hour);
+                        Ok(())
+                    },
+                    || Ok(())
+                )
+                .unwrap()
+        );
+        assert_eq!(hours, [1, 2]);
+        assert!(ticks.load(Ordering::Relaxed) > 0);
+    }
 
     #[test]
     fn a_reconstruction_failure_names_its_recorded_hour_after_a_gap() {

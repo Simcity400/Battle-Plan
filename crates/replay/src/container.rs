@@ -2763,16 +2763,19 @@ fn parallel_tables<T: Sync, R: Send>(
         });
         None
     } else {
+        let progress = crate::progress::Progress::current();
         std::thread::scope(|scope| {
             let mut handles = engine_allocation::vec(workers)?;
             for _ in 0..workers {
                 let priority = job_priority::JobPriority::current();
+                let progress = progress.clone();
                 let spawned = if refused_worker() {
                     None
                 } else {
                     std::thread::Builder::new()
                         .name("replay parallel decode".into())
                         .spawn_scoped(scope, move || {
+                            let _progress = progress.map(crate::progress::Progress::install);
                             priority.enter(job_priority::Level::Normal);
                             on_worker();
                             let _cpu = crate::cpu::scope("decode", cpu_family);

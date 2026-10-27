@@ -43,6 +43,19 @@ impl Read for PositionalReader<'_> {
     }
 }
 
+fn prefix<T: PartialEq>(current: &[T], earlier: &[T]) -> bool {
+    if current.len() < earlier.len() {
+        return false;
+    }
+    for (current, earlier) in current.chunks(64).zip(earlier.chunks(64)) {
+        if !current.starts_with(earlier) {
+            return false;
+        }
+        crate::progress::Progress::completed();
+    }
+    true
+}
+
 impl Replay {
     /// Open a held, read-only recording revision without buffering its blocks.
     /// Header/trailer admission and recovery are shared with `open`.
@@ -137,12 +150,12 @@ impl Replay {
             || earlier.needed_recovery()
             || earlier.slot != self.slot
             || end > self.revision.end
-            || !self.sessions.starts_with(&earlier.sessions)
-            || !self.branches.starts_with(&earlier.branches)
-            || !self.gaps.starts_with(&earlier.gaps)
-            || !self.controls.starts_with(&earlier.controls)
-            || !self.recovery_notes.starts_with(&earlier.recovery_notes)
-            || !self.index.starts_with(&earlier.index)
+            || !prefix(&self.sessions, &earlier.sessions)
+            || !prefix(&self.branches, &earlier.branches)
+            || !prefix(&self.gaps, &earlier.gaps)
+            || !prefix(&self.controls, &earlier.controls)
+            || !prefix(&self.recovery_notes, &earlier.recovery_notes)
+            || !prefix(&self.index, &earlier.index)
         {
             return Ok(false);
         }
@@ -230,11 +243,14 @@ impl Replay {
                 let end = start
                     .checked_add(output.len())
                     .ok_or_else(|| invalid("block offset overflow"))?;
-                output.copy_from_slice(
-                    self.bytes
-                        .get(start..end)
-                        .ok_or_else(|| invalid("block outside replay"))?,
-                );
+                let source = self
+                    .bytes
+                    .get(start..end)
+                    .ok_or_else(|| invalid("block outside replay"))?;
+                for (output, source) in output.chunks_mut(64 * 1024).zip(source.chunks(64 * 1024)) {
+                    output.copy_from_slice(source);
+                    crate::progress::Progress::completed();
+                }
                 Ok(())
             }
         }

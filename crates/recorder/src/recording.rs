@@ -1,4 +1,6 @@
 //! Passive process discovery, injection, detach and finalization.
+mod history_requests;
+mod progress_io;
 mod scripted_map_demand;
 use crate::{
     directories::{default_capture_directory, resolve_user_directory},
@@ -8,6 +10,7 @@ use crate::{
 use engine_executable::{build::PINNED_BUILD, build::hash_executable};
 use installed_content_core::{content::GatherOptions, content::GatheredContent, content::gather};
 use installed_content_localisation::localisation::Localisation;
+use history_requests::HistoryRequest;
 use replay::recorder_settings::RecorderSettings;
 use replay_data::identity::IdentityCodec;
 use replay_data::{identity::SessionStart, scope::CaptureMode};
@@ -151,6 +154,7 @@ struct Settling {
     /// Campaigns with an admitted load the game left: with no hour spooled, Auto save saves the
     /// hours ended sessions left waiting of them, as it would with one.
     left: std::sync::Mutex<BTreeSet<String>>,
+    stopped: Arc<AtomicBool>,
     /// A collector holds the histories, so it is asked to let go of one before it changes.
     collector: bool,
 }
@@ -164,70 +168,74 @@ fn locked<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// Each set-aside campaign's unsaved segments last acted on, whether they wait, and whether their save failed.
 type Settled = BTreeMap<String, (Vec<(u32, u64)>, Option<Waiting>, bool)>;
 
-const HISTORY_REQUEST: &str = "history.request";
-const HISTORY_ACK: &str = "history.ack";
-
-/// One request at a time: each replaces the request file.
-static ASKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Ask the attached collector to release, retake or close a campaign; `subject` names it, and for
-/// a close also the load it left.
-fn ask_collector(session: &Path, action: &str, subject: &str) -> Result<(), String> {
-    ask_collector_until(session, action, subject, &AtomicBool::new(false))
+struct RetakeHistory<F: FnMut(&str) -> Result<(), String>> {
+    request: F,
+    armed: bool,
 }
 
-/// As [`ask_collector`], giving up, waiting or not, once `stopped` is set.
+impl<F: FnMut(&str) -> Result<(), String>> Drop for RetakeHistory<F> {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(error) = (self.request)("retake") {
+                eprintln!("The collector could not hold its history again: {error}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn with_lent_history<T>(
+    request: impl FnMut(&str) -> Result<(), String>,
+    work: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let mut guard = RetakeHistory {
+        request,
+        armed: true,
+    };
+    let result = (guard.request)("lend").and_then(|()| work());
+    let retaken = (guard.request)("retake");
+    guard.armed = retaken.is_err();
+    match (result, retaken) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(error)) => Err(format!(
+            "the collector could not hold its history again: {error}"
+        )),
+        (Err(error), Err(retake)) => {
+            Err(format!("{error}; history could not be retaken: {retake}"))
+        }
+    }
+}
+
 fn ask_collector_until(
     session: &Path,
     action: &str,
     subject: &str,
     stopped: &AtomicBool,
 ) -> Result<(), String> {
-    let cancelled = || Err("the capture ended first".to_owned());
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let _one = loop {
-        match ASKING.try_lock() {
-            Ok(guard) => break guard,
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) if stopped.load(Ordering::Acquire) => {
-                return cancelled();
-            }
-            Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= deadline => {
-                return Err("the collector request lane stayed busy".into());
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    };
-    let token = format!(
-        "{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
-            .as_nanos()
-    );
-    let request = session.join(HISTORY_REQUEST);
-    let temporary = session.join(format!("{HISTORY_REQUEST}.{token}.tmp"));
-    fs::write(&temporary, format!("{token} {action} {subject}"))
-        .and_then(|()| fs::rename(&temporary, &request))
-        .map_err(|error| failure_text(&request, error))?;
-    while Instant::now() < deadline && !stopped.load(Ordering::Acquire) {
-        if let Ok(answer) = fs::read_to_string(session.join(HISTORY_ACK))
-            && let Some(answer) = answer.strip_prefix(&token)
-        {
-            return match answer.trim() {
-                "ok" => Ok(()),
-                refused => Err(refused.trim_start_matches("refused").trim().to_owned()),
-            };
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    let request = HistoryRequest::publish(session, action, subject)?;
+    let result = request.wait(stopped);
+    if result.is_err() {
+        request.return_history()?;
     }
-    if fs::read_to_string(&request).is_ok_and(|text| text.starts_with(&token)) {
-        let _ = fs::remove_file(&request);
+    result
+}
+
+fn history_loan(
+    loan: &mut Option<HistoryRequest>,
+    session: &Path,
+    action: &str,
+    campaign: &str,
+    stopped: &AtomicBool,
+) -> Result<(), String> {
+    if action == "retake" {
+        return match loan {
+            Some(loan) => loan.retake(stopped),
+            None => Ok(()),
+        };
     }
-    Err("the collector did not answer".into())
+    HistoryRequest::retry_returns(session, campaign, stopped)?;
+    *loan = Some(HistoryRequest::publish(session, action, campaign)?);
+    loan.as_ref().unwrap().wait(stopped)
 }
 
 /// Run `work` while the collector lets go of the campaign's history; `None` when it would not.
@@ -237,16 +245,24 @@ fn with_history<T>(
     campaign: &str,
     work: impl FnOnce() -> Result<T, String>,
 ) -> Option<Result<T, String>> {
-    if settling.collector
-        && let Err(error) = ask_collector(session, "release", campaign)
-    {
+    if !settling.collector {
+        return Some(work());
+    }
+    let mut loan = None;
+    let mut guard = RetakeHistory {
+        request: |action: &str| {
+            history_loan(&mut loan, session, action, campaign, &settling.stopped)
+        },
+        armed: true,
+    };
+    if let Err(error) = (guard.request)("release") {
         eprintln!("Campaign {campaign} cannot be saved now: {error}");
         return None;
     }
     let result = work();
-    if settling.collector
-        && let Err(error) = ask_collector(session, "retake", campaign)
-    {
+    let retaken = (guard.request)("retake");
+    guard.armed = retaken.is_err();
+    if let Err(error) = retaken {
         eprintln!("The collector could not hold campaign {campaign}'s history again: {error}");
     }
     Some(result)
@@ -524,7 +540,8 @@ fn packing_progress(
         policy.since = Some(elapsed);
     }
     packing.catch_up(policy.update(elapsed, known));
-    packing.watch_progress(runnable.is_some_and(|debt| debt.work.rows > 0 || debt.closed_blocks > 0));
+    packing
+        .watch_progress(runnable.is_some_and(|debt| debt.work.rows > 0 || debt.closed_blocks > 0));
     let mode = packing.mode();
     if before != mode
         || last.is_none_or(|last| elapsed.saturating_sub(last) >= Duration::from_secs(5))
@@ -615,7 +632,10 @@ impl FinalizingAhead {
         content: &GatheredContent,
         settling: Option<Arc<Settling>>,
     ) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = settling
+            .as_ref()
+            .map(|settling| Arc::clone(&settling.stopped))
+            .unwrap_or_default();
         let (session, target, stopping) = (session.to_owned(), target.to_owned(), stop.clone());
         let (layers, language) = (content.layers.clone(), content.language.clone());
         let names = Arc::<Mutex<BTreeMap<String, String>>>::default();
@@ -629,7 +649,9 @@ impl FinalizingAhead {
             .ok();
         let thread = packing.clone().and_then(|packing| std::thread::Builder::new()
             .name("finalize ahead".into())
-            .spawn(move || packing.run(|| {
+            .spawn(move || {
+                let _pass_progress = progress_io::passes(&session);
+                packing.run(|| {
                 // The session's own content stack names its countries as the game does.
                 let localisation = installed_content_localisation::localisation::read(&layers, &language)
                     .inspect_err(|error| {
@@ -722,7 +744,7 @@ impl FinalizingAhead {
                     }
                 }
                 (ahead, localisation, reading, writing)
-            }))
+            }) })
             .ok());
         Self {
             packing,
@@ -1254,6 +1276,7 @@ fn finalize_cli_session(
     mut terminal: TerminalOutcome,
     refresh: impl FnOnce() -> CollectorPresence,
 ) -> Result<(), String> {
+    let _pass_progress = progress_io::passes(session);
     if !terminal.recovery_allowed {
         return Err(terminal.issues.join("; "));
     }
@@ -1718,6 +1741,7 @@ pub(crate) fn capture(
     let directory = output
         .join("sessions")
         .join(format!("{}-{nonce}", process.start_time));
+    let _pass_progress = progress_io::passes(&directory);
     let bin = directory.join("bin");
     fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
     let dll = bin.join("collector.dll");
@@ -2086,9 +2110,14 @@ pub(crate) fn capture(
     }
     // None outlives the capture, nor waits on a collector detaching: an unanswered close gives up.
     capture_ended.store(true, Ordering::Release);
+    ahead.stop.store(true, Ordering::Release);
     for worker in closing {
         let _ = worker.join();
     }
+    let packing = ahead.packing.clone();
+    let join_began = Instant::now();
+    let (ahead, localisation) = finish_ahead(ahead, settling.as_deref());
+    let join_seconds = join_began.elapsed().as_secs_f64();
     if !process.handle.signaled()? {
         detach.set()?;
         let mut wait = CollectorWait::new(Instant::now(), DONE_STALL);
@@ -2108,18 +2137,14 @@ pub(crate) fn capture(
     // Done follows joined spool/status writers and release of the collector's output lock.
     let process_exited = process.handle.signaled()?;
     let spool_final = process_exited || done.handle.signaled()?;
+    HistoryRequest::retire_session(&directory, false, process_exited);
     print_status(&status_path);
     requested_detach |= control.stopping() || detach.handle.signaled()?;
     if requested_detach && !stop_observed {
         stop_qpc = requested_stop_counter(control, &directory);
         stop_load = system_times();
     }
-    // Nothing saves a set-aside campaign once the session saves.
     let detach_seconds = counter_seconds(stop_qpc, session.qpc_frequency);
-    let packing = ahead.packing.clone();
-    let join_began = Instant::now();
-    let (ahead, localisation) = finish_ahead(ahead, settling.as_deref());
-    let join_seconds = join_began.elapsed().as_secs_f64();
     let settings = RecorderSettings::path();
     let naming = replay_io::Naming {
         localisation: localisation.as_ref(),
@@ -2591,9 +2616,9 @@ fn session_discarded(directory: &Path) -> bool {
 
 /// A JSON publication, when it exists and parses.
 fn read_status(path: &Path) -> Option<Value> {
-    let value = fs::read(path)
+    let value = history_requests::open_shared(path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        .and_then(|file| serde_json::from_reader(file).ok());
     #[cfg(test)]
     completion_step(path, CompletionStep::Read);
     value
@@ -3010,7 +3035,10 @@ fn request_detach(output: &Path) -> Result<(), String> {
                     .into(),
             );
         }
-        if watch.stalled(Instant::now(), progress_stamp(&session_dir)) {
+        if watch.stalled(
+            Instant::now(),
+            progress_stamp(&session_dir, recorder_activity(&recorder)),
+        ) {
             return Err("detach/finalization stopped making progress; inspect the recorder console and retained spool".into());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -3059,7 +3087,64 @@ fn request_detach(output: &Path) -> Result<(), String> {
 // allows what the recording controller allows (DONE_STALL).
 const DETACH_STALL_TIMEOUT: Duration = DONE_STALL;
 /// The detach command's watch over the session's status and finalization.
-type ProgressWatch = StampWatch<(Option<SystemTime>, Option<SystemTime>)>;
+struct ProgressWatch {
+    work: StampWatch<(
+        Option<SystemTime>,
+        Option<SystemTime>,
+        Option<u64>,
+        Option<u64>,
+    )>,
+    activity: Option<(u64, u64, u64)>,
+    last_activity: Instant,
+}
+impl ProgressWatch {
+    fn new(now: Instant) -> Self {
+        Self {
+            work: StampWatch::new(now),
+            activity: None,
+            last_activity: now,
+        }
+    }
+    fn stalled(&mut self, now: Instant, stamp: ProgressStamp) -> bool {
+        let previous = self.work.stamp;
+        let advanced =
+            |next: Option<SystemTime>, old: Option<SystemTime>| next.is_some() && next != old;
+        let changed = advanced(stamp.collector, previous.0)
+            || advanced(stamp.finalization, previous.1)
+            || stamp
+                .work
+                .is_some_and(|work| previous.2.is_none_or(|old| work > old))
+            || stamp
+                .passes
+                .is_some_and(|work| previous.3.is_none_or(|old| work > old));
+        if changed {
+            self.work.last_progress = now;
+            self.last_activity = now;
+        }
+        self.work.stamp = (
+            stamp.collector.or(previous.0),
+            stamp.finalization.or(previous.1),
+            stamp.work.or(previous.2),
+            stamp.passes.or(previous.3),
+        );
+        if stamp.activity.is_some() && stamp.activity != self.activity {
+            self.last_activity = now;
+        }
+        self.activity = stamp.activity;
+        let quiet = now.duration_since(self.work.last_progress);
+        quiet >= self.work.stall
+            && (now.duration_since(self.last_activity) >= self.work.stall
+                || quiet >= Duration::from_secs(10 * 60))
+    }
+}
+#[derive(Default, PartialEq, Eq, Clone, Copy)]
+struct ProgressStamp {
+    collector: Option<SystemTime>,
+    finalization: Option<SystemTime>,
+    work: Option<u64>,
+    passes: Option<u64>,
+    activity: Option<(u64, u64, u64)>,
+}
 struct StampWatch<S> {
     last_progress: Instant,
     stamp: S,
@@ -3084,23 +3169,52 @@ impl<S: Default + PartialEq> StampWatch<S> {
         now.duration_since(self.last_progress) >= self.stall
     }
 }
-fn progress_stamp(directory: &Path) -> (Option<SystemTime>, Option<SystemTime>) {
-    let modified = |name| {
-        fs::metadata(directory.join(name))
-            .ok()
-            .and_then(|metadata| metadata.modified().ok())
+fn recorder_activity(recorder: &Process) -> Option<(u64, u64, u64)> {
+    use windows_sys::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetProcessIoCounters, GetProcessTimes, IO_COUNTERS},
     };
-    // After unload, the controller reports actual metadata/frame work. Earlier
-    // collector status publications act as its drain heartbeat.
+    let mut times = [FILETIME::default(); 4];
+    let [creation, exit, kernel, user] = &mut times;
+    let mut io = IO_COUNTERS::default();
+    if unsafe { GetProcessTimes(recorder.handle.0, creation, exit, kernel, user) } == 0
+        || unsafe { GetProcessIoCounters(recorder.handle.0, &mut io) } == 0
+    {
+        return None;
+    }
+    let ticks =
+        |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+    Some((
+        ticks(*kernel).saturating_add(ticks(*user)),
+        io.ReadTransferCount,
+        io.WriteTransferCount,
+    ))
+}
+
+fn progress_stamp(directory: &Path, activity: Option<(u64, u64, u64)>) -> ProgressStamp {
+    let metadata = |name| {
+        history_requests::open_shared(&directory.join(name))
+            .ok()?
+            .metadata()
+            .ok()
+    };
+    let modified = |name| metadata(name).and_then(|metadata| metadata.modified().ok());
     let finalization = modified("finalization-progress.json");
-    (
-        if finalization.is_none() {
-            modified("status.json").max(modified(COLLECTOR_PROGRESS))
-        } else {
+    let work = metadata("finalization-work").map(|metadata| metadata.len());
+    let finalizing = finalization.is_some()
+        || work.is_some()
+        || directory.join("history-requests/detached").exists();
+    ProgressStamp {
+        collector: if finalizing {
             None
+        } else {
+            modified("status.json").max(modified(COLLECTOR_PROGRESS))
         },
         finalization,
-    )
+        work,
+        passes: metadata("finalization-pass-work").map(|metadata| metadata.len()),
+        activity: if finalizing { activity } else { None },
+    }
 }
 
 /// The collector's step log in its session directory (`progress` in the
@@ -3239,6 +3353,7 @@ struct FinalizationProgress<'a> {
     records: Cell<u64>,
     last_write: Cell<Instant>,
     warned: Cell<bool>,
+    work_warned: Cell<bool>,
 }
 impl<'a> FinalizationProgress<'a> {
     fn new(directory: &'a Path, observe: &'a dyn Fn(u64)) -> Self {
@@ -3248,6 +3363,7 @@ impl<'a> FinalizationProgress<'a> {
             records: Cell::new(0),
             last_write: Cell::new(Instant::now()),
             warned: Cell::new(false),
+            work_warned: Cell::new(false),
         };
         progress.publish();
         progress
@@ -3263,16 +3379,23 @@ impl<'a> FinalizationProgress<'a> {
         }
     }
     fn publish(&self) {
+        let work = self.directory.join("finalization-work");
+        if let Err(error) = progress_io::work(&work, self.records.get())
+            && !self.work_warned.replace(true)
+        {
+            eprintln!(
+                "Finalization work signal unavailable at {}: {error}; the detach watch also follows recorder CPU and I/O.",
+                work.display()
+            );
+        }
         let path = self.directory.join("finalization-progress.json");
-        // Readers can deny rename-over on Windows. This file is advisory;
-        // keep finalizing and try again at the next scheduled update.
-        if let Err(error) = write_json(
+        if let Err(error) = progress_io::publish(
             &path,
             &json!({"recorder_pid": std::process::id(), "records": self.records.get()}),
         ) && !self.warned.replace(true)
         {
             eprintln!(
-                "Finalization progress unavailable at {}: {error}; replay finalization continues.",
+                "Finalization progress unavailable at {}: {error}; replay finalization continues with the independent work signal.",
                 path.display()
             );
         }
@@ -3451,6 +3574,7 @@ fn finish_capture(
     stage: &dyn Fn(Stage<'_>),
     diagnostics: impl FnOnce() -> Option<Value>,
 ) -> Result<CaptureOutcome, String> {
+    HistoryRequest::retire_session(directory, false, process_exited);
     {
         let _lock = completion_lock(directory)?;
         completion_presence(
@@ -3541,6 +3665,11 @@ fn refresh_unload_completion(
     directory: &Path,
     presence: CollectorPresence,
 ) -> Result<bool, String> {
+    HistoryRequest::retire_session(
+        directory,
+        presence.collector_loaded == Some(false),
+        presence.process_exited,
+    );
     let _lock = completion_lock(directory)?;
     let mut completed = read_status(&directory.join("completed.json"))
         .ok_or("saved session has no readable completion record")?;
@@ -3588,6 +3717,11 @@ fn publish_completion(
     mut completed: Value,
     presence: CollectorPresence,
 ) -> Result<CollectorPresence, String> {
+    HistoryRequest::retire_session(
+        directory,
+        presence.collector_loaded == Some(false),
+        presence.process_exited,
+    );
     completion_presence(&mut completed, presence, false);
     replay_io::write_session_end(directory, target, "completed.json", &completed)?;
     if presence.collector_loaded != Some(false) {
@@ -3608,16 +3742,19 @@ fn ensure_finalizable(directory: &Path) -> Result<(Option<Process>, SessionStart
     let session = SessionStart::decode(&mut decoder).map_err(|e| e.to_string())?;
     decoder.finish().map_err(|e| e.to_string())?;
     if !windows::games()?.contains(&session.process_id) {
+        HistoryRequest::retire_session(directory, false, true);
         return Ok((None, session));
     }
     let process = match Process::open(session.process_id, false) {
         Ok(process) => process,
         Err(_) if !windows::games()?.contains(&session.process_id) => {
+            HistoryRequest::retire_session(directory, false, true);
             return Ok((None, session));
         }
         Err(error) => return Err(error),
     };
     if process.start_time != session.process_start_time {
+        HistoryRequest::retire_session(directory, false, true);
         return Ok((None, session));
     }
     let done = config["done_event"]
@@ -3638,7 +3775,9 @@ fn ensure_finalizable(directory: &Path) -> Result<(Option<Process>, SessionStart
     if collector_loaded != Some(false) && !done {
         return Err("collector is still loaded without done; its spool may still change; use recorder detach or quit the game before finalizing".into());
     }
-    if !process.handle.signaled()? && !done {
+    let process_exited = process.handle.signaled()?;
+    HistoryRequest::retire_session(directory, collector_loaded == Some(false), process_exited);
+    if !process_exited && !done {
         // A completed recorder has already observed done and module absence; the
         // named event ceases to exist when all process handles have closed.
         if !directory.join("completed.json").is_file()
@@ -4278,7 +4417,10 @@ mod tests {
         let at = Duration::from_secs;
         let backlog = |rows, closed| replay_io::PackingBacklog {
             runnable: replay_io::PackingDebt {
-                work: replay::container::Outstanding { rows, ..Default::default() },
+                work: replay::container::Outstanding {
+                    rows,
+                    ..Default::default()
+                },
                 closed_blocks: closed,
                 ..Default::default()
             },
@@ -4346,13 +4488,31 @@ mod tests {
         packing.run(|| {
             packing.catch_up(true);
             assert_eq!(packing.mode(), "catch_up_normal");
-            assert_eq!(packing_progress(&packing, &ahead, &session, &mut policy,
-                Duration::from_secs(1), &mut last), None);
+            assert_eq!(
+                packing_progress(
+                    &packing,
+                    &ahead,
+                    &session,
+                    &mut policy,
+                    Duration::from_secs(1),
+                    &mut last
+                ),
+                None
+            );
             assert_eq!(packing.mode(), "background");
             assert!(policy.since.is_none());
             packing.promote();
-            assert_eq!(packing_progress(&packing, &ahead, &session, &mut policy,
-                Duration::from_secs(2), &mut last), None);
+            assert_eq!(
+                packing_progress(
+                    &packing,
+                    &ahead,
+                    &session,
+                    &mut policy,
+                    Duration::from_secs(2),
+                    &mut last
+                ),
+                None
+            );
             assert_eq!(packing.mode(), "foreground");
         });
         fs::remove_dir_all(directory).unwrap();
@@ -4398,6 +4558,44 @@ mod tests {
         assert_eq!(requested_stop_counter(&control, &root), None);
         signal_detach_request(&root, Some(42), || Ok(())).unwrap();
         assert_eq!(requested_stop_counter(&control, &root), Some(42));
+    }
+
+    #[test]
+    fn a_failed_explicit_retake_leaves_the_drop_guard_armed() {
+        let attempts = Cell::new(0);
+        let result = with_lent_history(
+            |action| {
+                if action == "retake" {
+                    attempts.set(attempts.get() + 1);
+                    if attempts.get() == 1 {
+                        return Err("return publication failed".to_owned());
+                    }
+                }
+                Ok(())
+            },
+            || Ok(()),
+        );
+        assert!(result.unwrap_err().contains("return publication failed"));
+        assert_eq!(attempts.get(), 2);
+    }
+
+    #[test]
+    fn a_failed_retake_is_reported_even_when_the_lend_also_failed() {
+        for lent in [false, true] {
+            let result = with_lent_history(
+                |action| match action {
+                    "lend" if lent => Ok(()),
+                    "lend" => Err("lost lend ack".to_owned()),
+                    _ => Err("retake deadline passed".to_owned()),
+                },
+                || Ok(()),
+            );
+            let error = result.unwrap_err();
+            assert!(error.contains("retake deadline passed"));
+            if !lent {
+                assert!(error.contains("lost lend ack"));
+            }
+        }
     }
 
     #[test]
@@ -5841,16 +6039,176 @@ mod tests {
     }
 
     #[test]
+    fn a_healthy_long_holds_comparison_keeps_the_watch_alive_without_record_callbacks() {
+        let root = crate::test_support::allocation_test_directory("long-holds-progress");
+        let mut records = crate::test_support::allocation_records();
+        records.push(replay::spool::Record::Control(
+            replay::spool::ControlRecord::Partial {
+                session: 7,
+                failed_hour: None,
+                reason: "synthetic comparison bytes ".repeat(40_000),
+            },
+        ));
+        let replay = Replay::from_records(
+            crate::test_support::ALLOCATION_CAMPAIGN.to_vec(),
+            &[records],
+        )
+        .unwrap();
+        let earlier = root.join("earlier.battleplan");
+        let staged = root.join("staged.battleplan");
+        fs::write(&earlier, replay.bytes()).unwrap();
+        fs::write(&staged, replay.bytes()).unwrap();
+        let held = Replay::open_path(&staged).unwrap();
+        let observe = |_| {};
+        let records_seen = FinalizationProgress::new(&root, &observe);
+        let start = Instant::now();
+        let state = Arc::new(Mutex::new((0_u64, ProgressWatch::new(start))));
+        let observed = Arc::clone(&state);
+        let directory = root.clone();
+        let signal = progress_io::PassProgress::new(&root);
+        let progress = replay::progress::Progress::new(move || {
+            let mut state = locked(&observed);
+            state.0 += 60;
+            let now = start + Duration::from_secs(state.0);
+            signal.completed_at(now);
+            assert!(!state.1.stalled(now, progress_stamp(&directory, None)));
+        })
+        .install();
+        assert!(held.holds(&earlier).unwrap());
+        drop(progress);
+        assert_eq!(records_seen.records.get(), 0);
+        let mut state = locked(&state);
+        assert!(state.0 > 10 * 60);
+        let stopped = start + Duration::from_secs(state.0 + 180);
+        assert!(state.1.stalled(stopped, progress_stamp(&root, None)));
+        drop(held);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn busy_process_activity_cannot_extend_a_stalled_finalizer_indefinitely() {
+        let start = Instant::now();
+        let mut watch = ProgressWatch::new(start);
+        for second in [0, 179, 358, 537, 599] {
+            assert!(!watch.stalled(
+                start + Duration::from_secs(second),
+                ProgressStamp {
+                    activity: Some((second + 1, second + 1, second + 1)),
+                    ..ProgressStamp::default()
+                }
+            ));
+        }
+        assert!(watch.stalled(
+            start + Duration::from_secs(600),
+            ProgressStamp {
+                activity: Some((1000, 1000, 1000)),
+                ..ProgressStamp::default()
+            }
+        ));
+        assert!(!watch.stalled(
+            start + Duration::from_secs(601),
+            ProgressStamp {
+                work: Some(8),
+                ..ProgressStamp::default()
+            }
+        ));
+        assert!(!watch.stalled(
+            start + Duration::from_secs(1200),
+            ProgressStamp {
+                activity: Some((2000, 2000, 2000)),
+                ..ProgressStamp::default()
+            }
+        ));
+        assert!(watch.stalled(
+            start + Duration::from_secs(1201),
+            ProgressStamp {
+                work: Some(8),
+                activity: Some((3000, 3000, 3000)),
+                ..ProgressStamp::default()
+            }
+        ));
+    }
+
+    #[test]
+    fn stale_json_follows_real_work_and_process_activity_but_still_detects_inactivity() {
+        use crate::test_support::allocation_test_directory;
+        let root = allocation_test_directory("finalization-work-watch");
+        let observe = |_| {};
+        let progress = FinalizationProgress::new(&root, &observe);
+        let path = root.join("finalization-progress.json");
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let reader = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&path)
+            .unwrap();
+        let start = Instant::now();
+        let mut watch = ProgressWatch::new(start);
+        let mut stamp = progress_stamp(&root, None);
+        assert!(!watch.stalled(start, stamp));
+        for seconds in [179, 358, 537] {
+            progress.records.set(progress.records.get() + 1);
+            progress.publish();
+            let next = progress_stamp(&root, None);
+            assert_eq!(next.finalization, stamp.finalization);
+            assert_ne!(next.work, stamp.work);
+            assert!(!watch.stalled(start + Duration::from_secs(seconds), next));
+            stamp = next;
+        }
+        // CPU/I/O remains observable even if both advisory files become unreadable.
+        for seconds in [700, 860] {
+            stamp.activity = Some((seconds, 1, 1));
+            assert!(!watch.stalled(start + Duration::from_secs(seconds), stamp));
+        }
+        assert!(watch.stalled(start + Duration::from_secs(1040), stamp));
+        drop(reader);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unreadable_progress_files_follow_cpu_reads_and_writes_without_inventing_counts() {
+        use crate::test_support::allocation_test_directory;
+        let root = allocation_test_directory("finalization-process-watch");
+        fs::create_dir(root.join("finalization-progress.json")).unwrap();
+        fs::create_dir(root.join("finalization-work")).unwrap();
+        fs::create_dir(root.join("history-requests")).unwrap();
+        fs::write(root.join("history-requests/detached"), b"released").unwrap();
+        let start = Instant::now();
+        let mut watch = ProgressWatch::new(start);
+        let mut stamp = progress_stamp(&root, None);
+        assert!(stamp.finalization.is_none());
+        assert!(stamp.work.is_none());
+        assert!(stamp.activity.is_none());
+        assert!(!watch.stalled(start, stamp));
+        for (seconds, activity) in [(179, (1, 0, 0)), (358, (1, 1, 0)), (537, (1, 1, 1))] {
+            stamp = progress_stamp(&root, Some(activity));
+            assert!(!watch.stalled(start + Duration::from_secs(seconds), stamp));
+        }
+        assert!(watch.stalled(start + Duration::from_secs(717), stamp));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn detach_wait_follows_progress_past_the_old_total_deadline_and_detects_stalls() {
         let start = Instant::now();
         let mut watch = ProgressWatch::new(start);
         for seconds in [0, 60, 119, 127, 240, 1000] {
             let stamp = Some(UNIX_EPOCH + Duration::from_secs(seconds));
-            assert!(!watch.stalled(start + Duration::from_secs(seconds), (None, stamp)));
+            assert!(!watch.stalled(
+                start + Duration::from_secs(seconds),
+                ProgressStamp {
+                    finalization: stamp,
+                    ..ProgressStamp::default()
+                }
+            ));
         }
         // The detach command allows the controller's 180 s without collector
         // progress: 150 s passes (the old 120 s limit failed it), 180 s ends.
-        let stamp = (None, Some(UNIX_EPOCH + Duration::from_secs(1000)));
+        let stamp = ProgressStamp {
+            finalization: Some(UNIX_EPOCH + Duration::from_secs(1000)),
+            ..ProgressStamp::default()
+        };
         assert!(!watch.stalled(start + Duration::from_secs(1150), stamp));
         assert!(!watch.stalled(start + Duration::from_secs(1179), stamp));
         assert!(watch.stalled(start + Duration::from_secs(1180), stamp));

@@ -1137,6 +1137,7 @@ pub struct Shared {
     pub frames: [AtomicPtr<Captured>; BUFFERS],
     pub completed: [AtomicI64; BUFFERS],
     pub callback_tail: [AtomicI64; BUFFERS],
+    pub(crate) history_frames: crate::frame_fence::Frames,
     frame_return: Mutex<()>,
     frame_available: Condvar,
     pub cancel_buffer_wait: AtomicBool,
@@ -1546,6 +1547,7 @@ impl Shared {
             frames: std::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
             completed: std::array::from_fn(|_| AtomicI64::new(0)),
             callback_tail: std::array::from_fn(|_| AtomicI64::new(0)),
+            history_frames: crate::frame_fence::Frames::default(),
             frame_return: Mutex::new(()),
             frame_available: Condvar::new(),
             cancel_buffer_wait: AtomicBool::new(false),
@@ -1842,6 +1844,7 @@ impl Shared {
 
     /// Publish all completed writes before waking a callback waiting for reuse.
     pub fn recycle_frame(&self, index: usize) {
+        self.history_frames.recycle(index);
         // The caller owns this queue lease; its loss witnesses were consumed or restored.
         unsafe {
             (&mut *self.frames[index].load(Ordering::Acquire))
@@ -2295,6 +2298,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         && shared.recording.load(Ordering::Acquire)
         && !crate::allocation::failed();
     if recording {
+        let history_capture = shared.history_frames.capture();
         let _frame_priority = shared.frame_priority.callback();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Callback);
         let _reads = crate::read_accounting::Capture::new();
@@ -2354,6 +2358,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         let mut buffer_wait_ns = 0;
         let index = shared.take_frame(&mut buffer_wait_ns);
         if let Some(index) = index {
+            history_capture.frame(index);
             shared.completed[index].store(0, Ordering::Relaxed);
             shared.callback_tail[index].store(0, Ordering::Relaxed);
         }

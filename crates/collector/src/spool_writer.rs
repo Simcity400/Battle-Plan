@@ -40,6 +40,11 @@ enum Command {
         frame: bool,
     },
     FinishSegment(CloseReceipt),
+    CloseContext {
+        records: Vec<SealedRecord>,
+        restarting: bool,
+        receipt: CloseReceipt,
+    },
 }
 
 #[derive(Clone, Default)]
@@ -343,8 +348,19 @@ impl Shared {
         &self,
         campaign: CampaignId,
         generation: u64,
+        command: Command,
+        receipt_bytes: usize,
+    ) -> io::Result<u64> {
+        self.submit_with_wait(campaign, generation, command, receipt_bytes, true)
+    }
+
+    fn submit_with_wait(
+        &self,
+        campaign: CampaignId,
+        generation: u64,
         mut command: Command,
         receipt_bytes: usize,
+        wait: bool,
     ) -> io::Result<u64> {
         let context = allocation::context();
         let (mut bytes, frame) = match &command {
@@ -360,10 +376,23 @@ impl Shared {
                     .ok_or_else(engine_allocation::oom)?;
                 (bytes, *frame)
             }
+            Command::CloseContext { records, .. } => (
+                records
+                    .iter()
+                    .try_fold(
+                        records.capacity() * size_of::<SealedRecord>(),
+                        |bytes, record| bytes.checked_add(record.storage_bytes()),
+                    )
+                    .ok_or_else(engine_allocation::oom)?,
+                false,
+            ),
             Command::FinishSegment(_) => (0, false),
         };
         let mut gaps = Vec::new();
-        if let Command::StartSegment { records, .. } | Command::Records { records, .. } = &command {
+        if let Command::StartSegment { records, .. }
+        | Command::Records { records, .. }
+        | Command::CloseContext { records, .. } = &command
+        {
             gaps = engine_allocation::vec(
                 records
                     .iter()
@@ -390,7 +419,13 @@ impl Shared {
                     },
             )
             .ok_or_else(engine_allocation::oom)?;
-        let mut state = self.lock();
+        let mut state = if wait {
+            self.lock()
+        } else {
+            self.state
+                .try_lock()
+                .map_err(|_| io::ErrorKind::WouldBlock)?
+        };
         let budget = budget_for(
             state.diagnostics.budget,
             bytes
@@ -399,6 +434,9 @@ impl Shared {
         );
         let mut waited = None;
         while state.diagnostics.bytes > budget.saturating_sub(bytes) {
+            if !wait {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
             if state.stopped || allocation::failed() {
                 return Err(io::ErrorKind::OutOfMemory.into());
             }
@@ -464,7 +502,7 @@ impl Shared {
         let next_ticket = ticket
             .checked_add(1)
             .ok_or_else(|| io::Error::other("spool writer sequence exhausted"))?;
-        if let Command::FinishSegment(receipt) = &command {
+        if let Command::FinishSegment(receipt) | Command::CloseContext { receipt, .. } = &command {
             engine_allocation::reserve(&mut state.close_receipts, 1)?;
             state.close_receipts.push(Arc::downgrade(&receipt.result));
         }
@@ -481,7 +519,9 @@ impl Shared {
         if allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
-        if let Command::FinishSegment(receipt) = &mut command {
+        if let Command::FinishSegment(receipt) | Command::CloseContext { receipt, .. } =
+            &mut command
+        {
             receipt.ticket = ticket;
         }
         state.next_ticket = next_ticket;
@@ -965,6 +1005,53 @@ impl<B: SegmentBackend> Output<B> {
             }
         }
     }
+    pub(crate) fn try_close_context(
+        &mut self,
+        context: Vec<Record>,
+        restarting: bool,
+    ) -> io::Result<CloseReceipt> {
+        let Self::Queued {
+            shared,
+            campaign,
+            generation,
+            open,
+            last_close,
+            ..
+        } = self
+        else {
+            return Err(io::Error::other("history requests require queued output"));
+        };
+        if !*open
+            && !restarting
+            && let Some(receipt) = last_close
+        {
+            return Ok(receipt.clone());
+        }
+        let next = generation
+            .checked_add(u64::from(restarting))
+            .ok_or_else(|| io::Error::other("spool generation exhausted"))?;
+        let mut records = engine_allocation::vec(context.len())?;
+        for record in context {
+            records.push(SealedRecord::context(record)?);
+        }
+        let mut receipt = CloseReceipt::default();
+        receipt.ticket = shared.submit_with_wait(
+            *campaign,
+            next,
+            Command::CloseContext {
+                records,
+                restarting,
+                receipt: receipt.clone(),
+            },
+            0,
+            false,
+        )?;
+        *generation = next;
+        *last_close = Some(receipt.clone());
+        *open = false;
+        Ok(receipt)
+    }
+
     pub(crate) fn finish_segment(&mut self) -> io::Result<()> {
         self.close_segment().map(|_| ())
     }
@@ -1081,7 +1168,9 @@ fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId)
             Command::StartSegment { frame: true, .. } | Command::Records { frame: true, .. }
         );
         let close = match &job.command {
-            Command::FinishSegment(receipt) => Some(receipt.clone()),
+            Command::FinishSegment(receipt) | Command::CloseContext { receipt, .. } => {
+                Some(receipt.clone())
+            }
             _ => None,
         };
         let mut committed_context = false;
@@ -1132,6 +1221,26 @@ fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId)
                         records
                             .into_iter()
                             .try_for_each(|record| spool.append_sealed(record))
+                    }
+                }
+                Command::CloseContext {
+                    records,
+                    restarting,
+                    ..
+                } => {
+                    if restarting {
+                        *generation = job.generation;
+                        spool
+                            .finish_segment()
+                            .and_then(|()| spool.start_sealed_context(records))
+                            .and_then(|()| spool.finish_segment())
+                    } else if *generation != job.generation {
+                        Err(io::Error::other("stale spool close generation"))
+                    } else {
+                        records
+                            .into_iter()
+                            .try_for_each(|record| spool.append_sealed(record))
+                            .and_then(|()| spool.finish_segment())
                     }
                 }
                 Command::FinishSegment(_) => {
@@ -1232,7 +1341,9 @@ fn cancel_queued(state: &mut State, kind: io::ErrorKind) {
             &job.command,
             Command::StartSegment { frame: true, .. } | Command::Records { frame: true, .. }
         );
-        if let Command::FinishSegment(receipt) = &job.command {
+        if let Command::FinishSegment(receipt) | Command::CloseContext { receipt, .. } =
+            &job.command
+        {
             receipt.complete(Err(kind));
         }
         state.payload_bytes -= job.payload_bytes;
@@ -1279,6 +1390,52 @@ fn budget_for(current: usize, record: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_close_defers_when_writer_is_busy_without_partially_submitting_context() {
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+            frequency: 10_000_000,
+        });
+        let mut output: Output = Output::Queued {
+            shared: Arc::clone(&shared),
+            campaign: *b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6",
+            generation: 1,
+            open: true,
+            last_ticket: None,
+            last_close: None,
+        };
+        let guard = shared.lock();
+        assert_eq!(
+            output
+                .try_close_context(Vec::new(), false)
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(guard);
+        shared.lock().diagnostics.bytes = MIN_BUDGET;
+        assert_eq!(
+            output
+                .try_close_context(Vec::new(), false)
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(output.is_open());
+        assert!(shared.lock().jobs.is_empty());
+        shared.lock().diagnostics.bytes = 0;
+        let receipt = output.try_close_context(Vec::new(), false).unwrap();
+        assert!(!output.is_open());
+        assert!(receipt.result().is_none());
+        let mut state = shared.lock();
+        assert_eq!(state.jobs.len(), 1);
+        cancel_queued(&mut state, io::ErrorKind::Interrupted);
+        assert_eq!(receipt.result(), Some(Err(io::ErrorKind::Interrupted)));
+    }
 
     #[test]
     fn terminal_ranges_keep_each_context_when_a_campaign_returns_before_its_writes_finish() {

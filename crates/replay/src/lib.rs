@@ -1,6 +1,7 @@
 //! Compressed recording containers, spool I/O and durable publication.
 
 pub mod container;
+pub mod progress;
 #[cfg(windows)]
 pub mod publication;
 pub mod recorder_settings;

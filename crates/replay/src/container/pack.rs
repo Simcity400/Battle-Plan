@@ -13,6 +13,7 @@ use std::{
 };
 
 struct Budget {
+    progress: Mutex<Option<crate::progress::Progress>>,
     // Playing limits remain active even after catch-up leaves OS background mode.
     background: std::sync::Arc<std::sync::atomic::AtomicBool>,
     io: Mutex<std::time::Instant>,
@@ -40,6 +41,14 @@ pub struct Packing {
     budget: std::sync::Arc<Budget>,
 }
 
+pub(crate) fn progress() -> Option<crate::progress::Progress> {
+    BUDGET.with_borrow(|budget| {
+        budget
+            .as_ref()
+            .and_then(|budget| lock(&budget.progress).clone())
+    })
+}
+
 impl Packing {
     pub fn new() -> io::Result<Self> {
         let foreground = (thread::available_parallelism().map_or(1, usize::from) / 2).max(1);
@@ -49,6 +58,7 @@ impl Packing {
     fn with_workers(foreground: usize) -> io::Result<Self> {
         let foreground = foreground.max(1);
         let budget = std::sync::Arc::new(Budget {
+            progress: Mutex::new(None),
             background: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             io: Mutex::new(std::time::Instant::now()),
             catch_up: std::sync::atomic::AtomicBool::new(false),
@@ -87,6 +97,16 @@ impl Packing {
     }
 
     pub fn run<T>(&self, work: impl FnOnce() -> T) -> T {
+        let current_progress = crate::progress::Progress::current();
+        let previous_progress =
+            std::mem::replace(&mut *lock(&self.budget.progress), current_progress);
+        struct RestoreProgress<'a>(&'a Budget, Option<crate::progress::Progress>);
+        impl Drop for RestoreProgress<'_> {
+            fn drop(&mut self) {
+                *lock(&self.0.progress) = self.1.take();
+            }
+        }
+        let _progress = RestoreProgress(&self.budget, previous_progress);
         struct Restore(Option<std::sync::Arc<Budget>>, job_priority::Caller, bool);
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -235,11 +255,13 @@ impl<T> Budgeted<T> {
     }
 
     fn transfer_length(length: usize) -> usize {
-        if BUDGET.with_borrow(|budget| {
-            budget
-                .as_ref()
-                .is_some_and(|budget| budget.background.load(Ordering::Acquire))
-        }) {
+        if crate::progress::Progress::current().is_some()
+            || BUDGET.with_borrow(|budget| {
+                budget
+                    .as_ref()
+                    .is_some_and(|budget| budget.background.load(Ordering::Acquire))
+            })
+        {
             length.min(64 << 10)
         } else {
             length
@@ -252,6 +274,9 @@ impl<T: io::Read> io::Read for Budgeted<T> {
         refresh();
         let length = Self::transfer_length(bytes.len());
         let count = self.0.read(&mut bytes[..length])?;
+        if count != 0 {
+            crate::progress::Progress::completed();
+        }
         Packing::io(count);
         Ok(count)
     }
@@ -261,6 +286,9 @@ impl<T: io::Write> io::Write for Budgeted<T> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         refresh();
         let count = self.0.write(&bytes[..Self::transfer_length(bytes.len())])?;
+        if count != 0 {
+            crate::progress::Progress::completed();
+        }
         Packing::io(count);
         Ok(count)
     }
@@ -466,7 +494,11 @@ pub(crate) fn each<T: Send, U: Send>(
             .into_iter()
             .map(|item| {
                 refresh();
-                work(item)
+                let result = work(item);
+                if result.is_ok() {
+                    crate::progress::Progress::completed();
+                }
+                result
             })
             .collect();
     }
@@ -486,6 +518,9 @@ pub(crate) fn each<T: Send, U: Send>(
             let item = lock(item).take().expect("each item is taken once");
             refresh();
             let result = panic::catch_unwind(panic::AssertUnwindSafe(|| work(item)));
+            if matches!(&result, Ok(Ok(_))) {
+                crate::progress::Progress::completed();
+            }
             *lock(&results[at]) = Some(result);
         }
     };
@@ -498,11 +533,14 @@ pub(crate) fn each<T: Send, U: Send>(
             run();
         });
     } else {
+        let progress = crate::progress::Progress::current();
         thread::scope(|scope| {
             for _ in 0..helpers {
+                let progress = progress.clone();
                 let priority = job_priority::JobPriority::current();
                 // A helper the OS refuses leaves its items to the others.
                 let _ = thread::Builder::new().spawn_scoped(scope, move || {
+                    let _progress = progress.map(crate::progress::Progress::install);
                     priority.enter(job_priority::Level::Normal);
                     run()
                 });
@@ -662,6 +700,7 @@ pub(crate) fn ordered<T: Send, U: Send>(
             }
         }
     };
+    let progress = crate::progress::Progress::current();
     thread::scope(|scope| {
         let _closing = Closing(&lane, &changed);
         let started = (0..helpers)
@@ -669,6 +708,7 @@ pub(crate) fn ordered<T: Send, U: Send>(
                 let priority = job_priority::JobPriority::current();
                 thread::Builder::new()
                     .spawn_scoped(scope, || {
+                        let _progress = progress.clone().map(crate::progress::Progress::install);
                         priority.enter(job_priority::Level::Normal);
                         serve()
                     })
@@ -822,12 +862,15 @@ pub(crate) fn blocks<J: Send, R: Send, P>(
         };
         panic::catch_unwind(panic::AssertUnwindSafe(|| write(&mut packer)))
     } else {
+        let progress = crate::progress::Progress::current();
         thread::scope(|scope| {
             let started = (1..workers)
                 .filter(|_| {
                     let priority = job_priority::JobPriority::current();
                     thread::Builder::new()
                         .spawn_scoped(scope, || {
+                            let _progress =
+                                progress.clone().map(crate::progress::Progress::install);
                             priority.enter(job_priority::Level::Normal);
                             pool.work()
                         })
@@ -871,6 +914,33 @@ mod fallback_tests;
 #[cfg(test)]
 mod continuous_tests {
     use super::*;
+
+    #[test]
+    fn finalizer_chunk_progress_reaches_persistent_workers_and_is_removed_after_the_job() {
+        use std::sync::{Arc, atomic::AtomicU64};
+        let packing = Packing::with_workers(2).unwrap();
+        packing.promote();
+        let chunks = Arc::new(AtomicU64::new(0));
+        let observed = Arc::clone(&chunks);
+        let progress = crate::progress::Progress::new(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+        })
+        .install();
+        packing.run(|| {
+            packing
+                .pool
+                .broadcast(|_| crate::progress::Progress::completed());
+        });
+        let completed = chunks.load(Ordering::Relaxed);
+        assert_eq!(completed, packing.pool.current_num_threads() as u64);
+        drop(progress);
+        packing.run(|| {
+            packing
+                .pool
+                .broadcast(|_| crate::progress::Progress::completed())
+        });
+        assert_eq!(chunks.load(Ordering::Relaxed), completed);
+    }
 
     #[test]
     fn takeover_uses_the_same_persistent_pool_and_restores_the_caller() {

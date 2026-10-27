@@ -59,6 +59,7 @@ impl Workers {
         let (tx, rx) = mpsc::sync_channel(count);
         let work = Arc::new(work);
         for (worker, batch) in batches.into_iter().enumerate() {
+            let progress = crate::progress::Progress::current();
             let work = Arc::clone(&work);
             let tx = tx.clone();
             let stop = Arc::clone(&self.stop);
@@ -67,6 +68,7 @@ impl Workers {
             #[cfg(test)]
             let context = context.clone();
             let job: Job = Box::new(move || {
+                let _progress = progress.map(crate::progress::Progress::install);
                 #[cfg(test)]
                 let _memory = context.enter(ownership::Kind::Results);
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -147,7 +149,13 @@ impl<R> Pending<R> {
     }
 }
 
-type Load = (Arc<Replay>, usize, [bool; TABLE_COUNT], chunks::Credit);
+type Load = (
+    Arc<Replay>,
+    usize,
+    [bool; TABLE_COUNT],
+    chunks::Credit,
+    Option<crate::progress::Progress>,
+);
 
 pub(super) struct Ahead {
     send: Option<mpsc::SyncSender<Load>>,
@@ -171,7 +179,8 @@ impl Ahead {
                 priority.enter();
                 #[cfg(test)]
                 let _memory = context.enter(ownership::Kind::Raw);
-                while let Ok((replay, position, selected, credit)) = requests.recv() {
+                while let Ok((replay, position, selected, credit, progress)) = requests.recv() {
+                    let _progress = progress.map(crate::progress::Progress::install);
                     let mut cancel = || {
                         if stopped.load(Ordering::Acquire) {
                             Err(io::ErrorKind::Interrupted.into())
@@ -213,7 +222,13 @@ impl Ahead {
         self.send
             .as_ref()
             .unwrap()
-            .send((replay, position, selected, credit))
+            .send((
+                replay,
+                position,
+                selected,
+                credit,
+                crate::progress::Progress::current(),
+            ))
             .map_err(|_| io::Error::other("replay inflate worker disconnected"))?;
         self.pending = Some(position);
         Ok(())
@@ -257,6 +272,72 @@ impl Drop for Ahead {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reused_workers_install_and_release_each_jobs_progress_scope() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let pool = Workers::new(2, Arc::clone(&stop)).unwrap();
+        for _ in 0..2 {
+            let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = Arc::clone(&ticks);
+            let progress = crate::progress::Progress::new(move || {
+                observed.fetch_add(1, Ordering::Relaxed);
+            })
+            .install();
+            let pending = pool
+                .start(vec![(), ()], |_, _| crate::progress::Progress::completed())
+                .unwrap();
+            pending.finish(&stop, &mut Check::disabled()).unwrap();
+            assert_eq!(ticks.load(Ordering::Relaxed), 2);
+            drop(progress);
+            let pending = pool
+                .start(vec![(), ()], |_, _| {
+                    assert!(crate::progress::Progress::current().is_none());
+                })
+                .unwrap();
+            pending.finish(&stop, &mut Check::disabled()).unwrap();
+            assert_eq!(ticks.load(Ordering::Relaxed), 2);
+        }
+    }
+
+    #[test]
+    fn read_ahead_reports_each_requests_progress_without_retaining_it() {
+        let replay = Arc::new(super::super::super::grouped::reader_tests::rewrite_fixture(
+            b'a',
+        ));
+        let mut ahead = Ahead::new(Arc::new(AtomicBool::new(false))).unwrap();
+        let credits = Arc::new(chunks::Credits::default());
+        for _ in 0..2 {
+            let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = Arc::clone(&ticks);
+            let progress = crate::progress::Progress::new(move || {
+                observed.fetch_add(1, Ordering::Relaxed);
+            })
+            .install();
+            ahead
+                .request(
+                    Arc::clone(&replay),
+                    0,
+                    [true; TABLE_COUNT],
+                    credits.acquire(1).unwrap(),
+                )
+                .unwrap();
+            drop(progress);
+            drop(ahead.take(&mut Check::disabled()).unwrap());
+            assert!(ticks.load(Ordering::Relaxed) > 0);
+            let completed = ticks.load(Ordering::Relaxed);
+            ahead
+                .request(
+                    Arc::clone(&replay),
+                    0,
+                    [true; TABLE_COUNT],
+                    credits.acquire(1).unwrap(),
+                )
+                .unwrap();
+            drop(ahead.take(&mut Check::disabled()).unwrap());
+            assert_eq!(ticks.load(Ordering::Relaxed), completed);
+        }
+    }
 
     #[test]
     fn worker_panic_and_disconnect_release_all_owned_jobs() {

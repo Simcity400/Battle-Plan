@@ -1,12 +1,17 @@
 //! Loader worker, spool thread, and restore/drain/self-unload lifecycle.
 
+mod history_requests;
+use history_requests::{HistoryWorker, SpoolHistory};
+
+#[cfg(test)]
+use crate::spooling::HistoryReply;
 use crate::{
     acquisition_jobs as acquisition, decode,
     history::PreparedCampaigns,
     hook::{Hook, Threads},
     sampling::{self, ACTIVE, SHARED, Shared},
     spool_phases::Phase,
-    spooling::{Distribution, HistoryReply, Processor, WallTotals},
+    spooling::{Distribution, Processor, WallTotals},
 };
 use collector_primitives::capacity::CapacityMax;
 use engine_executable::build::PINNED_BUILD;
@@ -1309,6 +1314,10 @@ fn run(
     let mut priority_reconciler =
         crate::frame_priority::Reconciler::start(Arc::clone(&shared.frame_priority))?;
     owned_workers.push(priority_reconciler.thread_id());
+    let (mut history_worker, history_handoff) =
+        HistoryWorker::start(config.output_dir.clone(), config.replay_dir.clone())
+            .map_err(|e| error_reason(e, "history worker could not start"))?;
+    owned_workers.push(history_worker.thread_id());
     // The conversion helpers are collector workers for every quiescence check
     // and join with the processor when the spool thread returns. Without them
     // the spool thread converts every table itself, with identical output.
@@ -1369,6 +1378,7 @@ fn run(
                 sizing,
                 spool_writer,
                 &spool_teardown_status,
+                history_handoff,
             )
         })
         .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
@@ -1991,6 +2001,10 @@ fn run(
         .map_err(|_| "spool thread failed")
         .and_then(|result| result);
     priority_reconciler.finish();
+    let history_release_error = history_worker.finish().err().map(|error| error.to_string());
+    if history_release_error.is_some() {
+        progress.step("history_release_acknowledgement_failed", None);
+    }
     status_writer.finish();
     let (mut spool_result, terminal_status) = match spool_outcome {
         Ok(outcome) => (
@@ -2148,6 +2162,7 @@ fn run(
             "error":spool_result.as_ref().err().copied(),
             "warning":restore_result.err(),
             "decode_failure":decode::panic_failure(),
+            "history_release_error": &history_release_error,
             "event_feed_failure":restore_result.is_err().then(crate::event_feed_observer::status),
             "installation_error":installation_error,
             "failed_hook_families":crate::hook_failures::status(),
@@ -2166,6 +2181,9 @@ fn run(
         let write = if drain_complete {
             if let Some((mut bytes, directories)) = terminal_status {
                 append_event_feed_detach_status(&mut bytes, event_feed_detach)
+                    .and_then(|()| {
+                        append_history_release_status(&mut bytes, history_release_error.as_deref())
+                    })
                     .and_then(|()| crate::status_writer::measure_bytes(&mut bytes, &directories))
                     .and_then(|()| write_status_bytes(&status_path, &bytes))
             } else {
@@ -2201,6 +2219,22 @@ fn append_event_feed_detach_status(
 ) -> io::Result<()> {
     // The spool's final snapshot precedes receipt drain and store release.
     let suffix = crate::status::serialize(&crate::status::status!({"event_feed_detach":losses}))?;
+    if bytes.last() != Some(&b'}') {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    engine_allocation::reserve(bytes, suffix.len())?;
+    bytes.pop();
+    if bytes.len() > 1 {
+        bytes.push(b',');
+    }
+    bytes.extend_from_slice(&suffix[1..]);
+    Ok(())
+}
+
+fn append_history_release_status(bytes: &mut Vec<u8>, error: Option<&str>) -> io::Result<()> {
+    let Some(error) = error else { return Ok(()) };
+    let suffix =
+        crate::status::serialize(&crate::status::status!({"history_release_error": error}))?;
     if bytes.last() != Some(&b'}') {
         return Err(io::ErrorKind::InvalidData.into());
     }
@@ -4586,6 +4620,7 @@ fn spool_loop(
     // nor joins that thread (#94).
     writer: crate::status_writer::StatusHandle,
     teardown_status: &OnceLock<TeardownStatus>,
+    history_requests: SpoolHistory,
 ) -> Result<SpoolOutcome, &'static str> {
     // This local drops before the owned processor/sizing parameters, so an
     // early return or unwind joins the sampler before either owner joins helpers.
@@ -4605,7 +4640,6 @@ fn spool_loop(
     let mut priority = OwnPriority::frame_pipeline();
     priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
     let mut refresh_requests = RefreshRequests::default();
-    let mut history_requests = HistoryRequests::default();
     // Wake-ups replace polling: decode publication, a parked clock
     // preparation and the stop request unpark this thread.
     let _ = shared.spool_waker.set(std::thread::current());
@@ -4826,6 +4860,7 @@ fn spool_loop(
                 last_warning = Some(error_reason(error, "collector spool I/O failed"));
             }
             sizing.retire(processor.take_retired());
+            history_requests.poll(&mut processor, &shared.history_frames);
         }
         crate::allocation::attempted_hour(None);
         if crate::allocation::failed() {
@@ -4857,6 +4892,7 @@ fn spool_loop(
         work.idle_flush_ns = work.idle_flush_ns.saturating_add(flush_ns);
         work.idle_flush_max_ns = work.idle_flush_max_ns.max(flush_ns);
         span.finish();
+        history_requests.poll(&mut processor, &shared.history_frames);
         if reported.elapsed() >= Duration::from_secs(1) || shared.stop_spool.load(Ordering::Acquire)
         {
             let _span = phases.span(Phase::Status);
@@ -4865,10 +4901,6 @@ fn spool_loop(
             if let Err(error) = refresh_requests.poll(&config.output_dir, shared) {
                 crate::allocation::observe(&error);
                 last_warning = Some("refresh request failed");
-            }
-            if let Err(error) = history_requests.poll(&config.output_dir, &mut processor) {
-                crate::allocation::observe(&error);
-                last_warning = Some("history request failed");
             }
             let status_started = sampling::qpc();
             if let Some(error) = writer.take_error() {
@@ -4968,12 +5000,14 @@ fn spool_loop(
                 .map_err(|e| error_reason(e, "terminal status allocation failed"))?,
             )
             .map_err(|e| error_reason(e, "terminal status allocation failed"))?;
+            let directories = processor
+                .spool_directories()
+                .map_err(|e| error_reason(e, "terminal directory allocation failed"))?;
+            drop(processor);
             return Ok(SpoolOutcome {
                 result: drain_result,
                 terminal_status,
-                directories: processor
-                    .spool_directories()
-                    .map_err(|e| error_reason(e, "terminal directory allocation failed"))?,
+                directories,
             });
         }
         if shared.ready.is_empty() {
@@ -5973,38 +6007,15 @@ impl RefreshRequests {
 
 static REFRESH_ACCEPTED: AtomicU64 = AtomicU64::new(0);
 
-/// The recorder's requests for a set-aside campaign's history file; the output lock stays held.
+#[cfg(test)]
 #[derive(Default)]
-struct HistoryRequests {
+struct HistoryReplies {
     last: Option<String>,
     pending: Option<HistoryReply>,
 }
 
-pub(crate) const HISTORY_REQUEST: &str = "history.request";
-pub(crate) const HISTORY_ACK: &str = "history.ack";
-
-fn take_history_request(session: &Path) -> io::Result<Option<String>> {
-    let request = session.join(HISTORY_REQUEST);
-    let processing = session.join("history.processing");
-    match fs::rename(&request, &processing) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        result => result?,
-    }
-    let text = fs::read_to_string(&processing)?;
-    fs::remove_file(&processing)?;
-    Ok(Some(text))
-}
-
-impl HistoryRequests {
-    fn poll(&mut self, session: &Path, processor: &mut Processor) -> io::Result<()> {
-        let text = take_history_request(session)?;
-        self.poll_reply(
-            text.as_deref(),
-            |request| processor.begin_history_request(request),
-            |ack| fs::write(session.join(HISTORY_ACK), ack),
-        )
-    }
-
+#[cfg(test)]
+impl HistoryReplies {
     fn poll_reply(
         &mut self,
         text: Option<&str>,
@@ -6239,7 +6250,11 @@ impl OwnPriority {
         role: crate::frame_priority::Role,
     ) {
         self.follow(false);
-        if !self.boosts_disabled || self.lowest != Some(false) || self.eco_qos != Some(false) || self.confined != Some(false) {
+        if !self.boosts_disabled
+            || self.lowest != Some(false)
+            || self.eco_qos != Some(false)
+            || self.confined != Some(false)
+        {
             return;
         }
         pipeline.register(role);
@@ -6259,7 +6274,9 @@ impl OwnPriority {
         if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) } == 0 {
             PRIORITY_FAILURES.fetch_add(1, Ordering::Relaxed);
             false
-        } else { true }
+        } else {
+            true
+        }
     }
 
     fn should_lower(&self, backlogged: bool) -> bool {
@@ -6489,6 +6506,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn failed_history_release_marker_keeps_successful_terminal_drain_and_diagnostics() {
+        let mut bytes =
+            br#"{"state":"detached","drain_complete":true,"spool_closed":true,"hours":42}"#
+                .to_vec();
+        append_history_release_status(&mut bytes, Some("Access is denied. (os error 5)")).unwrap();
+        let status: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(status["drain_complete"], true);
+        assert_eq!(status["spool_closed"], true);
+        assert_eq!(status["hours"], 42);
+        assert_eq!(status["state"], "detached");
+        assert_eq!(
+            status["history_release_error"],
+            "Access is denied. (os error 5)"
+        );
+    }
+
+    #[test]
     fn spool_error_stops_capture_before_synchronous_writer_cleanup() {
         let recording = AtomicBool::new(true);
         let cancelled = AtomicBool::new(false);
@@ -6507,34 +6541,8 @@ mod tests {
         assert!(cancelled.load(Ordering::Acquire));
     }
 
-    #[test]
-    fn a_late_lend_cannot_consume_the_retake_sent_after_its_deadline() {
-        let root = std::env::temp_dir().join(format!(
-            "hoi4-history-request-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let request = root.join(HISTORY_REQUEST);
-        fs::write(&request, "1 lend campaign").unwrap();
-        let lent = take_history_request(&root).unwrap().unwrap();
-        fs::write(&request, "2 retake campaign").unwrap();
-        assert_eq!(lent, "1 lend campaign");
-        fs::write(root.join(HISTORY_ACK), "1 ok").unwrap();
-        assert_eq!(
-            take_history_request(&root).unwrap().as_deref(),
-            Some("2 retake campaign")
-        );
-        assert!(take_history_request(&root).unwrap().is_none());
-        fs::remove_file(root.join(HISTORY_ACK)).unwrap();
-        fs::remove_dir(root).unwrap();
-    }
-
     fn poll_history_reply(
-        requests: &mut HistoryRequests,
+        requests: &mut HistoryReplies,
         text: Option<&str>,
         reply: Option<HistoryReply>,
         acks: &mut Vec<String>,
@@ -6553,7 +6561,7 @@ mod tests {
 
     #[test]
     fn history_close_acknowledgement_waits_for_its_receipt() {
-        let mut requests = HistoryRequests::default();
+        let mut requests = HistoryReplies::default();
         let receipt = crate::spool_writer::CloseReceipt::pending();
         let mut acks = Vec::new();
         poll_history_reply(
@@ -6580,7 +6588,7 @@ mod tests {
 
     #[test]
     fn history_close_failure_acknowledges_refusal_not_success() {
-        let mut requests = HistoryRequests::default();
+        let mut requests = HistoryReplies::default();
         let receipt = crate::spool_writer::CloseReceipt::pending();
         let mut acks = Vec::new();
         poll_history_reply(
@@ -6600,7 +6608,7 @@ mod tests {
 
     #[test]
     fn duplicate_history_tokens_do_not_restart_or_discard_a_pending_close() {
-        let mut requests = HistoryRequests::default();
+        let mut requests = HistoryReplies::default();
         let receipt = crate::spool_writer::CloseReceipt::pending();
         let mut acks = Vec::new();
         poll_history_reply(
@@ -6640,7 +6648,7 @@ mod tests {
     fn a_newer_retake_supersedes_pending_and_completed_history_closes() {
         for result in [Ok(()), Err(io::ErrorKind::WriteZero)] {
             for complete_before_retake in [false, true] {
-                let mut requests = HistoryRequests::default();
+                let mut requests = HistoryReplies::default();
                 let receipt = crate::spool_writer::CloseReceipt::pending();
                 let mut acks = Vec::new();
                 poll_history_reply(
@@ -6675,7 +6683,7 @@ mod tests {
 
     #[test]
     fn a_newer_history_close_keeps_its_own_receipt() {
-        let mut requests = HistoryRequests::default();
+        let mut requests = HistoryReplies::default();
         let old = crate::spool_writer::CloseReceipt::pending();
         let new = crate::spool_writer::CloseReceipt::pending();
         let mut acks = Vec::new();
@@ -6701,7 +6709,7 @@ mod tests {
     #[test]
     fn failed_history_acknowledgement_writes_retry_without_repeating_the_request() {
         for result in [Ok(()), Err(io::ErrorKind::WriteZero)] {
-            let mut requests = HistoryRequests::default();
+            let mut requests = HistoryReplies::default();
             let receipt = crate::spool_writer::CloseReceipt::pending();
             let mut acks = Vec::new();
             poll_history_reply(
@@ -6739,7 +6747,7 @@ mod tests {
 
     #[test]
     fn newer_ready_history_reply_retries_instead_of_an_older_close() {
-        let mut requests = HistoryRequests::default();
+        let mut requests = HistoryReplies::default();
         let receipt = crate::spool_writer::CloseReceipt::pending();
         let mut acks = Vec::new();
         poll_history_reply(

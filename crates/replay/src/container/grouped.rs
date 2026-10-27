@@ -1526,7 +1526,58 @@ const WINDOW_LOG: u32 = 26;
 /// [`WINDOW_LOG`]. The compressor knows the size, so it sizes its tables to
 /// it, but the frame does not record it: the directory does.
 pub(crate) fn compress_at(raw: &[u8], level: i32) -> io::Result<Vec<u8>> {
-    with_compressor(level, |compressor| compressor.compress(raw))
+    with_compressor(level, |compressor| {
+        if crate::progress::Progress::current().is_none() {
+            return compressor.compress(raw);
+        }
+        use zstd::zstd_safe::{InBuffer, OutBuffer, ResetDirective, zstd_sys::ZSTD_EndDirective};
+        let error = |code| io::Error::other(zstd::zstd_safe::get_error_name(code));
+        let context = compressor.context_mut();
+        context.reset(ResetDirective::SessionOnly).map_err(error)?;
+        context
+            .set_pledged_src_size(Some(raw.len() as u64))
+            .map_err(error)?;
+        let mut compressed = Vec::new();
+        engine_allocation::reserve(&mut compressed, zstd::zstd_safe::compress_bound(raw.len()))?;
+        let mut scratch = [0; 64 * 1024];
+        let mut at = 0;
+        loop {
+            let end = (at + 64 * 1024).min(raw.len());
+            let last = end == raw.len();
+            let mut input = InBuffer::around(&raw[at..end]);
+            loop {
+                let before = input.pos();
+                let mut output = OutBuffer::around(&mut scratch[..]);
+                let remaining = context
+                    .compress_stream2(
+                        &mut output,
+                        &mut input,
+                        if last {
+                            ZSTD_EndDirective::ZSTD_e_end
+                        } else {
+                            ZSTD_EndDirective::ZSTD_e_continue
+                        },
+                    )
+                    .map_err(error)?;
+                let count = output.pos();
+                compressed.extend_from_slice(&scratch[..count]);
+                if input.pos() != before || count != 0 {
+                    crate::progress::Progress::completed();
+                }
+                if input.pos() == end - at && (!last || remaining == 0) {
+                    break;
+                }
+                if input.pos() == before && count == 0 {
+                    return Err(io::Error::other("compression made no progress"));
+                }
+            }
+            if last {
+                break;
+            }
+            at = end;
+        }
+        Ok(compressed)
+    })
 }
 
 /// Runs `compress` with this thread's compressor for `level`. Every frame
@@ -1581,8 +1632,7 @@ pub(crate) fn fresh_and_failed_reuse(raw: &[u8], level: i32) -> io::Result<(Vec<
 /// that is not smaller.
 fn store(compressed: &[u8], raw: usize) -> io::Result<Option<Vec<u8>>> {
     let mut plain = Vec::with_capacity(raw);
-    zstd::stream::read::Decoder::with_buffer(compressed)?
-        .single_frame()
+    crate::progress::Reader(zstd::stream::read::Decoder::with_buffer(compressed)?.single_frame())
         .read_to_end(&mut plain)?;
     if plain.len() != raw {
         return Err(invalid_static("chosen section raw length mismatch"));
@@ -2777,6 +2827,7 @@ impl Directory {
             if count == 0 {
                 break;
             }
+            crate::progress::Progress::completed();
             total = total
                 .checked_add(count)
                 .filter(|&n| n <= raw)

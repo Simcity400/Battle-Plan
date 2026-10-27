@@ -4,6 +4,31 @@
 use super::*;
 use crate::rows::{ArmyOrderRow, CountryRow, DivisionRow, LexicalTokenRow, ProvinceRow};
 
+#[test]
+fn compression_progress_keeps_the_same_frame_bytes_and_reports_completed_chunks() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    for level in [9, 19] {
+        let raw: Vec<_> = (0..192 * 1024)
+            .map(|at| ((at * 31 + at / 127) % 251) as u8)
+            .collect();
+        let expected = grouped::compress_at(&raw, level).unwrap();
+        let count = Arc::new(AtomicU64::new(0));
+        let observed = Arc::clone(&count);
+        let progress = crate::progress::Progress::new(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+        })
+        .install();
+        let actual = grouped::compress_at(&raw, level).unwrap();
+        assert_eq!(actual, expected);
+        assert!(count.load(Ordering::Relaxed) >= 3);
+        drop(progress);
+        assert_eq!(grouped::compress_at(&raw, level).unwrap(), expected);
+    }
+}
+
 fn stored(mut frame: DecodedFrame) -> DecodedFrame {
     frame.metrics = frame.metrics.stored();
     frame

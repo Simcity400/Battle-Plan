@@ -3569,6 +3569,7 @@ impl Processor {
         }
     }
 
+    #[cfg(test)]
     fn close_campaign(
         &mut self,
         id: &str,
@@ -3611,7 +3612,147 @@ impl Processor {
         })
     }
 
-    /// The recorder saves a campaign the game left: let go of its history file meanwhile.
+    pub(crate) fn exchange_history_lease(
+        &mut self,
+        id: &str,
+        mut file: Option<File>,
+    ) -> Option<File> {
+        match self.campaigns.get_mut(id) {
+            Some(campaign) => {
+                std::mem::swap(&mut campaign.history_lease, &mut file);
+                file
+            }
+            None => self.history.exchange_lease(id, file),
+        }
+    }
+
+    pub(crate) fn try_history_request(
+        &mut self,
+        request: &str,
+    ) -> io::Result<Option<(HistoryReply, Option<File>)>> {
+        let mut words = request.split_whitespace();
+        let (Some(token), Some(action), Some(id)) = (words.next(), words.next(), words.next())
+        else {
+            return Err(io::ErrorKind::InvalidData.into());
+        };
+        let id = campaign_name(id.as_bytes())?;
+        let mut lease = None;
+        let refusal = match action {
+            "release"
+                if self
+                    .campaigns
+                    .get_mut(&id)
+                    .is_some_and(|campaign| campaign.spool.is_open()) =>
+            {
+                Some("the campaign is recording")
+            }
+            "release" | "lend" => {
+                lease = self.exchange_history_lease(&id, None);
+                None
+            }
+            "close" => {
+                let load = words.next().and_then(|word| word.parse::<i64>().ok());
+                let receipt = match self.try_close_campaign(&id, load) {
+                    Ok(Some(receipt)) => receipt,
+                    Ok(None) => return Ok(None),
+                    Err(error) => {
+                        return Ok(Some((
+                            HistoryReply::Ready(format!("{token} refused {error}")),
+                            None,
+                        )));
+                    }
+                };
+                return Ok(Some((
+                    HistoryReply::Closing {
+                        token: token.to_owned(),
+                        receipt,
+                    },
+                    None,
+                )));
+            }
+            _ => Some("unknown request"),
+        };
+        let reply = match refusal {
+            Some(reason) => format!("{token} refused {reason}"),
+            None => format!("{token} ok"),
+        };
+        Ok(Some((HistoryReply::Ready(reply), lease)))
+    }
+
+    fn try_close_campaign(
+        &mut self,
+        id: &str,
+        load: Option<i64>,
+    ) -> io::Result<Option<crate::spool_writer::CloseReceipt>> {
+        let Some(campaign) = self.campaigns.get_mut(id) else {
+            let receipt = crate::spool_writer::CloseReceipt::default();
+            receipt.complete(Ok(()));
+            return Ok(Some(receipt));
+        };
+        if load.is_some_and(|load| {
+            campaign
+                .tracker
+                .last_load_signal()
+                .is_some_and(|now| now != load)
+        }) {
+            return Err(invalid("the campaign was loaded again"));
+        }
+        let storage = if campaign.close_storage_bytes() != 0 {
+            let Some(storage) = self.writer.try_receipt_storage(
+                campaign.close_storage_bytes(),
+                size_of::<(
+                    crate::spool_writer::CloseReceipt,
+                    Vec<PendingBranch>,
+                    Option<crate::spool_writer::ReceiptStorage>,
+                )>(),
+                0,
+            )?
+            else {
+                return Ok(None);
+            };
+            Some(storage)
+        } else {
+            None
+        };
+        let restarting = !campaign.spool.is_open()
+            && campaign
+                .pending
+                .last()
+                .is_some_and(|pending| !pending.gaps.is_empty());
+        let context_submitted = campaign.spool.is_open() || restarting;
+        let context = if context_submitted {
+            campaign.context(restarting, 0)?
+        } else {
+            Vec::new()
+        };
+        if context_submitted && !campaign.pending.is_empty() {
+            engine_allocation::reserve(&mut campaign.closing, 1)?;
+        }
+        let caller = crate::allocation::context();
+        crate::allocation::set_context(crate::allocation::Context {
+            campaign_id: id.as_bytes().try_into().ok(),
+            branch: campaign.tracker.current_branch(),
+            load_signal: campaign.tracker.last_load_signal(),
+            failed_hour: None,
+        });
+        let result = campaign.spool.try_close_context(context, restarting);
+        crate::allocation::set_context(caller);
+        let receipt = match result {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+            result => result?,
+        };
+        if context_submitted && !campaign.pending.is_empty() {
+            campaign.closing.push((
+                receipt.clone(),
+                std::mem::take(&mut campaign.pending),
+                storage,
+            ));
+        }
+        self.account_ledger();
+        Ok(Some(receipt))
+    }
+
+    #[cfg(test)]
     pub(crate) fn release_history(&mut self, id: &str) -> Result<(), &'static str> {
         match self.campaigns.get_mut(id) {
             Some(campaign) if campaign.spool.is_open() => return Err("the campaign is recording"),
@@ -3623,6 +3764,7 @@ impl Processor {
 
     /// The recorder checkpoints the campaign being recorded: it adds the hours closed segments hold
     /// to the end of the history file, which keeps every hour it had. Let go of the file meanwhile.
+    #[cfg(test)]
     pub(crate) fn lend_history(&mut self, id: &str) {
         match self.campaigns.get_mut(id) {
             Some(campaign) => campaign.history_lease = None,
@@ -3631,6 +3773,7 @@ impl Processor {
     }
 
     /// Answer the recorder's `<token> release|lend|retake <campaign>` with `<token> ok|refused <reason>`.
+    #[cfg(test)]
     pub(crate) fn begin_history_request(&mut self, request: &str) -> HistoryReply {
         let mut words = request.split_whitespace();
         let (token, action, campaign) = (words.next(), words.next(), words.next());
@@ -3681,6 +3824,7 @@ impl Processor {
     }
 
     /// Hold a campaign's history file again, as the recorder saved it.
+    #[cfg(test)]
     pub(crate) fn retake_history(&mut self, id: &str) -> io::Result<()> {
         let lease = match self.history.history_path(id)? {
             Some(path) => Some(crate::history::lease(&path)?),
@@ -5569,6 +5713,7 @@ mod tests {
     fn a_campaign_the_game_left_is_saved_over_its_existing_recording_while_its_history_is_released()
     {
         use recorder_replay::replay_io;
+        use std::os::windows::fs::OpenOptionsExt;
         let root = scratch_root("set-aside-lease");
         let target = root.join("recordings");
         let name = std::str::from_utf8(ID).unwrap();
@@ -5619,11 +5764,17 @@ mod tests {
             .frame(&crate::spooling::campaign_frame(OTHER, 9012, 30))
             .unwrap();
         let held = fs::read(&recording).unwrap();
+        let conflict = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+            .open(&recording)
+            .unwrap();
         assert!(
             save(&folder).is_err(),
-            "no one replaces a history the collector holds"
+            "the restrictive reader prevents replacement"
         );
         assert_eq!(fs::read(&recording).unwrap(), held);
+        drop(conflict);
         // The campaign being recorded keeps its history, but lends it to a checkpoint.
         assert_eq!(
             processor.history_request(&format!("1 release {other}")),
@@ -5631,7 +5782,11 @@ mod tests {
         );
         assert_eq!(processor.history_request(&format!("5 lend {name}")), "5 ok");
         assert!(
-            fs::OpenOptions::new().write(true).open(&recording).is_ok(),
+            fs::OpenOptions::new()
+                .write(true)
+                .share_mode(0)
+                .open(&recording)
+                .is_ok(),
             "lent"
         );
         assert_eq!(
@@ -5639,7 +5794,11 @@ mod tests {
             "6 ok"
         );
         assert!(
-            fs::OpenOptions::new().write(true).open(&recording).is_err(),
+            fs::OpenOptions::new()
+                .write(true)
+                .share_mode(0)
+                .open(&recording)
+                .is_err(),
             "held again after the checkpoint"
         );
         // A checkpoint borrows the history of the campaign the game is recording too.
@@ -5667,7 +5826,11 @@ mod tests {
             .tracker
             .current_branch();
         assert!(
-            fs::OpenOptions::new().write(true).open(&recording).is_err(),
+            fs::OpenOptions::new()
+                .write(true)
+                .share_mode(0)
+                .open(&recording)
+                .is_err(),
             "held again"
         );
         assert_eq!(
