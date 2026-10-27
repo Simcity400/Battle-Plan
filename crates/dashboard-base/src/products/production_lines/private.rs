@@ -78,37 +78,50 @@ impl<'a, W: Pages + ?Sized> Store<'a, W> {
         let bytes = crate::prepared::series::compress(&serde_json::to_vec(node)?, 3)?;
         Ok(Root(Some(self.pages.write(&self.section, &bytes)?)))
     }
-    fn insert(&mut self, root: Root, key: &str, value: Vec<u8>) -> io::Result<Root> {
+    fn insert(&mut self, root: Root, key: &str, value: Vec<u8>) -> io::Result<Option<Root>> {
         let Some(mut node) = self.read(root)? else {
-            return self.write(&Node {
-                key: key.into(),
-                value,
-                left: Root::default(),
-                right: Root::default(),
-            });
+            return self
+                .write(&Node {
+                    key: key.into(),
+                    value,
+                    left: Root::default(),
+                    right: Root::default(),
+                })
+                .map(Some);
         };
         match key.cmp(&node.key) {
-            std::cmp::Ordering::Equal => node.value = value,
+            std::cmp::Ordering::Equal => {
+                if node.value == value {
+                    return Ok(None);
+                }
+                node.value = value;
+            }
             std::cmp::Ordering::Less => {
-                node.left = self.insert(node.left, key, value)?;
+                let Some(left) = self.insert(node.left, key, value)? else {
+                    return Ok(None);
+                };
+                node.left = left;
                 let mut left = self.read(node.left)?.expect("inserted private page");
                 if priority(&left.key) < priority(&node.key) {
                     node.left = left.right;
                     left.right = self.write(&node)?;
-                    return self.write(&left);
+                    return self.write(&left).map(Some);
                 }
             }
             std::cmp::Ordering::Greater => {
-                node.right = self.insert(node.right, key, value)?;
+                let Some(right) = self.insert(node.right, key, value)? else {
+                    return Ok(None);
+                };
+                node.right = right;
                 let mut right = self.read(node.right)?.expect("inserted private page");
                 if priority(&right.key) < priority(&node.key) {
                     node.right = right.left;
                     right.left = self.write(&node)?;
-                    return self.write(&right);
+                    return self.write(&right).map(Some);
                 }
             }
         }
-        self.write(&node)
+        self.write(&node).map(Some)
     }
 }
 fn priority(key: &str) -> (u64, &str) {
@@ -134,10 +147,9 @@ impl<W: Pages + ?Sized> Facts for Store<'_, W> {
         Ok(None)
     }
     fn put(&mut self, root: &mut Root, key: &str, value: Vec<u8>) -> io::Result<()> {
-        if self.get(*root, key)?.as_ref() == Some(&value) {
-            return Ok(());
+        if let Some(changed) = self.insert(*root, key, value)? {
+            *root = changed;
         }
-        *root = self.insert(*root, key, value)?;
         Ok(())
     }
     fn next(
