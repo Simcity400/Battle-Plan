@@ -1,10 +1,10 @@
-//! Certified icon-core segments. The existing census still authenticates every
-//! roster occurrence and reads its complete fixed record and literal name.
+//! Each template's last read, published as is while its writer certificate
+//! stands: the census then reads nothing of it past its identity.
 use super::*;
 use crate::template_changes::Changes;
 
-type Stamp = (u64, u64);
-type Certificate = [Stamp; 3];
+/// Template, owner and local-definition writer stamps.
+pub(super) type Certificate = [(u64, u64); 3];
 
 #[derive(Default)]
 struct Core {
@@ -12,6 +12,7 @@ struct Core {
     bytes: Vec<u8>,
     counts: Vec<native::SubunitCount>,
     variants: Vec<u64>,
+    names: Vec<u8>,
 }
 
 fn append<T: Copy>(output: &mut Vec<T>, source: &[T], span: &mut native::Span) -> Option<()> {
@@ -28,11 +29,13 @@ impl Core {
         bytes: &[u8],
         counts: &[native::SubunitCount],
         variants: &[u64],
+        names: &[u8],
     ) -> Option<Self> {
-        // Refused fields always retry on the original path, as before.
+        // Refused fields and names are read again next hour.
         if row.model_failure.is_some() || row.unit_type_failure.is_some() {
             return None;
         }
+        let display = row.display_name?;
         let mut core = Self {
             row: *row,
             ..Self::default()
@@ -45,8 +48,16 @@ impl Core {
             append(&mut core.counts, counts, grid)?;
         }
         append(&mut core.variants, variants, &mut r.excluded_variants)?;
-        // These belong to the independently held extension and fresh-name paths.
-        r.display_name = None;
+        let mut literal = display.literal;
+        let mut key = r.name_key?;
+        append(&mut core.names, names, &mut literal)?;
+        append(&mut core.names, names, &mut key)?;
+        r.display_name = Some(native::DisplayName {
+            literal,
+            fallback_key: display.fallback_key.map(|_| key),
+        });
+        r.name_key = Some(key);
+        // These belong to the independently held extension.
         r.names_group = None;
         r.cells = Default::default();
         r.grid_dimensions = Default::default();
@@ -70,15 +81,16 @@ impl Core {
         self.bytes.capacity()
             + self.counts.capacity() * size_of::<native::SubunitCount>()
             + self.variants.capacity() * size_of::<u64>()
+            + self.names.capacity()
     }
 }
 
 struct Entry {
     template: u64,
     certificate: Certificate,
-    record: Vec<u8>,
     core: Core,
     speed: Option<Vec<u32>>,
+    /// Published as held this hour.
     carried: bool,
 }
 
@@ -86,32 +98,19 @@ struct Entry {
 pub(super) struct Store {
     entries: Vec<Entry>,
     live: Vec<u64>,
-    pending: Option<(u64, usize, u32, Certificate)>,
     payload_bytes: usize,
-    before: Option<[Stamp; 2]>,
 }
 
 impl Store {
     pub fn forget(&mut self) {
         self.entries.clear();
-        self.pending = None;
         self.payload_bytes = 0;
-        self.before = None;
     }
 
-    pub fn begin(&mut self, changes: &dyn Changes) {
-        self.before = changes
-            .quiet()
-            .zip(changes.core_dependencies())
-            .map(|(templates, dependencies)| [templates, dependencies]);
-    }
-
-    /// Equal whole-domain tokens since before this walk exclude every writer
-    /// covered by the individual certificates already checked for this core.
-    fn stable(&self, changes: &dyn Changes) -> bool {
-        self.before.is_some_and(|[templates, dependencies]| {
-            changes.quiet() == Some(templates) && changes.core_dependencies() == Some(dependencies)
-        })
+    pub fn begin(&mut self) {
+        for entry in &mut self.entries {
+            entry.carried = false;
+        }
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -126,63 +125,61 @@ impl Store {
                 .sum::<usize>()
     }
 
-    pub fn prepare(
+    /// Whether this occurrence publishes its held row: the template object,
+    /// handle and owner are the held read's and its stamps have not moved.
+    pub fn carry(
         &mut self,
         template: u64,
         pointer: usize,
         owner: u32,
         certificate: Option<Certificate>,
-    ) {
-        if let Ok(at) = self
+    ) -> bool {
+        let Some(certificate) = certificate else {
+            return false;
+        };
+        let Ok(at) = self
             .entries
             .binary_search_by_key(&template, |entry| entry.template)
-        {
-            self.entries[at].carried = false;
-        }
-        self.pending = certificate.map(|certificate| (template, pointer, owner, certificate));
+        else {
+            return false;
+        };
+        let entry = &mut self.entries[at];
+        let carried = entry.core.row.pointer == pointer
+            && entry.core.row.owner == owner
+            && entry.certificate == certificate
+            // Refused or unheld speed keys take the fresh path.
+            && entry.speed.is_some();
+        entry.carried |= carried;
+        carried
     }
 
-    pub fn carry(&mut self, record: &[u8], changes: &dyn Changes) -> Option<native::IconCore<'_>> {
-        let (template, pointer, owner, certificate) = self.pending?;
-        let at = self
+    pub fn held(&self, template: u64) -> Option<native::IconCore<'_>> {
+        let entry = &self.entries[self
             .entries
             .binary_search_by_key(&template, |entry| entry.template)
-            .ok()?;
-        let entry = &self.entries[at];
-        if entry.core.row.pointer != pointer
-            || entry.core.row.owner != owner
-            || entry.certificate != certificate
-            || entry.record != record
-        {
-            return None;
-        }
-        if !self.stable(changes)
-            && (changes.sequence(pointer) != Some(certificate[0])
-                || changes.sequence(owner as usize) != Some(certificate[1])
-                || changes.core_dependencies() != Some(certificate[2]))
-        {
-            return None;
-        }
-        let entry = &mut self.entries[at];
-        entry.carried = true;
-        Some(native::IconCore {
+            .ok()?];
+        entry.carried.then_some(native::IconCore {
             row: entry.core.row,
             bytes: &entry.core.bytes,
             counts: &entry.core.counts,
             variants: &entry.core.variants,
+            names: &entry.core.names,
         })
     }
 
+    /// Holds a read row whose stamps, taken before its reads, still stand.
+    #[allow(clippy::too_many_arguments)]
     pub fn remember(
         &mut self,
         changes: &dyn Changes,
-        record: &[u8],
+        certificate: Option<Certificate>,
         row: &native::IconRow,
         bytes: &[u8],
         counts: &[native::SubunitCount],
         variants: &[u64],
+        names: &[u8],
     ) {
-        let Some((template, _, _, certificate)) = self.pending else {
+        let Some(certificate) = certificate else {
             return;
         };
         if changes.sequence(row.pointer) != Some(certificate[0])
@@ -191,47 +188,37 @@ impl Store {
         {
             return;
         }
-        let Some(core) = Core::read(row, bytes, counts, variants) else {
-            if let Ok(at) = self
-                .entries
-                .binary_search_by_key(&template, |entry| entry.template)
-            {
+        let found = self
+            .entries
+            .binary_search_by_key(&row.template, |entry| entry.template);
+        // Another occurrence of the handle was already published from it.
+        if found.is_ok_and(|at| self.entries[at].carried) {
+            return;
+        }
+        let Some(core) = Core::read(row, bytes, counts, variants, names) else {
+            if let Ok(at) = found {
                 let entry = self.entries.remove(at);
-                self.payload_bytes -= entry.record.capacity() + entry.core.allocated_bytes();
+                self.payload_bytes -= entry.core.allocated_bytes();
             }
             return;
         };
-        let at = match self
-            .entries
-            .binary_search_by_key(&template, |entry| entry.template)
-        {
+        let at = match found {
             Ok(at) => {
                 let entry = &mut self.entries[at];
-                let previous_bytes = entry.record.capacity() + entry.core.allocated_bytes();
-                if engine_allocation::reserve(&mut entry.record, record.len()).is_err() {
-                    return;
-                }
-                entry.carried = false;
-                self.payload_bytes -= previous_bytes;
+                self.payload_bytes -= entry.core.allocated_bytes();
                 entry.certificate = certificate;
-                entry.record.clear();
-                entry.record.extend_from_slice(record);
                 entry.core = core;
                 at
             }
             Err(at) => {
-                let Ok(record) = engine_allocation::copy_vec(record) else {
-                    return;
-                };
                 if engine_allocation::reserve(&mut self.entries, 1).is_err() {
                     return;
                 }
                 self.entries.insert(
                     at,
                     Entry {
-                        template,
+                        template: row.template,
                         certificate,
-                        record,
                         core,
                         speed: None,
                         carried: false,
@@ -240,25 +227,19 @@ impl Store {
                 at
             }
         };
-        let entry = &self.entries[at];
-        self.payload_bytes += entry.record.capacity() + entry.core.allocated_bytes();
+        self.payload_bytes += self.entries[at].core.allocated_bytes();
     }
 
-    pub fn speed(&self, template: u64, changes: &dyn Changes) -> Option<&[u32]> {
+    /// A carried template's held speed keys.
+    pub fn speed(&self, template: u64) -> Option<&[u32]> {
         let entry = &self.entries[self
             .entries
             .binary_search_by_key(&template, |entry| entry.template)
             .ok()?];
-        (entry.carried
-            && (self.stable(changes)
-                || (changes.sequence(entry.core.row.pointer) == Some(entry.certificate[0])
-                    && changes.sequence(entry.core.row.owner as usize)
-                        == Some(entry.certificate[1])
-                    && changes.core_dependencies() == Some(entry.certificate[2]))))
-        .then_some(entry.speed.as_deref())
-        .flatten()
+        entry.carried.then_some(entry.speed.as_deref()).flatten()
     }
 
+    /// Freshly read speed keys, held while the row's stamps still stand.
     pub fn remember_speed(&mut self, template: u64, keys: Option<&[u32]>, changes: &dyn Changes) {
         let Ok(at) = self
             .entries
@@ -290,7 +271,7 @@ impl Store {
         self.entries.retain(|entry| {
             let keep = self.live.binary_search(&entry.template).is_ok();
             if !keep {
-                self.payload_bytes -= entry.record.capacity() + entry.core.allocated_bytes();
+                self.payload_bytes -= entry.core.allocated_bytes();
             }
             keep
         });
@@ -300,20 +281,21 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
+    use crate::template_changes::Watches;
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-    struct Counted {
-        watches: crate::template_changes::Watches,
+    type Stamp = (u64, u64);
+
+    struct Stamped {
+        watches: Watches,
         dependencies: AtomicU64,
-        probes: AtomicUsize,
     }
 
-    impl Changes for Counted {
+    impl Changes for Stamped {
         fn quiet(&self) -> Option<Stamp> {
             self.watches.quiet()
         }
         fn sequence(&self, pointer: usize) -> Option<Stamp> {
-            self.probes.fetch_add(1, Relaxed);
             self.watches.sequence(pointer)
         }
         fn core_dependencies(&self) -> Option<Stamp> {
@@ -321,95 +303,71 @@ mod tests {
         }
     }
 
+    fn certificate(changes: &Stamped, row: &native::IconRow) -> Option<Certificate> {
+        Some([
+            changes.sequence(row.pointer)?,
+            changes.sequence(row.owner as usize)?,
+            changes.core_dependencies()?,
+        ])
+    }
+
     #[test]
-    fn quiet_template_core_and_speed_proofs_skip_receiver_probes() {
-        let changes = Counted {
-            watches: crate::template_changes::Watches::enabled(33),
+    fn held_rows_carry_only_under_their_own_stamps_and_object() {
+        let changes = Stamped {
+            watches: Watches::enabled(8),
             dependencies: AtomicU64::new(0),
-            probes: AtomicUsize::new(0),
+        };
+        let names = b"Alphakey";
+        let row = native::IconRow {
+            template: (7_u64 << 32) | u64::from(native::REFERENCE_TYPE),
+            pointer: 0x5000,
+            owner: 1,
+            display_name: Some(native::DisplayName {
+                literal: native::Span { start: 0, len: 5 },
+                fallback_key: None,
+            }),
+            name_key: Some(native::Span { start: 5, len: 3 }),
+            ..Default::default()
         };
         let mut store = Store::default();
-        let owner = changes.sequence(1).unwrap();
-        for index in 0..32 {
-            let row = native::IconRow {
-                template: ((index as u64 + 1) << 32) | u64::from(native::REFERENCE_TYPE),
-                pointer: 0x10000 + index * 0x400,
-                owner: 1,
-                ..Default::default()
-            };
-            let certificate = [changes.sequence(row.pointer).unwrap(), owner, (1, 0)];
-            store.prepare(row.template, row.pointer, row.owner, Some(certificate));
-            store.remember(&changes, b"fixed", &row, &[], &[], &[]);
-            store.remember_speed(row.template, Some(&[155]), &changes);
-        }
-        assert_eq!(store.entries.len(), 32);
-        store.begin(&changes);
-        changes.probes.store(0, Relaxed);
-        for index in 0..store.entries.len() {
-            let row = store.entries[index].core.row;
-            let certificate = store.entries[index].certificate;
-            store.prepare(row.template, row.pointer, row.owner, Some(certificate));
-            assert!(store.carry(b"fixed", &changes).is_some());
-            assert_eq!(store.speed(row.template, &changes), Some([155].as_slice()));
-        }
-        assert_eq!(changes.probes.load(Relaxed), 0);
-        let first = store.entries[0].core.row;
-        let certificate = store.entries[0].certificate;
-        // An unrelated writer removes the shortcut, not a valid receiver carry.
-        store.begin(&changes);
-        drop(
-            changes
-                .watches
-                .notify(store.entries[31].core.row.pointer, 0),
-        );
-        store.prepare(
-            first.template,
-            first.pointer,
-            first.owner,
-            Some(certificate),
-        );
-        assert!(store.carry(b"fixed", &changes).is_some());
-        assert_eq!(
-            store.speed(first.template, &changes),
-            Some([155].as_slice())
-        );
-        assert!(changes.probes.load(Relaxed) > 0);
-        // A later writer must also revoke speed after the core already carried.
-        store.begin(&changes);
-        let writer = changes.watches.notify(first.pointer, 0);
-        assert!(store.speed(first.template, &changes).is_none());
-        drop(writer);
-        // Entry precedes the fixed read; running and completed writers revoke it.
-        store.begin(&changes);
-        store.prepare(
-            first.template,
-            first.pointer,
-            first.owner,
-            Some(certificate),
-        );
-        let writer = changes.watches.notify(first.pointer, 0);
-        assert!(store.carry(b"fixed", &changes).is_none());
-        drop(writer);
-        assert!(store.carry(b"fixed", &changes).is_none());
-        assert_eq!(store.speed(first.template, &changes), None);
-        // Local definition/content changes also revoke the aggregate proof.
-        let certificate = [changes.sequence(first.pointer).unwrap(), owner, (1, 0)];
-        store.prepare(
-            first.template,
-            first.pointer,
-            first.owner,
-            Some(certificate),
-        );
-        store.remember(&changes, b"fixed", &first, &[], &[], &[]);
-        store.remember_speed(first.template, Some(&[155]), &changes);
-        store.begin(&changes);
-        store.prepare(
-            first.template,
-            first.pointer,
-            first.owner,
-            Some(certificate),
-        );
+        store.remember(&changes, certificate(&changes, &row), &row, &[], &[], &[], names);
+        store.remember_speed(row.template, Some(&[155]), &changes);
+        let carried = |store: &mut Store, changes: &Stamped, pointer: usize, owner: u32| {
+            store.begin();
+            let current = certificate(changes, &row);
+            store.carry(row.template, pointer, owner, current)
+        };
+        assert!(carried(&mut store, &changes, row.pointer, row.owner));
+        let core = store.held(row.template).unwrap();
+        let display = core.row.display_name.unwrap();
+        assert_eq!(&core.names[display.literal.start..][..display.literal.len], b"Alpha");
+        let key = core.row.name_key.unwrap();
+        assert_eq!(&core.names[key.start..][..key.len], b"key");
+        assert_eq!(store.speed(row.template), Some([155].as_slice()));
+        // Another object or owner, a moved stamp or no stamp at all reads the template.
+        assert!(!carried(&mut store, &changes, 0x6000, row.owner));
+        assert!(!carried(&mut store, &changes, row.pointer, 2));
+        assert!(store.held(row.template).is_none() && store.speed(row.template).is_none());
+        drop(changes.watches.notify(row.owner as usize, 29));
+        assert!(!carried(&mut store, &changes, row.pointer, row.owner));
+        store.begin();
+        assert!(!store.carry(row.template, row.pointer, row.owner, None));
         changes.dependencies.fetch_add(1, Relaxed);
-        assert!(store.carry(b"fixed", &changes).is_none());
+        assert!(!carried(&mut store, &changes, row.pointer, row.owner));
+        // A writer during the read leaves nothing held under the new stamps.
+        let before = certificate(&changes, &row);
+        drop(changes.watches.notify(row.pointer, 0));
+        store.remember(&changes, before, &row, &[], &[], &[], names);
+        assert!(!carried(&mut store, &changes, row.pointer, row.owner));
+        store.remember(&changes, certificate(&changes, &row), &row, &[], &[], &[], names);
+        assert!(carried(&mut store, &changes, row.pointer, row.owner));
+        // An unreadable name is not held, and drops the earlier read.
+        store.begin();
+        let unnamed = native::IconRow {
+            name_key: None,
+            ..row
+        };
+        store.remember(&changes, certificate(&changes, &row), &unnamed, &[], &[], &[], names);
+        assert!(store.entries.is_empty() && store.payload_bytes == 0);
     }
 }

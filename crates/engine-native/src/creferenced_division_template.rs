@@ -185,6 +185,9 @@ pub struct IconRow {
     pub formation_division_count: Option<i32>,
     /// Independently acquired display-name operands in the caller's name arena.
     pub display_name: Option<DisplayName>,
+    /// The fallback key in the name arena, read beside the literal for the
+    /// dictionary; None when the literal or the key was unreadable.
+    pub name_key: Option<Span>,
     /// Stored representative model or priority fallback. Token zero is the null
     /// object and draws no model; its count is unused.
     pub representative: SubunitCount,
@@ -248,7 +251,7 @@ pub struct Walk {
     pub outcome: Outcome,
     pub bytes_len: usize,
     pub required_bytes: usize,
-    /// Display naming uses the fallback key only when literal text is empty.
+    /// The named icon walk's literal and fallback key bytes.
     pub required_name_bytes: usize,
     /// Definition memo slots that would hold every definition at half load.
     pub required_memo: usize,
@@ -874,6 +877,18 @@ const ICON_NAMED_FIELDS: [RecordField; 3] = [
 ];
 const ICON_NAMED_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ICON_NAMED_FIELDS, ICON_NAMED_RECORD).expect("valid named icon layout");
+/// A policy walk gathers every identity first, then the rest of each read record.
+const IDENTITY: usize = 16;
+const IDENTITY_FIELDS: [RecordField; 1] = [ICON_FIELDS[0]];
+const IDENTITY_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&IDENTITY_FIELDS, IDENTITY).expect("valid template identity layout");
+const ICON_REST_FIELDS: [RecordField; 1] = [ICON_FIELDS[1]];
+const ICON_REST_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&ICON_REST_FIELDS, ICON_RECORD).expect("valid icon rest layout");
+const ICON_NAMED_REST_FIELDS: [RecordField; 2] = [ICON_NAMED_FIELDS[1], ICON_NAMED_FIELDS[2]];
+const ICON_NAMED_REST_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&ICON_NAMED_REST_FIELDS, ICON_NAMED_RECORD)
+        .expect("valid named icon rest layout");
 /// The largest record, for the batch buffer.
 const MAX_RECORD: usize = if RECORD > ICON_NAMED_RECORD {
     RECORD
@@ -889,41 +904,68 @@ const fn icon(offset: usize) -> usize {
 pub const READ_BATCH: usize = 32;
 const BATCH: usize = READ_BATCH;
 
-/// Extension demand can bracket the existing fixed-record read. Country
-/// preparation precedes its roster header; batch preparation precedes every
-/// fixed field. Only then does selection receive the authenticated identity.
+/// What a policy walk acquires for one authenticated roster occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acquire {
+    /// Publish [`DetailPolicy::held`]; nothing more of the template is read.
+    Held,
+    /// Read the template, with its extension operands when `details`.
+    Read { details: bool },
+}
+
+/// Selects each occurrence's reads. Country preparation precedes its roster
+/// header; batch preparation precedes every identity, and the demand sees the
+/// authenticated identity before anything else of the template is read.
 pub trait DetailPolicy {
     fn before_country(&mut self, _country: u32) {}
     fn before_records(&mut self, _templates: &[usize]) {}
-    fn demand(&mut self, country: u32, pointer: usize, template: u64, ordinal: u32) -> bool;
-    /// A complete, certified core, after the current fixed record was authenticated.
-    /// Roster and fixed-field acquisition and display names remain fresh.
-    fn core(&mut self, _record: &[u8]) -> Option<IconCore<'_>> {
+    fn demand(&mut self, country: u32, pointer: usize, template: u64, ordinal: u32) -> Acquire;
+    /// The row [`Acquire::Held`] named.
+    fn held(&mut self, _template: u64) -> Option<IconCore<'_>> {
         None
     }
-    fn remember_core(
+    /// A read row, after every read of its template.
+    fn remember(
         &mut self,
-        _record: &[u8],
         _row: &IconRow,
         _bytes: &[u8],
         _counts: &[SubunitCount],
         _variants: &[u64],
+        _names: &[u8],
     ) {
     }
 }
 
-/// Owned-core segments supplied by a caller that certified every followed input.
-/// Spans are relative to these slices; extensions and names are not carried here.
+/// A held row. Its spans are relative to these slices, its display name and
+/// key to `names`; extensions are not held here.
 pub struct IconCore<'a> {
     pub row: IconRow,
     pub bytes: &'a [u8],
     pub counts: &'a [SubunitCount],
     pub variants: &'a [u64],
+    pub names: &'a [u8],
 }
 impl<F: FnMut(u32, usize, u64, u32) -> bool> DetailPolicy for F {
-    fn demand(&mut self, country: u32, pointer: usize, template: u64, ordinal: u32) -> bool {
-        self(country, pointer, template, ordinal)
+    fn demand(&mut self, country: u32, pointer: usize, template: u64, ordinal: u32) -> Acquire {
+        Acquire::Read {
+            details: self(country, pointer, template, ordinal),
+        }
     }
+}
+
+/// How a walk reaches one authenticated occurrence.
+enum Visit<'a> {
+    /// The policy's held row, by handle.
+    Held(u64),
+    /// The gathered record, and whether extension operands are demanded.
+    Read(&'a [u8], bool),
+}
+
+fn authentic(record: &[u8], vtable: u64) -> Result<(), &'static str> {
+    if word(record, 0) != vtable || word(record, 8) as u32 != REFERENCE_TYPE {
+        return Err("division template vtable or reference type mismatch");
+    }
+    Ok(())
 }
 
 /// A tail field's place in a record.
@@ -965,8 +1007,11 @@ fn pointers(
 /// Every country's templates in roster order. Each roster batch's fixed fields
 /// are hinted and then gathered with `layout`; `prepare` sees the batch's
 /// records first, to hint what the visits will read, and `visit` receives the
-/// owner's id, the template and its authenticated record. Hints read nothing,
-/// so a batch's cache misses overlap instead of following one another.
+/// owner's id, the template and its authenticated record, or the handle the
+/// policy holds. Hints read nothing, so a batch's cache misses overlap instead
+/// of following one another. With a policy, the batch's identities are gathered
+/// first and only the occurrences it does not hold gather `rest`, the rest of
+/// `layout`.
 #[allow(clippy::too_many_arguments)]
 fn visit_templates(
     memory: &impl Memory,
@@ -974,12 +1019,12 @@ fn visit_templates(
     state: usize,
     layout: &RecordLayout<'_>,
     mut country_visit: Option<&mut dyn FnMut(ccountry::Country)>,
-    mut details: Option<&mut dyn DetailPolicy>,
+    mut details: Option<(&mut dyn DetailPolicy, &RecordLayout<'_>)>,
     mut prepare: impl FnMut(&[u8], usize),
     mut visit: impl FnMut(
         u32,
         usize,
-        &[u8],
+        Visit<'_>,
         Option<&mut dyn DetailPolicy>,
         u32,
     ) -> Result<(), &'static str>,
@@ -992,12 +1037,15 @@ fn visit_templates(
     let mut templates = [0_usize; BATCH];
     let stride = layout.stride();
     let mut records = [0_u8; BATCH * MAX_RECORD];
+    let mut identities = [0_u8; BATCH * IDENTITY];
+    let mut acquired = [Acquire::Read { details: true }; BATCH];
+    let mut read = [0_usize; BATCH];
     for slot in 1..countries.count() {
         let Some(country) = countries.at(slot)? else {
             continue;
         };
         found_country = true;
-        if let Some(details) = details.as_mut() {
+        if let Some((details, _)) = details.as_mut() {
             details.before_country(country.id);
         }
         if let Some(visit) = country_visit.as_mut() {
@@ -1011,36 +1059,79 @@ fn visit_templates(
         for first in (0..roster.count).step_by(BATCH) {
             let batch = ((roster.count - first) as usize).min(BATCH);
             pointers(memory, roster, first, &mut templates[..batch])?;
-            if let Some(details) = details.as_mut() {
-                details.before_records(&templates[..batch]);
-            }
-            for &at in &templates[..batch] {
-                for field in layout.fields() {
+            let templates = &templates[..batch];
+            let (fields, reads) = match details.as_mut() {
+                None => {
+                    read[..batch].copy_from_slice(templates);
+                    (layout, batch)
+                }
+                Some((policy, rest)) => {
+                    policy.before_records(templates);
+                    for &at in templates {
+                        memory.prefetch(at, IDENTITY);
+                    }
+                    if memory.copy_records(
+                        RecordSources::Pointers(templates),
+                        &IDENTITY_LAYOUT,
+                        &mut identities[..batch * IDENTITY],
+                    ) < batch
+                    {
+                        return Err("template fields unreadable");
+                    }
+                    let mut reads = 0;
+                    for (index, (&at, identity)) in templates
+                        .iter()
+                        .zip(identities.chunks_exact(IDENTITY))
+                        .enumerate()
+                    {
+                        authentic(identity, vtable)?;
+                        acquired[index] =
+                            policy.demand(country.id, at, word(identity, 8), first + index as u32);
+                        if acquired[index] != Acquire::Held {
+                            records[reads * stride..][..IDENTITY].copy_from_slice(identity);
+                            read[reads] = at;
+                            reads += 1;
+                        }
+                    }
+                    (*rest, reads)
+                }
+            };
+            let read = &read[..reads];
+            for &at in read {
+                for field in fields.fields() {
                     memory.prefetch(at.wrapping_add(field.source_offset), field.len);
                 }
             }
-            if memory.copy_records(
-                RecordSources::Pointers(&templates[..batch]),
-                layout,
-                &mut records[..batch * stride],
-            ) < batch * layout.field_count()
+            if !read.is_empty()
+                && memory.copy_records(
+                    RecordSources::Pointers(read),
+                    fields,
+                    &mut records[..reads * stride],
+                ) < reads * fields.field_count()
             {
                 return Err("template fields unreadable");
             }
-            prepare(&records[..batch * stride], stride);
-            for (index, (&at, record)) in templates[..batch]
-                .iter()
-                .zip(records[..batch * stride].chunks_exact(stride))
-                .enumerate()
-            {
-                if word(record, 0) != vtable || word(record, 8) as u32 != REFERENCE_TYPE {
-                    return Err("division template vtable or reference type mismatch");
-                }
+            prepare(&records[..reads * stride], stride);
+            let mut gathered = records[..reads * stride].chunks_exact(stride);
+            for (index, &at) in templates.iter().enumerate() {
                 let ordinal = first + index as u32;
+                let acquire = if details.is_some() {
+                    acquired[index]
+                } else {
+                    Acquire::Read { details: true }
+                };
+                let visited = match acquire {
+                    Acquire::Held => Visit::Held(word(&identities[index * IDENTITY..], 8)),
+                    Acquire::Read { details: demanded } => {
+                        let record = gathered.next().ok_or("template fields unreadable")?;
+                        authentic(record, vtable)?;
+                        Visit::Read(record, demanded)
+                    }
+                };
                 let policy = details
                     .as_mut()
-                    .map(|policy| &mut **policy as &mut dyn DetailPolicy);
-                visit(country.id, at, record, policy, ordinal)?;
+                    .map(|(policy, _)| &mut **policy as &mut dyn DetailPolicy);
+                visit(country.id, at, visited, policy, ordinal)?;
             }
         }
     }
@@ -1124,7 +1215,10 @@ fn walk_inner(
         None,
         None,
         |_, _| {},
-        |owner, at, record, _, _| {
+        |owner, at, visited, _, _| {
+            let Visit::Read(record, _) = visited else {
+                unreachable!("the daily walk has no policy to hold a row")
+            };
             let name = Descriptor::from_header(
                 memory,
                 at.checked_add(NAME)
@@ -1160,7 +1254,7 @@ fn walk_inner(
             result.required_name_bytes = result
                 .required_name_bytes
                 .checked_add(name.len)
-                .and_then(|n| n.checked_add(if name.len == 0 { name_key.len } else { 0 }))
+                .and_then(|n| n.checked_add(name_key.len))
                 .ok_or("template display name arena overflow")?;
             let end = result
                 .bytes_len
@@ -1333,8 +1427,9 @@ pub fn walk_icons_with_names_growing(
     )
 }
 
-/// The existing named/country census with extension demand selected per template.
-/// A false selection performs no extension prefix/tail or forbidden-type payload read.
+/// The existing named/country census with its reads selected per template.
+/// A held occurrence reads nothing past its identity; a read without details
+/// performs no extension prefix/tail or forbidden-type payload read.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_icons_with_selected_details_growing(
     memory: &impl Memory,
@@ -1476,6 +1571,39 @@ fn display_name_buffer(
     })
 }
 
+/// The fallback key behind a nonempty literal, for the dictionary; failure
+/// publishes no span or length.
+fn name_key_buffer(
+    memory: &impl Memory,
+    wrapper: usize,
+    bytes: &mut Buffer<'_, u8>,
+    used: &mut usize,
+    required: &mut usize,
+) -> Result<Span, &'static str> {
+    let key = Descriptor::read(
+        memory,
+        wrapper
+            .checked_add(NAME_KEY)
+            .ok_or("template name key address overflow")?,
+    )?;
+    *required = required
+        .checked_add(key.len)
+        .ok_or("template display name demand overflow")?;
+    let start = *used;
+    let end = start
+        .checked_add(key.len)
+        .ok_or("template display name arena overflow")?;
+    if matches!(bytes, Buffer::Fixed(_)) && end > bytes.len() {
+        return Err("template display name arena shortage");
+    }
+    key.copy_buffer(memory, bytes, start)?;
+    *used = end;
+    Ok(Span {
+        start,
+        len: key.len,
+    })
+}
+
 /// The validated name descriptors of one walk's priority sub-units, keyed by
 /// definition: a few definitions are every template's priority unit, so each
 /// name's header and terminator are read once a walk and only its bytes per
@@ -1568,90 +1696,113 @@ fn walk_icons_inner(
             }
         }
     };
+    let (layout, rest) = match display_bytes {
+        Some(_) => (&ICON_NAMED_LAYOUT, &ICON_NAMED_REST_LAYOUT),
+        None => (&ICON_LAYOUT, &ICON_REST_LAYOUT),
+    };
     let captured = visit_templates(
         memory,
         base,
         state,
-        match display_bytes {
-            Some(_) => &ICON_NAMED_LAYOUT,
-            None => &ICON_LAYOUT,
-        },
+        layout,
         country_visit,
-        detail_policy,
+        detail_policy.map(|policy| (policy, rest)),
         hint,
-        |country, at, record, mut policy, roster_ordinal| {
-            let mut details_fresh = policy
-                .as_mut()
-                .is_none_or(|policy| policy.demand(country, at, word(record, 8), roster_ordinal));
-            if !details_fresh
-                && let Some(core) = policy.as_mut().and_then(|policy| policy.core(record))
-            {
-                let byte_start = result.bytes_len;
-                let count_start = result.counts_len;
-                let variant_start = result.variants_len;
-                let byte_end = byte_start
-                    .checked_add(core.bytes.len())
-                    .ok_or("template byte arena overflow")?;
-                let count_end = count_start
-                    .checked_add(core.counts.len())
-                    .ok_or("template grouped arena overflow")?;
-                let variant_end = variant_start
-                    .checked_add(core.variants.len())
-                    .ok_or("template variant arena overflow")?;
-                result.required_bytes = result
-                    .required_bytes
-                    .checked_add(core.bytes.len())
-                    .ok_or("template byte arena overflow")?;
-                result.required_counts = result
-                    .required_counts
-                    .checked_add(core.counts.len())
-                    .ok_or("template grouped arena overflow")?;
-                result.required_variants = result
-                    .required_variants
-                    .checked_add(core.variants.len())
-                    .ok_or("template variant arena overflow")?;
-                if !rows.ensure(len + 1)?
-                    || !bytes.ensure(byte_end)?
-                    || !counts.ensure(count_end)?
-                    || !variants.ensure(variant_end)?
-                {
-                    missing = missing
-                        .checked_add(1)
-                        .ok_or("template row count overflow")?;
+        |country, at, visited, mut policy, roster_ordinal| {
+            let (record, mut details_fresh) = match visited {
+                Visit::Read(record, details) => (record, details),
+                Visit::Held(template) => {
+                    let Some(core) = policy.as_mut().and_then(|policy| policy.held(template))
+                    else {
+                        return Err("template held row unavailable");
+                    };
+                    let byte_start = result.bytes_len;
+                    let count_start = result.counts_len;
+                    let variant_start = result.variants_len;
+                    let byte_end = byte_start
+                        .checked_add(core.bytes.len())
+                        .ok_or("template byte arena overflow")?;
+                    let count_end = count_start
+                        .checked_add(core.counts.len())
+                        .ok_or("template grouped arena overflow")?;
+                    let variant_end = variant_start
+                        .checked_add(core.variants.len())
+                        .ok_or("template variant arena overflow")?;
+                    result.required_bytes = result
+                        .required_bytes
+                        .checked_add(core.bytes.len())
+                        .ok_or("template byte arena overflow")?;
+                    result.required_counts = result
+                        .required_counts
+                        .checked_add(core.counts.len())
+                        .ok_or("template grouped arena overflow")?;
+                    result.required_variants = result
+                        .required_variants
+                        .checked_add(core.variants.len())
+                        .ok_or("template variant arena overflow")?;
+                    if !rows.ensure(len + 1)?
+                        || !bytes.ensure(byte_end)?
+                        || !counts.ensure(count_end)?
+                        || !variants.ensure(variant_end)?
+                    {
+                        missing = missing
+                            .checked_add(1)
+                            .ok_or("template row count overflow")?;
+                        return Ok(());
+                    }
+                    bytes[byte_start..byte_end].copy_from_slice(core.bytes);
+                    counts[count_start..count_end].copy_from_slice(core.counts);
+                    variants[variant_start..variant_end].copy_from_slice(core.variants);
+                    let mut row = core.row;
+                    row.priority_unit_name.start += byte_start;
+                    row.model_entity.start += byte_start;
+                    row.counts.start += count_start;
+                    for grid in &mut row.grids {
+                        grid.start += count_start;
+                    }
+                    row.excluded_variants.start += variant_start;
+                    row.settings.roster_ordinal = roster_ordinal;
+                    result.bytes_len = byte_end;
+                    result.counts_len = count_end;
+                    result.variants_len = variant_end;
+                    let name_start = result.name_bytes_len;
+                    let name_end = name_start
+                        .checked_add(core.names.len())
+                        .ok_or("template display name arena overflow")?;
+                    let held_names = match display_bytes.as_mut() {
+                        Some(names) => {
+                            result.required_name_bytes = result
+                                .required_name_bytes
+                                .checked_add(core.names.len())
+                                .ok_or("template display name demand overflow")?;
+                            let fits = names.ensure(name_end)?;
+                            if fits {
+                                names[name_start..name_end].copy_from_slice(core.names);
+                            }
+                            fits
+                        }
+                        None => false,
+                    };
+                    if held_names {
+                        result.name_bytes_len = name_end;
+                        if let Some(name) = &mut row.display_name {
+                            name.literal.start += name_start;
+                            if let Some(key) = &mut name.fallback_key {
+                                key.start += name_start;
+                            }
+                        }
+                        if let Some(key) = &mut row.name_key {
+                            key.start += name_start;
+                        }
+                    } else {
+                        row.display_name = None;
+                        row.name_key = None;
+                    }
+                    rows[len] = row;
+                    len += 1;
                     return Ok(());
                 }
-                bytes[byte_start..byte_end].copy_from_slice(core.bytes);
-                counts[count_start..count_end].copy_from_slice(core.counts);
-                variants[variant_start..variant_end].copy_from_slice(core.variants);
-                let mut row = core.row;
-                row.priority_unit_name.start += byte_start;
-                row.model_entity.start += byte_start;
-                row.counts.start += count_start;
-                for grid in &mut row.grids {
-                    grid.start += count_start;
-                }
-                row.excluded_variants.start += variant_start;
-                row.settings.roster_ordinal = roster_ordinal;
-                result.bytes_len = byte_end;
-                result.counts_len = count_end;
-                result.variants_len = variant_end;
-                if let Some(names) = display_bytes.as_mut() {
-                    row.display_name = display_name_buffer(
-                        memory,
-                        at,
-                        record[ICON_NAME..ICON_NAME + msvc_string::STRIDE]
-                            .try_into()
-                            .unwrap(),
-                        names,
-                        &mut result.name_bytes_len,
-                        &mut result.required_name_bytes,
-                    )
-                    .ok();
-                }
-                rows[len] = row;
-                len += 1;
-                return Ok(());
-            }
+            };
             let mut details_failure = None;
             let mut extension = [0_u8; ICON_NAMED_RECORD];
             extension[..record.len()].copy_from_slice(record);
@@ -1676,7 +1827,6 @@ fn walk_icons_inner(
                     extension[icon(UNIT_TYPE_OVERRIDE + 4)..ICON_RECORD].copy_from_slice(&tail);
                 }
             }
-            let fixed_record = record;
             let record = &extension[..record.len()];
             let memo = memo.get_or_insert_with(|| {
                 Definitions::load(
@@ -2147,9 +2297,30 @@ fn walk_icons_inner(
                     &mut result.required_name_bytes,
                 )
                 .ok();
+                row.name_key = match row.display_name {
+                    None => None,
+                    Some(DisplayName {
+                        fallback_key: Some(key),
+                        ..
+                    }) => Some(key),
+                    Some(_) => name_key_buffer(
+                        memory,
+                        at,
+                        names,
+                        &mut result.name_bytes_len,
+                        &mut result.required_name_bytes,
+                    )
+                    .ok(),
+                };
             }
             if let Some(policy) = policy.as_mut() {
-                policy.remember_core(fixed_record, &row, &bytes, &counts, &variants);
+                policy.remember(
+                    &row,
+                    &bytes,
+                    &counts,
+                    &variants,
+                    display_bytes.as_deref().unwrap_or(&[]),
+                );
             }
             rows[len] = row;
             len += 1;

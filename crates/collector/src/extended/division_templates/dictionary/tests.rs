@@ -1,5 +1,4 @@
 use super::*;
-use crate::template_changes::Watches;
 use engine_native::memory::SliceMemory;
 
 /// Two templates whose literal names and keys are inline MSVC strings.
@@ -23,27 +22,29 @@ fn put(bytes: &mut [u8], at: usize, text: &[u8]) {
     bytes[at + 24..at + 32].copy_from_slice(&15_u64.to_le_bytes());
 }
 
-/// A template's pointer, literal name and the key beside an empty literal.
-type Template<'a> = (usize, &'a [u8], Option<&'a [u8]>);
+/// A template's pointer, literal name and key; `None` is a name the walk could not read.
+type Template<'a> = (usize, Option<(&'a [u8], &'a [u8])>);
 
-/// The icon walk's rows for `templates`, with their literals in `names` and
-/// an empty literal's key beside it.
+/// The icon walk's rows for `templates`, with their names in `names`.
 fn icons(templates: &[Template<'_>]) -> (Vec<native::IconRow>, Vec<u8>) {
     let mut names = Vec::new();
     let rows = templates
         .iter()
-        .map(|&(pointer, literal, key)| {
-            let literal = append(&mut names, literal).unwrap();
-            let fallback_key = key.map(|key| append(&mut names, key).unwrap());
+        .map(|&(pointer, walked)| {
+            let spans = walked.map(|(literal, key)| {
+                let literal = append(&mut names, literal).unwrap();
+                (literal, append(&mut names, key).unwrap())
+            });
             native::IconRow {
                 template: ((pointer as u64) << 32) | 0x34,
                 pointer,
                 owner: 7,
                 unit_type: 3,
-                display_name: Some(native::DisplayName {
+                display_name: spans.map(|(literal, key)| native::DisplayName {
                     literal,
-                    fallback_key,
+                    fallback_key: (literal.len == 0).then_some(key),
                 }),
+                name_key: spans.map(|(_, key)| key),
                 ..native::IconRow::default()
             }
         })
@@ -53,182 +54,115 @@ fn icons(templates: &[Template<'_>]) -> (Vec<native::IconRow>, Vec<u8>) {
 
 struct Hour {
     outcome: Outcome,
+    rereads: u64,
     rows: Vec<native::Row>,
     bytes: Vec<u8>,
 }
 
 impl Hour {
-    fn keys(&self) -> Vec<&[u8]> {
+    fn names(&self) -> Vec<(&[u8], &[u8])> {
         self.rows
             .iter()
-            .map(|row| text(&self.bytes, row.name_key).unwrap())
+            .map(|row| {
+                (
+                    text(&self.bytes, row.name).unwrap(),
+                    text(&self.bytes, row.name_key).unwrap(),
+                )
+            })
             .collect()
     }
 }
 
-fn hour(
-    world: &[u8],
-    icons: &(Vec<native::IconRow>, Vec<u8>),
-    store: &mut KeyStore,
-    watches: &Watches,
-) -> Hour {
-    let memory = SliceMemory {
-        base: 0,
-        bytes: world,
-    };
+fn hour(memory: &impl engine_native::Memory, icons: &(Vec<native::IconRow>, Vec<u8>)) -> Hour {
     let (mut rows, mut bytes) = (Vec::new(), Vec::new());
-    let outcome = derive(
-        &memory,
+    let (outcome, rereads) = derive(
+        memory,
         &icons.0,
         Outcome::Rows { len: icons.0.len() },
         &icons.1,
-        store,
-        watches,
         &mut rows,
         &mut bytes,
     );
     Hour {
         outcome,
+        rereads,
         rows,
         bytes,
     }
 }
 
-/// A quiet hour carries every key without reading a template; a hooked write
-/// to one template reads its names again; a reordered roster still finds
-/// each held key.
+/// The walk's names, held or read, are published without a native read.
 #[test]
-fn quiet_hours_carry_keys_and_a_written_template_is_read_again() {
-    let mut world = world();
-    let watches = Watches::enabled(16);
-    let mut store = KeyStore::default();
-    let roster = icons(&[(FIRST, &b"Alpha"[..], None), (SECOND, &b"Beta_"[..], None)]);
-    let first = hour(&world, &roster, &mut store, &watches);
-    assert_eq!(first.outcome, Outcome::Rows { len: 2 });
-    assert_eq!(first.keys(), [b"key_a", b"key_b"]);
-    assert_eq!(text(&first.bytes, first.rows[1].name), Some(&b"Beta_"[..]));
-    assert_eq!((first.rows[0].owner, first.rows[0].unit_type), (7, 3));
-    // Quiet: an unreadable template is not read.
-    world[FIRST + native::NAME_KEY + 16..][..8].copy_from_slice(&99_u64.to_le_bytes());
-    let quiet = hour(&world, &roster, &mut store, &watches);
-    assert_eq!(quiet.keys(), [b"key_a", b"key_b"]);
-    // A hooked assignment to the second template (named through its data).
-    put(&mut world, FIRST + native::NAME_KEY, b"key_a");
-    put(&mut world, SECOND + native::NAME_KEY, b"key_c");
-    drop(watches.notify(SECOND, 0));
-    // An unobserved change to the first stays carried.
-    put(&mut world, FIRST + native::NAME_KEY, b"key_z");
-    let written = hour(&world, &roster, &mut store, &watches);
-    assert_eq!(written.keys(), [b"key_a", b"key_c"]);
-    // Reordered, each key is still found by its template.
-    let reordered = icons(&[(SECOND, &b"Beta_"[..], None), (FIRST, &b"Alpha"[..], None)]);
-    drop(watches.notify(0xdead, 3));
-    let moved = hour(&world, &reordered, &mut store, &watches);
-    assert_eq!(moved.keys(), [b"key_c", b"key_a"]);
-    assert!(!watches.poisoned());
-}
-
-/// A hooked assignment enters during a fresh name read. The fresh key (or
-/// fault) remains the outcome; the overlapped observation cannot poison or
-/// become a held capture.
-#[test]
-fn key_writer_during_fresh_names_holds_nothing() {
-    use std::cell::Cell;
-    struct Writer<'a> {
-        world: &'a [u8],
-        watches: &'a Watches,
-        fired: Cell<bool>,
-        fail: bool,
-    }
-    impl engine_native::Memory for Writer<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == FIRST + native::NAME_KEY && !self.fired.replace(true) {
-                drop(self.watches.notify(FIRST, 0));
-                if self.fail {
-                    return false;
-                }
-            }
-            SliceMemory {
-                base: 0,
-                bytes: self.world,
-            }
-            .copy(address, output)
+fn the_walks_names_are_published_without_a_read() {
+    struct Unreadable;
+    impl engine_native::Memory for Unreadable {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            panic!("the walk supplied every name")
         }
     }
-    for fail in [false, true] {
-        let mut world = world();
-        let watches = Watches::enabled(16);
-        let mut store = KeyStore::default();
-        let roster = icons(&[(FIRST, &b"Alpha"[..], None)]);
-        put(&mut world, FIRST + native::NAME_KEY, b"key_c");
-        let writer = Writer {
-            world: &world,
-            watches: &watches,
-            fired: Cell::new(false),
-            fail,
-        };
-        let (mut rows, mut bytes) = (Vec::new(), Vec::new());
-        let outcome = derive(
-            &writer,
-            &roster.0,
-            Outcome::Rows { len: 1 },
-            &roster.1,
-            &mut store,
-            &watches,
-            &mut rows,
-            &mut bytes,
-        );
-        assert!(writer.fired.get());
-        assert!(!watches.poisoned(), "failed read {fail}");
-        assert!(store.held.is_empty() && store.quiet.is_none());
-        if fail {
-            assert!(matches!(outcome, Outcome::Unavailable { .. }));
-        } else {
-            assert_eq!(outcome, Outcome::Rows { len: 1 });
-            assert_eq!(text(&bytes, rows[0].name_key), Some(&b"key_c"[..]));
-        }
-        assert_eq!(
-            hour(&world, &roster, &mut store, &watches).keys(),
-            [b"key_c"]
-        );
-    }
-}
-
-/// A key behind an empty literal comes from the walk; an unknown unit type
-/// or an unavailable walk fails the dictionary and holds nothing.
-#[test]
-fn the_walks_key_is_published_and_failures_hold_nothing() {
-    let world = world();
-    let watches = Watches::enabled(16);
-    let mut store = KeyStore::default();
-    let roster = icons(&[(FIRST, &b""[..], Some(&b"walk_key"[..]))]);
-    let read = hour(&world, &roster, &mut store, &watches);
-    assert_eq!(read.keys(), [b"walk_key"]);
-    assert!(store.quiet.is_some());
-    let mut failed = roster.clone();
-    failed.0[0].unit_type_failure = Some("subunit category unreadable");
-    let failure = hour(&world, &failed, &mut store, &watches);
+    let roster = icons(&[
+        (FIRST, Some((&b"Alpha"[..], &b"key_a"[..]))),
+        (SECOND, Some((&b""[..], &b"walk_key"[..]))),
+    ]);
+    let read = hour(&Unreadable, &roster);
+    assert_eq!((read.outcome, read.rereads), (Outcome::Rows { len: 2 }, 0));
     assert_eq!(
-        failure.outcome,
+        read.names(),
+        [(&b"Alpha"[..], &b"key_a"[..]), (&b""[..], &b"walk_key"[..])]
+    );
+    assert_eq!((read.rows[0].owner, read.rows[0].unit_type), (7, 3));
+}
+
+/// A name the walk could not read is read again; an unreadable one, an
+/// unknown unit type or an unavailable walk refuses the dictionary.
+#[test]
+fn unread_names_are_read_again_and_failures_refuse_the_dictionary() {
+    let mut world = world();
+    let roster = icons(&[(FIRST, Some((&b"Alpha"[..], &b"key_a"[..]))), (SECOND, None)]);
+    let reread = hour(
+        &SliceMemory {
+            base: 0,
+            bytes: &world,
+        },
+        &roster,
+    );
+    assert_eq!((reread.outcome, reread.rereads), (Outcome::Rows { len: 2 }, 1));
+    assert_eq!(reread.names()[1], (&b"Beta_"[..], &b"key_b"[..]));
+    world[SECOND + native::NAME_KEY + 16..][..8].copy_from_slice(&99_u64.to_le_bytes());
+    let failed = hour(
+        &SliceMemory {
+            base: 0,
+            bytes: &world,
+        },
+        &roster,
+    );
+    assert!(matches!(failed.outcome, Outcome::Unavailable { .. }) && failed.rows.is_empty());
+    let mut unknown = roster.clone();
+    unknown.0[0].unit_type_failure = Some("subunit category unreadable");
+    let unknown = hour(
+        &SliceMemory {
+            base: 0,
+            bytes: &world,
+        },
+        &unknown,
+    );
+    assert_eq!(
+        unknown.outcome,
         Outcome::Unavailable {
             reason: "subunit category unreadable"
         }
     );
-    assert!(failure.rows.is_empty() && store.quiet.is_none() && store.held.is_empty());
-    let memory = SliceMemory {
-        base: 0,
-        bytes: &world,
-    };
     let (mut rows, mut bytes) = (Vec::new(), Vec::new());
-    let unavailable = derive(
-        &memory,
+    let (unavailable, _) = derive(
+        &SliceMemory {
+            base: 0,
+            bytes: &world,
+        },
         &[],
         Outcome::Unavailable {
             reason: "icon walk failed",
         },
         &[],
-        &mut store,
-        &watches,
         &mut rows,
         &mut bytes,
     );

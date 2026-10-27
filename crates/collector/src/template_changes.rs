@@ -1,10 +1,10 @@
 //! Allocation-free template and country-holder writer notifications. The native
 //! inventory is in `engine_mutations::template_mutations`; callbacks preserve original
-//! arguments and return values. Template extensions retain immutable payloads
-//! only under their object and owner certificates. Country configuration uses
-//! its owner/deployment holder; garrison selections use their occupation holder.
-//! A missing, poisoned, overlapping or invalidated certificate refuses extension
-//! carry. Name keys retain their existing fresh-read fallback.
+//! arguments and return values. A template whose object and owner certificates
+//! and local-definition token stand since its held read is not read at all.
+//! Country configuration uses its owner/deployment holder; garrison selections
+//! use their occupation holder. A missing, poisoned, overlapping or invalidated
+//! certificate reads the template afresh.
 //! A recoverable installation failure selects fresh reads for the whole family.
 use crate::{
     hook::Hook,
@@ -67,8 +67,10 @@ const UNIT_TYPE_SITE: usize = 23;
 static WATCHES: Watches = Watches::new();
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
-/// Reused and read keys and quiet captures.
+/// Carried and read templates and names read again, since attach.
 static READS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+/// The latest capture's carried and read templates.
+static HOUR: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
 /// Live sizing or captured template demand, for off-thread watch sizing.
 static TEMPLATES: AtomicUsize = AtomicUsize::new(0);
@@ -272,24 +274,27 @@ pub fn collect() {
     WATCHES.registry.collect();
 }
 
-/// One capture's name keys.
+/// One capture's templates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Counts {
-    pub reused: u64,
+    /// Published from their held read, reading nothing past the identity.
+    pub carried: u64,
     pub read: u64,
-    /// The capture's certificates held by the domain's unchanged quiet token,
-    /// without a per-template lookup.
-    pub quiet: bool,
+    /// Names the walk could not read, read again for the dictionary.
+    pub rereads: u64,
 }
 
-/// A worker publishes one capture's counts and, when it held its templates,
-/// their number for sizing.
+/// A worker publishes one capture's counts and, when its dictionary is
+/// complete, its templates for sizing.
 pub(crate) fn record(counts: &Counts, templates: Option<usize>) {
     for (target, value) in READS
         .iter()
-        .zip([counts.reused, counts.read, u64::from(counts.quiet)])
+        .zip([counts.carried, counts.read, counts.rereads])
     {
         target.fetch_add(value, Ordering::Relaxed);
+    }
+    for (target, value) in HOUR.iter().zip([counts.carried, counts.read]) {
+        target.store(value, Ordering::Relaxed);
     }
     if let Some(templates) = templates {
         TEMPLATES.store(templates, Ordering::Relaxed);
@@ -304,18 +309,21 @@ pub fn status() -> impl serde::Serialize {
             .map(|((site, _), n)| (site.name, n.load(Ordering::Relaxed))),
     );
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
+    let hour = HOUR.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "template_changes"),
         "fresh_only": Observer.fresh_only(),
         "poisoned": WATCHES.registry.poisoned(),
-        "reused_keys": reads[0],
-        "read_keys": reads[1],
-        "quiet_hours": reads[2],
+        "carried_templates": reads[0],
+        "read_templates": reads[1],
+        "name_rereads": reads[2],
+        "hour_carried_templates": hour[0],
+        "hour_read_templates": hour[1],
         "unchanged_unit_type_writes": WATCHES.unchanged_unit_type_writes.load(Ordering::Relaxed),
         "events": events,
         "watches": WATCHES.registry.status(),
         "hq_source_bytes": HQ_SOURCE_BYTES.load(Ordering::Relaxed),
-        "scope": "cumulative since attach; DivisionTemplates is derived every hour from the template icon walk, which reads each template's handle, owner, literal name and unit-type operands; a template's fallback name key, read by that walk only behind an empty literal, is carried (reused_keys) when the template object and handle are those of the held capture and either the domain's quiet token is unchanged since before that capture (quiet_hours) or no hooked writer touched the template since it registered; every other key is read afresh with its literal (read_keys); a capture is held only when no hooked writer ran during it; failed key reads refuse the table and forget the store"
+        "scope": "cumulative since attach, hour_* for the latest capture; DivisionTemplates and DivisionTemplateIcons come from one hourly roster walk that authenticates every occurrence's object and handle; an occurrence whose object, handle and owner are those of its held read and whose template, owner and local-definition writer stamps are unchanged since that read publishes the held read (core, literal name and key, extensions, speed keys) and reads nothing more of the template (carried_templates); every other occurrence, and every occurrence while the family is fresh-only, after a load or on a refresh hour, is read in full and held when its stamps stood across the read (read_templates); a name the walk could not read is read again for the dictionary (name_rereads), whose failure refuses the table"
     })
 }
 
@@ -392,6 +400,9 @@ impl Hooks {
                 destroy_hq_deployment as *const () as usize,
                 set_garrison_priority as *const () as usize,
                 update_template_tracked_variant as *const () as usize,
+                set_template_symbol as *const () as usize,
+                add_template_effect as *const () as usize,
+                add_colonial_template_effect as *const () as usize,
             ];
             for (index, (site, _)) in MUTATIONS.iter().enumerate() {
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
@@ -453,17 +464,23 @@ fn receiver(receiver: Receiver, first: usize) -> usize {
         Receiver::OccupationTable => {
             first.saturating_sub(engine_mutations::template_mutations::OCCUPATION_MEMBERSHIP)
         }
-        Receiver::OccupationGroup | Receiver::ScopeCountry | Receiver::CommandCountry => 0,
+        Receiver::OccupationGroup
+        | Receiver::ScopeCountry
+        | Receiver::CommandCountry
+        | Receiver::Every => 0,
     }
 }
 
-fn native_notification(
+/// The notification `site`'s writer gives `watches`, and its occupation holder's.
+pub(crate) fn native_notification(
+    watches: &Watches,
     site: usize,
     first: usize,
     second: usize,
-) -> (Notification<'static>, Option<Notification<'static>>) {
+) -> (Notification<'_>, Option<Notification<'static>>) {
     let kind = MUTATIONS[site].1;
     let selected = match kind {
+        Receiver::Every => None,
         Receiver::OccupationGroup | Receiver::ScopeCountry | Receiver::CommandCountry => {
             // SAFETY: all reads are guarded on the native calling thread.
             let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -498,10 +515,10 @@ fn native_notification(
         .contains(&site)
         .then(|| collector_observers::occupation_changes::holder_changed(selected));
     let template = match selected {
-        Some(at) => WATCHES.notify(at, site),
+        Some(at) => watches.notify(at, site),
         None => {
-            WATCHES.calls[site].fetch_add(1, Ordering::Relaxed);
-            WATCHES.registry.notify_every()
+            watches.calls[site].fetch_add(1, Ordering::Relaxed);
+            watches.registry.notify_every()
         }
     };
     (template, occupation)
@@ -523,7 +540,8 @@ macro_rules! callback {
             fourth: usize,
         ) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::TemplateChanges);
-            let notification = ManuallyDrop::new(native_notification($site, first, second));
+            let notification =
+                ManuallyDrop::new(native_notification(&WATCHES, $site, first, second));
             let original: NativeFunction =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
             let result = timing.original(|| unsafe { original(first, second, third, fourth) });
@@ -580,6 +598,10 @@ unsafe extern "system-unwind" fn set_template_unit_type(
 }
 callback!(toggle_template_variant, 24);
 callback!(update_template_tracked_variant, 56);
+// Custom-icon command (command).
+callback!(set_template_symbol, 57);
+callback!(add_template_effect, 58);
+callback!(add_colonial_template_effect, 59);
 callback!(rebuild_template_ai_role, 25);
 callback!(resize_template_grids, 26);
 callback!(refresh_template_name_group, 27);
@@ -602,7 +624,7 @@ unsafe extern "system-unwind" fn insert_occupation_group(
     fifth: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::TemplateChanges);
-    let notification = ManuallyDrop::new(native_notification(39, first, second));
+    let notification = ManuallyDrop::new(native_notification(&WATCHES, 39, first, second));
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[39].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(first, second, third, fourth, fifth) });
@@ -648,7 +670,7 @@ unsafe extern "system-unwind" fn requisition_hq_from_army(
         unsafe { std::mem::transmute(ORIGINAL[47].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(first, second, third, fourth) });
     if before.is_none() || before != state() {
-        drop(native_notification(47, first, second));
+        drop(native_notification(&WATCHES, 47, first, second));
     }
     drop(ManuallyDrop::into_inner(running));
     result
@@ -849,6 +871,23 @@ mod tests {
 
     #[test]
     fn unit_type_callback_preserves_arguments_return_and_in_flight_exclusion() {
+        const TEST: &str = "template_changes::tests::unit_type_callback_preserves_arguments_return_and_in_flight_exclusion";
+        const CHILD: &str = "BATTLE_PLAN_TEMPLATE_UNIT_TYPE_CALLBACK_TEST";
+        // The process-wide observer this enables would certify other tests' templates.
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         unsafe extern "system-unwind" fn original(a: usize, b: usize, c: usize, d: usize) -> usize {
             assert_eq!([c, d], [0x1234_5678_9abc_def0, usize::MAX - 11]);
             assert!(WATCHES.registry.quiet().is_none());
@@ -1162,6 +1201,30 @@ mod tests {
         assert!(Changes::sequence(&watches, 0x1000).is_none());
         assert!(Changes::quiet(&watches).is_none());
         drop(running);
+        assert!(!watches.poisoned());
+    }
+
+    /// The custom-icon command names no template: it revokes every one.
+    #[test]
+    fn the_custom_icon_command_revokes_every_template_certificate() {
+        let site = MUTATIONS
+            .iter()
+            .position(|(site, _)| site.name == "set_template_symbol")
+            .unwrap();
+        assert_eq!((site, MUTATIONS[site].1), (SITES - 1, Receiver::Every));
+        let watches = Watches::enabled(16);
+        let receivers = [0x1000, 0x2000, 7];
+        let before = receivers.map(|receiver| Changes::sequence(&watches, receiver).unwrap());
+        let quiet = Changes::quiet(&watches).unwrap();
+        let (running, occupation) = native_notification(&watches, site, 0xc0de, 0);
+        assert!(occupation.is_none());
+        assert!(Changes::sequence(&watches, 0x1000).is_none());
+        drop(running);
+        for (receiver, before) in receivers.into_iter().zip(before) {
+            assert_ne!(Changes::sequence(&watches, receiver), Some(before));
+        }
+        assert_ne!(Changes::quiet(&watches), Some(quiet));
+        assert_eq!(watches.calls[site].load(Ordering::Relaxed), 1);
         assert!(!watches.poisoned());
     }
 }

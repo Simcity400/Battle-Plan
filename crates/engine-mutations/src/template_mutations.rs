@@ -4,6 +4,8 @@
 //! rebuilding certify the template object. Effect writers are scoped to their
 //! canonical country, so inline lock/cap stores also revoke that owner's rows.
 //! The deleting destructor prevents address reuse from preserving a certificate.
+//! The custom-icon command resolves its template natively and stores the icon
+//! fields directly, so it revokes every template.
 //!
 //! Deployment selection and occupation reset/default/group/state setters
 //! certify their holders. Occupation insertion and group/status destruction revoke
@@ -31,6 +33,8 @@ pub enum Receiver {
     ScopeCountry,
     /// A command whose receiver retains the raw owning-country link.
     CommandCountry,
+    /// No receiver is resolved: the writer revokes every template.
+    Every,
 }
 
 /// The contained data's offset in the template
@@ -46,7 +50,7 @@ pub const COMMAND_COUNTRY: usize = 0x28;
 
 /// Every site with its receiver; each returns RAX unchanged from its
 /// original, so a detour returns the original's value.
-pub const MUTATIONS: [(MutationSite, Receiver); 57] = [
+pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
     // Editable-data assignment (dest, source): saving RSI and reserving 0x20
     // stack bytes occupy six relocated bytes.
     (
@@ -680,6 +684,41 @@ pub const MUTATIONS: [(MutationSite, Receiver); 57] = [
             ],
         },
         Receiver::Data,
+    ),
+    // Custom-icon command (command): writes the icon index and its flag past every other site.
+    (
+        MutationSite {
+            name: "set_template_symbol",
+            rva: 0x1b9_f780,
+            sentinel: [
+                0x40, 0x53, 0x57, 0x41, 0x56, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xf9, 0x48, 0x83,
+                0xc1, 0x28,
+            ],
+        },
+        Receiver::Every,
+    ),
+    // Scripted template additions (effect, scope) rename an existing template whose name the new one takes.
+    (
+        MutationSite {
+            name: "add_template_effect",
+            rva: 0x34_a060,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
+                0x20, 0x57,
+            ],
+        },
+        Receiver::Every,
+    ),
+    (
+        MutationSite {
+            name: "add_colonial_template_effect",
+            rva: 0x35_0470,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
+                0x20, 0x57,
+            ],
+        },
+        Receiver::Every,
     ),
 ];
 

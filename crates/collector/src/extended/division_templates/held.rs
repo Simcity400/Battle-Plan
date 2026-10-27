@@ -1,5 +1,6 @@
 //! Immutable extension payloads retained under native writer certificates.
-//! Ordinary hours reuse their allocations and acquire only dirty templates.
+//! Ordinary hours reuse their allocations and acquire only dirty templates;
+//! a roster move only renumbers the held settings.
 use super::*;
 use crate::template_changes::Changes;
 use std::sync::Arc;
@@ -19,6 +20,7 @@ struct Entry {
     attempted: bool,
     acquired: bool,
     valid: bool,
+    reordered: bool,
     layout: Option<Arc<TemplateLayout>>,
     settings: Option<Arc<TemplateSettings>>,
     raw_settings: Option<native::Settings>,
@@ -64,7 +66,7 @@ mod tests {
             names_group: Some(native::Span { start: 0, len: 3 }),
             ..Default::default()
         };
-        store.begin(&watches);
+        store.begin();
         assert!(store.request(&watches, row.owner, row.pointer, row.template, 0));
         store.certify(&watches, &[row]);
         drop(watches.notify(row.pointer, 0));
@@ -77,7 +79,7 @@ mod tests {
             .clone()
             .unwrap();
         assert_eq!(settings.names_group.as_deref(), Some(b"OLD".as_slice()));
-        store.begin(&watches);
+        store.begin();
         assert!(store.request(&watches, row.owner, row.pointer, row.template, 0));
     }
 
@@ -138,9 +140,27 @@ mod tests {
         assert_eq!(first.names_group.as_deref(), Some(b"OLD".as_slice()));
         assert_eq!(second.names_group.as_deref(), Some(b"NEW".as_slice()));
         assert!(!Arc::ptr_eq(&first, &second));
-        assert!(
-            store.request(&watches, 1, row.pointer, row.template, 1),
-            "roster reordering must refresh the first-name-match operand"
+        // A roster move renumbers the first-name-match operand without a read.
+        store.begin();
+        assert!(!store.request(&watches, 1, row.pointer, row.template, 1));
+        store.finish(&watches, &[row], &[], &[], &[]);
+        let moved = store
+            .values(&row)
+            .1
+            .require("settings")
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .clone();
+        assert_eq!(moved.roster_ordinal, 1);
+        assert_eq!(moved.names_group.as_deref(), Some(b"NEW".as_slice()));
+        assert_eq!(
+            store.payload_bytes,
+            store
+                .entries
+                .iter()
+                .map(Entry::allocated_bytes)
+                .sum::<usize>()
         );
     }
 
@@ -174,7 +194,7 @@ mod tests {
         store.finish(&watches, &[row], &cells, &[], &[]);
         let (layout, settings) = store.values(&row);
         crate::test_support::with_allocations_denied(|| {
-            store.begin(&watches);
+            store.begin();
             assert!(!store.request(&watches, row.owner, row.pointer, row.template, 0));
             struct QuietOnly((u64, u64));
             impl Changes for QuietOnly {
@@ -249,8 +269,8 @@ pub(super) struct Store {
     entries: Vec<Entry>,
     live: Vec<u64>,
     payload_bytes: usize,
-    before: Option<(u64, u64)>,
     requested: bool,
+    reordered: bool,
 }
 
 fn certificate(changes: &dyn Changes, pointer: usize, owner: u32) -> Option<Certificate> {
@@ -260,6 +280,8 @@ fn certificate(changes: &dyn Changes, pointer: usize, owner: u32) -> Option<Cert
     ])
 }
 
+/// The walk's policy: a template carries when its extension needs no read
+/// and its held row's certificate stands; every other template is read.
 pub(super) struct Demand<'a> {
     store: &'a mut Store,
     changes: &'a dyn Changes,
@@ -267,6 +289,8 @@ pub(super) struct Demand<'a> {
     dependencies: Option<Stamp>,
     owner: Option<(u64, u64)>,
     batch: [(usize, Option<Stamp>); native::READ_BATCH],
+    /// Carried and read occurrences.
+    pub counts: [u64; 2],
 }
 impl<'a> Demand<'a> {
     pub fn new(
@@ -281,7 +305,22 @@ impl<'a> Demand<'a> {
             dependencies: None,
             owner: None,
             batch: [(0, None); native::READ_BATCH],
+            counts: [0; 2],
         }
+    }
+
+    /// The template's stamp taken before this batch's reads, and its owner's.
+    fn stamps(&self, pointer: usize, ordinal: u32) -> Option<Certificate> {
+        let (expected, stamp) = self.batch[ordinal as usize % native::READ_BATCH];
+        Some([stamp.filter(|_| expected == pointer)?, self.owner?])
+    }
+
+    fn certificate(&self, pointer: usize, ordinal: u32) -> Option<super::core::Certificate> {
+        if self.changes.fresh_only() {
+            return None;
+        }
+        let [template, owner] = self.stamps(pointer, ordinal)?;
+        Some([template, owner, self.dependencies?])
     }
 }
 impl native::DetailPolicy for Demand<'_> {
@@ -294,42 +333,52 @@ impl native::DetailPolicy for Demand<'_> {
             *slot = (pointer, self.changes.sequence(pointer));
         }
     }
-    fn demand(&mut self, country: u32, pointer: usize, template: u64, ordinal: u32) -> bool {
-        let (expected, stamp) = self.batch[ordinal as usize % native::READ_BATCH];
-        let before = stamp
-            .zip(self.owner)
-            .map(|(template, owner)| [template, owner]);
-        self.core.prepare(
-            template,
-            pointer,
-            country,
-            before
-                .filter(|_| expected == pointer)
-                .zip(self.dependencies)
-                .map(|([template, owner], dependencies)| [template, owner, dependencies]),
-        );
-        self.store.request_certified(
+    fn demand(
+        &mut self,
+        country: u32,
+        pointer: usize,
+        template: u64,
+        ordinal: u32,
+    ) -> native::Acquire {
+        let stamps = self.stamps(pointer, ordinal);
+        let certificate = self.certificate(pointer, ordinal);
+        let details = self.store.request_certified(
             country,
             pointer,
             template,
             ordinal,
-            (expected == pointer).then_some(before).flatten(),
+            stamps,
             self.changes.fresh_only(),
-        )
+        );
+        let carried = !details && self.core.carry(template, pointer, country, certificate);
+        self.counts[usize::from(!carried)] += 1;
+        if carried {
+            native::Acquire::Held
+        } else {
+            native::Acquire::Read { details }
+        }
     }
-    fn core(&mut self, record: &[u8]) -> Option<native::IconCore<'_>> {
-        self.core.carry(record, self.changes)
+    fn held(&mut self, template: u64) -> Option<native::IconCore<'_>> {
+        self.core.held(template)
     }
-    fn remember_core(
+    fn remember(
         &mut self,
-        record: &[u8],
         row: &native::IconRow,
         bytes: &[u8],
         counts: &[native::SubunitCount],
         variants: &[u64],
+        names: &[u8],
     ) {
-        self.core
-            .remember(self.changes, record, row, bytes, counts, variants);
+        let certificate = self.certificate(row.pointer, row.settings.roster_ordinal);
+        self.core.remember(
+            self.changes,
+            certificate,
+            row,
+            bytes,
+            counts,
+            variants,
+            names,
+        );
     }
 }
 
@@ -337,12 +386,11 @@ impl Store {
     pub fn forget(&mut self) {
         self.entries.clear();
         self.payload_bytes = 0;
-        self.before = None;
     }
 
-    pub fn begin(&mut self, changes: &dyn Changes) {
-        self.before = changes.quiet();
+    pub fn begin(&mut self) {
         self.requested = false;
+        self.reordered = false;
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -419,12 +467,13 @@ impl Store {
             }
         };
         let entry = &mut self.entries[at];
-        let same = entry.pointer == pointer && entry.owner == owner && entry.ordinal == ordinal;
+        let same = entry.pointer == pointer && entry.owner == owner;
         if current.is_none() && !fresh {
             entry.valid = false;
             entry.attempted = false;
             entry.acquired = false;
             entry.requested = false;
+            entry.reordered = false;
             return false;
         }
         let read = fresh || !same || !entry.attempted || current != entry.certificate;
@@ -434,6 +483,8 @@ impl Store {
             entry.certificate = current;
             entry.acquired = false;
         }
+        entry.reordered = !read && entry.ordinal != ordinal;
+        self.reordered |= entry.reordered;
         entry.pointer = pointer;
         entry.owner = owner;
         entry.ordinal = ordinal;
@@ -443,8 +494,9 @@ impl Store {
         read
     }
 
+    /// Freezes what this walk read; a writer since its stamps refuses it.
     pub fn certify(&mut self, changes: &dyn Changes, rows: &[native::IconRow]) {
-        if !self.requested && self.before.is_some() && self.before == changes.quiet() {
+        if !self.requested {
             return;
         }
         for row in rows {
@@ -455,8 +507,11 @@ impl Store {
                 continue;
             };
             let entry = &mut self.entries[at];
+            if !entry.requested {
+                continue;
+            }
             if changes.fresh_only() {
-                entry.valid = entry.requested && row.details_fresh;
+                entry.valid = row.details_fresh;
                 continue;
             }
             if entry.pending.is_none()
@@ -467,11 +522,9 @@ impl Store {
                 entry.acquired = false;
                 continue;
             }
-            if entry.requested {
-                entry.attempted = true;
-                entry.certificate = entry.pending;
-                entry.valid = row.details_fresh;
-            }
+            entry.attempted = true;
+            entry.certificate = entry.pending;
+            entry.valid = row.details_fresh;
         }
     }
 
@@ -496,7 +549,7 @@ impl Store {
         variants: &[u64],
         bytes: &[u8],
     ) {
-        if !self.requested {
+        if !self.requested && !self.reordered {
             return;
         }
         for row in rows {
@@ -507,6 +560,32 @@ impl Store {
                 continue;
             };
             let entry = &mut self.entries[at];
+            if std::mem::take(&mut entry.reordered) {
+                if entry.valid
+                    && let Some(settings) = entry.settings.as_ref()
+                {
+                    let previous_bytes = entry.allocated_bytes();
+                    let renumbered = Arc::new(TemplateSettings {
+                        roster_ordinal: entry.ordinal,
+                        names_group: settings
+                            .names_group
+                            .as_deref()
+                            .map(|key| owned_vec(engine_allocation::copy_vec(key))),
+                        forbidden_equipment: settings
+                            .forbidden_equipment
+                            .as_deref()
+                            .map(|tokens| owned_vec(engine_allocation::copy_vec(tokens))),
+                        ..**settings
+                    });
+                    entry.settings = Some(renumbered);
+                    if let Some(raw) = &mut entry.raw_settings {
+                        raw.roster_ordinal = entry.ordinal;
+                    }
+                    self.payload_bytes =
+                        self.payload_bytes - previous_bytes + entry.allocated_bytes();
+                }
+                continue;
+            }
             if !entry.requested || !entry.valid {
                 continue;
             }
@@ -619,6 +698,7 @@ impl Store {
             self.payload_bytes = self.payload_bytes - previous_bytes + entry.allocated_bytes();
         }
         self.requested = false;
+        self.reordered = false;
     }
 
     pub fn settings_available(&self, row: &native::IconRow) -> bool {

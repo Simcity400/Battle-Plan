@@ -660,8 +660,8 @@ fn every_hour_reads_both_tables_and_bad_memory_cannot_claim_empty() {
         capture.capture(&present, 0, 0x1000, hour, force);
         let read = reads.finish();
         assert!(read[TABLES[1].index()].spans > 0);
-        // Unobserved, the name key behind the nonempty literal is read.
-        assert!(read[TABLES[0].index()].spans > 0, "{hour}");
+        // The walk reads the literal and its key; the dictionary reads nothing more.
+        assert_eq!(read[TABLES[0].index()].spans, 0, "{hour}");
         assert_eq!(
             template_outcomes(&capture),
             [Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 }]
@@ -1019,7 +1019,7 @@ fn border_effect_template_key_scale_bench() {
                 "TEMPLATE_KEY_BENCH templates={templates} shape={shape} whole_capture_p50_us={} dictionary_requests={requests:?} added_header_bytes={} prior_requested_bytes={} baseline_delta_bytes=0 delta_bytes={} initial_field_bytes={}",
                 times[times.len() / 2].as_micros(),
                 templates * 32,
-                requests.bytes - (templates * 32) as u64,
+                requests.bytes.saturating_sub((templates * 32) as u64),
                 delta_sizes[0],
                 templates * 12
             );
@@ -1138,9 +1138,10 @@ fn name_arena_growth_keeps_the_first_heading_and_counts_exact_demand() {
     assert!(matches!(row.display_name, Recorded::Value(Some(_))));
     assert_eq!(row.priority_unit_name, b"infantry");
     assert_eq!(row.model_unreadable, 0);
-    assert_eq!(capture.name_bytes.required, 3);
+    // The literal and the dictionary's key behind it.
+    assert_eq!(capture.name_bytes.required, 3 + 8);
     capture.grow(&mut size);
-    assert!(size.name_bytes >= 3);
+    assert!(size.name_bytes >= 3 + 8);
 }
 
 fn large_content(countries: usize, per_country: usize) -> Fixture {
@@ -1313,7 +1314,7 @@ fn live_template_demand_and_same_capture_growth_keep_every_country() {
     let grown = large_content(20, 5);
     captured.capture(&grown, 0, 0x1000, 10, true);
     assert_eq!(template_outcomes(&captured), [Outcome::Rows { len: 100 }; 2]);
-    assert_eq!(captured.name_bytes.len, 100 * 3);
+    assert_eq!(captured.name_bytes.len, 100 * (3 + 8));
     assert_eq!(captured.counts.len, 100);
 }
 
@@ -1355,91 +1356,155 @@ impl crate::template_changes::Changes for CoreChanges {
     }
 }
 
-#[test]
-fn certified_template_cores_match_fresh_for_quiet_changed_new_reordered_deleted_and_refused_rows() {
-    struct Counting<'a> {
-        source: &'a Fixture,
-        core_reads: std::cell::Cell<usize>,
+/// Every read a capture makes through it.
+struct Recording<'a> {
+    source: &'a Fixture,
+    reads: std::cell::RefCell<Vec<(usize, usize)>>,
+}
+impl Memory for Recording<'_> {
+    fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push((at, out.len()));
+        self.source.copy(at, out)
     }
-    impl Memory for Counting<'_> {
-        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-            if (0x6000..0x6200).contains(&at) || (0x7000..0x7400).contains(&at) {
-                self.core_reads.set(self.core_reads.get() + 1);
-            }
-            self.source.copy(at, out)
+}
+impl<'a> Recording<'a> {
+    fn new(source: &'a Fixture) -> Self {
+        Self {
+            source,
+            reads: Default::default(),
         }
     }
+    /// Reads of the template object past its identity.
+    fn template(&self, template: usize) -> usize {
+        self.reads
+            .borrow()
+            .iter()
+            .filter(|&&(at, len)| {
+                (template..template + 0x400).contains(&at) && (at, len) != (template, 16)
+            })
+            .count()
+    }
+    /// Reads of the grouped entries, grid cells and sub-unit the templates name.
+    fn shared(&self) -> usize {
+        self.reads
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| (0x6000..0x6400).contains(&at) || (0x7000..0x7400).contains(&at))
+            .count()
+    }
+}
+
+/// A copy of the fixture's template at 0x7800, listed after it.
+fn add_second_template(source: &mut Fixture) {
+    let template = source.bytes[0x5000..0x5400].to_vec();
+    source.bytes[0x7800..0x7c00].copy_from_slice(&template);
+    source.bytes[0x7808..0x7810].copy_from_slice(&((17_u64 << 32) | 52).to_le_bytes());
+    source.bytes[0x4008..0x4010].copy_from_slice(&0x7800_u64.to_le_bytes());
+    source.bytes[0x3000 + ccountry::DIVISION_TEMPLATES + 8..][..8]
+        .copy_from_slice(&0x0000_0002_0000_0002_u64.to_le_bytes());
+}
+
+fn site(name: &str) -> usize {
+    engine_mutations::template_mutations::MUTATIONS
+        .iter()
+        .position(|(site, _)| site.name == name)
+        .unwrap()
+}
+
+#[test]
+fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
+    const A: usize = 0x5000;
+    const B: usize = 0x7800;
     let changes = CoreChanges::new();
     let mut source = fixture();
-    source.bytes[0x5000 + native::REGIMENT_DATA..][..8].copy_from_slice(&0x6100_u64.to_le_bytes());
-    source.bytes[0x5000 + native::REGIMENT_DATA + 8..][..8]
+    source.bytes[A + native::REGIMENT_DATA..][..8].copy_from_slice(&0x6100_u64.to_le_bytes());
+    source.bytes[A + native::REGIMENT_DATA + 8..][..8]
         .copy_from_slice(&0x0000_0003_0000_0003_u64.to_le_bytes());
     source.bytes[0x6100..0x6108].copy_from_slice(&0x7000_u64.to_le_bytes());
     source.bytes[0x6110..0x6118].copy_from_slice(&0x7000_u64.to_le_bytes());
-    source.bytes[0x5000 + native::GRID_DIMENSIONS..][..4]
+    source.bytes[A + native::GRID_DIMENSIONS..][..4]
         .copy_from_slice(&0x0003_0001_u32.to_le_bytes());
     let mut capture = Captured::with_capacities(&capacity());
-    for hour in 0..13 {
-        match hour {
+    for hour in 0..16 {
+        // The templates this hour reads in full.
+        let read: &[usize] = match hour {
+            0 => &[A],
             2 => {
                 source.bytes[0x6008..0x600c].copy_from_slice(&7_i32.to_le_bytes());
-                drop(changes.templates.notify(0x5000, 1));
+                drop(changes.templates.notify(A, site("rebuild_template_caches")));
+                &[A]
             }
             3 => {
                 source.bytes[0x7000 + subunit::COMBAT_WIDTH..][..8]
                     .copy_from_slice(&34000_i64.to_le_bytes());
                 drop(changes.locals.notify(Some(0x8400), 1));
+                &[A]
             }
             4 => {
-                // This count is not covered by the template writer domain.
-                source.bytes[0x5000 + native::FORMATION_DIVISION_COUNT..][..4]
+                // Derived-stat rebuilds write the formation count.
+                source.bytes[A + native::FORMATION_DIVISION_COUNT..][..4]
                     .copy_from_slice(&19_i32.to_le_bytes());
+                drop(changes.templates.notify(A, site("rebuild_template_caches")));
+                &[A]
             }
             5 => {
-                let template = source.bytes[0x5000..0x5400].to_vec();
-                source.bytes[0x7800..0x7c00].copy_from_slice(&template);
-                source.bytes[0x7808..0x7810].copy_from_slice(&((17_u64 << 32) | 52).to_le_bytes());
-                source.bytes[0x4008..0x4010].copy_from_slice(&0x7800_u64.to_le_bytes());
-                source.bytes[0x3000 + ccountry::DIVISION_TEMPLATES + 8..][..8]
-                    .copy_from_slice(&0x0000_0002_0000_0002_u64.to_le_bytes());
+                add_second_template(&mut source);
+                &[B]
             }
             6 => {
-                source.bytes[0x4000..0x4008].copy_from_slice(&0x7800_u64.to_le_bytes());
-                source.bytes[0x4008..0x4010].copy_from_slice(&0x5000_u64.to_le_bytes());
+                // A roster move renumbers both without reading either.
+                source.bytes[0x4000..0x4008].copy_from_slice(&(B as u64).to_le_bytes());
+                source.bytes[0x4008..0x4010].copy_from_slice(&(A as u64).to_le_bytes());
+                &[]
             }
             7 => {
-                // A readable fixed record with an unreadable followed model array.
-                source.bytes[0x7800 + native::SUBUNIT_COUNTS..][..8]
+                source.bytes[B + native::SUBUNIT_COUNTS..][..8]
                     .copy_from_slice(&0xf000_u64.to_le_bytes());
-                drop(changes.templates.notify(0x7800, 1));
+                drop(changes.templates.notify(B, site("rebuild_template_caches")));
+                &[B]
             }
-            8 => {
-                source.bytes[0x7800 + native::SUBUNIT_COUNTS..][..8]
+            // A refused row is not held.
+            8 => &[B],
+            9 => {
+                source.bytes[B + native::SUBUNIT_COUNTS..][..8]
                     .copy_from_slice(&0x6000_u64.to_le_bytes());
-                drop(changes.templates.notify(0x7800, 1));
-                source.bytes[0x3000 + ccountry::DIVISION_TEMPLATES + 8..][..8]
-                    .copy_from_slice(&0x0000_0001_0000_0001_u64.to_le_bytes());
+                drop(changes.templates.notify(B, site("rebuild_template_caches")));
+                &[B]
             }
             10 => {
-                // Literal bytes are read fresh even without a template writer.
-                source.bytes[0x5000 + native::NAME] = b'B';
-                source.bytes[0x7800 + native::NAME] = b'C';
+                source.bytes[A + native::NAME] = b'B';
+                drop(changes.templates.notify(A, site("assign_editable_template_data")));
+                &[A]
             }
             11 => {
-                source.bytes[0x7800 + native::NAME + 16..][..8]
-                    .copy_from_slice(&0_u64.to_le_bytes());
+                source.bytes[B + native::NAME_KEY..][..8].copy_from_slice(b"new_name");
+                drop(changes.templates.notify(B, site("read_template_data")));
+                &[B]
             }
             12 => {
-                // The fallback key lies outside the fixed icon record.
-                source.bytes[0x7800 + native::NAME_KEY..][..8].copy_from_slice(b"new_name");
+                // Another handle at the held object is read, announced or not.
+                source.bytes[B + 8..B + 16].copy_from_slice(&((18_u64 << 32) | 52).to_le_bytes());
+                &[B]
             }
-            _ => {}
-        }
-        let counted = Counting {
-            source: &source,
-            core_reads: 0.into(),
+            13 => {
+                source.bytes[0x3000 + ccountry::DIVISION_TEMPLATES + 8..][..8]
+                    .copy_from_slice(&0x0000_0001_0000_0001_u64.to_le_bytes());
+                &[]
+            }
+            14 => {
+                source.bytes[B + native::CUSTOM_ICON..][..4].copy_from_slice(&17_i32.to_le_bytes());
+                drop(crate::template_changes::native_notification(
+                    &changes.templates,
+                    site("set_template_symbol"),
+                    0xc0de,
+                    0,
+                ));
+                &[B]
+            }
+            _ => &[],
         };
-        capture.capture_original(&counted, 0, 0x1000, hour, false, &changes);
+        let recording = Recording::new(&source);
+        capture.capture_original(&recording, 0, 0x1000, hour, false, &changes);
         let mut fresh = Captured::with_capacities(&capacity());
         fresh.capture_original(&source, 0, 0x1000, hour, true, &changes);
         assert_eq!(capture.tables(), fresh.tables(), "hour {hour}");
@@ -1448,18 +1513,48 @@ fn certified_template_cores_match_fresh_for_quiet_changed_new_reordered_deleted_
             fresh.model_failures(),
             "hour {hour}"
         );
-        if matches!(hour, 1 | 9 | 12) {
+        for template in [A, B] {
             assert_eq!(
-                counted.core_reads.get(),
-                0,
-                "quiet core and speed keys must not be walked"
-            );
-        } else {
-            assert!(
-                counted.core_reads.get() > 0,
-                "fresh or changed core must be read: {hour}"
+                recording.template(template) > 0,
+                read.contains(&template),
+                "hour {hour}, template {template:#x}"
             );
         }
+        if read.is_empty() {
+            assert_eq!(recording.shared(), 0, "hour {hour}");
+        }
+    }
+}
+
+/// Fresh-only observation reads every template under standing certificates.
+#[test]
+fn fresh_only_observation_reads_every_template() {
+    use crate::template_changes::Changes;
+    struct FreshOnly(CoreChanges);
+    impl Changes for FreshOnly {
+        fn fresh_only(&self) -> bool {
+            true
+        }
+        fn quiet(&self) -> Option<(u64, u64)> {
+            self.0.quiet()
+        }
+        fn sequence(&self, pointer: usize) -> Option<(u64, u64)> {
+            self.0.sequence(pointer)
+        }
+        fn core_dependencies(&self) -> Option<(u64, u64)> {
+            self.0.core_dependencies()
+        }
+    }
+    let changes = FreshOnly(CoreChanges::new());
+    let mut source = fixture();
+    let mut capture = Captured::with_capacities(&capacity());
+    for hour in 0_i32..3 {
+        // No writer announces the edit.
+        source.bytes[0x5000 + native::CUSTOM_ICON..][..4].copy_from_slice(&hour.to_le_bytes());
+        let recording = Recording::new(&source);
+        capture.capture_original(&recording, 0, 0x1000, hour, false, &changes);
+        assert!(recording.template(0x5000) > 0, "hour {hour}");
+        assert_eq!(displayed(capture.table_inputs()).custom_icon, hour);
     }
 }
 
@@ -1528,19 +1623,42 @@ fn tracked_variant_replacement_with_an_unchanged_header_invalidates_template_cor
     assert!(refused.excluded_variants.is_empty());
 }
 
+/// The custom-icon command names no template, so every template is read again.
 #[test]
-fn unnotified_custom_icon_edit_is_read_from_the_fresh_fixed_record() {
+fn the_custom_icon_command_reads_every_template_again() {
     let changes = CoreChanges::new();
     let mut source = fixture();
+    add_second_template(&mut source);
     let mut captured = Captured::with_capacities(&capacity());
     captured.capture_original(&source, 0, 0x1000, 1, false, &changes);
+    let recording = Recording::new(&source);
+    captured.capture_original(&recording, 0, 0x1000, 2, false, &changes);
+    assert_eq!(recording.template(0x5000) + recording.template(0x7800), 0);
     source.bytes[0x5000 + native::CUSTOM_ICON..][..4].copy_from_slice(&17_i32.to_le_bytes());
     source.bytes[0x5000 + native::CUSTOM_ICON_NATO] = 1;
-    captured.capture_original(&source, 0, 0x1000, 2, false, &changes);
+    drop(crate::template_changes::native_notification(
+        &changes.templates,
+        site("set_template_symbol"),
+        0xc0de,
+        0,
+    ));
+    let recording = Recording::new(&source);
+    captured.capture_original(&recording, 0, 0x1000, 3, false, &changes);
+    assert!(recording.template(0x5000) > 0 && recording.template(0x7800) > 0);
     let mut fresh = Captured::with_capacities(&capacity());
-    fresh.capture_original(&source, 0, 0x1000, 2, true, &changes);
+    fresh.capture_original(&source, 0, 0x1000, 3, true, &changes);
     assert_eq!(captured.tables(), fresh.tables());
-    let row = displayed(captured.table_inputs());
+    let [
+        _,
+        TableView::Complete(replay_data::rows::TableRows::DivisionTemplateIcons(icons)),
+    ] = captured.tables()
+    else {
+        panic!("icons");
+    };
+    let row = icons
+        .iter()
+        .find(|row| row.template == 0xffff_ffff_0000_0034)
+        .unwrap();
     assert_eq!((row.custom_icon, row.custom_icon_nato), (17, 1));
 }
 

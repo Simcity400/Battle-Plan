@@ -362,7 +362,7 @@ pub const fn cadence(table: TableId) -> Cadence {
         // DivisionTemplates falls to the hourly arm: counter tooltips, template triggers and the
         // model selectors read a template's names and category, which the update command, template
         // effects and the daily AI category chooser change at any hour. The collector derives it
-        // from the hourly icon walk, carrying only name keys no hooked writer touched
+        // from the hourly icon walk, carrying templates no hooked writer touched
         // (template_changes). CountryResources is hourly: a tactic's resource-count trigger reads
         // its produced and adjustment pools. Resource addition, building-resource modification,
         // country release and building level changes rewrite them at any hour, as does the daily

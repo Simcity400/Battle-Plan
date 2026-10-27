@@ -2,7 +2,9 @@
 //! inputs, the stored 3D-model inputs and the saved model choices of one
 //! walk, whose sub-unit definitions resolve through caller-owned slots that
 //! grow off-thread, and the names and categories derived from the same walk
-//! ([`dictionary`]). Each walked template's movement speed keys
+//! ([`dictionary`]). The walk authenticates every roster occurrence; one whose
+//! writer certificate stands since its held read publishes that read (`core`,
+//! `held`) and nothing of it is read. Each read template's movement speed keys
 //! (DivisionTemplateIcons.speed_keys, [`engine_native::carmy::movement_speed_keys`])
 //! are read after the walk from its template object; a refused read is that
 //! row's None, counted in [`speed_key_data`].
@@ -42,7 +44,7 @@ pub(crate) fn speed_key_data() -> impl serde::Serialize {
     crate::status::status!({
         "reads": SPEED_KEY_COUNTS[0].load(Relaxed),
         "refusals": SPEED_KEY_COUNTS[1].load(Relaxed),
-        "scope": "cumulative fresh DivisionTemplateIcons.speed_keys reads of the movement priority sub-unit's and its categories' modifier keys; certified icon cores reuse complete keys without native reads, and a refused fresh read is that row's None",
+        "scope": "cumulative fresh DivisionTemplateIcons.speed_keys reads of the movement priority sub-unit's and its categories' modifier keys; carried templates publish their held keys without native reads, and a refused fresh read is that row's None",
     })
 }
 
@@ -184,8 +186,6 @@ pub struct Captured {
     icon_bytes: Arena<u8>,
     name_bytes: Arena<u8>,
     sample_hour: Option<i32>,
-    /// The dictionary's held name keys, kept across hours.
-    keys: dictionary::KeyStore,
     held: held::Store,
     core: core::Store,
     model_failures: ModelFailures,
@@ -207,7 +207,6 @@ impl Captured {
             .fail(super::failed_capture(TABLES[1], hour, force_full, reason));
         // A failed capture has no rows of its own to count.
         self.model_failures = ModelFailures::default();
-        self.keys.forget();
         self.held.forget();
         self.core.forget();
         self.country_cache.forget();
@@ -246,7 +245,6 @@ impl Captured {
             icon_bytes: Arena::new(capacity.icon_bytes),
             name_bytes: Arena::new(capacity.name_bytes),
             sample_hour: None,
-            keys: dictionary::KeyStore::default(),
             held: held::Store::default(),
             core: core::Store::default(),
             model_failures: ModelFailures::default(),
@@ -278,7 +276,6 @@ impl Captured {
     }
     fn discard_owned(&mut self) {
         if self.pending_owned {
-            self.keys.forget();
             self.held.forget();
             self.core.forget();
             self.country_cache.forget();
@@ -296,7 +293,6 @@ impl Captured {
             + self.country_cache.allocated_bytes()
             + self.icon_bytes.allocated_bytes()
             + self.name_bytes.allocated_bytes()
-            + self.keys.allocated_bytes()
             + self.held.allocated_bytes()
             + self.core.allocated_bytes()
             + self.database.allocated_bytes()
@@ -464,9 +460,11 @@ impl Captured {
             self.country_snapshot = None;
         }
         self.country_cache.begin();
-        self.held.begin(changes);
-        self.core.begin(changes);
+        self.held.begin();
+        self.core.begin();
         self.sample_hour = Some(hour);
+        // Carried and read templates.
+        let templates: [u64; 2];
         // The counter/model inputs, each composition grid's entries and the
         // demanded display-name inputs every hour.
         let mut country_ticks = 0_u64;
@@ -516,6 +514,7 @@ impl Captured {
                 &mut countries,
                 &mut details,
             );
+            templates = details.counts;
             self.country_rows.outcome = match (walk.outcome, country_failure) {
                 (Outcome::Unavailable { reason }, _) | (_, Some(reason)) => {
                     Outcome::Unavailable { reason }
@@ -570,15 +569,22 @@ impl Captured {
             .first
             .get(..self.name_bytes.len)
             .unwrap_or(&[]);
-        self.rows.outcome = dictionary::derive(
+        let (outcome, rereads) = dictionary::derive(
             memory,
             icon_rows,
             self.icon_rows.outcome,
             names,
-            &mut self.keys,
-            changes,
             &mut self.rows.rows,
             &mut self.bytes.first,
+        );
+        self.rows.outcome = outcome;
+        crate::template_changes::record(
+            &crate::template_changes::Counts {
+                carried: templates[0],
+                read: templates[1],
+                rereads,
+            },
+            matches!(outcome, Outcome::Rows { .. }).then_some(icon_rows.len()),
         );
         self.bytes.len = self.bytes.first.len();
         self.bytes.required = self.bytes.len;
@@ -653,7 +659,7 @@ impl Captured {
         } else {
             for row in rows {
                 let start = self.speed_keys.len();
-                let span = if let Some(keys) = self.core.speed(row.template, changes) {
+                let span = if let Some(keys) = self.core.speed(row.template) {
                     let span = engine_allocation::reserve(&mut self.speed_keys, keys.len())
                         .ok()
                         .map(|()| {
