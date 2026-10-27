@@ -272,7 +272,7 @@ pub fn run(options: &Options) -> io::Result<Value> {
     if !preparation_mode && options.cores != 1 {
         return Err(invalid("The decode floor requires exactly one logical CPU"));
     }
-    let runtime_inventory = if runtime_mode {
+    let runtime_inventory = if preparation_mode {
         let mut inventory = independent::runtime_inventory();
         let coordinator: Vec<_> = prepass::families()
             .into_iter()
@@ -349,19 +349,14 @@ pub fn run(options: &Options) -> io::Result<Value> {
         wall = Instant::now();
     }
     let (hours, blocks, tables, completion, checksum) = if preparation_mode {
-        let runtime_session = runtime_mode
-            .then(crate::prepared::prepass::runtime::Session::start)
-            .transpose()?;
+        let runtime_session = crate::prepared::prepass::runtime::Session::start()?;
         let accepted = super::run(
             &source,
             Some(&options.content),
             &AtomicBool::new(false),
             |_| {},
         )?;
-        let runtime = runtime_session
-            .as_ref()
-            .map(|session| session.report())
-            .transpose()?;
+        let runtime = runtime_session.report()?;
         drop(runtime_session);
         let total = source.replay_ref().index.len();
         let (store, key) = crate::prepared::files(&source, Some(&options.content))?;
@@ -375,9 +370,7 @@ pub fn run(options: &Options) -> io::Result<Value> {
             ));
         }
         let mut completion = json!({"walk_next_block":accepted.next_block,"total_blocks":total,"sections":accepted.sections,"families":accepted.families});
-        if let Some(runtime) = runtime {
-            completion["runtime"] = runtime;
-        }
+        completion["runtime"] = runtime;
         // Count actual input frames outside the preparation interval, without inferred gap lengths.
         (Vec::new(), Vec::new(), Vec::new(), completion, None)
     } else {
@@ -478,7 +471,7 @@ pub fn run(options: &Options) -> io::Result<Value> {
         report["runtime"] = report["completion"]["runtime"].clone();
         report["runtime_inventory"] = inventory;
         report["driver"] = json!(
-            "PARTIAL main-store borrowed-extract measurement through ordinary production preparation; not whole-app one-decode runtime"
+            "Production default: one live shared-dispatch prepass task; PARTIAL borrowed-extract coverage, not whole-app one-decode runtime"
         );
         report["runtime_measurement"] = json!({
             "status":"PARTIAL",

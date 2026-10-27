@@ -25,7 +25,8 @@ const USAGE: &str = concat!(
     "Output must be under captures/w1b-cost or captures/w1b-runtime/self (canonical exact roots).\n",
     "Runtime defaults to captures/w1b-runtime/self; other modes default to captures/w1b-cost.\n",
     "Decode floors require --cores 1; runtime permits --cores 16 when available.\n",
-    "Runtime is a PARTIAL main-store borrowed-extract measurement, not whole-app one-decode runtime. ",
+    "Families and runtime use the same production-default one-live-prepass-task policy. ",
+    "Borrowed-extract coverage is PARTIAL, not whole-app one-decode runtime. ",
     "All registered families, coordinator, side jobs, main encoders, store and publication cadence remain; ",
     "no S3, byte credits, frozen roots or spools."
 );

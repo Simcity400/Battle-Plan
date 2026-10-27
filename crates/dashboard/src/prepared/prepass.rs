@@ -89,14 +89,13 @@ pub(crate) fn enabled() -> bool {
     true
 }
 
-/// Workers for a machine of `parallelism` processors: those the decoder and
-/// coordinator leave, at least one.
-pub(crate) fn workers(parallelism: usize) -> usize {
+/// One live prepass limits duplicated decoder state; other preparation work remains parallel.
+pub(crate) fn workers(_parallelism: usize) -> usize {
     #[cfg(test)]
     if let Some(workers) = TEST_WORKERS.with(std::cell::Cell::get) {
         return workers;
     }
-    parallelism.saturating_sub(2).max(1)
+    1
 }
 
 /// The read-ahead budget (default [`AHEAD_BYTES`]) and test-only fault
@@ -263,12 +262,7 @@ impl PrePass {
             .flat_map(|family| family.tables.iter().copied())
             .collect();
         let section_consumer = replay.section_reader(from, &tables, "walk pre-pass");
-        // Main's reader still uses decoder helpers; this measurement serializes live block extracts.
-        let count = if knobs.runtime.is_some() {
-            1
-        } else {
-            workers.max(1)
-        };
+        let count = workers.max(1);
         let shared = Arc::new(Shared {
             section_consumer,
             state: Mutex::new(State {
@@ -413,14 +407,8 @@ fn work(replay: &Replay, alive: Alive, families: &[&'static Family], knobs: &Kno
             extract_block_measured(replay, index, families, &shared.stop, knobs).outcomes
         }))
         .unwrap_or_else(|_| {
-            if knobs.runtime.is_some() {
-                let readings: Vec<_> = families.iter().copied().map(Reading::of).collect();
-                return runtime::panicked(replay, index, &readings).outcomes;
-            }
-            sequential(families)
-                .into_iter()
-                .map(|outcome| (outcome, Duration::ZERO, 0))
-                .collect()
+            let readings: Vec<_> = families.iter().copied().map(Reading::of).collect();
+            runtime::panicked(replay, index, &readings).outcomes
         });
         let bytes = outcomes.iter().map(|(_, _, bytes)| bytes).sum();
         let outcomes = outcomes
@@ -835,12 +823,7 @@ impl Pool {
             lanes.extend(families().into_iter().map(|family| (family, from, true)));
             first..lanes.len()
         });
-        // Main's reader still uses decoder helpers; this measurement serializes live block extracts.
-        let count = if knobs.runtime.is_some() {
-            1
-        } else {
-            workers.max(1)
-        };
+        let count = workers.max(1);
         let end = replay.index.len();
         let shared = Arc::new(PoolShared {
             state: Mutex::new(PoolState {
@@ -1133,13 +1116,7 @@ fn work_pool(replay: &Replay, alive: PoolAlive, knobs: &Knobs) {
             });
             extract_bound(replay, index, &readings, &shared.stop, knobs, keep)
         }))
-        .unwrap_or_else(|_| {
-            if knobs.runtime.is_some() {
-                runtime::panicked(replay, index, &readings)
-            } else {
-                Measured::sequential(readings.len())
-            }
-        });
+        .unwrap_or_else(|_| runtime::panicked(replay, index, &readings));
         for (reading, (outcome, _, _)) in readings.iter().zip(&measured.outcomes) {
             // Each family's outcome counted; the block task's cycles below.
             ::replay_frame::cpu::note(
@@ -1510,19 +1487,6 @@ pub(crate) struct Measured {
     pub reads: u64,
 }
 
-impl Measured {
-    /// Each of `families` families observing the block hour by hour.
-    fn sequential(families: usize) -> Self {
-        Self {
-            outcomes: (0..families)
-                .map(|_| (Outcome::Sequential, Duration::ZERO, 0))
-                .collect(),
-            read: Duration::ZERO,
-            reads: 0,
-        }
-    }
-}
-
 /// [`extract_bound`] of families as they declare their reads.
 fn extract_block_measured(
     replay: &Replay,
@@ -1575,28 +1539,20 @@ fn extract_main(
 ) -> Measured {
     let started = Instant::now();
     let format = replay.format;
-    let fields: Vec<Option<Vec<TableFields>>> = families
-        .iter()
-        .map(|family| changes_fields(family, knobs))
-        .collect();
-    let tables: Vec<Vec<TableId>> = families
-        .iter()
-        .map(|family| {
+    let mut fields = Vec::with_capacity(families.len());
+    let mut tables = Vec::with_capacity(families.len());
+    let mut extracts = Vec::with_capacity(families.len());
+    for family in families {
+        let _cpu = ::replay_frame::cpu::scope("extract", Some(family.family.name));
+        let setup = runtime::checked(|| {
+            let fields = changes_fields(family, knobs);
             let mut tables = family.tables().to_vec();
             tables.sort_unstable_by_key(|table| table.index());
             tables.dedup();
-            tables
-        })
-        .collect();
-    let mut extracts: Vec<Running> = families
-        .iter()
-        .zip(&fields)
-        .map(|(family, fields)| {
-            let _cpu = ::replay_frame::cpu::scope("extract", Some(family.family.name));
             let started = ::replay_frame::cpu::thread_cycles();
             let mut extract = family.start(format);
             ::replay_frame::cpu::note("extract-start", family.family.name, started);
-            let follow = match fields {
+            let follow = match &fields {
                 Some(fields) => {
                     extract.read_by_changes();
                     // Its own watch: the reader's changed tables are its own.
@@ -1606,14 +1562,31 @@ fn extract_main(
                 }
                 None => Follow::default(),
             };
-            Running {
-                extract: Some(extract),
-                failure: None,
-                took: Duration::ZERO,
-                follow,
+            Ok((fields, tables, extract, follow))
+        });
+        match setup {
+            Ok((watch, chosen, extract, follow)) => {
+                fields.push(watch);
+                tables.push(chosen);
+                extracts.push(Running {
+                    extract: Some(extract),
+                    failure: None,
+                    took: Duration::ZERO,
+                    follow,
+                });
             }
-        })
-        .collect();
+            Err(error) => {
+                fields.push(None);
+                tables.push(Vec::new());
+                extracts.push(Running {
+                    extract: None,
+                    failure: Some(error),
+                    took: Duration::ZERO,
+                    follow: Follow::default(),
+                });
+            }
+        }
+    }
     let check = || {
         if stop.load(Ordering::Acquire) {
             Err(io::Error::from(io::ErrorKind::Interrupted))
@@ -1623,12 +1596,18 @@ fn extract_main(
     };
     let read = {
         let mut watches: Vec<BlockWatch<'_>> = Vec::with_capacity(families.len());
-        for (((reading, running), fields), tables) in families
+        let mut positions = Vec::with_capacity(families.len());
+        for (position, (((reading, running), fields), tables)) in families
             .iter()
             .zip(extracts.iter_mut())
             .zip(&fields)
             .zip(&tables)
+            .enumerate()
         {
+            if running.failure.is_some() {
+                continue;
+            }
+            positions.push(position);
             let family = reading.family;
             watches.push(match fields {
                 Some(fields) => {
@@ -1713,7 +1692,10 @@ fn extract_main(
             });
         }
         let read = replay.read_block_watched_keeping(index, &mut watches, keep, check);
-        let own: Vec<io::Result<()>> = watches.into_iter().map(|watch| watch.finish()).collect();
+        let mut own: Vec<io::Result<()>> = families.iter().map(|_| Ok(())).collect();
+        for (position, watch) in positions.into_iter().zip(watches) {
+            own[position] = watch.finish();
+        }
         read.map(|()| own)
     };
     let spent = extracts
@@ -1721,9 +1703,9 @@ fn extract_main(
         .map(|running| running.took)
         .sum::<Duration>();
     let read_time = started.elapsed().saturating_sub(spent);
-    // Runtime: a family's earlier panic or interruption outranks a later failure of the shared read.
+    // A family's earlier panic or interruption outranks a later failure of the shared read.
     let mut fatal: Vec<Option<io::Error>> = Vec::new();
-    if read.is_err() && knobs.runtime.is_some() {
+    if read.is_err() {
         fatal = extracts
             .iter_mut()
             .map(|running| running.failure.take_if(|failure| runtime::fatal(failure)))
@@ -1766,18 +1748,14 @@ fn extract_main(
                     .iter()
                     .enumerate()
                     .map(|(position, family)| {
-                        let outcome = if let Some(outcome) = held(position, family) {
-                            outcome
-                        } else if knobs.runtime.is_some() {
+                        let outcome = held(position, family).unwrap_or_else(|| {
                             runtime::declined(
                                 replay,
                                 index,
                                 family.family.name,
                                 io::Error::new(error.kind(), Arc::clone(&error)),
                             )
-                        } else {
-                            Outcome::Sequential
-                        };
+                        });
                         (outcome, Duration::ZERO, 0)
                     })
                     .collect(),
@@ -1818,21 +1796,15 @@ fn extract_main(
                                 );
                                 Ok((facts?, bytes))
                             };
-                            // Outside runtime a panic here reaches the task's catch, which observes every co-read family hourly.
-                            if knobs.runtime.is_some() {
-                                runtime::checked(finish)
-                            } else {
-                                finish()
-                            }
+                            runtime::checked(finish)
                         }
                     };
                     let (outcome, bytes) = match finished {
                         Ok((facts, bytes)) => (Outcome::Facts(facts), bytes),
-                        Err(error) if knobs.runtime.is_some() => (
+                        Err(error) => (
                             runtime::declined(replay, index, family.family.name, error),
                             0,
                         ),
-                        Err(_) => (Outcome::Sequential, 0),
                     };
                     let bytes = if matches!(outcome, Outcome::Facts(_)) {
                         bytes

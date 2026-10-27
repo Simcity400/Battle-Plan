@@ -224,11 +224,9 @@ fn prepass_refusals_match_hourly_observation() {
     }
 }
 
-/// An extract that fails or panics hands its block to hourly observation;
-/// cancellation during an extract publishes nothing of the block, and the
-/// resumed preparation matches.
+/// Extract declines recover hourly; panics fail by name rather than hiding a bug.
 #[test]
-fn prepass_failed_extracts_observe_hourly_and_cancellation_discards_the_block() {
+fn prepass_declines_recover_panics_fail_and_cancellation_discards_the_block() {
     let replay = resources(5, false);
     let mut fixture = Fixture::new(&replay);
     let expected =
@@ -243,10 +241,19 @@ fn prepass_failed_extracts_observe_hourly_and_cancellation_discards_the_block() 
         });
         let source = fixture.source("prepass-faults");
         let hourly = prepass::noted("resources.sequential");
-        prepass::with_test_prepass(2, Some(hook), || {
+        let result = prepass::with_test_prepass(2, Some(hook), || {
             run(&source, None, &AtomicBool::new(false), |_| {})
-        })
-        .unwrap();
+        });
+        if matches!(fault, prepass::Fault::Panic) {
+            let error = result.expect_err("an observer panic must not become fallback facts");
+            let message = error.to_string();
+            assert!(message.contains("resources"), "{message}");
+            assert!(message.contains("physical block"), "{message}");
+            assert!(message.contains("panicked"), "{message}");
+            clear(source);
+            continue;
+        }
+        result.unwrap();
         assert_eq!(prepass::noted("resources.sequential") - hourly, 1);
         assert_payloads_equal(&payloads(&source, None), &expected, "failed extract");
         clear(source);

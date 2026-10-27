@@ -881,44 +881,127 @@ fn runtime_preserves_main_projection_quiet_deadline_carry_and_gap_delivery() {
 /// read's later interruption must not replace the panic as that family's failure.
 #[test]
 fn runtime_keeps_an_earlier_panic_over_a_later_shared_read_failure() {
-    let replay = recording(1);
-    let stop = Arc::new(AtomicBool::new(false));
-    let stopping = Arc::clone(&stop);
-    let hook: Hook = Arc::new(move |family, frame| {
-        if family == HOURS.name && frame.hour == 101 {
-            stopping.store(true, Ordering::Release);
-            return Fault::Panic;
+    for telemetry in [false, true] {
+        let replay = recording(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&stop);
+        let hook: Hook = Arc::new(move |family, frame| {
+            if family == HOURS.name && frame.hour == 101 {
+                stopping.store(true, Ordering::Release);
+                return Fault::Panic;
+            }
+            Fault::Continue
+        });
+        let _session = telemetry.then(runtime::Session::start).transpose().unwrap();
+        let knobs = Knobs {
+            runtime: runtime::current(),
+            hook: Some(hook),
+            ..Knobs::default()
+        };
+        let errors: Vec<io::Error> = extract_block_measured(
+            &replay,
+            &replay.index[0],
+            &[&HOURS, &HOURS_POWER],
+            &stop,
+            &knobs,
+        )
+        .outcomes
+        .into_iter()
+        .map(|(outcome, ..)| match outcome {
+            Outcome::Failed(error) => error,
+            other => panic!("expected a runtime failure: {other:?}"),
+        })
+        .collect();
+        assert!(runtime::panicking(&errors[0]), "{}", errors[0]);
+        assert!(!runtime::panicking(&errors[1]), "{}", errors[1]);
+        assert_eq!(
+            errors[1].kind(),
+            io::ErrorKind::Interrupted,
+            "{}",
+            errors[1]
+        );
+    }
+}
+
+#[test]
+fn a_setup_panic_names_only_its_family_and_preserves_healthy_sibling_facts() {
+    struct BadChanges;
+    impl Extract for BadChanges {
+        fn read_by_changes(&mut self) {
+            panic!("injected read_by_changes panic")
         }
-        Fault::Continue
-    });
-    let _session = runtime::Session::start().unwrap();
-    let knobs = Knobs {
-        runtime: runtime::current(),
-        hook: Some(hook),
-        ..Knobs::default()
+        fn observe(&mut self, _: &Replay, _: &DecodedFrame, _: &FrameChanges) -> io::Result<()> {
+            panic!("a failed setup must never observe")
+        }
+        fn finish(self: Box<Self>) -> io::Result<Box<dyn Any + Send>> {
+            panic!("a failed setup must never finish")
+        }
+    }
+    static BAD_FIELDS: Family = Family {
+        name: "broken field selection",
+        fields: Some(|| panic!("injected fields panic")),
+        start: |_| panic!("field selection failed before start"),
+        ..CAPTURE_POWER
     };
-    let errors: Vec<io::Error> = extract_block_measured(
-        &replay,
-        &replay.index[0],
-        &[&HOURS, &HOURS_POWER],
-        &stop,
-        &knobs,
-    )
-    .outcomes
-    .into_iter()
-    .map(|(outcome, ..)| match outcome {
-        Outcome::Failed(error) => error,
-        other => panic!("expected a runtime failure: {other:?}"),
-    })
-    .collect();
-    assert!(runtime::panicking(&errors[0]), "{}", errors[0]);
-    assert!(!runtime::panicking(&errors[1]), "{}", errors[1]);
-    assert_eq!(
-        errors[1].kind(),
-        io::ErrorKind::Interrupted,
-        "{}",
-        errors[1]
-    );
+    static BAD_START: Family = Family {
+        name: "broken start",
+        start: |_| panic!("injected start panic"),
+        ..CAPTURE_POWER
+    };
+    static BAD_CHANGES: Family = Family {
+        name: "broken read_by_changes",
+        start: |_| Box::new(BadChanges),
+        ..CAPTURE_POWER
+    };
+    let replay = moving_tables(32, true);
+    let expected = capture(&replay, &[&CAPTURE_POWER], true).0.remove(0);
+    for telemetry in [false, true] {
+        for broken in [&BAD_FIELDS, &BAD_START, &BAD_CHANGES] {
+            for reverse in [false, true] {
+                let session = telemetry.then(runtime::Session::start).transpose().unwrap();
+                let families = if reverse {
+                    [broken, &CAPTURE_POWER]
+                } else {
+                    [&CAPTURE_POWER, broken]
+                };
+                let measured = extract_block_measured(
+                    &replay,
+                    &replay.index[0],
+                    &families,
+                    &AtomicBool::new(false),
+                    &Knobs::current(),
+                );
+                assert_eq!(measured.reads, 1);
+                assert_eq!(measured.outcomes.len(), 2);
+                for (family, (outcome, ..)) in families.into_iter().zip(measured.outcomes) {
+                    if family.name == broken.name {
+                        let Outcome::Failed(error) = outcome else {
+                            panic!("expected setup failure: {outcome:?}")
+                        };
+                        assert!(runtime::panicking(&error), "{error}");
+                        assert!(error.to_string().contains(broken.name), "{error}");
+                        assert!(!error.to_string().contains(CAPTURE_POWER.name), "{error}");
+                        assert!(error.to_string().contains("physical block 0"), "{error}");
+                    } else {
+                        let Outcome::Facts(facts) = outcome else {
+                            panic!("healthy sibling failed: {outcome:?}")
+                        };
+                        assert_eq!(*facts.downcast::<Vec<Captured>>().unwrap(), expected);
+                    }
+                }
+                if let Some(session) = session {
+                    let report = session.report().unwrap();
+                    assert_eq!(report["delivered_family_count"], 2);
+                    for family in report["families"].as_array().unwrap() {
+                        assert_eq!(
+                            family["failures"],
+                            usize::from(family["family"] == broken.name)
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -1802,4 +1885,16 @@ fn a_walk_behind_every_paced_family_lane_keeps_the_pool() {
             "block {block} claimed beyond the walk's window {snapshot:?}"
         );
     }
+}
+
+#[test]
+fn production_prepass_worker_policy_is_independent_of_measurement_session() {
+    for cores in [1, 2, 16, 1500] {
+        assert_eq!(workers(cores), 1);
+    }
+    let session = runtime::Session::start().unwrap();
+    for cores in [1, 2, 16, 1500] {
+        assert_eq!(workers(cores), 1);
+    }
+    drop(session);
 }
