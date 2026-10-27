@@ -728,8 +728,8 @@ mod tests {
     /// only the differing rows reach the encoder.
     #[test]
     fn compared_frames_encode_the_bytes_of_complete_frames() {
-        let first = crate::spool_helper::SpoolHelper::start().unwrap();
-        let second = crate::spool_helper::SpoolHelper::start().unwrap();
+        let first = crate::spool_helper::SpoolHelper::start(None).unwrap();
+        let second = crate::spool_helper::SpoolHelper::start(None).unwrap();
         for helpers in [0, 1, 2] {
             let counters = Counters::default();
             let mut compared = FrameEncoder::new();

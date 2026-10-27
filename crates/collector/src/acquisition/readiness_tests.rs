@@ -554,3 +554,261 @@ fn readiness_multi_producer_barrier_keeps_dispatch_order_and_first_failure() {
         assert_eq!(pool.calibration().uncollected, 0);
     }
 }
+
+#[test]
+fn a_detached_handoff_notification_between_readiness_recheck_and_park_is_not_lost() {
+    let pool = Pool::start(1, 2, |_: &mut u8| 0_u8).unwrap();
+    let mut polls = 0;
+    let result = pool.wait_ready_with_spin(std::time::Duration::ZERO, || {
+        polls += 1;
+        match polls {
+            1 => None,
+            2 => {
+                pool.notify_ready();
+                None
+            }
+            _ => Some(7),
+        }
+    });
+    assert_eq!(result, 7);
+    assert_eq!(polls, 3);
+    assert_eq!(pool.shared.counters.join_sleeps.load(Ordering::Relaxed), 1);
+    assert!(!pool.shared.ready_waiting.load(Ordering::Relaxed));
+}
+
+struct PausedPublication {
+    entered: mpsc::Sender<()>,
+    released: Mutex<mpsc::Receiver<()>>,
+}
+impl Publication for PausedPublication {
+    fn published(&self, _: i64) {
+        self.entered.send(()).unwrap();
+        receive(&self.released.lock().unwrap());
+    }
+}
+struct WakeJob {
+    value: u8,
+    publication: Option<Arc<PausedPublication>>,
+}
+struct WakeFixture {
+    pool: Pool<WakeJob, u8>,
+    ticket: Ticket,
+    readiness: Mutex<mpsc::Receiver<idle_diagnostics::Signal>>,
+    resume_wake: mpsc::Sender<()>,
+    notification: Mutex<mpsc::Receiver<()>>,
+    resume_notification: mpsc::Sender<()>,
+    next_started: Mutex<mpsc::Receiver<()>>,
+    resume_next: mpsc::Sender<()>,
+}
+fn receive<T>(receiver: &mpsc::Receiver<T>) -> T {
+    receiver.recv_timeout(crate::TEST_HANG_GUARD).unwrap()
+}
+impl WakeFixture {
+    fn new() -> Self {
+        let (run, running) = mpsc::channel();
+        let running = Mutex::new(running);
+        let (resume_next, next) = mpsc::channel();
+        let next = Mutex::new(next);
+        let (started, next_started) = mpsc::channel();
+        let pool = Pool::start(2, 1, move |job: &mut WakeJob| {
+            if job.value == 1 {
+                receive(&running.lock().unwrap());
+            } else {
+                started.send(()).unwrap();
+                receive(&next.lock().unwrap());
+            }
+            job.value
+        })
+        .unwrap();
+        pool.set_on_completed(|job, _| {
+            job.publication
+                .as_ref()
+                .map(|publication| Arc::clone(publication) as Arc<dyn Publication>)
+        });
+        let once = std::sync::Once::new();
+        pool.set_readiness_wait_hook(move || once.call_once(|| run.send(()).unwrap()));
+        let (woke, readiness) = mpsc::channel();
+        let (resume_wake, paused) = mpsc::channel();
+        let paused = Mutex::new(paused);
+        assert!(
+            pool.shared
+                .hooks
+                .after_readiness_wake
+                .set(Box::new(move |signal| {
+                    woke.send(signal).unwrap();
+                    receive(&paused.lock().unwrap());
+                }))
+                .is_ok()
+        );
+        let (entered, notification) = mpsc::channel();
+        let (resume_notification, released) = mpsc::channel();
+        let publication = Arc::new(PausedPublication {
+            entered,
+            released: Mutex::new(released),
+        });
+        // SAFETY: the fixture retains every job and notification through settlement.
+        let ticket = unsafe {
+            pool.submit(&mut Some(WakeJob {
+                value: 1,
+                publication: Some(publication),
+            }))
+        }
+        .unwrap();
+        Self {
+            pool,
+            ticket,
+            readiness: Mutex::new(readiness),
+            resume_wake,
+            notification: Mutex::new(notification),
+            resume_notification,
+            next_started: Mutex::new(next_started),
+            resume_next,
+        }
+    }
+    fn wait_for_readiness(&self) -> (idle_diagnostics::Wait, idle_diagnostics::Signal) {
+        let comparison = self.pool.shared.ready_wake.load(Ordering::SeqCst);
+        let begin = crate::sampling::qpc();
+        self.pool
+            .wait_ready_with_spin(std::time::Duration::ZERO, || {
+                self.pool.is_complete(self.ticket).then_some(())
+            });
+        let signal = receive(&self.readiness.lock().unwrap());
+        (
+            idle_diagnostics::Wait {
+                address: idle_diagnostics::Address::Readiness,
+                comparison,
+                observed: self.pool.shared.ready_wake.load(Ordering::SeqCst),
+                begin,
+                end: crate::sampling::qpc(),
+                ..Default::default()
+            },
+            signal,
+        )
+    }
+    fn diagnostics(&self, wait: idle_diagnostics::Wait) -> idle_diagnostics::Hour {
+        self.pool.settle();
+        let mut hour = idle_diagnostics::Hour {
+            wait: Some(wait),
+            ..Default::default()
+        };
+        // SAFETY: both jobs were collected and every publisher has settled.
+        unsafe {
+            self.pool
+                .shared
+                .wake_events
+                .as_ref()
+                .unwrap()
+                .drain_into(&mut hour)
+        };
+        assert_eq!(hour.dropped_signals, 0);
+        hour
+    }
+}
+
+#[test]
+fn readiness_wake_survives_callback_progress_and_same_slot_reuse_before_join_wake() {
+    for spin in [false, true] {
+        let fixture = WakeFixture::new();
+        let (wait, readiness) = fixture.wait_for_readiness();
+        assert_eq!(fixture.pool.finish(fixture.ticket).unwrap().report, Ok(1));
+        // SAFETY: the fixture retains the replacement until its gated worker publishes.
+        let next = unsafe {
+            fixture.pool.submit(&mut Some(WakeJob {
+                value: 2,
+                publication: None,
+            }))
+        }
+        .unwrap();
+        assert_eq!(next.slot, fixture.ticket.slot);
+        assert_ne!(next.generation, fixture.ticket.generation);
+        receive(&fixture.next_started.lock().unwrap());
+        let (joining, registered) = mpsc::channel();
+        assert!(
+            fixture
+                .pool
+                .shared
+                .hooks
+                .before_join_wait
+                .set(Box::new(move |ticket, spin| {
+                    joining.send((ticket, spin)).unwrap();
+                }))
+                .is_ok()
+        );
+        let before = fixture.pool.shared.spin_wake.load(Ordering::SeqCst);
+        std::thread::scope(|scope| {
+            let fixture = &fixture;
+            scope.spawn(move || {
+                assert_eq!(receive(&registered), (next, spin));
+                fixture.resume_wake.send(()).unwrap();
+                receive(&fixture.notification.lock().unwrap());
+                assert_eq!(
+                    fixture.pool.shared.spin_wake.load(Ordering::SeqCst),
+                    before,
+                    "the old generation woke the replacement's spin waiter"
+                );
+                fixture.resume_next.send(()).unwrap();
+                fixture.resume_notification.send(()).unwrap();
+            });
+            let mut completion = None;
+            assert!(fixture.pool.finish_into_timed(
+                next,
+                &mut completion,
+                if spin {
+                    crate::TEST_HANG_GUARD
+                } else {
+                    std::time::Duration::ZERO
+                }
+            ));
+            assert_eq!(completion.unwrap().report, Ok(2));
+        });
+        let hour = fixture.diagnostics(wait);
+        assert_eq!(hour.matching_signals, 1);
+        assert_eq!(hour.signal, Some(readiness));
+        assert_eq!(fixture.pool.calibration().active, 0);
+        assert_eq!(fixture.pool.calibration().uncollected, 0);
+    }
+}
+
+#[test]
+fn one_publication_records_readiness_and_each_join_address_as_separate_wakes() {
+    for spin in [false, true] {
+        for readiness_wait in [false, true] {
+            let fixture = WakeFixture::new();
+            let (readiness, signal) = fixture.wait_for_readiness();
+            // Keep this generation registered to exercise both wake addresses in one publication.
+            fixture.pool.shared.awaited.store(
+                fixture.ticket.generation | if spin { AWAITED_SPIN } else { 0 },
+                Ordering::SeqCst,
+            );
+            fixture.resume_wake.send(()).unwrap();
+            receive(&fixture.notification.lock().unwrap());
+            let join = idle_diagnostics::Wait {
+                address: if spin {
+                    idle_diagnostics::Address::Spin
+                } else {
+                    idle_diagnostics::Address::Slot
+                },
+                ticket: Some(fixture.ticket),
+                comparison: 0,
+                observed: fixture.pool.shared.spin_wake.load(Ordering::SeqCst),
+                begin: readiness.end,
+                end: crate::sampling::qpc(),
+                ..Default::default()
+            };
+            fixture.pool.shared.awaited.store(0, Ordering::SeqCst);
+            assert_eq!(fixture.pool.finish(fixture.ticket).unwrap().report, Ok(1));
+            fixture.resume_notification.send(()).unwrap();
+            let hour = fixture.diagnostics(if readiness_wait { readiness } else { join });
+            assert_eq!(hour.matching_signals, 1);
+            if readiness_wait {
+                assert_eq!(hour.signal, Some(signal));
+            } else {
+                let joined = hour.signal.unwrap();
+                assert_eq!(joined.ticket, Some(fixture.ticket));
+                assert_eq!(joined.readiness, 0);
+                assert_eq!(joined.spin != 0, spin);
+                assert_eq!(joined.slot, !spin);
+            }
+        }
+    }
+}

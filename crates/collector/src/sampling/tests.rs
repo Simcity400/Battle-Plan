@@ -1327,6 +1327,7 @@ fn decode_queue_full_takes_the_existing_gap_branch_with_existing_counters() {
         shared
             .decode_queue
             .push(decode::DecodeJob {
+                queued_qpc: 0,
                 index,
                 seq: seq as u64,
                 hour: 0,
@@ -1378,6 +1379,7 @@ fn decode_queue_full_takes_the_existing_gap_branch_with_existing_counters() {
     // A decode FIFO filled with duplicate leases is an invariant violation.
     // Keep its explicit failure path rather than losing an acquired frame silently.
     let extra = decode::DecodeJob {
+        queued_qpc: 0,
         index,
         seq: u64::MAX,
         hour: 0,

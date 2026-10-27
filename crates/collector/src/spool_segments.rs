@@ -166,8 +166,8 @@ mod tests {
     /// thread encodes, and the helpers took tables with enough rows.
     #[test]
     fn segments_encoded_on_the_helpers_assemble_the_frame_one_thread_encodes() {
-        let first = crate::spool_helper::SpoolHelper::start().unwrap();
-        let second = crate::spool_helper::SpoolHelper::start().unwrap();
+        let first = crate::spool_helper::SpoolHelper::start(None).unwrap();
+        let second = crate::spool_helper::SpoolHelper::start(None).unwrap();
         let mut whole = FrameEncoder::new();
         let mut split = FrameEncoder::new();
         let helper_encodes = || HELPER.phase(Phase::Encode).0;

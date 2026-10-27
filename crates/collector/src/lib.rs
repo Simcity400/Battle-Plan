@@ -169,6 +169,8 @@ pub(crate) use collector_memory::terminal;
 pub(crate) use collector_observers::territory_changes;
 pub(crate) use collector_production::production::design_changes;
 mod thread_cpu;
+mod thread_diagnostics;
+mod frame_priority;
 pub(crate) use collector_observers::unit_leader_changes;
 pub(crate) use collector_observers::unit_leader_trait_changes;
 #[cfg(test)]

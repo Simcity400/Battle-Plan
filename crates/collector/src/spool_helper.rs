@@ -4,9 +4,8 @@
 //! [`SpoolHelper::join`] runs a borrowed job on the helper while the calling
 //! spool thread runs its own share, and returns only after both finished. The
 //! helper is started once, before hooks are published, and parks between
-//! hours: an hour allocates nothing and spawns nothing. It runs below normal
-//! priority, following the spool thread's verdict when capture buffers are
-//! backlogged, so it never competes with the game above the spool thread.
+//! hours: an hour allocates nothing and spawns nothing. Frame conversion is
+//! adaptively promoted by the frame pipeline, without EcoQoS or CPU-set confinement.
 //! Output placement is fixed by the caller, so the result is identical to
 //! running both shares on one thread.
 
@@ -55,7 +54,6 @@ struct State {
     job: Option<Erased>,
     running: bool,
     panicked: bool,
-    backlogged: bool,
     stop: bool,
 }
 
@@ -79,7 +77,12 @@ pub(crate) struct SpoolHelper {
 
 impl SpoolHelper {
     /// Start the helper thread and wait for its id.
-    pub(crate) fn start() -> io::Result<Self> {
+    pub(crate) fn start(
+        priority: Option<(
+            Arc<crate::frame_priority::Pipeline>,
+            crate::frame_priority::Role,
+        )>,
+    ) -> io::Result<Self> {
         let shared = Arc::new(Shared::default());
         let worker = Arc::clone(&shared);
         let (id_sender, id_receiver) = std::sync::mpsc::sync_channel(1);
@@ -92,7 +95,7 @@ impl SpoolHelper {
                 // SAFETY: GetCurrentThreadId has no preconditions.
                 let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
                 let _ = id_sender.send(id);
-                serve(&worker);
+                serve(&worker, priority);
             })?;
         let thread_id = id_receiver
             .recv()
@@ -113,7 +116,7 @@ impl SpoolHelper {
     /// after the helper finished with the job.
     pub(crate) fn join<'a, R>(
         &self,
-        backlogged: bool,
+        _backlogged: bool,
         job: &'a Job<'a>,
         own: impl FnOnce() -> R,
     ) -> R {
@@ -125,7 +128,6 @@ impl SpoolHelper {
             let mut state = self.shared.lock();
             state.job = Some(erased);
             state.panicked = false;
-            state.backlogged = backlogged;
             self.shared.changed.notify_all();
         }
         /// Waits for the job while `own` unwinds.
@@ -184,15 +186,28 @@ impl Drop for SpoolHelper {
     }
 }
 
-fn serve(shared: &Shared) {
-    let mut priority = crate::runtime::OwnPriority::new();
+fn serve(
+    shared: &Shared,
+    pipeline: Option<(
+        Arc<crate::frame_priority::Pipeline>,
+        crate::frame_priority::Role,
+    )>,
+) {
+    let mut priority = crate::runtime::OwnPriority::frame_pipeline();
+    let mut refresh = || {
+        if let Some((pipeline, role)) = &pipeline {
+            priority.follow_pipeline(pipeline, *role);
+        } else {
+            priority.follow(false);
+        }
+    };
+    refresh();
     let mut state = shared.lock();
     loop {
         if let Some(job) = state.job {
             state.running = true;
-            let backlogged = state.backlogged;
             drop(state);
-            priority.follow(backlogged);
+            refresh();
             // SAFETY: `join` keeps the job alive until `running` clears.
             let job = unsafe { &*job.0 };
             let panicked = catch_unwind(AssertUnwindSafe(job)).is_err();
@@ -204,7 +219,7 @@ fn serve(shared: &Shared) {
         } else if state.stop {
             return;
         } else {
-            priority.follow(false);
+            refresh();
             state = shared
                 .changed
                 .wait(state)
@@ -219,8 +234,31 @@ mod tests {
     use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
     #[test]
+    fn frame_conversion_is_normal_even_without_buffer_pressure() {
+        use std::sync::atomic::AtomicI32;
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_NORMAL,
+        };
+        let helper = SpoolHelper::start(None).unwrap();
+        for backlogged in [false, true, false] {
+            let observed = AtomicI32::new(i32::MIN);
+            helper.join(
+                backlogged,
+                &|| {
+                    observed.store(
+                        unsafe { GetThreadPriority(GetCurrentThread()) },
+                        Ordering::Relaxed,
+                    );
+                },
+                || (),
+            );
+            assert_eq!(observed.load(Ordering::Relaxed), THREAD_PRIORITY_NORMAL);
+        }
+    }
+
+    #[test]
     fn jobs_run_on_one_persistent_thread_and_join_waits_for_both_shares() {
-        let helper = SpoolHelper::start().unwrap();
+        let helper = SpoolHelper::start(None).unwrap();
         let ran_on = AtomicU32::new(0);
         let total = AtomicUsize::new(0);
         for round in 1..=5 {
@@ -243,7 +281,7 @@ mod tests {
 
     #[test]
     fn a_helper_panic_is_resumed_and_an_own_panic_still_waits_for_the_job() {
-        let helper = SpoolHelper::start().unwrap();
+        let helper = SpoolHelper::start(None).unwrap();
         let failing = || panic!("synthetic helper failure");
         let resumed = catch_unwind(AssertUnwindSafe(|| helper.join(false, &failing, || 1)));
         assert!(resumed.is_err());
@@ -264,7 +302,7 @@ mod tests {
 
     #[test]
     fn joining_allocates_nothing_on_the_spool_thread() {
-        let helper = SpoolHelper::start().unwrap();
+        let helper = SpoolHelper::start(None).unwrap();
         let count = AtomicUsize::new(0);
         let job = || {
             count.fetch_add(1, Ordering::Relaxed);

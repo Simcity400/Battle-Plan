@@ -49,6 +49,11 @@ thread_local! {
     static ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
+#[cfg(feature = "callback_profile")]
+pub(crate) fn active() -> bool {
+    ACTIVE.get()
+}
+
 pub(crate) struct Scope {
     previous: bool,
     _thread: PhantomData<Rc<()>>,

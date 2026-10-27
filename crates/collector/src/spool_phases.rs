@@ -132,15 +132,17 @@ impl Phase {
 
 /// Cumulative calls, QPC ticks and thread cycles of each phase.
 pub(crate) struct Totals {
-    phases: [[AtomicU64; 3]; Phase::ALL.len()],
+    phases: [[AtomicU64; 4]; Phase::ALL.len()],
     packs: [AtomicU64; crate::extended::PACK_NAMES.len()],
+    scheduler: [[AtomicU64; 3]; Phase::ALL.len()],
 }
 
 impl Totals {
     pub(crate) const fn new() -> Self {
         Self {
-            phases: [const { [const { AtomicU64::new(0) }; 3] }; Phase::ALL.len()],
+            phases: [const { [const { AtomicU64::new(0) }; 4] }; Phase::ALL.len()],
             packs: [const { AtomicU64::new(0) }; crate::extended::PACK_NAMES.len()],
+            scheduler: [const { [const { AtomicU64::new(0) }; 3] }; Phase::ALL.len()],
         }
     }
 
@@ -151,6 +153,7 @@ impl Totals {
             phase,
             qpc: crate::sampling::qpc(),
             cycles: thread_cycles(),
+            scheduler: crate::thread_diagnostics::Snapshot::now(false),
         }
     }
 
@@ -159,6 +162,23 @@ impl Totals {
         slot[0].fetch_add(1, Ordering::Relaxed);
         slot[1].fetch_add(ticks.max(0) as u64, Ordering::Relaxed);
         slot[2].fetch_add(cycles, Ordering::Relaxed);
+        slot[3].fetch_max(ticks.max(0) as u64, Ordering::Relaxed);
+    }
+
+    fn record_scheduler(
+        &self,
+        phase: Phase,
+        begin: crate::thread_diagnostics::Snapshot,
+        end: crate::thread_diagnostics::Snapshot,
+    ) {
+        if let Some(switches) = begin.switches_to(end) {
+            let slot = &self.scheduler[phase as usize];
+            slot[0].fetch_add(1, Ordering::Relaxed);
+            slot[1].fetch_add(u64::from(switches), Ordering::Relaxed);
+            if let Some(reasons) = end.wait_reasons {
+                slot[2].fetch_or(reasons, Ordering::Relaxed);
+            }
+        }
     }
 
     pub(crate) fn record_pack(&self, pack: usize, cycles: u64) {
@@ -187,10 +207,16 @@ impl Totals {
             "tsc_hz": hz,
             "phases": sequence(Phase::ALL.into_iter().map(move |phase| {
                 let (calls, ticks, cycles) = self.phase(phase);
+                let scheduler = &self.scheduler[phase as usize];
+                let covered = scheduler[0].load(Ordering::Relaxed);
                 status!({
+                    "scheduler_samples": covered,
+                    "context_switches": (covered != 0).then(|| scheduler[1].load(Ordering::Relaxed)),
+                    "wait_reason_bitmap": (covered != 0).then(|| scheduler[2].load(Ordering::Relaxed)),
                     "name": phase.name(),
                     "calls": calls,
                     "wall_ns": ns(ticks),
+                    "max_wall_ns": ns(self.phases[phase as usize][3].load(Ordering::Relaxed)),
                     "cycles": cycles,
                     "cycle_ns": crate::hook_timing::ticks_to_ns(cycles, hz),
                     "scope": phase.scope(),
@@ -208,7 +234,7 @@ impl Totals {
     }
 }
 
-const SCOPE: &str = "cumulative spool-thread work since attach by non-overlapping phase: calls, wall_ns from QPC and the thread's own cycles from QueryThreadCycleTime (cycle_ns converts them with hook_timing's tsc_hz). The phases partition the spool loop, so their cycles sum to the spool thread's measured CPU apart from thread start-up; wall exceeds cycles where the thread was preempted or waited. pack_cycles splits convert_packs by pack";
+const SCOPE: &str = "cumulative spool-thread work since attach by non-overlapping phase: calls, wall_ns from QPC and the thread's own cycles from QueryThreadCycleTime (cycle_ns converts them with hook_timing's tsc_hz). The phases partition the spool loop, so their cycles sum to the spool thread's measured CPU apart from thread start-up; wall exceeds cycles where the thread was preempted or waited. pack_cycles splits convert_packs by pack; scheduler_samples counts spans with successful dispatch-counter boundaries, context_switches sums their deltas and wait_reason_bitmap unions their OS reason masks; these are counts/masks, not off-CPU durations, with query limits in thread_diagnostics";
 
 /// The spool thread's totals.
 pub(crate) static SPOOL: Totals = Totals::new();
@@ -225,6 +251,7 @@ pub(crate) struct Span<'a> {
     phase: Phase,
     qpc: i64,
     cycles: u64,
+    scheduler: crate::thread_diagnostics::Snapshot,
 }
 
 impl<'a> Span<'a> {
@@ -233,6 +260,18 @@ impl<'a> Span<'a> {
     /// Record this phase and start the next one at the same instant.
     pub(crate) fn switch(mut self, phase: Phase) -> Span<'a> {
         let (qpc, cycles) = (crate::sampling::qpc(), thread_cycles());
+        let scheduler = crate::thread_diagnostics::Snapshot::now(false);
+        self.totals
+            .record_scheduler(self.phase, self.scheduler, scheduler);
+        if self.phase != Phase::Wait {
+            crate::thread_diagnostics::record_service(
+                self.scheduler,
+                scheduler,
+                (self.cycles != 0 && cycles != 0).then(|| cycles.saturating_sub(self.cycles)),
+                qpc - self.qpc,
+            );
+        }
+        self.scheduler = scheduler;
         self.totals.record(
             self.phase,
             qpc - self.qpc,
@@ -247,11 +286,20 @@ impl<'a> Span<'a> {
 
 impl Drop for Span<'_> {
     fn drop(&mut self) {
-        self.totals.record(
-            self.phase,
-            crate::sampling::qpc() - self.qpc,
-            thread_cycles().saturating_sub(self.cycles),
-        );
+        let scheduler = crate::thread_diagnostics::Snapshot::now(false);
+        let (ticks, end_cycles) = (crate::sampling::qpc() - self.qpc, thread_cycles());
+        let cycles = end_cycles.saturating_sub(self.cycles);
+        self.totals
+            .record_scheduler(self.phase, self.scheduler, scheduler);
+        if self.phase != Phase::Wait {
+            crate::thread_diagnostics::record_service(
+                self.scheduler,
+                scheduler,
+                (self.cycles != 0 && end_cycles != 0).then_some(cycles),
+                ticks,
+            );
+        }
+        self.totals.record(self.phase, ticks, cycles);
     }
 }
 
@@ -268,6 +316,32 @@ pub(crate) fn thread_cycles() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scheduler_coverage_preserves_missing_values_and_phase_maxima() {
+        let totals = Totals::new();
+        totals.record(Phase::Status, 20, 3);
+        totals.record(Phase::Status, 10, 2);
+        let before = serde_json::to_value(totals.status(1_000_000_000)).unwrap();
+        let row = &before["phases"][Phase::Status as usize];
+        assert_eq!(row["max_wall_ns"], 20);
+        assert_eq!(row["scheduler_samples"], 0);
+        assert!(row["context_switches"].is_null());
+        let start = crate::thread_diagnostics::Snapshot {
+            context_switches: Some(5),
+            ..Default::default()
+        };
+        let end = crate::thread_diagnostics::Snapshot {
+            context_switches: Some(8),
+            wait_reasons: Some(64),
+            ..Default::default()
+        };
+        totals.record_scheduler(Phase::Status, start, end);
+        let after = serde_json::to_value(totals.status(1_000_000_000)).unwrap();
+        let row = &after["phases"][Phase::Status as usize];
+        assert_eq!(row["scheduler_samples"], 1);
+        assert_eq!(row["context_switches"], 3);
+        assert_eq!(row["wait_reason_bitmap"], 64);
+    }
 
     #[test]
     fn spans_partition_work_by_phase_and_count_this_threads_cycles() {

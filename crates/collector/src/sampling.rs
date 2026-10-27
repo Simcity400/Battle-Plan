@@ -338,6 +338,7 @@ pub(crate) struct HourCost {
     pub collect_stalls_over_1ms: u64,
     pub growths: u64,
     pub diagnostics: crate::acquisition_diagnostics::Hour,
+    pub idle: crate::acquisition::idle_diagnostics::Hour,
     pub variants: Option<crate::design_changes::profile::Hour>,
     #[cfg(feature = "callback_profile")]
     pub join_timeline: Option<crate::acquisition_diagnostics::JoinSpan>,
@@ -379,6 +380,7 @@ thread_local! {
 pub(crate) fn reset_hour_joins() {
     HOUR_JOINS.set(None);
     crate::acquisition_diagnostics::reset();
+    crate::acquisition::idle_diagnostics::reset();
 }
 
 pub(crate) fn record_hour_join(
@@ -1141,7 +1143,8 @@ pub struct Shared {
     pub buffer_wait_ns: AtomicU64,
     pub buffer_wait_calls: AtomicU64,
     pub buffer_wait_max_ns: AtomicU64,
-    pub free: ArrayQueue<usize>,
+    pub free: Arc<ArrayQueue<usize>>,
+    pub(crate) frame_priority: Arc<crate::frame_priority::Pipeline>,
     pub ready: ArrayQueue<usize>,
     /// Single FIFO decode queue between the game thread and the spool ready
     /// queue. Every frame transits it in hour order (lightweight jobs; raw
@@ -1157,6 +1160,7 @@ pub struct Shared {
     /// until a ready buffer, a parked clock preparation or a stop request
     /// unparks it ([`Shared::wake_spool`]), or its next periodic deadline.
     pub spool_waker: OnceLock<std::thread::Thread>,
+    pub(crate) decode_waker: OnceLock<std::thread::Thread>,
     /// The game thread owns this until ready is published; the spool thread
     /// then takes it once, independent of any particular FIFO buffer.
     pub roster: UnsafeCell<Option<Box<Roster>>>,
@@ -1487,10 +1491,14 @@ impl Shared {
             .then(|| Box::new(extended::country_counters::CounterStore::observed()));
         let appearance_store = cfg!(feature = "appearance_changes")
             .then(|| Box::new(extended::country_appearance::AppearanceStore::default()));
+        let free = Arc::new(ArrayQueue::new(BUFFERS));
+        let frame_priority = Arc::new(crate::frame_priority::Pipeline::new());
         let army_stat_store = cfg!(feature = "army_stat_changes").then(|| {
-            extended::division_presentation::held_store::Slot::new(Box::new(
+            let slot = extended::division_presentation::held_store::Slot::new(Box::new(
                 extended::attack_stats::ArmyStatStore::new(),
-            ))
+            ));
+            slot.set_priority(Arc::clone(&frame_priority));
+            slot
         });
         let province_unit_store = crate::province_unit_changes::CARRY.then(|| {
             Box::new(extended::province_unit_order::ProvinceUnitStore::new(
@@ -1544,16 +1552,22 @@ impl Shared {
             buffer_wait_ns: AtomicU64::new(0),
             buffer_wait_calls: AtomicU64::new(0),
             buffer_wait_max_ns: AtomicU64::new(0),
-            free: ArrayQueue::new(BUFFERS),
+            free,
+            frame_priority,
             ready: ArrayQueue::new(BUFFERS),
             decode_queue: decode::new_queue(),
             dropped: AtomicU64::new(0),
             pool_bytes: Arc::new(AtomicU64::new(
-                (pool_bytes + size_of::<AtomicU64>() + 2 * size_of::<usize>()) as u64,
+                (pool_bytes + size_of::<AtomicU64>() + 2 * size_of::<usize>()
+                    + size_of::<crate::frame_priority::Pipeline>() + 2 * size_of::<usize>()
+                    + std::alloc::Layout::new::<[AtomicUsize; 2]>()
+                        .extend(std::alloc::Layout::new::<ArrayQueue<usize>>()).unwrap().0
+                        .pad_to_align().size()) as u64,
             )),
             recording: AtomicBool::new(true),
             stop_spool: AtomicBool::new(false),
             spool_waker: OnceLock::new(),
+            decode_waker: OnceLock::new(),
             roster: UnsafeCell::new(Some(roster)),
             roster_ready: AtomicBool::new(false),
             pending: UnsafeCell::new(LossBatch::default()),
@@ -1720,6 +1734,7 @@ impl Shared {
         self.pool_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
         // A newly allocated slot has no index in either queue. Both queues have
         // room for every allocated slot, including ones currently held by a thread.
+        self.frame_priority.publish(index);
         let published = self.free.push(index);
         debug_assert!(published.is_ok());
     }
@@ -1734,9 +1749,13 @@ impl Shared {
             return None;
         }
         if let Some(index) = self.free.pop() {
+            self.frame_priority
+                .claim(index, crate::frame_priority::Caller::Callback);
             return Some(index);
         }
         let started = qpc();
+        self.frame_priority
+            .refresh(crate::frame_priority::Caller::Callback);
         self.buffer_wait_calls.fetch_add(1, Ordering::Relaxed);
         let mut returned = self.frame_return.lock().unwrap_or_else(|e| e.into_inner());
         let index = loop {
@@ -1746,6 +1765,8 @@ impl Shared {
             if self.cancel_buffer_wait.load(Ordering::Acquire) {
                 break None;
             }
+            self.frame_priority
+                .refresh(crate::frame_priority::Caller::Callback);
             // Cancellation must work even if a failed consumer cannot notify us.
             returned = self
                 .frame_available
@@ -1754,6 +1775,13 @@ impl Shared {
                 .0;
         };
         drop(returned);
+        if let Some(index) = index {
+            self.frame_priority
+                .claim(index, crate::frame_priority::Caller::Callback);
+        } else {
+            self.frame_priority
+                .refresh(crate::frame_priority::Caller::Callback);
+        }
         let elapsed = self.ns(qpc() - started);
         self.buffer_wait_ns.fetch_add(elapsed, Ordering::Relaxed);
         self.buffer_wait_max_ns
@@ -1765,6 +1793,8 @@ impl Shared {
     /// Check after popping so a concurrent game pop cannot hide the last free frame.
     pub(crate) fn take_idle_frame_for_growth(&self) -> Option<usize> {
         let index = self.free.pop()?;
+        self.frame_priority
+            .claim(index, crate::frame_priority::Caller::Worker);
         if self.free.is_empty() {
             self.recycle_frame(index);
             return None;
@@ -1781,10 +1811,7 @@ impl Shared {
         }
     }
 
-    /// At most one of the four reusable buffers free: raise background priority
-    /// before the next callback waits in `take_frame` for a returned buffer.
-    /// Two buffers in flight is the steady decode-then-spool pipeline, not a
-    /// backlog.
+    /// The legacy sizing verdict; frame priority promotes one frame earlier.
     pub fn buffers_backlogged(&self) -> bool {
         self.free.len() <= 1
     }
@@ -1822,9 +1849,13 @@ impl Shared {
                 .clear();
         }
         let _returned = self.frame_return.lock().unwrap_or_else(|e| e.into_inner());
+        self.frame_priority.publish(index);
         let published = self.free.push(index);
         debug_assert!(published.is_ok());
         self.frame_available.notify_one();
+        drop(_returned);
+        self.frame_priority
+            .refresh(crate::frame_priority::Caller::Worker);
     }
 
     fn take_army_stat_store(&self) -> Option<extended::division_presentation::held_store::Loan> {
@@ -1925,6 +1956,8 @@ impl Shared {
         result?;
         for _ in 0..self.free.len() {
             let Some(index) = self.free.pop() else { break };
+            self.frame_priority
+                .claim(index, crate::frame_priority::Caller::Worker);
             let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
             let before = frame.allocated_bytes();
             let result = frame.prepare_clock(required);
@@ -2262,6 +2295,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         && shared.recording.load(Ordering::Acquire)
         && !crate::allocation::failed();
     if recording {
+        let _frame_priority = shared.frame_priority.callback();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Callback);
         let _reads = crate::read_accounting::Capture::new();
         let memory = CountedMemory::new(unsafe { LiveMemory::new() });
@@ -2556,6 +2590,7 @@ unsafe fn acquire_with_memory(
             Ordering::Relaxed,
         );
         let decode::DecodeJob {
+            queued_qpc: _,
             relations_payload,
             characters_payload,
             projects_payload,
@@ -4045,6 +4080,7 @@ unsafe fn acquire_with_memory(
                     final_inputs_armed = true;
                 }
                 let wait_begin = qpc();
+                let mut input_handoff = None;
                 let step = batch.wait_ready(|batch| {
                     macro_rules! ready {
                         ($pending:expr) => {
@@ -4069,10 +4105,14 @@ unsafe fn acquire_with_memory(
                                 .flatten()
                                 .all(|pending| pending_complete(batch, pending))
                     };
-                    // Claim this ordered join when its first producer publishes,
-                    // before unrelated handlers can defer the remaining parts.
-                    // No consumer leaves before every part has joined.
-                    ready_step!(Inputs, ready!(input_pending));
+                    // A published input can still have a publisher holding the fan-in lock.
+                    ready_step!(
+                        Inputs,
+                        all(&input_pending, &part_pending) && {
+                            input_handoff = presentation_inputs.try_close();
+                            input_handoff.is_some()
+                        }
+                    );
                     ready_step!(Presentation, presentation.ready(batch));
                     ready_step!(Roots, ready!(root_pending));
                     ready_step!(Divisions, ready!(divisions_pending));
@@ -4398,15 +4438,14 @@ unsafe fn acquire_with_memory(
                         release!();
                     }
                     EarlyStep::Inputs => {
+                        let mut input_handoff = input_handoff.take().expect("closed input handoff");
                         let (mut input_request, inputs_ok, mut input_failure) = completed!(
                             input_pending.take().expect("input producer"),
                             DivisionInputs
                         );
                         let consumers_begin = qpc();
                         let consumers_wait = shared.acquisition_wait_ns.load(Ordering::Relaxed);
-                        // Collect the input tickets before closing the fan-in:
-                        // their last publisher may still release Prepare while
-                        // this callback waits for the ordered parts.
+                        // Published tickets no longer borrow the closed fan-in.
                         let mut parts = [const { None }; crate::division_census::MAX_PARTS - 1];
                         for (part, pending) in
                             std::mem::take(&mut part_pending).into_iter().enumerate()
@@ -4418,14 +4457,14 @@ unsafe fn acquire_with_memory(
                         }
                         let restore_begin = qpc();
                         let (joined, join_failure) =
-                            presentation_inputs.restore_master(&mut input_request.payload.census);
+                            input_handoff.restore_master(&mut input_request.payload.census);
                         shared
                             .presentation
                             .input_restore_ns
                             .fetch_add(shared.ns(qpc() - restore_begin), Ordering::Relaxed);
                         input_request.payload.presentation = None;
                         shared.presentation.store_wait_ns.fetch_add(
-                            shared.ns(presentation_inputs.store_wait_ticks() as i64),
+                            shared.ns(input_handoff.store_wait_ticks() as i64),
                             Ordering::Relaxed,
                         );
                         input_failure = input_failure.or(join_failure);
@@ -4441,7 +4480,7 @@ unsafe fn acquire_with_memory(
                                 }
                                 continue;
                             };
-                            presentation_inputs.restore_part(part, &mut captured);
+                            input_handoff.restore_part(part, &mut captured);
                             if joining && !joined {
                                 let census = &mut input_request.payload.census;
                                 let result = match failure {
@@ -4507,9 +4546,13 @@ unsafe fn acquire_with_memory(
                         // Out of line: the job-sized requests stay off the hourly body's frame.
                         let (pending, movement, speed_terms, bytes, split, omitted) =
                             out_of_line(|| {
+                                let dispatched = input_handoff.take_dispatched();
+                                let retained = input_handoff.take_request();
+                                drop(input_handoff);
                                 if let Some((pending, movement, speed_terms, bytes, split)) =
-                                    presentation_inputs.take_dispatched()
+                                    dispatched
                                 {
+                                    assert!(retained.is_none());
                                     let (ticket, parked) = batch.adopt_presentation_ticket(pending);
                                     let pending = if parked {
                                         PendingAcquisition::Rejected(ticket)
@@ -4530,9 +4573,8 @@ unsafe fn acquire_with_memory(
                                         None,
                                     );
                                 }
-                                let mut presentation_request = presentation_inputs
-                                    .take_request()
-                                    .expect("presentation retained");
+                                let mut presentation_request =
+                                    retained.expect("presentation retained");
                                 if status_recorded && presentation_request.army_stats.is_none() {
                                     presentation_request.army_stats = shared.take_army_stat_store();
                                 }
@@ -6763,6 +6805,7 @@ unsafe fn acquire_with_memory(
                     .callback_growths
                     .saturating_add(diagnostics.jobs.worker_growths),
                 diagnostics,
+                idle: crate::acquisition::idle_diagnostics::take(),
                 variants: frame.clock.as_ref().and_then(|clock| {
                     crate::design_changes::profile::latest(clock.hour, dispatched)
                 }),
@@ -6789,6 +6832,7 @@ unsafe fn acquire_with_memory(
         frame.capture_seq = decode::next_seq();
         // Every field is named: a new one cannot keep a previous hour's value.
         let decode::DecodeJob {
+            queued_qpc: _,
             index: job_index,
             seq,
             hour,
@@ -7026,6 +7070,30 @@ unsafe fn finish_acquisition_into(
             assert!(batch.finish_into(ticket, out), "submitted acquisition job");
             let result = out.as_ref().expect("submitted acquisition job");
             let end = qpc();
+            use crate::acquisition::idle_diagnostics::{self, Family};
+            match (&result.request, &result.report) {
+                (acquisition::Job::Governance(_), Ok(acquisition::Report::Governance(report))) => {
+                    idle_diagnostics::update(|hour| {
+                        hour.governance = Some(Family::new(
+                            extended::governance::TABLES
+                                .into_iter()
+                                .zip(report.governance.ticks),
+                        ));
+                        hour.buildings_ticks = Some(report.buildings);
+                    });
+                }
+                (
+                    acquisition::Job::GatedProjects(request),
+                    Ok(acquisition::Report::GatedProjects(_)),
+                ) => {
+                    idle_diagnostics::update(|hour| {
+                        hour.projects = Some(Family::new(
+                            extended::projects::TABLES.into_iter().zip(request.ticks),
+                        ))
+                    });
+                }
+                _ => {}
+            }
             let wait = shared.ns(end - begin);
             let stall_ns = shared.join_costs[result.request.role() as usize].record(
                 &result.timeline,
@@ -7050,6 +7118,19 @@ unsafe fn finish_acquisition_into(
                     end_qpc: end,
                 }),
             );
+            #[cfg(feature = "callback_profile")]
+            idle_diagnostics::update(|hour| match result.request.role() {
+                acquisition::Role::Variants => {
+                    hour.variants_cycles = result.profile.runner_thread_cycles
+                }
+                acquisition::Role::Governance => {
+                    hour.governance_cycles = result.profile.runner_thread_cycles
+                }
+                acquisition::Role::GatedProjects => {
+                    hour.projects_cycles = result.profile.runner_thread_cycles
+                }
+                _ => {}
+            });
             shared
                 .acquisition_wait_ns
                 .fetch_add(wait, Ordering::Relaxed);

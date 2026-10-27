@@ -664,7 +664,8 @@ fn presentation_continuations_reuse_pool_storage_without_callback_allocations() 
             let mut request = request;
             batch.arm_presentation(&mut request);
             let ledger = batch.arm_presentation_inputs(request, 0, None, false);
-            ledger.take_request().unwrap()
+            let mut handoff = ledger.try_close().expect("unlocked input handoff");
+            handoff.take_request().unwrap()
         });
         let mut presentation = PresentationPending {
             prepare: Some(unsafe {
@@ -818,11 +819,12 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
                 let acquisition::Job::DivisionInputParts(mut part) = part.request else {
                     unreachable!()
                 };
+                let mut handoff = batch.wait_ready(|_| dispatch.try_close());
                 assert_eq!(
-                    dispatch.restore_master(&mut master.payload.census),
+                    handoff.restore_master(&mut master.payload.census),
                     (true, None)
                 );
-                dispatch.restore_part(0, &mut part.census);
+                handoff.restore_part(0, &mut part.census);
                 let inputs = master.payload.census.unit_inputs().unwrap();
                 assert_eq!(
                     inputs
@@ -833,7 +835,8 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
                     expected
                 );
                 let (pending, movement, speed_terms, _, split) =
-                    dispatch.take_dispatched().unwrap();
+                    handoff.take_dispatched().unwrap();
+                drop(handoff);
                 assert!(split);
                 assert!(Arc::ptr_eq(movement.inputs.as_ref().unwrap(), inputs));
                 assert!(Arc::ptr_eq(speed_terms.inputs.as_ref().unwrap(), inputs));
@@ -981,11 +984,12 @@ fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing()
         let acquisition::Job::DivisionInputParts(mut part) = part.request else {
             unreachable!()
         };
+        let mut handoff = batch.wait_ready(|_| dispatch.try_close());
         assert_eq!(
-            dispatch.restore_master(&mut master.payload.census),
+            handoff.restore_master(&mut master.payload.census),
             (true, None)
         );
-        dispatch.restore_part(0, &mut part.census);
+        handoff.restore_part(0, &mut part.census);
         assert_eq!(
             master
                 .payload
@@ -998,11 +1002,12 @@ fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing()
                 .collect::<Vec<_>>(),
             expected
         );
-        assert!(dispatch.take_dispatched().is_none());
+        assert!(handoff.take_dispatched().is_none());
         let mut presentation = PresentationPending {
-            omitted: Some(dispatch.take_request().expect("request held back")),
+            omitted: Some(handoff.take_request().expect("request held back")),
             ..Default::default()
         };
+        drop(handoff);
         let (request, report) = unsafe { presentation.finish(&shared, &mut batch) };
         assert!(report.is_ok());
         assert!(request.inputs.is_none() && request.army_stats.is_none());

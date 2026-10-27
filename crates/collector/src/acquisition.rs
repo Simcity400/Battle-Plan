@@ -40,6 +40,7 @@ use std::{
 
 use serde::Serialize;
 pub(crate) mod callback_parks;
+pub(crate) mod idle_diagnostics;
 use windows_sys::Win32::System::Threading::{
     GetCurrentThreadId, WaitOnAddress, WakeByAddressAll, WakeByAddressSingle,
 };
@@ -69,10 +70,9 @@ const COLLECTING: u64 = 3;
 const RUNNING: u64 = 4;
 const PHASE_MASK: u64 = 7;
 const MAX_GENERATION: u64 = u64::MAX >> 3;
-// A cell array cannot have enough slots to use this bit: its byte length is
-// bounded by isize::MAX. The lower bits retain the sleeping collector's slot + 1.
+// Ticket generations are pool-unique and at most 61 bits; the high bit marks spin eligibility.
 const AWAITED_SPIN: u64 = 1 << 63;
-const AWAITED_SLOT_MASK: u64 = !AWAITED_SPIN;
+const AWAITED_GENERATION_MASK: u64 = !AWAITED_SPIN;
 const fn word(generation: u64, phase: u64) -> u64 {
     generation << 3 | phase
 }
@@ -446,8 +446,12 @@ impl State {
         // the collector either sees RUNNING or the claimant sees its spin flag.
         // The wake sequence changes even if the wake precedes WaitOnAddress.
         let awaited = shared.awaited.load(Ordering::SeqCst);
-        if awaited == ((index as u64 + 1) | AWAITED_SPIN) {
-            shared.wake_spin_waiter();
+        if awaited == (slot.generation | AWAITED_SPIN) {
+            shared.wake_spin_waiter(Some(Ticket {
+                pool: shared.id,
+                slot: index,
+                generation: slot.generation,
+            }));
         }
         Claim {
             index,
@@ -533,6 +537,8 @@ struct Shared<J, R> {
     diagnostic_slots: Box<[crate::acquisition_diagnostics::Slot]>,
     diagnostic_worker_growths: AtomicU64,
     diagnostic_frequency: AtomicU64,
+    #[cfg(any(test, feature = "callback_profile"))]
+    wake_events: Option<idle_diagnostics::Events>,
     thread_ids: Vec<AtomicU32>,
     cells: Box<[Cell<J, R>]>,
     words: Box<[AtomicU64]>,
@@ -540,7 +546,7 @@ struct Shared<J, R> {
     /// Mirrors the locked, terminal stop state for lock-free spin eligibility.
     stopped: AtomicBool,
     uncollected: AtomicUsize,
-    /// One sleeping collector: slot + 1, optionally AWAITED_SPIN, or zero.
+    /// One sleeping collector: ticket generation, optionally AWAITED_SPIN, or zero.
     awaited: AtomicU64,
     worker_waiters: AtomicUsize,
     /// Eligibility waits use this address because an idle transition does not
@@ -554,6 +560,8 @@ struct Shared<J, R> {
     /// an early zero observer cannot unregister another still-sleeping waiter.
     settling: AtomicUsize,
     counters: Counters,
+    #[cfg(test)]
+    hooks: TestHooks,
     #[cfg(all(test, feature = "executor_join_help"))]
     help_attempt_gate: HelpAttemptGate,
     #[cfg(feature = "executor_join_help")]
@@ -569,6 +577,15 @@ struct Shared<J, R> {
     frequency: u64,
     join_failed: AtomicBool,
     context: BatchContext,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct TestHooks {
+    after_readiness_wake: OnceLock<Box<dyn Fn(idle_diagnostics::Signal) + Send + Sync>>,
+    before_readiness_wait: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    before_publication_failed: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    before_join_wait: OnceLock<Box<dyn Fn(Ticket, bool) + Send + Sync>>,
 }
 
 impl<J, R> Shared<J, R> {
@@ -601,24 +618,87 @@ impl<J, R> Shared<J, R> {
         if self.diagnostics.get().is_some() {
             self.diagnostic_slots[index].publish(published_qpc);
         }
+        #[cfg(any(test, feature = "callback_profile"))]
+        let mut signal = idle_diagnostics::Signal {
+            ticket: Some(Ticket {
+                pool: self.id,
+                slot: index,
+                generation,
+            }),
+            identity: self
+                .diagnostics
+                .get()
+                .map(|_| self.diagnostic_slots[index].identity()),
+            published: published_qpc,
+            thread: unsafe { GetCurrentThreadId() },
+            ..Default::default()
+        };
         self.words[index].store(word(generation, PUBLISHED), Ordering::SeqCst);
+        #[cfg(any(test, feature = "callback_profile"))]
+        {
+            signal.released = crate::sampling::qpc();
+        }
         // No cell access after this store, even if the slot is already reused.
         // Dekker in the SC order: either the sleeper's word reload sees this
         // store, or this load sees its awaited registration. WaitOnAddress
         // also returns immediately if publication precedes its actual wait:
         // either the slot word differs, or the eligibility wake sequence does.
         if self.ready_waiting.load(Ordering::SeqCst) {
-            self.ready_wake.fetch_add(1, Ordering::SeqCst);
+            let sequence = self.ready_wake.fetch_add(1, Ordering::SeqCst) + 1;
+            #[cfg(any(test, feature = "callback_profile"))]
+            let begin = crate::sampling::qpc();
             // SAFETY: stable aligned storage lives through the callback wait.
             unsafe { WakeByAddressSingle(self.ready_wake.as_ptr().cast()) };
+            #[cfg(any(test, feature = "callback_profile"))]
+            {
+                let readiness = idle_diagnostics::Signal {
+                    readiness: sequence,
+                    wake_begin: begin,
+                    wake_end: crate::sampling::qpc(),
+                    ..signal
+                };
+                if let Some(events) = &self.wake_events {
+                    events.record(readiness);
+                }
+                #[cfg(test)]
+                if let Some(hook) = self.hooks.after_readiness_wake.get() {
+                    hook(readiness);
+                }
+            }
+            #[cfg(not(any(test, feature = "callback_profile")))]
+            let _ = sequence;
         }
         let awaited = self.awaited.load(Ordering::SeqCst);
-        if awaited & AWAITED_SLOT_MASK == index as u64 + 1 {
+        if awaited & AWAITED_GENERATION_MASK == generation {
             if awaited & AWAITED_SPIN != 0 {
-                self.wake_spin_waiter();
+                #[cfg(any(test, feature = "callback_profile"))]
+                let begin = crate::sampling::qpc();
+                let sequence = self.wake_spin_waiter(None);
+                #[cfg(any(test, feature = "callback_profile"))]
+                if let Some(events) = &self.wake_events {
+                    events.record(idle_diagnostics::Signal {
+                        spin: sequence,
+                        wake_begin: begin,
+                        wake_end: crate::sampling::qpc(),
+                        ..signal
+                    });
+                }
+                #[cfg(not(any(test, feature = "callback_profile")))]
+                let _ = sequence;
             } else {
+                #[cfg(any(test, feature = "callback_profile"))]
+                let begin = crate::sampling::qpc();
                 // SAFETY: stable, aligned atomic storage lives through every wait.
                 unsafe { WakeByAddressSingle(self.words[index].as_ptr().cast()) };
+                #[cfg(any(test, feature = "callback_profile"))]
+                if let Some(events) = &self.wake_events {
+                    events.record(idle_diagnostics::Signal {
+                        slot: true,
+                        wake_begin: begin,
+                        wake_end: crate::sampling::qpc(),
+                        ..signal
+                    });
+                }
             }
         }
         if self.worker_waiters.load(Ordering::SeqCst) != 0 {
@@ -628,15 +708,37 @@ impl<J, R> Shared<J, R> {
         published_qpc
     }
 
-    fn wake_spin_waiter(&self) {
+    fn wake_spin_waiter(&self, claimed: Option<Ticket>) -> u64 {
+        #[cfg(not(any(test, feature = "callback_profile")))]
+        let _ = claimed;
         // Sampled after SC registration and before the word/active reloads.
         // Changing the comparison value closes the wake-before-wait gap for
         // idle transitions, which leave the slot word unchanged. Between that
         // sample and its wait, only this preallocated batch can run: its finite
         // cell count cannot produce enough transitions to wrap this sequence.
-        self.spin_wake.fetch_add(1, Ordering::SeqCst);
+        let sequence = self.spin_wake.fetch_add(1, Ordering::SeqCst) + 1;
+        #[cfg(any(test, feature = "callback_profile"))]
+        let begin = claimed.map(|_| crate::sampling::qpc());
         // SAFETY: this aligned atomic shares the lifetime of every join waiter.
         unsafe { WakeByAddressSingle(self.spin_wake.as_ptr().cast()) };
+        #[cfg(any(test, feature = "callback_profile"))]
+        if let Some(ticket) = claimed
+            && let Some(events) = &self.wake_events
+        {
+            events.record(idle_diagnostics::Signal {
+                ticket: Some(ticket),
+                identity: self
+                    .diagnostics
+                    .get()
+                    .map(|_| self.diagnostic_slots[ticket.slot].identity()),
+                wake_begin: begin.unwrap(),
+                wake_end: crate::sampling::qpc(),
+                thread: unsafe { GetCurrentThreadId() },
+                spin: sequence,
+                ..Default::default()
+            });
+        }
+        sequence
     }
 
     fn wait_active(&self) {
@@ -809,6 +911,10 @@ impl<J, R> Shared<J, R> {
                 catch_unwind(AssertUnwindSafe(|| publication.published(published_qpc)))
             {
                 std::mem::forget(payload);
+                #[cfg(test)]
+                if let Some(hook) = self.hooks.before_publication_failed.get() {
+                    hook();
+                }
                 if let Err(payload) = catch_unwind(AssertUnwindSafe(|| publication.failed())) {
                     std::mem::forget(payload);
                 }
@@ -829,7 +935,8 @@ impl<J, R> Shared<J, R> {
             // see its flag and change/wake spin_wake. A wake before its OS wait
             // still returns immediately because the comparison value differs.
             if self.awaited.load(Ordering::SeqCst) & AWAITED_SPIN != 0 {
-                self.wake_spin_waiter();
+                // No event-log write after active retires: settlement can already drain it.
+                self.wake_spin_waiter(None);
             }
         }
         if active == 0 && self.settling.load(Ordering::SeqCst) != 0 {
@@ -1089,6 +1196,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             diagnostic_slots: diagnostic_slots.into_boxed_slice(),
             diagnostic_worker_growths: AtomicU64::new(0),
             diagnostic_frequency: AtomicU64::new(1),
+            #[cfg(any(test, feature = "callback_profile"))]
+            wake_events: idle_diagnostics::Events::new(capacity.saturating_mul(2)),
             thread_ids,
             cells: cells.into_boxed_slice(),
             words: words.into_boxed_slice(),
@@ -1102,6 +1211,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             ready_wake: AtomicU64::new(0),
             settling: AtomicUsize::new(0),
             counters: Counters::default(),
+            #[cfg(test)]
+            hooks: TestHooks::default(),
             #[cfg(all(test, feature = "executor_join_help"))]
             help_attempt_gate: HelpAttemptGate::default(),
             #[cfg(feature = "executor_join_help")]
@@ -1127,7 +1238,15 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 .expect("admitted acquisition shared layout")
                 .0
                 .pad_to_align();
-            let bytes = arc_layout.size()
+            #[cfg(any(test, feature = "callback_profile"))]
+            let wake_bytes = shared
+                .wake_events
+                .as_ref()
+                .map_or(0, idle_diagnostics::Events::allocated_bytes);
+            #[cfg(not(any(test, feature = "callback_profile")))]
+            let wake_bytes = 0;
+            let bytes = wake_bytes
+                + arc_layout.size()
                 + size_of_val(&*shared.cells)
                 + size_of_val(&*shared.words)
                 + size_of_val(&*shared.diagnostic_slots)
@@ -1489,7 +1608,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
     pub(crate) fn finish_into(&self, ticket: Ticket, out: &mut Option<Completion<J, R>>) -> bool {
         let begin = std::time::Instant::now();
-        let collected = self.finish_into_timed(ticket, out);
+        let collected = self.finish_into_timed(ticket, out, JOIN_SPIN);
         if collected {
             let wall = begin.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
             JOINS.fetch_add(1, Ordering::Relaxed);
@@ -1583,7 +1702,12 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         self.shared.uncollected.fetch_sub(1, Ordering::Release);
         true
     }
-    fn finish_into_timed(&self, ticket: Ticket, out: &mut Option<Completion<J, R>>) -> bool {
+    fn finish_into_timed(
+        &self,
+        ticket: Ticket,
+        out: &mut Option<Completion<J, R>>,
+        spin_budget: std::time::Duration,
+    ) -> bool {
         debug_assert!(
             out.is_none(),
             "collector storage holds an uncollected completion"
@@ -1641,12 +1765,11 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 self.shared.execute(claim, true, true);
                 continue;
             }
-            let spin_available = !JOIN_SPIN.is_zero()
+            let spin_available = !spin_budget.is_zero()
                 && (!cfg!(feature = "executor_spin_until_pool_busy") || spin_until.is_none())
                 && spin_until.is_none_or(|deadline| deadline > std::time::Instant::now())
                 && !self.shared.stopped.load(Ordering::SeqCst);
-            let registration =
-                (ticket.slot as u64 + 1) | if spin_available { AWAITED_SPIN } else { 0 };
+            let registration = ticket.generation | if spin_available { AWAITED_SPIN } else { 0 };
             self.shared.awaited.store(registration, Ordering::SeqCst);
             // Snapshot the wake sequence BEFORE reloading eligibility. Claim,
             // idle retirement and publication pair their SC transition/load
@@ -1665,7 +1788,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 // Like the locked policy, the first eligible pass starts the
                 // deadline here and counts a spin even if then descheduled.
                 let deadline =
-                    *spin_until.get_or_insert_with(|| std::time::Instant::now() + JOIN_SPIN);
+                    *spin_until.get_or_insert_with(|| std::time::Instant::now() + spin_budget);
                 self.spin(ticket, deadline);
                 continue;
             }
@@ -1684,14 +1807,38 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                     (value, observed)
                 };
                 let park = callback_parks::Park::new(callback_parks::Site::Join);
-                unsafe {
-                    WaitOnAddress(
-                        address.as_ptr().cast(),
-                        (&comparison as *const u64).cast(),
-                        size_of::<u64>(),
-                        u32::MAX,
-                    )
+                #[cfg(test)]
+                if let Some(hook) = self.shared.hooks.before_join_wait.get() {
+                    hook(ticket, spin_available);
+                }
+                let wait = || {
+                    // SAFETY: the stable atomic and local comparison have identical widths.
+                    unsafe {
+                        WaitOnAddress(
+                            address.as_ptr().cast(),
+                            (&comparison as *const u64).cast(),
+                            size_of::<u64>(),
+                            u32::MAX,
+                        )
+                    };
+                    #[cfg(feature = "callback_profile")]
+                    {
+                        address.load(Ordering::SeqCst)
+                    }
                 };
+                #[cfg(feature = "callback_profile")]
+                idle_diagnostics::wait(
+                    if spin_available {
+                        idle_diagnostics::Address::Spin
+                    } else {
+                        idle_diagnostics::Address::Slot
+                    },
+                    Some(ticket),
+                    comparison,
+                    wait,
+                );
+                #[cfg(not(feature = "callback_profile"))]
+                wait();
                 drop(park);
             }
             self.shared.awaited.store(0, Ordering::SeqCst);
@@ -1777,11 +1924,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         }
     }
     /// Wait until the sole callback collector can advance a dependency edge.
-    /// `ready` only inspects tickets; it never collects, submits or waits. The
-    /// workers must be able to complete the outstanding producers themselves.
+    /// `ready` only probes tickets or a nonblocking handoff.
     /// Registration precedes both the sequence snapshot and the readiness
     /// recheck: a publication either appears in that recheck or changes the
-    /// sequence before the address wait. No queue mutex or payload is borrowed.
+    /// sequence before the address wait. Parking holds no executor queue lock.
     pub(crate) fn wait_ready<T>(&self, mut ready: impl FnMut() -> Option<T>) -> T {
         if self.shared.diagnostics.get().is_none() {
             return self.wait_ready_with_spin(JOIN_SPIN, &mut ready);
@@ -1835,7 +1981,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         }
         // Keep short producer edges on the callback instead of sleeping
         // between publications. The fixed budget never extends after a wake.
-        // This wait inspects tickets only; it never claims a queued job.
+        // This wait never claims a queued job.
         if !budget.is_zero() && !self.shared.stopped.load(Ordering::Acquire) {
             let begin = std::time::Instant::now();
             add(&self.shared.counters.spins, 1);
@@ -1879,14 +2025,79 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             add(&self.shared.counters.join_sleeps, 1);
             // SAFETY: stable aligned u64 and a same-size local comparison.
             let _park = callback_parks::Park::new(callback_parks::Site::Readiness);
-            unsafe {
-                WaitOnAddress(
-                    self.shared.ready_wake.as_ptr().cast(),
-                    (&wake as *const u64).cast(),
-                    size_of::<u64>(),
-                    u32::MAX,
-                )
+            #[cfg(test)]
+            if let Some(hook) = self.shared.hooks.before_readiness_wait.get() {
+                hook();
+            }
+            let wait = || {
+                // SAFETY: the stable atomic and local comparison have identical widths.
+                unsafe {
+                    WaitOnAddress(
+                        self.shared.ready_wake.as_ptr().cast(),
+                        (&wake as *const u64).cast(),
+                        size_of::<u64>(),
+                        u32::MAX,
+                    )
+                };
+                #[cfg(feature = "callback_profile")]
+                {
+                    self.shared.ready_wake.load(Ordering::SeqCst)
+                }
             };
+            #[cfg(feature = "callback_profile")]
+            idle_diagnostics::wait(idle_diagnostics::Address::Readiness, None, wake, wait);
+            #[cfg(not(feature = "callback_profile"))]
+            wait();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wait_ready_without_spin<T>(&self, ready: impl FnMut() -> Option<T>) -> T {
+        self.wait_ready_with_spin(std::time::Duration::ZERO, ready)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_readiness_wait_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        assert!(
+            self.shared
+                .hooks
+                .before_readiness_wait
+                .set(Box::new(hook))
+                .is_ok()
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_publication_failed_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        assert!(
+            self.shared
+                .hooks
+                .before_publication_failed
+                .set(Box::new(hook))
+                .is_ok()
+        );
+    }
+
+    pub(crate) fn notify_ready(&self) {
+        if self.shared.ready_waiting.load(Ordering::SeqCst) {
+            let sequence = self.shared.ready_wake.fetch_add(1, Ordering::SeqCst) + 1;
+            #[cfg(any(test, feature = "callback_profile"))]
+            let begin = crate::sampling::qpc();
+            // SAFETY: the readiness address lives through every callback wait.
+            unsafe { WakeByAddressSingle(self.shared.ready_wake.as_ptr().cast()) };
+            #[cfg(any(test, feature = "callback_profile"))]
+            if let Some(events) = &self.shared.wake_events {
+                events.record(idle_diagnostics::Signal {
+                    handoff: true,
+                    wake_begin: begin,
+                    wake_end: crate::sampling::qpc(),
+                    thread: unsafe { GetCurrentThreadId() },
+                    readiness: sequence,
+                    ..Default::default()
+                });
+            }
+            #[cfg(not(any(test, feature = "callback_profile")))]
+            let _ = sequence;
         }
     }
 
@@ -1921,6 +2132,13 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             .shared
             .diagnostic_worker_growths
             .swap(0, Ordering::Relaxed);
+        #[cfg(any(test, feature = "callback_profile"))]
+        if let Some(events) = &self.shared.wake_events {
+            idle_diagnostics::update(|hour| {
+                // SAFETY: this caller has drained and settled every publisher.
+                unsafe { events.drain_into(hour) };
+            });
+        }
         jobs
     }
 
@@ -2341,8 +2559,8 @@ mod tests {
         std::thread::scope(|scope| {
             let helper = scope.spawn(|| {
                 let registered = progressed(|| {
-                    pool.shared.awaited.load(Ordering::SeqCst) & AWAITED_SLOT_MASK
-                        == ticket.slot as u64 + 1
+                    pool.shared.awaited.load(Ordering::SeqCst) & AWAITED_GENERATION_MASK
+                        == ticket.generation
                         && pool.shared.counters.join_sleeps.load(Ordering::Acquire) > sleeps_before
                 });
                 release.open();
@@ -2398,8 +2616,8 @@ mod tests {
         std::thread::scope(|scope| {
             let helper = scope.spawn(|| {
                 let registered = progressed(|| {
-                    pool.shared.awaited.load(Ordering::SeqCst) & AWAITED_SLOT_MASK
-                        == queued.slot as u64 + 1
+                    pool.shared.awaited.load(Ordering::SeqCst) & AWAITED_GENERATION_MASK
+                        == queued.generation
                         && pool.shared.counters.join_sleeps.load(Ordering::Acquire) > sleeps_before
                 });
                 pool.stop_for_contained_panic();
@@ -2645,8 +2863,8 @@ mod tests {
                         .is_ok_and(|thread| thread == caller)
                 } else {
                     progressed(|| {
-                        pool_ref.shared.awaited.load(Ordering::SeqCst) & AWAITED_SLOT_MASK
-                            == awaited.slot as u64 + 1
+                        pool_ref.shared.awaited.load(Ordering::SeqCst) & AWAITED_GENERATION_MASK
+                            == awaited.generation
                     })
                 };
                 release_ref.open();
@@ -3092,6 +3310,7 @@ mod tests {
                 .unwrap();
             assert_eq!(pool.shared.cells.len(), capacity);
             assert_eq!(pool.shared.words.len(), capacity);
+            assert!(pool.shared.wake_events.is_some());
             assert_eq!(size_of::<Cell<J, R>>(), size_of::<Completion<J, R>>());
             let state = pool.shared.lock();
             let threads = pool.threads.lock().unwrap();
@@ -3111,6 +3330,7 @@ mod tests {
                 pool.shared.thread_ids.capacity() * size_of::<AtomicU32>(),
                 threads.capacity() * size_of::<JoinHandle<()>>(),
                 runner_bytes,
+                2 * capacity * size_of::<idle_diagnostics::Signal>(),
             ];
             assert_eq!(size_of_val(&*pool.shared.run), runner_bytes);
             let expected: usize = allocations.into_iter().sum();

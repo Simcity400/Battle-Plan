@@ -566,7 +566,7 @@ impl WorkerWork {
     }
 }
 
-fn thread_cpu_ns() -> io::Result<u64> {
+pub(crate) fn thread_cpu_ns() -> io::Result<u64> {
     let mut creation = unsafe { std::mem::zeroed() };
     let mut exit = unsafe { std::mem::zeroed() };
     let mut kernel = unsafe { std::mem::zeroed() };
@@ -1303,14 +1303,26 @@ fn run(
     }
     let acquisition = shared.acquisition.get().expect("initialized before hook");
     let mut owned_workers = acquisition.thread_ids();
+    let mut priority_reconciler =
+        crate::frame_priority::Reconciler::start(Arc::clone(&shared.frame_priority))?;
+    owned_workers.push(priority_reconciler.thread_id());
     // The conversion helpers are collector workers for every quiescence check
     // and join with the processor when the spool thread returns. Without them
     // the spool thread converts every table itself, with identical output.
-    for role in [
-        crate::thread_cpu::Role::SpoolHelper,
-        crate::thread_cpu::Role::SecondSpoolHelper,
+    for (role, priority_role) in [
+        (
+            crate::thread_cpu::Role::SpoolHelper,
+            crate::frame_priority::Role::FirstHelper,
+        ),
+        (
+            crate::thread_cpu::Role::SecondSpoolHelper,
+            crate::frame_priority::Role::SecondHelper,
+        ),
     ] {
-        if let Ok(helper) = crate::spool_helper::SpoolHelper::start() {
+        if let Ok(helper) = crate::spool_helper::SpoolHelper::start(Some((
+            Arc::clone(&shared.frame_priority),
+            priority_role,
+        ))) {
             owned_workers.push(helper.thread_id());
             crate::thread_cpu::register_id(role, helper.thread_id());
             processor.set_helper(helper);
@@ -1617,6 +1629,7 @@ fn run(
         && !detach.signaled()
         && !spool.is_finished()
         && !decode::worker_finished()
+        && !priority_reconciler.is_finished()
         && !shared.acquisition_failed()
         && !crate::allocation::failed()
     {
@@ -1963,6 +1976,7 @@ fn run(
         .join()
         .map_err(|_| "spool thread failed")
         .and_then(|result| result);
+    priority_reconciler.finish();
     status_writer.finish();
     let (mut spool_result, terminal_status) = match spool_outcome {
         Ok(outcome) => (
@@ -1973,6 +1987,9 @@ fn run(
     };
     if shared.acquisition_failed() {
         add_terminal_error(&mut spool_result, "game-thread acquisition failed");
+    }
+    if shared.frame_priority.failed() {
+        add_terminal_error(&mut spool_result, "frame priority reconciler failed");
     }
     if let Err(error) = decode_outcome {
         add_terminal_error(&mut spool_result, error);
@@ -2987,6 +3004,8 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "scope": "Map recordings only: hours the DivisionModelInputs job read the division census, and the rows whose orders group trained (the only ones it reads exercise operands for), cumulative and the most in one hour; its timing is the division_model_inputs role's",
             },
             "background_priority": background_priority_status(),
+            "frame_priority": shared.frame_priority.status(shared.frequency),
+            "thread_diagnostics": crate::thread_diagnostics::status(shared.frequency),
             "collector_thread_cpu": crate::thread_cpu::status(
                 shared
                     .acquisition
@@ -4336,7 +4355,8 @@ fn spool_loop(
     let mut startup_unknown = 0_u64;
     let mut work = WorkerWork::new();
     let mut reported = Instant::now() - Duration::from_secs(1);
-    let mut priority = OwnPriority::new();
+    let mut priority = OwnPriority::frame_pipeline();
+    priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
     let mut refresh_requests = RefreshRequests::default();
     let mut history_requests = HistoryRequests::default();
     // Wake-ups replace polling: decode publication, a parked clock
@@ -4352,12 +4372,12 @@ fn spool_loop(
             .prepare_clock_capture(&live)
             .map_err(|_| "clock preparation allocation failed")?;
         span.finish();
-        priority.follow(shared.buffers_backlogged());
+        priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
         while let Some(index) = shared.ready.pop() {
             if crate::allocation::failed() {
                 return Err("collector allocation failed");
             }
-            priority.follow(shared.buffers_backlogged());
+            priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
             let span = phases.span(Phase::Receive);
             let service_started = sampling::qpc();
             work.queue_peak_observed = work.queue_peak_observed.max(shared.ready.len() + 1);
@@ -5142,10 +5162,11 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
         return;
     };
     let phases = &crate::spool_phases::SIZING;
-    let mut priority = OwnPriority::new();
+    let mut priority = OwnPriority::frame_pipeline();
+    priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Sizing);
     let mut next_pass = Instant::now();
     while !sizing.stop.load(Ordering::Acquire) && !crate::allocation::failed() {
-        priority.follow(shared.buffers_backlogged());
+        priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Sizing);
         let retired = std::mem::take(&mut *lock(&sizing.retired));
         if !retired.is_empty() {
             let _span = phases.span(Phase::Retire);
@@ -5933,17 +5954,11 @@ fn least_preferred_cores(sets: &[CpuSet]) -> Result<Vec<u32>, ConfinementAvailab
 /// pages a thread touches, so the reservation costs address space, not memory.
 pub(crate) const BACKGROUND_STACK_BYTES: usize = 16 * 1024 * 1024;
 
-/// Priority of one collector-owned background thread (decode, spool). It uses
-/// THREAD_PRIORITY_LOWEST and execution-speed EcoQoS while keeping up. A buffer
-/// backlog restores THREAD_PRIORITY_NORMAL and clears EcoQoS: `take_frame` may
-/// be waiting for this thread. Only the calling thread is
-/// changed; game threads, their priorities and affinities are never touched.
-/// Priority and EcoQoS failures independently retain their previous setting
-/// and retry between work items; neither prevents changing the other. While
-/// keeping up the thread is also confined to the two least preferred physical
-/// cores, so its work shares no core with game threads elsewhere; a backlog
-/// lifts the confinement with the priority.
+// Frame service must never wait for a buffer backlog before becoming runnable.
 pub(crate) struct OwnPriority {
+    _profile: Option<crate::thread_diagnostics::Profile>,
+    boosts_disabled: bool,
+    frame_pipeline: bool,
     lowest: Option<bool>,
     eco_qos: Option<bool>,
     confined: Option<bool>,
@@ -5952,13 +5967,59 @@ pub(crate) struct OwnPriority {
 impl OwnPriority {
     pub(crate) const fn new() -> Self {
         Self {
+            _profile: None,
+            boosts_disabled: false,
+            frame_pipeline: false,
             lowest: None,
             eco_qos: None,
             confined: None,
         }
     }
 
-    /// Call between work items with the current backlog verdict.
+    pub(crate) fn frame_pipeline() -> Self {
+        let mut priority = Self {
+            _profile: Some(crate::thread_diagnostics::Profile::start()),
+            frame_pipeline: true,
+            ..Self::new()
+        };
+        priority.follow(false);
+        priority
+    }
+
+    pub(crate) fn follow_pipeline(
+        &mut self,
+        pipeline: &crate::frame_priority::Pipeline,
+        role: crate::frame_priority::Role,
+    ) {
+        self.follow(false);
+        if !self.boosts_disabled || self.lowest != Some(false) || self.eco_qos != Some(false) || self.confined != Some(false) {
+            return;
+        }
+        pipeline.register(role);
+        pipeline.refresh(crate::frame_priority::Caller::Worker);
+    }
+
+    pub(crate) fn reconciler(&mut self) -> bool {
+        self.follow(false);
+        if !self.boosts_disabled
+            || self.lowest != Some(false)
+            || self.eco_qos != Some(false)
+            || self.confined != Some(false)
+        {
+            return false;
+        }
+        // SAFETY: the pseudo-handle names only this collector-owned controller.
+        if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) } == 0 {
+            PRIORITY_FAILURES.fetch_add(1, Ordering::Relaxed);
+            false
+        } else { true }
+    }
+
+    fn should_lower(&self, backlogged: bool) -> bool {
+        !self.frame_pipeline && !backlogged
+    }
+
+    /// Retry failed policy calls between work items; frame service never lowers.
     pub(crate) fn follow(&mut self, backlogged: bool) {
         use windows_sys::Win32::System::Threading::{
             GetCurrentThread, SetThreadInformation, SetThreadPriority, SetThreadPriorityBoost,
@@ -5966,14 +6027,14 @@ impl OwnPriority {
             THREAD_POWER_THROTTLING_STATE, THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL,
             ThreadPowerThrottling,
         };
-        let lowest = !backlogged;
-        if self.lowest.is_none() {
-            // No dynamic boost: a wake-up never lifts this thread above its
-            // base priority, so even the backlog's normal priority only shares
-            // CPUs with game threads and never preempts them.
+        let lowest = self.should_lower(backlogged);
+        if !self.boosts_disabled {
+            // Adaptive priority changes only our base priority, never dynamic wake boosts.
             // SAFETY: the pseudo-handle names only the calling thread.
             if unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) } == 0 {
                 PRIORITY_FAILURES.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.boosts_disabled = true;
             }
         }
         if self.lowest != Some(lowest) {
@@ -6025,8 +6086,12 @@ impl OwnPriority {
                 self.eco_qos = Some(lowest);
             }
         }
-        let sets = background_cpu_sets();
-        if !sets.is_empty() && self.confined != Some(lowest) {
+        let sets = if self.frame_pipeline {
+            &[][..]
+        } else {
+            background_cpu_sets()
+        };
+        if (self.frame_pipeline || !sets.is_empty()) && self.confined != Some(lowest) {
             use windows_sys::Win32::System::Threading::SetThreadSelectedCpuSets;
             let (list, count) = if lowest {
                 (sets.as_ptr(), sets.len() as u32)
@@ -6062,7 +6127,7 @@ fn background_priority_status() -> impl serde::Serialize {
         "confinement_failures": CONFINEMENT_FAILURES.load(Ordering::Relaxed),
         "confinement_cpu_sets": CONFINEMENT_CPU_SETS.load(Ordering::Relaxed),
         "confinement_availability": confinement_availability(),
-        "scope": "cumulative successful policy applications of the decode, spool, spool helper and sizing threads: LOWEST with execution-speed EcoQoS while idle or keeping up, NORMAL with EcoQoS explicitly cleared when at most one of the four reusable buffers is free; dynamic wake-up boosts are disabled; priority and EcoQoS failures retain their previous setting independently and retry between work items; counts include initial applications, not current thread counts; confined, confinement_cleared_for_backlog and confinement_failures count successful selections of the two least preferred physical cores while keeping up, their clears on backlog and failed selection calls; confinement_cpu_sets is the number of logical processors selected; confinement_availability is not queried until a background thread first applies policy, then retains selected, too few cores, several processor groups, query failed or allocation failed until the collector reloads; an unavailable selection stays empty and makes no selection call; status never initializes or retries the query",
+        "scope": "cumulative successful policy applications: decode, spool, both conversion helpers and sizing initialize NORMAL with execution-speed EcoQoS explicitly cleared and no collector CPU-set selection; frame_priority reports their adaptive promotions and costs; sizing participates to avoid a descheduled capacity-mutex owner; dynamic wake-up boosts are disabled; priority and EcoQoS failures retain their previous setting independently and retry between work items; counts include initial applications, not current thread counts; confined, confinement_cleared_for_backlog and confinement_failures count successful selections of the two least preferred physical cores while keeping up, their clears (including frame-service startup) and failed selection calls; confinement_cpu_sets is the number of logical processors selected; confinement_availability is not queried until sizing first applies policy, then retains selected, too few cores, several processor groups, query failed or allocation failed until the collector reloads; an unavailable selection stays empty and makes no selection call; status never initializes or retries the query",
     })
 }
 
@@ -6469,6 +6534,34 @@ mod tests {
             }
         }
         sets
+    }
+
+    #[test]
+    fn frame_pipeline_never_lowers_even_with_all_four_frames_free() {
+        let pipeline = OwnPriority {
+            frame_pipeline: true,
+            ..OwnPriority::new()
+        };
+        let sizing = OwnPriority::new();
+        for backlogged in [false, true, false] {
+            assert!(!pipeline.should_lower(backlogged));
+            assert_eq!(sizing.should_lower(backlogged), !backlogged);
+        }
+    }
+
+    #[test]
+    fn frame_pipeline_applies_normal_policy_before_waiting_and_keeps_it_between_jobs() {
+        std::thread::spawn(|| {
+            let mut priority = OwnPriority::frame_pipeline();
+            for backlogged in [false, true, false] {
+                priority.follow(backlogged);
+                assert_eq!(priority.lowest, Some(false));
+                assert_eq!(priority.eco_qos, Some(false));
+                assert_eq!(priority.confined, Some(false));
+            }
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

@@ -33,7 +33,7 @@ impl Identity {
             partition: None,
         }
     }
-    fn status(self) -> impl serde::Serialize {
+    pub(crate) fn status(self) -> impl serde::Serialize {
         crate::status::status!({
             "role": crate::status::DebugValue(ROLES[self.role]),
             "part": self.part,

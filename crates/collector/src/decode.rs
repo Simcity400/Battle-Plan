@@ -73,6 +73,7 @@ use std::sync::{
 };
 mod diagnostics;
 mod pools;
+mod service;
 
 pub(crate) use diagnostics::*;
 pub use pools::*;
@@ -288,6 +289,7 @@ pub struct DecodeJob {
     pub capitulation_refresh: bool,
     pub force_full: bool,
     pub game_elapsed: i64,
+    pub queued_qpc: i64,
     pub relations_payload: Option<RelationsJob>,
     pub characters_payload: [Option<CharactersJob>; CHARACTER_PARTS],
     pub projects_payload: Option<ProjectsJob>,
@@ -794,10 +796,11 @@ fn reclaim_payloads() {
 /// The loader starts the worker before enabling the hook. A full queue returns the job for
 /// the existing gap path and counts the drop on the existing counters.
 #[cfg(test)]
-pub fn enqueue(shared: &Shared, job: DecodeJob) -> Option<DecodeJob> {
+pub fn enqueue(shared: &Shared, mut job: DecodeJob) -> Option<DecodeJob> {
     if crate::allocation::failed() {
         return Some(job);
     }
+    job.queued_qpc = sampling::qpc();
     match shared.decode_queue.push(job) {
         Ok(()) => {
             enqueued(shared);
@@ -818,6 +821,7 @@ pub fn enqueue_reserved(shared: &Shared, mut reserved: Reserved<'_>) -> bool {
         recycle_payloads(reserved.job());
         return false;
     }
+    reserved.job().queued_qpc = sampling::qpc();
     match reserved.publish() {
         Ok(()) => {
             enqueued(shared);
@@ -832,6 +836,9 @@ pub fn enqueue_reserved(shared: &Shared, mut reserved: Reserved<'_>) -> bool {
 }
 
 fn enqueued(shared: &Shared) {
+    if let Some(worker) = shared.decode_waker.get() {
+        worker.unpark();
+    }
     JOBS.fetch_add(1, Ordering::Relaxed);
     // Decode-queue depth high-water for live backlog visibility.
     // Records the deepest observed FIFO occupancy (bounded by BUFFERS).
@@ -917,7 +924,8 @@ fn recycle_payloads(job: &mut DecodeJob) {
 /// off to the spool ready queue in the same order; no reorder buffer exists.
 fn decode_loop() {
     let mut air_bases_memo = AirBasesMemo::default();
-    let mut priority = crate::runtime::OwnPriority::new();
+    let mut priority = crate::runtime::OwnPriority::frame_pipeline();
+    let mut registered = false;
     loop {
         if STOP.load(Ordering::Acquire) {
             break;
@@ -928,15 +936,23 @@ fn decode_loop() {
             continue;
         }
         let shared = unsafe { &*shared_ptr };
-        priority.follow(shared.buffers_backlogged());
+        if !registered {
+            let _ = shared.decode_waker.set(std::thread::current());
+            priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Decode);
+            registered = true;
+        }
         match shared.decode_queue.pop() {
-            Some(job) => process_owned_job(shared, job, &mut air_bases_memo),
+            Some(job) => {
+                priority
+                    .follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Decode);
+                process_owned_job(shared, job, &mut air_bases_memo);
+            }
             None => {
                 failure::stage("idle retirement", None);
                 let _phase = crate::allocation::enter(crate::allocation::Phase::Decode);
                 crate::allocation::attempted_hour(None);
                 reclaim_payloads();
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                std::thread::park_timeout(std::time::Duration::from_millis(1));
             }
         }
     }
@@ -957,6 +973,7 @@ pub(crate) fn drain_for_test(shared: &Shared, memo: &mut AirBasesMemo) {
 /// family to its pool. Dropping this envelope without recycling used to
 /// allocate a fresh payload on the game thread on every subsequent hour.
 fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut AirBasesMemo) {
+    let mut service = service::Service::start(shared, &job);
     let failure_scope = failure::Scope::frame(failure::Frame {
         index: job.index,
         seq: job.seq,
@@ -990,9 +1007,10 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     failure::stage("frame retirement", None);
     reclaim_payloads();
     if !crate::allocation::failed() {
-        process_job(shared, &mut job, air_bases_memo);
+        process_job(shared, &mut job, air_bases_memo, &mut service);
     }
 
+    service.decoded();
     // Return even a terminally skipped frame's loan. Its Drop forgets an
     // incomplete settlement, so later acquisition never carries a partial tree.
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
@@ -1081,6 +1099,7 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
         shared.wake_spool();
     }
     crate::allocation::attempted_hour(None);
+    service.finish();
 }
 
 fn publish_ready(
@@ -1304,7 +1323,12 @@ fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
 
 /// Decode one FIFO item and hand its pooled frame to the spool ready queue
 /// in FIFO hour order. Skip items forward without touching typed rows.
-fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBasesMemo) {
+fn process_job(
+    shared: &Shared,
+    job: &mut DecodeJob,
+    air_bases_memo: &mut AirBasesMemo,
+    service: &mut service::Service,
+) {
     failure::stage("missing payload verdicts", None);
     if !job.air_bases_refresh || job.air_bases_payload.is_none() {
         air_bases_memo.invalidate();
@@ -1312,7 +1336,9 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     fail_missing_payloads(frame, job);
     // Return presentation's cross-frame store before independent publication.
-    decode_presentation(shared, job.index);
+    service.presentation_begin();
+    let store_returned = decode_presentation(shared, job.index);
+    service.presentation_returned(store_returned);
     failure::stage("owned capture tails", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     let (ticks, bytes) = frame.extended.decode_capture_tails();
@@ -1766,7 +1792,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
 
 /// The FIFO worker owns the frame; this packet has no raw decode dependency.
 /// Return its held-store loan before unrelated families can delay the next hour.
-fn decode_presentation(shared: &Shared, index: usize) {
+fn decode_presentation(shared: &Shared, index: usize) -> bool {
     failure::stage("division presentation", None);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let before_bytes = frame.extended.presentation_allocated_bytes();
@@ -1786,6 +1812,9 @@ fn decode_presentation(shared: &Shared, index: usize) {
     );
     if let Some(store) = frame.extended.take_settled_army_store() {
         shared.return_army_stat_store(store);
+        true
+    } else {
+        false
     }
 }
 
@@ -2146,6 +2175,7 @@ impl Calibration {
     pub fn status(self) -> crate::status::Object<impl crate::status::Fields> {
         crate::status::status!({
             "scope": "decode worker totals since attach; monotonic counters except live capacity fields",
+            "frame_service": service::status(),
             "raw_growth": crate::raw::growth_diagnostics(),
             "raw_indexes": crate::raw::index_diagnostics(),
             "read_plans": crate::raw::read_plan_diagnostics(),

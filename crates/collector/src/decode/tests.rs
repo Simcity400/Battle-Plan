@@ -72,7 +72,8 @@ fn required_project_freeze_failure_is_terminal_before_ready_publication() {
 // Tests retaining payloads exercise decoding directly and publish only after
 // that successful walk; production also gates after payload recycling.
 fn process_test_job(shared: &Shared, job: &mut DecodeJob, memo: &mut AirBasesMemo) {
-    process_job(shared, job, memo);
+    let mut service = service::Service::start(shared, job);
+    process_job(shared, job, memo, &mut service);
     if !crate::allocation::failed() {
         shared.ready.push(job.index).unwrap();
         shared.completed[job.index].store(job.game_elapsed.max(1), Ordering::Release);
@@ -413,6 +414,7 @@ fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publica
     );
     let air_allocation = air.log.bytes.as_ptr();
     let job = DecodeJob {
+        queued_qpc: 0,
         index,
         game_elapsed: 17,
         relations_payload: Some(RelationsJob::default()),
@@ -984,6 +986,7 @@ fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
     for (order, index) in indices.iter().enumerate() {
         shared.completed[*index].store(0, Ordering::Relaxed);
         let job = DecodeJob {
+            queued_qpc: 0,
             index: *index,
             seq: 100 + order as u64,
             hour: 200 + order as i32,
@@ -1053,6 +1056,7 @@ fn queue_full_returns_the_job_for_the_existing_gap_path() {
     let shared = Shared::new(0, 0, 1);
     for seq in 0..BUFFERS {
         let job = DecodeJob {
+            queued_qpc: 0,
             index: 0,
             seq: seq as u64,
             hour: 0,
@@ -1103,6 +1107,7 @@ fn queue_full_returns_the_job_for_the_existing_gap_path() {
     }
     let before = DROPS.load(Ordering::Relaxed);
     let job = DecodeJob {
+        queued_qpc: 0,
         index: 0,
         seq: u64::MAX,
         hour: 0,
@@ -1169,6 +1174,7 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
     assert!(report.raw_ok);
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
+        queued_qpc: 0,
         index,
         seq: next_seq(),
         hour: 1,
@@ -1321,6 +1327,7 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     frame.extended.characters_pilot().raw_active = [true; crate::extended::characters::N];
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
+        queued_qpc: 0,
         index,
         seq: next_seq(),
         hour: 0,
@@ -1556,6 +1563,7 @@ fn worker_decodes_a_projects_refresh_payload_into_the_same_typed_rows() {
     frame.extended.projects_pilot().raw_mode = true;
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
+        queued_qpc: 0,
         index,
         seq: next_seq(),
         hour: 3,
@@ -1635,6 +1643,7 @@ fn worker_decodes_a_lexical_refresh_payload_into_the_same_typed_rows() {
     frame.extended.lexical_pilot().raw_mode = true;
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
+        queued_qpc: 0,
         index,
         seq: next_seq(),
         hour: 3,
@@ -1708,6 +1717,7 @@ fn worker_preserves_already_typed_wars_rows() {
     }
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
+        queued_qpc: 0,
         index,
         seq: next_seq(),
         hour: 41,
@@ -1790,6 +1800,7 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
     let pool_before = shared.pool_bytes.load(Ordering::Relaxed);
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
+        queued_qpc: 0,
         index,
         seq: next_seq(),
         hour: 42,
@@ -2306,6 +2317,7 @@ fn queue_high_water_tracks_the_deepest_observed_fifo_occupancy() {
     let index = shared.free.pop().expect("pooled buffer");
     for _ in 0..3 {
         let job = DecodeJob {
+            queued_qpc: 0,
             index,
             seq: next_seq(),
             hour: 0,
@@ -2385,6 +2397,7 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
     assert!(report.raw_ok);
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
+        queued_qpc: 0,
         index,
         seq: next_seq(),
         hour: 9,
@@ -2465,6 +2478,7 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
     assert!(report.raw_ok);
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
+        queued_qpc: 0,
         index,
         seq: next_seq(),
         hour: 9,
@@ -2548,6 +2562,7 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
     assert!(report.raw_ok);
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
+        queued_qpc: 0,
         index,
         seq: next_seq(),
         hour: 9,
@@ -2681,6 +2696,7 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
     frame.extended.production_rest_pilot().rest_raw_mode = true;
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
+        queued_qpc: 0,
         index,
         seq: next_seq(),
         hour: 11,
@@ -2778,6 +2794,7 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
     frame.extended.construction_rest_pilot().rest_raw_mode = true;
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
+        queued_qpc: 0,
         index,
         seq: next_seq(),
         hour: 12,
@@ -2920,6 +2937,7 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
     shared.completed[index].store(0, Ordering::Relaxed);
     let refresh_before = REFRESH_JOBS.load(Ordering::Relaxed);
     let mut job = DecodeJob {
+        queued_qpc: 0,
         index,
         seq: next_seq(),
         hour: 9,
@@ -2996,6 +3014,7 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
 /// kit-staged payload.
 fn bare_job(index: usize, seq: u64, hour: i32, game_elapsed: i64) -> DecodeJob {
     DecodeJob {
+        queued_qpc: 0,
         index,
         seq,
         hour,

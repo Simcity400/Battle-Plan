@@ -139,8 +139,8 @@ fn hour_frame(step: i32) -> Captured {
 fn the_conversion_helper_reproduces_single_thread_conversion() {
     use crate::extended::capture_live_shape;
     use crate::projection::{Projection, ProjectionScratch};
-    let first = crate::spool_helper::SpoolHelper::start().unwrap();
-    let second = crate::spool_helper::SpoolHelper::start().unwrap();
+    let first = crate::spool_helper::SpoolHelper::start(None).unwrap();
+    let second = crate::spool_helper::SpoolHelper::start(None).unwrap();
     let helper_calls = crate::spool_phases::HELPER
         .phase(crate::spool_phases::Phase::ConvertPacks)
         .0;

@@ -238,12 +238,20 @@ fn submit(
     last_publish: i64,
     edge: usize,
 ) -> RangeTicket {
-    let role = job.role();
-    let mut job = Some(job);
+    submit_retained(executor, calibration, &mut Some(job), last_publish, edge)
+}
+
+fn submit_retained(
+    executor: &acquisition::Pool<Job, Report>,
+    calibration: &SharedCalibration,
+    job: &mut Option<Job>,
+    last_publish: i64,
+    edge: usize,
+) -> RangeTicket {
+    let role = job.as_ref().expect("retained successor").role();
     // SAFETY: Batch owns the ledger until every child is drained. Each phase
     // has its own reservation because preceding tickets may be uncollected.
-    let result =
-        unsafe { executor.submit_with_priority_timed(&mut job, role.priority(), true, false) };
+    let result = unsafe { executor.submit_with_priority_timed(job, role.priority(), true, false) };
     note_dispatch(&calibration.roles[role as usize], result.is_ok());
     match result {
         Ok((ticket, queued_qpc)) => {
@@ -263,7 +271,7 @@ fn submit(
                 .fetch_add(1, Ordering::Relaxed);
             RangeTicket {
                 ticket: executor
-                    .park(&mut job, true)
+                    .park(job, true)
                     .expect("presentation successor slot"),
                 parked: true,
             }
