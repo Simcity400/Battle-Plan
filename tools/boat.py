@@ -17,7 +17,7 @@ a clean worktree.
 
 Worktrees share VMs, locks and `logs/timings.jsonl` under the main checkout's `captures/boat`
 (BOAT_STATE_DIR overrides). A run keeps its VM alive with a short lease it renews, and leaves
-it with a 15-minute idle tail, so the next run reuses it warm and an interrupted run strands it
+it with a 5-minute idle tail, so the next run reuses it warm and an interrupted run strands it
 for minutes, not hours.
 `reconcile`, which every run also does, ends long lifetimes on VMs no run holds.
 """
@@ -45,8 +45,8 @@ TARGET = "x86_64-pc-windows-msvc"
 RUN_SH = b'#!/usr/bin/env bash\nset -euo pipefail\nsource /home/user/hoi4/env.sh\nexec python3 /home/user/hoi4/remote.py "$@"'
 LEASE_SECONDS = 900
 RENEW_SECONDS = 240
-# Owner, 26 Oct: a VM stays warm 15 min after its run, so the next one skips the multi-minute resume.
-IDLE_SECONDS = 900
+# Warm 5 min after a run, skipping the next run's multi-minute resume (27 Oct: 86% of reuses came within 5 min).
+IDLE_SECONDS = 300
 # Give slow resumed images up to 30 min to finish hydration.
 HYDRATION_SECONDS = 1800
 COOLDOWN_SECONDS = 1800
@@ -419,8 +419,9 @@ def choose(state, lane, size):
         vmid = next((event["id"] for event in events if event.get("event") == "created"), None)
         if creation.returncode or not vmid:
             if vmid:
-                atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT})
+                # Shorten before publishing: a run that acquires it afterwards keeps its own full lease.
                 boat("extend", vmid, "--ttl", str(IDLE_SECONDS), check=False)
+                atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT})
             raise Failure(f"Boat could not clone {SNAPSHOT} ({creation.returncode}), sandbox {vmid}: {creation.stderr.strip()}")
         lock = state.lock(vmid)
         atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT})
