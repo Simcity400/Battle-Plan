@@ -46,7 +46,7 @@ pub const COMMAND_COUNTRY: usize = 0x28;
 
 /// Every site with its receiver; each returns RAX unchanged from its
 /// original, so a detour returns the original's value.
-pub const MUTATIONS: [(MutationSite, Receiver); 56] = [
+pub const MUTATIONS: [(MutationSite, Receiver); 57] = [
     // Editable-data assignment (dest, source): saving RSI and reserving 0x20
     // stack bytes occupy six relocated bytes.
     (
@@ -668,6 +668,18 @@ pub const MUTATIONS: [(MutationSite, Receiver); 56] = [
             ],
         },
         Receiver::CommandCountry,
+    ),
+    // Role edits can rewrite the excluded-variant payload without changing its header.
+    (
+        MutationSite {
+            name: "update_template_tracked_variant",
+            rva: 0xba_5440,
+            sentinel: [
+                0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x57, 0x48, 0x83, 0xec, 0x38, 0x44, 0x0f, 0xbe,
+                0x89, 0x44,
+            ],
+        },
+        Receiver::Data,
     ),
 ];
 

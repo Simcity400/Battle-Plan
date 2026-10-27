@@ -774,6 +774,34 @@ fn real_silent_constructors_refuse_and_propagate_their_family() {
 }
 
 #[test]
+fn template_rollback_failure_stays_fatal_with_fresh_read_fallback() {
+    use replay_frame::frame::Metrics;
+    if !isolated("hook_failures::contract_tests::template_rollback_failure_stays_fatal_with_fresh_read_fallback") {
+        return;
+    }
+    reset_session();
+    let result = FamilyHooks::<crate::template_changes::Hooks>::construct(0, || {
+        crate::hook::installation::refused(
+            crate::hook::installation::Kind::Rollback,
+            None,
+            "synthetic unsafe template rollback",
+        );
+        Err("synthetic template construction failure")
+    });
+    assert!(result.is_err());
+    assert!(fatal_installation_error().is_some());
+    assert!(!crate::template_changes::Changes::fresh_only(&crate::template_changes::Observer));
+    let mut input = FrameInput {
+        branch: 1,
+        hour: 1,
+        metrics: Metrics::default(),
+        tables: std::array::from_fn(|index| TableView::Complete(
+            replay_data::rows::TableRows::empty(TableId::ALL[index])).into()),
+    };
+    assert!(apply(&mut input).is_err());
+}
+
+#[test]
 fn initial_internal_rollback_failure_enters_teardown_and_stays_terminal() {
     if !isolated(
         "hook_failures::contract_tests::initial_internal_rollback_failure_enters_teardown_and_stays_terminal",

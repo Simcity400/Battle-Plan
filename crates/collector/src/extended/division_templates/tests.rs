@@ -242,6 +242,97 @@ fn enabled_unsized_startup_records_known_template_and_country_values_through_spo
 }
 
 #[test]
+fn failed_template_observer_preserves_fresh_template_and_country_values() {
+    use crate::hook_failures::{Family, FamilyHooks};
+    use crate::template_changes::{Changes, Observer};
+    use engine_deployment::cdeployment_status as deployment;
+    use engine_occupation::ccountry_occupation_status as occupation;
+    use replay_frame::frame::{FrameInput, Metrics};
+
+    const TEST: &str = "extended::division_templates::tests::failed_template_observer_preserves_fresh_template_and_country_values";
+    const CHILD: &str = "BATTLE_PLAN_TEMPLATE_INSTALL_FAILURE_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    let hooks = FamilyHooks::<crate::template_changes::Hooks>::construct(0, || {
+        Err("synthetic nearby relay allocation failure")
+    }).unwrap();
+    assert!(hooks.inner.is_none());
+    assert!(crate::hook_failures::failed(Family::Templates));
+    assert!(!crate::hook_failures::failed(Family::ArmyStats));
+    assert!(Observer.fresh_only());
+    assert_eq!(serde_json::to_value(crate::template_changes::status()).unwrap()["fresh_only"], true);
+    assert_eq!(Observer.quiet(), None);
+    assert_eq!(Observer.sequence(0x5000), None);
+
+    let mut source = fixture();
+    for (at, value) in [
+        (0x5000 + native::REGIMENT_DATA, 0x6100),
+        (0x5000 + native::REGIMENT_DATA + 8, (2_u64 << 32) | 2),
+        (0x6100, 0x7000),
+        (0x3000 + ccountry::OCCUPATION_STATUS, 0x8000),
+        (0x8000, occupation::VTABLE_RVA as u64),
+        (0x8000 + occupation::SECONDARY_BASE, occupation::SECONDARY_VTABLE_RVA as u64),
+    ] {
+        source.bytes[at..][..8].copy_from_slice(&value.to_le_bytes());
+    }
+    source.bytes[0x5000 + native::GRID_DIMENSIONS..][..4]
+        .copy_from_slice(&((2_u32 << 16) | 1).to_le_bytes());
+    let mut captured = Captured::with_capacities(&capacity());
+    for (hour, key, priority) in [(1, b"first".as_slice(), -7_i32), (2, b"later".as_slice(), 11)] {
+        set_name(&mut source, b"", key);
+        source.bytes[0x5000 + native::PRIORITY..][..4].copy_from_slice(&priority.to_le_bytes());
+        source.bytes[0x8000 + occupation::GARRISON_PRIORITY..][..4]
+            .copy_from_slice(&priority.to_le_bytes());
+        source.bytes[0x8400 + deployment::NEXT_HQ_ORDER..][..4]
+            .copy_from_slice(&priority.to_le_bytes());
+        captured.capture_original(&source, 0, 0x1000, hour, false, &Observer);
+        let mut input = FrameInput {
+            branch: 1,
+            hour,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|index| TableView::Complete(
+                replay_data::rows::TableRows::empty(TableId::ALL[index])).into()),
+        };
+        for (table, value) in TABLES.into_iter().zip(captured.table_inputs()) {
+            input.tables[table.index()] = value;
+        }
+        crate::hook_failures::apply(&mut input).unwrap();
+        let TableInput::Sampled(TableView::Complete(rows)) = &input.tables[TABLES[0].index()] else {
+            panic!("readable dictionary was discarded");
+        };
+        assert_eq!(rows.rows::<tables::DivisionTemplates>().unwrap()[0].name_key,
+            Recorded::Value(key.to_vec()));
+        let TableInput::Sampled(TableView::Complete(rows)) = &input.tables[TABLES[1].index()] else {
+            panic!("readable template was discarded");
+        };
+        let row = &rows.rows::<tables::DivisionTemplateIcons>().unwrap()[0];
+        let settings = row.settings.require("settings").unwrap().as_ref().unwrap();
+        assert_eq!(settings.priority, priority);
+        assert!(row.layout.require("layout").unwrap().is_some());
+        let TableInput::Sampled(TableView::Complete(rows)) = &input.tables[TABLES[2].index()] else {
+            panic!("readable country configuration was discarded");
+        };
+        let row = &rows.rows::<tables::CountryTemplateState>().unwrap()[0];
+        assert_eq!(row.next_hq_order, priority);
+        assert_eq!(row.garrison_priority, Recorded::Value(Some(priority)));
+        assert!(matches!(&input.tables[TableId::OrdersGroupCounterInputs.index()],
+            TableInput::Sampled(TableView::Complete(_))));
+    }
+    source.bytes[0x5000 + native::SUBUNIT_COUNTS..][..8]
+        .copy_from_slice(&0xf000_u64.to_le_bytes());
+    captured.capture_original(&source, 0, 0x1000, 3, false, &Observer);
+    assert_eq!(displayed(captured.table_inputs()).model_unreadable, 1);
+}
+
+#[test]
 fn cold_and_post_gap_template_columns_pass_spool_validation_with_named_refusals() {
     use crate::template_changes::Watches;
     use replay::{spool::Record, spool::encode_record};
@@ -1370,6 +1461,89 @@ fn certified_template_cores_match_fresh_for_quiet_changed_new_reordered_deleted_
             );
         }
     }
+}
+
+#[test]
+fn tracked_variant_replacement_with_an_unchanged_header_invalidates_template_core() {
+    use engine_mutations::template_mutations::{MUTATIONS, Receiver};
+    use engine_native::cequipment_variant as variant;
+
+    let site = MUTATIONS
+        .iter()
+        .position(|(site, _)| site.name == "update_template_tracked_variant");
+    crate::sampled_verify::begin_hour(1);
+    let changes = CoreChanges::new();
+    let mut source = fixture();
+    let pointers = [0x7500_usize, 0x7700, 0x7900];
+    let handles = [21_u64, 22, 23].map(|id| (id << 32) | u64::from(variant::REFERENCE_TYPE));
+    for (&pointer, handle) in pointers.iter().zip(handles) {
+        source.bytes[pointer..][..8].copy_from_slice(&(variant::VTABLE_RVA as u64).to_le_bytes());
+        source.bytes[pointer + 8..][..8].copy_from_slice(&handle.to_le_bytes());
+    }
+    let header = 0x5000 + native::EXCLUDED_VARIANT_DATA;
+    source.bytes[header..][..8].copy_from_slice(&0x6200_u64.to_le_bytes());
+    source.bytes[header + 8..][..8].copy_from_slice(&((2_u64 << 32) | 2).to_le_bytes());
+    for (index, pointer) in [pointers[1], pointers[2]].into_iter().enumerate() {
+        source.bytes[0x6200 + index * 8..][..8].copy_from_slice(&(pointer as u64).to_le_bytes());
+    }
+    let mut captured = Captured::with_capacities(&capacity());
+    captured.capture_original(&source, 0, 0x1000, 1, false, &changes);
+    assert_eq!(
+        displayed(captured.table_inputs()).excluded_variants,
+        handles[1..]
+    );
+    let fixed = source.bytes[0x5000..0x5400].to_vec();
+    // Two role edits compact then append in spare storage, restoring the complete header.
+    {
+        let _writer = site.map(|site| {
+            assert!(matches!(MUTATIONS[site].1, Receiver::Data));
+            changes.templates.notify(0x5000, site)
+        });
+        source.bytes[0x6200..][..8].copy_from_slice(&(pointers[2] as u64).to_le_bytes());
+        source.bytes[header + 12..][..4].copy_from_slice(&1_u32.to_le_bytes());
+    }
+    {
+        let _writer = site.map(|site| changes.templates.notify(0x5000, site));
+        source.bytes[0x6208..][..8].copy_from_slice(&(pointers[0] as u64).to_le_bytes());
+        source.bytes[header + 12..][..4].copy_from_slice(&2_u32.to_le_bytes());
+    }
+    assert_eq!(&source.bytes[0x5000..0x5400], fixed.as_slice());
+    captured.capture_original(&source, 0, 0x1000, 2, false, &changes);
+    let mut fresh = Captured::with_capacities(&capacity());
+    fresh.capture_original(&source, 0, 0x1000, 2, true, &changes);
+    assert_eq!(captured.tables(), fresh.tables());
+    assert_eq!(
+        displayed(captured.table_inputs()).excluded_variants,
+        [handles[2], handles[0]]
+    );
+    // A newly unreadable variant must refuse current model inputs, never carry old handles.
+    {
+        let _writer = site.map(|site| changes.templates.notify(0x5000, site));
+        source.bytes[0x6208..][..8].copy_from_slice(&0xf000_u64.to_le_bytes());
+    }
+    captured.capture_original(&source, 0, 0x1000, 3, false, &changes);
+    fresh.capture_original(&source, 0, 0x1000, 3, true, &changes);
+    assert_eq!(captured.tables(), fresh.tables());
+    let refused = displayed(captured.table_inputs());
+    assert_eq!(refused.model_unreadable, 1);
+    assert!(refused.excluded_variants.is_empty());
+}
+
+#[test]
+fn unnotified_custom_icon_edit_is_read_from_the_fresh_fixed_record() {
+    crate::sampled_verify::begin_hour(1);
+    let changes = CoreChanges::new();
+    let mut source = fixture();
+    let mut captured = Captured::with_capacities(&capacity());
+    captured.capture_original(&source, 0, 0x1000, 1, false, &changes);
+    source.bytes[0x5000 + native::CUSTOM_ICON..][..4].copy_from_slice(&17_i32.to_le_bytes());
+    source.bytes[0x5000 + native::CUSTOM_ICON_NATO] = 1;
+    captured.capture_original(&source, 0, 0x1000, 2, false, &changes);
+    let mut fresh = Captured::with_capacities(&capacity());
+    fresh.capture_original(&source, 0, 0x1000, 2, true, &changes);
+    assert_eq!(captured.tables(), fresh.tables());
+    let row = displayed(captured.table_inputs());
+    assert_eq!((row.custom_icon, row.custom_icon_nato), (17, 1));
 }
 
 #[test]

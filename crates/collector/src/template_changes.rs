@@ -5,6 +5,7 @@
 //! its owner/deployment holder; garrison selections use their occupation holder.
 //! A missing, poisoned, overlapping or invalidated certificate refuses extension
 //! carry. Name keys retain their existing fresh-read fallback.
+//! A recoverable installation failure selects fresh reads for the whole family.
 use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
@@ -155,6 +156,10 @@ impl Watches {
 
 /// What a walk sees of the notifications.
 pub(crate) trait Changes: Sync {
+    /// A recoverable observer install failure requires fresh reads without reuse admission.
+    fn fresh_only(&self) -> bool {
+        false
+    }
     /// `(epoch, revision)` of the whole domain while it is observed and no
     /// writer runs; `None` otherwise. Equal values across hours prove that no
     /// observed writer ran in between, so every certificate taken after the
@@ -199,11 +204,19 @@ pub(crate) fn unsized_observer_for_tests() -> Observer {
     Observer
 }
 impl Changes for Observer {
+    fn fresh_only(&self) -> bool {
+        crate::hook_failures::failed(crate::hook_failures::Family::Templates)
+            && crate::hook_failures::fatal_installation_error().is_none()
+    }
     fn quiet(&self) -> Option<(u64, u64)> {
-        WATCHES.quiet()
+        (!crate::hook_failures::failed(crate::hook_failures::Family::Templates))
+            .then(|| WATCHES.quiet())
+            .flatten()
     }
     fn sequence(&self, template: usize) -> Option<(u64, u64)> {
-        WATCHES.sequence(template)
+        (!crate::hook_failures::failed(crate::hook_failures::Family::Templates))
+            .then(|| WATCHES.sequence(template))
+            .flatten()
     }
     fn deployment_reset_sequence(&self, status: usize) -> Option<(u64, u64)> {
         crate::local_subunit_changes::Changes::sequence(
@@ -323,6 +336,7 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "template_changes"),
+        "fresh_only": Observer.fresh_only(),
         "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
         "icon_core_verified": CORE_SAMPLED.verified(),
@@ -417,6 +431,7 @@ impl Hooks {
                 refund_hq_equipment as *const () as usize,
                 destroy_hq_deployment as *const () as usize,
                 set_garrison_priority as *const () as usize,
+                update_template_tracked_variant as *const () as usize,
             ];
             for (index, (site, _)) in MUTATIONS.iter().enumerate() {
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
@@ -604,6 +619,7 @@ unsafe extern "system-unwind" fn set_template_unit_type(
     result
 }
 callback!(toggle_template_variant, 24);
+callback!(update_template_tracked_variant, 56);
 callback!(rebuild_template_ai_role, 25);
 callback!(resize_template_grids, 26);
 callback!(refresh_template_name_group, 27);

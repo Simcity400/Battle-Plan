@@ -157,13 +157,14 @@ impl Store {
         }
         let previous_bytes = entry.allocated_bytes();
         let mut row = entry.row.clone().unwrap_or_default();
+        let fresh = changes.fresh_only();
         let current = config(changes, country.id, entry.manager);
-        if current.is_none() {
+        if current.is_none() && !fresh {
             entry.config_attempted = false;
             entry.config_valid = false;
             return Err("country template writer certificate unavailable");
         }
-        let read_config = !entry.config_attempted || (current.is_some() && current != entry.config);
+        let read_config = fresh || !entry.config_attempted || current != entry.config;
         let mut occupation_changed = false;
         if read_config {
             self.changed = true;
@@ -178,14 +179,16 @@ impl Store {
                 .ok_or("deployment status pointer unreadable or null")?;
             entry.manager = manager;
             let before = config(changes, country.id, manager);
-            if before.is_none() {
+            if before.is_none() && !fresh {
                 entry.config_attempted = false;
                 return Err("country template writer certificate unavailable");
             }
             entry.config = before;
             row.state =
                 engine_deployment::cdeployment_status::template_state(memory, base, country)?;
-            if manager != row.state.manager || before != config(changes, country.id, manager) {
+            if manager != row.state.manager
+                || (!fresh && before != config(changes, country.id, manager))
+            {
                 entry.config_attempted = false;
                 return Err("country template configuration changed during acquisition");
             }
@@ -206,15 +209,15 @@ impl Store {
             );
         }
         let garrison = garrison_certificate(changes, entry.occupation, country.id);
-        let read_garrison = garrison.is_some()
+        let read_garrison = fresh || (garrison.is_some()
             && (entry.row.is_none()
                 || entry.garrison.is_none()
                 || occupation_changed
-                || garrison != entry.garrison);
+                || garrison != entry.garrison));
         if read_garrison {
             self.changed = true;
             let read = (|| {
-                if garrison.is_none() {
+                if garrison.is_none() && !fresh {
                     return Err("garrison template writer certificate unavailable");
                 }
                 let priority = engine_occupation::ccountry_occupation_status::template_priority(
@@ -240,7 +243,7 @@ impl Store {
                         Ok(())
                     },
                 )?;
-                if garrison != garrison_certificate(changes, entry.occupation, country.id) {
+                if !fresh && garrison != garrison_certificate(changes, entry.occupation, country.id) {
                     return Err("garrison template selections changed during acquisition");
                 }
                 if let Some(held) = row

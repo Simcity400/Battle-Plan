@@ -142,13 +142,14 @@ impl Store {
             entry.header = native::Header::default();
             self.payload_bytes = self.payload_bytes - previous_bytes + entry.allocated_bytes();
         }
+        let fresh = changes.fresh_only();
         let current = certificate(changes, root.pointer(), entry.attempted_holder);
-        if current.is_none() {
+        if current.is_none() && !fresh {
             entry.attempted = false;
             entry.valid = false;
             return Err("headquarters context writer certificate unavailable");
         }
-        let acquire = !entry.attempted || (current.is_some() && current != entry.certificate);
+        let acquire = fresh || !entry.attempted || current != entry.certificate;
         if !acquire {
             entry.valid = entry.value.is_some();
             return entry.value.clone().ok_or(
@@ -160,10 +161,11 @@ impl Store {
         entry.certificate = current;
         let previous_bytes = entry.allocated_bytes();
         let read = (|| {
-            let Some(group_before) = changes.sequence(root.pointer()) else {
+            let group_before = changes.sequence(root.pointer());
+            if group_before.is_none() && !fresh {
                 entry.attempted = false;
                 return Err("headquarters context writer certificate unavailable");
-            };
+            }
             let holder = root
                 .pointer()
                 .checked_add(native::HOLDER)
@@ -173,10 +175,12 @@ impl Store {
             if holder != entry.attempted_holder {
                 crate::template_changes::forget_hq_holder(entry.attempted_holder);
             }
-            crate::template_changes::track_hq_holder(holder)?;
+            if !fresh {
+                crate::template_changes::track_hq_holder(holder)?;
+            }
             let before = certificate(changes, root.pointer(), holder);
             entry.attempted_holder = holder;
-            if before.is_none() || before.map(|stamp| stamp[0]) != Some(group_before) {
+            if !fresh && (before.is_none() || before.map(|stamp| stamp[0]) != group_before) {
                 entry.attempted = false;
                 return Err("headquarters context writer certificate unavailable");
             }
@@ -190,8 +194,8 @@ impl Store {
             }
             entry.header = certified_header;
             native::pools(memory, base, &entry.header, &mut entry.pools)?;
-            if Some(group_before) != changes.sequence(root.pointer())
-                || before != certificate(changes, root.pointer(), entry.header.holder)
+            if !fresh && (group_before != changes.sequence(root.pointer())
+                || before != certificate(changes, root.pointer(), entry.header.holder))
             {
                 entry.attempted = false;
                 return Err("headquarters template context changed during acquisition");
@@ -278,9 +282,7 @@ mod tests {
     fn put(bytes: &mut [u8], at: usize, value: u64) {
         bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     }
-    #[test]
-    fn template_hq_quiet_cache_has_no_native_reads_or_allocations_and_equal_writer_results_share_payload()
-     {
+    fn fixture() -> (Fixture, Root, u64) {
         let mut memory = Fixture(vec![0; 0x5000]);
         let handle = (7_u64 << 32) | 53;
         put(&mut memory.0, 0x1000, corders_group::VTABLE_RVA as u64);
@@ -298,6 +300,31 @@ mod tests {
             corders_group::walk_roots(&memory, 0, &mut roots),
             engine_native::walk::Outcome::Rows { len: 1 }
         );
+        (memory, roots[0], handle)
+    }
+    #[test]
+    fn fresh_only_hq_context_rereads_without_certificates_and_preserves_native_refusals() {
+        struct Fresh;
+        impl Changes for Fresh {
+            fn fresh_only(&self) -> bool { true }
+            fn quiet(&self) -> Option<(u64, u64)> { None }
+            fn sequence(&self, _: usize) -> Option<(u64, u64)> { None }
+            fn mismatch(&self) { unreachable!() }
+        }
+        let (mut memory, root, handle) = fixture();
+        let mut store = Store::default();
+        assert_eq!(store.read(&memory, 0, root, &Fresh).unwrap().queued, 0);
+        memory.0[0x1000 + 0x19a] = 3;
+        assert_eq!(store.read(&memory, 0, root, &Fresh).unwrap().queued, 3);
+        put(&mut memory.0, 0x1000 + native::HOLDER, 0x6000);
+        assert!(store.read(&memory, 0, root, &Fresh).is_err());
+        assert!(store.value(handle).is_none());
+    }
+    #[test]
+    fn template_hq_quiet_cache_has_no_native_reads_or_allocations_and_equal_writer_results_share_payload()
+     {
+        let (mut memory, root, handle) = fixture();
+        let roots = [root];
         let watches = Watches::enabled(32);
         let mut store = Store::default();
         let running = watches.notify(0x1000, 43);

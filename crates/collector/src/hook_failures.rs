@@ -393,7 +393,7 @@ impl Family {
                 | (Designs, WorldInputs | CountryInputs | Buildings)
                 | (
                     ArmyStats,
-                    Designs | UnitLeaders | CountryInputs | LocalSubunits | Templates
+                    Designs | UnitLeaders | CountryInputs | LocalSubunits
                 )
                 | (Market, CountryInputs | Variables)
                 | (WarParticipation, CountryInputs | Opinion | Relation)
@@ -548,8 +548,17 @@ pub(crate) fn apply(source: &mut FrameInput) -> io::Result<()> {
     if !ANY.load(Ordering::Acquire) {
         return Ok(());
     }
+    if failed(Family::Templates)
+        && let Some(error) = fatal_installation_error()
+    {
+        return Err(io::Error::other(error));
+    }
     let failures = FAILURES.lock().unwrap_or_else(PoisonError::into_inner);
-    for family in Family::ALL.into_iter().filter(|family| failed(*family)) {
+    // Template observation admits reuse; its absence selects fresh acquisition.
+    for family in Family::ALL
+        .into_iter()
+        .filter(|family| failed(*family) && *family != Family::Templates)
+    {
         let failure = failures
             .iter()
             .find(|failure| failure.family == family.name())
@@ -996,6 +1005,13 @@ mod tests {
             };
             apply(&mut source).unwrap();
             for table in super::contract_tests::expected_tables(family) {
+                if family == Family::Templates {
+                    assert!(matches!(
+                        &source.tables[table.index()],
+                        replay_frame::frame::TableInput::Sampled(TableView::Complete(_))
+                    ));
+                    continue;
+                }
                 assert!(
                     matches!(&source.tables[table.index()], replay_frame::frame::TableInput::Sampled(TableView::Unavailable { reason })
                     if reason.starts_with("hook family ") && reason.contains("not installed:") && reason.contains("synthetic publication failure")),

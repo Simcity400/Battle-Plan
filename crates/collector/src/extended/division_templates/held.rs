@@ -317,6 +317,7 @@ impl native::DetailPolicy for Demand<'_> {
             template,
             ordinal,
             (expected == pointer).then_some(before).flatten(),
+            self.changes.fresh_only(),
         )
     }
     fn core(&mut self, record: &[u8]) -> Option<native::IconCore<'_>> {
@@ -389,6 +390,7 @@ impl Store {
             template,
             ordinal,
             certificate(changes, pointer, owner),
+            changes.fresh_only(),
         )
     }
     fn request_certified(
@@ -398,6 +400,7 @@ impl Store {
         template: u64,
         ordinal: u32,
         current: Option<Certificate>,
+        fresh: bool,
     ) -> bool {
         let at = match self
             .entries
@@ -420,14 +423,14 @@ impl Store {
         };
         let entry = &mut self.entries[at];
         let same = entry.pointer == pointer && entry.owner == owner && entry.ordinal == ordinal;
-        if current.is_none() {
+        if current.is_none() && !fresh {
             entry.valid = false;
             entry.attempted = false;
             entry.acquired = false;
             entry.requested = false;
             return false;
         }
-        let read = !same || !entry.attempted || (current.is_some() && current != entry.certificate);
+        let read = fresh || !same || !entry.attempted || current != entry.certificate;
         if read {
             self.requested = true;
             entry.attempted = true;
@@ -455,6 +458,10 @@ impl Store {
                 continue;
             };
             let entry = &mut self.entries[at];
+            if changes.fresh_only() {
+                entry.valid = entry.requested && row.details_fresh;
+                continue;
+            }
             if entry.pending.is_none()
                 || entry.pending != certificate(changes, row.pointer, row.owner)
             {
