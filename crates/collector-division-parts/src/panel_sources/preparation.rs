@@ -256,10 +256,7 @@ impl NativeReads {
                 .and_then(Result::ok)
                 .flatten();
             if let Some((id, pointer)) = context {
-                for country in [seed.roster_owner, seed.logical_owner]
-                    .into_iter()
-                    .flatten()
-                {
+                for country in state_countries(seed) {
                     self.capture_state(memory, base, state, store, id, pointer, country);
                 }
             }
@@ -275,10 +272,10 @@ impl NativeReads {
         accumulator: usize,
     ) {
         let identity = (kind, owner);
-        if self.root_indices.contains_key(&identity) {
-            return;
-        }
-        self.root_indices.insert(identity, None);
+        let index_slot = match self.root_indices.entry(identity) {
+            std::collections::hash_map::Entry::Occupied(_) => return,
+            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(None),
+        };
         // Cold/full admissions stay in the original ordered slow path. Warm
         // receivers are already registered; a slot hint never trusts a table pointer.
         let held = store.roots.get(&identity);
@@ -336,7 +333,7 @@ impl NativeReads {
             Ok(())
         });
         self.complete &= read.ready;
-        self.root_indices.insert(identity, Some(index));
+        *index_slot = Some(index);
         self.roots_used += 1;
     }
     pub fn root(
@@ -381,8 +378,7 @@ impl NativeReads {
         };
         self.membership_observation = Some((certificate, slot));
         let certificate = Some(certificate);
-        if held.is_some_and(|held| held.army == seed.pointer && held.certificate == certificate)
-        {
+        if held.is_some_and(|held| held.army == seed.pointer && held.certificate == certificate) {
             return;
         }
         let index = self.membership_indices.len();
@@ -444,10 +440,10 @@ impl NativeReads {
         pointer: usize,
         country: u32,
     ) {
-        if self.states.contains_key(&(id, country)) {
-            return;
-        }
-        self.states.insert((id, country), None);
+        let state_slot = match self.states.entry((id, country)) {
+            std::collections::hash_map::Entry::Occupied(_) => return,
+            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(None),
+        };
         let held = store.states.get(&(id, country));
         let hint = held.map_or(usize::MAX, |held| held.slot);
         let acquired = operands::state_sequence_at(id, hint);
@@ -458,8 +454,7 @@ impl NativeReads {
         self.state_certificates.insert((id, country), certificate);
         self.state_slots.insert((id, country), slot);
         let certificate = Some(certificate);
-        if held.is_some_and(|held| held.pointer == pointer && held.certificate == certificate)
-        {
+        if held.is_some_and(|held| held.pointer == pointer && held.certificate == certificate) {
             return;
         }
         let mut values = [Err("state attrition unavailable"); 3];
@@ -478,14 +473,11 @@ impl NativeReads {
                 break;
             }
         }
-        self.states.insert(
-            (id, country),
-            Some(StateRead {
-                pointer,
-                certificate,
-                values,
-            }),
-        );
+        *state_slot = Some(StateRead {
+            pointer,
+            certificate,
+            values,
+        });
     }
     pub fn state(
         &self,
@@ -518,7 +510,10 @@ impl NativeReads {
             self.complete = false;
             return;
         }
-        self.variant_indices.insert((handle, pointer), None);
+        let index_slot = self
+            .variant_indices
+            .entry((handle, pointer))
+            .or_insert(None);
         let certificate = operands::observed_variant_sequence(pointer)
             .and_then(|_| operands::variant_sequence(pointer));
         let availability = operands::variant_capability();
@@ -598,7 +593,7 @@ impl NativeReads {
             read.result = Err(VARIANT_WITHDRAWN);
         }
         self.complete &= read.ready;
-        self.variant_indices.insert((handle, pointer), Some(index));
+        *index_slot = Some(index);
         self.variants_used += 1;
     }
     pub fn has_variant(&self, handle: u64, pointer: usize) -> bool {
@@ -628,11 +623,38 @@ impl NativeReads {
     }
 }
 
+fn state_countries(seed: &DivisionSeed) -> impl Iterator<Item = u32> {
+    seed.roster_owner.into_iter().chain(
+        seed.logical_owner
+            .filter(|owner| Some(*owner) != seed.roster_owner),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use engine_native::memory::SliceMemory;
     use replay_data::rows::tables;
+
+    #[test]
+    fn preparation_keeps_each_distinct_state_owner_in_original_order() {
+        for roster in [None, Some(7), Some(19)] {
+            for logical in [None, Some(7), Some(19)] {
+                let seed = DivisionSeed {
+                    roster_owner: roster,
+                    logical_owner: logical,
+                    ..Default::default()
+                };
+                let mut reference = Vec::new();
+                for owner in [roster, logical].into_iter().flatten() {
+                    if !reference.contains(&owner) {
+                        reference.push(owner);
+                    }
+                }
+                assert_eq!(state_countries(&seed).collect::<Vec<_>>(), reference);
+            }
+        }
+    }
 
     struct Denied;
     impl Memory for Denied {
@@ -738,9 +760,7 @@ mod tests {
             let mut reads = NativeReads::default();
             reads.roots.push(read);
             reads.root_indices.insert((0, owner), Some(0));
-            reads
-                .root_certificates
-                .insert((0, owner), stamp);
+            reads.root_certificates.insert((0, owner), stamp);
             let mut staged = Store {
                 settling_owned: true,
                 ..Store::default()

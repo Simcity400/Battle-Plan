@@ -77,6 +77,8 @@ pub struct Captured {
     failure: Option<&'static str>,
     observers: Vec<replay_data::rows::CombatLogObserverRow>,
     observer_failure: Option<&'static str>,
+    /// The observer projection's sort scratch, kept with this frame across hours.
+    observer_scratch: std::sync::Mutex<collector_combat_log::observer_projection::Scratch>,
     daily_refresh: bool,
     daily_previous: Option<DailyObservers>,
 }
@@ -97,6 +99,7 @@ impl Captured {
             failure: None,
             observers: Vec::new(),
             observer_failure: None,
+            observer_scratch: Default::default(),
             daily_refresh: true,
             daily_previous: None,
         }
@@ -117,6 +120,11 @@ impl Captured {
             + self.pointers.capacity() * size_of::<usize>()
             + self.identities.capacity() * 16
             + self.observers.capacity() * size_of::<replay_data::rows::CombatLogObserverRow>()
+            + self
+                .observer_scratch
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
@@ -411,9 +419,13 @@ impl Captured {
                 },
             ),
             match self.outcomes()[1] {
-                Outcome::Rows { .. } => match collector_combat_log::observer_projection::project(
+                Outcome::Rows { .. } => match collector_combat_log::observer_projection::project_with(
                     &self.observers,
                     previous,
+                    &mut self
+                        .observer_scratch
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
                 ) {
                     Ok(rows) => {
                         TableView::Complete(replay_data::rows::TableRows::CombatLogObservers(rows))

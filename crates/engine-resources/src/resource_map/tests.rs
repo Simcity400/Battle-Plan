@@ -4,6 +4,151 @@ use crate::{ccountry_resources::test_support::Fixture, cresource_exchange as exc
 const GAME_STATE: usize = 0x1000;
 const THRESHOLD: i64 = 80_000;
 
+struct PathMemory<'a> {
+    source: &'a Fixture,
+    denied: Option<usize>,
+    guards: std::cell::Cell<usize>,
+    faults: std::cell::Cell<usize>,
+}
+impl PathMemory<'_> {
+    fn copy_source(&self, address: usize, output: &mut [u8]) -> bool {
+        if self
+            .denied
+            .is_some_and(|denied| denied >= address && denied - address < output.len())
+        {
+            self.faults.set(self.faults.get() + 1);
+            return false;
+        }
+        self.source.copy(address, output)
+    }
+}
+impl Memory for PathMemory<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.guards.set(self.guards.get() + 1);
+        self.copy_source(address, output)
+    }
+}
+
+fn scalar_path(
+    memory: &impl Memory,
+    elements: Array,
+    offset: usize,
+    unreadable: &'static str,
+    path: &mut Vec<u32>,
+) -> Result<(), &'static str> {
+    for index in 0..elements.count {
+        let item = element(memory, elements, index, 8, "route path element unreadable")?;
+        if item == 0 {
+            return Err("null route path element");
+        }
+        let id = read::<u32>(memory, at(item, offset)?).ok_or(unreadable)?;
+        allocation::reserve(path, 1).map_err(|_| "route path allocation failed")?;
+        path.push(id);
+    }
+    Ok(())
+}
+
+#[test]
+fn route_walk_keeps_scalar_values_prefixes_and_every_ordered_source_refusal() {
+    for count in [0, 1, 2, 63, 64, 65, 1500] {
+        for (offset, unreadable) in [
+            (REGION_ID, "sea region id unreadable"),
+            (cstate::ID, "route state id unreadable"),
+        ] {
+            let mut fixture = Fixture::default();
+            let elements = Array {
+                data: 0x1000,
+                count,
+            };
+            for index in 0..count {
+                let pointer = 0x10000 + index as usize * 0x100;
+                fixture.u64(elements.data + index as usize * 8, pointer as u64);
+                fixture.u32(pointer + offset, index.rotate_left(17));
+            }
+            let indices: Vec<_> = if count <= 65 {
+                (0..count).collect()
+            } else {
+                vec![0, 1, 63, 64, 65, count - 1]
+            };
+            let faults = std::iter::once(None).chain(indices.into_iter().flat_map(|index| {
+                [
+                    Some(elements.data + index as usize * 8 + 7),
+                    Some(0x10000 + index as usize * 0x100 + offset + 3),
+                ]
+            }));
+            for denied in faults {
+                let memory = || PathMemory {
+                    source: &fixture,
+                    denied,
+                    guards: Default::default(),
+                    faults: Default::default(),
+                };
+                let scalar = memory();
+                let actual_memory = memory();
+                let mut expected = vec![99];
+                let mut actual = expected.clone();
+                let reference = scalar_path(&scalar, elements, offset, unreadable, &mut expected);
+                let result = route_path(&actual_memory, elements, offset, unreadable, &mut actual);
+                assert_eq!(
+                    (result, actual),
+                    (reference, expected),
+                    "count {count}, fault {denied:?}"
+                );
+                assert!(actual_memory.faults.get() <= 1, "a failed source was retried");
+                if denied.is_none() && count >= 2 {
+                    assert_eq!(actual_memory.guards.get(), scalar.guards.get());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn route_walk_keeps_earlier_id_faults_and_partial_paths() {
+    let mut fixture = Fixture::default();
+    let elements = Array {
+        data: 0x1000,
+        count: 65,
+    };
+    for index in 0..elements.count {
+        let pointer = 0x10000 + index as usize * 0x100;
+        fixture.u64(elements.data + index as usize * 8, pointer as u64);
+        fixture.u32(pointer + REGION_ID, index);
+    }
+    for invalid in [0, usize::MAX - REGION_ID + 1] {
+        fixture.u64(elements.data + 17 * 8, invalid as u64);
+        for denied in [
+            None,
+            Some(0x10000 + 5 * 0x100 + REGION_ID),
+            Some(elements.data + 40 * 8),
+        ] {
+            let memory = || PathMemory {
+                source: &fixture,
+                denied,
+                guards: Default::default(),
+                faults: Default::default(),
+            };
+            let mut expected = Vec::new();
+            let mut actual = Vec::new();
+            let reference = scalar_path(
+                &memory(),
+                elements,
+                REGION_ID,
+                "sea region id unreadable",
+                &mut expected,
+            );
+            let result = route_path(
+                &memory(),
+                elements,
+                REGION_ID,
+                "sea region id unreadable",
+                &mut actual,
+            );
+            assert_eq!((result, actual), (reference, expected));
+        }
+    }
+}
+
 fn state(f: &mut Fixture, address: usize, id: u32) {
     f.u32(address + cstate::ID, id);
     // An empty country-modifier hash: the base accumulator, with no entries.

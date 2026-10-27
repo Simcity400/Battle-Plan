@@ -20,8 +20,6 @@ use crate::{
 };
 use engine_native::modifier_definition;
 
-type RouteElementId<M> = fn(&M, usize) -> Result<u32, &'static str>;
-
 /// A present key's successful metadata is shared only within this parked
 /// walk. Values and presence remain current per accumulator; failed metadata
 /// is never retained, and absent keys demand none. Stack storage cannot add
@@ -1375,21 +1373,19 @@ pub fn read_route(
         row.source_state = state_id(word(ROUTE_FROM))?;
         row.destination_state = state_id(word(ROUTE_TO))?;
     }
-    let (ends, list, element_id): (_, _, RouteElementId<_>) = if kind == NAVAL {
+    let (ends, list, id_offset, unreadable) = if kind == NAVAL {
         (
             [word(ROUTE_FROM_PORT), word(ROUTE_TO_PORT)],
             ROUTE_SEA_REGIONS,
-            |memory, region| {
-                read::<u32>(memory, at(region, REGION_ID)?).ok_or("sea region id unreadable")
-            },
+            REGION_ID,
+            "sea region id unreadable",
         )
     } else {
         (
             [word(ROUTE_FROM), word(ROUTE_TO)],
             ROUTE_LAND_STATES,
-            |memory, state| {
-                read::<u32>(memory, at(state, cstate::ID)?).ok_or("route state id unreadable")
-            },
+            cstate::ID,
+            "route state id unreadable",
         )
     };
     let elements = Array::from_header(
@@ -1409,17 +1405,28 @@ pub fn read_route(
     };
     row.from = read::<u32>(memory, at(ends[0], end_id)?).ok_or("route end unreadable")?;
     row.to = read::<u32>(memory, at(ends[1], end_id)?).ok_or("route end unreadable")?;
+    route_path(memory, elements, id_offset, unreadable, path)?;
+    row.path_len = path.len() - row.path_start;
+    Ok(row)
+}
+
+fn route_path(
+    memory: &impl Memory,
+    elements: Array,
+    id_offset: usize,
+    unreadable: &'static str,
+    path: &mut Vec<u32>,
+) -> Result<(), &'static str> {
     for index in 0..elements.count {
         let item = element(memory, elements, index, 8, "route path element unreadable")?;
         if item == 0 {
             return Err("null route path element");
         }
-        let id = element_id(memory, item)?;
+        let id = read::<u32>(memory, at(item, id_offset)?).ok_or(unreadable)?;
         allocation::reserve(path, 1).map_err(|_| "route path allocation failed")?;
         path.push(id);
     }
-    row.path_len = path.len() - row.path_start;
-    Ok(row)
+    Ok(())
 }
 
 #[cfg(test)]
