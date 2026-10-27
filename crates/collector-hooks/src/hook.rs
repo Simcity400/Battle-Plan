@@ -491,10 +491,52 @@ impl Hook {
     /// Prepare protection/ranges before holding threads, validate every site
     /// before any write, and publish the whole family under one suspension.
     pub fn set_family_enabled(hooks: &mut [Self], enabled: bool) -> Result<bool, String> {
+        if !enabled && restoration::active() {
+            return Ok(restoration::restore(hooks.iter_mut()));
+        }
         let mut references = publication_storage(hooks.len(), enabled)
             .map_err(|_| "hook family allocation failed")?;
         references.extend(hooks.iter_mut());
         Self::set_enabled_batch(&mut references, enabled)
+    }
+
+    pub fn set_enabled_iter<'a>(
+        hooks: impl Iterator<Item = &'a mut Self>,
+        enabled: bool,
+    ) -> Result<bool, String> {
+        Self::publish_iter(hooks, enabled, Self::set_enabled_batch)
+    }
+
+    pub fn set_enabled_iter_attach<'a>(
+        hooks: impl Iterator<Item = &'a mut Self>,
+        enabled: bool,
+    ) -> Result<bool, String> {
+        Self::publish_iter(hooks, enabled, Self::set_enabled_batch_attach)
+    }
+
+    pub fn set_enabled_iter_attach_tracking_busy<'a>(
+        hooks: impl Iterator<Item = &'a mut Self>,
+        enabled: bool,
+    ) -> Result<bool, String> {
+        Self::publish_iter(hooks, enabled, Self::set_enabled_batch_attach_tracking_busy)
+    }
+
+    fn publish_iter<'a>(
+        hooks: impl Iterator<Item = &'a mut Self>,
+        enabled: bool,
+        publish: impl FnOnce(&mut [&mut Self], bool) -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        if !enabled && restoration::active() {
+            return Ok(restoration::restore(hooks));
+        }
+        let capacity = hooks
+            .size_hint()
+            .1
+            .ok_or("hook iterator has no size bound")?;
+        let mut references = shared::publication_storage_attach(capacity, enabled)
+            .map_err(|_| "hook family allocation failed")?;
+        references.extend(hooks);
+        publish(&mut references, enabled)
     }
 
     pub fn set_enabled_batch(hooks: &mut [&mut Self], enabled: bool) -> Result<bool, String> {
@@ -562,6 +604,11 @@ impl Hook {
         enabled: bool,
         mut flush: impl FnMut() -> Result<(), u32>,
     ) -> Result<bool, String> {
+        if !enabled && restoration::active() {
+            return Ok(restoration::restore(
+                hooks.iter_mut().map(|hook| &mut **hook),
+            ));
+        }
         for hook in hooks.iter_mut() {
             hook.diagnostic_failure = false;
         }
@@ -1093,11 +1140,27 @@ impl Threads {
     }
 
     pub fn suspend(&mut self) -> Result<(), u32> {
+        self.suspend_resizing(true, |threads| {
+            threads.resume()?;
+            threads.prepare_census()
+        })
+    }
+
+    fn suspend_prepared(&mut self) -> Result<(), u32> {
+        // Let the restoration owner observe every resume before retrying growth.
+        self.suspend_resizing(false, |_| Err(ERROR_INSUFFICIENT_BUFFER))
+    }
+
+    fn suspend_resizing(
+        &mut self,
+        headroom: bool,
+        resize: impl FnMut(&mut Self) -> Result<(), u32>,
+    ) -> Result<(), u32> {
         #[cfg(any(test, feature = "test-support"))]
         SUSPENSIONS.with(|count| count.set(count.get() + 1));
         // Query sizing and prepare aligned caller storage immediately before
         // acquiring any hold. A resize retry always resumes before preparing.
-        self.prepare_census()?;
+        self.prepare_census_with_headroom(headroom)?;
         self.suspend_with(
             |handle, diagnostics| {
                 suspension_with(handle, diagnostics, thread_exited, |handle| {
@@ -1109,14 +1172,15 @@ impl Threads {
                 })
             },
             Self::discover,
-            |threads| {
-                threads.resume()?;
-                threads.prepare_census()
-            },
+            resize,
         )
     }
 
     fn prepare_census(&mut self) -> Result<(), u32> {
+        self.prepare_census_with_headroom(true)
+    }
+
+    fn prepare_census_with_headroom(&mut self, headroom: bool) -> Result<(), u32> {
         if self.threads.iter().any(|thread| thread.suspended) {
             self.census_refusal = Some("thread census resize requires resumed threads");
             return Err(ERROR_RETRY);
@@ -1130,7 +1194,13 @@ impl Threads {
         }
         let required = required.max(self.census_required) as usize;
         let bytes = required
-            .checked_add(required / 2)
+            .checked_add(
+                if headroom || required > std::mem::size_of_val(self.census.as_slice()) {
+                    required / 2
+                } else {
+                    0
+                },
+            )
             .filter(|bytes| *bytes <= u32::MAX as usize)
             .ok_or(ERROR_BAD_LENGTH)?;
         let words = bytes.div_ceil(size_of::<usize>());
@@ -1140,9 +1210,13 @@ impl Threads {
             .map_err(|_| ERROR_NOT_ENOUGH_MEMORY)?;
         self.census.resize(words.max(self.census.len()), 0);
         // Headroom for threads created before every in-process creator is held.
-        let headroom = self.threads.len() / 2 + 16;
+        let additional = if headroom || self.threads.len() == self.threads.capacity() {
+            self.threads.len() / 2 + 16
+        } else {
+            0
+        };
         self.threads
-            .try_reserve_exact(headroom)
+            .try_reserve_exact(additional)
             .map_err(|_| ERROR_NOT_ENOUGH_MEMORY)?;
         self.census_short = false;
         self.census_refusal = None;
@@ -1340,6 +1414,7 @@ impl Threads {
         exited: impl FnMut(HANDLE) -> bool,
     ) -> Result<bool, u32> {
         self.find_collision(
+            &[],
             |ip| ranges.iter().any(|range| range.contains(&ip)).then_some(()),
             exited,
         )
@@ -1349,6 +1424,7 @@ impl Threads {
     /// Return the first live collision from the ordinary suspended-thread scan.
     fn colliding_range(&mut self, ranges: &[Range<usize>]) -> Result<Option<usize>, u32> {
         self.find_collision(
+            &[],
             |ip| ranges.iter().position(|range| range.contains(&ip)),
             thread_exited,
         )
@@ -1356,6 +1432,7 @@ impl Threads {
 
     fn find_collision<T>(
         &mut self,
+        excluded: &[u32],
         mut locate: impl FnMut(usize) -> Option<T>,
         mut exited: impl FnMut(HANDLE) -> bool,
     ) -> Result<Option<T>, u32> {
@@ -1365,6 +1442,9 @@ impl Threads {
             return Err(ERROR_RETRY);
         }
         for thread in self.threads.iter_mut().filter(|thread| thread.suspended) {
+            if excluded.contains(&thread.id) {
+                continue;
+            }
             let Some(ip) = thread.ip else {
                 continue;
             };
@@ -1464,6 +1544,8 @@ impl Drop for Threads {
 #[path = "hook/publication.rs"]
 pub mod publication;
 
+#[path = "hook/restoration.rs"]
+pub mod restoration;
 #[path = "hook/shared.rs"]
 pub mod shared;
 #[path = "hook/tap.rs"]

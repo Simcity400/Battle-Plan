@@ -110,30 +110,63 @@ fn read_file(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
 }
 
 pub fn write_json(path: &Path, value: &Value) -> Result<()> {
+    write_json_before_publish(path, value, |_| Ok(()))
+}
+
+fn write_json_before_publish(
+    path: &Path,
+    value: &Value,
+    before_publish: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     use std::io::Write;
-    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
     let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
-    Budgeted::new(fs::File::create(&temporary).map_err(|error| error.to_string())?)
-        .write_all(&bytes)
-        .map_err(|error| error.to_string())?;
-    fs::OpenOptions::new()
-        .write(true)
-        .open(&temporary)
-        .and_then(|file| file.sync_all())
-        .map_err(|error| failure(&temporary, error))?;
-    let from = windows::wide(temporary.as_os_str());
-    let to = windows::wide(path.as_os_str());
-    if unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().to_string());
+    let (temporary, file) = json_temporary(path)?;
+    let result = (|| {
+        Budgeted::new(file)
+            .write_all(&bytes)
+            .map_err(|error| error.to_string())?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&temporary)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| failure(&temporary, error))?;
+        before_publish(&temporary)?;
+        let from = windows::wide(temporary.as_os_str());
+        let to = windows::wide(path.as_os_str());
+        if unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
     }
-    Ok(())
+    result
+}
+
+fn json_temporary(path: &Path) -> Result<(PathBuf, fs::File)> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+        let temporary = path.with_extension(format!("json.{}.{sequence}.tmp", std::process::id()));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(failure(&temporary, error)),
+        }
+    }
 }
 
 type Result<T> = std::result::Result<T, String>;
@@ -7040,6 +7073,39 @@ fn print_throughput<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlapping_json_publications_own_distinct_temporary_files() {
+        let directory = recorder_test_support::test_support::allocation_test_directory(
+            "json-publication-interleaving",
+        );
+        let path = directory.join("completed.json");
+        write_json_before_publish(&path, &json!({"writer":"first"}), |temporary| {
+            let first = fs::read(temporary).unwrap();
+            write_json_before_publish(&path, &json!({"writer":"second"}), |second| {
+                assert_ne!(temporary, second);
+                assert_eq!(fs::read(temporary).unwrap(), first);
+                Ok(())
+            })?;
+            let published: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(published["writer"], "second");
+            assert_eq!(fs::read(temporary).unwrap(), first);
+            Ok(())
+        })
+        .unwrap();
+        let published: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(published["writer"], "first");
+        assert!(
+            write_json_before_publish(&path, &json!({"writer":"aborted"}), |_| {
+                Err("synthetic publication failure".into())
+            })
+            .is_err()
+        );
+        let published: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(published["writer"], "first");
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     /// Names by tag, with no name chosen.
     fn unnamed() -> Naming<'static> {

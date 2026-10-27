@@ -767,6 +767,9 @@ impl<T> FamilyHooks<T> {
         let Some(hooks) = self.inner.as_mut() else {
             return Ok(true);
         };
+        if !requested {
+            return toggle(hooks, false);
+        }
         let (result, report) = crate::hook::installation::capture(|| {
             let result = toggle(hooks, enabled);
             if requested && let Err(cause) = &result {
@@ -798,7 +801,11 @@ macro_rules! family_hooks {
         impl FamilyHooks<crate::$module::Hooks> {
             pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
                 self.toggle(enabled, |hooks, enabled| hooks.set_enabled(enabled).map_err(|cause|
-                    crate::runtime::installation_message(format!("{cause}"))))
+                    if enabled {
+                        crate::runtime::installation_message(cause)
+                    } else {
+                        "hook restoration failed; collector retained"
+                    }))
             }
             pub(crate) fn executable_ranges(&self) -> impl Iterator<Item=Range<usize>> + '_ {
                 self.inner.iter().flat_map(|hooks| hooks.executable_ranges().into_iter())

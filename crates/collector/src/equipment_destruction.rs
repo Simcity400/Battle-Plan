@@ -2905,11 +2905,7 @@ fn callback(id: native::SiteId) -> usize {
 }
 
 fn set_sites_enabled(hooks: &mut [(native::SiteId, Hook)], enabled: bool) -> Result<bool, String> {
-    let mut family = crate::hook::publication_storage(hooks.len(), enabled)
-        .map_err(|_| "equipment hook family allocation failed".to_owned())?;
-    family.extend(hooks.iter_mut().map(|(_, hook)| hook));
-    let complete = Hook::set_enabled_batch(&mut family, enabled)?;
-    drop(family);
+    let complete = Hook::set_enabled_iter(hooks.iter_mut().map(|(_, hook)| hook), enabled)?;
     if complete {
         for (id, _) in hooks {
             SITE_ENABLED[*id as usize].store(enabled, Ordering::SeqCst);
@@ -3117,3 +3113,12 @@ pub fn status() -> impl serde::Serialize {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn synthetic_restore_hooks(original: Hook, supplemental: Hook) -> Hooks {
+    Hooks {
+        original: vec![(native::SiteId::Land, original)],
+        supplemental: vec![(native::SiteId::Paradrop, supplemental)],
+        publication_attempted: false,
+    }
+}

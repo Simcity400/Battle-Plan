@@ -721,25 +721,21 @@ impl Hooks {
                 fault(family, Fault::Disabled);
             }
         }
-        let families = self
-            .hooks
-            .iter()
-            .map(|(family, _)| *family)
-            .chain(self.taps.iter().map(|(family, _)| *family))
-            .collect::<Vec<_>>();
-        let mut publication = self
-            .hooks
-            .iter_mut()
-            .map(|(_, hook)| hook)
-            .chain(self.taps.iter_mut().map(|(_, tap)| tap.publication_hook()))
-            .collect::<Vec<_>>();
-        if publication.is_empty() {
-            return Ok(true);
-        }
-        let ready = Hook::set_enabled_batch_attach(&mut publication, enabled)
-            .map_err(|_| "map event hook state change failed")?;
+        let ready = Hook::set_enabled_iter_attach(
+            self.hooks
+                .iter_mut()
+                .map(|(_, hook)| hook)
+                .chain(self.taps.iter_mut().map(|(_, tap)| tap.publication_hook())),
+            enabled,
+        )
+        .map_err(|_| "map event hook state change failed")?;
         if ready && enabled {
-            for family in families {
+            for family in self
+                .hooks
+                .iter()
+                .map(|(family, _)| family)
+                .chain(self.taps.iter().map(|(family, _)| family))
+            {
                 ENABLED[family.index()].store(true, Ordering::SeqCst);
             }
         }

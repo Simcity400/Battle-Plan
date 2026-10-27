@@ -1161,17 +1161,13 @@ impl Hooks {
             Some(outcome) => {
                 outcome.map_err(|reason| remember_publication_failure("publication", reason))?
             }
-            None => {
-                let mut hooks = crate::hook::shared::publication_storage_attach(
-                    self.hooks.len() + self.taps.len(),
-                    enabled,
-                )
-                .map_err(|reason| remember_publication_failure("publication storage", reason))?;
-                hooks.extend(self.hooks.iter_mut());
-                hooks.extend(self.taps.iter_mut().map(Tap::publication_hook));
-                Hook::set_enabled_batch_attach(&mut hooks, enabled)
-                    .map_err(|reason| remember_publication_failure("publication", reason))?
-            }
+            None => Hook::set_enabled_iter_attach(
+                self.hooks
+                    .iter_mut()
+                    .chain(self.taps.iter_mut().map(Tap::publication_hook)),
+                enabled,
+            )
+            .map_err(|reason| remember_publication_failure("publication", reason))?,
         };
         if !ready {
             return Ok(false);

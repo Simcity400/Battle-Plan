@@ -77,17 +77,54 @@ pub struct Module {
     pub base: usize,
     pub path: PathBuf,
 }
+const MODULE_SNAPSHOT_WAIT: Duration = Duration::from_millis(100);
+const MODULE_SNAPSHOT_RETRY: Duration = Duration::from_millis(1);
+
+fn module_snapshot<T>(
+    deadline: Instant,
+    mut create: impl FnMut() -> io::Result<T>,
+    mut now: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+) -> io::Result<T> {
+    loop {
+        if now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "module snapshot remained unstable",
+            ));
+        }
+        match create() {
+            Ok(snapshot) => return Ok(snapshot),
+            Err(error) if error.raw_os_error() == Some(ERROR_BAD_LENGTH as i32) => {}
+            Err(error) => return Err(error),
+        }
+        let remaining = deadline.saturating_duration_since(now());
+        if !remaining.is_zero() {
+            sleep(remaining.min(MODULE_SNAPSHOT_RETRY));
+        }
+    }
+}
+
 pub fn modules(pid: u32) -> Result<Vec<Module>, String> {
-    let snapshot = loop {
-        let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid) };
-        if raw != INVALID_HANDLE_VALUE {
-            break Handle(raw);
-        }
-        if unsafe { GetLastError() } != ERROR_BAD_LENGTH {
-            return Err(io::Error::last_os_error().to_string());
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    };
+    modules_until(pid, Instant::now() + MODULE_SNAPSHOT_WAIT)
+}
+
+pub fn modules_until(pid: u32, deadline: Instant) -> Result<Vec<Module>, String> {
+    let snapshot = module_snapshot(
+        deadline.min(Instant::now() + MODULE_SNAPSHOT_WAIT),
+        || {
+            let raw =
+                unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid) };
+            if raw == INVALID_HANDLE_VALUE {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(Handle(raw))
+            }
+        },
+        Instant::now,
+        std::thread::sleep,
+    )
+    .map_err(|error| error.to_string())?;
     let mut entry: MODULEENTRY32W = unsafe { std::mem::zeroed() };
     entry.dwSize = size_of::<MODULEENTRY32W>() as u32;
     let mut found = unsafe { Module32FirstW(snapshot.0, &mut entry) };
@@ -154,8 +191,12 @@ impl Process {
     }
 
     pub fn has_module(&self, path: &Path) -> Result<bool, String> {
+        self.has_module_until(path, Instant::now() + MODULE_SNAPSHOT_WAIT)
+    }
+
+    pub fn has_module_until(&self, path: &Path, deadline: Instant) -> Result<bool, String> {
         let expected = path.canonicalize().map_err(|e| e.to_string())?;
-        Ok(modules(self.pid)?.iter().any(|m| {
+        Ok(modules_until(self.pid, deadline)?.iter().any(|m| {
             m.path.canonicalize().is_ok_and(|p| {
                 p.as_os_str()
                     .to_string_lossy()
@@ -331,5 +372,100 @@ impl Event {
         } else {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn module_snapshot_churn_expires_without_another_attempt() {
+        for budget in [MODULE_SNAPSHOT_WAIT, Duration::from_micros(2500)] {
+            let started = Instant::now();
+            let elapsed = Cell::new(Duration::ZERO);
+            let attempts = Cell::new(0);
+            let result = module_snapshot::<()>(
+                started + budget,
+                || {
+                    assert!(elapsed.get() < budget);
+                    attempts.set(attempts.get() + 1);
+                    Err(io::Error::from_raw_os_error(ERROR_BAD_LENGTH as i32))
+                },
+                || started + elapsed.get(),
+                |delay| {
+                    assert!(!delay.is_zero() && delay <= MODULE_SNAPSHOT_RETRY);
+                    elapsed.set(elapsed.get() + delay);
+                },
+            );
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+            assert_eq!(elapsed.get(), budget);
+            assert_eq!(attempts.get(), budget.as_micros().div_ceil(1000) as u32);
+        }
+    }
+
+    #[test]
+    fn module_snapshot_retries_only_bad_length_and_can_recover() {
+        let started = Instant::now();
+        let elapsed = Cell::new(Duration::ZERO);
+        let attempts = Cell::new(0);
+        let snapshot = module_snapshot(
+            started + MODULE_SNAPSHOT_WAIT,
+            || {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() < 3 {
+                    Err(io::Error::from_raw_os_error(ERROR_BAD_LENGTH as i32))
+                } else {
+                    Ok(42)
+                }
+            },
+            || started + elapsed.get(),
+            |delay| elapsed.set(elapsed.get() + delay),
+        )
+        .unwrap();
+        assert_eq!(snapshot, 42);
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(elapsed.get(), MODULE_SNAPSHOT_RETRY * 2);
+
+        let error = module_snapshot::<()>(
+            started + MODULE_SNAPSHOT_WAIT,
+            || Err(io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32)),
+            || started,
+            |_| panic!("permanent snapshot errors must not retry"),
+        )
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+    }
+
+    #[test]
+    fn expired_module_snapshot_deadline_does_not_start_an_observation() {
+        let deadline = Instant::now();
+        let error = module_snapshot::<()>(
+            deadline,
+            || panic!("expired snapshot must not start"),
+            || deadline,
+            |_| panic!("expired snapshot must not wait"),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn slow_bad_length_observation_cannot_restart_the_snapshot_budget() {
+        let started = Instant::now();
+        let elapsed = Cell::new(Duration::ZERO);
+        let error = module_snapshot::<()>(
+            started + MODULE_SNAPSHOT_WAIT,
+            || {
+                assert_eq!(elapsed.get(), Duration::ZERO);
+                elapsed.set(MODULE_SNAPSHOT_WAIT);
+                Err(io::Error::from_raw_os_error(ERROR_BAD_LENGTH as i32))
+            },
+            || started + elapsed.get(),
+            |_| panic!("an exhausted observation must not wait or retry"),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 }

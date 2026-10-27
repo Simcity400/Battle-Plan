@@ -327,8 +327,11 @@ impl Hooks {
                 watches.set_enabled(false);
             }
         }
-        let mut hooks: Vec<_> = self.hooks.iter_mut().map(|(_, hook)| hook.hook()).collect();
-        if !Hook::set_enabled_batch_attach_tracking_busy(&mut hooks, enabled).map_err(|cause| {
+        if !Hook::set_enabled_iter_attach_tracking_busy(
+            self.hooks.iter_mut().map(|(_, hook)| hook.hook()),
+            enabled,
+        )
+        .map_err(|cause| {
             let sites = MUTATIONS
                 .iter()
                 .map(|(site, _, _)| site.name)

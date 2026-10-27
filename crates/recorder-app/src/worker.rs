@@ -51,6 +51,7 @@ struct Inner {
     /// Exit after the Stop prompt that Quit opened is answered and carried out.
     quit_after_stop: bool,
     capturing: bool,
+    unloading: bool,
     /// A finished session's Saved or Discarded state stays until the panel has shown it.
     result: bool,
     /// A capture's failure stays until the panel has shown it.
@@ -379,7 +380,7 @@ impl Recorder {
             }
             // Start needs a game to attach to; Stop a recording to end.
             let menu = (
-                inner.game_running && !inner.capturing,
+                inner.game_running && !inner.capturing && !inner.unloading,
                 inner.capturing
                     && inner.snapshot.phase == Phase::Recording
                     && !inner.snapshot.stopping,
@@ -577,6 +578,16 @@ impl Recorder {
             if self.exit_requested() {
                 app.exit(0);
                 return;
+            }
+            {
+                let inner = self.lock();
+                if inner.unloading {
+                    let _ = self
+                        .wake
+                        .wait_timeout(inner, Duration::from_millis(100))
+                        .unwrap_or_else(|error| error.into_inner());
+                    continue;
+                }
             }
             let settings = RecorderSettings::load().unwrap_or_else(|error| {
                 eprintln!("Recorder settings could not be read: {error}");
@@ -870,6 +881,7 @@ impl Recorder {
             }
         };
         let started = Cell::new(false);
+        let finished = RefCell::new(None);
         let stage = |stage: Stage<'_>| match stage {
             Stage::Preparing => {}
             Stage::Recording {
@@ -892,6 +904,10 @@ impl Recorder {
                 inner.snapshot.progress = snapshot::saving_progress(records, inner.hours);
             }),
             Stage::SetAside { waiting, done } => self.set_aside_changed(app, waiting, done),
+            Stage::Finished { result } => {
+                finished.replace(Some(self.finish(app, result, started.get())));
+            }
+            Stage::Unloading(observation) => self.observe_unload(app, observation),
         };
         let recording = Recording {
             output: &root,
@@ -912,7 +928,9 @@ impl Recorder {
             names_wanted: &|| self.lock().panel_open,
         };
         let result = controller::record(pid, &recording, &self.control, &stage);
-        let mut ended = self.finish(app, result, started.get());
+        let mut ended = finished.into_inner().unwrap_or_else(|| {
+            self.finish(app, result.as_ref().map_err(String::as_str), started.get())
+        });
         if ended.rerouted {
             ended.handover = admission.handover.take();
         }
@@ -1042,13 +1060,13 @@ impl Recorder {
     fn finish(
         &self,
         app: &AppHandle,
-        result: Result<CaptureOutcome, String>,
+        result: Result<&CaptureOutcome, &str>,
         started: bool,
     ) -> Ended {
         let outcome = match result {
             Ok(outcome) => outcome,
             Err(error) => {
-                self.fail(app, error, started);
+                self.fail(app, error.to_owned(), started);
                 return Ended::held();
             }
         };
@@ -1143,6 +1161,26 @@ impl Recorder {
         ended
     }
 
+    fn observe_unload(&self, app: &AppHandle, observation: controller::UnloadObservation) {
+        self.update(app, |inner| inner.unloading = true);
+        let app_copy = app.clone();
+        let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
+        let spawned = std::thread::Builder::new()
+            .name("recorder-unload".into())
+            .spawn(move || {
+                let result = observation.finish();
+                recorder.update(&app_copy, |inner| unload_finished(inner, result));
+                recordings_changed(&app_copy);
+                recorder.wake.notify_all();
+            });
+        if let Err(error) = spawned {
+            self.update(app, |inner| unload_finished(inner, Err(format!(
+                "Collector unload observation could not start: {error}; quit the game before recording again"
+            ))));
+            self.wake.notify_all();
+        }
+    }
+
     fn fail(&self, app: &AppHandle, error: String, started: bool) {
         eprintln!("Recording: {error}");
         let problem = Problem {
@@ -1165,6 +1203,28 @@ impl Recorder {
     }
 }
 
+fn unload_finished(inner: &mut Inner, result: Result<(), String>) {
+    inner.unloading = false;
+    if let Err(error) = result {
+        let mut problem = inner
+            .snapshot
+            .problem
+            .clone()
+            .or_else(|| inner.sticky.clone())
+            .unwrap_or(Problem {
+                text: "Recording finished with a collector warning.".into(),
+                detail: String::new(),
+            });
+        if !problem.detail.is_empty() {
+            problem.detail.push('\n');
+        }
+        problem.detail.push_str(&error);
+        inner.snapshot.problem = Some(problem.clone());
+        inner.sticky = Some(problem);
+        inner.seen = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1172,6 +1232,45 @@ mod tests {
 
     const CAMPAIGN: &str = "00000000-0000-4000-8000-000000000000";
     const OTHER: &str = "00000000-0000-4000-8000-000000000001";
+
+    #[test]
+    fn unload_followup_keeps_saved_state_and_prior_failures_without_losing_record_requests() {
+        for warning in [false, true] {
+            let mut inner = Inner::default();
+            inner.snapshot.phase = Phase::Saved;
+            inner.snapshot.progress = None;
+            inner.result = true;
+            inner.unloading = true;
+            inner.record_requested = true;
+            if warning {
+                inner.snapshot.problem = Some(Problem {
+                    text: "Earlier capture failure".into(),
+                    detail: "synthetic drain failure".into(),
+                });
+            }
+            unload_finished(
+                &mut inner,
+                if warning {
+                    Err("collector remains loaded".into())
+                } else {
+                    Ok(())
+                },
+            );
+            assert!(!inner.unloading && !inner.capturing);
+            assert!(inner.record_requested && inner.result);
+            assert_eq!(inner.snapshot.phase, Phase::Saved);
+            assert_eq!(inner.snapshot.progress, None);
+            if warning {
+                let problem = inner.snapshot.problem.unwrap();
+                assert_eq!(problem.text, "Earlier capture failure");
+                assert!(problem.detail.contains("synthetic drain failure"));
+                assert!(problem.detail.contains("collector remains loaded"));
+                assert_eq!(inner.sticky.unwrap().detail, problem.detail);
+            } else {
+                assert!(inner.snapshot.problem.is_none());
+            }
+        }
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(

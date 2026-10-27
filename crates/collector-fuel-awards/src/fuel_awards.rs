@@ -1223,14 +1223,11 @@ impl Hooks {
         }
         let ready = match crate::hook::shared::attach_outcome() {
             Some(outcome) => outcome.map_err(|_| "fuel award tap publication failed")?,
-            None => {
-                let mut hooks =
-                    crate::hook::shared::publication_storage_attach(self.taps.len(), enabled)
-                        .map_err(|_| "fuel award hook family allocation failed")?;
-                hooks.extend(self.taps.iter_mut().map(Tap::publication_hook));
-                Hook::set_enabled_batch_attach(&mut hooks, enabled)
-                    .map_err(|_| "fuel award tap publication failed")?
-            }
+            None => Hook::set_enabled_iter_attach(
+                self.taps.iter_mut().map(Tap::publication_hook),
+                enabled,
+            )
+            .map_err(|_| "fuel award tap publication failed")?,
         };
         if ready {
             LOG.invalidate();

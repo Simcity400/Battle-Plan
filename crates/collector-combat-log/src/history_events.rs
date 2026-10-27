@@ -772,11 +772,12 @@ impl Hooks {
             return Err("combat log writer family unavailable".into());
         }
         // Publish as one family so a partial enable cannot certify history.
-        let mut refs: Vec<&mut Hook> = self.hooks.iter_mut().collect();
-        if let Some(tap) = self.tap.as_mut() {
-            refs.push(tap.publication_hook());
-        }
-        let complete = Hook::set_enabled_batch(&mut refs, enabled)?;
+        let complete = Hook::set_enabled_iter(
+            self.hooks
+                .iter_mut()
+                .chain(self.tap.iter_mut().map(Tap::publication_hook)),
+            enabled,
+        )?;
         if complete {
             WRITERS.enabled.store(enabled, SeqCst);
         }

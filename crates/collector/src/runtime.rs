@@ -213,14 +213,16 @@ pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
     let _bootstrap = crate::allocation::enter(crate::allocation::Phase::Bootstrap);
     crate::allocation::install_hooks();
     let witness = bootstrap_witness(module);
+    let mut spool_final = false;
     let result = match &witness {
         Ok((file, session, process_start)) => {
             crate::allocation::prepare(file, *session, *process_start);
-            run(module, *session, *process_start)
+            run(module, *session, *process_start, &mut spool_final)
         }
         Err(error) => Err(*error),
     };
     if let Err(error) = result
+        && !spool_final
         && !crate::allocation::failed()
         && let Ok(path) = module_path(module)
     {
@@ -595,6 +597,7 @@ fn run(
     module: HMODULE,
     prepared_session: u64,
     prepared_process_start: u64,
+    spool_final: &mut bool,
 ) -> Result<(), &'static str> {
     // Calibrate hook timing over the whole attachment, before any hook exists.
     crate::hook_timing::start();
@@ -1398,6 +1401,13 @@ fn run(
             None
         }
     };
+    let restoration = match crate::hook::restoration::Scratch::prepare(ranges.len()) {
+        Ok(scratch) => Some(scratch),
+        Err(error) => {
+            installation_error.get_or_insert(error);
+            None
+        }
+    };
     if crate::allocation::failed() {
         installation_error = Some("collector allocation failed before hooks");
     }
@@ -1639,6 +1649,7 @@ fn run(
     // restoring the hook and waiting for ACTIVE to reach zero; ordinary restore
     // keeps recording until every callback already in the relay has returned.
     let _teardown = crate::allocation::enter(crate::allocation::Phase::Teardown);
+    let _restoration = restoration.map(crate::hook::restoration::Scratch::enter);
     crate::allocation::attempted_hour(None);
     shared.cancel_buffer_wait.store(true, Ordering::Release);
     let decode_stopped_early = installation_error.is_none() && decode::worker_finished();
@@ -1740,6 +1751,7 @@ fn run(
     // Every round visits all unfinished families even if an earlier one refuses.
     // A damaged enabled patch still prevents unloading its relay and this DLL.
     let mut first_restore_error = None;
+    let mut restore_wait = RestoreWait::new(Instant::now());
     let restore_result = loop {
         // Keep invalidation published while any older native invocation can
         // still reach an observer post reader, even after its site was restored.
@@ -1822,7 +1834,9 @@ fn run(
         // Every unrestored family that takes part publishes under one census
         // and suspension (`hook::shared`); `restore_round` then applies and
         // logs each family's outcome, and publishes the others on their own.
-        let mut restore_round_shared = crate::hook::shared::Round::collect();
+        let mut restore_round_shared = (!crate::hook::restoration::active())
+            .then(crate::hook::shared::Round::collect)
+            .flatten();
         if let Some(round) = restore_round_shared.as_mut() {
             for family in RestoreFamily::ALL {
                 if family.shared() && !restored[family as usize] {
@@ -1836,15 +1850,7 @@ fn run(
             );
         }
         let restore = |family| {
-            let result = toggle(family);
-            let result = if result == Ok(false) && detach_started.elapsed() >= DETACH_BUDGET {
-                Err(mutation_detach_refusal(
-                    detach_started.elapsed(),
-                    |family| family.observer_state().0,
-                ))
-            } else {
-                result
-            };
+            let (result, refusal) = crate::hook::restoration::attempt(|| toggle(family));
             // Its count: the microseconds of its own checks and writes in the
             // shared suspension, when it took part (taken, so no other family
             // reads it).
@@ -1860,31 +1866,32 @@ fn run(
                 crate::hook::shared::take_reported_ticks()
                     .map(|ticks| ticks_to_micros(ticks, frequency)),
             );
+            if let Some(refusal) = refusal {
+                progress.step(format_args!("restore {family:?}: {refusal}"), None);
+            }
             if let Err(error) = result {
+                progress.step(format_args!("restore {family:?}: {error}"), None);
                 first_restore_error.get_or_insert(error);
             }
             result
         };
-        let result = restore_round(
+        let result = restore_wait.round(
             &mut restored,
             &mut previous_errors,
             observers_active,
             restore,
+            Instant::now,
         );
         drop(restore_round_shared);
         match result {
-            Ok(true) => break Ok(()),
-            Ok(false) => {
-                let Some(delay) =
-                    detach_retry_delay(detach_started.elapsed(), Duration::from_millis(100))
-                else {
-                    break Err(first_restore_error.unwrap_or_else(|| {
-                        mutation_detach_refusal(detach_started.elapsed(), |family| {
-                            family.observer_state().0
-                        })
-                    }));
-                };
-                std::thread::sleep(delay);
+            Ok(RestoreRound::Complete) => break Ok(()),
+            Ok(RestoreRound::Retry(delay)) => std::thread::sleep(delay),
+            Ok(RestoreRound::Stalled) => {
+                break Err(first_restore_error.unwrap_or_else(|| {
+                    mutation_detach_refusal(detach_started.elapsed(), |family| {
+                        family.observer_state().0
+                    })
+                }));
             }
             Err(error) => break Err(first_restore_error.unwrap_or(error)),
         }
@@ -1917,7 +1924,7 @@ fn run(
             &owned_workers,
             QuietPhase::Observers,
             &restored,
-            detach_started,
+            Instant::now(),
         )
     {
         progress.step("observers_refused", None);
@@ -1927,7 +1934,14 @@ fn run(
             (spool, status_writer)
         );
     }
-    progress.step("observers_quiet", None);
+    progress.step(
+        if hooks.restored {
+            "observers_quiet"
+        } else {
+            "observers_retained"
+        },
+        None,
+    );
     // Normal restoration also waits for callbacks and originals before release;
     // the pinned path retains their state after acquisition admission closes.
     shared.recording.store(false, Ordering::Release);
@@ -2003,13 +2017,20 @@ fn run(
             &[],
             QuietPhase::Release,
             &restored,
-            detach_started,
+            Instant::now(),
         )
     {
         progress.step("release_refused", None);
         retain_detach!(reason, spool_result.as_ref().err().copied(), ());
     }
-    progress.step("release_quiet", None);
+    progress.step(
+        if hooks.restored {
+            "release_quiet"
+        } else {
+            "release_retained"
+        },
+        None,
+    );
     if hooks.restored {
         // Spool/status readers joined and every family passed the final quiet check.
         if let Some(hooks) = experience_hooks.inner.as_mut() {
@@ -2106,12 +2127,17 @@ fn run(
         ),
         || {},
     );
-    progress.step("released", None);
+    progress.step(
+        if restore_result.is_ok() {
+            "released"
+        } else {
+            "retained"
+        },
+        None,
+    );
+    drop(_restoration);
     let drain_complete = spool_result.is_ok();
     if let Some(error) = installation_error {
-        add_terminal_error(&mut spool_result, error);
-    }
-    if let Err(error) = restore_result {
         add_terminal_error(&mut spool_result, error);
     }
     if !crate::allocation::failed() {
@@ -2120,6 +2146,7 @@ fn run(
             "state":if pinned { "pinned" } else { "detached" },"session":session_id,
             "process_start_time":process_start,"drain_complete":drain_complete,
             "error":spool_result.as_ref().err().copied(),
+            "warning":restore_result.err(),
             "decode_failure":decode::panic_failure(),
             "event_feed_failure":restore_result.is_err().then(crate::event_feed_observer::status),
             "installation_error":installation_error,
@@ -2156,9 +2183,14 @@ fn run(
     if restore_result.is_ok() {
         crate::worker_sampler::release();
     }
+    if let Err(error) = spool_result
+        && !crate::allocation::failed()
+    {
+        let _ = fs::write(dll_path.with_file_name("collector.error.txt"), error);
+    }
     progress.step("done", None);
-    // Closed before done, so the recorder may remove the session directory.
     drop(progress);
+    *spool_final = true;
     signal_done(output_lock, &done);
     spool_result
 }
@@ -3326,8 +3358,57 @@ fn mutation_detach_refusal(
         .unwrap_or("collector mutation entry restoration refused; collector retained")
 }
 
-// Native retry phases share the detach start and budget. Windows calls and
-// owned worker joins remain separate obligations; timeout never permits release.
+#[derive(Debug, PartialEq, Eq)]
+enum RestoreRound {
+    Complete,
+    Retry(Duration),
+    Stalled,
+}
+
+struct RestoreWait {
+    ready: usize,
+    progressed: Instant,
+}
+impl RestoreWait {
+    fn new(now: Instant) -> Self {
+        Self {
+            ready: 0,
+            progressed: now,
+        }
+    }
+    fn round(
+        &mut self,
+        restored: &mut [bool; RestoreFamily::ALL.len()],
+        previous_errors: &mut [bool; RestoreFamily::ALL.len()],
+        active: impl FnMut() -> bool,
+        restore: impl FnMut(RestoreFamily) -> Result<bool, &'static str>,
+        now: impl FnOnce() -> Instant,
+    ) -> Result<RestoreRound, &'static str> {
+        if restore_round(restored, previous_errors, active, restore)? {
+            Ok(RestoreRound::Complete)
+        } else {
+            Ok(match self.retry(now(), restored) {
+                Some(delay) => RestoreRound::Retry(delay),
+                None => RestoreRound::Stalled,
+            })
+        }
+    }
+    fn retry(
+        &mut self,
+        now: Instant,
+        restored: &[bool; RestoreFamily::ALL.len()],
+    ) -> Option<Duration> {
+        let ready = restored.iter().filter(|ready| **ready).count();
+        if ready > self.ready {
+            self.ready = ready;
+            self.progressed = now;
+        }
+        detach_retry_delay(
+            now.duration_since(self.progressed),
+            Duration::from_millis(100),
+        )
+    }
+}
 
 fn detach_retry_delay(elapsed: Duration, poll: Duration) -> Option<Duration> {
     DETACH_BUDGET
@@ -3376,27 +3457,33 @@ fn wait_quiet(
         {
             return Err(reason);
         }
-        if !observers_active()
-            && let Ok(mut threads) = Threads::open_excluding(excluded_threads)
-        {
-            // Snapshot/open may allocate. Only scalar counts and current IPs
-            // are consulted after suspension; no owner drops in this window.
-            let result = threads.suspend().and_then(|()| {
-                if observers_active() {
-                    Ok(false)
-                } else {
-                    threads.contains_ip(ranges).map(|present| !present)
+        if !observers_active() {
+            if let Some(result) =
+                crate::hook::restoration::quiet(ranges, excluded_threads, observers_active)
+            {
+                if result? {
+                    return Ok(());
                 }
-            });
-            if threads.resume().is_err() {
-                // Shared Threads::resume returns a failure only after every
-                // owned suspension is actually resumed or proved exited.
-                // Error history still refuses release; diagnostics now run
-                // outside the suspended interval and all roots are retained.
-                return Err("collector quiet thread resume refused; collector retained");
-            }
-            if result == Ok(true) {
-                return Ok(());
+            } else if let Ok(mut threads) = Threads::open_excluding(excluded_threads) {
+                // Snapshot/open may allocate. Only scalar counts and current IPs
+                // are consulted after suspension; no owner drops in this window.
+                let result = threads.suspend().and_then(|()| {
+                    if observers_active() {
+                        Ok(false)
+                    } else {
+                        threads.contains_ip(ranges).map(|present| !present)
+                    }
+                });
+                if threads.resume().is_err() {
+                    // Shared Threads::resume returns a failure only after every
+                    // owned suspension is actually resumed or proved exited.
+                    // Error history still refuses release; diagnostics now run
+                    // outside the suspended interval and all roots are retained.
+                    return Err("collector quiet thread resume refused; collector retained");
+                }
+                if result == Ok(true) {
+                    return Ok(());
+                }
             }
         }
         let Some(delay) = detach_retry_delay(started.elapsed(), Duration::from_millis(1)) else {
@@ -3409,6 +3496,168 @@ fn wait_quiet(
 #[cfg(test)]
 mod detach_policy_tests {
     use super::*;
+
+    #[test]
+    fn successful_restores_do_not_consume_a_refused_familys_retry_budget() {
+        let start = Instant::now();
+        let mut wait = RestoreWait::new(start);
+        let mut restored = [true; RestoreFamily::ALL.len()];
+        restored[RestoreFamily::EquipmentDestruction as usize] = false;
+        restored[RestoreFamily::WorldLifetime as usize] = false;
+        let first_pass = start + DETACH_BUDGET + Duration::from_secs(1);
+        assert!(wait.retry(first_pass, &restored).is_some());
+        assert!(wait.retry(first_pass + DETACH_BUDGET, &restored).is_none());
+        restored[RestoreFamily::EquipmentDestruction as usize] = true;
+        assert!(wait.retry(first_pass + DETACH_BUDGET, &restored).is_some());
+    }
+
+    #[test]
+    fn slow_restore_rounds_credit_progress_before_timing_out_busy_families() {
+        let start = Instant::now();
+        let mut wait = RestoreWait::new(start);
+        let mut restored = [false; RestoreFamily::ALL.len()];
+        let mut previous_errors = [false; RestoreFamily::ALL.len()];
+        let first = RestoreFamily::EquipmentDestruction;
+        let second = RestoreFamily::BuildingBombing;
+        let slow_round = start + DETACH_BUDGET + Duration::from_secs(1);
+        for (now, first_ready) in [(slow_round, false), (slow_round + DETACH_BUDGET, true)] {
+            assert_eq!(
+                wait.round(
+                    &mut restored,
+                    &mut previous_errors,
+                    || false,
+                    |family| Ok(family != second && (family != first || first_ready)),
+                    || now,
+                ),
+                Ok(RestoreRound::Retry(Duration::from_millis(100)))
+            );
+            assert!(previous_errors.iter().all(|error| !error));
+        }
+        let last_progress = slow_round + DETACH_BUDGET;
+        assert_eq!(
+            wait.round(
+                &mut restored,
+                &mut previous_errors,
+                || false,
+                |_| Ok(false),
+                || last_progress + DETACH_BUDGET,
+            ),
+            Ok(RestoreRound::Stalled)
+        );
+        assert_eq!(
+            wait.round(
+                &mut restored,
+                &mut previous_errors,
+                || false,
+                |_| Ok(true),
+                || last_progress + DETACH_BUDGET,
+            ),
+            Ok(RestoreRound::Complete)
+        );
+        assert!(restored.iter().all(|ready| *ready));
+    }
+
+    #[test]
+    fn persistent_restore_errors_are_not_hidden_by_progress_in_the_same_round() {
+        let start = Instant::now();
+        let mut wait = RestoreWait::new(start);
+        let mut restored = [false; RestoreFamily::ALL.len()];
+        let mut previous_errors = [false; RestoreFamily::ALL.len()];
+        for (round, expected) in [
+            Ok(RestoreRound::Retry(Duration::from_millis(100))),
+            Err("bytes differ"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                wait.round(
+                    &mut restored,
+                    &mut previous_errors,
+                    || false,
+                    |family| match family {
+                        RestoreFamily::Hourly => Err("bytes differ"),
+                        RestoreFamily::Portrait => Ok(round != 0),
+                        _ => Ok(true),
+                    },
+                    || start + DETACH_BUDGET * (round as u32 + 1),
+                ),
+                expected
+            );
+        }
+        assert!(restored[RestoreFamily::Portrait as usize]);
+        assert!(previous_errors[RestoreFamily::Hourly as usize]);
+    }
+
+    #[test]
+    fn terminal_equipment_restore_reaches_unload_with_persistent_allocator_refusal() {
+        const CHILD: &str = "BATTLE_PLAN_TERMINAL_EQUIPMENT_RESTORE";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "runtime::detach_policy_tests::terminal_equipment_restore_reaches_unload_with_persistent_allocator_refusal", "--nocapture"])
+                .env(CHILD, "1").output().unwrap();
+            assert!(
+                output.status.success(),
+                "restore child failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        unsafe extern "system" fn target() -> usize {
+            7
+        }
+        unsafe extern "system" fn callback() -> usize {
+            19
+        }
+        let code = crate::hook::TestCode::new();
+        let make = |offset| {
+            let (site, bytes) = code.stub(offset, target as *const () as usize);
+            unsafe { Hook::new(site, callback as *const () as usize, bytes) }.unwrap()
+        };
+        let hooks = crate::equipment_destruction::synthetic_restore_hooks(make(0), make(64));
+        let mut hooks =
+            crate::hook_failures::FamilyHooks::new(RestoreFamily::EquipmentDestruction, Ok(hooks))
+                .unwrap();
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        let ranges = hooks.executable_ranges().collect::<Vec<_>>();
+        let scratch = crate::hook::restoration::Scratch::prepare(2)
+            .unwrap()
+            .enter();
+        crate::allocation::install_hooks();
+        crate::allocation::fail(
+            crate::allocation::Phase::Extended,
+            crate::allocation::Code::Reserve,
+        );
+        let shared = AtomicPtr::new(std::ptr::NonNull::<Shared>::dangling().as_ptr());
+        let unloaded = std::cell::Cell::new(false);
+        let (restored, quiet, exit) = crate::test_support::with_allocations_denied(|| {
+            let restored = hooks.set_enabled(false);
+            let quiet = crate::hook::restoration::quiet(&ranges, &[], || false);
+            if restored != Ok(true) || quiet != Some(Ok(true)) {
+                std::mem::forget(hooks);
+                return (restored, quiet, 1);
+            }
+            HookLifetime {
+                restored: true,
+                shared: &shared,
+            }
+            .release(hooks, || {});
+            let exit = finish_worker(&shared, (), |()| {
+                unloaded.set(true);
+                0
+            });
+            drop(scratch);
+            (restored, quiet, exit)
+        });
+        assert_eq!(restored, Ok(true));
+        assert_eq!(quiet, Some(Ok(true)));
+        assert_eq!(exit, 0);
+        assert!(unloaded.get());
+        assert!(shared.load(Ordering::Acquire).is_null());
+        assert!(crate::allocation::failed());
+        assert_eq!(crate::test_support::ATTEMPTS.load(Ordering::Relaxed), 0);
+    }
 
     #[test]
     fn restoration_refusal_still_visits_later_families_and_keeps_progress() {
@@ -4276,10 +4525,8 @@ fn spool_status<'a>(
         dropped_frames: shared.dropped.load(Ordering::Relaxed),
         startup_unattributed_callbacks: startup_unknown,
         drain_complete,
-        warning,
-        error: error
-            .or(teardown.restoration_error)
-            .or(teardown.installation_error),
+        warning: warning.or(teardown.restoration_error),
+        error: error.or(teardown.installation_error),
         original_bytes_verified: terminal.then_some(!pinned),
         active_callbacks: (terminal && !pinned).then_some(0),
         collector_pinned: terminal.then_some(pinned),
@@ -8505,6 +8752,90 @@ mod tests {
         assert!(status.get("warning").is_none());
         assert!(status.get("error").is_none());
         drop(writer);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn restoration_only_status_warns_without_hiding_real_drain_or_capture_errors() {
+        let session = SessionStart {
+            id: 1,
+            process_id: 100,
+            process_start_time: 1000,
+            qpc_frequency: 1,
+            sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
+            capture_mode: replay_data::identity::CaptureMode::Full,
+            identity: replay_data::identity::Identity {
+                game_version: "fixture".into(),
+                exe_hash: [1; 32],
+                exe_size: 1,
+                vanilla_hash: [2; 32],
+                dlc: Vec::new(),
+                mods: Vec::new(),
+                coverage_policy: 1,
+                language: "english".into(),
+                recorder_version: "fixture".into(),
+                collector_hash: [3; 32],
+                verification: replay_data::identity::Verification::Unchecked,
+            },
+        };
+        let directory = std::env::temp_dir().join(format!(
+            "hoi4-restoration-warning-status-{}",
+            std::process::id()
+        ));
+        let processor =
+            Processor::new(&directory, PreparedCampaigns::default(), session.clone()).unwrap();
+        let shared = Shared::new(0, 0, 1);
+        shared.recording.store(false, Ordering::Release);
+        let writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
+        let work = WorkerWork::new();
+        let handle = writer.handle();
+        for (warning, error, installation_error, drain_complete) in [
+            (None, None, None, true),
+            (Some("earlier write retried"), None, None, true),
+            (None, Some("final spool sync failed"), None, false),
+            (None, Some("game-thread acquisition failed"), None, false),
+            (None, None, Some("hook installation failed"), true),
+        ] {
+            let status: Value = serde_json::from_slice(
+                &crate::status::serialize(
+                    &spool_status(
+                        &processor,
+                        &shared,
+                        &session,
+                        &work,
+                        &handle,
+                        "detached",
+                        0,
+                        warning,
+                        error,
+                        drain_complete,
+                        true,
+                        TeardownStatus {
+                            restoration_error: Some("synthetic hook stayed busy"),
+                            installation_error,
+                        },
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(status["state"], "pinned");
+            assert_eq!(status["collector_pinned"], true);
+            assert_eq!(status["recording_stopped"], true);
+            assert_eq!(status["spool_closed"], true);
+            assert_eq!(status["original_bytes_verified"], false);
+            assert!(status.get("active_callbacks").is_none());
+            assert_eq!(status["drain_complete"], drain_complete);
+            assert_eq!(status["restoration_error"], "synthetic hook stayed busy");
+            assert_eq!(
+                status["warning"],
+                warning.unwrap_or("synthetic hook stayed busy")
+            );
+            assert_eq!(status["error"], json!(error.or(installation_error)));
+        }
+        drop(writer);
+        drop(processor);
         fs::remove_dir_all(directory).unwrap();
     }
 

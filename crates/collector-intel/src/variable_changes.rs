@@ -744,14 +744,16 @@ impl Hooks {
         // other families in a runtime round (`hook::shared`): a thread at any
         // of its sites, or in a tap, holds every site back until the next
         // attempt.
-        let mut family: Vec<_> = self
-            .hooks
-            .iter_mut()
-            .chain(self.taps.iter_mut().map(Tap::publication_hook))
-            .collect();
-        if !Hook::set_enabled_batch_attach(&mut family, enabled).map_err(|_| {
-            family
-                .iter()
+        if !Hook::set_enabled_iter_attach(
+            self.hooks
+                .iter_mut()
+                .chain(self.taps.iter_mut().map(Tap::publication_hook)),
+            enabled,
+        )
+        .map_err(|_| {
+            self.hooks
+                .iter_mut()
+                .chain(self.taps.iter_mut().map(Tap::publication_hook))
                 .find_map(|hook| hook.snapshot_failure())
                 .unwrap_or("Script variables / delayed pass publication failed")
         })? {

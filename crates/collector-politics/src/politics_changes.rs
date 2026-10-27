@@ -3024,19 +3024,12 @@ impl Hooks {
         }
         let outcome = match crate::hook::shared::attach_outcome() {
             Some(outcome) => outcome,
-            None => {
-                let mut family = crate::hook::shared::publication_storage_attach(
-                    self.entries.len() + self.taps.len(),
-                    enabled,
-                )
-                .map_err(|_| "politics hook family allocation failed")?;
-                family.extend(
-                    self.entries
-                        .iter_mut()
-                        .chain(self.taps.iter_mut().map(Tap::publication_hook)),
-                );
-                Hook::set_enabled_batch_attach(&mut family, enabled)
-            }
+            None => Hook::set_enabled_iter_attach(
+                self.entries
+                    .iter_mut()
+                    .chain(self.taps.iter_mut().map(Tap::publication_hook)),
+                enabled,
+            ),
         };
         if !outcome.map_err(|reason| {
             let _ = UNHOOKED.set(reason);

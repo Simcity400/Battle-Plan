@@ -364,13 +364,14 @@ impl Hooks {
         if !enabled {
             self.observe(false);
         }
-        let mut hooks = self
-            .taps
-            .iter_mut()
-            .map(Tap::publication_hook)
-            .chain(self.methods.iter_mut())
-            .collect::<Vec<_>>();
-        let ready = Hook::set_enabled_batch_attach(&mut hooks, enabled).map_err(|reason| {
+        let ready = Hook::set_enabled_iter_attach(
+            self.taps
+                .iter_mut()
+                .map(Tap::publication_hook)
+                .chain(self.methods.iter_mut()),
+            enabled,
+        )
+        .map_err(|reason| {
             hook_failure(
                 "publication failed",
                 SITES

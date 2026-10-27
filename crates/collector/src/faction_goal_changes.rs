@@ -174,8 +174,11 @@ impl Hooks {
         if !enabled {
             WATCHES.set_enabled(false);
         }
-        let mut hooks: Vec<_> = self.hooks.iter_mut().map(OwnedHook::hook).collect();
-        if !Hook::set_enabled_batch_attach_tracking_busy(&mut hooks, enabled).map_err(|cause| {
+        if !Hook::set_enabled_iter_attach_tracking_busy(
+            self.hooks.iter_mut().map(OwnedHook::hook),
+            enabled,
+        )
+        .map_err(|cause| {
             let sites = MUTATIONS
                 .iter()
                 .map(|(site, _, _)| site.name)
@@ -185,7 +188,7 @@ impl Hooks {
         })? {
             return Ok(false);
         }
-        WATCHES.set_enabled(enabled && hooks.len() == SITES);
+        WATCHES.set_enabled(enabled && self.hooks.len() == SITES);
         Ok(true)
     }
     pub fn busy_sites(&mut self) -> Vec<&'static str> {

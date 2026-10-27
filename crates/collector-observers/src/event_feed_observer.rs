@@ -1439,13 +1439,16 @@ impl Hooks {
             held.owner.revoke_world();
         }
         let Held { hooks, taps, .. } = &mut **held;
-        let mut family: Vec<_> = hooks
-            .iter_mut()
-            .chain(taps.iter_mut().map(Tap::publication_hook))
-            .collect();
-        let ready = Hook::set_enabled_batch_attach(&mut family, enabled).map_err(|cause| {
-            let label = family
-                .iter()
+        let ready = Hook::set_enabled_iter_attach(
+            hooks
+                .iter_mut()
+                .chain(taps.iter_mut().map(Tap::publication_hook)),
+            enabled,
+        )
+        .map_err(|cause| {
+            let label = hooks
+                .iter_mut()
+                .chain(taps.iter_mut().map(Tap::publication_hook))
                 .find_map(|hook| hook.snapshot_failure())
                 .unwrap_or("Event feed / action, registry, decision store and pass family");
             crate::script_event_observer::terminal_hook_failure(label, "publication", cause)

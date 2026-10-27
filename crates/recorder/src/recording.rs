@@ -945,9 +945,14 @@ pub enum Stage<'a> {
         /// now, by campaign, while asked for; one not known is left out.
         names: &'a BTreeMap<String, String>,
     },
-    /// Collector absence or game exit is proven and the spool is being
-    /// finalized. `records` counts finalization work done so far.
+    /// The spool is final; `records` counts finalization work done so far.
     Saving { records: u64 },
+    /// Published data is ready for the user, independently of DLL unload.
+    Finished {
+        result: Result<&'a CaptureOutcome, &'a str>,
+    },
+    /// Observe unload separately after showing the saved result.
+    Unloading(UnloadObservation),
     /// Campaigns set aside: those waiting, when that changed, and what was done since.
     SetAside {
         waiting: Option<&'a [Waiting]>,
@@ -1224,43 +1229,76 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
                     session.display()
                 ));
             }
-            let (process_exited, expected) = ensure_finalizable(&session)?;
+            let (process, expected) = ensure_finalizable(&session)?;
+            let dll = session.join("bin/collector.dll");
+            let process_exited = CollectorPresence::observe(process.as_ref(), &dll).process_exited;
+            let refresh = || CollectorPresence::wait(process.as_ref(), &dll);
             let _lock = finalization_lock(&options.output)?;
-            if let Some(witness) = replay_io::read_failure_witness(&session)? {
-                if witness.session != expected.id
-                    || witness.process_start_time != expected.process_start_time
-                {
-                    return Err("collector failure witness belongs to a different process session; spool retained".into());
-                }
-                return finalize_failed_session(
-                    &session,
-                    &options.output,
-                    &witness,
-                    process_exited,
-                );
-            }
-            finalize_cli_session(&session, &options.output, process_exited)
+            let terminal = terminal_outcome(
+                &session,
+                expected.id,
+                expected.process_start_time,
+                false,
+                process_exited,
+                true,
+            );
+            finalize_cli_session(&session, &options.output, terminal, refresh)
         }
         _ => Err(usage()),
     }
 }
 
-fn finalize_cli_session(session: &Path, output: &Path, process_exited: bool) -> Result<(), String> {
-    let finalized = replay_io::finalize_session_outcome(session, output)?;
+fn finalize_cli_session(
+    session: &Path,
+    output: &Path,
+    mut terminal: TerminalOutcome,
+    refresh: impl FnOnce() -> CollectorPresence,
+) -> Result<(), String> {
+    if !terminal.recovery_allowed {
+        return Err(terminal.issues.join("; "));
+    }
+    if let Some(witness) = &terminal.witness {
+        publish_failure_status(session, witness)?;
+    }
+    let finalized = match replay_io::finalize_session_outcome(session, output) {
+        Ok(finalized) => finalized,
+        Err(error) => {
+            terminal
+                .issues
+                .push(format!("replay finalization failed: {error}"));
+            replay_io::Finalized::default()
+        }
+    };
+    terminal.issues.extend(
+        finalized
+            .errors
+            .iter()
+            .map(|error| format!("replay finalization failed: {error}")),
+    );
     complete_cli_finalization(
         session,
         output,
         &finalized,
         json!({
-            "detach_requested": false, "detached": !process_exited, "process_exited": process_exited,
-            "partial": !finalized.errors.is_empty(), "issues": finalized.errors,
+            "detach_requested": terminal.witness.is_some(),
+            "drain_complete": terminal.drain_complete,
+            "capture_failed": terminal.capture_failed,
+            "failure_code": terminal.witness.as_ref().map(|_| "allocation_failed"),
+            "failed_hour": terminal.witness.as_ref().and_then(|witness| witness.failed_hour),
+            "partial": !terminal.issues.is_empty(), "issues": terminal.issues,
+            "warnings": terminal.warnings,
             "omitted": finalized.omitted.iter().map(Omission::to_json).collect::<Vec<_>>(),
         }),
+        refresh,
     )?;
-    if finalized.errors.is_empty() {
+    if terminal.issues.is_empty() {
         Ok(())
     } else {
-        Err(finalized.errors.join("\n"))
+        Err(format!(
+            "recording completion is partial: {}; spool retained at {}",
+            terminal.issues.join("; "),
+            session.display()
+        ))
     }
 }
 
@@ -1269,7 +1307,10 @@ fn complete_cli_finalization(
     output: &Path,
     finalized: &replay_io::Finalized,
     details: Value,
+    refresh: impl FnOnce() -> CollectorPresence,
 ) -> Result<(), String> {
+    let _lock = completion_lock(session)?;
+    let presence = refresh();
     let path = waiting_record(session);
     let mut completed = if path.exists() {
         read_status(&path).ok_or_else(|| failure_text(&path, "unreadable; spool retained"))?
@@ -1312,57 +1353,12 @@ fn complete_cli_finalization(
     completed["replays"] = json!(replays);
     completed["target"] = json!(output);
     completed["waiting"] = json!(waiting);
-    replay_io::write_session_end(session, output, "completed.json", &completed)?;
+    publish_completion(session, output, completed, presence)?;
     if session.join(WAITING_FILE).exists() {
         fs::remove_file(session.join(WAITING_FILE))
             .map_err(|error| failure_text(&session.join(WAITING_FILE), error))?;
     }
     Ok(())
-}
-
-/// `finalize` of a session whose collector failed: publish what recovery
-/// allows, then record the partial completion. A Battle Plan Recorder session's
-/// admission record is never rewritten here, so repeating it publishes the
-/// same admitted loads.
-fn finalize_failed_session(
-    session: &Path,
-    output: &Path,
-    witness: &TerminalWitness,
-    process_exited: bool,
-) -> Result<(), String> {
-    publish_failure_status(session, witness)?;
-    let mut issues = vec!["collector allocation failed".to_owned()];
-    let finalized = match replay_io::finalize_session_outcome(session, output) {
-        Ok(finalized) => finalized,
-        Err(error) => {
-            issues.push(format!("replay finalization failed: {error}"));
-            replay_io::Finalized::default()
-        }
-    };
-    issues.extend(
-        finalized
-            .errors
-            .iter()
-            .map(|error| format!("replay finalization failed: {error}")),
-    );
-    let omitted: Vec<_> = finalized.omitted.iter().map(Omission::to_json).collect();
-    complete_cli_finalization(
-        session,
-        output,
-        &finalized,
-        json!({
-            "replays":finalized.replays,"detach_requested":true,"detached":!process_exited,
-            "process_exited":process_exited,"drain_complete":witness.drain_complete,
-            "capture_failed":true,"failure_code":"allocation_failed",
-            "failed_hour":witness.failed_hour,"partial":true,
-            "issues":issues,"warnings":[],"omitted":omitted,
-        }),
-    )?;
-    Err(format!(
-        "recording completion is partial: {}; spool retained at {}",
-        issues.join("; "),
-        session.display()
-    ))
 }
 
 /// `inspect <replay> --characters <substring> --hour <n> --branch <id>`, the
@@ -1404,6 +1400,8 @@ pub(crate) const TWO_GAMES: &str =
 pub(crate) const UNSUPPORTED_BUILD: &str = "unsupported game build";
 pub(crate) const COLLECTOR_LOADED: &str =
     "collector.dll is already loaded in this process; detach its recorder first";
+const COLLECTOR_UNLOAD_WARNING: &str =
+    "collector unload is unconfirmed; quit the game before recording again";
 
 pub(crate) fn checked_single_game() -> Result<Option<u32>, String> {
     match windows::games()?.as_slice() {
@@ -1438,7 +1436,13 @@ fn record(options: Options) -> Result<(), String> {
             std::thread::sleep(Duration::from_secs(2));
             continue;
         };
-        let outcome = capture(pid, &cli_capture(&options, &user), &CONSOLE, &|_| {})?;
+        let outcome = capture(pid, &cli_capture(&options, &user), &CONSOLE, &|stage| {
+            if let Stage::Unloading(observation) = stage {
+                if let Err(error) = observation.finish() {
+                    eprintln!("Collector warning: {error}");
+                }
+            }
+        })?;
         if outcome.detach_requested || options.once || CONSOLE.stopping() {
             return Ok(());
         }
@@ -1700,14 +1704,13 @@ pub(crate) fn capture(
     let game_version = PINNED_BUILD
         .read_version_banner(&mut executable)
         .map_err(|e| format!("game version text: {e}"))?;
-    if windows::modules(pid)?.iter().any(|module| {
+    let collector_loaded = windows::modules(pid)?.iter().any(|module| {
         module
             .path
             .file_name()
             .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("collector.dll"))
-    }) {
-        return Err(COLLECTOR_LOADED.into());
-    }
+    });
+    require_collector_absent(Some(collector_loaded))?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -2098,22 +2101,13 @@ pub(crate) fn capture(
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        while collector_present(&process, &dll)? {
-            if let Some(end) = wait.ended(Instant::now(), collector_stamp(&directory)) {
-                return Err(format!(
-                    "collector signaled done but remains loaded {}; spool retained and not finalized",
-                    end.describe(&directory)
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
         if let Some(summary) = step_summary(&directory, "detach_requested", "done") {
             println!("Collector detach {summary}");
         }
     }
-    // The collector can fail while draining, after signaling was requested. Its
-    // files become terminal evidence only after unload or process termination.
+    // Done follows joined spool/status writers and release of the collector's output lock.
     let process_exited = process.handle.signaled()?;
+    let spool_final = process_exited || done.handle.signaled()?;
     print_status(&status_path);
     requested_detach |= control.stopping() || detach.handle.signaled()?;
     if requested_detach && !stop_observed {
@@ -2144,89 +2138,20 @@ pub(crate) fn capture(
                 .and_then(|status| status["campaign"].as_str().map(str::to_owned))
                 .filter(|campaign| replay_data::identity::is_campaign_uuid(campaign.as_bytes()))
         });
-    let discarding = control.discarding();
-    let spooled = replay_io::spooled_campaigns(&directory)?;
-    let mut set_aside_unsaved = false;
-    for campaign in &spooled {
-        if Some(campaign) != current.as_ref() {
-            set_aside_unsaved |=
-                !replay_io::unsaved_segments(&directory.join(campaign))?.is_empty();
-        }
-    }
-    // Another campaign the session admitted may still save the hours it continues.
-    let others_admitted = admit.is_some()
-        && admission
-            .admitted
-            .loads
-            .keys()
-            .any(|campaign| Some(campaign) != current.as_ref());
-    if discarding && (set_aside_unsaved || others_admitted) {
-        // Discard drops the campaign in progress; the others keep theirs.
-        if let Some(current) = current.as_ref().filter(|current| spooled.contains(current)) {
-            println!("Discarding campaign {current} of this session.");
-            replay_io::discard_checkpoints(&directory, current)?;
-            replay_io::discard_unsaved(&directory, current)?;
-        }
-    } else if discarding {
-        // Published checkpoint hours stay; only this session's unsaved hours are discarded.
-        for campaign in &spooled {
-            replay_io::discard_checkpoints(&directory, campaign)?;
-        }
-        if process_exited {
-            println!("Game process exited; discarding this session.");
-        } else {
-            println!(
-                "Collector absence confirmed in the running game process; discarding this session."
-            );
-        }
-        replay_io::write_session_end(
-            &directory,
-            target,
-            "completed.json",
-            &json!({
-                "replays":[],"discarded":true,"detach_requested":requested_detach,
-                "detached":!process_exited,"process_exited":process_exited,
-                "partial":false,"issues":[],"warnings":[],
-            }),
-        )?;
-        remove_active(&active, &directory)?;
-        discard_session(&directory)?;
-        return Ok(CaptureOutcome {
-            detach_requested: requested_detach,
-            process_exited,
-            replays: Vec::new(),
-            discarded: true,
-            rerouted,
-            omitted: Vec::new(),
-            waiting: Vec::new(),
-            unrenamed: Vec::new(),
-        });
-    }
-    // Saving, with the game no longer captured: a load that recorded and ended
-    // between polls (the game closing, or Stop) is asked about now by the same
-    // rule, so a wanted load is never left out for being brief.
-    if let Some(admit) = &admit_staged
-        && let Err(error) = admission.check_spooled(admit)
-    {
-        admission_failures.push(error);
-    }
+    let _lock = finalization_lock(target)?;
     let mut outcome = terminal_outcome(
         &directory,
         session.id,
         session.process_start_time,
         requested_detach,
         process_exited,
+        spool_final,
     );
     outcome.issues.extend(
         admission_failures
-            .into_iter()
+            .drain(..)
             .map(|error| format!("a load could not be admitted, so it is not published: {error}")),
     );
-    if process_exited {
-        println!("Game process exited; recovering the flushed spool.");
-    } else {
-        println!("Collector absence confirmed in the running game process.");
-    }
     for warning in &outcome.warnings {
         eprintln!("Collector warning: {warning}");
     }
@@ -2251,6 +2176,84 @@ pub(crate) fn capture(
             .issues
             .push(format!("incomplete status publication failed: {error}"));
     }
+    let discarding = control.discarding();
+    let spooled = replay_io::spooled_campaigns(&directory)?;
+    let mut set_aside_unsaved = false;
+    for campaign in &spooled {
+        if Some(campaign) != current.as_ref() {
+            set_aside_unsaved |=
+                !replay_io::unsaved_segments(&directory.join(campaign))?.is_empty();
+        }
+    }
+    // Another campaign the session admitted may still save the hours it continues.
+    let others_admitted = admit.is_some()
+        && admission
+            .admitted
+            .loads
+            .keys()
+            .any(|campaign| Some(campaign) != current.as_ref());
+    if discarding && (set_aside_unsaved || others_admitted) {
+        // Discard drops the campaign in progress; the others keep theirs.
+        if let Some(current) = current.as_ref().filter(|current| spooled.contains(current)) {
+            println!("Discarding campaign {current} of this session.");
+            if outcome.issues.is_empty() {
+                replay_io::discard_checkpoints(&directory, current)?;
+                replay_io::discard_unsaved(&directory, current)?;
+            }
+        }
+    } else if discarding {
+        // Published checkpoint hours stay; only this session's unsaved hours are discarded.
+        if outcome.issues.is_empty() {
+            for campaign in &spooled {
+                replay_io::discard_checkpoints(&directory, campaign)?;
+            }
+        }
+        if process_exited {
+            println!("Game process exited; discarding this session.");
+        } else {
+            println!("Collector spool closed; discarding this session's unsaved hours.");
+        }
+        return finish_capture(
+            &directory,
+            target,
+            &active,
+            &session,
+            &dll,
+            process_exited,
+            discarded_completion(&outcome, requested_detach),
+            capture_result(
+                &directory,
+                &outcome,
+                CaptureOutcome {
+                    detach_requested: requested_detach,
+                    process_exited,
+                    discarded: true,
+                    rerouted,
+                    ..CaptureOutcome::default()
+                },
+            ),
+            stage,
+            || None,
+        );
+    }
+    // Saving, with the game no longer captured: a load that recorded and ended
+    // between polls (the game closing, or Stop) is asked about now by the same
+    // rule, so a wanted load is never left out for being brief.
+    if let Some(admit) = &admit_staged
+        && let Err(error) = admission.check_spooled(admit)
+    {
+        admission_failures.push(error);
+    }
+    outcome.issues.extend(
+        admission_failures
+            .into_iter()
+            .map(|error| format!("a load could not be admitted, so it is not published: {error}")),
+    );
+    if process_exited {
+        println!("Game process exited; recovering the flushed spool.");
+    } else {
+        println!("Collector spool closed; finalizing the committed prefix.");
+    }
     let auto = auto_save.is_none_or(|auto_save| auto_save());
     let destination = |campaign: &str| {
         if saved_at_end(
@@ -2269,7 +2272,6 @@ pub(crate) fn capture(
     };
     let spooled = replay_io::spooled_campaigns(&directory)?;
     let admitted = admit.is_some().then_some(&admission.admitted);
-    let _lock = finalization_lock(target)?;
     let recovery_allowed = outcome.recovery_allowed;
     // A campaign without an admitted load is only reported left out: it neither saves nor waits.
     let saving_now = |campaign: &str| {
@@ -2334,30 +2336,31 @@ pub(crate) fn capture(
         if continued.is_empty() {
             println!("Nothing was recorded in this session.");
         }
-        replay_io::write_session_end(
+        return finish_capture(
             &directory,
             target,
-            "completed.json",
-            &json!({
+            &active,
+            &session,
+            &dll,
+            process_exited,
+            json!({
                 "replays":continued,"nothing_recorded":continued.is_empty(),
                 "discarded_campaign":current.as_ref().filter(|_| discarding),
                 "detach_requested":requested_detach,
-                "detached":!process_exited,"process_exited":process_exited,
                 "drain_complete":outcome.drain_complete,"capture_failed":false,
                 "partial":false,"issues":[],"warnings":outcome.warnings,
             }),
-        )?;
-        remove_active(&active, &directory)?;
-        return Ok(CaptureOutcome {
-            detach_requested: requested_detach,
-            process_exited,
-            replays: continued,
-            discarded: discarding,
-            rerouted,
-            omitted: Vec::new(),
-            waiting: Vec::new(),
-            unrenamed: Vec::new(),
-        });
+            Ok(CaptureOutcome {
+                detach_requested: requested_detach,
+                process_exited,
+                replays: continued,
+                discarded: discarding,
+                rerouted,
+                ..CaptureOutcome::default()
+            }),
+            stage,
+            || None,
+        );
     }
     // Hours behind older ones that could not be saved stay in the spool, waiting with them.
     let destination = |campaign: &str| {
@@ -2436,8 +2439,6 @@ pub(crate) fn capture(
         "discarded_campaign":current.as_ref().filter(|_| discarding),
         "omitted":omitted.iter().map(Omission::to_json).collect::<Vec<_>>(),
         "detach_requested":requested_detach,
-        "detached":!process_exited,
-        "process_exited":process_exited,
         "drain_complete":outcome.drain_complete,
         "capture_failed":outcome.capture_failed,
         "failure_code":outcome.witness.as_ref().map(|_| "allocation_failed"),
@@ -2446,47 +2447,51 @@ pub(crate) fn capture(
         "issues":outcome.issues,
         "warnings":outcome.warnings,
     });
-    replay_io::write_session_end(&directory, target, "completed.json", &completed)?;
-    // The completion record lists them now.
-    let _ = fs::remove_file(directory.join(WAITING_FILE));
-    remove_active(&active, &directory)?;
-    let seconds = |duration: Option<Duration>| duration.map(|duration| duration.as_secs_f64());
-    let phases = packing
-        .as_ref()
-        .map(|packing| packing.timings())
-        .unwrap_or([None; 5]);
-    let diagnostics = json!({
-        "save_ready": outcome.issues.is_empty(),
-        "stop_to_save_ready_s": outcome.issues.is_empty().then(|| counter_seconds(stop_qpc, session.qpc_frequency)).flatten(),
-        "detach_s": detach_seconds, "join_s": join_seconds,
-        "drain_s": seconds(phases[0]), "pack_s": seconds(phases[1]),
-        "write_s": seconds(phases[2]), "readback_s": seconds(phases[3]),
-        "publication_s": seconds(phases[4]),
-        "machine_cpu_busy_percent": system_busy(stop_load),
-        "phase_accounting": "coordinator wall intervals after promotion; detach and join overlap packing; unobserved phases are null",
-        "scope": "normal save; continue-a-saved-campaign staging and holds proof are not covered by the 30 s target",
-    });
-    println!("Stop to save-ready: {diagnostics}");
-    if let Err(error) = write_json(&directory.join("finalization-status.json"), &diagnostics) {
-        eprintln!("Finalization diagnostics unavailable: {error}");
-    }
-    if !outcome.issues.is_empty() {
-        return Err(format!(
-            "recording completion is partial: {}; recoverable spool retained at {}",
-            outcome.issues.join("; "),
-            directory.display()
-        ));
-    }
-    Ok(CaptureOutcome {
-        detach_requested: requested_detach,
+    let result = capture_result(
+        &directory,
+        &outcome,
+        CaptureOutcome {
+            detach_requested: requested_detach,
+            process_exited,
+            replays: finalized,
+            discarded: discarding,
+            rerouted,
+            omitted,
+            waiting: waiting.into_iter().map(|(campaign, _)| campaign).collect(),
+            unrenamed,
+        },
+    );
+    finish_capture(
+        &directory,
+        target,
+        &active,
+        &session,
+        &dll,
         process_exited,
-        replays: finalized,
-        discarded: discarding,
-        rerouted,
-        omitted,
-        waiting: waiting.into_iter().map(|(campaign, _)| campaign).collect(),
-        unrenamed,
-    })
+        completed,
+        result,
+        stage,
+        || {
+            let seconds =
+                |duration: Option<Duration>| duration.map(|duration| duration.as_secs_f64());
+            let phases = packing
+                .as_ref()
+                .map(|packing| packing.timings())
+                .unwrap_or([None; 5]);
+            let diagnostics = json!({
+                "save_ready": outcome.issues.is_empty(),
+                "stop_to_save_ready_s": outcome.issues.is_empty().then(|| counter_seconds(stop_qpc, session.qpc_frequency)).flatten(),
+                "detach_s": detach_seconds, "join_s": join_seconds,
+                "drain_s": seconds(phases[0]), "pack_s": seconds(phases[1]),
+                "write_s": seconds(phases[2]), "readback_s": seconds(phases[3]),
+                "publication_s": seconds(phases[4]),
+                "machine_cpu_busy_percent": system_busy(stop_load),
+                "phase_accounting": "coordinator wall intervals after promotion; detach and join overlap packing; unobserved phases are null",
+                "scope": "normal save; continue-a-saved-campaign staging and holds proof are not covered by the 30 s target",
+            });
+            Some(diagnostics)
+        },
+    )
 }
 
 /// Without Auto save, only Stop's Save saves, and only the campaign in progress.
@@ -2550,6 +2555,11 @@ fn remove_active(active: &Path, directory: &Path) -> Result<(), String> {
 /// Remove a discarded session's spool, copied collector and evidence, keeping
 /// only its completion record. Call only after collector absence or game exit.
 fn discard_session(directory: &Path) -> Result<(), String> {
+    let completed = read_status(&directory.join("completed.json"))
+        .ok_or("discarded session has no readable completion record")?;
+    if completed["partial"] != false || !completed["issues"].as_array().is_some_and(Vec::is_empty) {
+        return Ok(());
+    }
     for entry in fs::read_dir(directory).map_err(|error| failure_text(directory, error))? {
         let entry = entry.map_err(|error| failure_text(directory, error))?;
         if entry.file_name() == "completed.json" {
@@ -2581,9 +2591,12 @@ fn session_discarded(directory: &Path) -> bool {
 
 /// A JSON publication, when it exists and parses.
 fn read_status(path: &Path) -> Option<Value> {
-    fs::read(path)
+    let value = fs::read(path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    #[cfg(test)]
+    completion_step(path, CompletionStep::Read);
+    value
 }
 
 #[derive(Debug)]
@@ -2620,10 +2633,14 @@ fn classify_terminal(
         issue(format!("collector terminal error: {}", error.trim()));
     }
     if let Some(status) = status {
-        for warning in [status["warning"].as_str(), status["last_error"].as_str()]
-            .into_iter()
-            .flatten()
-            .filter(|warning| !warning.trim().is_empty())
+        for warning in [
+            status["warning"].as_str(),
+            status["last_error"].as_str(),
+            status["restoration_error"].as_str(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|warning| !warning.trim().is_empty())
         {
             if !outcome.warnings.iter().any(|previous| previous == warning) {
                 outcome.warnings.push(warning.to_owned());
@@ -2647,7 +2664,7 @@ fn classify_terminal(
         }
         if matches!(
             status["state"].as_str(),
-            Some("detached" | "capture_failed")
+            Some("detached" | "pinned" | "capture_failed")
         ) && correct_session
         {
             outcome.drain_complete = status["drain_complete"].as_bool();
@@ -2660,8 +2677,7 @@ fn classify_terminal(
         issue(if process_exited {
             "game exited after detach was requested without confirmation of a completed collector drain".into()
         } else {
-            "collector unloaded without confirming a completed final queue drain and spool sync"
-                .into()
+            "collector ended without confirming a completed final queue drain and spool sync".into()
         });
     }
     outcome
@@ -2673,6 +2689,7 @@ fn terminal_outcome(
     process_start_time: u64,
     requested_detach: bool,
     process_exited: bool,
+    spool_final: bool,
 ) -> TerminalOutcome {
     let mut status_read_issues = Vec::new();
     let mut error_read_issues = Vec::new();
@@ -2743,7 +2760,7 @@ fn terminal_outcome(
             {
                 outcome.issues.push("collector capture failed without a valid terminal witness; spool retained and not finalized".into());
                 outcome.recovery_allowed = false;
-            } else if requested_detach && outcome.drain_complete != Some(true) {
+            } else if requested_detach && outcome.drain_complete != Some(true) && !spool_final {
                 outcome.recovery_allowed = false;
             }
         }
@@ -2811,7 +2828,7 @@ fn publish_failure_status(directory: &Path, witness: &TerminalWitness) -> Result
 
 /// A complete first-failure witness is authoritative while capture is loaded.
 /// A concurrent fixed-record write may not yet have a valid checksum; terminal
-/// recovery still validates all evidence strictly after collector absence.
+/// recovery still validates all evidence strictly after the spool becomes final.
 fn live_failure(
     directory: &Path,
     session: u64,
@@ -2879,7 +2896,7 @@ fn completed_detach(value: &Value) -> Result<bool, String> {
         return Err("requested detach has no completed collector drain".into());
     }
     if !detached && !exited {
-        return Err("completion confirms neither detach nor game process exit".into());
+        return Err("recording finalized, but collector unload is unconfirmed; quit the game before recording again".into());
     }
     Ok(detached)
 }
@@ -2998,10 +3015,34 @@ fn request_detach(output: &Path) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let completed: Value = serde_json::from_slice(
+    let mut completed: Value = serde_json::from_slice(
         &fs::read(session_dir.join("completed.json")).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
+    if completed["unload_pending"] == true
+        && completed["partial"] == false
+        && completed["issues"].as_array().is_some_and(Vec::is_empty)
+    {
+        let observation = UnloadObservation {
+            directory: session_dir.clone(),
+            dll: PathBuf::from(
+                active["dll"]
+                    .as_str()
+                    .ok_or("active recorder has no collector path")?,
+            ),
+            pid: active["game_pid"]
+                .as_u64()
+                .and_then(|pid| u32::try_from(pid).ok())
+                .ok_or("active recorder has no valid game pid")?,
+            process_start: active["process_start_time"]
+                .as_u64()
+                .ok_or("active recorder has no game start time")?,
+            process_exited: false,
+        };
+        refresh_unload_completion(&session_dir, observation.observe())?;
+        completed = read_status(&session_dir.join("completed.json"))
+            .ok_or("saved session has no readable completion record")?;
+    }
     if completed_detach(&completed)? {
         println!("Detached and finalized: {}", session_dir.display());
     } else {
@@ -3285,19 +3326,278 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn collector_present(process: &Process, dll: &Path) -> Result<bool, String> {
+fn collector_present(process: &Process, dll: &Path, deadline: Instant) -> Result<bool, String> {
     if process.handle.signaled()? {
         return Ok(false);
     }
-    match process.has_module(dll) {
+    match process.has_module_until(dll, deadline) {
         Ok(present) => Ok(present),
         Err(_) if process.handle.signaled()? => Ok(false),
         Err(error) => Err(error),
     }
 }
 
-/// Returns whether the original process has exited, after proving DLL absence.
-fn ensure_finalizable(directory: &Path) -> Result<(bool, SessionStart), String> {
+#[derive(Clone, Copy)]
+struct CollectorPresence {
+    process_exited: bool,
+    collector_loaded: Option<bool>,
+}
+impl CollectorPresence {
+    fn exited() -> Self {
+        Self {
+            process_exited: true,
+            collector_loaded: Some(false),
+        }
+    }
+    fn wait(process: Option<&Process>, dll: &Path) -> Self {
+        wait_collector_absence(
+            |deadline| Self::observe_until(process, dll, deadline),
+            Instant::now,
+            std::thread::sleep,
+        )
+    }
+    fn observe(process: Option<&Process>, dll: &Path) -> Self {
+        Self::observe_until(process, dll, Instant::now() + UNLOAD_POLL)
+    }
+    fn observe_until(process: Option<&Process>, dll: &Path, deadline: Instant) -> Self {
+        let Some(process) = process else {
+            return Self::exited();
+        };
+        let collector_loaded = collector_present(process, dll, deadline).ok();
+        if process.handle.signaled().unwrap_or(false) {
+            Self::exited()
+        } else {
+            Self {
+                process_exited: false,
+                collector_loaded,
+            }
+        }
+    }
+}
+
+const UNLOAD_WAIT: Duration = Duration::from_secs(10);
+const UNLOAD_POLL: Duration = Duration::from_millis(100);
+
+fn wait_collector_absence(
+    mut refresh: impl FnMut(Instant) -> CollectorPresence,
+    mut now: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+) -> CollectorPresence {
+    let deadline = now() + UNLOAD_WAIT;
+    let mut presence = CollectorPresence {
+        process_exited: false,
+        collector_loaded: None,
+    };
+    loop {
+        if now() >= deadline {
+            return presence;
+        }
+        presence = refresh(deadline);
+        if presence.process_exited || presence.collector_loaded == Some(false) {
+            return presence;
+        }
+        let remaining = deadline.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return presence;
+        }
+        sleep(remaining.min(UNLOAD_POLL));
+    }
+}
+
+fn require_collector_absent(loaded: Option<bool>) -> Result<(), String> {
+    if loaded == Some(false) {
+        Ok(())
+    } else {
+        Err(COLLECTOR_LOADED.into())
+    }
+}
+
+fn capture_result(
+    directory: &Path,
+    terminal: &TerminalOutcome,
+    result: CaptureOutcome,
+) -> Result<CaptureOutcome, String> {
+    if terminal.issues.is_empty() {
+        Ok(result)
+    } else {
+        Err(format!(
+            "recording completion is partial: {}; session evidence retained at {}",
+            terminal.issues.join("; "),
+            directory.display()
+        ))
+    }
+}
+
+fn discarded_completion(terminal: &TerminalOutcome, requested_detach: bool) -> Value {
+    json!({
+        "replays":[],"discarded":true,"detach_requested":requested_detach,
+        "drain_complete":terminal.drain_complete,"capture_failed":terminal.capture_failed,
+        "failure_code":terminal.witness.as_ref().map(|_| "allocation_failed"),
+        "failed_hour":terminal.witness.as_ref().and_then(|witness| witness.failed_hour),
+        "partial":!terminal.issues.is_empty(),"issues":terminal.issues,"warnings":terminal.warnings,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_capture(
+    directory: &Path,
+    target: &Path,
+    active: &Path,
+    session: &SessionStart,
+    dll: &Path,
+    process_exited: bool,
+    mut completed: Value,
+    result: Result<CaptureOutcome, String>,
+    stage: &dyn Fn(Stage<'_>),
+    diagnostics: impl FnOnce() -> Option<Value>,
+) -> Result<CaptureOutcome, String> {
+    {
+        let _lock = completion_lock(directory)?;
+        completion_presence(
+            &mut completed,
+            CollectorPresence {
+                process_exited,
+                collector_loaded: process_exited.then_some(false),
+            },
+            !process_exited,
+        );
+        replay_io::write_session_end(directory, target, "completed.json", &completed)?;
+    }
+    let _ = fs::remove_file(directory.join(WAITING_FILE));
+    remove_active(active, directory)?;
+    stage(Stage::Finished {
+        result: result.as_ref().map_err(String::as_str),
+    });
+    if let Some(diagnostics) = diagnostics() {
+        println!("Stop to save-ready: {diagnostics}");
+        if let Err(error) = write_json(&directory.join("finalization-status.json"), &diagnostics) {
+            eprintln!("Finalization diagnostics unavailable: {error}");
+        }
+    }
+    stage(Stage::Unloading(UnloadObservation {
+        directory: directory.to_path_buf(),
+        dll: dll.to_path_buf(),
+        pid: session.process_id,
+        process_start: session.process_start_time,
+        process_exited,
+    }));
+    result
+}
+
+#[derive(Debug)]
+pub struct UnloadObservation {
+    directory: PathBuf,
+    dll: PathBuf,
+    pid: u32,
+    process_start: u64,
+    process_exited: bool,
+}
+
+impl UnloadObservation {
+    pub fn finish(self) -> Result<(), String> {
+        let presence = self.observe();
+        self.finish_with(presence)
+    }
+
+    fn observe(&self) -> CollectorPresence {
+        if self.process_exited {
+            CollectorPresence::exited()
+        } else {
+            wait_collector_absence(
+                |deadline| match Process::open(self.pid, false) {
+                    Ok(process) if process.start_time != self.process_start => {
+                        CollectorPresence::exited()
+                    }
+                    Ok(process) => {
+                        CollectorPresence::observe_until(Some(&process), &self.dll, deadline)
+                    }
+                    Err(_) if windows::games().is_ok_and(|games| !games.contains(&self.pid)) => {
+                        CollectorPresence::exited()
+                    }
+                    Err(_) => CollectorPresence {
+                        process_exited: false,
+                        collector_loaded: None,
+                    },
+                },
+                Instant::now,
+                std::thread::sleep,
+            )
+        }
+    }
+
+    fn finish_with(self, presence: CollectorPresence) -> Result<(), String> {
+        let discarded = refresh_unload_completion(&self.directory, presence)?;
+        if presence.collector_loaded != Some(false) {
+            return Err(COLLECTOR_UNLOAD_WARNING.into());
+        }
+        if discarded {
+            discard_session(&self.directory)?;
+        }
+        Ok(())
+    }
+}
+
+fn refresh_unload_completion(
+    directory: &Path,
+    presence: CollectorPresence,
+) -> Result<bool, String> {
+    let _lock = completion_lock(directory)?;
+    let mut completed = read_status(&directory.join("completed.json"))
+        .ok_or("saved session has no readable completion record")?;
+    completion_presence(&mut completed, presence, false);
+    write_json(&directory.join("completed.json"), &completed)?;
+    Ok(completed["discarded"] == true)
+}
+
+fn completion_presence(completed: &mut Value, presence: CollectorPresence, pending: bool) {
+    if !completed["warnings"].is_array() {
+        completed["warnings"] = json!([]);
+    }
+    completed["warnings"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|warning| warning.as_str() != Some(COLLECTOR_UNLOAD_WARNING));
+    completed["detached"] =
+        json!(!presence.process_exited && presence.collector_loaded == Some(false));
+    completed["collector_loaded"] = json!(presence.collector_loaded);
+    completed["process_exited"] = json!(presence.process_exited);
+    completed["unload_pending"] = json!(pending);
+    if !pending && presence.collector_loaded != Some(false) {
+        completed["warnings"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(COLLECTOR_UNLOAD_WARNING));
+    }
+}
+
+#[cfg(test)]
+fn write_completion(
+    directory: &Path,
+    target: &Path,
+    completed: Value,
+    refresh: impl FnOnce() -> CollectorPresence,
+) -> Result<CollectorPresence, String> {
+    let presence = refresh();
+    let _lock = completion_lock(directory)?;
+    publish_completion(directory, target, completed, presence)
+}
+
+fn publish_completion(
+    directory: &Path,
+    target: &Path,
+    mut completed: Value,
+    presence: CollectorPresence,
+) -> Result<CollectorPresence, String> {
+    completion_presence(&mut completed, presence, false);
+    replay_io::write_session_end(directory, target, "completed.json", &completed)?;
+    if presence.collector_loaded != Some(false) {
+        eprintln!("Collector warning: {COLLECTOR_UNLOAD_WARNING}");
+    }
+    Ok(presence)
+}
+
+/// Prove the original session's spool is final, independently of DLL unload.
+fn ensure_finalizable(directory: &Path) -> Result<(Option<Process>, SessionStart), String> {
     let config: Value = serde_json::from_slice(
         &fs::read(directory.join("bin/collector.json")).map_err(|e| e.to_string())?,
     )
@@ -3308,30 +3608,37 @@ fn ensure_finalizable(directory: &Path) -> Result<(bool, SessionStart), String> 
     let session = SessionStart::decode(&mut decoder).map_err(|e| e.to_string())?;
     decoder.finish().map_err(|e| e.to_string())?;
     if !windows::games()?.contains(&session.process_id) {
-        return Ok((true, session));
+        return Ok((None, session));
     }
     let process = match Process::open(session.process_id, false) {
         Ok(process) => process,
-        Err(_) if !windows::games()?.contains(&session.process_id) => return Ok((true, session)),
+        Err(_) if !windows::games()?.contains(&session.process_id) => {
+            return Ok((None, session));
+        }
         Err(error) => return Err(error),
     };
     if process.start_time != session.process_start_time {
-        return Ok((true, session));
+        return Ok((None, session));
     }
     let done = config["done_event"]
         .as_str()
         .ok_or("collector configuration has no done event")?;
-    if collector_present(&process, &directory.join("bin/collector.dll"))? {
-        return Err(
-            "collector is still loaded; use recorder detach or quit the game before finalizing"
-                .into(),
-        );
+    let done = Event::open(done)
+        .and_then(|event| event.handle.signaled())
+        .unwrap_or(false);
+    let collector_loaded = match collector_present(
+        &process,
+        &directory.join("bin/collector.dll"),
+        Instant::now() + UNLOAD_POLL,
+    ) {
+        Ok(loaded) => Some(loaded),
+        Err(_) if done => None,
+        Err(error) => return Err(error),
+    };
+    if collector_loaded != Some(false) && !done {
+        return Err("collector is still loaded without done; its spool may still change; use recorder detach or quit the game before finalizing".into());
     }
-    if !process.handle.signaled()?
-        && !Event::open(done)
-            .and_then(|event| event.handle.signaled())
-            .unwrap_or(false)
-    {
+    if !process.handle.signaled()? && !done {
         // A completed recorder has already observed done and module absence; the
         // named event ceases to exist when all process handles have closed.
         if !directory.join("completed.json").is_file()
@@ -3346,12 +3653,42 @@ fn ensure_finalizable(directory: &Path) -> Result<(bool, SessionStart), String> 
             );
         }
     }
-    Ok((process.handle.signaled()?, session))
+    Ok((Some(process), session))
 }
 
 fn finalization_lock(output: &Path) -> Result<File, String> {
+    exclusive_file(&output.join("finalize.lock"))
+}
+
+fn completion_lock(directory: &Path) -> Result<File, String> {
+    exclusive_file(&directory.join("completion.lock"))
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompletionStep {
+    Read,
+    Blocked,
+}
+
+#[cfg(test)]
+thread_local! {
+    static COMPLETION_STEP: std::cell::RefCell<Option<Box<dyn Fn(&Path, CompletionStep)>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+fn completion_step(path: &Path, step: CompletionStep) {
+    COMPLETION_STEP.with(|hook| {
+        if let Some(hook) = hook.borrow().as_ref() {
+            hook(path, step);
+        }
+    });
+}
+
+fn exclusive_file(path: &Path) -> Result<File, String> {
     use std::os::windows::fs::OpenOptionsExt;
-    let path = output.join("finalize.lock");
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         match fs::OpenOptions::new()
@@ -3363,6 +3700,8 @@ fn finalization_lock(output: &Path) -> Result<File, String> {
         {
             Ok(file) => return Ok(file),
             Err(error) if error.raw_os_error() == Some(32) && Instant::now() < deadline => {
+                #[cfg(test)]
+                completion_step(path, CompletionStep::Blocked);
                 std::thread::sleep(Duration::from_millis(100))
             }
             Err(error) => {
@@ -3447,6 +3786,7 @@ pub fn waiting_campaigns(session: &Path) -> Vec<WaitingCampaign> {
 
 /// Take a campaign off its session's waiting list once saved or discarded.
 fn unlist_waiting(session: &Path, campaign: &str) -> Result<(), String> {
+    let _lock = completion_lock(session)?;
     let path = waiting_record(session);
     let mut completed = read_status(&path).ok_or_else(|| failure_text(&path, "unreadable"))?;
     if let Some(waiting) = completed["waiting"].as_array_mut() {
@@ -5477,27 +5817,24 @@ mod tests {
         use crate::test_support::allocation_test_directory;
 
         let root = allocation_test_directory("finalization-progress-initial-write");
-        // An unwritable temporary path exercises failure before replacement.
-        let temporary = root.join(format!(
-            "finalization-progress.json.{}.tmp",
-            std::process::id()
-        ));
-        fs::create_dir(&temporary).unwrap();
+        let session = root.join("session");
+        fs::write(&session, b"not a directory").unwrap();
         let observed = Cell::new(0);
         let observe = |records| observed.set(records);
-        let progress = FinalizationProgress::new(&root, &observe);
+        let progress = FinalizationProgress::new(&session, &observe);
         let previous_attempt = Instant::now() - Duration::from_secs(2);
         progress.last_write.set(previous_attempt);
         progress.advance();
         assert_eq!(observed.get(), 1);
         assert!(progress.last_write.get() > previous_attempt);
-        fs::remove_dir(&temporary).unwrap();
+        fs::remove_file(&session).unwrap();
+        fs::create_dir(&session).unwrap();
         progress
             .last_write
             .set(Instant::now() - Duration::from_secs(2));
         progress.advance();
         let resumed: Value =
-            serde_json::from_slice(&fs::read(root.join("finalization-progress.json")).unwrap())
+            serde_json::from_slice(&fs::read(session.join("finalization-progress.json")).unwrap())
                 .unwrap();
         assert_eq!(resumed["records"], 2);
         fs::remove_dir_all(root).unwrap();
@@ -5793,7 +6130,7 @@ mod tests {
         .unwrap();
         let witness = allocation_witness(1);
         fs::write(directory.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
-        let outcome = terminal_outcome(&directory, 7, 13, true, false);
+        let outcome = terminal_outcome(&directory, 7, 13, true, false, false);
         assert_eq!(outcome.witness, Some(witness));
         assert_eq!(outcome.drain_complete, Some(false));
         assert!(outcome.recovery_allowed);
@@ -5854,6 +6191,892 @@ mod tests {
     }
 
     #[test]
+    fn final_spool_allows_an_incomplete_drain_without_claiming_clean_detach() {
+        use crate::test_support::allocation_test_directory;
+        let directory = allocation_test_directory("final-pinned-spool");
+        create_failure_witness(&directory, 7, 13).unwrap();
+        write_json(
+            &directory.join("status.json"),
+            &json!({
+                "session":7,"state":"pinned","spool_closed":true,"recording_stopped":true,
+                "drain_complete":false,"error":"synthetic hook restoration refused",
+            }),
+        )
+        .unwrap();
+        let live = terminal_outcome(&directory, 7, 13, true, false, false);
+        assert!(!live.recovery_allowed);
+        let ended = terminal_outcome(&directory, 7, 13, true, false, true);
+        assert!(ended.recovery_allowed);
+        assert_eq!(ended.drain_complete, Some(false));
+        assert!(!ended.issues.is_empty());
+        assert!(completed_detach(&json!({
+            "partial":true,"issues":ended.issues,"detach_requested":true,
+            "detached":false,"collector_loaded":true,"process_exited":false,"drain_complete":false,
+        })).is_err());
+    }
+
+    #[test]
+    fn done_with_a_retained_module_saves_only_the_committed_prefix_and_its_gap() {
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, allocation_witness, write_campaign_spool,
+        };
+        let root = allocation_test_directory("done-retained-module");
+        let session = root.join("session");
+        let output = root.join("recordings");
+        let records = allocation_records();
+        let end = records
+            .iter()
+            .position(
+                |record| matches!(record, replay::spool::Record::Frame(frame) if frame.hour == 4),
+            )
+            .unwrap();
+        let campaign = write_campaign_spool(&session, &records[..end]);
+        let spool = campaign.join("spool.0000.h4s");
+        let mut witness = allocation_witness(fs::metadata(&spool).unwrap().len());
+        witness.failed_hour = Some(4);
+        witness.phase = 6;
+        let mut bytes = fs::read(&spool).unwrap();
+        for record in &records[end..] {
+            bytes.extend(replay::spool::encode_record(record).unwrap());
+        }
+        bytes.extend_from_slice(b"synthetic torn tail");
+        fs::write(&spool, &bytes).unwrap();
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        let outcome = terminal_outcome(&session, 7, 13, true, false, true);
+        assert!(outcome.recovery_allowed);
+        fs::create_dir_all(&output).unwrap();
+        let _lock = finalization_lock(&output).unwrap();
+        let error = finalize_cli_session(
+            &session,
+            &output,
+            terminal_outcome(&session, 7, 13, true, false, true),
+            || CollectorPresence {
+                process_exited: false,
+                collector_loaded: Some(true),
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("partial"));
+        let completed = read_status(&session.join("completed.json")).unwrap();
+        assert_eq!(completed["detached"], false);
+        assert_eq!(completed["collector_loaded"], true);
+        assert_eq!(completed["process_exited"], false);
+        assert_eq!(completed["partial"], true);
+        let paths = completed["replays"].as_array().unwrap();
+        assert_eq!(paths.len(), 1);
+        let path = PathBuf::from(paths[0].as_str().unwrap());
+        assert_eq!(published_hours(&path), [(9, 2), (9, 3)]);
+        let replay = replay::container::Replay::open_path(&path).unwrap();
+        assert_eq!(
+            replay
+                .gaps
+                .iter()
+                .map(|gap| (gap.branch, gap.first_hour, gap.last_hour))
+                .collect::<Vec<_>>(),
+            [(9, 4, 4)]
+        );
+        assert!(matches!(
+            replay.seek(9, 4).unwrap(),
+            replay::container::SeekResult::Gap { .. }
+        ));
+        assert_eq!(fs::read(&spool).unwrap(), bytes);
+    }
+
+    #[test]
+    fn cli_finalize_preserves_incomplete_drain_without_an_allocation_witness() {
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_spool,
+        };
+        let root = allocation_test_directory("cli-incomplete-drain");
+        let session = root.join("session");
+        let output = root.join("output");
+        let records = allocation_records();
+        let end = records
+            .iter()
+            .position(
+                |record| matches!(record, replay::spool::Record::Frame(frame) if frame.hour == 4),
+            )
+            .unwrap();
+        write_campaign_spool(&session, &records[..end]);
+        create_failure_witness(&session, 7, 13).unwrap();
+        write_json(
+            &session.join("status.json"),
+            &json!({
+                "session":7,"state":"pinned","spool_closed":true,"drain_complete":false,
+                "error":"synthetic final spool sync failed","warning":"earlier write retried",
+            }),
+        )
+        .unwrap();
+        write_json(
+            &session.join("completed.json"),
+            &json!({
+                "replays":[],"partial":true,"issues":["synthetic final spool sync failed"],
+                "drain_complete":false,"warnings":[],
+            }),
+        )
+        .unwrap();
+        for loaded in [Some(true), Some(false)] {
+            let terminal = terminal_outcome(&session, 7, 13, false, false, true);
+            assert!(terminal.recovery_allowed);
+            assert!(terminal.witness.is_none());
+            assert!(!terminal.capture_failed);
+            assert_eq!(terminal.drain_complete, Some(false));
+            let error = finalize_cli_session(&session, &output, terminal, || CollectorPresence {
+                process_exited: false,
+                collector_loaded: loaded,
+            })
+            .unwrap_err();
+            assert!(
+                error.contains("partial") && error.contains("synthetic final spool sync failed")
+            );
+            let completed = read_status(&session.join("completed.json")).unwrap();
+            assert_eq!(completed["partial"], true);
+            assert_eq!(completed["drain_complete"], false);
+            assert_eq!(completed["capture_failed"], false);
+            assert_eq!(completed["failure_code"], Value::Null);
+            assert!(completed["issues"].as_array().unwrap().iter().any(|issue| {
+                issue
+                    .as_str()
+                    .unwrap()
+                    .contains("final queue drain or spool sync was incomplete")
+            },));
+            assert!(
+                completed["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("earlier write retried"))
+            );
+            assert_eq!(
+                completed["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(COLLECTOR_UNLOAD_WARNING)),
+                loaded != Some(false)
+            );
+            assert!(
+                completed_detach(&completed)
+                    .unwrap_err()
+                    .contains("synthetic final spool sync failed")
+            );
+            let paths = completed["replays"].as_array().unwrap();
+            assert_eq!(paths.len(), 1);
+            assert_eq!(
+                published_hours(Path::new(paths[0].as_str().unwrap())),
+                [(9, 2), (9, 3)]
+            );
+        }
+    }
+
+    #[test]
+    fn completion_writers_serialize_both_orders_without_resurrecting_waiting_campaigns() {
+        use crate::test_support::allocation_test_directory;
+        use std::sync::mpsc;
+
+        #[derive(Clone, Copy, Debug)]
+        enum Writer {
+            Unload,
+            Unlist,
+            Cli,
+        }
+        #[derive(Debug, PartialEq, Eq)]
+        enum Event {
+            Read,
+            Blocked,
+            Finished,
+        }
+
+        fn write(writer: Writer, session: &Path, target: &Path) -> Result<(), String> {
+            let presence = CollectorPresence {
+                process_exited: false,
+                collector_loaded: Some(false),
+            };
+            match writer {
+                Writer::Unload => refresh_unload_completion(session, presence).map(|_| ()),
+                Writer::Unlist => {
+                    let _lock = finalization_lock(target)?;
+                    unlist_waiting(session, "A")
+                }
+                Writer::Cli => {
+                    let _lock = finalization_lock(target)?;
+                    complete_cli_finalization(
+                        session,
+                        target,
+                        &replay_io::Finalized {
+                            replays: vec![target.join("saved.battleplan")],
+                            saved_campaigns: BTreeSet::from(["A".to_owned()]),
+                            ..replay_io::Finalized::default()
+                        },
+                        json!({"cli_updated":true}),
+                        || presence,
+                    )
+                }
+            }
+        }
+
+        for (first, second) in [
+            (Writer::Unload, Writer::Unlist),
+            (Writer::Unlist, Writer::Unload),
+            (Writer::Unload, Writer::Cli),
+            (Writer::Cli, Writer::Unload),
+        ] {
+            let root =
+                allocation_test_directory(&format!("completion-writers-{first:?}-{second:?}"));
+            let session = root.join("session");
+            let target = root.join("output");
+            fs::create_dir_all(&session).unwrap();
+            fs::create_dir_all(&target).unwrap();
+            write_json(
+                &session.join("completed.json"),
+                &json!({
+                    "target":target,"waiting":[{"campaign":"A"},{"campaign":"B"}],
+                    "partial":false,"issues":[],"warnings":["historical warning"],
+                    "unload_pending":true,"collector_loaded":true,"detached":false,
+                }),
+            )
+            .unwrap();
+            let (read_tx, read_rx) = mpsc::channel();
+            let (release_first_tx, release_first_rx) = mpsc::channel();
+            let (event_tx, event_rx) = mpsc::channel();
+            let (release_second_tx, release_second_rx) = mpsc::channel();
+            std::thread::scope(|scope| {
+                let session_ref = &session;
+                let target_ref = &target;
+                let first_thread = scope.spawn(move || {
+                    let read = Cell::new(false);
+                    COMPLETION_STEP.with(|hook| {
+                        *hook.borrow_mut() = Some(Box::new(move |path, step| {
+                            if step == CompletionStep::Read
+                                && path.file_name() == Some(OsStr::new("completed.json"))
+                                && !read.replace(true)
+                            {
+                                read_tx.send(Event::Read).unwrap();
+                                release_first_rx.recv().unwrap();
+                            }
+                        }))
+                    });
+                    write(first, session_ref, target_ref)
+                });
+                assert_eq!(read_rx.recv().unwrap(), Event::Read);
+                let second_thread = scope.spawn(move || {
+                    let blocked = Cell::new(false);
+                    let hook_tx = event_tx.clone();
+                    COMPLETION_STEP.with(|hook| {
+                        *hook.borrow_mut() = Some(Box::new(move |path, step| {
+                            if step == CompletionStep::Blocked
+                                && path.file_name() == Some(OsStr::new("completion.lock"))
+                                && !blocked.replace(true)
+                            {
+                                hook_tx.send(Event::Blocked).unwrap();
+                                release_second_rx.recv().unwrap();
+                            }
+                        }))
+                    });
+                    let result = write(second, session_ref, target_ref);
+                    event_tx.send(Event::Finished).unwrap();
+                    result
+                });
+                let event = event_rx.recv().unwrap();
+                release_first_tx.send(()).unwrap();
+                first_thread.join().unwrap().unwrap();
+                let _ = release_second_tx.send(());
+                second_thread.join().unwrap().unwrap();
+                assert_eq!(event, Event::Blocked);
+            });
+            let completed = read_status(&session.join("completed.json")).unwrap();
+            assert_eq!(completed["waiting"], json!([{"campaign":"B"}]));
+            assert_eq!(completed["collector_loaded"], false);
+            assert_eq!(completed["detached"], true);
+            assert_eq!(completed["unload_pending"], false);
+            assert_eq!(completed["warnings"], json!(["historical warning"]));
+            if matches!(first, Writer::Cli) || matches!(second, Writer::Cli) {
+                assert_eq!(completed["cli_updated"], true);
+                assert_eq!(
+                    completed["replays"],
+                    json!([target.join("saved.battleplan")])
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn saved_notification_and_diagnostics_precede_deferred_unload() {
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_spool,
+        };
+        for loaded in [true, false] {
+            let root = allocation_test_directory(&format!("save-ready-before-unload-{loaded}"));
+            let directory = root.join("session");
+            let target = root.join("output");
+            let records = allocation_records();
+            let replay::spool::Record::SessionStart(session) = &records[0] else {
+                unreachable!()
+            };
+            write_campaign_spool(&directory, &records);
+            let finalized = replay_io::finalize_session_outcome(&directory, &target).unwrap();
+            assert!(finalized.errors.is_empty());
+            let active = root.join("active.json");
+            write_json(&active, &json!({"session_dir":directory})).unwrap();
+            let elapsed = Cell::new(Duration::from_secs(25));
+            let shown = Cell::new(false);
+            let pending = RefCell::new(None);
+            let result = finish_capture(
+                &directory, &target, &active, session, &directory.join("bin/collector.dll"), false,
+                json!({"replays":finalized.replays,"partial":false,"issues":[],"drain_complete":true}),
+                Ok(CaptureOutcome { replays:finalized.replays.clone(), ..CaptureOutcome::default() }),
+                &|stage| match stage {
+                    Stage::Finished { result } => {
+                        assert!(result.is_ok());
+                        assert!(!active.exists());
+                        for path in &result.unwrap().replays {
+                            assert_eq!(published_hours(path), [(9, 2), (9, 3), (9, 4)]);
+                        }
+                        let completed = read_status(&directory.join("completed.json")).unwrap();
+                        assert_eq!(completed["unload_pending"], true);
+                        assert_eq!(completed["warnings"], json!([]));
+                        assert!(require_collector_absent(completed["collector_loaded"].as_bool()).is_err());
+                        elapsed.set(elapsed.get() + Duration::from_secs(2));
+                        shown.set(true);
+                    }
+                    Stage::Unloading(observation) => {
+                        assert!(shown.get());
+                        let status = read_status(&directory.join("finalization-status.json")).unwrap();
+                        assert_eq!(status["stop_to_save_ready_s"], 27);
+                        pending.replace(Some(observation));
+                    }
+                    _ => unreachable!(),
+                },
+                || {
+                    assert!(shown.get());
+                    Some(json!({"save_ready":true,"stop_to_save_ready_s":elapsed.get().as_secs()}))
+                },
+            ).unwrap();
+            assert_eq!(result.replays, finalized.replays);
+            assert_eq!(elapsed.get(), Duration::from_secs(27));
+            let started = Instant::now();
+            let observation_started = elapsed.get();
+            let presence = wait_collector_absence(
+                |_| CollectorPresence {
+                    process_exited: false,
+                    collector_loaded: Some(loaded),
+                },
+                || started + (elapsed.get() - observation_started),
+                |delay| elapsed.set(elapsed.get() + delay),
+            );
+            let update = pending.into_inner().unwrap().finish_with(presence);
+            assert_eq!(update.is_err(), loaded);
+            assert_eq!(
+                elapsed.get(),
+                Duration::from_secs(if loaded { 37 } else { 27 })
+            );
+            let completed = read_status(&directory.join("completed.json")).unwrap();
+            assert_eq!(completed["partial"], false);
+            assert_eq!(completed["unload_pending"], false);
+            assert_eq!(completed["collector_loaded"], loaded);
+            assert_eq!(
+                completed["warnings"],
+                if loaded {
+                    json!([COLLECTOR_UNLOAD_WARNING])
+                } else {
+                    json!([])
+                }
+            );
+            let status = read_status(&directory.join("finalization-status.json")).unwrap();
+            assert_eq!(status["stop_to_save_ready_s"], 27);
+        }
+    }
+
+    #[test]
+    fn unload_followup_preserves_later_completion_and_does_not_reconcile_checkpoints() {
+        use crate::test_support::allocation_test_directory;
+        let directory = allocation_test_directory("unload-followup-completion");
+        let campaign = directory.join("00000000-0000-4000-8000-000000000000");
+        fs::create_dir_all(&campaign).unwrap();
+        let proof = campaign.join("checkpoint.json");
+        fs::write(&proof, b"synthetic journal owned by another finalizer").unwrap();
+        let completed = json!({
+            "partial":true,"issues":["later finalization failed"],
+            "replays":["later publication"],"waiting":["later waiting campaign"],
+            "warnings":["historical warning"],"unload_pending":true,
+        });
+        write_json(&directory.join("completed.json"), &completed).unwrap();
+        refresh_unload_completion(
+            &directory,
+            CollectorPresence {
+                process_exited: false,
+                collector_loaded: Some(false),
+            },
+        )
+        .unwrap();
+        let updated = read_status(&directory.join("completed.json")).unwrap();
+        for key in ["partial", "issues", "replays", "waiting", "warnings"] {
+            assert_eq!(updated[key], completed[key]);
+        }
+        assert_eq!(updated["unload_pending"], false);
+        assert_eq!(updated["detached"], true);
+        assert_eq!(
+            fs::read(proof).unwrap(),
+            b"synthetic journal owned by another finalizer"
+        );
+    }
+
+    #[test]
+    fn discarded_partial_sessions_keep_terminal_fields_and_all_failure_evidence() {
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, allocation_witness, write_campaign_spool,
+        };
+        for failure in ["sync", "allocation", "clean"] {
+            for exited in [false, true] {
+                let root =
+                    allocation_test_directory(&format!("discard-terminal-{failure}-{exited}"));
+                let directory = root.join("session");
+                let target = root.join("output");
+                fs::create_dir_all(&target).unwrap();
+                let records = allocation_records();
+                let replay::spool::Record::SessionStart(session) = &records[0] else {
+                    unreachable!()
+                };
+                let campaign = write_campaign_spool(&directory, &records);
+                let spool = campaign.join("spool.0000.h4s");
+                let bytes = fs::read(&spool).unwrap();
+                create_failure_witness(&directory, 7, 13).unwrap();
+                if failure == "allocation" {
+                    fs::write(
+                        directory.join(WITNESS_FILE_NAME),
+                        allocation_witness(bytes.len() as u64).encode(),
+                    )
+                    .unwrap();
+                }
+                let witness = fs::read(directory.join(WITNESS_FILE_NAME)).unwrap();
+                fs::write(directory.join("progress"), b"synthetic done").unwrap();
+                write_json(
+                    &directory.join("status.json"),
+                    &json!({
+                        "session":7,"state":"pinned","spool_closed":true,
+                        "drain_complete":failure=="clean",
+                        "error":(failure=="sync").then_some("synthetic final spool sync failed"),
+                    }),
+                )
+                .unwrap();
+                let terminal = terminal_outcome(&directory, 7, 13, true, exited, true);
+                let partial = failure != "clean";
+                assert_eq!(!terminal.issues.is_empty(), partial);
+                let completed = discarded_completion(&terminal, true);
+                assert_eq!(completed["drain_complete"], failure == "clean");
+                assert_eq!(completed["capture_failed"], failure == "allocation");
+                assert_eq!(
+                    completed["failure_code"],
+                    if failure == "allocation" {
+                        json!("allocation_failed")
+                    } else {
+                        Value::Null
+                    }
+                );
+                assert_eq!(
+                    completed["failed_hour"],
+                    if failure == "allocation" {
+                        json!(99)
+                    } else {
+                        Value::Null
+                    }
+                );
+                let pending = RefCell::new(None);
+                let result = finish_capture(
+                    &directory,
+                    &target,
+                    &root.join("active.json"),
+                    session,
+                    &directory.join("bin/collector.dll"),
+                    exited,
+                    completed,
+                    capture_result(
+                        &directory,
+                        &terminal,
+                        CaptureOutcome {
+                            discarded: true,
+                            ..CaptureOutcome::default()
+                        },
+                    ),
+                    &|stage| match stage {
+                        Stage::Finished { result } => assert_eq!(result.is_err(), partial),
+                        Stage::Unloading(observation) => {
+                            pending.replace(Some(observation));
+                        }
+                        _ => unreachable!(),
+                    },
+                    || None,
+                );
+                assert_eq!(result.is_err(), partial);
+                assert!(spool.exists());
+                pending
+                    .into_inner()
+                    .unwrap()
+                    .finish_with(if exited {
+                        CollectorPresence::exited()
+                    } else {
+                        CollectorPresence {
+                            process_exited: false,
+                            collector_loaded: Some(false),
+                        }
+                    })
+                    .unwrap();
+                let completed = read_status(&directory.join("completed.json")).unwrap();
+                assert_eq!(completed["discarded"], true);
+                assert_eq!(completed["partial"], partial);
+                assert_eq!(completed["issues"], json!(terminal.issues));
+                if partial {
+                    discard_session(&directory).unwrap();
+                    assert_eq!(fs::read(&spool).unwrap(), bytes);
+                    assert_eq!(
+                        fs::read(directory.join(WITNESS_FILE_NAME)).unwrap(),
+                        witness
+                    );
+                    assert_eq!(
+                        fs::read(directory.join("progress")).unwrap(),
+                        b"synthetic done"
+                    );
+                    assert!(directory.join("status.json").exists());
+                    assert!(completed_detach(&completed).is_err());
+                } else {
+                    assert!(!spool.exists());
+                    assert!(!directory.join(WITNESS_FILE_NAME).exists());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fully_drained_pinned_collector_finalizes_with_warnings_and_blocks_attach() {
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_spool,
+        };
+        let root = allocation_test_directory("restoration-only-warning");
+        let session = root.join("session");
+        let output = root.join("output");
+        write_campaign_spool(&session, &allocation_records());
+        create_failure_witness(&session, 7, 13).unwrap();
+        write_json(
+            &session.join("status.json"),
+            &json!({
+                "session":7,"state":"pinned","spool_closed":true,"drain_complete":true,
+                "warning":"earlier write retried","restoration_error":"synthetic hook stayed busy",
+                "collector_pinned":true,"recording_stopped":true,
+            }),
+        )
+        .unwrap();
+        let terminal = terminal_outcome(&session, 7, 13, true, false, true);
+        assert_eq!(terminal.drain_complete, Some(true));
+        assert!(terminal.issues.is_empty());
+        assert!(terminal.witness.is_none());
+        assert_eq!(
+            terminal.warnings,
+            ["earlier write retried", "synthetic hook stayed busy"]
+        );
+        finalize_cli_session(&session, &output, terminal, || CollectorPresence {
+            process_exited: false,
+            collector_loaded: Some(true),
+        })
+        .unwrap();
+        let completed = read_status(&session.join("completed.json")).unwrap();
+        assert_eq!(completed["partial"], false);
+        assert_eq!(completed["issues"], json!([]));
+        assert_eq!(completed["drain_complete"], true);
+        assert_eq!(completed["detached"], false);
+        assert_eq!(
+            completed["warnings"],
+            json!([
+                "earlier write retried",
+                "synthetic hook stayed busy",
+                COLLECTOR_UNLOAD_WARNING,
+            ])
+        );
+        assert!(require_collector_absent(completed["collector_loaded"].as_bool()).is_err());
+        let paths = completed["replays"].as_array().unwrap();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(
+            published_hours(Path::new(paths[0].as_str().unwrap())),
+            [(9, 2), (9, 3), (9, 4)]
+        );
+    }
+
+    #[test]
+    fn healthy_stop_waits_for_unload_only_after_publishing_its_replays() {
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_spool,
+        };
+        for empty in [false, true] {
+            let root = allocation_test_directory(&format!("healthy-stop-unload-{empty}"));
+            let session = root.join("session");
+            let output = root.join("output");
+            fs::create_dir_all(&session).unwrap();
+            if !empty {
+                write_campaign_spool(&session, &allocation_records());
+            }
+            let finalized = replay_io::finalize_session_outcome(&session, &output).unwrap();
+            assert!(finalized.errors.is_empty());
+            assert_eq!(finalized.replays.is_empty(), empty);
+            let started = Instant::now();
+            let elapsed = Cell::new(Duration::ZERO);
+            let polls = Cell::new(0);
+            complete_cli_finalization(
+                &session,
+                &output,
+                &finalized,
+                json!({"partial":false,"issues":[],"detach_requested":true,"drain_complete":true}),
+                || {
+                    wait_collector_absence(
+                        |_| {
+                            polls.set(polls.get() + 1);
+                            for replay in &finalized.replays {
+                                assert!(replay.is_file());
+                                assert_eq!(published_hours(replay), [(9, 2), (9, 3), (9, 4)]);
+                            }
+                            assert!(!session.join("completed.json").exists());
+                            CollectorPresence {
+                                process_exited: false,
+                                collector_loaded: Some(elapsed.get() < Duration::from_secs(3)),
+                            }
+                        },
+                        || started + elapsed.get(),
+                        |delay| elapsed.set(elapsed.get() + delay),
+                    )
+                },
+            )
+            .unwrap();
+            assert_eq!(elapsed.get(), Duration::from_secs(3));
+            assert_eq!(polls.get(), 31);
+            let completed = read_status(&session.join("completed.json")).unwrap();
+            assert_eq!(completed["detached"], true);
+            assert_eq!(completed["partial"], false);
+            assert_eq!(completed["warnings"], json!([]));
+            assert!(completed_detach(&completed).unwrap());
+        }
+    }
+
+    #[test]
+    fn unload_warning_is_reported_only_after_the_bounded_wait_expires() {
+        use crate::test_support::allocation_test_directory;
+        for loaded in [Some(true), None] {
+            let root = allocation_test_directory(&format!("unload-wait-expired-{loaded:?}"));
+            let session = root.join("session");
+            let output = root.join("output");
+            fs::create_dir_all(&session).unwrap();
+            let started = Instant::now();
+            let elapsed = Cell::new(Duration::ZERO);
+            let polls = Cell::new(0);
+            let presence = write_completion(
+                &session,
+                &output,
+                json!({"partial":false,"issues":[],"detach_requested":true,"drain_complete":true}),
+                || {
+                    wait_collector_absence(
+                        |_| {
+                            polls.set(polls.get() + 1);
+                            assert!(!session.join("completed.json").exists());
+                            CollectorPresence {
+                                process_exited: false,
+                                collector_loaded: loaded,
+                            }
+                        },
+                        || started + elapsed.get(),
+                        |delay| {
+                            assert!(delay <= UNLOAD_POLL && !delay.is_zero());
+                            elapsed.set(elapsed.get() + delay);
+                        },
+                    )
+                },
+            )
+            .unwrap();
+            assert_eq!(elapsed.get(), UNLOAD_WAIT);
+            assert_eq!(polls.get(), 100);
+            assert_eq!(presence.collector_loaded, loaded);
+            assert!(require_collector_absent(presence.collector_loaded).is_err());
+            let completed = read_status(&session.join("completed.json")).unwrap();
+            assert_eq!(completed["detached"], false);
+            assert_eq!(completed["partial"], false);
+            assert_eq!(completed["issues"], json!([]));
+            assert_eq!(completed["warnings"], json!([COLLECTOR_UNLOAD_WARNING]));
+        }
+    }
+
+    #[test]
+    fn unload_observation_uses_the_remaining_deadline_and_still_writes_completion() {
+        use crate::test_support::allocation_test_directory;
+        let root = allocation_test_directory("unload-observation-deadline");
+        let session = root.join("session");
+        let output = root.join("output");
+        fs::create_dir_all(&session).unwrap();
+        let started = Instant::now();
+        let elapsed = Cell::new(Duration::ZERO);
+        let polls = Cell::new(0);
+        let presence = write_completion(
+            &session,
+            &output,
+            json!({"partial":false,"issues":[],"drain_complete":true}),
+            || {
+                wait_collector_absence(
+                    |deadline| {
+                        assert_eq!(deadline, started + UNLOAD_WAIT);
+                        assert!(elapsed.get() < UNLOAD_WAIT);
+                        polls.set(polls.get() + 1);
+                        let remaining = deadline.duration_since(started + elapsed.get());
+                        elapsed.set(elapsed.get() + remaining.min(Duration::from_secs(3)));
+                        CollectorPresence {
+                            process_exited: false,
+                            collector_loaded: None,
+                        }
+                    },
+                    || started + elapsed.get(),
+                    |delay| elapsed.set(elapsed.get() + delay),
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(elapsed.get(), UNLOAD_WAIT);
+        assert_eq!(polls.get(), 4);
+        assert!(require_collector_absent(presence.collector_loaded).is_err());
+        let completed = read_status(&session.join("completed.json")).unwrap();
+        assert_eq!(completed["collector_loaded"], Value::Null);
+        assert_eq!(completed["partial"], false);
+        assert_eq!(completed["warnings"], json!([COLLECTOR_UNLOAD_WARNING]));
+    }
+
+    #[test]
+    fn unload_wait_returns_immediately_for_absence_or_process_exit() {
+        for presence in [
+            CollectorPresence::exited(),
+            CollectorPresence {
+                process_exited: false,
+                collector_loaded: Some(false),
+            },
+        ] {
+            let polls = Cell::new(0);
+            let result = wait_collector_absence(
+                |_| {
+                    polls.set(polls.get() + 1);
+                    presence
+                },
+                Instant::now,
+                |_| panic!("confirmed absence must not wait"),
+            );
+            assert_eq!(polls.get(), 1);
+            assert_eq!(result.process_exited, presence.process_exited);
+            assert_eq!(result.collector_loaded, Some(false));
+        }
+    }
+
+    #[test]
+    fn completion_refreshes_slow_unload_after_finalization_without_a_partial_recording() {
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_spool,
+        };
+        let root = allocation_test_directory("completion-slow-unload");
+        let session = root.join("session");
+        let output = root.join("output");
+        write_campaign_spool(&session, &allocation_records());
+        let loaded = Cell::new(Some(true));
+        let finalized = replay_io::finalize_session_outcome(&session, &output).unwrap();
+        assert!(loaded.get().unwrap());
+        loaded.set(Some(false));
+        complete_cli_finalization(
+            &session, &output, &finalized,
+            json!({"partial":false,"issues":[],"warnings":[],"detach_requested":true,"drain_complete":true}),
+            || CollectorPresence { process_exited: false, collector_loaded: loaded.get() },
+        ).unwrap();
+        let completed = read_status(&session.join("completed.json")).unwrap();
+        assert_eq!(completed["detached"], true);
+        assert_eq!(completed["collector_loaded"], false);
+        assert_eq!(completed["process_exited"], false);
+        assert_eq!(completed["partial"], false);
+        assert_eq!(completed["issues"], json!([]));
+        assert_eq!(completed["warnings"], json!([]));
+        assert!(completed_detach(&completed).unwrap());
+        assert!(require_collector_absent(loaded.get()).is_ok());
+        assert_eq!(
+            published_hours(&finalized.replays[0]),
+            [(9, 2), (9, 3), (9, 4)]
+        );
+    }
+
+    #[test]
+    fn unconfirmed_unload_warns_without_making_saved_data_partial_or_allowing_attach() {
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_spool,
+        };
+        for loaded in [Some(true), None] {
+            let root = allocation_test_directory(&format!("completion-unconfirmed-{loaded:?}"));
+            let session = root.join("session");
+            let output = root.join("output");
+            write_campaign_spool(&session, &allocation_records());
+            finalize_cli_session(
+                &session,
+                &output,
+                terminal_outcome(&session, 7, 13, false, true, true),
+                || CollectorPresence {
+                    process_exited: false,
+                    collector_loaded: loaded,
+                },
+            )
+            .unwrap();
+            let completed = read_status(&session.join("completed.json")).unwrap();
+            assert_eq!(completed["partial"], false);
+            assert_eq!(completed["issues"], json!([]));
+            assert_eq!(completed["warnings"], json!([COLLECTOR_UNLOAD_WARNING]));
+            assert_eq!(completed["detached"], false);
+            assert_eq!(completed["collector_loaded"], json!(loaded));
+            assert_eq!(completed["process_exited"], false);
+            assert!(
+                completed_detach(&completed)
+                    .unwrap_err()
+                    .contains("unload is unconfirmed")
+            );
+            assert!(require_collector_absent(loaded).is_err());
+            let paths = completed["replays"].as_array().unwrap();
+            assert_eq!(paths.len(), 1);
+            assert_eq!(
+                published_hours(Path::new(paths[0].as_str().unwrap())),
+                [(9, 2), (9, 3), (9, 4)]
+            );
+            finalize_cli_session(
+                &session,
+                &output,
+                terminal_outcome(&session, 7, 13, false, true, true),
+                || CollectorPresence {
+                    process_exited: false,
+                    collector_loaded: Some(false),
+                },
+            )
+            .unwrap();
+            let completed = read_status(&session.join("completed.json")).unwrap();
+            assert_eq!(completed["partial"], false);
+            assert_eq!(completed["warnings"], json!([]));
+            assert_eq!(completed["detached"], true);
+        }
+    }
+
+    #[test]
+    fn completion_refreshes_process_exit_without_claiming_a_live_detach() {
+        use crate::test_support::allocation_test_directory;
+        let root = allocation_test_directory("completion-process-exit");
+        let session = root.join("session");
+        let output = root.join("output");
+        fs::create_dir_all(&session).unwrap();
+        write_completion(
+            &session,
+            &output,
+            json!({"partial":false,"issues":[],"detach_requested":true,"drain_complete":true}),
+            CollectorPresence::exited,
+        )
+        .unwrap();
+        let completed = read_status(&session.join("completed.json")).unwrap();
+        assert_eq!(completed["process_exited"], true);
+        assert_eq!(completed["collector_loaded"], false);
+        assert_eq!(completed["detached"], false);
+        assert_eq!(completed["partial"], false);
+        assert_eq!(completed["warnings"], json!([]));
+        assert!(!completed_detach(&completed).unwrap());
+    }
+
+    #[test]
     fn allocation_failure_missing_invalid_or_foreign_witness_never_reports_success() {
         use crate::test_support::{allocation_test_directory, allocation_witness};
         let directory = allocation_test_directory("terminal-refusals");
@@ -5864,7 +7087,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let missing = terminal_outcome(&directory, 7, 13, true, false);
+        let missing = terminal_outcome(&directory, 7, 13, true, false, true);
         assert!(!missing.recovery_allowed);
         assert!(!missing.issues.is_empty());
         fs::create_dir_all(directory.join("bin")).unwrap();
@@ -5874,7 +7097,7 @@ mod tests {
             &json!({"session":7,"state":"detached","drain_complete":true}),
         )
         .unwrap();
-        let missing = terminal_outcome(&directory, 7, 13, true, false);
+        let missing = terminal_outcome(&directory, 7, 13, true, false, true);
         assert!(!missing.recovery_allowed);
         assert!(
             missing
@@ -5884,13 +7107,13 @@ mod tests {
         );
         let witness = allocation_witness(1);
         fs::write(directory.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
-        let foreign = terminal_outcome(&directory, 7, 14, true, false);
+        let foreign = terminal_outcome(&directory, 7, 14, true, false, true);
         assert!(!foreign.recovery_allowed);
         assert!(foreign.witness.is_none());
         let mut invalid = witness.encode();
         invalid[31] ^= 1;
         fs::write(directory.join(WITNESS_FILE_NAME), invalid).unwrap();
-        let invalid = terminal_outcome(&directory, 7, 13, true, false);
+        let invalid = terminal_outcome(&directory, 7, 13, true, false, true);
         assert!(!invalid.recovery_allowed);
         assert!(invalid.witness.is_none());
     }
@@ -6440,14 +7663,26 @@ mod tests {
                 )
                 .unwrap();
             }
-            finalize_cli_session(&session, &target, true).unwrap();
+            finalize_cli_session(
+                &session,
+                &target,
+                terminal_outcome(&session, 7, 13, false, true, true),
+                CollectorPresence::exited,
+            )
+            .unwrap();
             assert!(waiting_campaigns(&session).is_empty());
             assert!(replay_io::segment_paths(&campaign).unwrap().is_empty());
             let completed = read_status(&session.join("completed.json")).unwrap();
             assert_eq!(completed["process_exited"], true);
             assert_eq!(completed["waiting"], json!([]));
             assert_eq!(completed["replays"].as_array().unwrap().len(), 1);
-            finalize_cli_session(&session, &target, true).unwrap();
+            finalize_cli_session(
+                &session,
+                &target,
+                terminal_outcome(&session, 7, 13, false, true, true),
+                CollectorPresence::exited,
+            )
+            .unwrap();
             fs::remove_dir_all(root).unwrap();
         }
     }
@@ -6466,7 +7701,15 @@ mod tests {
         let refused = "00000000-0000-4000-8000-000000000000";
         let spool = write_load_segment(&session.join(refused), 0, 10, 5..=6, 21);
         let before = fs::read(&spool).unwrap();
-        assert!(finalize_cli_session(&session, &target, true).is_err());
+        assert!(
+            finalize_cli_session(
+                &session,
+                &target,
+                terminal_outcome(&session, 7, 13, false, true, true),
+                CollectorPresence::exited
+            )
+            .is_err()
+        );
         assert!(replay_io::segment_paths(&campaign).unwrap().is_empty());
         assert_eq!(fs::read(&spool).unwrap(), before);
         let waiting = waiting_campaigns(&session);
@@ -6506,7 +7749,13 @@ mod tests {
         let recording = output.join("Campaign.battleplan");
         let mut published: Option<Vec<u8>> = None;
         for _ in 0..2 {
-            let error = finalize_failed_session(&session, &output, &witness, true).unwrap_err();
+            let error = finalize_cli_session(
+                &session,
+                &output,
+                terminal_outcome(&session, 7, 13, false, true, true),
+                CollectorPresence::exited,
+            )
+            .unwrap_err();
             assert!(error.contains("partial"), "{error}");
             assert_eq!(published_hours(&recording), [(9, 2), (9, 3), (9, 4)]);
             let bytes = fs::read(&recording).unwrap();
