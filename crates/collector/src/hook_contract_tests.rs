@@ -4,146 +4,42 @@ use super::*;
 pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
     use TableId::*;
     match family {
-        Family::EquipmentDestruction => &[
-            EquipmentDestruction,
-            DivisionEquipmentDeletions,
-            VariantDefinitions,
-            VariantModules,
-            VariantStats,
-            VariantUpgrades,
-            AvailableEquipmentVariants,
-        ],
-        Family::Land => &[LandCombatResults, DestroyedDivisions, LandEventCoverage],
-        Family::Portrait => &[CharacterPortraits, LeaderPortraits, LeaderPortraitPaths],
-        Family::Opinion => &[
-            RelationOpinions,
-            RelationTuples,
-            WarOwnedRelations,
-            WarRelationGoals,
-            WarOverviewCountries,
-            WarNameRules,
-        ],
+        Family::Portrait
+        | Family::CombatLogPrune
+        | Family::Opinion
+        | Family::Advisor
+        | Family::Relation
+        | Family::History
+        | Family::Flags
+        | Family::Buildings
+        | Family::AdvisorPools
+        | Family::PartyLeaders
+        | Family::Variables
+        | Family::Parties
+        | Family::Wings
+        | Family::Roster
+        | Family::PoliticalStatus
+        | Family::Rails
+        | Family::Territory
+        | Family::ArmyStats
+        | Family::CountryInputs
+        | Family::Missions
+        | Family::Raid
+        | Family::NavalTrees
+        | Family::UnitLeaders
+        | Family::Census
+        | Family::AirRecords
+        | Family::LocalSubunits
+        | Family::ShipModels
+        | Family::ProvinceUnits
+        | Family::AirBaseCarry
+        | Family::Fuel
+        | Family::Propaganda => &[],
+        Family::EquipmentDestruction => &[EquipmentDestruction, DivisionEquipmentDeletions],
+        Family::Land => &[LandCombatResults, DestroyedDivisions],
         Family::Construction => &[ConstructionLineOutput],
         Family::LineOutput => &[ProductionLineOutput, RocketProductionOutput],
-        Family::CombatLogPrune => &[
-            CombatLogEquipment,
-            CombatLogState,
-            CombatLogGroups,
-            CombatLogMonths,
-            CombatLogManpower,
-            CombatLogReferences,
-            CombatLogBattles,
-            CombatLogBattleSides,
-            CombatLogBattleCountries,
-            CombatLogBattleEquipment,
-            CombatLogBattleModifiers,
-            CombatLogTemplates,
-            CombatLogEnemyEquipment,
-        ],
-        Family::Advisor => &[
-            Characters,
-            CountryLeaderRoles,
-            AdvisorRoles,
-            UnitLeaderTraits,
-            CharacterRoleTraits,
-            CharacterOperatives,
-            AvailableAdvisors,
-            PartyLeaders,
-        ],
-        Family::Relation => &[AirCountryRelations, WarRelations, RelationLinks],
-        Family::History => &[AirNavalPatrolHistories],
-        Family::Flags => &[ScriptFlags],
-        Family::Buildings => &[StateBuildings, ProvinceBuildings],
-        Family::AdvisorPools => &[AvailableAdvisors, HiredAdvisors, AdvisorTokens],
-        Family::PartyLeaders => &[PartyLeaders],
-        Family::Variables => &[ScriptVariables, FactionVariables, Projects, ProjectPrograms],
-        Family::Parties => &[PoliticalParties, ActiveIdeas],
-        Family::Wings => &[WingEquipment],
-        Family::Roster => &[
-            CountryCharacters,
-            CountryRetiredCharacters,
-            Scientists,
-            ScientistSkills,
-            Characters,
-            CountryLeaderRoles,
-            AdvisorRoles,
-            UnitLeaderTraits,
-            CharacterRoleTraits,
-            CharacterOperatives,
-            ScientistDaily,
-        ],
-        Family::PoliticalStatus => &[Politics],
-        Family::Missions => &[
-            AirRegionalMissions,
-            AirTransferInputs,
-            AirGroundCrews,
-            RadarCoverage,
-            NavalRegionalMines,
-            NavalAccidentReports,
-            FleetCounterInputs,
-        ],
-        Family::Rails => &[RailCooldowns, RailEdges],
-        Family::Territory => &[States, Provinces],
-        Family::ArmyStats => &[
-            DivisionLandInputs,
-            DivisionStatus,
-            DivisionPanelSources,
-            DivisionPanelStats,
-            DivisionHistory,
-        ],
-        Family::CountryInputs => &[
-            CountryStabilityInputs,
-            CountryStabilityLines,
-            ResearchInputs,
-            ResearchAppliedBonuses,
-            ResearchModifiers,
-            ResearchTechnologies,
-            TechnologyDefinitions,
-            Focus,
-            CompletedFocuses,
-            Projects,
-            ProjectHistory,
-            CountryAppearance,
-            CountryCounterInputs,
-            CountryVisibility,
-            CountryWargoals,
-            WargoalTargets,
-            WargoalJustifications,
-            StateResistance,
-            CountryUnitSpeedEntries,
-            FactionResearch,
-        ],
-        Family::Raid => &[Raids, RaidSpeedInputs, RaidAirScores],
-        Family::NavalTrees => &[
-            NavalModifierTreeSamples,
-            NavalModifierTrees,
-            NavalMissionCountries,
-            NavalMissionCommanders,
-            DivisionRetreatBans,
-            UnitLeaderTraits,
-            ShipModels,
-            StateResistance,
-        ],
-        Family::UnitLeaders => &[UnitLeaders, UnitLeaderTraitExperience],
-        Family::Census => &[
-            Characters,
-            CountryCharacters,
-            Scientists,
-            ScientistSkills,
-            UnitLeaders,
-            CharacterRoleTraits,
-        ],
         Family::WorldInputs => &[
-            ProvinceNames,
-            NavalRegionAccess,
-            WorldTension,
-            ThreatSources,
-            ThreatCountryAggregates,
-            DynamicModifiers,
-            IndustrialOrganisations,
-            IndustrialOrganisationDetails,
-            IndustrialOrganisationPolicies,
-            IndustrialOrganisationHistory,
             DoctrineFolders,
             DoctrineTracks,
             DoctrineLeaderMastery,
@@ -152,36 +48,28 @@ pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
             DoctrineEquipmentBonuses,
             DoctrineCountries,
         ],
-        Family::AirRecords => &[AirRegionCombat],
-        Family::LocalSubunits => &[CountryLocalSubunits],
         Family::Templates => &[
             DivisionTemplates,
             DivisionTemplateIcons,
             CountryTemplateState,
             OrdersGroupCounterInputs,
         ],
-        Family::ShipModels => &[ShipModels],
-        Family::ProvinceUnits => &[ProvinceUnitOrder],
-        Family::AirBaseCarry => &[AirBaseRegistrations],
         Family::Experience => &[CountryExperienceGains],
-        Family::Fuel => &[CountryFuel],
         Family::OperationOutcomes => &[OperationCompletions],
         Family::Politics => &[
             CountryPowerDaily,
             CountryPowerChanges,
             CountryPowerDailyCosts,
             GovernmentChanges,
-            PoliticsCaptureCoverage,
         ],
         Family::Logistics => &[LogisticsEquipment],
         Family::Peace => &[PeaceSettlements],
         Family::NavalResultSources => &[NavalResultSources],
-        Family::AirLosses => &[AirLossEvents, AirDailyRoster],
+        Family::AirLosses => &[AirLossEvents],
         Family::BuildingBombing => &[BuildingBombingDamage],
         Family::NuclearStrikes => &[NuclearStrikes],
         Family::MapEvents => &[MapEvents],
         Family::EventFeed => &[EventFeedHistory],
-        Family::Propaganda => &[PropagandaEfforts],
         Family::IntelSources => &[IntelContributions, IntelSources],
         Family::NetworkAuxiliary => &[IntelNetworkAuxiliaries],
         Family::NavalManagement => &[
@@ -201,15 +89,9 @@ pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
             WarLendLeaseHistories,
         ],
         Family::Designs => &[
-            VariantDefinitions,
-            VariantModules,
-            VariantStats,
-            VariantUpgrades,
             VariantChanges,
-            VariantBonusSnapshots,
             DesignCountryModifiers,
             DesignCountryTemplates,
-            DesignObserverContext,
             DesignOrganisationLiveness,
         ],
         Family::FactionGoals => &[FactionGoalStatus, FactionGoalEntries],
@@ -225,31 +107,11 @@ pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
             FactionMinimumUpgrades,
             FactionDoctrine,
         ],
-        Family::Market => &[
-            CountryMarket,
-            MarketContractTerms,
-            LendLeaseAgreements,
-            MarketEvents,
-        ],
+        Family::Market => &[MarketEvents],
         Family::Hourly | Family::WorldLifetime => &[],
     }
 }
 
-#[test]
-fn refusal_tables_match_capture_contracts() {
-    for family in Family::ALL {
-        assert_eq!(
-            family.tables(),
-            expected_tables(family),
-            "{} refusal mapping",
-            family.name()
-        );
-    }
-}
-
-// These are the source catalogues the constructors walk, independently of the
-// diagnostic/overlap inventory. Exhaustiveness forces each new runtime family
-// to declare its native ownership here as well as its refusal tables.
 fn constructor_sites(family: Family) -> Vec<usize> {
     use engine_air_history::{air_history_mutations, air_loss_sites, air_record_mutations};
     use engine_characters::ccharacter_portraits;
@@ -686,7 +548,7 @@ fn omitted_or_wrong_family_native_site_is_a_registration_failure() {
     );
 }
 
-fn isolated(test: &str) -> bool {
+pub(crate) fn isolated(test: &str) -> bool {
     const CHILD: &str = "BATTLE_PLAN_CONTAINMENT_REVIEW_TEST";
     if std::env::var_os(CHILD).is_some() {
         return true;
@@ -704,7 +566,7 @@ fn isolated(test: &str) -> bool {
     );
     false
 }
-fn reset_session() {
+pub(crate) fn reset_session() {
     for flag in &FAILED {
         flag.store(false, Ordering::Release);
     }

@@ -49,6 +49,15 @@ fn hour(
     job: &mut AirBasesJob,
     check: Check,
 ) -> (fog::RegistrationsSnapshot, Vec<usize>, RegistrationCounts) {
+    let (decoded, reads, counts) = captured_hour(bytes, job, check);
+    (decoded.registrations_snapshot(), reads, counts)
+}
+
+fn captured_hour(
+    bytes: &[u8],
+    job: &mut AirBasesJob,
+    check: Check,
+) -> (fog::Captured, Vec<usize>, RegistrationCounts) {
     job.carry.check = check;
     let memory = Reads {
         inner: kit::memory(bytes),
@@ -74,11 +83,7 @@ fn hour(
     decoded.registrations_raw_mode = true;
     decoded.decode_registrations_payload(kit::BASE, job, &mut [0; AIR_BASES_N]);
     let counts = job.registration_store.as_ref().unwrap().counts();
-    (
-        decoded.registrations_snapshot(),
-        memory.reads.into_inner(),
-        counts,
-    )
+    (decoded, memory.reads.into_inner(), counts)
 }
 
 fn direct(bytes: &[u8]) -> fog::RegistrationsSnapshot {
@@ -98,6 +103,83 @@ fn counts(carried: u64, read: u64, verified: u64, mismatches: u64) -> Registrati
         read,
         verified,
         mismatches,
+    }
+}
+
+#[test]
+fn failed_registration_observer_and_forwarder_read_changed_native_subtrees() {
+    use crate::air_base_carry_changes::Changes;
+    use crate::hook_failures::{Family, FamilyHooks, contract_tests, failed};
+    use replay_frame::frame::{FrameInput, Metrics};
+    if !contract_tests::isolated(
+        "extended::air::registration_store_tests::failed_registration_observer_and_forwarder_read_changed_native_subtrees",
+    ) {
+        return;
+    }
+    for forwarder in [false, true] {
+        contract_tests::reset_session();
+        if forwarder {
+            FamilyHooks::<crate::ship_model_changes::Hooks>::construct(0, || {
+                Err("synthetic relay allocation failure")
+            })
+            .unwrap();
+            assert!(failed(Family::ShipModels));
+        } else {
+            FamilyHooks::<crate::air_base_carry_changes::Hooks>::construct(0, || {
+                Err("synthetic relay allocation failure")
+            })
+            .unwrap();
+        }
+        assert!(failed(Family::AirBaseCarry));
+        assert_eq!(
+            crate::air_base_carry_changes::Observer.sequence(B0_HANDLE),
+            None
+        );
+        let mut bytes = fixture();
+        let mut job = AirBasesJob::fixture();
+        job.registration_store = Some(Box::new(RegistrationStore::new()));
+        job.carry = CarryRun::default();
+        let mut previous = None;
+        for value in [13_i64, 29] {
+            kit::put64(
+                &mut bytes,
+                kit::CONT1 + ccountry_air_container::CAPACITY_RAW,
+                value as u64,
+            );
+            let (decoded, reads, work) = captured_hour(&bytes, &mut job, Check::Nothing);
+            let fresh = decoded.registrations_snapshot();
+            assert_eq!(work, counts(0, 2, 0, 0));
+            assert!(
+                reads
+                    .iter()
+                    .any(|at| (kit::CONT1..kit::CONT1 + 0x100).contains(at))
+            );
+            assert_same(&fresh, &direct(&bytes));
+            if let Some(previous) = previous {
+                assert_ne!(fresh.rows, previous);
+            }
+            previous = Some(fresh.rows);
+            let mut frame = FrameInput {
+                branch: 1,
+                hour: 10,
+                metrics: Metrics::default(),
+                tables: std::array::from_fn(|index| {
+                    TableView::Complete(rows::TableRows::empty(TableId::ALL[index])).into()
+                }),
+            };
+            for (table, view) in fog::TABLES.into_iter().zip(decoded.tables()) {
+                frame.tables[table.index()] = view.into();
+            }
+            let expected = frame.tables[TableId::AirBaseRegistrations.index()].clone();
+            assert!(
+                matches!(&expected, TableInput::Sampled(TableView::Complete(rows::TableRows::AirBaseRegistrations(rows))) if !rows.is_empty())
+            );
+            crate::hook_failures::apply(&mut frame).unwrap();
+            assert_eq!(
+                frame.tables[TableId::AirBaseRegistrations.index()],
+                expected
+            );
+        }
     }
 }
 

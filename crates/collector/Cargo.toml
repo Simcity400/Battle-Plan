@@ -444,6 +444,7 @@ name = "tap_foreign_unwind"
 required-features = ["tap-foreign-probe"]
 
 [dev-dependencies]
+engine-equipment.workspace = true
 collector-naval-management = { workspace = true, features = ["test-support"] }
 # Saves spools the collector writes, as the recorder does.
 recorder-replay.workspace = true

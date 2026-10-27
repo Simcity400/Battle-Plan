@@ -400,6 +400,87 @@ impl Family {
                 | (Missions, WorldInputs | Raid)
         )
     }
+    // These captures already refuse missing observation or read current sources.
+    fn preserves_capture(self, table: TableId) -> bool {
+        if matches!(
+            self,
+            Self::Portrait
+                | Self::CombatLogPrune
+                | Self::Opinion
+                | Self::Advisor
+                | Self::Relation
+                | Self::History
+                | Self::Flags
+                | Self::Buildings
+                | Self::AdvisorPools
+                | Self::PartyLeaders
+                | Self::Variables
+                | Self::Parties
+                | Self::Wings
+                | Self::Roster
+                | Self::PoliticalStatus
+                | Self::Rails
+                | Self::Territory
+                | Self::ArmyStats
+                | Self::CountryInputs
+                | Self::Missions
+                | Self::Raid
+                | Self::NavalTrees
+                | Self::UnitLeaders
+                | Self::Census
+                | Self::AirRecords
+                | Self::LocalSubunits
+                | Self::ShipModels
+                | Self::ProvinceUnits
+                | Self::AirBaseCarry
+                | Self::Fuel
+                | Self::Propaganda
+        ) {
+            return true;
+        }
+        match self {
+            Self::Land => table == TableId::LandEventCoverage,
+            Self::Politics => table == TableId::PoliticsCaptureCoverage,
+            Self::Designs => matches!(
+                table,
+                TableId::DesignObserverContext
+                    | TableId::VariantDefinitions
+                    | TableId::VariantModules
+                    | TableId::VariantStats
+                    | TableId::VariantUpgrades
+                    | TableId::VariantBonusSnapshots
+            ),
+            Self::EquipmentDestruction => matches!(
+                table,
+                TableId::VariantDefinitions
+                    | TableId::VariantModules
+                    | TableId::VariantStats
+                    | TableId::VariantUpgrades
+                    | TableId::AvailableEquipmentVariants
+            ),
+            Self::AirLosses => table == TableId::AirDailyRoster,
+            Self::Market => matches!(
+                table,
+                TableId::CountryMarket
+                    | TableId::MarketContractTerms
+                    | TableId::LendLeaseAgreements
+            ),
+            Self::WorldInputs => matches!(
+                table,
+                TableId::ProvinceNames
+                    | TableId::NavalRegionAccess
+                    | TableId::WorldTension
+                    | TableId::ThreatSources
+                    | TableId::ThreatCountryAggregates
+                    | TableId::DynamicModifiers
+                    | TableId::IndustrialOrganisations
+                    | TableId::IndustrialOrganisationDetails
+                    | TableId::IndustrialOrganisationPolicies
+                    | TableId::IndustrialOrganisationHistory
+            ),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -545,13 +626,11 @@ pub(crate) fn status() -> impl Serialize {
     Status
 }
 pub(crate) fn apply(source: &mut FrameInput) -> io::Result<()> {
+    if let Some(error) = fatal_installation_error() {
+        return Err(io::Error::other(error));
+    }
     if !ANY.load(Ordering::Acquire) {
         return Ok(());
-    }
-    if failed(Family::Templates)
-        && let Some(error) = fatal_installation_error()
-    {
-        return Err(io::Error::other(error));
     }
     let failures = FAILURES.lock().unwrap_or_else(PoisonError::into_inner);
     // Template observation admits reuse; its absence selects fresh acquisition.
@@ -564,6 +643,9 @@ pub(crate) fn apply(source: &mut FrameInput) -> io::Result<()> {
             .find(|failure| failure.family == family.name())
             .unwrap();
         for table in family.tables() {
+            if family.preserves_capture(*table) {
+                continue;
+            }
             source.tables[table.index()] = TableView::Unavailable {
                 reason: engine_allocation::string(&failure.refusal)?,
             }
@@ -1019,6 +1101,18 @@ mod tests {
                     family.name()
                 );
             }
+            for table in family.tables() {
+                if !super::contract_tests::expected_tables(family).contains(table) {
+                    assert!(
+                        matches!(
+                            &source.tables[table.index()],
+                            replay_frame::frame::TableInput::Sampled(TableView::Complete(_))
+                        ),
+                        "{} {table:?} discarded fresh rows",
+                        family.name()
+                    );
+                }
+            }
             assert!(matches!(
                 &source.tables[TableId::Clock.index()],
                 replay_frame::frame::TableInput::Sampled(TableView::Complete(_))
@@ -1088,7 +1182,15 @@ impl FamilyHooks<crate::faction_companion_changes::Hooks> {
 
 #[cfg(test)]
 #[path = "hook_contract_tests.rs"]
-mod contract_tests;
+pub(crate) mod contract_tests;
+
+#[cfg(test)]
+#[path = "hook_fresh_reads_tests.rs"]
+mod fresh_reads_tests;
+
+#[cfg(test)]
+#[path = "hook_fresh_producer_tests.rs"]
+mod fresh_producer_tests;
 
 #[cfg(test)]
 #[path = "hook_constructor_gate.rs"]

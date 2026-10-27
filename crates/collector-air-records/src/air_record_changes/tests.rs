@@ -48,6 +48,24 @@ fn a_take_names_each_touched_holder_once() {
     free(&touched);
 }
 
+/// Hooks that never installed leave every interval unnamed, however many
+/// takes clear the initial loss.
+#[test]
+fn a_never_installed_observer_certifies_no_interval() {
+    let touched = Touched::new();
+    touched
+        .set
+        .store(Box::into_raw(Set::new(0).unwrap()), Ordering::SeqCst);
+    let mut offered = None;
+    let mut out = Vec::new();
+    for _ in 0..3 {
+        out.clear();
+        assert_eq!(touched.take(&mut out, &mut offered), Ok(false));
+        assert!(out.is_empty());
+    }
+    free(&touched);
+}
+
 /// A lease spanning the gate, a closed gate and a full set each lose the
 /// interval; the set is drained only by an exclusive take.
 #[test]

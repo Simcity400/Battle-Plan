@@ -639,6 +639,7 @@ dependencies = [
  "engine-decisions",
  "engine-deployment",
  "engine-dlc",
+ "engine-equipment",
  "engine-events",
  "engine-executable",
  "engine-fixed-layout",

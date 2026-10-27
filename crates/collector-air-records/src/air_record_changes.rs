@@ -201,7 +201,10 @@ impl Touched {
             }
             Ok(())
         })();
-        let complete = result.is_ok() && !self.lost.swap(false, Ordering::SeqCst);
+        // Without installed writers nothing reaches the set, so no interval is named.
+        let complete = result.is_ok()
+            && !self.lost.swap(false, Ordering::SeqCst)
+            && self.observing.load(Ordering::SeqCst);
         self.closed.store(false, Ordering::SeqCst);
         result.map(|()| complete)
     }
