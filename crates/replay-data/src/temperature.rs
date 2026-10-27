@@ -190,11 +190,20 @@ pub fn window_span(cursor: i32, window: i32, count: i32) -> Result<(i32, i32), &
     if cursor >= count {
         return Ok((0, cursor));
     }
-    let span = window.max(1).min(count);
+    let span = window_capacity(window, count as usize) as i32;
     Ok((
         span,
         ((i64::from(cursor) + i64::from(span)) % i64::from(count)) as i32,
     ))
+}
+
+fn window_capacity(width: i32, count: usize) -> usize {
+    // The first native signed decrement wraps at i32::MIN.
+    if width == i32::MIN {
+        count
+    } else {
+        (width.max(1) as usize).min(count)
+    }
 }
 
 /// The slots an update starting at `cursor` visits, and the cursor it leaves, following the
@@ -220,7 +229,7 @@ pub fn window(cursor: i32, window: i32, count: i32) -> Result<(Vec<u32>, i32), &
         if remaining.wrapping_sub(1) <= 0 {
             break;
         }
-        remaining -= 1;
+        remaining = remaining.wrapping_sub(1);
         if next == cursor {
             break;
         }
@@ -265,12 +274,21 @@ impl Simulation {
     /// The next hour: the weather pass runs with the seed after its increment, or, for
     /// `None`, an hour whose suspended manager updated nothing.
     pub fn advance(&mut self, content: &Content, seed: Option<u32>) -> Result<(), String> {
+        self.advance_changed(content, seed, None)
+    }
+
+    fn advance_changed(
+        &mut self,
+        content: &Content,
+        seed: Option<u32>,
+        changed: Option<&mut Vec<(u32, i64, i64)>>,
+    ) -> Result<(), String> {
         let hour = self
             .hour
             .checked_add(1)
             .ok_or("weather temperature hour overflow")?;
         if let Some(seed) = seed {
-            self.update(content, hour, seed)?;
+            self.update_changed(content, hour, seed, changed)?;
         }
         self.hour = hour;
         Ok(())
@@ -278,6 +296,16 @@ impl Simulation {
 
     /// One ordinary update (the manager's pass flag clear, pass index zero) at native date `hour`.
     pub fn update(&mut self, content: &Content, hour: i32, seed: u32) -> Result<(), String> {
+        self.update_changed(content, hour, seed, None)
+    }
+
+    fn update_changed(
+        &mut self,
+        content: &Content,
+        hour: i32,
+        seed: u32,
+        mut changed: Option<&mut Vec<(u32, i64, i64)>>,
+    ) -> Result<(), String> {
         let count = self.states.len();
         if content.provinces.len() != count {
             return Err(format!(
@@ -301,6 +329,15 @@ impl Simulation {
             if commit {
                 state.temperature = state.staged;
                 state.drift = state.working;
+            }
+            let before = self.states[slot as usize].temperature;
+            if before != state.temperature
+                && let Some(changed) = changed.as_deref_mut()
+            {
+                changed
+                    .try_reserve(1)
+                    .map_err(|error| format!("weather temperature changes: {error}"))?;
+                changed.push((slot, before, state.temperature));
             }
             self.states[slot as usize] = state;
         }
@@ -390,9 +427,51 @@ pub struct Memo {
     simulation: Option<Simulation>,
     /// Derivations of the kept pass, at most one per hour; always empty unless holding.
     held: Vec<Simulation>,
+    changed: Vec<(u32, i64, i64)>,
+    changed_credit: Option<engine_allocation::credit::Credit>,
+    incremental: bool,
+    detached_words: Option<std::sync::Weak<input::Words>>,
 }
 
 impl Memo {
+    /// Admit the native update window before any committed edit can be appended.
+    pub fn admit_changes(&mut self, content: &Content) -> std::io::Result<()> {
+        self.admit_changes_in(
+            content,
+            &engine_allocation::credit::MemoryBudget::preparation(),
+        )
+    }
+
+    fn admit_changes_in(
+        &mut self,
+        content: &Content,
+        budget: &engine_allocation::credit::MemoryBudget,
+    ) -> std::io::Result<()> {
+        let count = window_capacity(
+            content.settings.provinces_per_update,
+            content.provinces.len(),
+        );
+        if count <= self.changed.capacity() {
+            return Ok(());
+        }
+        let bytes = engine_allocation::mul(count, size_of::<(u32, i64, i64)>())?;
+        let credit = budget.admit(bytes).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("regional-weather temperature change capacity: {error}"),
+            )
+        })?;
+        let mut changed = Vec::new();
+        engine_allocation::reserve_exact(&mut changed, count)?;
+        self.changed = changed;
+        self.changed_credit = Some(credit);
+        Ok(())
+    }
+
+    pub fn change_bytes(&self) -> usize {
+        self.changed.capacity() * size_of::<(u32, i64, i64)>()
+    }
+
     /// The owner must trim held derivations to its live frames with [`Self::retain_held`].
     pub fn holding() -> Self {
         Self {
@@ -413,38 +492,79 @@ impl Memo {
         rows: &[WeatherProvinceRow],
         content: Result<&Content, &str>,
     ) -> Result<&[State], String> {
-        let mut anchored = Vec::new();
-        let mut recorded = Vec::new();
-        for (slot, row) in rows.iter().enumerate() {
-            if row.id as usize != slot {
-                return Err("WeatherProvinces slots are not dense".into());
-            }
-            match row.temperature.record()? {
-                TemperatureRecord::Anchored(state) => anchored.push(state),
-                TemperatureRecord::AtHour(temperature) => recorded.push(State {
-                    temperature,
-                    ..State::default()
-                }),
-                TemperatureRecord::NotRecorded => {
-                    return Err("WeatherProvinces temperature not recorded".into());
+        self.states_changed(branch, hour, rows, content, None)
+    }
+
+    /// `changed` certifies exactly the changed/deleted keys since this memo's last successful hour.
+    pub fn states_changed(
+        &mut self,
+        branch: u64,
+        hour: i32,
+        rows: &[WeatherProvinceRow],
+        content: Result<&Content, &str>,
+        changed: Option<&[u128]>,
+    ) -> Result<&[State], String> {
+        self.incremental = false;
+        self.changed.clear();
+        self.detached_words = None;
+        let pass = rows.first().and_then(|row| match &row.temperature_pass {
+            Recorded::Value(Some(pass)) => Some(pass),
+            _ => None,
+        });
+        let same_anchor = changed.is_some_and(|changed| {
+            self.branch == branch
+                && pass.is_some_and(|pass| self.anchor == Some((pass.anchor, pass.cursor)))
+                && rows.len() == self.anchored.len()
+                && !rows.is_empty()
+                && changed.iter().all(|&key| {
+                    usize::try_from(key).ok().and_then(|slot| {
+                        let row = rows.get(slot)?;
+                        Some(
+                            row.id as usize == slot
+                                && row.temperature.record().ok()
+                                    == Some(TemperatureRecord::Anchored(self.anchored[slot])),
+                        )
+                    }) == Some(true)
+                })
+        });
+        let anchored = if same_anchor {
+            None
+        } else {
+            let mut anchored = Vec::new();
+            let mut recorded = Vec::new();
+            for (slot, row) in rows.iter().enumerate() {
+                if row.id as usize != slot {
+                    return Err("WeatherProvinces slots are not dense".into());
+                }
+                match row.temperature.record()? {
+                    TemperatureRecord::Anchored(state) => anchored.push(state),
+                    TemperatureRecord::AtHour(temperature) => recorded.push(State {
+                        temperature,
+                        ..State::default()
+                    }),
+                    TemperatureRecord::NotRecorded => {
+                        return Err("WeatherProvinces temperature not recorded".into());
+                    }
                 }
             }
-        }
-        if !recorded.is_empty() {
-            if !anchored.is_empty() {
-                return Err("WeatherProvinces mixes anchored and hourly temperatures".into());
+            if !recorded.is_empty() {
+                if !anchored.is_empty() {
+                    return Err("WeatherProvinces mixes anchored and hourly temperatures".into());
+                }
+                self.anchor = None;
+                self.held.clear();
+                self.simulation = Some(Simulation::new(hour, 0, recorded));
+                return Ok(&self.simulation.as_ref().unwrap().states);
             }
-            self.anchor = None;
-            self.held.clear();
-            self.simulation = Some(Simulation::new(hour, 0, recorded));
-            return Ok(&self.simulation.as_ref().unwrap().states);
-        }
+            Some(Cow::Owned(anchored))
+        };
         self.states_anchored(
             branch,
             hour,
-            Cow::Owned(anchored),
+            anchored,
             rows.first().map(|row| &row.temperature_pass),
             content,
+            changed.is_some(),
         )
     }
 
@@ -452,9 +572,10 @@ impl Memo {
         &mut self,
         branch: u64,
         hour: i32,
-        anchored: Cow<'_, [State]>,
+        anchored: Option<Cow<'_, [State]>>,
         pass: Option<&Recorded<Option<crate::rows::TemperaturePass>>>,
         content: Result<&Content, &str>,
+        collect_changes: bool,
     ) -> Result<&[State], String> {
         let pass = match pass {
             Some(Recorded::Value(Some(pass))) => pass,
@@ -473,14 +594,16 @@ impl Memo {
         let content = content.map_err(|reason| format!("temperature content: {reason}"))?;
         if self.branch != branch
             || self.anchor != Some((pass.anchor, pass.cursor))
-            || self.anchored.as_slice() != anchored.as_ref()
+            || anchored
+                .as_ref()
+                .is_some_and(|anchored| self.anchored.as_slice() != anchored.as_ref())
         {
             self.branch = branch;
             self.anchor = Some((pass.anchor, pass.cursor));
             self.consumed.clear();
             self.simulation = None;
             self.held.clear();
-            self.anchored = anchored.into_owned();
+            self.anchored = anchored.map(Cow::into_owned).unwrap_or_default();
         }
         // Derivations past the shared seed prefix cannot certify this frame.
         let agreed = self
@@ -523,6 +646,7 @@ impl Memo {
                 self.anchored.clone(),
             )),
         };
+        let continued = start.is_none();
         if let Some(start) = start {
             if let Some(previous) = self.simulation.take()
                 && self.hold
@@ -533,10 +657,19 @@ impl Memo {
             self.simulation = Some(start);
         }
         let from = steps(self.simulation.as_ref().unwrap());
+        let incremental = collect_changes
+            && continued
+            && self.simulation.as_ref().unwrap().hour.checked_add(1) == Some(hour);
+        if incremental {
+            self.admit_changes(content)
+                .map_err(|error| error.to_string())?;
+        }
         for at in from..reach {
             let entry = pass.hours[at];
             let simulation = self.simulation.as_mut().unwrap();
-            if let Err(reason) = simulation.advance(content, entry) {
+            if let Err(reason) =
+                simulation.advance_changed(content, entry, incremental.then_some(&mut self.changed))
+            {
                 self.anchor = None;
                 self.simulation = None;
                 self.held.clear();
@@ -555,7 +688,13 @@ impl Memo {
         if self.hold && !self.held.iter().any(|held| held.hour == simulation.hour) {
             self.held.push(simulation.clone());
         }
+        self.incremental = incremental;
         Ok(&simulation.states)
+    }
+
+    /// Committed temperature edits from the preceding successful hour; None after any root reset.
+    pub fn changes(&self) -> Option<&[(u32, i64, i64)]> {
+        self.incremental.then_some(&self.changed)
     }
 
     /// Trims held derivations by branch and hour without discarding the last simulation.

@@ -72,7 +72,7 @@ fn membership(query: &Query<'_>) -> io::Result<Arc<Membership>> {
 /// Each source owns one drill memo per branch. Binding changes reset only
 /// that memo; this never mutates the prepared observer or publishes history.
 #[derive(Default)]
-struct Temperatures(BTreeMap<u64, temperature::Observation>);
+pub(super) struct Temperatures(pub(super) BTreeMap<u64, temperature::Observation>);
 
 fn temperatures(
     query: &Query<'_>,
@@ -80,11 +80,23 @@ fn temperatures(
     members: &[u32],
     warnings: &mut Vec<String>,
 ) -> io::Result<Result<Vec<Option<i64>>, String>> {
-    dashboard_text::metadata::check_cancel(query.cancelled)?;
+    temperatures_checked(query, frame, members, warnings, &mut || {
+        dashboard_text::metadata::check_cancel(query.cancelled)
+    })
+}
+
+pub(super) fn temperatures_checked(
+    query: &Query<'_>,
+    frame: &DecodedFrame,
+    members: &[u32],
+    warnings: &mut Vec<String>,
+    check: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<Result<Vec<Option<i64>>, String>> {
+    check()?;
     let state = query.source.state::<Temperatures>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     let observation = state.0.entry(query.branch).or_default();
-    observation.bind(query.source, query.content, query.cancelled)?;
+    observation.bind_states(query.source, query.content, query.cancelled)?;
     warnings.extend(observation.warnings());
     let values = observation.states(frame).map(|states| {
         members
@@ -92,7 +104,7 @@ fn temperatures(
             .map(|&id| states.get(id as usize).map(|state| state.temperature))
             .collect()
     });
-    dashboard_text::metadata::check_cancel(query.cancelled)?;
+    check()?;
     Ok(values)
 }
 

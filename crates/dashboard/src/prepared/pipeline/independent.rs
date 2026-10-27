@@ -473,6 +473,7 @@ pub(super) mod world_tension;
 /// minefields, naval supremacy, doctrine mastery, occupation reserve
 /// manpower, intel network coverage, naval repairs and refits.
 pub(super) mod keyed;
+mod weather;
 
 /// Shared faction account, selection and manpower histories.
 pub(super) mod factions;

@@ -151,7 +151,7 @@ impl<O: Observer> Branch for KeyedBranch<O> {
 
 use crate::products::{
     air_missions, air_statistics, doctrine_mastery, intel_coverage, minefields, naval_refits,
-    naval_repairs, naval_supremacy, occupation_reserve, regional_weather,
+    naval_repairs, naval_supremacy, occupation_reserve,
 };
 
 pub(in crate::prepared::pipeline) static AIR_MISSIONS: Keyed<air_missions::AirMissionsObserver> =
@@ -159,8 +159,7 @@ pub(in crate::prepared::pipeline) static AIR_MISSIONS: Keyed<air_missions::AirMi
 pub(in crate::prepared::pipeline) static AIR_STATISTICS: Keyed<
     air_statistics::AirStatisticsObserver,
 > = Keyed::new("independent.air-statistics", &["air-statistics"]);
-pub(in crate::prepared::pipeline) static WEATHER: Keyed<regional_weather::block::Observer> =
-    Keyed::new("independent.regional-weather", &["regional-weather"]);
+pub(in crate::prepared::pipeline) use super::weather::WEATHER;
 pub(in crate::prepared::pipeline) static MINEFIELDS: Keyed<minefields::MinefieldsObserver> =
     Keyed::new("independent.minefields", &["minefields"]);
 pub(in crate::prepared::pipeline) static NAVAL_SUPREMACY: Keyed<

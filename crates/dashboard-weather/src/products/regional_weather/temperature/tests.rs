@@ -16,8 +16,10 @@ use replay_frame::frame::TableView;
 use serde_json::json;
 
 fn bound(members: &[(u32, Vec<u32>)], count: usize) -> Bound {
+    let members: BTreeMap<_, _> = members.iter().cloned().collect();
     Bound {
-        members: members.iter().cloned().collect(),
+        inverse: Mutex::default(),
+        members,
         pass: Content {
             provinces: (0..count)
                 .map(|id| Province {
@@ -87,7 +89,7 @@ fn temperatures(
 
 fn observe(observation: &mut Observation, frame: &DecodedFrame) -> BTreeMap<String, i128> {
     let mut values = Values::default();
-    observation.observe(frame, &mut values);
+    observation.observe(frame, &mut values).unwrap();
     values
         .iter()
         .map(|(name, value)| (name.to_owned(), value))
@@ -97,6 +99,11 @@ fn observe(observation: &mut Observation, frame: &DecodedFrame) -> BTreeMap<Stri
 fn observation(content: Arc<Bound>) -> Observation {
     Observation {
         status: Some("available".into()),
+        inverse: Some(
+            content
+                .lease_inverse(&MemoryBudget::preparation(), &mut || Ok(()))
+                .unwrap(),
+        ),
         content: Some(content),
         ..Default::default()
     }
@@ -759,4 +766,424 @@ fn compact_bound_observers_preserve_literal_temperatures_and_refusals_after_resu
             keeper = <block::Observer as dashboard_keyed::Observer>::keeper().unwrap();
         }
     }
+}
+
+#[test]
+fn incremental_region_sums_keep_duplicate_and_overlapping_membership_exact() {
+    let mut content = bound(
+        &[
+            (71, vec![1, 2, 1]),
+            (72, vec![2, 3]),
+            (73, vec![]),
+            (74, vec![9]),
+        ],
+        4,
+    );
+    content.pass.settings.provinces_per_update = 2;
+    content.pass.settings.smoothing = 50_000;
+    content.pass.provinces[1].neighbours = vec![2];
+    content.pass.provinces[2].neighbours = vec![3];
+    content.pass.provinces[3].neighbours = vec![1];
+    let content = Arc::new(content);
+    let words = states(&[0, 100_001, -500_000, 900_000]);
+    let seeds: Vec<_> = (0..12).map(|at| (at % 4 != 2).then_some(at + 7)).collect();
+    let mut observation = observation(Arc::clone(&content));
+    let mut reference = Simulation::new(10, 1, words.clone());
+    let mut previous: Option<DecodedFrame> = None;
+    for step in 0..=12 {
+        if step > 0 {
+            reference.advance(&content.pass, seeds[step - 1]).unwrap();
+        }
+        let frame = temperatures(
+            1,
+            10,
+            10 + step as i32,
+            &words,
+            seeds[..step].to_vec(),
+            &content.pass,
+        );
+        let rows = frame.complete::<tables::WeatherProvinces>().unwrap();
+        let keys: Vec<_> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(at, row)| {
+                (previous
+                    .as_ref()
+                    .and_then(|frame| frame.complete::<tables::WeatherProvinces>().ok())
+                    .and_then(|rows| rows.get(at))
+                    != Some(row))
+                .then_some(at as u128)
+            })
+            .collect();
+        observation
+            .refresh(
+                &frame,
+                previous.as_ref().map(|_| keys.as_slice()),
+                |_, _| {},
+            )
+            .unwrap();
+        for (&id, members) in &content.members {
+            assert_eq!(
+                observation.aggregates.as_ref().unwrap().regions[&id].mean,
+                average(members, &reference.states),
+                "region {id}, step {step}"
+            );
+        }
+        assert_eq!(observation.aggregates.as_ref().unwrap().missing, 2);
+        if step > 0 {
+            assert!(observation.memo.changes().is_some());
+        }
+        previous = Some(frame);
+    }
+    assert_eq!(
+        content
+            .inverse
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .regions(1)
+            .collect::<Vec<_>>(),
+        [71, 71]
+    );
+    assert_eq!(
+        content
+            .inverse
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .regions(2)
+            .collect::<Vec<_>>(),
+        [71, 72]
+    );
+    assert_eq!(
+        observation.refused["region membership is empty or a member province temperature is unavailable"],
+        26
+    );
+}
+
+fn cached_bound(source: &Source, options: &ContentOptions) -> Arc<Bound> {
+    source
+        .state::<catalogue::KeyedResults<catalogue::RecordedBinding, Bound>>()
+        .lock()
+        .unwrap()
+        .get_or_init(&catalogue::recorded_binding(options), |_| {
+            unreachable!("fixture installed the binding")
+        })
+        .unwrap()
+}
+
+#[test]
+fn inverse_leases_retire_while_source_and_old_bindings_stay_cached() {
+    let source = source(vec![frame(10, Some(vec![row(71)]))]);
+    let options = install_cached(&source, bound(&[(71, vec![1, 1]), (72, vec![2])], 3));
+    let cached = cached_bound(&source, &options);
+    let expected = Inverse::allocation_bytes(3).unwrap();
+    let budget = MemoryBudget::new(expected);
+    let mut first = Observation::default();
+    let mut second = Observation::default();
+    first
+        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .unwrap();
+    second
+        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        first.inverse.as_ref().unwrap().index.as_ref().unwrap(),
+        second.inverse.as_ref().unwrap().index.as_ref().unwrap()
+    ));
+    let old = crate::allocation_watch::Watch::new(Arc::as_ptr(
+        first.inverse.as_ref().unwrap().index.as_ref().unwrap(),
+    ));
+    assert_eq!(budget.used(), expected);
+    first.retire();
+    assert_eq!(budget.used(), expected);
+    assert!(!old.freed());
+    drop(second);
+    assert_eq!(budget.used(), 0);
+    assert!(old.freed());
+    drop(old);
+    assert!(cached.inverse.lock().unwrap().is_none());
+
+    first
+        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .unwrap();
+    let retired = crate::allocation_watch::Watch::new(Arc::as_ptr(
+        first.inverse.as_ref().unwrap().index.as_ref().unwrap(),
+    ));
+    let mut other_options = options.clone();
+    other_options.allow_unverified = true;
+    source
+        .state::<catalogue::KeyedResults<catalogue::RecordedBinding, Bound>>()
+        .lock()
+        .unwrap()
+        .get_or_init(&catalogue::recorded_binding(&other_options), |_| {
+            Ok(bound(&[(72, vec![1, 2, 1])], 3))
+        })
+        .unwrap();
+    first
+        .bind_in(&source, Some(&other_options), &mut || Ok(()), &budget)
+        .unwrap();
+    assert!(retired.freed());
+    drop(retired);
+    assert!(cached.inverse.lock().unwrap().is_none());
+    assert_eq!(budget.used(), expected);
+    assert_eq!(
+        first
+            .inverse
+            .as_ref()
+            .unwrap()
+            .regions(1)
+            .collect::<Vec<_>>(),
+        [72, 72]
+    );
+    first.retire();
+    assert_eq!(budget.used(), 0);
+    assert!(
+        cached_bound(&source, &other_options)
+            .inverse
+            .lock()
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn inverse_denial_and_cancelled_initialization_release_credit_without_caching_failure() {
+    let source = source(vec![frame(10, Some(vec![row(71)]))]);
+    let options = install_cached(&source, bound(&[(71, vec![1, 2])], 3));
+    let cached = cached_bound(&source, &options);
+    let budget = MemoryBudget::new(Inverse::allocation_bytes(2).unwrap());
+    let mut observer = Observation::default();
+    let denied = observer
+        .bind_in(
+            &source,
+            Some(&options),
+            &mut || Ok(()),
+            &MemoryBudget::new(0),
+        )
+        .unwrap_err();
+    assert_eq!(denied.kind(), io::ErrorKind::WouldBlock);
+    assert!(denied.to_string().contains("shared inverse membership"));
+    assert!(observer.inverse.is_none());
+    assert!(cached.inverse.lock().unwrap().is_none());
+    let cancelled = observer
+        .bind_in(
+            &source,
+            Some(&options),
+            &mut || {
+                if budget.used() > 0 {
+                    Err(io::ErrorKind::Interrupted.into())
+                } else {
+                    Ok(())
+                }
+            },
+            &budget,
+        )
+        .unwrap_err();
+    assert_eq!(cancelled.kind(), io::ErrorKind::Interrupted);
+    assert_eq!(budget.used(), 0);
+    assert!(observer.inverse.is_none());
+    assert!(cached.inverse.lock().unwrap().is_none());
+    observer
+        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .unwrap();
+    assert!(budget.used() > 0);
+    let cancelled = observer
+        .bind_in(
+            &source,
+            Some(&options),
+            &mut || Err(io::ErrorKind::Interrupted.into()),
+            &budget,
+        )
+        .unwrap_err();
+    assert_eq!(cancelled.kind(), io::ErrorKind::Interrupted);
+    assert!(observer.inverse.is_none());
+    assert_eq!(budget.used(), 0);
+    assert!(cached.inverse.lock().unwrap().is_none());
+    observer
+        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .unwrap();
+    assert!(observer.inverse.is_some());
+    drop(observer);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn concurrent_inverse_binders_share_one_credit_and_retire_the_last_lease() {
+    use std::sync::Barrier;
+    let source = source(vec![frame(10, Some(vec![row(71)]))]);
+    let options = install_cached(&source, bound(&[(71, vec![1, 1]), (72, vec![1, 2])], 3));
+    let cached = cached_bound(&source, &options);
+    let expected = Inverse::allocation_bytes(4).unwrap();
+    let budget = MemoryBudget::new(expected);
+    let start = Barrier::new(4);
+    let observers = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                scope.spawn(|| {
+                    start.wait();
+                    let mut observer = Observation::default();
+                    observer
+                        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+                        .unwrap();
+                    observer
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    for observer in &observers[1..] {
+        assert!(Arc::ptr_eq(
+            observers[0]
+                .inverse
+                .as_ref()
+                .unwrap()
+                .index
+                .as_ref()
+                .unwrap(),
+            observer.inverse.as_ref().unwrap().index.as_ref().unwrap()
+        ));
+    }
+    assert_eq!(budget.used(), expected);
+    assert_eq!(budget.peak(), expected);
+    assert_eq!(
+        observers[0]
+            .inverse
+            .as_ref()
+            .unwrap()
+            .regions(1)
+            .collect::<Vec<_>>(),
+        [71, 71, 72]
+    );
+    drop(observers);
+    assert_eq!(budget.used(), 0);
+    assert!(cached.inverse.lock().unwrap().is_none());
+}
+
+#[test]
+fn source_cached_cancelled_drill_never_holds_an_aggregate_inverse_lease() {
+    use super::super::provinces::{Temperatures, temperatures_checked};
+    use dashboard_base::prepared::{
+        coverage::{Coverage, SCHEMA},
+        prefix::Prefix,
+    };
+    use dashboard_keyed::query::Query;
+    use std::sync::atomic::Ordering;
+
+    let content = bound(&[(71, vec![1, 2])], 3);
+    let frame = temperatures(1, 10, 10, &states(&[0, -7, 21]), vec![], &content.pass);
+    let source = source(vec![frame.clone()]);
+    let options = install_cached(&source, content);
+    let cached = cached_bound(&source, &options);
+    let expected = Inverse::allocation_bytes(2).unwrap();
+    let budget = MemoryBudget::new(expected);
+    let mut prepared = Observation::default();
+    prepared
+        .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .unwrap();
+    let allocation = crate::allocation_watch::Watch::new(Arc::as_ptr(
+        prepared.inverse.as_ref().unwrap().index.as_ref().unwrap(),
+    ));
+    let fixture = Fixture::new();
+    let params = json!({"branchId":"1", "view":"provinces", "region":"71", "hour":10});
+    let prefix = Prefix {
+        coverage: Coverage {
+            schema: SCHEMA,
+            first_hour: 10,
+            last_hour: 9,
+            complete: false,
+        },
+        pending: vec![],
+    };
+    let cancelled = AtomicBool::new(false);
+    let query = Query {
+        source: &source,
+        params: &params,
+        content: Some(&options),
+        store: &fixture.store,
+        key: &fixture.key,
+        branch: 1,
+        prefix: &prefix,
+        cancelled: &cancelled,
+    };
+    let mut checks = 0;
+    let error = temperatures_checked(&query, &frame, &[1, 2], &mut vec![], &mut || {
+        checks += 1;
+        if checks == 2 {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        dashboard_text::metadata::check_cancel(&cancelled)
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert_eq!(checks, 2);
+    {
+        let state = source.state::<Temperatures>();
+        let state = state.lock().unwrap();
+        let drill = state.0.get(&1).unwrap();
+        assert!(drill.inverse.is_none());
+        assert_eq!(drill.memo.simulation().unwrap().hour, 10);
+        assert_eq!(drill.memo.simulation().unwrap().states[1].temperature, -7);
+        assert!(drill.content.is_some());
+    }
+    assert!(!allocation.freed());
+    prepared.retire();
+    assert_eq!(budget.used(), 0);
+    assert!(allocation.freed());
+    assert!(cached.inverse.lock().unwrap().is_none());
+    assert_eq!(source.state::<Temperatures>().lock().unwrap().0.len(), 1);
+}
+
+#[test]
+fn final_inverse_retirement_and_concurrent_rebind_fit_one_allocation() {
+    use std::sync::Barrier;
+    let source = source(vec![frame(10, Some(vec![row(71)]))]);
+    let options = install_cached(&source, bound(&[(71, vec![1, 1]), (72, vec![2])], 3));
+    let cached = cached_bound(&source, &options);
+    let expected = Inverse::allocation_bytes(3).unwrap();
+    let budget = MemoryBudget::new(expected);
+    let mut old = Observation::default();
+    old.bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+        .unwrap();
+    let gate = Barrier::new(2);
+    let gate = &gate;
+    let current = std::thread::scope(|scope| {
+        let retiring = scope.spawn(move || {
+            gate.wait();
+            drop(old);
+        });
+        let binding = scope.spawn(|| {
+            gate.wait();
+            let mut current = Observation::default();
+            current
+                .bind_in(&source, Some(&options), &mut || Ok(()), &budget)
+                .unwrap();
+            current
+        });
+        retiring.join().unwrap();
+        binding.join().unwrap()
+    });
+    assert_eq!(budget.used(), expected);
+    assert_eq!(budget.peak(), expected);
+    assert_eq!(
+        current
+            .inverse
+            .as_ref()
+            .unwrap()
+            .regions(1)
+            .collect::<Vec<_>>(),
+        [71, 71]
+    );
+    let allocation = crate::allocation_watch::Watch::new(Arc::as_ptr(
+        current.inverse.as_ref().unwrap().index.as_ref().unwrap(),
+    ));
+    drop(current);
+    assert_eq!(budget.used(), 0);
+    assert!(allocation.freed());
+    assert!(cached.inverse.lock().unwrap().is_none());
 }

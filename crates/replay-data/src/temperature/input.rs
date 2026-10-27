@@ -2,8 +2,8 @@ use super::{Content, Memo, Simulation, State};
 use crate::rows::{Recorded, TemperaturePass, TemperatureRecord, WeatherProvinceRow};
 use std::{borrow::Cow, io, sync::Arc};
 
-#[derive(PartialEq, Eq)]
-enum Words {
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Words {
     Anchored(Vec<State>),
     Hourly(Vec<State>),
     Refused(&'static str),
@@ -148,6 +148,17 @@ impl Memo {
         input: &Input,
         content: Result<&Content, &str>,
     ) -> Result<&[State], String> {
+        self.incremental = false;
+        self.changed.clear();
+        let words = Arc::downgrade(&input.words);
+        let same = self.branch == branch
+            && matches!(input.pass.as_ref(), Recorded::Value(Some(pass))
+                if self.anchor == Some((pass.anchor, pass.cursor)))
+            && self
+                .detached_words
+                .as_ref()
+                .is_some_and(|held| held.ptr_eq(&words));
+        self.detached_words = None;
         match &*input.words {
             Words::Refused(reason) => Err((*reason).into()),
             Words::Hourly(words) => {
@@ -156,13 +167,18 @@ impl Memo {
                 self.simulation = Some(Simulation::new(hour, 0, words.clone()));
                 Ok(&self.simulation.as_ref().unwrap().states)
             }
-            Words::Anchored(words) => self.states_anchored(
-                branch,
-                hour,
-                Cow::Borrowed(words),
-                Some(input.pass.as_ref()),
-                content,
-            ),
+            Words::Anchored(anchored) => {
+                self.states_anchored(
+                    branch,
+                    hour,
+                    (!same).then_some(Cow::Borrowed(anchored)),
+                    Some(input.pass.as_ref()),
+                    content,
+                    true,
+                )?;
+                self.detached_words = Some(words);
+                Ok(&self.simulation.as_ref().unwrap().states)
+            }
         }
     }
 }
@@ -269,6 +285,13 @@ mod tests {
                 full.states(branch, hour, &frame, Ok(&content))
                     .map(<[State]>::to_vec),
             );
+            if branch == 1 && step == 1 {
+                assert!(compact.changes().is_some());
+                assert_eq!(compact.held(), 0);
+            }
+            if corrupt || missing || branch == 2 {
+                assert!(compact.changes().is_none());
+            }
             previous = Some(input);
         }
         for (slot, temperature) in [

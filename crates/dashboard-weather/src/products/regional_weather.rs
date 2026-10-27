@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, io};
 use ts_rs::TS;
 
+mod admission;
 pub mod block;
 mod columns;
 mod content;

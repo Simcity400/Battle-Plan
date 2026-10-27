@@ -2,7 +2,10 @@
 
 #[cfg(test)]
 #[global_allocator]
-static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static TEST_ALLOCATOR: allocation_watch::Allocator = allocation_watch::Allocator;
+
+#[cfg(test)]
+mod allocation_watch;
 
 pub mod products {
     pub mod regional_weather;

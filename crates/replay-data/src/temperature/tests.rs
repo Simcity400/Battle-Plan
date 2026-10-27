@@ -315,7 +315,7 @@ fn hourly_temperatures_of_older_formats_need_no_content() {
 fn the_window_span_counts_what_the_window_lists() {
     for count in [1, 2, 5, 13] {
         for cursor in -1..=count {
-            for width in [-3, 0, 1, 2, 4, 5, 13, 40] {
+            for width in [i32::MIN, i32::MIN + 1, -3, 0, 1, 2, 4, 5, 13, 40, i32::MAX] {
                 let listed =
                     window(cursor, width, count).map(|(slots, next)| (slots.len() as i32, next));
                 assert_eq!(window_span(cursor, width, count), listed);
@@ -532,4 +532,174 @@ fn an_advance_refusal_clears_held_derivations_and_allows_a_fresh_retry() {
         anchored
     );
     assert_eq!(memo.held(), 1);
+}
+
+#[test]
+fn certified_anchor_changes_match_full_validation_and_keep_checksum_refusals() {
+    let content = content();
+    let anchor = date(1936, 100, 7);
+    let original = vec![
+        state(0, 0, 0, 0),
+        state(1_234_567, 250_000, 1_234_567, 250_000),
+        state(800_000, -120_000, 800_000, -120_000),
+        state(-50_000, 600_000, 999, 7),
+        state(2_000_000, 10, 1_500_000, -40_000),
+    ];
+    let seeds: Vec<_> = (0..8).map(|i| (i != 2).then_some(i * 171 + 7)).collect();
+    let mut fast = Memo::default();
+    let mut full = Memo::default();
+    let mut before: Option<Vec<WeatherProvinceRow>> = None;
+    let mut previous = None;
+    let mut last_states: Option<Vec<State>> = None;
+    for (branch, step, edit, corrupt) in [
+        (1, 0, false, false),
+        (1, 1, false, false),
+        (1, 2, false, false),
+        (1, 3, false, false),
+        (1, 4, true, false),
+        (1, 5, true, true),
+        (1, 6, true, false),
+        (1, 8, true, false),
+        (2, 8, true, false),
+        (2, 2, true, false),
+    ] {
+        let mut anchored = original.clone();
+        if edit {
+            anchored[3].staged += 31;
+        }
+        let mut expected = Simulation::new(anchor, 1, anchored.clone());
+        for &seed in &seeds[..step] {
+            expected.advance(&content, seed).unwrap();
+        }
+        let frame = rows(
+            &anchored,
+            Some(crate::rows::TemperaturePass {
+                anchor,
+                cursor: 1,
+                anchor_seed: None,
+                hours: seeds[..step].to_vec(),
+                checksum: expected.checksum() ^ u64::from(corrupt),
+            }),
+        );
+        let hour = anchor + step as i32;
+        let keys: Vec<_> = frame
+            .iter()
+            .enumerate()
+            .filter_map(|(at, row)| {
+                (before.as_ref().and_then(|rows| rows.get(at)) != Some(row)).then_some(at as u128)
+            })
+            .collect();
+        let consecutive = previous.is_some_and(|(b, h): (u64, i32)| b == branch && h + 1 == hour);
+        let observed = fast
+            .states_changed(
+                branch,
+                hour,
+                &frame,
+                Ok(&content),
+                consecutive.then_some(keys.as_slice()),
+            )
+            .map(<[State]>::to_vec);
+        let oracle = full
+            .states(branch, hour, &frame, Ok(&content))
+            .map(<[State]>::to_vec);
+        assert_eq!(observed, oracle, "{branch}/{hour}/{edit}/{corrupt}");
+        if let Ok(now) = &observed {
+            if let Some(changes) = fast.changes() {
+                let old = last_states.as_ref().unwrap();
+                let expected: Vec<_> = old
+                    .iter()
+                    .zip(now)
+                    .enumerate()
+                    .filter_map(|(id, (a, b))| {
+                        (a.temperature != b.temperature).then_some((
+                            id as u32,
+                            a.temperature,
+                            b.temperature,
+                        ))
+                    })
+                    .collect();
+                let mut actual = changes.to_vec();
+                actual.sort_unstable_by_key(|edit| edit.0);
+                assert_eq!(actual, expected);
+            }
+        } else {
+            assert!(fast.changes().is_none());
+        }
+        previous = observed.is_ok().then_some((branch, hour));
+        last_states = observed.ok();
+        before = Some(frame);
+    }
+}
+
+#[test]
+fn minimum_signed_window_admits_every_committed_edit_before_native_update() {
+    use engine_allocation::credit::MemoryBudget;
+    let count = 9;
+    let content = Content {
+        provinces: (0..count)
+            .map(|id| Province {
+                active: true,
+                neighbours: vec![id as u32],
+                region: None,
+                terrain: Ok(None),
+            })
+            .collect(),
+        settings: Settings {
+            provinces_per_update: i32::MIN,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let states = vec![
+        State {
+            temperature: 10,
+            staged: 20,
+            ..Default::default()
+        };
+        count
+    ];
+    let expected_bytes = count * size_of::<(u32, i64, i64)>();
+    let mut memo = Memo::default();
+    let denied = MemoryBudget::new(expected_bytes - 1);
+    assert_eq!(
+        memo.admit_changes_in(&content, &denied).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert_eq!(denied.used(), 0);
+    assert_eq!(memo.changed.capacity(), 0);
+    let budget = MemoryBudget::new(expected_bytes);
+    memo.admit_changes_in(&content, &budget).unwrap();
+    let capacity = memo.changed.capacity();
+    assert_eq!(capacity, count);
+    assert_eq!(budget.used(), expected_bytes);
+    assert_eq!(
+        window(3, i32::MIN, count as i32),
+        Ok((vec![3, 4, 5, 6, 7, 8, 0, 1, 2], 3))
+    );
+    assert_eq!(
+        window_span(3, i32::MIN, count as i32),
+        Ok((count as i32, 3))
+    );
+    let mut simulation = Simulation::new(10, 3, states.clone());
+    let mut untracked = Simulation::new(10, 3, states);
+    simulation
+        .update_changed(&content, 11, 7, Some(&mut memo.changed))
+        .unwrap();
+    untracked.update(&content, 11, 7).unwrap();
+    assert_eq!(simulation, untracked);
+    assert!(
+        simulation
+            .states
+            .iter()
+            .all(|state| state.temperature == 20)
+    );
+    assert_eq!(memo.changed.len(), count);
+    assert_eq!(memo.changed.capacity(), capacity);
+    assert_eq!(budget.used(), expected_bytes);
+    assert_eq!(budget.peak(), expected_bytes);
+    for &(_, before, now) in &memo.changed {
+        assert_eq!((before, now), (10, 20));
+    }
+    drop(memo);
+    assert_eq!(budget.used(), 0);
 }
