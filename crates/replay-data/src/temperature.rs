@@ -20,7 +20,10 @@
 //! products and sums, truncating division, the fixed-point division guard that stores
 //! `0xFFFFFFFF`, and the date functions' 32-bit arithmetic.
 
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
+
+mod input;
+pub use input::Input;
 
 use crate::rows::{Recorded, TemperatureRecord, WeatherProvinceRow};
 
@@ -436,7 +439,24 @@ impl Memo {
             self.simulation = Some(Simulation::new(hour, 0, recorded));
             return Ok(&self.simulation.as_ref().unwrap().states);
         }
-        let pass = match rows.first().map(|row| &row.temperature_pass) {
+        self.states_anchored(
+            branch,
+            hour,
+            Cow::Owned(anchored),
+            rows.first().map(|row| &row.temperature_pass),
+            content,
+        )
+    }
+
+    fn states_anchored(
+        &mut self,
+        branch: u64,
+        hour: i32,
+        anchored: Cow<'_, [State]>,
+        pass: Option<&Recorded<Option<crate::rows::TemperaturePass>>>,
+        content: Result<&Content, &str>,
+    ) -> Result<&[State], String> {
+        let pass = match pass {
             Some(Recorded::Value(Some(pass))) => pass,
             Some(Recorded::Value(None)) => {
                 return Err("the collector did not read this hour's temperature pass whole".into());
@@ -453,14 +473,14 @@ impl Memo {
         let content = content.map_err(|reason| format!("temperature content: {reason}"))?;
         if self.branch != branch
             || self.anchor != Some((pass.anchor, pass.cursor))
-            || self.anchored != anchored
+            || self.anchored.as_slice() != anchored.as_ref()
         {
             self.branch = branch;
             self.anchor = Some((pass.anchor, pass.cursor));
             self.consumed.clear();
             self.simulation = None;
             self.held.clear();
-            self.anchored = anchored;
+            self.anchored = anchored.into_owned();
         }
         // Derivations past the shared seed prefix cannot certify this frame.
         let agreed = self

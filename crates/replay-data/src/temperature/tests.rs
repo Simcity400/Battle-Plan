@@ -1,7 +1,7 @@
 use super::*;
 
 /// A game date: `days` after 1 January of `year`, at `hour`.
-fn date(year: i32, days: i32, hour: i32) -> i32 {
+pub(super) fn date(year: i32, days: i32, hour: i32) -> i32 {
     EPOCH + year * HOURS_PER_YEAR + days * 24 + hour
 }
 
@@ -33,7 +33,7 @@ fn the_window_wraps_stops_on_its_start_and_visits_at_least_one_slot() {
     assert!(window(-1, 3, 5).is_err());
 }
 
-fn content() -> Content {
+pub(super) fn content() -> Content {
     let year = |region| {
         (
             region,

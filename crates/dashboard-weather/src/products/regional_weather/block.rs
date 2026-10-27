@@ -12,6 +12,8 @@ use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::io;
 
+mod retained;
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Observer {
     temperature: super::temperature::Observation,
@@ -63,6 +65,10 @@ impl dashboard_keyed::Observer for Observer {
 
     fn family() -> &'static Family {
         &FAMILY
+    }
+
+    fn keeper() -> Option<Box<dyn dashboard_keyed::block::Keeper<Self>>> {
+        Some(Box::new(retained::Keeper::default()))
     }
 
     fn bind(

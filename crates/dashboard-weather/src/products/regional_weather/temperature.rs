@@ -243,5 +243,7 @@ impl Observation {
     }
 }
 
+mod retained;
+
 #[cfg(test)]
 mod tests;

@@ -680,3 +680,83 @@ fn unchanged_pass_at_a_new_hour_is_rechecked_not_carried_as_proven_temperature()
             .any(|warning| warning.as_str().unwrap().contains("frame is hour 11"))
     );
 }
+
+#[test]
+fn compact_bound_observers_preserve_literal_temperatures_and_refusals_after_resume() {
+    let mut content = bound(&[(71, vec![1, 2]), (72, vec![2])], 3);
+    content.warnings = vec!["synthetic bound-content warning".into()];
+    let first_words = states(&[0, -100_000, 300_000]);
+    let resumed_words = states(&[0, -300_000, 100_000]);
+    let first = temperatures(1, 10, 10, &first_words, vec![], &content.pass);
+    let mut refused = frame(11, Some(vec![row(71), row(72)]));
+    *refused.tables[TableId::WeatherProvinces.index()] = TableView::Unavailable {
+        reason: "synthetic bound-temperature refusal".into(),
+    };
+    let resumed = temperatures(1, 12, 12, &resumed_words, vec![], &content.pass);
+    let frames = vec![first, refused, resumed];
+    let source = source(frames.clone());
+    let options = install_cached(&source, content);
+    let cancelled = AtomicBool::new(false);
+    let mut whole = block::Observer::default();
+    let mut compact = block::Observer::default();
+    for observer in [&mut whole, &mut compact] {
+        observer.bind(&source, Some(&options), &cancelled).unwrap();
+        assert_eq!(observer.temperature_status(), "available");
+    }
+    let mut keeper = <block::Observer as dashboard_keyed::Observer>::keeper().unwrap();
+    for (at, frame) in frames.into_iter().enumerate() {
+        let province_view = frame.tables[TableId::WeatherProvinces.index()].identity();
+        let region_view = frame.tables[TableId::WeatherRegions.index()].identity();
+        let input = keeper.keep(FormatVersion::CURRENT, &frame).unwrap();
+        let mut expected = Values::default();
+        assert!(
+            whole
+                .observe(FormatVersion::CURRENT, &frame, &mut expected)
+                .unwrap()
+        );
+        drop(frame);
+        assert!(!province_view.is_alive());
+        assert!(!region_view.is_alive());
+        let mut actual = Values::default();
+        assert!(input.observe(&mut compact, &mut actual).unwrap());
+        assert!(expected.iter().eq(actual.iter()));
+        let literal = match at {
+            0 => BTreeMap::from([("71|temp", 100_000), ("72|temp", 300_000)]),
+            1 => BTreeMap::new(),
+            2 => BTreeMap::from([("71|temp", -100_000), ("72|temp", 100_000)]),
+            _ => unreachable!(),
+        };
+        let warnings = if at == 0 {
+            vec!["synthetic bound-content warning"]
+        } else {
+            vec![
+                "synthetic bound-content warning",
+                "1 weather temperature observations not shown: hour 11 WeatherProvinces is unavailable: synthetic bound-temperature refusal",
+            ]
+        };
+        for (observer, values) in [(&whole, &expected), (&compact, &actual)] {
+            assert_eq!(
+                values
+                    .iter()
+                    .filter(|(name, _)| name.ends_with("|temp"))
+                    .collect::<BTreeMap<_, _>>(),
+                literal,
+            );
+            assert_eq!(observer.temperature_warnings(), warnings);
+            assert_eq!(observer.temperature_status(), "available");
+        }
+        assert_eq!(
+            serde_json::to_value(&whole).unwrap(),
+            serde_json::to_value(&compact).unwrap()
+        );
+        if at == 1 {
+            whole = serde_json::from_value(serde_json::to_value(&whole).unwrap()).unwrap();
+            compact = serde_json::from_value(serde_json::to_value(&compact).unwrap()).unwrap();
+            for observer in [&mut whole, &mut compact] {
+                observer.bind(&source, Some(&options), &cancelled).unwrap();
+                assert_eq!(observer.temperature_warnings(), warnings);
+            }
+            keeper = <block::Observer as dashboard_keyed::Observer>::keeper().unwrap();
+        }
+    }
+}

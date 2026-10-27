@@ -108,6 +108,11 @@ pub trait Observer: Default + Serialize + DeserializeOwned + Send + 'static {
     /// The family's pre-pass entry ([`block::family`] builds it).
     fn family() -> &'static Family;
 
+    /// Operand-only retention for observers that need no reconstructed frame during the fold.
+    fn keeper() -> Option<Box<dyn block::Keeper<Self>>> {
+        None
+    }
+
     /// The fields of [`Self::TABLES`] whose changes make an hour observed.
     fn fields() -> io::Result<Vec<TableFields>>;
 
@@ -311,7 +316,31 @@ impl<O: Observer> Scan<O> {
         frame: &DecodedFrame,
         read: bool,
     ) -> io::Result<()> {
-        let hour = frame.hour;
+        self.observe_input(frame.hour, read, &block::Borrowed { format, frame })
+    }
+
+    fn prepare_kept(
+        &mut self,
+        hour: i32,
+        changes: &FrameChanges,
+        input: &dyn block::Operands<O>,
+    ) -> io::Result<()> {
+        self.batch.advance(hour)?;
+        self.catalogue_pending = true;
+        let read = changes.slot_read[O::READ.index()];
+        if self.open && self.continues_to(hour) && !O::changed(changes) {
+            self.hold(hour, read);
+            return Ok(());
+        }
+        self.observe_input(hour, read, input)
+    }
+
+    fn observe_input(
+        &mut self,
+        hour: i32,
+        read: bool,
+        input: &dyn block::Operands<O>,
+    ) -> io::Result<()> {
         let continuous = self.continues_to(hour);
         let starts = !self.open || !continuous;
         self.last_hour = Some(hour);
@@ -319,12 +348,8 @@ impl<O: Observer> Scan<O> {
             let mut delta = std::mem::take(&mut self.delta);
             delta.clear();
             self.index_names();
-            let observed = self.observer.observe_changes(
-                format,
-                frame,
-                &delta::Names(&self.index),
-                &mut delta,
-            );
+            let observed =
+                input.observe_changes(&mut self.observer, &delta::Names(&self.index), &mut delta);
             let done = match observed {
                 Ok(Some(true)) => {
                     self.apply(hour, read, &delta);
@@ -345,7 +370,7 @@ impl<O: Observer> Scan<O> {
         }
         let mut values = std::mem::take(&mut self.values);
         values.clear();
-        let known = self.observer.observe(format, frame, &mut values);
+        let known = input.observe(&mut self.observer, &mut values);
         let known = match known {
             Ok(known) => known,
             Err(error) => {
