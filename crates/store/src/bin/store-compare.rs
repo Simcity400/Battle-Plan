@@ -401,6 +401,29 @@ fn compare_bytes(
 }
 
 fn private_section(name: &str) -> bool {
+    for prefix in [
+        "production-lines-private-v2-",
+        "production-lines-private-v3-",
+        "production-lines-history-v2-",
+        "production-lines-history-v3-",
+        "production-lines-variants-v1-",
+        "production-lines-variants-v2-",
+        "production-lines-aliases-v1-",
+        "production-lines-aliases-v2-",
+    ] {
+        if let Some(branch) = name.strip_prefix(prefix) {
+            return branch.parse::<u64>().is_ok_and(|n| n.to_string() == branch);
+        }
+    }
+    for prefix in ["production-lines-state-v1-", "production-lines-state-v2-"] {
+        if let Some(branch) = name
+            .strip_prefix(prefix)
+            .and_then(|s| s.strip_suffix("-world"))
+        {
+            return branch.parse::<u64>().is_ok_and(|n| n.to_string() == branch);
+        }
+    }
+
     // These identities are continuation-only; unknown sections remain public contracts.
     if name == "map.resume" {
         return true;
@@ -759,6 +782,32 @@ mod tests {
             schema: 1,
             source: None,
             rules: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn only_versioned_internal_production_pages_allow_private_migrations() {
+        for section in [
+            "production-lines-history-v2-1",
+            "production-lines-history-v3-1",
+            "production-lines-variants-v1-1",
+            "production-lines-variants-v2-1",
+            "production-lines-private-v3-1",
+            "production-lines-state-v2-1-world",
+            "production-lines-aliases-v2-1",
+        ] {
+            assert!(private_section(section), "{section}");
+        }
+        for section in [
+            "production-lines-history-v3-01",
+            "production-lines-history-v3-1-extra",
+            "production-lines-state-v2-1-other",
+            "production-lines-directory-v1-1",
+            "production-lines-scan-v5-1-474552",
+            "production-lines-scan-meta-v5-1-474552",
+            "preparation-family-production-lines-1",
+        ] {
+            assert!(!private_section(section), "{section}");
         }
     }
 

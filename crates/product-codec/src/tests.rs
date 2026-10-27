@@ -228,3 +228,23 @@ fn empty_arrays_round_trip_and_still_bound_collection_counts() {
     assert_eq!(decode::<Vec<[u16; 0]>>(&bytes).unwrap(), values);
     assert!(decode::<Vec<[u16; 0]>>(&u64::MAX.to_le_bytes()).is_err());
 }
+
+#[test]
+fn private_page_tuple_result_box_and_bulk_byte_encodings_are_canonical() {
+    let value = (Some(-5_i64), Err::<(), String>("q".into()));
+    let expected = [
+        1, 251, 255, 255, 255, 255, 255, 255, 255, 1, 1, 0, 0, 0, 0, 0, 0, 0, b'q',
+    ];
+    assert_eq!(encode(&value).unwrap(), expected);
+    assert_eq!(
+        decode::<(Option<i64>, Result<(), String>)>(&expected).unwrap(),
+        value
+    );
+    assert_eq!(
+        encode(&vec![0_u8, 128, 255]).unwrap(),
+        [3, 0, 0, 0, 0, 0, 0, 0, 0, 128, 255]
+    );
+    assert_eq!(decode::<Box<u16>>(&[52, 18]).unwrap(), Box::new(0x1234));
+    assert!(decode::<()>(&[1]).is_err());
+    assert!(decode::<Result<(), String>>(&[2]).is_err());
+}

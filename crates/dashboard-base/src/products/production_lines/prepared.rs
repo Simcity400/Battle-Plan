@@ -1,7 +1,9 @@
+mod binary;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 #[cfg(test)]
 mod tests;
+
 use super::input::{HourInput, ReadEvidence, World, observe_design};
 use super::private::Facts;
 use super::*;
@@ -224,10 +226,10 @@ pub fn coverage_section(branch: u64) -> String {
     format!("preparation-family-production-lines-{branch}")
 }
 fn alias_section(branch: u64) -> String {
-    format!("production-lines-aliases-v1-{branch}")
+    format!("production-lines-aliases-v2-{branch}")
 }
 fn variant_section(branch: u64) -> String {
-    format!("production-lines-variants-v1-{branch}")
+    format!("production-lines-variants-v2-{branch}")
 }
 fn tag_key(tag: &str) -> String {
     format!(
@@ -850,7 +852,12 @@ impl Prepared {
                 if facts.get(self.directory.index, &name)?.is_some() {
                     continue;
                 }
-                private::put(&mut facts, &mut self.directory.index, &name, &tag)?;
+                private::put(
+                    &mut facts,
+                    &mut self.directory.index,
+                    &name,
+                    &tag.to_owned(),
+                )?;
                 changed = true;
                 if self.directory.coverage.complete {
                     self.publish_tag(writer, replay, tag, icons, cancelled)?;
@@ -865,7 +872,7 @@ impl Prepared {
             {
                 self.publish(writer, replay, &block, icons, cancelled)?;
             } else if changed {
-                pages::write(
+                pages::write_json(
                     writer,
                     &directory_section(self.directory.branch),
                     0,
@@ -1272,7 +1279,7 @@ impl Prepared {
         self.directory.coverage.last_hour = block.last_hour;
         self.directory.coverage.complete = self.directory.last_block == last_block(replay, branch);
 
-        pages::write(writer, &directory_section(branch), 0, &self.directory)?;
+        pages::write_json(writer, &directory_section(branch), 0, &self.directory)?;
         writer.write_at(
             &coverage_section(branch),
             0,
@@ -1291,7 +1298,7 @@ impl Prepared {
                     break;
                 };
                 cursor = next;
-                let tag: String = serde_json::from_slice(&bytes)?;
+                let tag: String = product_codec::decode(&bytes)?;
                 crate::metadata::check_cancel(cancelled)?;
                 self.publish_tag(writer, replay, &tag, icons, cancelled)?;
             }
@@ -1350,19 +1357,26 @@ fn assemble(
         &format!("history-{selected}"),
     )?
     .unwrap_or_default();
+    let mut tag_native = None;
+    let mut tag_sleep = None;
     if selected.starts_with("tag-") {
         let tag: Option<TagSnapshot> = private::get(
             &mut private::Store::new(&mut ReadPages(&mut read), directory.branch),
             directory.index,
             selected,
         )?;
-        if matches!(tag, Some(TagSnapshot::Absent)) || (tag.is_none() && head.len == 0) {
+        if matches!(&tag, Some(TagSnapshot::Absent)) || (tag.is_none() && head.len == 0) {
             head = private::get(
                 &mut private::Store::new(&mut ReadPages(&mut read), directory.branch),
                 directory.index,
                 "history-absent",
             )?
             .unwrap_or_default();
+        }
+        match tag {
+            Some(TagSnapshot::Native(key)) => tag_native = Some(key),
+            Some(TagSnapshot::Projected(snapshot)) => tag_sleep = snapshot.sleep,
+            _ => {}
         }
     }
     let mut reader = ReadPages(&mut read);
@@ -1372,55 +1386,59 @@ fn assemble(
         crate::metadata::check_cancel(cancelled)?;
         assembled.push(page, localisation.clone(), Arc::clone(&language))?;
     }
-    let mut cursor = directory.variants.cursor(0)?;
-    while let Some(next) =
-        cursor.next::<VariantPage>(&mut facts, &variant_section(directory.branch))?
     {
-        crate::metadata::check_cancel(cancelled)?;
-        #[cfg(test)]
-        let _workspace = tests::NamingOperands::hold(&next.catalogue, &variants);
-        let VariantPage {
-            catalogue: mut next,
-            icons,
-        } = next;
-        for (id, versions) in std::mem::take(&mut next.versions) {
-            let known = variants.entry(id).or_default();
-            for version in versions {
-                match known
-                    .last_mut()
-                    .filter(|last| last.first_hour == version.first_hour)
+        let _naming = replay_frame::cpu::scope("production naming", Some("production-lines"));
+        let mut cursor = directory.variants.cursor(0)?;
+        while let Some(next) =
+            cursor.next::<VariantPage>(&mut facts, &variant_section(directory.branch))?
+        {
+            crate::metadata::check_cancel(cancelled)?;
+            #[cfg(test)]
+            let _workspace = tests::NamingOperands::hold(&next.catalogue, &variants);
+            let VariantPage {
+                catalogue: mut next,
+                icons,
+            } = next;
+            for (id, versions) in std::mem::take(&mut next.versions) {
+                let known = variants.entry(id).or_default();
+                for version in versions {
+                    match known
+                        .last_mut()
+                        .filter(|last| last.first_hour == version.first_hour)
+                    {
+                        Some(last) => *last = version,
+                        None => known.push(version),
+                    }
+                }
+            }
+            catalogue = next;
+            for (id, hour, icon, definition_changed) in icons {
+                if let Some(versions) = assembled.result.icons.get_mut(&id)
+                    && versions.first().is_some_and(|first| first.0 <= hour)
                 {
-                    Some(last) => *last = version,
-                    None => known.push(version),
+                    let at = versions.partition_point(|(at, _)| *at <= hour);
+                    let pending = at != 0
+                        && versions[at - 1]
+                            .1
+                            .otherwise
+                            .as_ref()
+                            .err()
+                            .is_some_and(|reason| {
+                                matches!(
+                                    reason.as_str(),
+                                    "the variant's definition is not recorded yet"
+                                        | "the variant's definition is not recorded at this time"
+                                )
+                            });
+                    if (definition_changed || pending) && (at == 0 || versions[at - 1].1 != icon) {
+                        versions.insert(at, (hour, icon));
+                    }
                 }
             }
         }
-        catalogue = next;
-        for (id, hour, icon, definition_changed) in icons {
-            if let Some(versions) = assembled.result.icons.get_mut(&id)
-                && versions.first().is_some_and(|first| first.0 <= hour)
-            {
-                let at = versions.partition_point(|(at, _)| *at <= hour);
-                let pending = at != 0
-                    && versions[at - 1]
-                        .1
-                        .otherwise
-                        .as_ref()
-                        .err()
-                        .is_some_and(|reason| {
-                            matches!(
-                                reason.as_str(),
-                                "the variant's definition is not recorded yet"
-                                    | "the variant's definition is not recorded at this time"
-                            )
-                        });
-                if (definition_changed || pending) && (at == 0 || versions[at - 1].1 != icon) {
-                    versions.insert(at, (hour, icon));
-                }
-            }
-        }
+        catalogue.versions = variants;
     }
-    catalogue.versions = variants;
+
     drop(facts);
     drop(reader);
     for versions in assembled.result.icons.values_mut() {
@@ -1435,19 +1453,14 @@ fn assemble(
         )?
         .and_then(|snapshot| snapshot.sleep)
     } else if selected.starts_with("tag-") {
-        match private::get::<TagSnapshot>(
-            &mut private::Store::new(&mut ReadPages(&mut read), directory.branch),
-            directory.index,
-            selected,
-        )? {
-            Some(TagSnapshot::Native(key)) => private::get::<CountrySnapshot>(
+        match tag_native {
+            Some(key) => private::get::<CountrySnapshot>(
                 &mut private::Store::new(&mut ReadPages(&mut read), directory.branch),
                 directory.index,
                 &native_key(&key),
             )?
             .and_then(|snapshot| snapshot.sleep),
-            Some(TagSnapshot::Projected(snapshot)) => snapshot.sleep,
-            _ => None,
+            None => tag_sleep,
         }
     } else {
         None
@@ -1479,6 +1492,16 @@ pub fn directory(
     crate::prepared::series::read_reply(store, key, &directory_section(branch), 0)
 }
 
+pub(super) fn binary_current(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+) -> io::Result<bool> {
+    Ok(store
+        .read(key, &state_section(branch, "world"), 0)?
+        .is_some())
+}
+
 pub fn current(
     store: &store::Store,
     key: &store::SourceKey,
@@ -1486,6 +1509,10 @@ pub fn current(
     context: &LoadContext,
     branch: u64,
 ) -> io::Result<bool> {
+    if !binary_current(store, key, branch)? {
+        return Ok(false);
+    }
+
     let Some(directory) = directory(store, key, branch)? else {
         return Ok(false);
     };
@@ -1552,6 +1579,11 @@ pub(super) fn query(
     }
     let (store, key) = crate::prepared::files(source, context.content.as_ref())?;
     let _scope = store.scope(&key)?;
+    if !binary_current(&store, &key, branch)? {
+        return Err(crate::invalid(
+            "Production lines need preparation for the current private-page schema",
+        ));
+    }
     let mut directory = directory(&store, &key, branch)?
         .ok_or_else(|| crate::invalid("Production lines are still being prepared"))?;
     if directory.coverage.schema != crate::prepared::coverage::SCHEMA
@@ -2331,7 +2363,7 @@ impl PagedCountry {
 }
 
 fn state_section(branch: u64, key: &str) -> String {
-    format!("production-lines-state-v1-{branch}-{key}")
+    format!("production-lines-state-v2-{branch}-{key}")
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2391,7 +2423,7 @@ impl Prepared {
                 aliases: self.aliases.keys().cloned().collect(),
             },
         )?;
-        pages::write(facts.pages, &directory_section(branch), 0, &self.directory)
+        pages::write_json(facts.pages, &directory_section(branch), 0, &self.directory)
     }
     pub fn resume(
         store: &store::Store,
@@ -2400,6 +2432,10 @@ impl Prepared {
         branch: u64,
         icons: Option<&IconContent>,
     ) -> io::Result<Option<Self>> {
+        if !binary_current(store, key, branch)? {
+            return Ok(None);
+        }
+
         use std::io::Read;
         let Some(directory) = directory(store, key, branch)? else {
             return Ok(None);
@@ -2592,7 +2628,7 @@ fn modifier_bytes(
 }
 
 fn history_section(branch: u64) -> String {
-    format!("production-lines-history-v2-{branch}")
+    format!("production-lines-history-v3-{branch}")
 }
 #[derive(Serialize, Deserialize)]
 struct VariantPage {

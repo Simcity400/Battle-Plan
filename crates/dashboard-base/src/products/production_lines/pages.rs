@@ -62,12 +62,46 @@ pub(super) fn write<W: Pages + ?Sized>(
     writer: &mut W,
     section: &str,
     range: u64,
+    value: &impl product_codec::Product,
+) -> io::Result<()> {
+    let bytes = pack(value)?;
+    writer.write_at(section, range, &bytes)?;
+    #[cfg(any(test, feature = "test-support"))]
+    writer.note_framing(
+        section,
+        range,
+        crate::prepared::pages::framing::compressed(&bytes),
+    );
+    Ok(())
+}
+
+pub(super) fn write_json<W: Pages + ?Sized>(
+    writer: &mut W,
+    section: &str,
+    range: u64,
     value: &impl Serialize,
 ) -> io::Result<()> {
     crate::prepared::series::write_reply(writer, section, range, value)
 }
 
-pub(super) fn read<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> io::Result<T> {
+const BINARY_PAGE: &[u8] = b"PLB1";
+
+pub(super) fn pack(value: &impl product_codec::Product) -> io::Result<Vec<u8>> {
+    let mut raw = BINARY_PAGE.to_vec();
+    product_codec::Product::encode(value, &mut raw)?;
+    crate::prepared::series::compress(&raw, 3)
+}
+
+pub(super) fn read<T: product_codec::Product>(bytes: &[u8]) -> io::Result<T> {
+    let raw = decompress(bytes)?;
+    let payload = raw
+        .strip_prefix(BINARY_PAGE)
+        .ok_or_else(|| crate::invalid("Invalid production binary page schema"))?;
+    product_codec::decode(payload)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(super) fn read_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> io::Result<T> {
     serde_json::from_slice(&decompress(bytes)?).map_err(io::Error::other)
 }
 
@@ -253,13 +287,13 @@ impl PageLog {
         &mut self,
         facts: &mut private::Store<'_, W>,
         section: &str,
-        value: &impl Serialize,
+        value: &impl product_codec::Product,
     ) -> io::Result<()> {
         let next = self
             .len
             .checked_add(1)
             .ok_or_else(|| crate::invalid("Production page ordinal overflow"))?;
-        let bytes = crate::prepared::series::compress(&serde_json::to_vec(value)?, 3)?;
+        let bytes = pack(value)?;
         let range = facts.pages.write(section, &bytes)?;
         private::put(facts, &mut self.root, &format!("{:016x}", self.len), &range)?;
         self.len = next;
@@ -278,7 +312,7 @@ impl PageLog {
 }
 
 impl PageCursor {
-    pub fn next<T: serde::de::DeserializeOwned>(
+    pub fn next<T: product_codec::Product>(
         &mut self,
         facts: &mut private::Store<'_, impl Pages + ?Sized>,
         section: &str,
@@ -297,3 +331,13 @@ impl PageCursor {
         Ok(Some(page))
     }
 }
+
+product_codec::product! { impl Page {
+    lines: SavedLines,
+    countries: Vec<u64>,
+    continuation: bool,
+} default {} }
+product_codec::product! { impl PageLog {
+    root: private::Root,
+    len: u64,
+} default {} }

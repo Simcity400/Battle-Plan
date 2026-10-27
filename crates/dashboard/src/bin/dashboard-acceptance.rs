@@ -36,6 +36,8 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[path = "dashboard-acceptance/display_products.rs"]
 mod display_products;
+#[path = "dashboard-acceptance/production_lines.rs"]
+mod production_lines;
 #[path = "dashboard-acceptance/readiness_probe.rs"]
 mod readiness_probe;
 
@@ -56,7 +58,19 @@ struct Requests {
     #[serde(default)]
     production: Vec<ProducedParams>,
     #[serde(default)]
+    production_lines: bool,
+    #[serde(default)]
+    production_line_all_keys: Vec<String>,
+    #[serde(default = "one")]
+    production_line_stride: usize,
+    #[serde(default)]
+    production_line_origin_hours: Vec<i32>,
+    #[serde(default)]
     viewports: Vec<Viewport>,
+}
+
+fn one() -> usize {
+    1
 }
 
 #[derive(Deserialize, Serialize)]
@@ -77,6 +91,9 @@ struct Options {
     repetitions: usize,
     allow_unverified: bool,
     prepare_only: bool,
+    production_only: bool,
+    prepared_store: Option<PathBuf>,
+    compare_replies: Option<PathBuf>,
     progressive: Option<String>,
     prefix_blocks: usize,
     measurements: Option<PathBuf>,
@@ -99,6 +116,9 @@ fn options() -> io::Result<Options> {
     let mut repetitions = 20;
     let mut allow_unverified = false;
     let mut prepare_only = false;
+    let mut production_only = false;
+    let mut prepared_store = None;
+    let mut compare_replies = None;
     let mut progressive = None;
     let mut prefix_blocks = 13;
     let mut measurements = None;
@@ -127,6 +147,10 @@ fn options() -> io::Result<Options> {
         }
         if arg == "--allow-unverified" {
             allow_unverified = true;
+            continue;
+        }
+        if arg == "--production-only" {
+            production_only = true;
             continue;
         }
         if arg == "--prepare-only" {
@@ -165,12 +189,13 @@ fn options() -> io::Result<Options> {
             Some("--game-dir") => game = Some(PathBuf::from(value)),
             Some("--user-dir") => user = Some(PathBuf::from(value)),
             Some("--requests") => requests = Some(PathBuf::from(value)),
+            Some("--prepared-store") => prepared_store = Some(PathBuf::from(value)),
+            Some("--compare-replies") => compare_replies = Some(PathBuf::from(value)),
             Some("--repetitions") => {
                 repetitions = value
                     .to_str()
                     .and_then(|value| value.parse().ok())
-                    .filter(|value| *value > 0)
-                    .ok_or_else(|| invalid("Repetitions must be a positive integer"))?;
+                    .ok_or_else(|| invalid("Repetitions must be a nonnegative integer"))?;
             }
             _ => {
                 return Err(invalid(format!(
@@ -179,6 +204,9 @@ fn options() -> io::Result<Options> {
                 )));
             }
         }
+    }
+    if repetitions == 0 && !production_only {
+        return Err(invalid("Zero repetitions requires --production-only"));
     }
     Ok(Options {
         recording: recording.ok_or_else(|| invalid("Supply --recording"))?,
@@ -190,6 +218,9 @@ fn options() -> io::Result<Options> {
         repetitions,
         allow_unverified,
         prepare_only,
+        production_only,
+        prepared_store,
+        compare_replies,
         progressive,
         prefix_blocks,
         measurements,
@@ -238,11 +269,37 @@ struct Timing {
     label: String,
     product: String,
     first_ms: f64,
-    p50_ms: f64,
-    p95_ms: f64,
-    p99_ms: f64,
+    p50_ms: Option<f64>,
+    p95_ms: Option<f64>,
+    p99_ms: Option<f64>,
     samples: usize,
     reply_bytes: usize,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ServedReply {
+    label: String,
+    request: Value,
+    reply: Value,
+    reply_text: String,
+}
+
+impl ServedReply {
+    fn matches(&self, other: &Self) -> bool {
+        self.label == other.label
+            && self.request == other.request
+            && self.reply_text.as_bytes() == other.reply_text.as_bytes()
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        if serde_json::from_str::<Value>(&self.reply_text)? != self.reply {
+            return Err(invalid(
+                "Original reply bytes differ from their JSON diagnostic",
+            ));
+        }
+        Ok(())
+    }
 }
 
 struct Evidence {
@@ -255,6 +312,7 @@ struct Evidence {
     differences_file: BufWriter<File>,
     replies: BufWriter<File>,
     phases: BufWriter<File>,
+    baseline: Option<BTreeMap<String, ServedReply>>,
 }
 
 impl Evidence {
@@ -269,9 +327,10 @@ impl Evidence {
             errors: 0,
             skipped: Vec::new(),
             timings: Vec::new(),
+            baseline: None,
         })
     }
-    fn row(writer: &mut impl Write, value: &Value) -> io::Result<()> {
+    fn row(writer: &mut impl Write, value: &impl Serialize) -> io::Result<()> {
         serde_json::to_writer(&mut *writer, value)?;
         writer.write_all(b"\n")
     }
@@ -355,6 +414,45 @@ impl Evidence {
             }),
         )
     }
+
+    fn diff_reply_bytes(&mut self, label: &str, expected: &str, actual: &str) -> io::Result<()> {
+        if expected.as_bytes() == actual.as_bytes() {
+            return Ok(());
+        }
+        self.difference(
+            label,
+            "/replyText",
+            Some(&json!(expected)),
+            Some(&json!(actual)),
+        )?;
+        self.diff(
+            &format!("{label}/json-diagnostic"),
+            "",
+            &serde_json::from_str(expected)?,
+            &serde_json::from_str(actual)?,
+        )
+    }
+
+    fn compare_served(&mut self, expected: &ServedReply, actual: &ServedReply) -> io::Result<()> {
+        self.comparisons += 1;
+        let label = format!("{}/served-parity", actual.label);
+        Self::row(
+            &mut self.replies,
+            &json!({"label": label, "matched": expected.matches(actual),
+                "expectedReplyBytes": expected.reply_text.len(), "actualReplyBytes": actual.reply_text.len()}),
+        )?;
+        if expected.matches(actual) {
+            return Ok(());
+        }
+        self.diff(
+            &label,
+            "/label",
+            &json!(expected.label),
+            &json!(actual.label),
+        )?;
+        self.diff(&label, "/request", &expected.request, &actual.request)?;
+        self.diff_reply_bytes(&label, &expected.reply_text, &actual.reply_text)
+    }
     /// Includes coverage, stamp/manifest checks and JSON serialization in the
     /// actual host-direct dispatch. Parsing and oracle work are outside timing.
     fn query(
@@ -384,16 +482,16 @@ impl Evidence {
                 prepared::query::query(source, &request, context.content.as_ref(), &cancelled)?;
             samples.push(started.elapsed().as_secs_f64() * 1000.0);
             if repeated != reply {
-                self.compare(
-                    &format!("{label}/repeat"),
-                    value.clone(),
-                    serde_json::from_str(&repeated)?,
-                )?;
+                self.comparisons += 1;
+                self.diff_reply_bytes(&format!("{label}/repeat"), &reply, &repeated)?;
             }
         }
         samples.sort_by(f64::total_cmp);
-        let percentile =
-            |percent: usize| samples[(samples.len() * percent).div_ceil(100).saturating_sub(1)];
+        let percentile = |percent: usize| {
+            samples
+                .get((samples.len() * percent).div_ceil(100).saturating_sub(1))
+                .copied()
+        };
         self.timings.push(Timing {
             label: label.into(),
             product: product.into(),
@@ -405,15 +503,31 @@ impl Evidence {
             reply_bytes: reply.len(),
         });
         Self::row(
-            &mut self.replies,
-            &json!({"label": label, "request": request, "reply": value}),
+            &mut fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.path.join("query-timings.jsonl"))?,
+            &serde_json::to_value(self.timings.last().unwrap())?,
         )?;
+        let served = ServedReply {
+            label: label.into(),
+            request: serde_json::to_value(&request)?,
+            reply: value,
+            reply_text: reply,
+        };
+        Self::row(&mut self.replies, &served)?;
         self.compare(&format!("{label}/envelope"), json!({
             "sourceId": request.source_id, "revision": request.revision, "product": product
         }), json!({
-            "sourceId": value["sourceId"], "revision": value["revision"], "product": value["product"]
+            "sourceId": served.reply["sourceId"], "revision": served.reply["revision"], "product": served.reply["product"]
         }))?;
-        Ok(value["data"].clone())
+        if let Some(baseline) = self.baseline.as_mut() {
+            let expected = baseline
+                .remove(label)
+                .ok_or_else(|| invalid(format!("Baseline lacks request {label}")))?;
+            self.compare_served(&expected, &served)?;
+        }
+        Ok(served.reply["data"].clone())
     }
 }
 
@@ -1809,9 +1923,9 @@ fn map(
                 label: label.clone(),
                 product: format!("map-{operation}"),
                 first_ms,
-                p50_ms: percentile(50),
-                p95_ms: percentile(95),
-                p99_ms: percentile(99),
+                p50_ms: Some(percentile(50)),
+                p95_ms: Some(percentile(95)),
+                p99_ms: Some(percentile(99)),
                 samples: repetitions,
                 reply_bytes: 0,
             });
@@ -2085,7 +2199,33 @@ fn progressive_measure(options: Options, path: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
+fn validate_modes(options: &Options) -> io::Result<()> {
+    if options.compare_replies.is_some()
+        && (options.display_products_cost
+            || options.readiness
+            || options.progressive.is_some()
+            || options.prepare_only)
+    {
+        return Err(invalid(
+            "--compare-replies requires queries; it cannot be combined with display-products, readiness, progressive or prepare-only mode",
+        ));
+    }
+    if options.prepared_store.is_some()
+        && (options.prefix.is_some()
+            || options.prepare_only
+            || options.progressive.is_some()
+            || options.readiness
+            || options.display_products_cost)
+    {
+        return Err(invalid(
+            "--prepared-store requires queries; it cannot be combined with prefix preparation, prepare-only, progressive, readiness or display-products mode",
+        ));
+    }
+    Ok(())
+}
+
 fn run(options: Options) -> io::Result<bool> {
+    validate_modes(&options)?;
     let path = isolated(&options.evidence)?;
     if options.display_products_cost {
         return display_products::run(&options, &path);
@@ -2112,7 +2252,13 @@ fn run(options: Options) -> io::Result<bool> {
     if options.progressive.is_some() {
         return progressive_measure(options, &path);
     }
+    let baseline = options
+        .compare_replies
+        .as_deref()
+        .map(production_lines::read_replies)
+        .transpose()?;
     let mut evidence = Evidence::new(path.clone())?;
+    evidence.baseline = baseline;
     evidence.phase("setup")?;
     let context = LoadContext {
         content: match (options.game, options.user) {
@@ -2174,38 +2320,55 @@ fn run(options: Options) -> io::Result<bool> {
         canonical_recording.clone()
     };
     let source = open(&recording)?;
-    let preparation = prepare(&source, &context, &mut evidence, "complete")?;
+    let imported = options
+        .prepared_store
+        .as_deref()
+        .map(|from| production_lines::import_store(&source, from, &path))
+        .transpose()?;
+    let preparation = if imported.is_some() {
+        json!({"imported":true})
+    } else {
+        prepare(&source, &context, &mut evidence, "complete")?
+    };
     evidence.phase("prepared-reopen")?;
     let reopen_started = Instant::now();
     let reopened = open(&recording)?;
-    let restored =
-        prepared::pipeline::restore(&reopened, context.content.as_ref(), &AtomicBool::new(false))?;
+    let restored = if imported.is_some() {
+        None
+    } else {
+        prepared::pipeline::restore(&reopened, context.content.as_ref(), &AtomicBool::new(false))?
+    };
     let reopen_ms = reopen_started.elapsed().as_secs_f64() * 1000.0;
-    evidence.compare(
-        "reopen/prepared-restored",
-        json!(true),
-        json!(restored.is_some()),
-    )?;
-    evidence.compare(
-        "reopen/new-blocks",
-        json!(0),
-        json!(restored.as_ref().map(|value| value.new_blocks)),
-    )?;
-    let reused = prepare(&reopened, &context, &mut evidence, "unchanged-reuse")?;
-    evidence.compare(
-        "unchanged-reuse/new-blocks",
-        json!(0),
-        reused["newBlocks"].clone(),
-    )?;
+    if imported.is_none() {
+        evidence.compare(
+            "reopen/prepared-restored",
+            json!(true),
+            json!(restored.is_some()),
+        )?;
+        evidence.compare(
+            "reopen/new-blocks",
+            json!(0),
+            json!(restored.as_ref().map(|value| value.new_blocks)),
+        )?;
+        let reused = prepare(&reopened, &context, &mut evidence, "unchanged-reuse")?;
+        evidence.compare(
+            "unchanged-reuse/new-blocks",
+            json!(0),
+            reused["newBlocks"].clone(),
+        )?;
+    }
     drop(reopened);
     let requests = requests(&source, options.requests.as_deref())?;
     serde_json::to_writer_pretty(File::create(path.join("requests.json"))?, &requests)?;
     let (_, key) = prepared::files(&source, context.content.as_ref())?;
     let stamps = serde_json::to_value(&key)?;
     let content_files = stamps["content"].as_array().map_or(0, Vec::len);
-    for label in ["focus", "production", "measure", "map"]
+    for label in ["focus", "production", "production-lines", "measure", "map"]
         .into_iter()
-        .filter(|_| !options.prepare_only)
+        .filter(|label| {
+            !options.prepare_only && (!options.production_only || label.starts_with("production"))
+        })
+        .filter(|label| *label != "production-lines" || requests.production_lines)
     {
         evidence.phase(&format!("parity-and-timing/{label}"))?;
         let outcome = match label {
@@ -2217,6 +2380,13 @@ fn run(options: Options) -> io::Result<bool> {
                 options.repetitions,
             ),
             "production" => production(
+                &source,
+                &context,
+                &requests,
+                &mut evidence,
+                options.repetitions,
+            ),
+            "production-lines" => production_lines::run(
                 &source,
                 &context,
                 &requests,
@@ -2243,6 +2413,20 @@ fn run(options: Options) -> io::Result<bool> {
             evidence.error(label, &error)?;
         }
     }
+    if let Some(baseline) = &evidence.baseline {
+        if !baseline.is_empty() {
+            return Err(invalid(format!(
+                "{} baseline requests were not replayed",
+                baseline.len()
+            )));
+        }
+    }
+    if let Some((manifest, original)) = imported {
+        if fs::read(&manifest)? != original {
+            return Err(invalid("Queries modified the imported prepared manifest"));
+        }
+        fs::write(path.join("prepared-manifest"), original)?;
+    }
     evidence.replies.flush()?;
     evidence.phase("complete")?;
     evidence.differences_file.flush()?;
@@ -2258,6 +2442,10 @@ fn run(options: Options) -> io::Result<bool> {
         &json!({
             "recording": canonical_recording, "sourcePath": recording,
             "preparationOnly": options.prepare_only, "parityPerformed": !options.prepare_only,
+            "productionLinesChecked": requests.production_lines && !options.prepare_only,
+            "importedStore": options.prepared_store,
+            "comparedReplies": options.compare_replies,
+            "servedReplyEncoding": "original-utf8",
             "sourceKey": key, "recordedContentFileStamps": content_files,
             "preparation": preparation, "growth": growth, "preparedReopenMs": reopen_ms,
             "comparisons": evidence.comparisons, "differences": evidence.differences, "errors": evidence.errors,
@@ -2299,6 +2487,106 @@ fn main() {
             eprintln!("Acceptance harness: {error}");
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod served_parity_tests {
+    use super::*;
+
+    fn reply(text: &str) -> ServedReply {
+        ServedReply {
+            label: "synthetic".into(),
+            request: json!({"product":"synthetic","params":{"tag":"TST"}}),
+            reply: serde_json::from_str(text).unwrap(),
+            reply_text: text.into(),
+        }
+    }
+
+    #[test]
+    fn served_comparison_keeps_order_whitespace_escapes_and_signed_zero() {
+        for (left, right) in [
+            (r#"{"a":1,"b":2}"#, r#"{"b":2,"a":1}"#),
+            (r#"{"a":1}"#, r#"{ "a": 1 }"#),
+            (r#"{"a":"a"}"#, r#"{"a":"\u0061"}"#),
+            (r#"{"a":-0.0}"#, r#"{"a":0.0}"#),
+        ] {
+            let (left, right) = (reply(left), reply(right));
+            assert_eq!(left.reply, right.reply);
+            assert!(!left.matches(&right));
+            assert!(left.matches(&reply(&left.reply_text)));
+            let restored: ServedReply =
+                serde_json::from_slice(&serde_json::to_vec(&left).unwrap()).unwrap();
+            assert!(left.matches(&restored));
+        }
+    }
+
+    #[test]
+    fn served_comparison_requires_request_identity_and_original_bytes() {
+        let left = reply(r#"{"a":1}"#);
+        let mut right = reply(&left.reply_text);
+        right.request["params"]["tag"] = json!("NEW");
+        assert!(!left.matches(&right));
+        right = reply(&left.reply_text);
+        right.reply = json!({"a":2});
+        assert!(right.validate().is_err());
+        let mut parsed_only = serde_json::to_value(&left).unwrap();
+        parsed_only.as_object_mut().unwrap().remove("replyText");
+        assert!(serde_json::from_value::<ServedReply>(parsed_only).is_err());
+    }
+
+    fn query_options() -> Options {
+        Options {
+            recording: "synthetic.battleplan".into(),
+            prefix: None,
+            evidence: "synthetic-evidence".into(),
+            game: None,
+            user: None,
+            requests: None,
+            repetitions: 0,
+            allow_unverified: false,
+            prepare_only: false,
+            production_only: true,
+            prepared_store: None,
+            compare_replies: None,
+            progressive: None,
+            prefix_blocks: 13,
+            measurements: None,
+            display_products_cost: false,
+            display_products_all_countries: false,
+            readiness: false,
+            readiness_limit: Duration::from_secs(1),
+            readiness_table: None,
+            readiness_cold_content: false,
+        }
+    }
+
+    #[test]
+    fn imported_stores_and_reply_comparisons_cannot_enter_modes_that_ignore_them() {
+        for imported in [false, true] {
+            for mode in ["display", "readiness", "progressive", "prepare-only"] {
+                let mut options = query_options();
+                if imported {
+                    options.prepared_store = Some("synthetic-store".into());
+                } else {
+                    options.compare_replies = Some("synthetic-baseline".into());
+                }
+                match mode {
+                    "display" => options.display_products_cost = true,
+                    "readiness" => options.readiness = true,
+                    "progressive" => options.progressive = Some("setup".into()),
+                    "prepare-only" => options.prepare_only = true,
+                    _ => unreachable!(),
+                }
+                assert!(validate_modes(&options).is_err(), "{mode}");
+            }
+        }
+        let mut options = query_options();
+        options.prepared_store = Some("synthetic-store".into());
+        options.compare_replies = Some("synthetic-baseline".into());
+        assert!(validate_modes(&options).is_ok());
+        options.prefix = Some("synthetic-prefix".into());
+        assert!(validate_modes(&options).is_err());
     }
 }
 

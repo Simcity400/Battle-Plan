@@ -77,7 +77,8 @@ fn empty_countries_and_unrequested_countries_publish_the_same_coverage() {
     }
     for tag in ["GER", "ITA"] {
         let (scan, meta) = saved_sections(1, tag);
-        let saved: SavedScan = pages::read(&pages.read_at(&scan, 0).unwrap().unwrap()).unwrap();
+        let saved: SavedScan =
+            pages::read_json(&pages.read_at(&scan, 0).unwrap().unwrap()).unwrap();
         assert_eq!(saved.last_block, last_block(&replay, 1));
         assert!(pages.read_at(&meta, 0).unwrap().is_some());
         if tag == "ITA" {
@@ -635,7 +636,7 @@ fn renamed_and_reused_aliases_resume_with_the_literal_tag_fold_bytes() {
         &flag,
     )
     .unwrap();
-    let saved: SavedScan = pages::read(
+    let saved: SavedScan = pages::read_json(
         &pages
             .read_at(&saved_sections(1, "GER").0, 0)
             .unwrap()
@@ -823,7 +824,7 @@ fn non_flushing_continuation_keeps_pending_records_before_observing_more() {
         if position + 1 < replay.index.len() {
             let block = &replay.index[position];
             resumed.directory.last_block = Some((block.first_hour, block.last_hour, block.offset));
-            pages::write(&mut right, &directory_section(1), 0, &resumed.directory).unwrap();
+            pages::write_json(&mut right, &directory_section(1), 0, &resumed.directory).unwrap();
             resumed.save(&mut right, &flag).unwrap();
             resumed = restore(&mut right, &replay);
             assert!(
@@ -2493,12 +2494,14 @@ fn ordered_page_logs_keep_old_checkpoints_and_shared_prefixes_immutable() {
     let mut stored = fixtures::FixturePages::default();
     let mut facts = private::Store::new(&mut stored, 1);
     let mut log = pages::PageLog::default();
-    log.append(&mut facts, "synthetic-log", &"first").unwrap();
+    log.append(&mut facts, "synthetic-log", &"first".to_owned())
+        .unwrap();
     let prefix = log;
-    log.append(&mut facts, "synthetic-log", &"later").unwrap();
+    log.append(&mut facts, "synthetic-log", &"later".to_owned())
+        .unwrap();
     let mut alternative = prefix;
     alternative
-        .append(&mut facts, "synthetic-log", &"replacement")
+        .append(&mut facts, "synthetic-log", &"replacement".to_owned())
         .unwrap();
     for (log, expected) in [
         (prefix, vec!["first"]),
@@ -3085,4 +3088,38 @@ fn failed_seed_publication_keeps_the_committed_roster_and_compatibility_sections
     for (key, bytes) in expected.pages {
         assert_eq!(actual.get(&key), Some(&bytes));
     }
+}
+
+#[test]
+fn an_old_private_section_identity_forces_repreparation_with_current_public_scans() {
+    let replay = recording();
+    let cancelled = AtomicBool::new(false);
+    let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
+    let mut pages = fixtures::FixturePages::default();
+    for (position, block) in replay.index.iter().enumerate() {
+        prepared
+            .advance_block(&mut pages, &replay, position, None, &cancelled)
+            .unwrap();
+        prepared
+            .publish(&mut pages, &replay, block, None, &cancelled)
+            .unwrap();
+    }
+    let state = pages.pages.remove(&(state_section(1, "world"), 0)).unwrap();
+    pages
+        .pages
+        .insert(("production-lines-state-v1-1-world".into(), 0), state);
+    assert!(pages.pages.contains_key(&(directory_section(1), 0)));
+    assert!(pages.pages.contains_key(&(saved_sections(1, "GER").0, 0)));
+    let fixture = crate::prepared::series::tests::Fixture::new();
+    let mut writer = fixture.writer();
+    for ((section, range), bytes) in &pages.pages {
+        writer.write_at(section, *range, bytes.as_slice()).unwrap();
+    }
+    writer.commit().unwrap();
+    assert!(!binary_current(&fixture.store, &fixture.key, 1).unwrap());
+    assert!(
+        Prepared::resume(&fixture.store, &fixture.key, &replay, 1, None)
+            .unwrap()
+            .is_none()
+    );
 }

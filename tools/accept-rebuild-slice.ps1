@@ -5,7 +5,10 @@ param(
     [string]$UserDir = $(if (Test-Path Env:BATTLE_PLAN_USER_DIR) { $env:BATTLE_PLAN_USER_DIR } else { $env:HOI4_USER_DIR }),
     [string]$Requests,
     [string]$Prefix,
-    [ValidateRange(1, [int]::MaxValue)][int]$Repetitions = 20,
+    [string]$PreparedStore,
+    [string]$CompareReplies,
+    [switch]$ProductionOnly,
+    [ValidateRange(0, [int]::MaxValue)][int]$Repetitions = 20,
     [string]$Executable,
     [switch]$AllowUnverified,
     [switch]$PrepareOnly,
@@ -61,7 +64,8 @@ $arguments.Add('--repetitions')
 $arguments.Add($Repetitions.ToString([Globalization.CultureInfo]::InvariantCulture))
 foreach ($pair in @(
     @('--game-dir', $GameDir), @('--user-dir', $UserDir),
-    @('--requests', $Requests), @('--prefix', $Prefix)
+    @('--requests', $Requests), @('--prefix', $Prefix),
+    @('--prepared-store', $PreparedStore), @('--compare-replies', $CompareReplies)
 )) {
     if ($pair[1]) {
         $arguments.Add($pair[0])
@@ -69,6 +73,7 @@ foreach ($pair in @(
     }
 }
 if ($AllowUnverified) { $arguments.Add('--allow-unverified') }
+if ($ProductionOnly) { $arguments.Add('--production-only') }
 if ($PrepareOnly) { $arguments.Add('--prepare-only') }
 if ($DisplayProductsCost) { $arguments.Add('--display-products-cost') }
 if ($DisplayProductsAllCountries) { $arguments.Add('--display-products-all-countries') }

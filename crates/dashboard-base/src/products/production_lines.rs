@@ -53,6 +53,8 @@
 //! sprite, else `GFX_<owner tag>_<script key>`, `GFX_<script key>`, or the game's
 //! `GFX_idea_unknown` (replay README, IndustrialOrganisations).
 
+mod binary;
+
 use super::{
     CountryParams, LoadContext, Product,
     equipment::{self, EQUIPMENT_DECIMALS, Tags, Texts, VariantCatalogue},
@@ -1593,6 +1595,9 @@ pub fn saved_current(
     tag: &str,
 ) -> io::Result<bool> {
     let (_, meta) = saved_sections(branch, tag);
+    if !prepared::binary_current(store, key, branch)? {
+        return Ok(false);
+    }
     let Some(meta) = crate::prepared::series::read_reply::<SavedMeta>(store, key, &meta, 0)? else {
         return Ok(false);
     };

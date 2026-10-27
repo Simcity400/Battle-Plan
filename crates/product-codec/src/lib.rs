@@ -308,6 +308,76 @@ impl<T: Product, const N: usize> Product for [T; N] {
     }
 }
 
+impl Product for () {
+    const MIN_BYTES: usize = 1;
+    fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        0_u8.encode(out)
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        if input.u8()? != 0 {
+            return Err(invalid("unknown unit product marker"));
+        }
+        Ok(())
+    }
+    fn schema(schema: &mut Schema) {
+        schema.field("unit");
+    }
+}
+impl<T: Product> Product for Box<T> {
+    const MIN_BYTES: usize = T::MIN_BYTES;
+    fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        (**self).encode(out)
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        Ok(Box::new(T::decode(input)?))
+    }
+    fn schema(schema: &mut Schema) {
+        schema.field("Box");
+        T::schema(schema);
+    }
+}
+impl<T: Product, E: Product> Product for Result<T, E> {
+    const MIN_BYTES: usize = 1;
+    fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        match self {
+            Ok(value) => {
+                0_u8.encode(out)?;
+                value.encode(out)
+            }
+            Err(value) => {
+                1_u8.encode(out)?;
+                value.encode(out)
+            }
+        }
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        match input.u8()? {
+            0 => Ok(Ok(T::decode(input)?)),
+            1 => Ok(Err(E::decode(input)?)),
+            _ => Err(invalid("unknown result product tag")),
+        }
+    }
+    fn schema(schema: &mut Schema) {
+        schema.field("Result");
+        T::schema(schema);
+        E::schema(schema);
+    }
+}
+macro_rules! tuples {
+    ($(($($name:ident),+)),+ $(,)?) => { $(
+        impl<$($name: Product),+> Product for ($($name,)+) {
+            const MIN_BYTES: usize = 0 $(+ $name::MIN_BYTES)+;
+            #[allow(non_snake_case)]
+            fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
+                let ($($name,)+) = self; $($name.encode(out)?;)+ Ok(())
+            }
+            fn decode(input: &mut Decoder<'_>) -> io::Result<Self> { Ok(($($name::decode(input)?,)+)) }
+            fn schema(schema: &mut Schema) { schema.field("tuple"); $($name::schema(schema);)+ }
+        }
+    )+ };
+}
+tuples!((A, B), (A, B, C), (A, B, C, D), (A, B, C, D, E));
+
 #[macro_export]
 macro_rules! product {
     ($(#[$meta:meta])* $vis:vis struct $name:ident { $($fv:vis $field:ident: $ty:ty),* $(,)? } $($rest:tt)*) => {

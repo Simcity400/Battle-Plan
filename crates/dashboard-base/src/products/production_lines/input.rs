@@ -955,3 +955,12 @@ fn organisation_tokens(
         }))
         .collect()
 }
+
+product_codec::product! { impl WorldSaved {
+    variants: VariantCatalogue,
+    pending_bytes: usize,
+    icon_events: Vec<(u64, i32, IconChoice, bool)>,
+    definitions: Vec<u8>,
+    definition_count: usize,
+    revision: u64,
+} default {} }

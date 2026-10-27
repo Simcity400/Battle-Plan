@@ -1421,3 +1421,76 @@ pub fn design_changed(frame: &DecodedFrame) -> bool {
         .complete::<tables::VariantChanges>()
         .is_ok_and(|rows| !rows.is_empty())
 }
+
+impl product_codec::Product for VariantCatalogue {
+    const MIN_BYTES: usize = 17;
+    fn encode(&self, out: &mut Vec<u8>) -> std::io::Result<()> {
+        product_codec::Product::encode(&self.versions, out)?;
+        product_codec::Product::encode(&self.last_hour, out)?;
+        product_codec::Product::encode(&self.known, out)
+    }
+    fn decode(input: &mut product_codec::Decoder<'_>) -> std::io::Result<Self> {
+        Ok(Self {
+            versions: product_codec::Product::decode(input)?,
+            last_hour: product_codec::Product::decode(input)?,
+            known: product_codec::Product::decode(input)?,
+            ..Self::default()
+        })
+    }
+    fn schema(s: &mut product_codec::Schema) {
+        s.field("variant-catalogue/persisted/v1");
+        <BTreeMap<u64, Vec<VariantVersion>> as product_codec::Product>::schema(s);
+    }
+}
+impl product_codec::Product for VariantVersion {
+    const MIN_BYTES: usize = 5;
+    fn encode(&self, out: &mut Vec<u8>) -> std::io::Result<()> {
+        self.first_hour.encode(out)?;
+        self.raw.is_some().encode(out)?;
+        if let Some(raw) = &self.raw {
+            raw.id.encode(out)?;
+            raw.first_hour.encode(out)?;
+            raw.token.encode(out)?;
+            raw.display_name.encode(out)?;
+            raw.suffix.encode(out)?;
+            raw.append.encode(out)?;
+            raw.name_tag.encode(out)?;
+            raw.type_tag.encode(out)?;
+            raw.design.encode(out)?;
+            raw.refusals.encode(out)?;
+        }
+        Ok(())
+    }
+    fn decode(input: &mut product_codec::Decoder<'_>) -> std::io::Result<Self> {
+        let first_hour = i32::decode(input)?;
+        let raw = if bool::decode(input)? {
+            let raw = RawVariant {
+                id: u64::decode(input)?,
+                first_hour: i32::decode(input)?,
+                token: String::decode(input)?,
+                display_name: String::decode(input)?,
+                suffix: String::decode(input)?,
+                append: bool::decode(input)?,
+                name_tag: Option::<String>::decode(input)?,
+                type_tag: Option::<String>::decode(input)?,
+                design: Option::<String>::decode(input)?,
+                refusals: Vec::<(String, String)>::decode(input)?,
+            };
+            if raw.refusals.iter().any(|(name, _)| {
+                !matches!(
+                    name.as_str(),
+                    "token" | "display name" | "suffix" | "name tag" | "type tag" | "design"
+                )
+            }) {
+                return Err(product_codec::invalid("Unknown equipment variant operand"));
+            }
+            Some(raw)
+        } else {
+            None
+        };
+        Ok(Self { first_hour, raw })
+    }
+    fn schema(s: &mut product_codec::Schema) {
+        s.field("variant-version/raw-persisted/v1");
+    }
+}

@@ -23,23 +23,23 @@ pub(super) trait Facts {
     ) -> io::Result<()>;
 }
 
-pub(super) fn get<T: serde::de::DeserializeOwned>(
+pub(super) fn get<T: product_codec::Product>(
     facts: &mut dyn Facts,
     root: Root,
     key: &str,
 ) -> io::Result<Option<T>> {
     facts
         .get(root, key)?
-        .map(|bytes| serde_json::from_slice(&bytes).map_err(io::Error::other))
+        .map(|bytes| product_codec::decode(&bytes))
         .transpose()
 }
 pub(super) fn put(
     facts: &mut dyn Facts,
     root: &mut Root,
     key: &str,
-    value: &impl Serialize,
+    value: &impl product_codec::Product,
 ) -> io::Result<()> {
-    facts.put(root, key, serde_json::to_vec(value)?)
+    facts.put(root, key, product_codec::encode(value)?)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -60,7 +60,7 @@ impl<'a, W: Pages + ?Sized> Store<'a, W> {
         Self {
             pages,
             branch,
-            section: format!("production-lines-private-v2-{branch}"),
+            section: format!("production-lines-private-v3-{branch}"),
         }
     }
     fn read(&mut self, root: Root) -> io::Result<Option<Node>> {
@@ -75,7 +75,7 @@ impl<'a, W: Pages + ?Sized> Store<'a, W> {
             .transpose()
     }
     fn write(&mut self, node: &Node) -> io::Result<Root> {
-        let bytes = crate::prepared::series::compress(&serde_json::to_vec(node)?, 3)?;
+        let bytes = pages::pack(node)?;
         Ok(Root(Some(self.pages.write(&self.section, &bytes)?)))
     }
     fn insert(&mut self, root: Root, key: &str, value: Vec<u8>) -> io::Result<Option<Root>> {
@@ -190,3 +190,22 @@ impl<W: Pages + ?Sized> Facts for Store<'_, W> {
         Ok(())
     }
 }
+
+impl product_codec::Product for Root {
+    const MIN_BYTES: usize = 1;
+    fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        product_codec::Product::encode(&self.0, out)
+    }
+    fn decode(input: &mut product_codec::Decoder<'_>) -> io::Result<Self> {
+        Ok(Self(product_codec::Product::decode(input)?))
+    }
+    fn schema(s: &mut product_codec::Schema) {
+        s.field("production-root/v1");
+    }
+}
+product_codec::product! { impl Node {
+    key: String,
+    value: Vec<u8>,
+    left: Root,
+    right: Root,
+} default {} }

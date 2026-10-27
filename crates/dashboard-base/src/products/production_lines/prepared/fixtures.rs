@@ -35,7 +35,8 @@ pub fn prepare(source: &Source, context: &LoadContext) -> io::Result<()> {
     let icons = preparation_icons(source, context);
     let replay = source.replay_ref();
     let tags: Vec<_> = source
-        .metadata().unwrap()
+        .metadata()
+        .unwrap()
         .countries
         .iter()
         .map(|country| country.tag.clone())
@@ -144,7 +145,7 @@ pub(super) fn query(
     let Some(bytes) = pages.read_at(&directory_section(branch), 0)? else {
         return Ok(None);
     };
-    let directory: Directory = pages::read(&bytes)?;
+    let directory: Directory = pages::read_json(&bytes)?;
     let selected = match holder {
         None => tag_key(tag),
         Some(country) => native_key(&country),
@@ -171,7 +172,7 @@ pub(super) fn country_at(
     let Some(bytes) = pages.read_at(&directory_section(branch), 0)? else {
         return Ok(None);
     };
-    let directory: Directory = pages::read(&bytes)?;
+    let directory: Directory = pages::read_json(&bytes)?;
     read_country_at(&directory, tag, hour, |section, range| {
         pages.read_at(section, range)
     })
