@@ -21,16 +21,20 @@ export function validateOccupationReserve(value: unknown): OccupationReserveRepl
 /** One recorded entry of a holder's reserve: its place in the holder's list, its source
  * country (null when the reference does not resolve) and its signed amount. */
 export interface ReserveEntry { ordinal: number; source: string | null; amount: bigint }
-export interface HolderReserve { holder: string; tag: string; entries: ReserveEntry[]; positive: bigint; negative: ReserveEntry[] }
+/** `admitted`: the holder's occupation status was read with its entries, so a source
+ * without an entry holds none. */
+export interface HolderReserve { holder: string; tag: string; admitted: boolean; entries: ReserveEntry[]; positive: bigint; negative: ReserveEntry[] }
 
-/** Each holder's entries at `hour`, in recorded order; null when not recorded then. A holder
- * without entries at a known hour holds no reserve from occupied countries. */
+/** Each holder's entries at `hour`, in recorded order; null when not recorded then. An
+ * admitted holder without entries holds no reserve. */
 export function reservesAt(reply: OccupationReserveReply, hour: number): { holders: HolderReserve[]; readHour: number | undefined } | null {
   if (!keyedKnown(reply.window, hour)) return null;
   const holders = new Map<string, Map<number, { source?: string | null; amount?: bigint }>>();
+  const admitted = new Set<string>();
   for (const series of reply.window.series) {
     const [holder, ordinal, field] = series.name.split('|');
     const run = runAtHour(series.runs, hour);
+    if (run && ordinal === 'holder' && field === undefined) { admitted.add(holder); continue; }
     if (!run || (field !== 'amount' && field !== 'source')) continue;
     const entries = holders.get(holder) ?? new Map();
     const entry = entries.get(Number(ordinal)) ?? {};
@@ -39,11 +43,12 @@ export function reservesAt(reply: OccupationReserveReply, hour: number): { holde
     entries.set(Number(ordinal), entry);
     holders.set(holder, entries);
   }
+  for (const holder of admitted) if (!holders.has(holder)) holders.set(holder, new Map());
   const out: HolderReserve[] = [];
   for (const [holder, entries] of holders) {
     const list = [...entries].filter(([, entry]) => entry.amount !== undefined).sort(([a], [b]) => a - b)
       .map(([ordinal, entry]) => ({ ordinal, source: entry.source ?? null, amount: entry.amount! }));
-    out.push({ holder, tag: countryPart(holder)?.tag ?? holder, entries: list,
+    out.push({ holder, tag: countryPart(holder)?.tag ?? holder, admitted: admitted.has(holder), entries: list,
       positive: list.reduce((sum, entry) => entry.amount > 0n ? sum + entry.amount : sum, 0n),
       negative: list.filter(entry => entry.amount < 0n) });
   }
@@ -65,11 +70,11 @@ export function sourceParts(reserve: HolderReserve): { source: string | null; am
 export function holderSourceBands(reply: OccupationReserveReply, holder: string): { sources: (string | null)[]; bands: Run[][] } {
   const resolved = [...new Set(Object.values(reply.sources))];
   const bands = holderBands(reply, holder, [...resolved, null]);
-  return bands.at(-1)!.length ? { sources: [...resolved, null], bands } : { sources: resolved, bands: bands.slice(0, -1) };
+  return bands.at(-1)!.some(run => run.value > 0) ? { sources: [...resolved, null], bands } : { sources: resolved, bands: bands.slice(0, -1) };
 }
 
 /** One holder's positive reserve from each source over the window, as stacked chart runs
- * (one per source, in the order of `sources`). */
+ * (one per source, in the order of `sources`); 0 where an admitted holder has no entry from it. */
 export function holderBands(reply: OccupationReserveReply, holder: string, sources: readonly (string | null)[]): Run[][] {
   const hours = new Set<number>();
   for (const series of reply.window.series) if (series.name.startsWith(`${holder}|`)) for (const run of series.runs) { hours.add(run[0]); hours.add(run[1] + 1); }
@@ -81,7 +86,7 @@ export function holderBands(reply: OccupationReserveReply, holder: string, sourc
     if (!at) continue;
     const parts = new Map(sourceParts(at).map(part => [part.source, part.amount]));
     sources.forEach((source, band) => {
-      const amount = parts.get(source);
+      const amount = parts.get(source) ?? (at.admitted ? 0n : undefined);
       if (amount === undefined) return;
       const value = Number(amount), runs = bands[band], previous = runs.at(-1);
       if (previous && previous.lastHour + 1 === first && previous.value === value) previous.lastHour = last;

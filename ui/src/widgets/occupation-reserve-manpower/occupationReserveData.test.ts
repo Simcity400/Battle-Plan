@@ -49,3 +49,27 @@ test('the holder drill keeps unresolved positive amounts in their own band, by d
   // FRA's only entry is negative, so its band is empty rather than drawn.
   assert.deepEqual(holderBands(reply, 'GER@7', ['POL@20', 'FRA@9', null])[1], []);
 });
+
+/** GER holds POL's reserve from hour 10; both are admitted holders through hour 30. */
+const admitted = validateOccupationReserve({ window: { firstHour: 0, lastHour: 40, known: [{ firstHour: 0, lastHour: 30 }], reads: [[0, 30, 0]], series: [
+  { name: 'GER@7|holder', runs: [[0, 30, '1', true]] },
+  { name: 'ITA@8|holder', runs: [[0, 30, '1', true]] },
+  { name: 'GER@7|0|amount', runs: [[10, 30, '400', true]] },
+  { name: 'GER@7|0|source', runs: [[10, 30, '1', true]] },
+] }, holders: [{ tag: 'GER', slot: 7 }, { tag: 'ITA', slot: 8 }], sources: { 1: 'POL@20' }, warnings: [] });
+
+test('an admitted holder without entries holds no reserve, and only a known hour says so', () => {
+  const italy = reservesAt(admitted, 20)!.holders.find(holder => holder.holder === 'ITA@8')!;
+  assert.deepEqual([italy.admitted, italy.entries, italy.positive], [true, [], 0n]);
+  assert.equal(reservesAt(admitted, 35), null);
+  // Without the admission the same reply proves nothing about a holder missing from it.
+  assert.equal(reservesAt(reply, 30)!.holders.find(holder => holder.holder === 'ITA@8'), undefined);
+  assert.equal(reservesAt(reply, 30)!.holders[0].admitted, false);
+});
+
+test('an admitted holder\'s bands are zero before its first entry, never a gap, with no unresolved band', () => {
+  const drill = holderSourceBands(admitted, 'GER@7');
+  assert.deepEqual(drill.sources, ['POL@20']);
+  assert.deepEqual(drill.bands[0].map(run => [run.firstHour, run.lastHour, run.value]), [[0, 9, 0], [10, 30, 400]]);
+  assert.deepEqual(holderSourceBands(admitted, 'ITA@8'), { sources: ['POL@20'], bands: [[{ firstHour: 0, lastHour: 30, value: 0, breakBefore: true }]] });
+});

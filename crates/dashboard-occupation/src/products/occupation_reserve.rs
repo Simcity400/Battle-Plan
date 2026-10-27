@@ -1,10 +1,16 @@
-//! Daily occupation reserve occurrences, independent of occupation-law evaluation.
+//! Daily occupation reserve occurrences, independent of occupation-law evaluation:
+//! the foreign garrison manpower each country's occupation status holds in reserve,
+//! by the country that sent it.
 //!
-//! Names: `TAG@slot|<ordinal>|amount` and `TAG@slot|<ordinal>|source`.
-//! Source values index `sources` (decimal id -> `TAG@slot`). An ordinal is list
-//! order, not a transfer or a lifetime. Missing occurrences never prove that a
-//! holder is eligible and empty: these three tables have no occupation-admission
-//! witness. Positive amounts alone determine race order; negatives stay signed.
+//! Every country owns one occupation status, and the walk that reads each status's
+//! reserve writes one OccupationSettings row for it. Those rows, from the same
+//! supplying read, admit the holders: an admitted holder without occurrences holds
+//! none. A read without that inventory is not an observation.
+//!
+//! Names: `TAG@slot|holder` (1 while admitted), `TAG@slot|<ordinal>|amount` and
+//! `TAG@slot|<ordinal>|source`. Source values index `sources` (decimal id ->
+//! `TAG@slot`). An ordinal is list order, not a transfer or a lifetime. Positive
+//! amounts alone determine race order; negatives stay signed.
 
 use dashboard_base::{
     prepared::prepass::Family,
@@ -73,41 +79,70 @@ pub struct OccupationReserveReply {
     pub warnings: Vec<String>,
 }
 
-/// A supplying read's identity join, not the later playback hour's join.
+const UNADMITTED: &str = "Reserve holders unavailable: occupation statuses not recorded at the supplying read (reads)";
+const UNJOINED: &str =
+    "Reserve holder identities unavailable: countries not recorded at the supplying read (reads)";
+const UNSPELLED: &str =
+    "Country tag cannot be represented by the keyed name grammar (holder observations)";
+const UNNAMED: &str = "Reserve holder identity unavailable (holder observations)";
+
+/// A supplying read's identity join and admitted holders, not the later playback hour's.
 #[derive(Default, Serialize, Deserialize)]
 struct Bindings {
     countries: Vec<(u32, u32, Vec<u8>)>,
     links: Vec<(u32, u32)>,
     raw: BTreeMap<u32, String>,
+    holders: Vec<String>,
+    /// Admitted holders the read cannot name: [tag outside the grammar, identity unresolved].
+    unnamed: [u64; 2],
 }
 
 impl Bindings {
-    fn read(frame: &DecodedFrame) -> Option<Self> {
-        let countries = frame.complete::<tables::Countries>().ok()?;
-        let links = frame.complete::<tables::CountryLinks>().ok()?;
-        let joined = Countries::read(frame)?;
+    fn read(frame: &DecodedFrame) -> Result<Self, &'static str> {
+        let admitted = frame
+            .complete::<tables::OccupationSettings>()
+            .map_err(|_| UNADMITTED)?;
+        let countries = frame
+            .complete::<tables::Countries>()
+            .map_err(|_| UNJOINED)?;
+        let links = frame
+            .complete::<tables::CountryLinks>()
+            .map_err(|_| UNJOINED)?;
+        let joined = Countries::read(frame).ok_or(UNJOINED)?;
         let valid_slots: BTreeSet<_> = countries
             .iter()
             .filter(|row| key_tag(&row.tag).is_some())
             .map(|row| row.canonical_slot)
             .collect();
-        Some(Self {
+        let raw: BTreeMap<u32, String> = links
+            .iter()
+            .filter_map(|r| {
+                let slot = joined.slot(r.id)?;
+                valid_slots
+                    .contains(&slot)
+                    .then(|| joined.raw(r.id))
+                    .flatten()
+                    .map(|part| (r.id, part))
+            })
+            .collect();
+        let mut holders = Vec::new();
+        let mut unnamed = [0; 2];
+        for row in admitted {
+            match raw.get(&row.country) {
+                Some(part) => holders.push(part.clone()),
+                None if joined.raw(row.country).is_some() => unnamed[0] += 1,
+                None => unnamed[1] += 1,
+            }
+        }
+        Ok(Self {
             countries: countries
                 .iter()
                 .map(|r| (r.id, r.canonical_slot, r.tag.clone()))
                 .collect(),
             links: links.iter().map(|r| (r.id, r.canonical_slot)).collect(),
-            raw: links
-                .iter()
-                .filter_map(|r| {
-                    let slot = joined.slot(r.id)?;
-                    valid_slots
-                        .contains(&slot)
-                        .then(|| joined.raw(r.id))
-                        .flatten()
-                        .map(|part| (r.id, part))
-                })
-                .collect(),
+            raw,
+            holders,
+            unnamed,
         })
     }
     fn same(&self, frame: &DecodedFrame) -> bool {
@@ -152,6 +187,7 @@ impl KeyedObserver for OccupationReserveObserver {
     const NAME: &'static str = "occupation-reserve";
     const TABLES: &'static [TableId] = &[
         TableId::CountryOccupationReserveManpower,
+        TableId::OccupationSettings,
         TableId::CountryLinks,
         TableId::Countries,
     ];
@@ -162,6 +198,8 @@ impl KeyedObserver for OccupationReserveObserver {
     fn fields() -> io::Result<Vec<TableFields>> {
         Ok(vec![
             TableFields::all(Self::READ).when_read(),
+            // The shared occupation walk records its read on this table alone.
+            TableFields::keys(TableId::OccupationSettings).when_read(),
             TableFields::all(TableId::CountryLinks),
             TableFields::named(TableId::Countries, &["canonical_slot", "tag"])?,
         ])
@@ -182,19 +220,25 @@ impl KeyedObserver for OccupationReserveObserver {
             return Ok(false);
         };
         if dashboard_text::metadata::slot_read(format, &frame.metrics, Self::READ, frame.hour) {
-            self.bindings = Bindings::read(frame);
+            self.bindings = match Bindings::read(frame) {
+                Ok(bindings) => Some(bindings),
+                Err(reason) => {
+                    *self.refusals.entry(reason.into()).or_default() += 1;
+                    None
+                }
+            };
         }
         let Some(bindings) = self.bindings.as_ref().filter(|b| b.same(frame)) else {
             return Ok(false);
         };
-        for (_, slot, tag) in &bindings.countries {
-            let Some(tag) = key_tag(tag) else {
-                *self.refusals.entry("Country tag cannot be represented by the keyed name grammar (country observations)".into()).or_default() += 1;
-                continue;
-            };
-            self.holders
-                .entry(countries::part(tag, *slot))
-                .or_insert(frame.hour);
+        for holder in &bindings.holders {
+            values.push(format!("{holder}|holder"), 1);
+            self.holders.entry(holder.clone()).or_insert(frame.hour);
+        }
+        for (reason, count) in [UNSPELLED, UNNAMED].into_iter().zip(bindings.unnamed) {
+            if count > 0 {
+                *self.refusals.entry(reason.into()).or_default() += count;
+            }
         }
         for row in rows {
             let Some(holder) = bindings.raw.get(&row.country) else {
@@ -305,9 +349,14 @@ fn reply(
     cancelled: &AtomicBool,
 ) -> io::Result<OccupationReserveReply> {
     let mut reply = OccupationReserveReply {
-        window: KeyedWindow { first_hour: first, last_hour: last, ..Default::default() },
-        holders: Vec::new(), sources: BTreeMap::new(),
-        warnings: vec!["Known-empty reserve holders unavailable: no occupation-holder admission witness in the selected tables; missing holder occurrences are unknown, never zero (1).".into()],
+        window: KeyedWindow {
+            first_hour: first,
+            last_hour: last,
+            ..Default::default()
+        },
+        holders: Vec::new(),
+        sources: BTreeMap::new(),
+        warnings: Vec::new(),
     };
     if first > last.min(through.unwrap_or(last)) {
         return Ok(reply);
@@ -342,19 +391,24 @@ fn reply(
             .keyed()
             .filter_map(|(name, key)| {
                 let (part, tail) = name.split_once('|')?;
-                (tail.ends_with("|amount") && candidates.contains(part))
-                    .then_some((part.to_owned(), key))
+                let admission = tail == "holder";
+                ((admission || tail.ends_with("|amount")) && candidates.contains(part))
+                    .then_some((part.to_owned(), admission, key))
             })
             .collect();
         dashboard_text::metadata::check_cancel(cancelled)?;
         let mut requested = vec![dashboard_keyed::KNOWN, dashboard_keyed::READ];
-        requested.extend(keys.iter().map(|(_, key)| *key));
+        requested.extend(keys.iter().map(|(_, _, key)| *key));
         let values = opened.values_at(&requested, end)?;
         let mut totals = BTreeMap::<String, i128>::new();
         if values[0].is_some() && values[1].is_some() {
-            for ((part, _), value) in keys.iter().zip(&values[2..]) {
+            // An admitted holder without entries ranks as a proven zero.
+            for ((part, admission, _), value) in keys.iter().zip(&values[2..]) {
                 if let Some(value) = value {
-                    *totals.entry(part.clone()).or_default() += (*value).max(0);
+                    let total = totals.entry(part.clone()).or_default();
+                    if !admission {
+                        *total += (*value).max(0);
+                    }
                 }
             }
         }

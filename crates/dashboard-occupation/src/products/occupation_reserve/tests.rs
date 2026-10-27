@@ -2,10 +2,13 @@ use super::*;
 use dashboard_base::test_fixtures::world_frame;
 use dashboard_keyed::{Scan, query};
 use replay_data::rows::{
-    CountryLinkRow, CountryOccupationReserveManpowerRow, CountryRow, TableRows,
+    CountryLinkRow, CountryOccupationReserveManpowerRow, CountryRow, OccupationSettingsRow,
+    TableRows,
 };
 use replay_frame::frame::TableView;
 
+/// Every country's occupation status, as the shared walk records it; `fresh`
+/// marks its read on OccupationSettings, the table the walk is timed on.
 fn frame(
     hour: i32,
     entries: Option<&[(u32, u32, u32, i32)]>,
@@ -48,7 +51,16 @@ fn frame(
             reason: "Synthetic reserve refusal".into(),
         },
     };
-    frame.metrics.table_ns[TableId::CountryOccupationReserveManpower.index()] = u64::from(fresh);
+    *frame.tables[TableId::OccupationSettings.index()] =
+        TableView::Complete(TableRows::OccupationSettings(
+            (1..=count)
+                .map(|country| OccupationSettingsRow {
+                    country,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    frame.metrics.table_ns[TableId::OccupationSettings.index()] = u64::from(fresh);
     frame
 }
 fn params(value: serde_json::Value) -> OccupationReserveParams {
@@ -133,10 +145,11 @@ fn occupation_reserve_repeated_sources_signed_extremes_and_positive_only_ranking
     let source = run(&reply, "Mod 1@1|0|source").unwrap().runs[0].2.clone();
     assert_eq!(reply.sources[&source], "Mod 2@2");
     assert_eq!(run(&reply, "Mod 1@1|1|source").unwrap().runs[0].2, source);
-    assert_eq!(reply.window.series.len(), 8);
+    assert_eq!(run(&reply, "Mod 1@1|holder").unwrap().runs[0].2, "1");
+    assert_eq!(reply.window.series.len(), 9);
 }
 #[test]
-fn occupation_reserve_complete_empty_is_not_authenticated_empty_holder() {
+fn occupation_reserve_admitted_holder_without_occurrences_holds_none() {
     let fixture = dashboard_base::prepared::series::tests::Fixture::new();
     let mut scan = Scan::default();
     observe(&mut scan, &frame(100, Some(&[]), true, 2));
@@ -151,14 +164,121 @@ fn occupation_reserve_complete_empty_is_not_authenticated_empty_holder() {
     );
     assert_eq!(reply.window.known.len(), 1);
     assert_eq!(reply.window.known[0].last_hour, 100);
-    assert!(reply.window.series.is_empty());
-    assert_eq!(reply.holders.len(), 1);
-    assert!(
-        reply
-            .warnings
-            .iter()
-            .any(|w| w.contains("admission witness"))
+    // Admitted at the read with no occurrence: a proven empty reserve, not an unknown one.
+    assert_eq!(reply.window.series.len(), 1);
+    assert_eq!(
+        run(&reply, "Mod 1@1|holder").unwrap().runs,
+        [(100, 100, "1".into(), true)]
     );
+    assert_eq!(reply.holders.len(), 1);
+    assert!(reply.warnings.is_empty(), "{:?}", reply.warnings);
+}
+#[test]
+fn occupation_reserve_top_ranks_admitted_holders_without_occurrences_as_zero() {
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let mut scan = Scan::default();
+    observe(&mut scan, &frame(100, Some(&[(2, 0, 1, 90)]), true, 3));
+    publish(&mut scan, &fixture);
+    let reply = load(
+        &fixture,
+        &params(serde_json::json!({"branchId":"1","top":2})),
+        100,
+        100,
+        None,
+    );
+    assert_eq!(
+        reply.holders.iter().map(|h| h.slot).collect::<Vec<_>>(),
+        [2, 1]
+    );
+    assert_eq!(
+        run(&reply, "Mod 1@1|holder").unwrap().runs,
+        [(100, 100, "1".into(), true)]
+    );
+    assert!(run(&reply, "Mod 3@3|holder").is_none());
+}
+#[test]
+fn occupation_reserve_read_without_the_status_inventory_is_not_recorded() {
+    for inventory in [
+        TableView::Unavailable {
+            reason: "Synthetic status refusal".into(),
+        },
+        TableView::Truncated {
+            rows: TableRows::OccupationSettings(vec![OccupationSettingsRow {
+                country: 1,
+                ..Default::default()
+            }]),
+            missing: 1,
+        },
+    ] {
+        let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+        let mut scan = Scan::default();
+        let mut refused = frame(100, Some(&[(1, 0, 2, 5)]), true, 2);
+        *refused.tables[TableId::OccupationSettings.index()] = inventory;
+        observe(&mut scan, &refused);
+        observe(&mut scan, &frame(101, Some(&[(1, 0, 2, 5)]), false, 2));
+        observe(&mut scan, &frame(102, Some(&[(1, 0, 2, 5)]), true, 2));
+        publish(&mut scan, &fixture);
+        let reply = load(
+            &fixture,
+            &params(serde_json::json!({"branchId":"1"})),
+            100,
+            102,
+            None,
+        );
+        assert_eq!(
+            reply
+                .window
+                .known
+                .iter()
+                .map(|s| (s.first_hour, s.last_hour))
+                .collect::<Vec<_>>(),
+            [(102, 102)]
+        );
+        assert!(
+            reply
+                .window
+                .series
+                .iter()
+                .all(|s| s.runs.iter().all(|r| r.0 == 102))
+        );
+        assert!(
+            reply
+                .warnings
+                .iter()
+                .any(|w| w.contains("occupation statuses not recorded") && w.ends_with(": 1.")),
+            "{:?}",
+            reply.warnings
+        );
+    }
+}
+#[test]
+fn occupation_reserve_holders_are_the_read_inventory_not_every_country() {
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let mut scan = Scan::default();
+    let mut read = frame(100, Some(&[]), true, 3);
+    if let TableView::Complete(TableRows::OccupationSettings(rows)) =
+        &mut *read.tables[TableId::OccupationSettings.index()]
+    {
+        rows.retain(|row| row.country != 3);
+    }
+    observe(&mut scan, &read);
+    publish(&mut scan, &fixture);
+    let reply = load(
+        &fixture,
+        &params(serde_json::json!({"branchId":"1"})),
+        100,
+        100,
+        None,
+    );
+    assert_eq!(
+        reply
+            .holders
+            .iter()
+            .map(|holder| holder.slot)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert!(run(&reply, "Mod 3@3|holder").is_none());
 }
 #[test]
 fn occupation_reserve_missing_source_keeps_signed_amount_and_counts_refusal() {
@@ -176,8 +296,11 @@ fn occupation_reserve_missing_source_keeps_signed_amount_and_counts_refusal() {
         100,
         None,
     );
-    assert_eq!(reply.window.series.len(), 1);
-    assert_eq!(reply.window.series[0].runs[0].2, i32::MAX.to_string());
+    assert_eq!(
+        run(&reply, "Mod 1@1|0|amount").unwrap().runs[0].2,
+        i32::MAX.to_string()
+    );
+    assert!(run(&reply, "Mod 1@1|0|source").is_none());
     assert!(reply.sources.is_empty());
     assert!(
         reply
@@ -237,7 +360,7 @@ fn occupation_reserve_identity_changes_wait_for_supplier_and_tag_reuse_never_mer
     }
     observe(&mut scan, &changed);
     changed.hour = 102;
-    changed.metrics.table_ns[TableId::CountryOccupationReserveManpower.index()] = 1;
+    changed.metrics.table_ns[TableId::OccupationSettings.index()] = 1;
     observe(&mut scan, &changed);
     publish(&mut scan, &fixture);
     let reply = load(
@@ -281,10 +404,11 @@ fn occupation_reserve_equal_forced_reads_are_watched_and_dated() {
     );
     assert_eq!(reply.window.reads, [(100, 101, 100), (102, 102, 102)]);
     let fields = OccupationReserveObserver::fields().unwrap();
+    // The walk's read is timed on OccupationSettings: only that watch keeps its reads.
     assert!(
         fields
             .iter()
-            .any(|f| f.table == TableId::CountryOccupationReserveManpower && f.read)
+            .any(|f| f.table == TableId::OccupationSettings && f.read)
     );
 }
 #[test]
@@ -385,7 +509,7 @@ fn occupation_reserve_unrepresentable_mod_tag_is_counted_without_losing_other_nu
         100,
         None,
     );
-    assert_eq!(reply.window.series.len(), 2);
+    assert_eq!(reply.window.series.len(), 3);
     assert!(
         reply
             .warnings

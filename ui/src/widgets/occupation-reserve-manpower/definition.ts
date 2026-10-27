@@ -12,7 +12,7 @@ export const OPTIONS: readonly OptionField[] = partsRaceOptions('source', BREAKD
     ? { ...field, choices: field.choices.map(choice => choice.value === 'main' ? { ...choice, label: 'Holders' } : choice) } : field);
 export const definition = {
   kind: 'occupation-reserve-manpower', version: 1, title: 'Occupation reserve manpower', icon: 'flag', category: 'Occupation',
-  description: 'Reserve manpower each occupier holds from each occupied country, with its history.',
+  description: 'Foreign garrison manpower each country holds in reserve, by the country that sent it, with its history.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, all: true },
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 10 }, options: OPTIONS,

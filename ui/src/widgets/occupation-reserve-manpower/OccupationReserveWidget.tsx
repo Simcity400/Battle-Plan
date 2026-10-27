@@ -31,8 +31,8 @@ import './occupationReserve.css';
 
 const UNRESOLVED = 'unresolved';
 
-/** Reserve manpower each occupier holds from each occupied country, as a ranked race whose
- * bars split by source; a holder opens its sources over time. */
+/** Foreign garrison manpower each country holds in reserve, as a ranked race whose bars
+ * split by the country that sent it; a holder opens its sources over time. */
 export default function OccupationReserveWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics } = props;
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
@@ -52,8 +52,8 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const at = useMemo(() => data ? reservesAt(data, moment) : null, [data, moment]);
   const shown = useMemo(() => {
     if (!at) return [];
-    // Every holder with a recorded entry stays reachable, zero-only ones included.
-    const ranked = [...at.holders].filter(holder => holder.entries.length > 0)
+    // Admitted holders and any with a recorded entry stay reachable, proven zeros included.
+    const ranked = [...at.holders].filter(holder => holder.admitted || holder.entries.length > 0)
       .sort((a, b) => a.positive > b.positive ? -1 : a.positive < b.positive ? 1 : a.tag.localeCompare(b.tag));
     if (widget.countries.kind === 'all') return ranked;
     const candidates = new Set(rankedCandidates(resolved, moment, ranked.map(holder => holder.tag)));
@@ -104,7 +104,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
     playhead={playhead} moment={moment} slots={resolved.top ?? Math.max(1, shown.length)} ranked={entries} lines={[]} parts={parts}
     raceLegendParts={parts} partsLabel="Source countries" countryTags={holderTags} label="Occupation reserve manpower"
     // A group's members at an hour still being prepared are not known yet: no bar is not proof of none.
-    empty={resolved.known(moment) ? 'No reserve manpower is held from occupied countries at this date.' : MEMBERSHIP_PREPARING} formatValue={value => Math.round(value).toLocaleString('en-US')}
+    empty={resolved.known(moment) ? 'No reserve manpower is held at this date.' : MEMBERSHIP_PREPARING} formatValue={value => Math.round(value).toLocaleString('en-US')}
     labels={{ race: `Occupation reserve manpower, ${dayLabel(moment)}`, actions: 'Occupation reserve actions' }}
     presentation={{ exact: true, windowedLegend: true }} tooltip={tooltip}
     onPick={(hour, tag) => { if (!tag) return; setHolder(shown.find(item => item.tag === tag)?.holder ?? null); dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour, playing: widget.time.mode === 'follow', playhead: moment }); }} />;
@@ -149,14 +149,14 @@ function HolderSources({ widget, runtime, active, holder, hour, extent, playhead
   const drill = useMemo(() => data && holder ? holderSourceBands(data, holder) : { sources: [] as (string | null)[], bands: [] }, [data, holder]);
   const sources = drill.sources;
   const tags = useMemo(() => sources.flatMap(source => source === null ? [] : [countryPart(source)!.tag]), [sources]);
-  const looks = useCountryLooks(runtime.client, track, tags, hour, active);
+  const holderTag = holder ? countryPart(holder)?.tag ?? holder : null;
+  const looks = useCountryLooks(runtime.client, track, useMemo(() => [...new Set([...holderTag ? [holderTag] : [], ...tags])], [holderTag, tags]), hour, active);
   const colour = useCountryColours(tags, looks.color, tokens, looks);
   const sourceName = (source: string | null) => source === null ? 'Source country unavailable' : looks.name(countryPart(source)!.tag, hour);
   const sourceColour = (source: string | null) => source === null ? tokens.muted : colour(countryPart(source)!.tag, hour);
   const bands = drill.bands;
-  const holderTag = holder ? countryPart(holder)?.tag ?? holder : null;
   const mix = useMemo(() => holderTag ? { tag: holderTag, bands, parts: sources.map(source => {
-    const amount = at ? sourceParts(at).find(part => part.source === source)?.amount : undefined;
+    const amount = at ? sourceParts(at).find(part => part.source === source)?.amount ?? (at.admitted ? 0n : undefined) : undefined;
     return { id: source ?? UNRESOLVED, label: sourceName(source), color: sourceColour(source), value: amount === undefined ? '—' : persons(amount) };
   }) } : null,
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -169,19 +169,25 @@ function HolderSources({ widget, runtime, active, holder, hour, extent, playhead
   if (!holder) return <WidgetState kind="empty" icon="flag" message="Choose a holder: click its bar in the race." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading this holder's reserve…" />;
+  if (pendingReplyAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   const negative = at?.negative ?? [];
+  const list = negative.length > 0 && <dl className="occupation-negative" aria-label="Negative entries">
+    <dt>Negative entries</dt>
+    {negative.map(entry => <dd key={entry.ordinal}><span>{sourceName(entry.source)}</span><span>{persons(entry.amount)}</span></dd>)}
+  </dl>;
+  // Admitted with no positive entry anywhere in the range: nothing to stack, a proven zero.
+  if (at?.admitted && !sources.length) return <div className="occupation-holder">
+    <WidgetState kind="empty" icon="flag" message={`${looks.name(holderTag!, hour)} holds no reserve manpower at this date.`} />{list}
+  </div>;
   return <div className="occupation-holder">
     <CountryRaceView runtime={runtime} track={track} active={active} options={widget.options ?? {}} view="mix" extent={extent} playhead={playhead}
-    moment={hour} slots={1} ranked={[]} lines={[]} parts={mix?.parts ?? []} mix={mix} countryTags={holderTag ? [holderTag] : []}
+    moment={hour} slots={1} ranked={[]} lines={[]} parts={mix?.parts ?? []} mix={mix} countryTags={holderTag ? [holderTag] : []} pending={preparedPrefix(data)?.pending}
     label="Reserve manpower by source country" empty="No reserve manpower recorded." formatValue={value => Math.round(value).toLocaleString('en-US')}
     labels={{ mix: name => `Reserve manpower ${name} holds by source country` }} partsLabel="Source countries"
     presentation={{ exact: true, held: true, windowedLegend: true }}
-    mixEmpty={{ icon: 'flag', message: 'Choose a holder: click its bar in the race.', unavailable: name => `No reserve manpower was recorded for ${name}.` }}
+    mixEmpty={{ icon: 'flag', message: 'Choose a holder: click its bar in the race.', unavailable: name => `Reserve manpower was not recorded for ${name} at this date.` }}
     tooltip={tooltip} />
-    {negative.length > 0 && <dl className="occupation-negative" aria-label="Negative entries">
-      <dt>Negative entries</dt>
-      {negative.map(entry => <dd key={entry.ordinal}><span>{sourceName(entry.source)}</span><span>{persons(entry.amount)}</span></dd>)}
-    </dl>}
+    {list}
   </div>;
 }
 

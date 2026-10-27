@@ -52,7 +52,7 @@ test('occupation reserve of a group at an hour still being prepared is loading, 
     // The final reply proves there is no human player at the end: the race is genuinely empty.
     state.groups = pendingGroups({ final: true });
     render();
-    assert.equal(state.view?.empty, 'No reserve manpower is held from occupied countries at this date.');
+    assert.equal(state.view?.empty, 'No reserve manpower is held at this date.');
   } finally { delete host.__occupationPending; await close(); }
 });
 
