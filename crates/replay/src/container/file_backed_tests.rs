@@ -326,7 +326,16 @@ fn held_metadata_open_uses_only_header_and_trailer_bytes() {
         bytes: io::Cursor::new(memory.bytes().to_vec()),
         reads: Vec::new(),
     };
-    let admitted = Replay::open_file_metadata(&mut observed).unwrap();
+    let packing = Packing::new().unwrap();
+    let admitted = packing.run(|| Replay::open_file_metadata(&mut observed).unwrap());
+    assert_eq!(
+        packing.io_bytes(),
+        observed
+            .reads
+            .iter()
+            .map(|(_, count)| *count as u64)
+            .sum::<u64>()
+    );
     assert_eq!(admitted.index, memory.index);
     assert_eq!(admitted.ordinals, memory.ordinals);
     for (offset, count) in observed.reads {
@@ -690,5 +699,96 @@ fn held_chunk_api_reads_only_the_requested_frame_and_matches_resident_slices() {
         assert_eq!(bytes, held.stored_length);
         memory.inflate_into(&mut resident).unwrap();
         assert_eq!(buffer, resident);
+    }
+}
+
+#[test]
+fn recorder_io_budget_covers_anchor_ranges_without_a_second_outer_block_charge() {
+    use crate::rows::CountryRow;
+    let mut encoder = FrameEncoder::new();
+    let mut input = vec![
+        Record::SessionStart(session(1)),
+        Record::BranchStart(branch(1, 1)),
+    ];
+    for hour in [1, 2, 721, 722, 1441, 1442] {
+        let mut frame = source(1, hour);
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+            (1..=1_500)
+                .map(|id| CountryRow {
+                    id,
+                    canonical_slot: id,
+                    tag: format!("synthetic-country-{id}").into_bytes(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        input.push(Record::Frame(encoder.encode(frame, false).unwrap()));
+    }
+    let memory = Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
+    assert!(
+        grouped::keyframe_chain(&memory, 2, TableId::Countries)
+            .unwrap()
+            .len()
+            > 1
+    );
+    let fixture = Fixture::new(memory.bytes());
+    let held = Replay::open_path(&fixture.0).unwrap();
+    let expected = memory.read_block(&memory.index[2]).unwrap();
+    let packing = Packing::new().unwrap();
+    packing.run(|| {
+        let before = packing.io_bytes();
+        let (actual, read) = file_backed::measure_held_reads(|| {
+            held.read_block_parallel(
+                &held.index[2],
+                &Parallel {
+                    workers: 1,
+                    on_worker: &|| {},
+                },
+            )
+            .unwrap()
+        });
+        assert_eq!(actual, expected);
+        assert!(
+            read > held.index[2].length,
+            "anchor directories and sections must be read"
+        );
+        assert_eq!(packing.io_bytes() - before, read);
+    });
+}
+
+#[test]
+fn recorder_io_budget_counts_atomic_writes_and_both_sides_of_staging_copies() {
+    let memory = current_recording();
+    let source = Fixture::new(memory.bytes());
+    let held = Replay::open_path(&source.0).unwrap();
+    let atomic = Fixture(source.0.with_extension("atomic"));
+    let from_held = Fixture(source.0.with_extension("held-copy"));
+    let from_memory = Fixture(source.0.with_extension("memory-copy"));
+    let packing = Packing::new().unwrap();
+    packing.run(|| {
+        let mut before = packing.io_bytes();
+        memory.write_atomic(&atomic.0).unwrap();
+        assert_eq!(packing.io_bytes() - before, memory.saved_length());
+        before = packing.io_bytes();
+        let published = Fixture(
+            crate::recording_files::publish_new(
+                &memory,
+                source.0.parent().unwrap(),
+                source.0.file_stem().unwrap().to_str().unwrap(),
+                |_| Ok(()),
+            )
+            .unwrap(),
+        );
+        assert_eq!(packing.io_bytes() - before, memory.saved_length());
+        assert_eq!(std::fs::read(&published.0).unwrap(), memory.bytes());
+        before = packing.io_bytes();
+        held.copy_saved(&from_held.0).unwrap();
+        assert_eq!(packing.io_bytes() - before, 2 * held.saved_length());
+        before = packing.io_bytes();
+        memory.copy_saved(&from_memory.0).unwrap();
+        assert_eq!(packing.io_bytes() - before, memory.saved_length());
+    });
+    for copy in [&atomic, &from_held, &from_memory] {
+        assert_eq!(std::fs::read(&copy.0).unwrap(), memory.bytes());
     }
 }

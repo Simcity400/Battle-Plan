@@ -30,25 +30,8 @@ use windows_sys::Win32::System::{
     Performance::QueryPerformanceFrequency,
 };
 
-/// The recorded speed index of the game's fastest speed.
-const FASTEST_SPEED: i32 = 4;
-
-/// Below its fastest speed the game waits between hours; nothing read tells a pause from a long hour.
-fn writes_ahead(speed: Option<i32>) -> bool {
-    speed.is_some_and(|speed| speed < FASTEST_SPEED)
-}
-
-/// Recorded hours a campaign's spool holds before a checkpoint saves them: an in-game year.
-const CHECKPOINT_HOURS: usize = 365 * 24;
-/// Spool bytes a campaign's spool holds before a checkpoint saves them.
-const CHECKPOINT_BYTES: u64 = 5 << 30;
-/// A checkpoint that saved nothing or failed is tried again after this long.
-const CHECKPOINT_RETRY: Duration = Duration::from_secs(10 * 60);
-
-/// Whether a campaign's spool holds enough for a checkpoint.
-fn checkpoint_due(hours: usize, bytes: u64) -> bool {
-    hours >= CHECKPOINT_HOURS || bytes >= CHECKPOINT_BYTES
-}
+/// Retry failed publication without adding a dependency to capture.
+const CHECKPOINT_RETRY: Duration = Duration::from_secs(10);
 
 /// Saves the campaign being recorded as it grows, on the finalize-ahead thread in background
 /// mode, so its spool stays small and the save at the end covers only the hours since.
@@ -80,67 +63,30 @@ impl Checkpoints {
             if let Err(error) = replay_io::drop_checkpointed(&directory) {
                 eprintln!("Checkpointed spool segments could not be deleted: {error}");
             }
-            // A Battle Plan Recorder session checkpoints the campaign the game has loaded; settling
-            // saves the ones it set aside.
             if settling.is_some_and(|settling| {
                 locked(&settling.loaded).as_deref() != Some(campaign.as_str())
-            }) || !ahead
-                .unsaved(&directory)
-                .is_some_and(|(hours, bytes)| checkpoint_due(hours, bytes))
-                || self
-                    .retry
-                    .get(&campaign)
-                    .is_some_and(|retry| Instant::now() < *retry)
+            }) || self
+                .retry
+                .get(&campaign)
+                .is_some_and(|retry| Instant::now() < *retry)
             {
                 continue;
             }
-            // The collector writes only the newest segment: closed now, it is saved with the rest.
-            let Some((through, newest)) = replay_io::segment_paths(&directory)
-                .ok()
-                .and_then(|paths| paths.last().cloned())
-            else {
+            let Some(through) = ahead.completed_through(&directory) else {
                 continue;
             };
-            if replay_io::open_held(&newest).is_ok() {
-                continue;
-            }
             let began = Instant::now();
-            ahead.hold_through(&directory, through);
             let auto_save = settling.is_none_or(|settling| settling.save.load(Ordering::Acquire));
-            let interrupted = || {
-                if stopped.load(Ordering::Acquire) {
-                    Err(std::io::ErrorKind::Interrupted.into())
-                } else {
-                    Ok(())
-                }
-            };
-            // The collector holds the recording the checkpoint adds to, so lends it meanwhile.
-            let result = ask_collector_until(session, "close", &campaign, stopped)
-                .and_then(|()| ahead.read(session, target).map(|_| ()))
-                .and_then(|()| {
-                    with_lent_history(
-                        |action| {
-                            if action == "retake" {
-                                ask_collector(session, action, &campaign)
-                            } else {
-                                ask_collector_until(session, action, &campaign, stopped)
-                            }
-                        },
-                        || {
-                            replay_io::checkpoint_campaign(
-                                session,
-                                target,
-                                &campaign,
-                                through,
-                                auto_save,
-                                ahead,
-                                naming,
-                                &interrupted,
-                            )
-                        },
-                    )
-                });
-            ahead.forget(&directory);
+            let result = replay_io::checkpoint_campaign(
+                session,
+                target,
+                &campaign,
+                through,
+                auto_save,
+                ahead,
+                naming,
+                &|| Ok(()),
+            );
             match result {
                 Ok(Some(done)) => {
                     println!(
@@ -169,43 +115,6 @@ impl Checkpoints {
                         .insert(campaign, Instant::now() + CHECKPOINT_RETRY);
                 }
             }
-        }
-    }
-}
-
-struct RetakeHistory<F: FnMut(&str) -> Result<(), String>> {
-    request: F,
-    armed: bool,
-}
-
-impl<F: FnMut(&str) -> Result<(), String>> Drop for RetakeHistory<F> {
-    fn drop(&mut self) {
-        if self.armed {
-            if let Err(error) = (self.request)("retake") {
-                eprintln!("The collector could not hold its history again: {error}");
-            }
-        }
-    }
-}
-
-fn with_lent_history<T>(
-    request: impl FnMut(&str) -> Result<(), String>,
-    work: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
-    let mut guard = RetakeHistory {
-        request,
-        armed: true,
-    };
-    let result = (guard.request)("lend").and_then(|()| work());
-    let retaken = (guard.request)("retake");
-    guard.armed = false;
-    match (result, retaken) {
-        (result, Ok(())) => result,
-        (Ok(_), Err(error)) => Err(format!(
-            "the collector could not hold its history again: {error}"
-        )),
-        (Err(error), Err(retake)) => {
-            Err(format!("{error}; history could not be retaken: {retake}"))
         }
     }
 }
@@ -565,10 +474,105 @@ fn background_naming<T>(work: impl FnOnce() -> T) -> T {
     job_priority::JobPriority::run(Arc::new(AtomicBool::new(true)), work)
 }
 
+// The loaded 1941 run lost coordinator CPU with 1.5 GB unwritten; one normal open block is not debt.
+#[derive(Default)]
+struct PackingCatchUp {
+    since: Option<Duration>,
+}
+
+impl PackingCatchUp {
+    fn update(&mut self, now: Duration, backlog: Option<&replay_io::PackingBacklog>) -> bool {
+        let Some(backlog) = backlog else {
+            self.since = None;
+            return false;
+        };
+        let seconds = replay::container::Outstanding {
+            rows: backlog.runnable.work.rows,
+            ..Default::default()
+        }
+        .runnable_seconds();
+        let closed = backlog.runnable.closed_blocks;
+        match self.since {
+            None if seconds >= 12.0 || closed >= 2 => self.since = Some(now),
+            Some(since)
+                if seconds <= 3.0
+                    && closed == 0
+                    && now.saturating_sub(since) >= Duration::from_secs(10) =>
+            {
+                self.since = None
+            }
+            _ => {}
+        }
+        self.since.is_some()
+    }
+}
+
+fn packing_progress(
+    packing: &replay::container::Packing,
+    ahead: &replay_io::Ahead,
+    session: &Path,
+    policy: &mut PackingCatchUp,
+    elapsed: Duration,
+    last: &mut Option<Duration>,
+) -> Option<f64> {
+    let backlog = ahead.backlog(session);
+    let known = backlog.as_ref().ok();
+    let runnable = known.map(|backlog| backlog.runnable);
+    let blocked = known.map(|backlog| backlog.blocked);
+    let before = packing.mode();
+    if before == "catch_up_normal" && policy.since.is_none() {
+        policy.since = Some(elapsed);
+    }
+    packing.catch_up(policy.update(elapsed, known));
+    packing.watch_progress(runnable.is_some_and(|debt| debt.work.rows > 0 || debt.closed_blocks > 0));
+    let mode = packing.mode();
+    if before != mode
+        || last.is_none_or(|last| elapsed.saturating_sub(last) >= Duration::from_secs(5))
+    {
+        *last = Some(elapsed);
+        let (read, written, packed) = (ahead.frames_read(), ahead.written(), ahead.hours());
+        println!(
+            "Packing progress: {}",
+            json!({
+                "elapsed_s": elapsed.as_secs_f64(),
+                "scope": "accepted current spool tails; counts reset on retirement or campaign removal",
+                "tail_read_hours": read,
+                "tail_written_hours": written,
+                "tail_packed_hours": packed,
+                "unwritten_hours": read.saturating_sub(written),
+                "unpacked_hours": read.saturating_sub(packed),
+                "backlog_scope": "runnable admitted prefix; blocked includes unadmitted, refused or stopped work",
+                "backlog_error": backlog.as_ref().err(),
+                "runnable_unwritten_hours": runnable.map(|debt| debt.unwritten_hours),
+                "closed_unpacked_blocks": runnable.map(|debt| debt.closed_blocks),
+                "rows_bytes": runnable.map(|debt| debt.work.rows),
+                "compression_work_bytes": runnable.map(|debt| debt.work.compression),
+                "verified_pending_raw_bytes": runnable.map(|debt| debt.work.readback),
+                "open_raw_bytes": runnable.map(|debt| debt.work.open),
+                "estimated_pack_readback_s": runnable.map(|debt| debt.work.stop_seconds()),
+                "blocked_unwritten_hours": blocked.map(|debt| debt.unwritten_hours),
+                "blocked_closed_unpacked_blocks": blocked.map(|debt| debt.closed_blocks),
+                "blocked_rows_bytes": blocked.map(|debt| debt.work.rows),
+                "blocked_compression_work_bytes": blocked.map(|debt| debt.work.compression),
+                "blocked_verified_pending_raw_bytes": blocked.map(|debt| debt.work.readback),
+                "blocked_open_raw_bytes": blocked.map(|debt| debt.work.open),
+                "priority_mode": mode,
+                "priority_mode_scope": "requested; OS transition failures are reported to stderr",
+                "cpu_credits": replay::container::Packing::workers(),
+                "logical_io_mib_s": if mode == "foreground" { None } else { Some(32) },
+                "logical_io_bytes": packing.io_bytes(),
+                "limiter_wait_thread_s": packing.io_wait().as_secs_f64(),
+            })
+        );
+    }
+    runnable.map(|debt| debt.work.runnable_seconds())
+}
+
 type AheadResult = (replay_io::Ahead, Option<Localisation>, Duration, Duration);
 
-/// Finalizes a growing spool ahead below the fastest speed, and names it when asked, on one thread.
+/// Continuously packs a growing spool at every speed, independently of the hourly callback.
 struct FinalizingAhead {
+    packing: Option<Arc<replay::container::Packing>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<AheadResult>>,
     asked: Arc<AtomicBool>,
@@ -617,11 +621,15 @@ impl FinalizingAhead {
         let names = Arc::<Mutex<BTreeMap<String, String>>>::default();
         let (published, asked) = (Arc::clone(&names), Arc::new(AtomicBool::new(false)));
         let asking = Arc::clone(&asked);
-        let thread = std::thread::Builder::new()
+        let packing = replay::container::Packing::new()
+            .map(Arc::new)
+            .inspect_err(|error| {
+                eprintln!("Continuous packing could not start; spool retained: {error}");
+            })
+            .ok();
+        let thread = packing.clone().and_then(|packing| std::thread::Builder::new()
             .name("finalize ahead".into())
-            .spawn(move || background_naming(|| {
-                // So are the threads its checkpoints and saves start.
-                job_priority::background_thread();
+            .spawn(move || packing.run(|| {
                 // The session's own content stack names its countries as the game does.
                 let localisation = installed_content_localisation::localisation::read(&layers, &language)
                     .inspect_err(|error| {
@@ -640,12 +648,25 @@ impl FinalizingAhead {
                 };
                 let mut settled = Settled::new();
                 let mut checkpoints = Checkpoints::default();
+                println!("Continuous packing: background_cpu_credits={} logical_io_mib_s=32 burst_mib=8 natural_block_hours=720; collector has no dependency on these workers", replay::container::Packing::workers());
+                let mut service_scale = 1.0_f64;
+                let mut catch_up = PackingCatchUp::default();
+                let progress_began = Instant::now();
+                let mut last_progress = None;
+                let mut last_work = None;
                 let settings = RecorderSettings::path();
                 while !stopped() {
+                    let work_before = last_work;
+                    let frames_before = ahead.written();
                     let before = thread_cpu();
-                    if let Err(error) = ahead.read(&session, &target) {
-                        fail(error);
+                    packing.watch_progress(last_work.is_some_and(|work| work > 0.001));
+                    {
+                        let _phase = replay::container::Packing::phase(replay::container::Phase::Drain);
+                        if let Err(error) = ahead.read(&session, &target) {
+                            fail(error);
+                        }
                     }
+                    let _ = packing_progress(&packing, &ahead, &session, &mut catch_up, progress_began.elapsed(), &mut last_progress);
                     let naming = replay_io::Naming {
                         localisation: localisation.as_ref(),
                         settings: &settings,
@@ -658,12 +679,32 @@ impl FinalizingAhead {
                             .unwrap_or_else(std::sync::PoisonError::into_inner) = named;
                     }
                     reading += thread_cpu() - before;
+                    packing.watch_progress(true);
                     if let Some(settling) = &settling
                         && let Err(error) =
                             settle(&session, &target, &mut ahead, settling, &mut settled, naming)
                     {
                         eprintln!("Set-aside campaigns could not be looked at: {error}");
                     }
+                    {
+                        let began = Instant::now();
+                        let before_work = ahead.backlog(&session).ok().map(|backlog| backlog.runnable.work.runnable_seconds());
+                        packing.watch_progress(before_work.is_some_and(|work| work > 0.001));
+                        let slice = Duration::from_secs_f64(before_work.map_or(0.05, |work| (service_scale * work).clamp(0.05, 1.0)));
+                        let busy = || stopped() || began.elapsed() >= slice;
+                        let before = thread_cpu();
+                        if let Err(error) = ahead.write(&session, &target, &busy) {
+                            fail(error);
+                        }
+                        writing += thread_cpu() - before;
+                        let after_work = ahead.backlog(&session).ok().map(|backlog| backlog.runnable.work.runnable_seconds());
+                        if let (Some(before), Some(after)) = (before_work, after_work)
+                            && before - after > 0.01
+                        {
+                            service_scale = 0.75 * service_scale + 0.25 * (began.elapsed().as_secs_f64() / (before - after)).clamp(0.1, 20.0);
+                        }
+                    }
+                    packing.watch_progress(true);
                     checkpoints.run(
                         &session,
                         &target,
@@ -672,33 +713,29 @@ impl FinalizingAhead {
                         naming,
                         &stopping,
                     );
-                    if writes_ahead(ahead.speed()) {
-                        let began = Instant::now();
-                        let busy = || stopped() || began.elapsed() >= Duration::from_secs(1);
-                        let before = thread_cpu();
-                        if let Err(error) = ahead.write(&session, &target, &busy) {
-                            fail(error);
-                        }
-                        writing += thread_cpu() - before;
-                        if began.elapsed() >= Duration::from_secs(1) {
-                            continue;
-                        }
-                    }
-                    for _ in 0..10 {
-                        if stopped() {
-                            break;
-                        }
+                    let work_after = packing_progress(&packing, &ahead, &session, &mut catch_up, progress_began.elapsed(), &mut last_progress);
+                    let progressed = ahead.written() != frames_before
+                        || matches!((work_before, work_after), (Some(before), Some(after)) if after < before);
+                    last_work = work_after;
+                    if (work_after.is_none_or(|work| work <= 0.001) || !progressed) && !stopped() {
                         std::thread::sleep(Duration::from_millis(100));
                     }
                 }
                 (ahead, localisation, reading, writing)
             }))
-            .ok();
+            .ok());
         Self {
+            packing,
             stop,
             thread,
             asked,
             names,
+        }
+    }
+
+    fn promote(&self) {
+        if let Some(packing) = &self.packing {
+            packing.promote();
         }
     }
 
@@ -716,18 +753,25 @@ impl FinalizingAhead {
 
     /// What was written ahead, and the localisation that names the countries.
     fn finish(mut self) -> (replay_io::Ahead, Option<Localisation>) {
+        self.promote();
         self.stop.store(true, Ordering::Release);
         match self.thread.take().map(std::thread::JoinHandle::join) {
             Some(Ok((ahead, localisation, reading, writing))) => {
-                let (read, written) = (ahead.frames_read(), ahead.written());
-                let per =
-                    |cpu: Duration, hours: usize| cpu.as_secs_f64() * 1e3 / hours.max(1) as f64;
+                let work = ahead.outstanding();
                 println!(
-                    "Finalize ahead: read {read} hours at {:.2} ms CPU per hour; wrote {written} ({} packed) at {:.1} ms CPU per hour written, {:.1} ms per hour read.",
-                    per(reading, read),
+                    "Stop outstanding: rows_bytes={} compression_work_bytes={} verified_pending_raw_bytes={} open_raw_bytes={} estimated_pack_readback_s={:.3} (offline service seed; excludes detach and staging)",
+                    work.rows,
+                    work.compression,
+                    work.readback,
+                    work.open,
+                    work.stop_seconds()
+                );
+                let (read, written) = (ahead.frames_read(), ahead.written());
+                println!(
+                    "Finalize ahead: tail_read_hours={read} tail_written_hours={written} tail_packed_hours={} lifetime_coordinator_read_cpu_s={:.3} lifetime_coordinator_write_cpu_s={:.3} (helper CPU excluded)",
                     ahead.hours(),
-                    per(writing, written),
-                    per(writing, read),
+                    reading.as_secs_f64(),
+                    writing.as_secs_f64(),
                 );
                 (ahead, localisation)
             }
@@ -760,11 +804,61 @@ fn thread_cpu() -> Duration {
     Duration::from_nanos((ticks(kernel) + ticks(user)) * 100)
 }
 
+fn performance_counter() -> Option<u64> {
+    let mut counter = 0;
+    unsafe { windows_sys::Win32::System::Performance::QueryPerformanceCounter(&mut counter) }
+        .ne(&0)
+        .then_some(counter as u64)
+}
+
+fn counter_seconds(start: Option<u64>, frequency: u64) -> Option<f64> {
+    let elapsed = performance_counter()?.checked_sub(start?)?;
+    (frequency != 0).then_some(elapsed as f64 / frequency as f64)
+}
+
+fn system_times() -> Option<(u64, u64)> {
+    use windows_sys::Win32::{Foundation::FILETIME, System::Threading::GetSystemTimes};
+    let mut idle = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut kernel = idle;
+    let mut user = idle;
+    if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
+        return None;
+    }
+    let ticks =
+        |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+    Some((ticks(idle), ticks(kernel) + ticks(user)))
+}
+
+fn system_busy(before: Option<(u64, u64)>) -> Option<f64> {
+    let (idle, total) = system_times()?;
+    let (before_idle, before_total) = before?;
+    let total = total.checked_sub(before_total)?;
+    let idle = idle.checked_sub(before_idle)?;
+    (total != 0).then_some(100.0 * total.saturating_sub(idle) as f64 / total as f64)
+}
+
+fn requested_stop_counter(control: &Control, directory: &Path) -> Option<u64> {
+    Some(control.stop_qpc.load(Ordering::Acquire))
+        .filter(|qpc| *qpc != 0)
+        .or_else(|| {
+            fs::read_to_string(directory.join("stop.request"))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()
+        })
+        .filter(|qpc| *qpc != 0)
+}
+
 /// Stop and discard requests for a capture. The command line's console
 /// handler owns one; the tray recorder owns one per capture.
 #[derive(Debug, Default)]
 pub struct Control {
     stop: AtomicBool,
+    stop_qpc: std::sync::atomic::AtomicU64,
     discard: AtomicBool,
     /// Save (false) or Discard (true) asked for a campaign the session set aside.
     set_aside: std::sync::Mutex<Vec<(String, bool)>>,
@@ -776,6 +870,7 @@ impl Control {
     pub const fn new() -> Self {
         Self {
             stop: AtomicBool::new(false),
+            stop_qpc: std::sync::atomic::AtomicU64::new(0),
             discard: AtomicBool::new(false),
             set_aside: std::sync::Mutex::new(Vec::new()),
             accepting: AtomicBool::new(false),
@@ -808,6 +903,11 @@ impl Control {
     /// instead of saving it; only an explicit user choice may set it.
     pub fn stop(&self, discard: bool) {
         // The choice is visible before the stop that acts on it.
+        if let Some(qpc) = performance_counter() {
+            let _ = self
+                .stop_qpc
+                .compare_exchange(0, qpc, Ordering::AcqRel, Ordering::Acquire);
+        }
         self.discard.store(discard, Ordering::Release);
         self.stop.store(true, Ordering::Release);
     }
@@ -823,6 +923,7 @@ impl Control {
     /// Clear every request before the next capture.
     pub fn reset(&self) {
         self.stop.store(false, Ordering::Release);
+        self.stop_qpc.store(0, Ordering::Release);
         self.discard.store(false, Ordering::Release);
         let mut requests = locked(&self.set_aside);
         self.accepting.store(false, Ordering::Release);
@@ -1837,6 +1938,9 @@ pub(crate) fn capture(
     let mut admission_failures = Vec::new();
     let mut rerouted = false;
     let mut requested_detach = false;
+    let mut stop_qpc = None;
+    let mut stop_observed = false;
+    let mut stop_load = None;
     let mut second_reported = false;
     let mut next_discovery = Instant::now();
     control.accept_requests();
@@ -1848,6 +1952,12 @@ pub(crate) fn capture(
     let capture_ended = Arc::new(AtomicBool::new(false));
     loop {
         requested_detach |= control.stopping() || detach.handle.signaled()?;
+        if requested_detach && !stop_observed {
+            stop_observed = true;
+            stop_qpc = requested_stop_counter(control, &directory);
+            stop_load = system_times();
+            ahead.promote();
+        }
         if process.handle.signaled()? {
             break;
         }
@@ -1960,6 +2070,12 @@ pub(crate) fn capture(
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    if requested_detach && !stop_observed {
+        stop_observed = true;
+        stop_qpc = requested_stop_counter(control, &directory);
+        stop_load = system_times();
+    }
+    ahead.promote();
     // Asked after the last poll took them: nothing acts on them now, so they are answered.
     let unanswered = control.end_requests();
     if let Some(settling) = &settling {
@@ -2000,8 +2116,16 @@ pub(crate) fn capture(
     let process_exited = process.handle.signaled()?;
     print_status(&status_path);
     requested_detach |= control.stopping() || detach.handle.signaled()?;
+    if requested_detach && !stop_observed {
+        stop_qpc = requested_stop_counter(control, &directory);
+        stop_load = system_times();
+    }
     // Nothing saves a set-aside campaign once the session saves.
+    let detach_seconds = counter_seconds(stop_qpc, session.qpc_frequency);
+    let packing = ahead.packing.clone();
+    let join_began = Instant::now();
     let (ahead, localisation) = finish_ahead(ahead, settling.as_deref());
+    let join_seconds = join_began.elapsed().as_secs_f64();
     let settings = RecorderSettings::path();
     let naming = replay_io::Naming {
         localisation: localisation.as_ref(),
@@ -2251,7 +2375,7 @@ pub(crate) fn capture(
     {
         stage(Stage::Saving { records: 0 });
     }
-    let (mut finalized, omitted, unrenamed) = match outcome.recovery_allowed.then(|| {
+    let finalize = || {
         replay_io::finalize_session_ahead(
             &directory,
             target,
@@ -2263,7 +2387,12 @@ pub(crate) fn capture(
             naming,
             &destination,
         )
-    }) {
+    };
+    let finalized_result = outcome.recovery_allowed.then(|| match &packing {
+        Some(packing) => packing.run(finalize),
+        None => finalize(),
+    });
+    let (mut finalized, omitted, unrenamed) = match finalized_result {
         Some(Ok(done)) => {
             outcome.issues.extend(
                 done.errors
@@ -2321,6 +2450,26 @@ pub(crate) fn capture(
     // The completion record lists them now.
     let _ = fs::remove_file(directory.join(WAITING_FILE));
     remove_active(&active, &directory)?;
+    let seconds = |duration: Option<Duration>| duration.map(|duration| duration.as_secs_f64());
+    let phases = packing
+        .as_ref()
+        .map(|packing| packing.timings())
+        .unwrap_or([None; 5]);
+    let diagnostics = json!({
+        "save_ready": outcome.issues.is_empty(),
+        "stop_to_save_ready_s": outcome.issues.is_empty().then(|| counter_seconds(stop_qpc, session.qpc_frequency)).flatten(),
+        "detach_s": detach_seconds, "join_s": join_seconds,
+        "drain_s": seconds(phases[0]), "pack_s": seconds(phases[1]),
+        "write_s": seconds(phases[2]), "readback_s": seconds(phases[3]),
+        "publication_s": seconds(phases[4]),
+        "machine_cpu_busy_percent": system_busy(stop_load),
+        "phase_accounting": "coordinator wall intervals after promotion; detach and join overlap packing; unobserved phases are null",
+        "scope": "normal save; continue-a-saved-campaign staging and holds proof are not covered by the 30 s target",
+    });
+    println!("Stop to save-ready: {diagnostics}");
+    if let Err(error) = write_json(&directory.join("finalization-status.json"), &diagnostics) {
+        eprintln!("Finalization diagnostics unavailable: {error}");
+    }
     if !outcome.issues.is_empty() {
         return Err(format!(
             "recording completion is partial: {}; recoverable spool retained at {}",
@@ -2791,6 +2940,23 @@ fn request_refresh(output: &Path) -> Result<(), String> {
     }
 }
 
+fn signal_detach_request(
+    session: &Path,
+    counter: Option<u64>,
+    signal: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let written = counter
+        .ok_or_else(|| "performance counter unavailable".to_owned())
+        .and_then(|qpc| {
+            fs::write(session.join("stop.request"), qpc.to_string())
+                .map_err(|error| error.to_string())
+        });
+    if let Err(error) = written {
+        eprintln!("Stop-to-save-ready timing unavailable; detach will still be requested: {error}");
+    }
+    signal()
+}
+
 fn request_detach(output: &Path) -> Result<(), String> {
     let active: Value = serde_json::from_slice(
         &fs::read(output.join("active.json"))
@@ -2811,7 +2977,9 @@ fn request_detach(output: &Path) -> Result<(), String> {
         .ok_or("active recorder has no valid recorder pid")?;
     let recorder = Process::open(recorder_pid, false)
         .map_err(|error| format!("recording controller unavailable: {error}"))?;
-    Event::open(name)?.set()?;
+    signal_detach_request(&session_dir, performance_counter(), || {
+        Event::open(name)?.set()
+    })?;
     println!("Detach requested. Waiting for recorder finalization.");
     let mut watch = ProgressWatch::new(Instant::now());
     while !session_dir.join("completed.json").exists() {
@@ -3765,88 +3933,179 @@ pub fn discard_waiting(session: &Path, campaign: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn lend_ack_loss_timeout_and_cancellation_always_retake_without_running_the_checkpoint() {
-        for failure in [
-            "lost acknowledgement",
-            "deadline passed",
-            "capture cancelled",
-        ] {
-            let actions = RefCell::new(Vec::new());
-            let protected = Cell::new(true);
-            let result = with_lent_history(
-                |action| {
-                    actions.borrow_mut().push(action.to_owned());
-                    match action {
-                        "lend" => {
-                            protected.set(false);
-                            Err(failure.to_owned())
-                        }
-                        "retake" => {
-                            protected.set(true);
-                            Ok(())
-                        }
-                        _ => unreachable!(),
-                    }
+    fn packing_escalation_uses_work_and_closed_blocks_with_hysteresis_and_a_hold() {
+        let mut policy = PackingCatchUp::default();
+        let at = Duration::from_secs;
+        let backlog = |rows, closed| replay_io::PackingBacklog {
+            runnable: replay_io::PackingDebt {
+                work: replay::container::Outstanding { rows, ..Default::default() },
+                closed_blocks: closed,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for seconds in 0..100 {
+            assert!(!policy.update(at(seconds), Some(&backlog(45_917_453, 1))));
+        }
+        assert!(policy.update(at(100), Some(&backlog(100_000_000, 0))));
+        assert!(policy.update(at(101), Some(&backlog(0, 0))));
+        assert!(policy.update(at(109), Some(&backlog(0, 0))));
+        assert!(policy.update(at(110), Some(&backlog(30_000_000, 0))));
+        assert!(policy.update(at(111), Some(&backlog(0, 1))));
+        assert!(!policy.update(at(112), Some(&backlog(20_000_000, 0))));
+        assert!(!policy.update(at(113), Some(&backlog(60_000_000, 1))));
+        assert!(policy.update(at(114), Some(&backlog(0, 2))));
+        assert!(policy.update(at(123), Some(&backlog(0, 0))));
+        assert!(!policy.update(at(124), Some(&backlog(0, 0))));
+    }
+
+    #[test]
+    fn blocked_debt_cannot_enter_or_hold_catch_up_after_healthy_work_drains() {
+        let mut policy = PackingCatchUp::default();
+        let mut backlog = replay_io::PackingBacklog {
+            blocked: replay_io::PackingDebt {
+                work: replay::container::Outstanding {
+                    rows: 1_500_000_000,
+                    compression: 500_000_000,
+                    readback: 500_000_000,
+                    open: 500_000_000,
                 },
-                || -> Result<(), String> {
-                    panic!("unacknowledged lend cannot start a checkpoint")
-                },
+                unwritten_hours: 4000,
+                closed_blocks: 6,
+            },
+            ..Default::default()
+        };
+        let at = Duration::from_secs;
+        assert!(!policy.update(at(0), Some(&backlog)));
+        backlog.runnable.work.rows = 100_000_000;
+        backlog.runnable.closed_blocks = 2;
+        assert!(policy.update(at(1), Some(&backlog)));
+        backlog.runnable = Default::default();
+        assert!(policy.update(at(10), Some(&backlog)));
+        assert!(!policy.update(at(11), Some(&backlog)));
+        for now in 12..100 {
+            assert!(!policy.update(at(now), Some(&backlog)));
+        }
+        backlog.runnable.closed_blocks = 2;
+        assert!(policy.update(at(100), Some(&backlog)));
+        assert!(!policy.update(at(101), None));
+        assert!(policy.since.is_none());
+    }
+
+    #[test]
+    fn unknown_backlog_leaves_catch_up_without_undoing_stop_promotion() {
+        let directory = crate::test_support::allocation_test_directory("unknown-packing-policy");
+        let session = directory.join("session");
+        let target = directory.join("target");
+        replay_io::begin_admissions(&session, &target).unwrap();
+        fs::write(session.join(replay_io::ADMISSIONS_FILE), b"not json").unwrap();
+        let ahead = replay_io::Ahead::default();
+        let packing = replay::container::Packing::new().unwrap();
+        let mut policy = PackingCatchUp::default();
+        let mut last = None;
+        packing.run(|| {
+            packing.catch_up(true);
+            assert_eq!(packing.mode(), "catch_up_normal");
+            assert_eq!(packing_progress(&packing, &ahead, &session, &mut policy,
+                Duration::from_secs(1), &mut last), None);
+            assert_eq!(packing.mode(), "background");
+            assert!(policy.since.is_none());
+            packing.promote();
+            assert_eq!(packing_progress(&packing, &ahead, &session, &mut policy,
+                Duration::from_secs(2), &mut last), None);
+            assert_eq!(packing.mode(), "foreground");
+        });
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn failed_cli_timestamp_never_blocks_detach_or_invents_the_controller_poll_time() {
+        let root = crate::test_support::allocation_test_directory("stop-timestamp-failure");
+        fs::create_dir(root.join("stop.request")).unwrap();
+        let signalled = Cell::new(0);
+        for result in [Ok(()), Err("detach event unavailable".to_owned())] {
+            let expected = result.clone();
+            assert_eq!(
+                signal_detach_request(&root, Some(42), || {
+                    signalled.set(signalled.get() + 1);
+                    result
+                }),
+                expected
             );
-            assert!(result.unwrap_err().contains(failure));
-            assert!(protected.get());
-            assert_eq!(*actions.borrow(), ["lend", "retake"]);
         }
+        assert_eq!(signalled.get(), 2);
+        let control = Control::new();
+        assert_eq!(requested_stop_counter(&control, &root), None);
+        assert_eq!(
+            counter_seconds(requested_stop_counter(&control, &root), 10_000_000),
+            None
+        );
+        control.stop_qpc.store(84, Ordering::Release);
+        assert_eq!(requested_stop_counter(&control, &root), Some(84));
     }
 
     #[test]
-    fn checkpoint_errors_cancellation_and_unwinding_retake_history() {
-        for outcome in 0..4 {
-            let actions = RefCell::new(Vec::new());
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                with_lent_history(
-                    |action| {
-                        actions.borrow_mut().push(action.to_owned());
-                        Ok(())
-                    },
-                    || match outcome {
-                        0 => Ok(()),
-                        1 => Err("checkpoint failed".to_owned()),
-                        2 => Err("capture cancelled".to_owned()),
-                        _ => panic!("checkpoint panicked"),
-                    },
-                )
-            }));
-            assert_eq!(*actions.borrow(), ["lend", "retake"]);
-            assert_eq!(result.is_err(), outcome == 3);
-        }
+    fn cli_timestamp_and_missing_counter_are_diagnostics_only() {
+        let root = crate::test_support::allocation_test_directory("stop-timestamp-success");
+        let control = Control::new();
+        let signalled = Cell::new(false);
+        signal_detach_request(&root, None, || {
+            signalled.set(true);
+            Ok(())
+        })
+        .unwrap();
+        assert!(signalled.get());
+        assert_eq!(requested_stop_counter(&control, &root), None);
+        signal_detach_request(&root, Some(42), || Ok(())).unwrap();
+        assert_eq!(requested_stop_counter(&control, &root), Some(42));
     }
 
     #[test]
-    fn a_failed_retake_is_reported_even_when_the_lend_also_failed() {
-        for lent in [false, true] {
-            let result = with_lent_history(
-                |action| match action {
-                    "lend" if lent => Ok(()),
-                    "lend" => Err("lost lend ack".to_owned()),
-                    _ => Err("retake deadline passed".to_owned()),
-                },
-                || Ok(()),
-            );
-            let error = result.unwrap_err();
-            assert!(error.contains("retake deadline passed"));
-            if !lent {
-                assert!(error.contains("lost lend ack"));
-            }
-        }
+    fn continuous_commit_succeeds_without_any_collector_or_callback_endpoint() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, recorded_frames,
+            write_load_segment,
+        };
+        let root = allocation_test_directory("continuous-no-collector");
+        let session = root.join("session");
+        let target = root.join("recordings");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let campaign = session.join(name);
+        let first = write_load_segment(&campaign, 0, 9, 2..=4, FIRST_LOAD);
+        write_load_segment(&campaign, 1, 10, 5..=6, RELOAD);
+        let mut ahead = replay_io::Ahead::default();
+        ahead.read(&session, &target).unwrap();
+        ahead.write(&session, &target, &|| false).unwrap();
+        assert_eq!(ahead.completed_through(&campaign), Some(0));
+        Checkpoints::default().run(
+            &session,
+            &target,
+            &mut ahead,
+            None,
+            unnamed(),
+            &AtomicBool::new(false),
+        );
+        assert!(!first.exists());
+        let saved = replay::recording_files::recording_of(&target, ALLOCATION_CAMPAIGN)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recorded_frames(&saved), [(9, 2), (9, 3), (9, 4)]);
+        assert_eq!(ahead.written(), 2);
     }
 
     #[test]
-    fn only_a_speed_below_the_fastest_writes_ahead() {
-        use super::{FASTEST_SPEED, writes_ahead};
-        // No speed read yet, or the fastest, which a pause or a long hour also leaves unchanged.
-        assert!(!writes_ahead(None));
-        assert!(!writes_ahead(Some(FASTEST_SPEED)));
-        assert!((0..FASTEST_SPEED).all(|speed| writes_ahead(Some(speed))));
+    fn continuous_packing_has_no_speed_gate_or_collector_request() {
+        let source = include_str!("recording.rs");
+        let checkpoints = source
+            .split("impl Checkpoints {")
+            .nth(1)
+            .unwrap()
+            .split("/// A campaign the running session set aside")
+            .next()
+            .unwrap();
+        assert!(!checkpoints.contains("ask_collector"));
+        assert!(!checkpoints.contains("with_lent_history"));
+        assert!(checkpoints.contains("completed_through"));
     }
 
     use super::*;
@@ -5145,6 +5404,7 @@ mod tests {
         let settling = Settling::default();
         locked(&settling.requests).push(("forwarded".to_owned(), false));
         let unstarted = FinalizingAhead {
+            packing: None,
             stop: Arc::default(),
             thread: None,
             asked: Arc::default(),

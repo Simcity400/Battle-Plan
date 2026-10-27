@@ -243,8 +243,78 @@ enum Begun {
 
 /// A block written ahead: packed with its hours reported, or written and compressing.
 enum Finished {
-    Packed(CompressedBlock),
+    Packed(CompressedBlock, bool),
     Compressing(grouped::Compressing, Vec<Observed>),
+}
+
+/// Measured service weights, seeded by the dense late-campaign offline probe, not hour counts.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Outstanding {
+    pub rows: u64,
+    pub compression: u64,
+    pub readback: u64,
+    pub open: u64,
+}
+
+impl Outstanding {
+    pub fn runnable_seconds(&self) -> f64 {
+        self.rows as f64 * 1.38e-7
+            + self.compression as f64 * 5.57e-8
+            + self.readback as f64 * 8.66e-8
+    }
+    pub fn stop_seconds(&self) -> f64 {
+        self.runnable_seconds() + self.open as f64 * (5.57e-8 + 8.66e-8)
+    }
+}
+
+struct CommitPrefix {
+    expected: usize,
+    before: Option<Revision>,
+    records: usize,
+    blocks: usize,
+    natural: usize,
+    hours: usize,
+}
+
+// Clone admitted metadata, not the mutable file's newest slot or its historical block payloads.
+fn duplicate(replay: &Replay) -> io::Result<Replay> {
+    Ok(Replay {
+        held_length: replay.held_length,
+        format: replay.format,
+        keyframe_interval: replay.keyframe_interval,
+        capture_mode: replay.capture_mode,
+        damaged_parts: replay.damaged_parts,
+        damaged_range: replay.damaged_range,
+        header_end: replay.header_end,
+        trailer_start: replay.trailer_start,
+        slot: replay.slot,
+        revision: replay.revision,
+        previous: replay.previous,
+        earlier: replay.earlier,
+        partial_control: replay.partial_control,
+        bytes: replay.bytes.clone(),
+        campaign_id: replay.campaign_id.clone(),
+        identity: replay.identity.clone(),
+        sessions: replay.sessions.clone(),
+        branches: replay.branches.clone(),
+        gaps: replay.gaps.clone(),
+        controls: replay.controls.clone(),
+        recovery_notes: replay.recovery_notes.clone(),
+        warnings: replay.warnings.clone(),
+        index: replay.index.clone(),
+        ordinals: replay.ordinals.clone(),
+        regions: replay.regions.clone(),
+        decoded_sections: decoded_sections::Cache::default(),
+        anchor_candidates: grouped::CandidateCache::default(),
+        file: replay.file.as_ref().map(File::try_clone).transpose()?,
+        verified: replay
+            .verified
+            .iter()
+            .map(|verified| AtomicBool::new(verified.load(std::sync::atomic::Ordering::Acquire)))
+            .collect(),
+        appendable: false,
+        append_path: None,
+    })
 }
 
 /// Blocks written while a spool still grows, for its finalization to take over.
@@ -254,6 +324,10 @@ pub struct Ahead {
     records: Vec<(u32, Vec<Recovered>)>,
     anchors: grouped::Anchors,
     blocks: Vec<Finished>,
+    natural: Vec<usize>,
+    closed: usize,
+    committing: Option<CommitPrefix>,
+    block_limit: usize,
     open: Option<Started>,
     /// Hours of packed blocks, reported already.
     hours: usize,
@@ -270,9 +344,24 @@ impl Ahead {
             records: Vec::new(),
             anchors,
             blocks: Vec::new(),
+            natural: Vec::new(),
+            closed: 0,
+            committing: None,
+            block_limit: MAX_BLOCK_RAW_BYTES,
             open: None,
             hours: 0,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn limit_for_test(&mut self, limit: usize) {
+        self.block_limit = limit;
+    }
+
+    pub(super) fn renumber(&mut self) {
+        for (at, (number, _)) in self.records.iter_mut().enumerate() {
+            *number = at as u32;
+        }
     }
 
     pub fn existing(&self) -> Option<&Replay> {
@@ -287,10 +376,44 @@ impl Ahead {
     /// Hours whose frames are written, packed or not.
     pub fn written(&self) -> usize {
         let compressing = self.blocks.iter().map(|block| match block {
-            Finished::Packed(_) => 0,
+            Finished::Packed(..) => 0,
             Finished::Compressing(_, observed) => observed.len(),
         });
-        self.hours + compressing.sum::<usize>() + self.open.as_ref().map_or(0, |open| open.written)
+        self.hours
+            + compressing.sum::<usize>()
+            + self.open.as_ref().map_or(0, |open| open.observed.len())
+    }
+
+    pub fn outstanding(&self) -> Outstanding {
+        let rows = self
+            .records
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter_map(|record| match record {
+                Recovered::Frame(frame) => Some(frame),
+                _ => None,
+            })
+            .skip(self.written())
+            .map(|frame| frame.placement.length as u64)
+            .sum();
+        let mut work = Outstanding {
+            rows,
+            ..Default::default()
+        };
+        for block in &self.blocks {
+            match block {
+                Finished::Packed(block, _) => work.readback += block.raw_length,
+                Finished::Compressing(block, _) => {
+                    work.compression += block.work_bytes();
+                    work.readback += block.raw_bytes();
+                }
+            }
+        }
+        work.open = self
+            .open
+            .as_ref()
+            .map_or(0, |open| open.writing.block.work_bytes());
+        work
     }
 
     /// Whether finalizing `segments` writes first what this wrote.
@@ -349,7 +472,7 @@ impl Ahead {
         }) else {
             return Ok(false);
         };
-        let cores = pack::Cores::new(1);
+        let cores = pack::Cores::new(pack::workers());
         let read = |position: usize, metadata: &FrameMetadata| read(segments[position].0, metadata);
         let observation =
             |observed: &mut Vec<Observed>, frame: &Frame, decoded: &DecodedFrame, sizes| {
@@ -375,10 +498,11 @@ impl Ahead {
                     observe(hour)?;
                 }
                 self.hours += observed.len();
-                self.blocks[at] = Finished::Packed(packed);
+                self.blocks[at] =
+                    Finished::Packed(packed, observed.iter().any(|hour| hour.players > 1));
                 continue;
             }
-            let at = self.blocks.len();
+            let at = self.closed;
             let Some(block) = planned.get(at) else {
                 return Ok(true);
             };
@@ -394,7 +518,7 @@ impl Ahead {
                     if !writing.frame(
                         &frame,
                         campaign_id,
-                        MAX_BLOCK_RAW_BYTES,
+                        self.block_limit,
                         &mut self.anchors,
                         &cores,
                         &mut |frame, decoded, sizes| {
@@ -416,17 +540,32 @@ impl Ahead {
                     return Ok(true);
                 }
                 let frame = restore(Some(&read), block.position, *record)?;
-                let observed = &mut open.observed;
+                let observed = std::cell::RefCell::new(&mut open.observed);
+                let mut split = Vec::new();
                 if !open.writing.frame(
                     &frame,
                     campaign_id,
-                    MAX_BLOCK_RAW_BYTES,
+                    self.block_limit,
                     &mut self.anchors,
                     &cores,
-                    &mut |frame, decoded, sizes| observation(observed, frame, decoded, sizes),
-                    None,
+                    &mut |frame, decoded, sizes| {
+                        observation(&mut observed.borrow_mut(), frame, decoded, sizes)
+                    },
+                    Some(&mut |block| {
+                        split.push((
+                            grouped::Compressing::new(block.written()),
+                            std::mem::take(&mut **observed.borrow_mut()),
+                        ));
+                        Ok(())
+                    }),
                 )? {
-                    return Ok(false);
+                    return Err(invalid_static(
+                        "retained writer could not split a raw block",
+                    ));
+                }
+                for (block, observed) in split {
+                    self.blocks.push(Finished::Compressing(block, observed));
+                    self.natural.push(at);
                 }
                 open.written += 1;
             }
@@ -440,7 +579,209 @@ impl Ahead {
                 grouped::Compressing::new(writing.finish()),
                 observed,
             ));
+            self.natural.push(at);
+            self.closed += 1;
         }
+    }
+    /// A complete segment prefix whose natural blocks no longer depend on the open encoder.
+    pub fn completed_through(&self, segments: &[(u32, &[Recovered])]) -> Option<u32> {
+        let mut frames = 0;
+        let mut natural = 0;
+        let mut through = None;
+        for ((number, records), (kept_number, kept)) in segments.iter().zip(&self.records) {
+            if number != kept_number || *records != kept.as_slice() {
+                break;
+            }
+            for record in *records {
+                if let Recovered::Frame(frame) = record {
+                    frames += 1;
+                    natural += usize::from(frame.keyframe);
+                }
+            }
+            let blocks = self.natural.partition_point(|at| *at < natural);
+            if natural <= self.closed
+                && frames != 0
+                && self.blocks[..blocks]
+                    .iter()
+                    .all(|block| matches!(block, Finished::Packed(..)))
+            {
+                through = Some(*number);
+            } else {
+                break;
+            }
+        }
+        through
+    }
+
+    /// Split only fully packed, whole spool segments; the next encoder and its anchors stay here.
+    pub fn take_completed(&mut self, through: u32) -> io::Result<Option<Self>> {
+        let records = self
+            .records
+            .partition_point(|(number, _)| *number <= through);
+        if records == 0 {
+            return Ok(None);
+        }
+        let natural = self.records[..records]
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| matches!(record, Recovered::Frame(frame) if frame.keyframe))
+            .count();
+        if natural == 0 || natural > self.closed {
+            return Ok(None);
+        }
+        let blocks = self.natural.partition_point(|at| *at < natural);
+        if self.blocks[..blocks]
+            .iter()
+            .any(|block| !matches!(block, Finished::Packed(..)))
+        {
+            return Ok(None);
+        }
+        let hours = self.records[..records]
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| matches!(record, Recovered::Frame(_)))
+            .count();
+        let existing = self.existing.as_ref().map(duplicate).transpose()?;
+        let taken = Self {
+            existing,
+            records: self.records[..records].to_vec(),
+            anchors: grouped::Anchors::default(),
+            blocks: self.blocks[..blocks]
+                .iter()
+                .map(|block| match block {
+                    Finished::Packed(block, multiplayer) => {
+                        Finished::Packed(block.clone(), *multiplayer)
+                    }
+                    _ => unreachable!("only packed blocks are offered"),
+                })
+                .collect(),
+            natural: self.natural[..blocks].to_vec(),
+            closed: natural,
+            committing: None,
+            block_limit: self.block_limit,
+            open: None,
+            hours,
+        };
+        self.committing = Some(CommitPrefix {
+            expected: self
+                .existing
+                .as_ref()
+                .map_or(0, |replay| replay.index.len())
+                + blocks,
+            before: self.existing.as_ref().map(Replay::revision),
+            records,
+            blocks,
+            natural,
+            hours,
+        });
+        Ok(Some(taken))
+    }
+
+    pub fn multiplayer(&self) -> bool {
+        self.blocks
+            .iter()
+            .any(|block| matches!(block, Finished::Packed(_, true)))
+    }
+
+    pub fn abort_commit(&mut self) {
+        self.committing = None;
+    }
+
+    /// Called only after the exact spool-prefix reader has proved a prior interrupted publication.
+    pub fn accept_verified_prefix(&mut self, through: u32, replay: &Replay) -> io::Result<()> {
+        if self.take_completed(through)?.is_none() {
+            return Err(invalid_static("verified prefix was not fully packed"));
+        }
+        let revision = replay.revision();
+        self.committed(duplicate(replay)?, revision)
+    }
+
+    /// Adopt only the verified commit that consumed the returned prefix; do not seed anchors again.
+    pub fn committed(&mut self, replay: Replay, watermark: Revision) -> io::Result<()> {
+        let prefix = self
+            .committing
+            .as_ref()
+            .ok_or_else(|| invalid_static("no prefix awaiting commit"))?;
+        replay.require_undamaged()?;
+        if replay.revision() != watermark
+            || replay.index.len() != prefix.expected
+            || !prefix
+                .before
+                .map(|revision| replay.contains_revision(revision))
+                .transpose()?
+                .unwrap_or(true)
+        {
+            return Err(invalid_static(
+                "verified prefix revision differs from its watermark",
+            ));
+        }
+        let prefix = self.committing.take().unwrap();
+        self.records.drain(..prefix.records);
+        self.blocks.drain(..prefix.blocks);
+        self.natural.drain(..prefix.blocks);
+        self.closed -= prefix.natural;
+        self.hours -= prefix.hours;
+        for at in &mut self.natural {
+            *at -= prefix.natural;
+        }
+        self.existing = Some(replay);
+        Ok(())
+    }
+
+    pub(super) fn finish(
+        mut self,
+        campaign: &[u8],
+        segments: &[(u32, &[Recovered])],
+        read: impl Fn(u32, &FrameMetadata) -> io::Result<Frame> + Sync,
+        mut observe: impl FnMut(&Observed) -> io::Result<()>,
+    ) -> io::Result<Pending> {
+        if !self.advance(campaign, segments, read, &mut observe, &|| false)? {
+            return Err(invalid_static("retained spool prefix changed"));
+        }
+        if let Some(Started {
+            writing, observed, ..
+        }) = self.open.take()
+        {
+            self.blocks.push(Finished::Compressing(
+                grouped::Compressing::new(writing.finish()),
+                observed,
+            ));
+        }
+        let records: Vec<_> = segments.iter().map(|(_, records)| *records).collect();
+        let identity =
+            self.existing
+                .as_ref()
+                .map(|replay| replay.identity.clone())
+                .or_else(|| {
+                    records.iter().flat_map(|records| records.iter()).find_map(
+                        |record| match record {
+                            Recovered::SessionStart(session) => Some(session.identity.clone()),
+                            _ => None,
+                        },
+                    )
+                })
+                .ok_or_else(|| invalid_static("retained writer has no identity"))?;
+        let (mut pending, _) = plan(
+            &records,
+            &identity,
+            self.existing.as_ref(),
+            KEYFRAME_INTERVAL,
+        )?;
+        let cores = pack::Cores::new(pack::workers());
+        for block in self.blocks {
+            let block = match block {
+                Finished::Packed(block, _) => block,
+                Finished::Compressing(mut compressing, observed) => {
+                    let block = compressing.run(&cores, &|| false)?.unwrap();
+                    for hour in &observed {
+                        observe(hour)?;
+                    }
+                    block
+                }
+            };
+            pending.blocks.push(block);
+        }
+        Ok(pending)
     }
 }
 
@@ -549,7 +890,7 @@ pub(super) fn write<R: SpoolRecord>(
         anchors = ahead.anchors;
         for block in ahead.blocks {
             match block {
-                Finished::Packed(block) => {
+                Finished::Packed(block, _) => {
                     packed.insert(first, Outcome::Packed(block, Vec::new()));
                 }
                 Finished::Compressing(compressing, observed) => {

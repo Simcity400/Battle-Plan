@@ -1,11 +1,6 @@
-//! Packing a recording's blocks on a bounded pool of threads.
+//! Bounded block packing: ordered coordinator state, parallel finite table/section work.
 //!
-//! The writer encodes every frame on the calling thread, in recorded order:
-//! block boundaries, keyframe anchors and each block's predictions, row keys
-//! and models are decided there. A finished block depends on nothing else, so
-//! [`blocks`] compresses finished blocks on worker threads while the calling
-//! thread writes the next, and returns them in order with the result the
-//! sequential writer would have returned.
+//! Offline callers may also pipeline independent finished blocks on OS workers.
 
 use std::{
     collections::VecDeque,
@@ -16,6 +11,341 @@ use std::{
     },
     thread,
 };
+
+struct Budget {
+    // Playing limits remain active even after catch-up leaves OS background mode.
+    background: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    io: Mutex<std::time::Instant>,
+    catch_up: std::sync::atomic::AtomicBool,
+    io_wait_ns: std::sync::atomic::AtomicU64,
+    started: std::time::Instant,
+    progress_due_ns: std::sync::atomic::AtomicU64,
+    pool: std::sync::OnceLock<std::sync::Weak<rayon::ThreadPool>>,
+    foreground: usize,
+    priority_failed: std::sync::atomic::AtomicBool,
+    promoted: Mutex<Option<std::time::Instant>>,
+    timings: Mutex<[Option<std::time::Duration>; 5]>,
+    io_bytes: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    readback_table: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
+}
+
+thread_local! {
+    static BUDGET: std::cell::RefCell<Option<std::sync::Arc<Budget>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Recorder-owned persistent workers: four active CPU credits and 32 MiB/s while playing.
+pub struct Packing {
+    pool: std::sync::Arc<rayon::ThreadPool>,
+    budget: std::sync::Arc<Budget>,
+}
+
+impl Packing {
+    pub fn new() -> io::Result<Self> {
+        let foreground = (thread::available_parallelism().map_or(1, usize::from) / 2).max(1);
+        Self::with_workers(foreground)
+    }
+
+    fn with_workers(foreground: usize) -> io::Result<Self> {
+        let foreground = foreground.max(1);
+        let budget = std::sync::Arc::new(Budget {
+            background: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            io: Mutex::new(std::time::Instant::now()),
+            catch_up: std::sync::atomic::AtomicBool::new(false),
+            io_wait_ns: std::sync::atomic::AtomicU64::new(0),
+            started: std::time::Instant::now(),
+            progress_due_ns: std::sync::atomic::AtomicU64::new(0),
+            pool: std::sync::OnceLock::new(),
+            foreground,
+            priority_failed: std::sync::atomic::AtomicBool::new(false),
+            promoted: Mutex::new(None),
+            timings: Mutex::new([None; 5]),
+            io_bytes: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            readback_table: Mutex::new(None),
+        });
+        let started = budget.clone();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(foreground.saturating_sub(1).max(1))
+            .thread_name(|at| format!("recorder packing {at}"))
+            .start_handler(move |_| {
+                BUDGET.with_borrow_mut(|slot| *slot = Some(started.clone()));
+                refresh();
+            })
+            .exit_handler(|_| job_priority::foreground_thread())
+            .build()
+            .map_err(io::Error::other)?;
+        pool.broadcast(|_| ());
+        if budget.priority_failed.load(Ordering::Acquire) {
+            return Err(io::Error::other(
+                "recorder workers could not enter background mode",
+            ));
+        }
+        let pool = std::sync::Arc::new(pool);
+        let _ = budget.pool.set(std::sync::Arc::downgrade(&pool));
+        Ok(Self { pool, budget })
+    }
+
+    pub fn run<T>(&self, work: impl FnOnce() -> T) -> T {
+        struct Restore(Option<std::sync::Arc<Budget>>, job_priority::Caller, bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                BUDGET.with_borrow_mut(|slot| *slot = self.0.take());
+                let _ = job_priority::worker(self.2);
+                self.1.clone().enter();
+            }
+        }
+        let caller = job_priority::Caller::current();
+        let background = job_priority::is_background_thread();
+        let previous = BUDGET.with_borrow_mut(|slot| slot.replace(self.budget.clone()));
+        let _restore = Restore(previous, caller, background);
+        refresh();
+        work()
+    }
+
+    pub(super) fn scope<'scope, F, T>(work: F) -> T
+    where
+        F: FnOnce(&rayon::Scope<'scope>) -> T,
+    {
+        let pool = BUDGET
+            .with_borrow(|budget| {
+                budget
+                    .as_ref()
+                    .and_then(|budget| budget.pool.get())
+                    .and_then(std::sync::Weak::upgrade)
+            })
+            .expect("packing owns its workers");
+        pool.in_place_scope(work)
+    }
+
+    /// Promote these workers in place, at their next table, section or frame boundary.
+    pub fn promote(&self) {
+        let mut promoted = lock(&self.budget.promoted);
+        if promoted.is_none() {
+            *promoted = Some(std::time::Instant::now());
+        }
+        drop(promoted);
+        self.budget.background.store(false, Ordering::Release);
+        self.pool.spawn_broadcast(|_| refresh());
+    }
+
+    /// Leave OS background mode while catching up, retaining the playing CPU and logical I/O limits.
+    pub fn catch_up(&self, enabled: bool) {
+        if self.budget.catch_up.swap(enabled, Ordering::AcqRel) != enabled {
+            self.pool.spawn_broadcast(|_| refresh());
+        }
+        refresh();
+    }
+
+    /// Busy operations refresh priority themselves if the coordinator cannot sample its backlog.
+    pub fn watch_progress(&self, active: bool) {
+        let due = if active {
+            (self.budget.started.elapsed() + std::time::Duration::from_secs(10))
+                .as_nanos()
+                .min(u64::MAX as u128) as u64
+        } else {
+            0
+        };
+        self.budget.progress_due_ns.store(due, Ordering::Release);
+    }
+
+    pub fn mode(&self) -> &'static str {
+        if !self.budget.background.load(Ordering::Acquire) {
+            "foreground"
+        } else if self.budget.catch_up.load(Ordering::Acquire) {
+            "catch_up_normal"
+        } else {
+            "background"
+        }
+    }
+
+    pub fn workers() -> usize {
+        workers()
+    }
+
+    pub fn timings(&self) -> [Option<std::time::Duration>; 5] {
+        *lock(&self.budget.timings)
+    }
+
+    pub fn phase(phase: Phase) -> PhaseTimer {
+        PhaseTimer {
+            budget: BUDGET.with_borrow(Clone::clone),
+            phase,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    pub fn io(bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        let budget = BUDGET.with_borrow(Clone::clone);
+        let Some(budget) = budget else { return };
+        budget.io_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+        if !budget.background.load(Ordering::Acquire) {
+            return;
+        }
+        const RATE: u64 = 32 << 20;
+        const BURST: u64 = 8 << 20;
+        let due = {
+            let mut next = lock(&budget.io);
+            let now = std::time::Instant::now();
+            let burst = std::time::Duration::from_secs_f64(BURST as f64 / RATE as f64);
+            let start = (*next).max(now.checked_sub(burst).unwrap_or(now));
+            *next = start + std::time::Duration::from_secs_f64(bytes as f64 / RATE as f64);
+            *next
+        };
+        let began = std::time::Instant::now();
+        if began < due {
+            while budget.background.load(Ordering::Acquire) && std::time::Instant::now() < due {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            budget.io_wait_ns.fetch_add(
+                began.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                Ordering::Relaxed,
+            );
+        }
+        refresh();
+    }
+
+    pub fn io_bytes(&self) -> u64 {
+        self.budget.io_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Sum of limiter waits on all packing threads, not coordinator wall time.
+    pub fn io_wait(&self) -> std::time::Duration {
+        std::time::Duration::from_nanos(self.budget.io_wait_ns.load(Ordering::Relaxed))
+    }
+
+    pub fn active() -> bool {
+        BUDGET.with_borrow(|budget| budget.is_some())
+    }
+}
+
+/// Charge completed file I/O once, including short operations, against the current packing job.
+pub struct Budgeted<T>(T);
+
+impl<T> Budgeted<T> {
+    pub fn new(inner: T) -> Self {
+        Self(inner)
+    }
+
+    pub fn get_ref(&self) -> &T {
+        &self.0
+    }
+
+    fn transfer_length(length: usize) -> usize {
+        if BUDGET.with_borrow(|budget| {
+            budget
+                .as_ref()
+                .is_some_and(|budget| budget.background.load(Ordering::Acquire))
+        }) {
+            length.min(64 << 10)
+        } else {
+            length
+        }
+    }
+}
+
+impl<T: io::Read> io::Read for Budgeted<T> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        refresh();
+        let length = Self::transfer_length(bytes.len());
+        let count = self.0.read(&mut bytes[..length])?;
+        Packing::io(count);
+        Ok(count)
+    }
+}
+
+impl<T: io::Write> io::Write for Budgeted<T> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        refresh();
+        let count = self.0.write(&bytes[..Self::transfer_length(bytes.len())])?;
+        Packing::io(count);
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl<T: io::Seek> io::Seek for Budgeted<T> {
+    fn seek(&mut self, position: io::SeekFrom) -> io::Result<u64> {
+        self.0.seek(position)
+    }
+}
+
+/// Exclusive coordinator wall time, reported only for phases actually entered after Stop.
+#[derive(Clone, Copy)]
+pub enum Phase {
+    Drain,
+    Pack,
+    Write,
+    Readback,
+    Publication,
+}
+
+pub struct PhaseTimer {
+    budget: Option<std::sync::Arc<Budget>>,
+    phase: Phase,
+    started: std::time::Instant,
+}
+
+impl Drop for PhaseTimer {
+    fn drop(&mut self) {
+        let Some(budget) = &self.budget else { return };
+        let Some(promoted) = *lock(&budget.promoted) else {
+            return;
+        };
+        let elapsed = self.started.max(promoted).elapsed();
+        let mut timings = lock(&budget.timings);
+        *timings[self.phase as usize].get_or_insert(std::time::Duration::ZERO) += elapsed;
+    }
+}
+
+pub(super) fn readback_table() {
+    refresh();
+    #[cfg(test)]
+    {
+        let watch = BUDGET.with_borrow(|budget| {
+            budget
+                .as_ref()
+                .and_then(|budget| lock(&budget.readback_table).clone())
+        });
+        if let Some(watch) = watch {
+            watch();
+        }
+    }
+}
+
+fn stalled(budget: &Budget, elapsed: std::time::Duration) -> bool {
+    let due = budget.progress_due_ns.load(Ordering::Acquire);
+    due != 0
+        && elapsed.as_nanos() >= u128::from(due)
+        && budget.background.load(Ordering::Acquire)
+        && budget
+            .catch_up
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+}
+
+pub(super) fn refresh() {
+    BUDGET.with_borrow(|budget| {
+        if let Some(budget) = budget {
+            if budget.progress_due_ns.load(Ordering::Relaxed) != 0 && stalled(budget, budget.started.elapsed()) {
+                println!("Packing escalation: 10 s without a coordinator backlog sample during active work; CPU credits and logical I/O budget unchanged");
+            }
+            let background = budget.background.load(Ordering::Acquire)
+                && !budget.catch_up.load(Ordering::Acquire);
+            if let Err(error) = job_priority::worker(background)
+                && !budget.priority_failed.swap(true, Ordering::AcqRel)
+            {
+                eprintln!("Recorder worker priority transition failed: {error}");
+            }
+        }
+    });
+}
 
 #[cfg(test)]
 thread_local! {
@@ -29,6 +359,17 @@ thread_local! {
 pub(crate) fn workers() -> usize {
     #[cfg(test)]
     if let Some(workers) = WORKERS.get() {
+        return workers;
+    }
+    if let Some(workers) = BUDGET.with_borrow(|budget| {
+        budget.as_ref().map(|budget| {
+            if budget.background.load(Ordering::Acquire) {
+                4.min(budget.foreground)
+            } else {
+                budget.foreground
+            }
+        })
+    }) {
         return workers;
     }
     (thread::available_parallelism().map_or(1, usize::from) / 2).max(1)
@@ -121,7 +462,13 @@ pub(crate) fn each<T: Send, U: Send>(
 ) -> io::Result<Vec<U>> {
     let helpers = cores.take(items.len().saturating_sub(1));
     if helpers == 0 {
-        return items.into_iter().map(work).collect();
+        return items
+            .into_iter()
+            .map(|item| {
+                refresh();
+                work(item)
+            })
+            .collect();
     }
     let lent = Lent(cores, helpers);
     let items: Vec<_> = items
@@ -137,21 +484,32 @@ pub(crate) fn each<T: Send, U: Send>(
                 return;
             };
             let item = lock(item).take().expect("each item is taken once");
+            refresh();
             let result = panic::catch_unwind(panic::AssertUnwindSafe(|| work(item)));
             *lock(&results[at]) = Some(result);
         }
     };
-    thread::scope(|scope| {
-        for _ in 0..helpers {
-            let priority = job_priority::JobPriority::current();
-            // A helper the OS refuses leaves its items to the others.
-            let _ = thread::Builder::new().spawn_scoped(scope, move || {
-                priority.enter(job_priority::Level::Normal);
-                run()
-            });
-        }
-        run();
-    });
+    if Packing::active() {
+        Packing::scope(|scope| {
+            for _ in 0..helpers {
+                let run = &run;
+                scope.spawn(move |_| run());
+            }
+            run();
+        });
+    } else {
+        thread::scope(|scope| {
+            for _ in 0..helpers {
+                let priority = job_priority::JobPriority::current();
+                // A helper the OS refuses leaves its items to the others.
+                let _ = thread::Builder::new().spawn_scoped(scope, move || {
+                    priority.enter(job_priority::Level::Normal);
+                    run()
+                });
+            }
+            run();
+        });
+    }
     drop(lent);
     results
         .into_iter()
@@ -196,6 +554,7 @@ pub(crate) fn ordered<T: Send, U: Send>(
     let helpers = threads.saturating_sub(1);
     let inline = |next: &mut dyn FnMut() -> Option<T>, take: &mut dyn FnMut(U) -> bool| {
         while let Some(item) = next() {
+            refresh();
             if !take(work(item)) {
                 return;
             }
@@ -203,6 +562,42 @@ pub(crate) fn ordered<T: Send, U: Send>(
     };
     if helpers == 0 {
         return inline(&mut next, &mut take);
+    }
+    if Packing::active() {
+        // Pool tasks finish a batch; none waits for its coordinator to feed or accept work.
+        let cores = Cores::new(threads);
+        let ahead = helpers.saturating_mul(2);
+        loop {
+            let mut items = Vec::new();
+            let mut exhausted = false;
+            for _ in 0..ahead {
+                refresh();
+                match next() {
+                    Some(item) => items.push(item),
+                    None => {
+                        exhausted = true;
+                        break;
+                    }
+                }
+            }
+            let results = each(&cores, items, |item| {
+                Ok(panic::catch_unwind(panic::AssertUnwindSafe(|| work(item))))
+            })
+            .expect("ordered work keeps panics as results");
+            for result in results {
+                refresh();
+                let result = match result {
+                    Ok(result) => result,
+                    Err(panic) => panic::resume_unwind(panic),
+                };
+                if !take(result) {
+                    return;
+                }
+            }
+            if exhausted {
+                return;
+            }
+        }
     }
     let lane = Mutex::new(Lane {
         waiting: VecDeque::new(),
@@ -215,6 +610,7 @@ pub(crate) fn ordered<T: Send, U: Send>(
         loop {
             if let Some((at, item)) = state.waiting.pop_front() {
                 drop(state);
+                refresh();
                 let result = panic::catch_unwind(panic::AssertUnwindSafe(|| work(item)));
                 state = lock(&lane);
                 state.done.insert(at, result);
@@ -226,19 +622,7 @@ pub(crate) fn ordered<T: Send, U: Send>(
             }
         }
     };
-    thread::scope(|scope| {
-        let _closing = Closing(&lane, &changed);
-        let started = (0..helpers)
-            .filter(|_| {
-                let priority = job_priority::JobPriority::current();
-                thread::Builder::new()
-                    .spawn_scoped(scope, || {
-                        priority.enter(job_priority::Level::Normal);
-                        serve()
-                    })
-                    .is_ok()
-            })
-            .count();
+    let mut drive = |started| {
         if started == 0 {
             return inline(&mut next, &mut take);
         }
@@ -277,7 +661,22 @@ pub(crate) fn ordered<T: Send, U: Send>(
                 Err(panic) => panic::resume_unwind(panic),
             }
         }
-    })
+    };
+    thread::scope(|scope| {
+        let _closing = Closing(&lane, &changed);
+        let started = (0..helpers)
+            .filter(|_| {
+                let priority = job_priority::JobPriority::current();
+                thread::Builder::new()
+                    .spawn_scoped(scope, || {
+                        priority.enter(job_priority::Level::Normal);
+                        serve()
+                    })
+                    .is_ok()
+            })
+            .count();
+        drive(started);
+    });
 }
 
 type Packed<R> = thread::Result<io::Result<R>>;
@@ -357,6 +756,7 @@ impl<'a, J, R> Packer<'a, J, R> {
     /// stops writing after an earlier job failed, and [`blocks`] returns
     /// that job's error.
     pub(crate) fn submit(&mut self, job: J) -> io::Result<()> {
+        refresh();
         let pool = self.pool;
         if self.inline {
             let packed = (pool.pack)(job, &pool.cores)?;
@@ -414,25 +814,34 @@ pub(crate) fn blocks<J: Send, R: Send, P>(
         changed: Condvar::new(),
         pack: &pack,
     };
-    let written = thread::scope(|scope| {
-        let started = (1..workers)
-            .filter(|_| {
-                let priority = job_priority::JobPriority::current();
-                thread::Builder::new()
-                    .spawn_scoped(scope, || {
-                        priority.enter(job_priority::Level::Normal);
-                        pool.work()
-                    })
-                    .is_ok()
-            })
-            .count();
+    let written = if Packing::active() {
+        // Keep ordered block ownership here; only finite table/section work enters the pool.
         let mut packer = Packer {
             pool: &pool,
-            inline: started == 0,
+            inline: true,
         };
-        // A job submitted before the writer panicked still fails first.
         panic::catch_unwind(panic::AssertUnwindSafe(|| write(&mut packer)))
-    });
+    } else {
+        thread::scope(|scope| {
+            let started = (1..workers)
+                .filter(|_| {
+                    let priority = job_priority::JobPriority::current();
+                    thread::Builder::new()
+                        .spawn_scoped(scope, || {
+                            priority.enter(job_priority::Level::Normal);
+                            pool.work()
+                        })
+                        .is_ok()
+                })
+                .count();
+            let mut packer = Packer {
+                pool: &pool,
+                inline: started == 0,
+            };
+            // A job submitted before the writer panicked still fails first.
+            panic::catch_unwind(panic::AssertUnwindSafe(|| write(&mut packer)))
+        })
+    };
     let queue = pool
         .queue
         .into_inner()
@@ -454,3 +863,220 @@ pub(crate) fn blocks<J: Send, R: Send, P>(
 #[cfg(test)]
 #[path = "pack_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "pack_fallback_tests.rs"]
+mod fallback_tests;
+
+#[cfg(test)]
+mod continuous_tests {
+    use super::*;
+
+    #[test]
+    fn takeover_uses_the_same_persistent_pool_and_restores_the_caller() {
+        let packing = Packing::new().unwrap();
+        let before = packing.pool.broadcast(|_| std::thread::current().id());
+        packing.run(|| {
+            assert!(workers() <= 4);
+            let cores = Cores::new(workers());
+            assert_eq!(
+                each(&cores, (0..100).collect(), |at| Ok(at + 1)).unwrap(),
+                (1..=100).collect::<Vec<_>>()
+            );
+        });
+        assert!(!Packing::active());
+        packing.promote();
+        packing.run(|| {
+            assert_eq!(workers(), packing.budget.foreground);
+            let cores = Cores::new(workers());
+            assert_eq!(
+                each(&cores, (0..100).collect(), |at| Ok(at + 1))
+                    .unwrap()
+                    .len(),
+                100
+            );
+        });
+        assert_eq!(
+            before,
+            packing.pool.broadcast(|_| std::thread::current().id())
+        );
+        assert!(!Packing::active());
+    }
+
+    #[test]
+    fn stop_promotes_an_inflight_job_without_cancelling_or_resubmitting_it() {
+        use std::sync::{Arc, Barrier, mpsc};
+        let packing = Arc::new(Packing::new().unwrap());
+        let identities = packing.pool.broadcast(|_| std::thread::current().id());
+        let calls = Arc::new((0..20).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
+        let release = Arc::new(Barrier::new(2));
+        let (started, waiting) = mpsc::channel();
+        let running = packing.clone();
+        let counts = calls.clone();
+        let blocked = release.clone();
+        let coordinator = thread::spawn(move || {
+            running.run(|| {
+                let cores = Cores::new(workers());
+                each(&cores, (0..20).collect(), |at| {
+                    counts[at].fetch_add(1, Ordering::Relaxed);
+                    if at == 0 {
+                        started.send(()).unwrap();
+                        blocked.wait();
+                    }
+                    Ok(at)
+                })
+                .unwrap()
+            })
+        });
+        waiting.recv().unwrap();
+        packing.promote();
+        release.wait();
+        assert_eq!(coordinator.join().unwrap(), (0..20).collect::<Vec<_>>());
+        assert!(calls.iter().all(|calls| calls.load(Ordering::Relaxed) == 1));
+        assert_eq!(
+            identities,
+            packing.pool.broadcast(|_| std::thread::current().id())
+        );
+        assert!(
+            packing
+                .pool
+                .broadcast(|_| !job_priority::is_background_thread())
+                .into_iter()
+                .all(|foreground| foreground)
+        );
+    }
+
+    #[test]
+    fn stop_promotes_readback_at_each_table_including_the_external_coordinator() {
+        use crate::container::{
+            Parallel, Replay,
+            tests::{CAMPAIGN, records},
+        };
+        use std::collections::HashMap;
+        use std::sync::{Arc, Barrier};
+        for requested in [1, 4] {
+            let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
+            let reference = Replay::open(replay.bytes().to_vec()).unwrap();
+            let expected = reference.read_block(&reference.index[0]).unwrap();
+            let packing = Arc::new(Packing::new().unwrap());
+            let count = requested.min(packing.budget.foreground).min(
+                crate::rows::TableId::ALL
+                    .len()
+                    .div_ceil(super::super::PARALLEL_FRAMES),
+            );
+            let arrived = Arc::new(Barrier::new(count + 1));
+            let release = Arc::new(Barrier::new(count + 1));
+            let resumed = Arc::new(Barrier::new(count));
+            let observations = Arc::new(Mutex::new(HashMap::<thread::ThreadId, Vec<bool>>::new()));
+            let seen = observations.clone();
+            let first = arrived.clone();
+            let blocked = release.clone();
+            let second = resumed.clone();
+            *lock(&packing.budget.readback_table) = Some(Arc::new(move || {
+                let turn = {
+                    let mut seen = lock(&seen);
+                    let states = seen.entry(thread::current().id()).or_default();
+                    states.push(job_priority::is_background_thread());
+                    states.len()
+                };
+                if turn == 1 {
+                    first.wait();
+                    blocked.wait();
+                } else if turn == 2 {
+                    second.wait();
+                }
+            }));
+            let running = packing.clone();
+            let coordinator = thread::spawn(move || {
+                let caller = thread::current().id();
+                let result = running.run(|| {
+                    replay
+                        .read_block_parallel(
+                            &replay.index[0],
+                            &Parallel {
+                                workers: count,
+                                on_worker: &|| {},
+                            },
+                        )
+                        .unwrap()
+                });
+                (caller, result)
+            });
+            arrived.wait();
+            packing.promote();
+            release.wait();
+            let (caller, result) = coordinator.join().unwrap();
+            assert_eq!(result, expected);
+            let observed = lock(&observations);
+            assert_eq!(observed.len(), count);
+            assert!(
+                observed.contains_key(&caller),
+                "the coordinator must process tables too"
+            );
+            assert!(observed.values().all(|states| states.len() >= 2
+                && states[0]
+                && states[1..].iter().all(|background| !background)));
+        }
+    }
+
+    #[test]
+    fn io_budget_charges_short_operations_once_and_not_failed_or_empty_operations() {
+        use io::{Read, Seek, Write};
+        struct Short(io::Cursor<Vec<u8>>);
+        impl Read for Short {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                let length = bytes.len().min(2);
+                self.0.read(&mut bytes[..length])
+            }
+        }
+        impl Write for Short {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if bytes == b"fail" {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                self.0.write(&bytes[..bytes.len().min(3)])
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Seek for Short {
+            fn seek(&mut self, to: io::SeekFrom) -> io::Result<u64> {
+                self.0.seek(to)
+            }
+        }
+        let packing = Packing::new().unwrap();
+        packing.run(|| {
+            let mut file = Budgeted::new(Short(io::Cursor::new(Vec::new())));
+            file.write_all(b"1234567").unwrap();
+            assert_eq!(packing.io_bytes(), 7);
+            assert_eq!(
+                file.write(b"fail").unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+            assert_eq!(packing.io_bytes(), 7);
+            file.seek(io::SeekFrom::Start(0)).unwrap();
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"1234567");
+            assert_eq!(packing.io_bytes(), 14);
+            assert_eq!(file.read(&mut []).unwrap(), 0);
+            assert_eq!(packing.io_bytes(), 14);
+        });
+    }
+
+    #[test]
+    fn phases_not_observed_are_not_zero_and_stop_does_not_reset_progress() {
+        let packing = Packing::new().unwrap();
+        assert_eq!(packing.timings(), [None; 5]);
+        packing.promote();
+        packing.run(|| {
+            let _phase = Packing::phase(Phase::Pack);
+        });
+        let timed = packing.timings();
+        assert!(timed[Phase::Pack as usize].is_some());
+        assert!(timed[Phase::Readback as usize].is_none());
+        packing.promote();
+        assert_eq!(packing.timings(), timed);
+    }
+}

@@ -10,11 +10,11 @@ use std::{
 };
 
 use replay::{
-    container::BlockIndex, container::Incomplete, container::Observed, container::RecoveryNote,
-    container::Replay, container::Revision, container::SeekResult, container::UpdateKind,
-    spool::ControlRecord, spool::FrameMetadata, spool::Record, spool::RecordReader,
-    spool::RecordRef, spool::Recovered, spool::Recovery, spool::SpoolRecord, spool::Tail,
-    spool::read_frame_at, spool::recover_reader,
+    container::BlockIndex, container::Budgeted, container::Incomplete, container::Observed,
+    container::RecoveryNote, container::Replay, container::Revision, container::SeekResult,
+    container::UpdateKind, spool::ControlRecord, spool::FrameMetadata, spool::Record,
+    spool::RecordReader, spool::RecordRef, spool::Recovered, spool::Recovery, spool::SpoolRecord,
+    spool::Tail, spool::read_frame_at, spool::read_frame_payload_at, spool::recover_reader,
 };
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{
@@ -102,13 +102,20 @@ impl Omission {
     }
 }
 
+fn read_file(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    Budgeted::new(fs::File::open(path)?).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 pub fn write_json(path: &Path, value: &Value) -> Result<()> {
+    use std::io::Write;
     let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    fs::write(
-        &temporary,
-        serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
+    Budgeted::new(fs::File::create(&temporary).map_err(|error| error.to_string())?)
+        .write_all(&bytes)
+        .map_err(|error| error.to_string())?;
     fs::OpenOptions::new()
         .write(true)
         .open(&temporary)
@@ -184,6 +191,20 @@ pub struct Ahead {
     committed: Option<Box<Committed<'static>>>,
     // Checkpoint metrics outlive the disposable spool tails, whose table times recordings omit.
     checkpoint_reports: BTreeMap<PathBuf, Box<FinalizationReport>>,
+}
+
+/// Known work in one scheduling class, not a promise that blocked work can drain.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PackingDebt {
+    pub work: replay::container::Outstanding,
+    pub unwritten_hours: usize,
+    pub closed_blocks: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PackingBacklog {
+    pub runnable: PackingDebt,
+    pub blocked: PackingDebt,
 }
 
 #[derive(Default)]
@@ -282,7 +303,7 @@ impl Ahead {
                 let read = tail.records().len();
                 let pending = std::sync::Mutex::new(None::<(Placement, Frame)>);
                 let grow = tail.grow(
-                    &mut std::io::BufReader::new(file),
+                    &mut std::io::BufReader::new(Budgeted::new(file)),
                     length,
                     |record, placement| {
                         let mut pending = pending
@@ -404,7 +425,11 @@ impl Ahead {
                         .tails
                         .get(&segment)
                         .ok_or_else(|| std::io::Error::other("spool segment is gone"))?;
-                    read_frame_at(&mut fs::File::open(path)?, placement, tail.valid_bytes())
+                    read_frame_at(
+                        &mut Budgeted::new(fs::File::open(path)?),
+                        placement,
+                        tail.valid_bytes(),
+                    )
                 };
                 let mut known = campaign
                     .naming
@@ -452,6 +477,21 @@ impl Ahead {
             .map(|(_, tail)| tail.valid_bytes() as u64)
             .sum();
         Some((hours, bytes))
+    }
+
+    /// Only closed, wholly admitted, already packed segments can become a durable watermark.
+    pub fn completed_through(&self, campaign_dir: &Path) -> Option<u32> {
+        let campaign = self.campaigns.get(campaign_dir)?;
+        let (written, _) = campaign.written.as_ref()?;
+        let mut closed = Vec::new();
+        for (number, (path, tail)) in &campaign.tails {
+            let Ok(file) = open_held(path) else { break };
+            if file.metadata().ok()?.len() != tail.valid_bytes() as u64 {
+                break;
+            }
+            closed.push((*number, tail.records()));
+        }
+        written.completed_through(&closed)
     }
 
     /// Read no segment of the campaign after `through` until its checkpoint takes what was read.
@@ -540,6 +580,7 @@ impl Ahead {
                     .collect(),
             };
             let (ahead, summary) = campaign.written.as_mut().unwrap();
+            let _phase = replay::container::Packing::phase(replay::container::Phase::Pack);
             let advanced = ahead.advance(
                 &id,
                 &segments,
@@ -553,6 +594,72 @@ impl Ahead {
             }
         }
         Ok(())
+    }
+
+    /// All recovered debt, including work background packing cannot admit.
+    pub fn outstanding(&self) -> replay::container::Outstanding {
+        let mut total = replay::container::Outstanding::default();
+        for campaign in self.campaigns.values() {
+            let segments = admitted_prefix(&campaign.tails, None);
+            let work = campaign.debt(&segments).work;
+            total.rows += work.rows;
+            total.compression += work.compression;
+            total.readback += work.readback;
+            total.open += work.open;
+        }
+        total
+    }
+
+    /// All recovered closed blocks, including those outside the admitted prefix.
+    pub fn pending_blocks(&self) -> usize {
+        self.campaigns
+            .values()
+            .map(|campaign| campaign.debt(&admitted_prefix(&campaign.tails, None)).closed_blocks)
+            .sum()
+    }
+
+    /// Only the prefix write can consume drives scheduling; everything else stays visible as blocked.
+    pub fn backlog(&self, session_dir: &Path) -> Result<PackingBacklog> {
+        let admissions = session_admissions(session_dir)?;
+        let mut backlog = PackingBacklog::default();
+        for (directory, campaign) in &self.campaigns {
+            let all = campaign.debt(&admitted_prefix(&campaign.tails, None));
+            let runnable = directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| {
+                    if campaign.stopped {
+                        return None;
+                    }
+                    let admitted = admissions.as_ref().map(|admissions| {
+                        admissions.loads.get(name).cloned().unwrap_or_default()
+                    });
+                    let segments = admitted_prefix(&campaign.tails, admitted.as_ref());
+                    let id = campaign_id(segments.iter().map(|(_, records)| *records)).ok()?;
+                    if campaign_filename(&id).ok() != Some(name)
+                        || campaign.written.as_ref().is_some_and(|(written, _)| {
+                            !written.continues(&segments)
+                        })
+                    {
+                        return None;
+                    }
+                    Some(campaign.debt(&segments))
+                })
+                .unwrap_or_default();
+            backlog.runnable.work.rows += runnable.work.rows;
+            backlog.runnable.work.compression += runnable.work.compression;
+            backlog.runnable.work.readback += runnable.work.readback;
+            backlog.runnable.work.open += runnable.work.open;
+            backlog.runnable.unwritten_hours += runnable.unwritten_hours;
+            backlog.runnable.closed_blocks += runnable.closed_blocks;
+            backlog.blocked.work.rows += all.work.rows - runnable.work.rows;
+            backlog.blocked.work.compression += all.work.compression - runnable.work.compression;
+            backlog.blocked.work.readback += all.work.readback - runnable.work.readback;
+            backlog.blocked.work.open += all.work.open - runnable.work.open;
+            backlog.blocked.unwritten_hours += all.unwritten_hours - runnable.unwritten_hours;
+            backlog.blocked.closed_blocks += all.closed_blocks - runnable.closed_blocks;
+        }
+        Ok(backlog)
     }
 
     /// Hours written ahead, whose blocks are packed.
@@ -571,6 +678,34 @@ impl Ahead {
             .filter_map(|campaign| campaign.written.as_ref())
             .map(|(ahead, _)| ahead.written())
             .sum()
+    }
+}
+
+impl CampaignAhead {
+    fn debt(&self, segments: &[(u32, &[Recovered])]) -> PackingDebt {
+        let (work, written, packed) = self.written.as_ref().map_or(
+            (replay::container::Outstanding::default(), 0, 0),
+            |(written, _)| (written.outstanding(), written.written(), written.hours()),
+        );
+        let mut debt = PackingDebt {
+            work,
+            ..Default::default()
+        };
+        debt.work.rows = 0;
+        let mut read = 0;
+        for record in segments.iter().flat_map(|(_, records)| *records) {
+            if let Recovered::Frame(frame) = record {
+                if frame.keyframe && read > packed {
+                    debt.closed_blocks += 1;
+                }
+                if read >= written {
+                    debt.work.rows += frame.placement.length as u64;
+                    debt.unwritten_hours += 1;
+                }
+                read += 1;
+            }
+        }
+        debt
     }
 }
 
@@ -638,16 +773,23 @@ impl FinalizationFrames {
             .get(&number)
             .ok_or_else(|| std::io::Error::other("recovered spool segment is missing"))?;
         let frame = match segment {
-            Segment::Held(file) => read_frame_at(
-                &mut *file
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Segment::Held(file) => {
+                let payload = read_frame_payload_at(
+                    &mut Budgeted::new(
+                        &mut *file
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    ),
+                    expected.placement,
+                    *length,
+                )?;
+                payload.decode()?
+            }
+            Segment::Growing(path) => read_frame_at(
+                &mut Budgeted::new(fs::File::open(path)?),
                 expected.placement,
                 *length,
             )?,
-            Segment::Growing(path) => {
-                read_frame_at(&mut fs::File::open(path)?, expected.placement, *length)?
-            }
         };
         if (frame.branch, frame.hour, frame.keyframe)
             != (expected.branch, expected.hour, expected.keyframe)
@@ -669,7 +811,7 @@ fn read_failure_witnesses(session_dir: &Path) -> Result<Vec<TerminalWitness>> {
     let path = session_dir.join(WITNESS_FILE_NAME);
     let config_path = session_dir.join("bin/collector.json");
     let modern = config_path.is_file();
-    let bytes = match fs::read(&path) {
+    let bytes = match read_file(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if modern {
@@ -691,7 +833,7 @@ fn read_failure_witnesses(session_dir: &Path) -> Result<Vec<TerminalWitness>> {
     if let Ok(identity) = TerminalWitness::decode_prepared(&bytes) {
         if modern {
             let config: serde_json::Value = serde_json::from_slice(
-                &fs::read(&config_path).map_err(|error| failure(&config_path, error))?,
+                &read_file(&config_path).map_err(|error| failure(&config_path, error))?,
             )
             .map_err(|error| failure(&config_path, error))?;
             let session_id = config["session_id"].as_u64().ok_or_else(|| {
@@ -813,7 +955,7 @@ fn failure_session(session_dir: &Path, witness: &TerminalWitness) -> Result<Sess
     let config_path = session_dir.join("bin/collector.json");
     if config_path.is_file() {
         let config: serde_json::Value = serde_json::from_slice(
-            &fs::read(&config_path).map_err(|error| failure(&config_path, error))?,
+            &read_file(&config_path).map_err(|error| failure(&config_path, error))?,
         )
         .map_err(|error| failure(&config_path, error))?;
         let bytes: Vec<u8> = serde_json::from_value(config["session_start"].clone())
@@ -853,7 +995,7 @@ fn failure_session(session_dir: &Path, witness: &TerminalWitness) -> Result<Sess
             )
             .map_err(|error| failure(&path, error))?;
             if let Ok(Some(Record::SessionStart(session))) =
-                RecordReader::new(file, length).next_record()
+                RecordReader::new(Budgeted::new(file), length).next_record()
                 && session.id == witness.session
                 && session.process_start_time == witness.process_start_time
             {
@@ -995,7 +1137,7 @@ fn write_selection(session_dir: &Path, selection: &Selection) -> Result<()> {
 
 fn selected_recordings(session_dir: &Path) -> Result<Option<Selection>> {
     let path = session_dir.join(RECORDINGS_FILE);
-    let bytes = match fs::read(&path) {
+    let bytes = match read_file(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         bytes => bytes.map_err(|error| failure(&path, error))?,
     };
@@ -1315,7 +1457,7 @@ pub fn session_admissions(session_dir: &Path) -> Result<Option<Admissions>> {
             "the admission record is missing or unreadable; nothing published; spool retained",
         )
     };
-    let record: serde_json::Value = fs::read(&path)
+    let record: serde_json::Value = read_file(&path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .ok_or_else(unreadable)?;
@@ -1352,7 +1494,7 @@ fn first_witness(campaign_dir: &Path) -> Option<(u64, Option<i64>)> {
     let (_, first) = segment_paths(campaign_dir).ok()?.into_iter().next()?;
     let file = fs::File::open(&first).ok()?;
     let length = usize::try_from(file.metadata().ok()?.len()).ok()?;
-    let mut reader = RecordReader::new(file, length);
+    let mut reader = RecordReader::new(Budgeted::new(file), length);
     while let Ok(Some(record)) = reader.next_record() {
         if let Record::Control(ControlRecord::ClockWitness {
             qpc, load_signal, ..
@@ -1369,7 +1511,7 @@ pub fn spool_capture_mode(campaign_dir: &Path) -> Option<replay_data::scope::Cap
     let (_, first) = segment_paths(campaign_dir).ok()?.into_iter().next()?;
     let file = fs::File::open(&first).ok()?;
     let length = usize::try_from(file.metadata().ok()?.len()).ok()?;
-    match RecordReader::new(file, length).next_record() {
+    match RecordReader::new(Budgeted::new(file), length).next_record() {
         Ok(Some(Record::SessionStart(session))) => Some(session.capture_mode),
         _ => None,
     }
@@ -1494,7 +1636,7 @@ fn read_branch_loads(campaign_dir: &Path) -> Result<BranchLoads> {
         branches.current = None;
         // Damage ends a segment's readable prefix.
         recover_reader(
-            std::io::BufReader::new(file),
+            std::io::BufReader::new(Budgeted::new(file)),
             length,
             Recovered::keep,
             |record| {
@@ -1653,7 +1795,7 @@ fn session_witness(session_dir: &Path) -> Result<Option<TerminalWitness>> {
     let witness = read_failure_witness(session_dir)?;
     if witness.is_none()
         && ["status.json", "completed.json"].iter().any(|name| {
-            fs::read(session_dir.join(name))
+            read_file(session_dir.join(name))
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
                 .is_some_and(|status| status["capture_failed"] == true)
@@ -1886,6 +2028,7 @@ enum CheckpointStep {
     Written,
     Verified,
     Journaled,
+    Watermarked,
     Handed,
     Trimmed,
     Discarded,
@@ -1940,7 +2083,7 @@ fn revision_of(value: &Value) -> Option<Revision> {
 
 fn read_checkpointed(campaign_dir: &Path) -> Result<Option<Checkpointed>> {
     let path = campaign_dir.join(CHECKPOINT_FILE);
-    let bytes = match fs::read(&path) {
+    let bytes = match read_file(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         bytes => bytes.map_err(|error| failure(&path, error))?,
     };
@@ -2005,8 +2148,10 @@ fn write_checkpointed(campaign_dir: &Path, checkpointed: &Checkpointed) -> Resul
         .create_new(true)
         .open(&temporary)
         .map_err(|error| failure(&temporary, error))?;
-    file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
+    Budgeted::new(&mut file)
+        .write_all(&bytes)
+        .map_err(|error| failure(&temporary, error))?;
+    file.sync_all()
         .map_err(|error| failure(&temporary, error))?;
     drop(file);
     replay::publication::replace_file(&temporary, &path).map_err(|error| failure(&path, error))
@@ -2360,14 +2505,48 @@ pub fn checkpoint_campaign(
     }
     fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
     let unsaved = !auto_save;
-    let taken = ahead.campaigns.remove(&campaign_dir);
+    let mut retained = None;
+    let taken = match ahead.campaigns.remove(&campaign_dir) {
+        Some(mut campaign)
+            if campaign.written.is_some()
+                && campaign.tails.keys().any(|number| *number > through) =>
+        {
+            let prefix = campaign
+                .written
+                .as_mut()
+                .map(|(written, _)| written.take_completed(through))
+                .transpose()
+                .map_err(|error| failure(&campaign_dir, error))?
+                .flatten();
+            let Some(prefix) = prefix else {
+                ahead.campaigns.insert(campaign_dir.clone(), campaign);
+                return Ok(None);
+            };
+            let tails = campaign
+                .tails
+                .range(..=through)
+                .map(|(number, tail)| (*number, tail.clone()))
+                .collect();
+            let mut summary = Box::<Summary>::default();
+            summary.multiplayer = prefix.multiplayer();
+            let taken = Box::new(CampaignAhead {
+                saved: campaign.saved.clone(),
+                tails,
+                written: Some((prefix, summary)),
+                ..Default::default()
+            });
+            retained = Some(campaign);
+            Some(taken)
+        }
+        taken => taken,
+    };
     let committed = &mut ahead.committed;
     let mut hand = |recording: &Path, replay: &Replay, blocks: &[BlockIndex]| {
         if let Some(committed) = committed {
             committed(recording, replay, blocks);
         }
     };
-    let mut outcome = finalize_campaign_with_publisher(
+    let result = finalize_campaign_with_publisher(
         &campaign_dir,
         &paths,
         replay_dir,
@@ -2383,7 +2562,53 @@ pub fn checkpoint_campaign(
         // The collector holds the recording until the session ends; the save then names it.
         |recording, _| Ok(recording.to_owned()),
         &mut hand,
-    )?;
+    );
+    if let Some(mut campaign) = retained {
+        let must_adopt = result
+            .as_ref()
+            .is_ok_and(|outcome| outcome.replay.is_some());
+        let recording = result
+            .as_ref()
+            .ok()
+            .and_then(|outcome| outcome.replay.clone())
+            .or_else(|| read_saved(&campaign_dir).map(|saved| saved.replay));
+        let adopted = (|| {
+            let recording = recording
+                .ok_or_else(|| failure(&campaign_dir, "commit has no durable spool watermark"))?;
+            let replay = held_recording(&recording)?;
+            let saved = read_saved(&campaign_dir).ok_or_else(|| {
+                failure(
+                    &campaign_dir,
+                    "verified commit has no durable spool watermark",
+                )
+            })?;
+            if saved.revision != replay.revision() {
+                return Err(failure(
+                    &campaign_dir,
+                    "spool watermark differs from verified revision",
+                ));
+            }
+            if let Some((written, _)) = &mut campaign.written {
+                written
+                    .committed(replay, saved.revision)
+                    .map_err(|error| failure(&campaign_dir, error))?;
+            }
+            campaign.saved.extend(saved.segments.keys().copied());
+            campaign.tails.retain(|number, _| *number > through);
+            campaign.through = None;
+            Ok(())
+        })();
+        if adopted.is_err()
+            && let Some((written, _)) = &mut campaign.written
+        {
+            written.abort_commit();
+        }
+        ahead.campaigns.insert(campaign_dir.clone(), campaign);
+        if must_adopt {
+            adopted?;
+        }
+    }
+    let mut outcome = result?;
     let Some(recording) = outcome.replay else {
         return Ok(None);
     };
@@ -2484,7 +2709,7 @@ fn finished_campaign(campaign_dir: &Path) -> Result<bool> {
         return Ok(false);
     };
     let ended: Value =
-        serde_json::from_slice(&fs::read(&path).map_err(|error| failure(&path, error))?)
+        serde_json::from_slice(&read_file(&path).map_err(|error| failure(&path, error))?)
             .map_err(|error| failure(&path, error))?;
     let campaign = campaign_dir.file_name().and_then(|name| name.to_str());
     Ok(ended.is_object()
@@ -2615,9 +2840,15 @@ fn finalize_campaign(
         let replay = held_recording(recording)?;
         let mut report =
             merge_reports(checkpointed, outcome.report.take(), &replay)?.unwrap_or_default();
-        report
-            .complete(&replay, progress)
-            .map_err(|error| failure(recording, error))?;
+        println!(
+            "Finalization evidence: {} known hours; historical timings not reconstructed.",
+            report
+                .summary
+                .hours
+                .values()
+                .map(BTreeSet::len)
+                .sum::<usize>()
+        );
         let mut lengths =
             read_saved(campaign_dir).map_or_else(BTreeMap::new, |saved| saved.segments);
         for (number, path) in paths {
@@ -2630,24 +2861,14 @@ fn finalize_campaign(
         }
         report.spool_bytes = lengths.values().sum();
         emit_finalization(&report.text(replay.saved_length())?);
-        print_throughput(&replay.sessions, replay.controls.iter().map(Some));
         println!(
             "gaps={} damaged_segments={}",
             replay.gaps.len(),
             replay.recovery_notes.len()
         );
-        for control in &replay.controls {
-            if let ControlRecord::GapSummary {
-                session,
-                dropped_frames,
-                reason,
-            } = control
-            {
-                println!(
-                    "gap_summary session={session} dropped_frames={dropped_frames} hour_range=unknown: {reason}"
-                );
-            }
-        }
+        println!(
+            "Detailed capture statistics and gap controls are available through inspect, not scanned at Stop."
+        );
     }
     if !unsaved && campaign_dir.parent().is_some_and(session_ended) {
         if let Err(error) = drop_checkpointed(campaign_dir) {
@@ -2688,7 +2909,7 @@ fn spool_session(paths: &[(u32, PathBuf)]) -> Vec<u64> {
         let (_, first) = paths.first()?;
         let file = fs::File::open(first).ok()?;
         let length = usize::try_from(file.metadata().ok()?.len()).ok()?;
-        match RecordReader::new(file, length).next_record() {
+        match RecordReader::new(Budgeted::new(file), length).next_record() {
             Ok(Some(Record::SessionStart(session))) => Some(session.id),
             Ok(Some(Record::BranchStart(branch))) => Some(branch.session),
             _ => None,
@@ -2699,6 +2920,7 @@ fn spool_session(paths: &[(u32, PathBuf)]) -> Vec<u64> {
 
 /// The name a save gives a recording of these contents.
 fn recording_stem(replay: &Replay, naming: Naming<'_>, multiplayer: bool) -> Result<String> {
+    let _phase = replay::container::Packing::phase(replay::container::Phase::Publication);
     let name = crate::recording_name::recording_name(replay, naming.localisation, multiplayer)
         .map_err(|error| error.to_string())?;
     if let Some(report) = naming.report {
@@ -3179,9 +3401,12 @@ fn finalize_campaign_with_publisher(
             .ok()
             .filter(|_| bytes <= length)
             .ok_or_else(|| failure(path, "failure witness watermark exceeds the spool length"))?;
-        let recovered = recover_reader(std::io::BufReader::new(file), end, Recovered::keep, |_| {
-            progress()
-        })
+        let recovered = recover_reader(
+            std::io::BufReader::new(Budgeted::new(file)),
+            end,
+            Recovered::keep,
+            |_| progress(),
+        )
         .map_err(|error| failure(path, error))?;
         if recovered.valid_bytes != end {
             return Err(failure(
@@ -3288,7 +3513,7 @@ fn finalize_campaign_with_publisher(
                     saved,
                     covered_saved,
                     &omitted,
-                );
+                )?;
             }
             placed
         };
@@ -3304,6 +3529,7 @@ fn finalize_campaign_with_publisher(
             ..CampaignOutcome::default()
         });
     }
+    let drain_phase = replay::container::Packing::phase(replay::container::Phase::Drain);
     let mut spool_bytes = 0_u64;
     let mut segments = Vec::with_capacity(paths.len());
     let mut held = BTreeMap::new();
@@ -3332,7 +3558,7 @@ fn finalize_campaign_with_publisher(
             }
         }
         let recovered = {
-            let mut input = std::io::BufReader::new(&file);
+            let mut input = std::io::BufReader::new(Budgeted::new(&file));
             let continued = match tails.remove(number) {
                 Some((tail_path, tail)) if tail_path == *path => tail
                     .finish(&mut input, prefix_length, Recovered::keep, |_| progress())
@@ -3369,6 +3595,7 @@ fn finalize_campaign_with_publisher(
         lengths.insert(*number, length);
         segments.push((*number, recovered));
     }
+    drop(drain_phase);
     if !watermark_found {
         return Err(failure(
             campaign_dir,
@@ -3719,6 +3946,15 @@ fn finalize_campaign_with_publisher(
         .map(|(number, recovery)| (*number, recovery.records.as_slice()))
         .collect();
     sorted.sort_unstable_by_key(|(number, _)| *number);
+    let written = written.map(|(mut ahead, summary)| {
+        if prefix != 0
+            && let Some(previous) = &previous
+        {
+            // published_prefix already compared these frames exactly after an interrupted save.
+            let _ = ahead.accept_verified_prefix(segments[prefix - 1].0, previous);
+        }
+        (ahead, summary)
+    });
     let (ahead, mut summary) = match written {
         Some((ahead, summary))
             if ahead.continues(&sorted)
@@ -3875,6 +4111,8 @@ fn finalize_campaign_with_publisher(
     if (checkpoint || journaled) && !unchanged {
         checkpoint_step(CheckpointStep::Verified, &destination)?;
     }
+    let publication_phase =
+        replay::container::Packing::phase(replay::container::Phase::Publication);
     if unchanged {
         println!("{} (already finalized; unchanged)", destination.display());
     }
@@ -3883,10 +4121,12 @@ fn finalize_campaign_with_publisher(
     }
     if let Some(multiplayer) = published_roster {
         record_recording(session_dir, &id, &destination)?;
-        if !checkpoint {
-            remember_roster(&destination, multiplayer)
-                .map_err(|error| failure(&destination, error))?;
-        }
+        remember_roster(&destination, multiplayer).map_err(|error| failure(&destination, error))?;
+    } else if let Some(multiplayer) = base_roster
+        .map(|known| known || summary.multiplayer)
+        .or_else(|| summary.multiplayer.then_some(true))
+    {
+        remember_roster(&destination, multiplayer).map_err(|error| failure(&destination, error))?;
     }
     saved.extend(
         lengths
@@ -3907,7 +4147,10 @@ fn finalize_campaign_with_publisher(
         saved,
         covered_saved,
         &omitted,
-    );
+    )?;
+    if checkpoint && !unchanged {
+        checkpoint_step(CheckpointStep::Watermarked, &destination)?;
+    }
     if !unchanged {
         committed(&destination, &replay, &replay.index[base_blocks..]);
         if checkpoint {
@@ -3919,30 +4162,20 @@ fn finalize_campaign_with_publisher(
     }
     drop(lock);
     progress().map_err(|error| failure(&destination, error))?;
+    drop(publication_phase);
     let ready_seconds = started.elapsed().as_secs_f64();
     if !unchanged {
         println!("{}", destination.display());
-    }
-    // New captures were summarized during validation and encoding. A repeated
-    // finalization skipped those steps, so only that case needs a reporting pass.
-    if unchanged {
-        summary = Box::default();
-        for (number, recovery) in &segments {
-            for record in &recovery.records {
-                if let Recovered::Frame(frame) = record {
-                    let frame = frames
-                        .read(*number, frame)
-                        .map_err(|error| error.to_string())?;
-                    summary.observe(&frame)?;
-                }
-            }
-        }
     }
     if checkpoint {
         emit_finalization(&format!(
             "checkpoint_s={ready_seconds:.3} replay_bytes={} spool_bytes={spool_bytes} hours={}\n",
             replay.saved_length(),
-            summary.totals.len()
+            outcome
+                .covered
+                .values()
+                .map(|(_, hours, _)| hours)
+                .sum::<u64>()
         ));
     }
     Ok(CampaignOutcome {
@@ -3951,7 +4184,7 @@ fn finalize_campaign_with_publisher(
             revision: Some(replay.revision()),
             summary,
             spool_bytes,
-            seconds: ready_seconds,
+            seconds: Some(ready_seconds),
         })),
         ..outcome
     })
@@ -3966,8 +4199,8 @@ fn write_saved_record(
     segments: BTreeMap<u32, u64>,
     covered: BTreeMap<u32, (u64, u64, Option<(Hour, Hour)>)>,
     omitted: &[(Option<i64>, u64)],
-) {
-    if let Err(error) = write_saved(
+) -> Result<()> {
+    write_saved(
         campaign_dir,
         &Saved {
             replay: destination.to_owned(),
@@ -3976,9 +4209,7 @@ fn write_saved_record(
             covered,
             omitted: omitted.to_vec(),
         },
-    ) {
-        eprintln!("{error}");
-    }
+    )
 }
 
 /// The branch tracker after the committed history, for a branch whose start records were torn.
@@ -4940,7 +5171,7 @@ fn failure_segment_ranges(
 }
 
 fn open(path: &Path) -> Result<Replay> {
-    Replay::open(fs::read(path).map_err(|error| failure(path, error))?)
+    Replay::open(read_file(path).map_err(|error| failure(path, error))?)
         .map_err(|error| failure(path, error))
 }
 
@@ -4949,6 +5180,7 @@ fn verify_publication(
     path: &Path,
     progress: &dyn Fn() -> std::io::Result<()>,
 ) -> Result<Replay> {
+    let _phase = replay::container::Packing::phase(replay::container::Phase::Readback);
     let saved = held_recording(path)?;
     saved
         .require_undamaged()
@@ -4962,7 +5194,13 @@ fn verify_publication(
     for block in &saved.index {
         progress().map_err(|error| failure(path, error))?;
         saved
-            .read_block(block)
+            .read_block_parallel(
+                block,
+                &replay::container::Parallel {
+                    workers: replay::container::Packing::workers(),
+                    on_worker: &|| {},
+                },
+            )
             .map_err(|error| failure(path, error))?;
     }
     Ok(saved)
@@ -5030,7 +5268,7 @@ struct Saved {
 
 fn read_saved(campaign_dir: &Path) -> Option<Saved> {
     let value: Value =
-        serde_json::from_slice(&fs::read(campaign_dir.join(SAVED_FILE)).ok()?).ok()?;
+        serde_json::from_slice(&read_file(campaign_dir.join(SAVED_FILE)).ok()?).ok()?;
     Some(Saved {
         replay: PathBuf::from(value["replay"].as_str()?),
         revision: revision_of(&value["revision"])?,
@@ -5205,7 +5443,7 @@ pub fn unsaved(session_dir: &Path, campaign: &str) -> Result<Option<Unsaved>> {
         summary.bytes += bytes;
         let file = fs::File::open(&path).map_err(|error| failure(&path, error))?;
         let recovery = recover_reader(
-            std::io::BufReader::new(file),
+            std::io::BufReader::new(Budgeted::new(file)),
             usize::try_from(bytes).map_err(|error| failure(&path, error))?,
             Recovered::keep,
             |_| Ok(()),
@@ -6392,7 +6630,7 @@ struct FinalizationReport {
     revision: Option<Revision>,
     summary: Box<Summary>,
     spool_bytes: u64,
-    seconds: f64,
+    seconds: Option<f64>,
 }
 
 impl std::fmt::Debug for FinalizationReport {
@@ -6420,7 +6658,10 @@ fn merge_reports(
             earlier.summary.merge(later.summary)?;
             earlier.revision = later.revision.or(earlier.revision);
             earlier.spool_bytes += later.spool_bytes;
-            earlier.seconds += later.seconds;
+            earlier.seconds = match (earlier.seconds, later.seconds) {
+                (Some(earlier), Some(later)) => Some(earlier + later),
+                (earlier, later) => earlier.or(later),
+            };
             Ok(Some(earlier))
         }
         (earlier, later) => Ok(earlier.or(later)),
@@ -6428,54 +6669,20 @@ fn merge_reports(
 }
 
 impl FinalizationReport {
-    fn complete(
-        &mut self,
-        replay: &Replay,
-        progress: &dyn Fn() -> std::io::Result<()>,
-    ) -> std::io::Result<()> {
-        for block in &replay.index {
-            let known = self.summary.hours.get(&block.branch).map_or(0, |hours| {
-                hours.range(block.first_hour..=block.last_hour).count()
-            });
-            if known as u64 == (i64::from(block.last_hour) - i64::from(block.first_hour) + 1) as u64
-            {
-                continue;
-            }
-            let mut decoder = FrameDecoder::default();
-            let mut previous = None;
-            replay.visit_block(block, None, |frame| {
-                progress()?;
-                let decoded = decoder.apply(&frame)?;
-                let sizes = frame.table_encoded_sizes()?;
-                let hour = Observed::new(&frame, &decoded, sizes, previous.as_ref())?;
-                if !self
-                    .summary
-                    .hours
-                    .get(&hour.branch)
-                    .is_some_and(|hours| hours.contains(&hour.hour))
-                {
-                    self.summary
-                        .observe_hour(&hour)
-                        .map_err(std::io::Error::other)?;
-                }
-                previous = Some(hour);
-                Ok(true)
-            })?;
-        }
-        Ok(())
-    }
-
     fn text(&mut self, replay_bytes: u64) -> Result<String> {
         use std::io::Write;
         let mut output = Vec::new();
         writeln!(
             output,
-            "finalize_s={:.3} replay_bytes={replay_bytes} spool_bytes={}",
-            self.seconds, self.spool_bytes
+            "finalize_s={} replay_bytes={replay_bytes} spool_bytes={}",
+            self.seconds
+                .map(|seconds| format!("{seconds:.3}"))
+                .unwrap_or_else(|| "not_observed".into()),
+            self.spool_bytes
         )
         .map_err(|error| error.to_string())?;
         self.summary
-            .write(self.spool_bytes, &mut output)
+            .write_known(&mut output)
             .map_err(|error| error.to_string())?;
         String::from_utf8(output).map_err(|error| error.to_string())
     }
@@ -6535,6 +6742,12 @@ impl Default for Summary {
 
 impl Summary {
     fn merge(&mut self, mut later: Box<Summary>) -> Result<()> {
+        if self.totals.is_empty() && self.hours.is_empty() {
+            let multiplayer = self.multiplayer;
+            *self = *later;
+            self.multiplayer |= multiplayer;
+            return Ok(());
+        }
         for (branch, hours) in &later.hours {
             if self
                 .hours
@@ -6660,8 +6873,30 @@ impl Summary {
         }
     }
 
+    fn write_known(&self, output: &mut impl std::io::Write) -> std::io::Result<()> {
+        let hours = self.totals.len();
+        if hours == 0 {
+            return writeln!(
+                output,
+                "hours=0 total_p50_ms=not_observed total_p95_ms=not_observed total_max_ms=not_observed pool_max_bytes=not_observed dropped_counter_max=not_observed"
+            );
+        }
+        writeln!(
+            output,
+            "hours={hours} total_p50_ms=not_summarized total_p95_ms=not_summarized total_max_ms=not_summarized pool_max_bytes={} dropped_counter_max={}",
+            self.max_pool, self.max_dropped
+        )
+    }
+
     fn write(&mut self, spool_bytes: u64, output: &mut impl std::io::Write) -> std::io::Result<()> {
         let hours = self.totals.len();
+        if hours == 0 {
+            writeln!(
+                output,
+                "hours=0 total_p50_ms=not_observed total_p95_ms=not_observed total_max_ms=not_observed pool_max_bytes=not_observed dropped_counter_max=not_observed"
+            )?;
+            return Ok(());
+        }
         let [p50, p95, maximum] = percentiles(&mut self.totals);
         writeln!(
             output,
@@ -6708,7 +6943,7 @@ impl Summary {
     /// were read, so a replay without timed hours reports them not recorded.
     fn read_times(&mut self, table: TableId) -> String {
         let times = &mut self.table_times[table.index()];
-        if times.is_empty() && self.untimed_hours != 0 {
+        if times.is_empty() {
             return "not_recorded not_recorded not_recorded".into();
         }
         let [p50, p95, maximum] = percentiles(times);
@@ -6844,7 +7079,7 @@ mod tests {
         fs::remove_dir_all(session).unwrap();
     }
 
-    fn long_finalization_records(promote_hour: Option<i32>) -> Vec<Record> {
+    pub(super) fn long_finalization_records(promote_hour: Option<i32>) -> Vec<Record> {
         use replay_data::{rows::ClockRow, rows::LexicalTokenRow};
         use replay_frame::frame::FrameEncoder;
         let mut base = crate::test_support::allocation_records();
@@ -7696,6 +7931,239 @@ mod tests {
                 _ => unreachable!("a frame's position"),
             }
         })
+    }
+
+    #[test]
+    fn runnable_backlog_stops_at_the_first_unadmitted_load_even_after_a_later_admission() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, THIRD_LOAD, allocation_test_directory,
+            three_load_records, write_campaign_spool,
+        };
+        let directory = allocation_test_directory("admitted-packing-backlog");
+        let session = directory.join("session");
+        let target = directory.join("target");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        write_campaign_spool(&session, &three_load_records());
+        begin_admissions(&session, &target).unwrap();
+        let mut admissions = Admissions::default();
+        admissions.admit(&session, &target, name, FIRST_LOAD).unwrap();
+        let mut ahead = Ahead::default();
+        ahead.read(&session, &target).unwrap();
+        let before = ahead.backlog(&session).unwrap();
+        assert_eq!((before.runnable.unwritten_hours, before.blocked.unwritten_hours), (3, 4));
+        assert_eq!((before.runnable.closed_blocks, before.blocked.closed_blocks), (2, 4));
+        assert_eq!(before.runnable.work.rows + before.blocked.work.rows, ahead.outstanding().rows);
+        ahead.write(&session, &target, &|| false).unwrap();
+        let packed = ahead.backlog(&session).unwrap();
+        assert_eq!(ahead.written(), 3);
+        assert_eq!((packed.runnable.unwritten_hours, packed.runnable.closed_blocks), (0, 0));
+        assert_eq!(packed.blocked.work.rows, before.blocked.work.rows);
+        admissions.refuse(&session, &target, name, RELOAD, Refusal::Off).unwrap();
+        admissions.admit(&session, &target, name, THIRD_LOAD).unwrap();
+        ahead.write(&session, &target, &|| false).unwrap();
+        let refused = ahead.backlog(&session).unwrap();
+        assert_eq!(ahead.written(), 3);
+        assert_eq!(refused.runnable.work.rows, 0);
+        assert_eq!(refused.runnable.closed_blocks, 0);
+        assert_eq!(refused.blocked.unwritten_hours, 4);
+        assert_eq!(refused.blocked.closed_blocks, 4);
+        admissions.admit(&session, &target, name, RELOAD).unwrap();
+        let admitted = ahead.backlog(&session).unwrap();
+        assert_eq!((admitted.runnable.unwritten_hours, admitted.blocked.unwritten_hours), (4, 0));
+        assert_eq!(admitted.runnable.closed_blocks, 4);
+        ahead.write(&session, &target, &|| false).unwrap();
+        let drained = ahead.backlog(&session).unwrap();
+        assert_eq!(ahead.written(), 7);
+        assert_eq!(drained.runnable.work.rows, 0);
+        assert_eq!(drained.runnable.closed_blocks, 0);
+        assert_eq!(drained.blocked.work.rows, 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn blocked_refused_and_stopped_campaigns_do_not_add_to_a_healthy_campaigns_runnable_debt() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, THIRD_LOAD, allocation_records,
+            allocation_test_directory, three_load_records, write_campaign_spool,
+        };
+        const HEALTHY: &str = "00000000-0000-4000-8000-000000000001";
+        for state in ["unadmitted", "refused", "stopped"] {
+            let directory = allocation_test_directory(&format!("blocked-packing-backlog-{state}"));
+            let session = directory.join("session");
+            let target = directory.join("target");
+            let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+            let records = three_load_records();
+            let campaign = write_campaign_spool(&session, &records);
+            begin_admissions(&session, &target).unwrap();
+            let mut admissions = Admissions::default();
+            let mut ahead = Ahead::default();
+            if state == "stopped" {
+                admissions.admit(&session, &target, name, FIRST_LOAD).unwrap();
+                ahead.read(&session, &target).unwrap();
+                ahead.write(&session, &target, &|| false).unwrap();
+                assert!(ahead.campaigns[&campaign].written.is_some());
+                for load in [RELOAD, THIRD_LOAD] {
+                    admissions.admit(&session, &target, name, load).unwrap();
+                }
+                ahead.campaigns.get_mut(&campaign).unwrap().stopped = true;
+            } else if state == "refused" {
+                admissions.refuse(&session, &target, name, FIRST_LOAD, Refusal::Elsewhere).unwrap();
+            }
+            let mut healthy = allocation_records();
+            for record in &mut healthy {
+                if let Record::Frame(frame) = record {
+                    frame.tables[TableId::Campaign.index()] = TableUpdate::Snapshot(
+                        TableRows::Campaign(vec![replay_data::rows::CampaignRow { id: HEALTHY.as_bytes().to_vec() }]),
+                    );
+                }
+            }
+            let healthy_dir = session.join(HEALTHY);
+            fs::create_dir_all(&healthy_dir).unwrap();
+            fs::write(healthy_dir.join("spool.0000.h4s"), healthy.iter()
+                .flat_map(|record| replay::spool::encode_record(record).unwrap()).collect::<Vec<_>>()).unwrap();
+            admissions.admit(&session, &target, HEALTHY, FIRST_LOAD).unwrap();
+            ahead.read(&session, &target).unwrap();
+            // Inflate only blocked metadata, not files or allocations, past the row escalation threshold.
+            let spool: Vec<_> = records.iter()
+                .flat_map(|record| replay::spool::encode_record(record).unwrap()).collect();
+            let mut tail = Tail::default();
+            tail.grow(&mut std::io::Cursor::new(&spool), spool.len(), |record, placement| {
+                let mut record = Recovered::keep(record, placement);
+                if let Recovered::Frame(frame) = &mut record {
+                    frame.placement.length = 100_000_000;
+                }
+                record
+            }).unwrap();
+            ahead.campaigns.get_mut(&campaign).unwrap().tails.get_mut(&0).unwrap().1 = tail;
+            let before = ahead.backlog(&session).unwrap();
+            assert_eq!(before.runnable.unwritten_hours, 3, "{state}");
+            assert_eq!(before.runnable.closed_blocks, 2, "{state}");
+            assert!(before.blocked.work.rows >= 100_000_000, "{state}");
+            assert!(before.blocked.closed_blocks >= 2, "{state}");
+            if state == "stopped" {
+                assert!(before.blocked.work.readback > 0);
+                assert!(before.blocked.work.open > 0);
+            }
+            ahead.write(&session, &target, &|| false).unwrap();
+            let drained = ahead.backlog(&session).unwrap();
+            assert_eq!(drained.runnable.unwritten_hours, 0, "{state}");
+            assert_eq!(drained.runnable.work.rows, 0, "{state}");
+            assert_eq!(drained.runnable.closed_blocks, 0, "{state}");
+            assert_eq!(drained.blocked.work.rows, before.blocked.work.rows, "{state}");
+            assert_eq!(drained.blocked.closed_blocks, before.blocked.closed_blocks, "{state}");
+            assert_eq!(drained.runnable.work.rows + drained.blocked.work.rows, ahead.outstanding().rows);
+            assert_eq!(drained.runnable.closed_blocks + drained.blocked.closed_blocks, ahead.pending_blocks());
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_encoder_outside_the_current_admitted_prefix_is_blocked_not_runnable() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_records, allocation_test_directory,
+            write_campaign_spool,
+        };
+        let directory = allocation_test_directory("withdrawn-packing-prefix");
+        let session = directory.join("session");
+        let target = directory.join("target");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        write_campaign_spool(&session, &allocation_records());
+        begin_admissions(&session, &target).unwrap();
+        Admissions::default().admit(&session, &target, name, FIRST_LOAD).unwrap();
+        let mut ahead = Ahead::default();
+        ahead.read(&session, &target).unwrap();
+        ahead.write(&session, &target, &|| false).unwrap();
+        assert!(ahead.backlog(&session).unwrap().runnable.work.readback > 0);
+        begin_admissions(&session, &target).unwrap();
+        let backlog = ahead.backlog(&session).unwrap();
+        assert_eq!(backlog.runnable.work.readback, 0);
+        assert_eq!(backlog.runnable.work.open, 0);
+        assert!(backlog.blocked.work.readback > 0);
+        assert!(backlog.blocked.work.open > 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn unreadable_admissions_leave_scheduling_debt_unavailable() {
+        use crate::test_support::{allocation_records, allocation_test_directory, write_campaign_spool};
+        let directory = allocation_test_directory("unknown-packing-backlog");
+        let session = directory.join("session");
+        let target = directory.join("target");
+        write_campaign_spool(&session, &allocation_records());
+        begin_admissions(&session, &target).unwrap();
+        let mut ahead = Ahead::default();
+        ahead.read(&session, &target).unwrap();
+        fs::write(session.join(ADMISSIONS_FILE), b"not json").unwrap();
+        assert!(ahead.backlog(&session).is_err());
+        assert!(ahead.outstanding().rows > 0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn backlog_includes_newly_read_frames_before_the_encoder_accepts_them() {
+        use crate::test_support::{ALLOCATION_CAMPAIGN, allocation_test_directory};
+        let directory = allocation_test_directory("fresh-packing-backlog");
+        let session = directory.join("session");
+        let campaign = session.join(std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap());
+        fs::create_dir_all(&campaign).unwrap();
+        let path = campaign.join("spool.0000.h4s");
+        let output = directory.join("output");
+        let records = long_finalization_records(Some(12));
+        let split = records
+            .iter()
+            .position(|record| matches!(record, Record::Frame(frame) if frame.hour == 12))
+            .unwrap();
+        let prefix: Vec<_> = records[..split]
+            .iter()
+            .flat_map(|record| replay::spool::encode_record(record).unwrap())
+            .collect();
+        fs::write(&path, prefix).unwrap();
+        let mut ahead = Ahead::default();
+        ahead.read(&session, &output).unwrap();
+        assert_eq!(ahead.frames_read(), 10);
+        assert_eq!(ahead.written(), 0);
+        assert!(ahead.outstanding().rows > 0);
+        assert_eq!(ahead.pending_blocks(), 0);
+        ahead.write(&session, &output, &|| false).unwrap();
+        assert_eq!(ahead.written(), 10);
+        assert_eq!(ahead.outstanding().rows, 0);
+        let bytes: Vec<_> = records
+            .iter()
+            .flat_map(|record| replay::spool::encode_record(record).unwrap())
+            .collect();
+        fs::write(&path, &bytes).unwrap();
+        ahead.read(&session, &output).unwrap();
+        assert_eq!(
+            (ahead.frames_read(), ahead.written(), ahead.hours()),
+            (20, 10, 0)
+        );
+        assert_eq!(ahead.pending_blocks(), 1);
+        let expected: u64 = ahead
+            .campaigns
+            .values()
+            .flat_map(|campaign| campaign.tails.values())
+            .flat_map(|(_, tail)| tail.records())
+            .filter_map(|record| match record {
+                Recovered::Frame(frame) if frame.hour >= 12 => Some(frame.placement.length as u64),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(ahead.outstanding().rows, expected);
+        assert!(expected > 0);
+        ahead.write(&session, &output, &|| false).unwrap();
+        assert_eq!(
+            (ahead.frames_read(), ahead.written(), ahead.hours()),
+            (20, 20, 10)
+        );
+        assert_eq!(ahead.pending_blocks(), 0);
+        assert_eq!(ahead.outstanding().rows, 0);
+        ahead.forget(&campaign);
+        assert_eq!(
+            (ahead.frames_read(), ahead.written(), ahead.hours()),
+            (0, 0, 0)
+        );
+        assert_eq!(ahead.pending_blocks(), 0);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

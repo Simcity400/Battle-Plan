@@ -1,6 +1,6 @@
 //! Recording files: a recording is its folder and the campaign its header names.
 
-use crate::container::{AtomicPublisher, PublishStage, Replay};
+use crate::container::{AtomicPublisher, Budgeted, PublishStage, Replay};
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -30,7 +30,7 @@ fn at(path: &Path, error: io::Error) -> io::Error {
 /// The campaign a recording's header names; `None` for an identity that names no campaign.
 pub fn campaign_of(path: &Path) -> io::Result<Option<Vec<u8>>> {
     File::open(path)
-        .and_then(|mut file| Replay::read_campaign_uuid(&mut file))
+        .and_then(|file| Replay::read_campaign_uuid(&mut Budgeted::new(file)))
         .map_err(|error| at(path, error))
 }
 
@@ -309,17 +309,18 @@ struct NewPublisher<'a> {
 }
 
 impl AtomicPublisher for NewPublisher<'_> {
-    type Writer = File;
-    fn create(&mut self) -> io::Result<File> {
+    type Writer = Budgeted<File>;
+    fn create(&mut self) -> io::Result<Self::Writer> {
         OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&self.temporary)
+            .map(Budgeted::new)
     }
-    fn sync(&mut self, writer: &mut File) -> io::Result<()> {
-        writer.sync_all()
+    fn sync(&mut self, writer: &mut Self::Writer) -> io::Result<()> {
+        writer.get_ref().sync_all()
     }
-    fn replace(&mut self, writer: File) -> io::Result<()> {
+    fn replace(&mut self, writer: Self::Writer) -> io::Result<()> {
         drop(writer);
         self.published = Some(place_new(&self.temporary, self.folder, self.stem)?);
         Ok(())

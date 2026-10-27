@@ -738,6 +738,27 @@ pub fn read_frame_at(
     placement: Placement,
     length: usize,
 ) -> io::Result<Frame> {
+    read_frame_payload_at(input, placement, length)?.decode()
+}
+
+/// An immutable recovered envelope; checksum and frame decoding need no file lock.
+pub struct FramePayload(Envelope);
+
+impl FramePayload {
+    pub fn decode(self) -> io::Result<Frame> {
+        match self.0.record()? {
+            Record::Frame(frame) => Ok(frame),
+            _ => Err(invalid_static("recovered spool frame is missing")),
+        }
+    }
+}
+
+/// Copy just the held record's bytes while its seek cursor is locked.
+pub fn read_frame_payload_at(
+    input: &mut (impl Read + Seek),
+    placement: Placement,
+    length: usize,
+) -> io::Result<FramePayload> {
     let missing = || invalid_static("recovered spool frame is missing");
     if placement.offset >= length {
         return Err(missing());
@@ -755,10 +776,7 @@ pub fn read_frame_at(
             "spool record changed since it was recovered",
         ));
     }
-    match envelope.record()? {
-        Record::Frame(frame) => Ok(frame),
-        _ => Err(missing()),
-    }
+    Ok(FramePayload(envelope))
 }
 
 struct Envelope {
@@ -817,6 +835,7 @@ fn recover_records<T: SpoolRecord + Send>(
 }
 
 /// A segment's records recovered so far, continued as the segment grows.
+#[derive(Clone)]
 pub struct Tail<T> {
     records: Vec<T>,
     accepted: Accepted,

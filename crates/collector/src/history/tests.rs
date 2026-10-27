@@ -751,3 +751,26 @@ fn market_and_other_event_ledger_sequences_restore_all_retained_prefixes_before_
     drop(prepared);
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn resident_history_lease_never_blocks_recorder_append_or_rollback() {
+    use std::io::Write;
+    let root = std::env::temp_dir().join(format!("hoi4_history_shared_{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("history.bin");
+    fs::write(&path, b"resident snapshot").unwrap();
+    let mut resident = lease(&path).unwrap();
+    let mut writer = OpenOptions::new().append(true).open(&path).unwrap();
+    writer.write_all(b" appended").unwrap();
+    writer.sync_data().unwrap();
+    drop(writer);
+    let replacement = root.join("replacement.bin");
+    fs::write(&replacement, b"rolled back").unwrap();
+    replay::publication::replace_file(&replacement, &path).unwrap();
+    let mut bytes = Vec::new();
+    resident.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"resident snapshot appended");
+    assert_eq!(fs::read(&path).unwrap(), b"rolled back");
+    drop(resident);
+    fs::remove_dir_all(root).unwrap();
+}

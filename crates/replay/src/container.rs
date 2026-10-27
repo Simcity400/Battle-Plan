@@ -393,6 +393,7 @@ impl CampaignHistory {
     }
 }
 
+#[derive(Clone)]
 struct CompressedBlock {
     branch: BranchId,
     first_hour: Hour,
@@ -529,7 +530,7 @@ impl Replay {
         file: &mut (impl Read + Seek),
         _length: u64,
     ) -> io::Result<TrailerSummary> {
-        let located = commit::locate(&mut commit::Seeking(file))?;
+        let located = commit::locate(&mut commit::Seeking(&mut Budgeted::new(file)))?;
         let format =
             FormatVersion::read(u16::from_le_bytes(located.header[4..6].try_into().unwrap()))?;
         let mut sessions = Vec::new();
@@ -1543,6 +1544,7 @@ impl Replay {
         destination: &Path,
         mut checkpoint: impl FnMut(PublishStage) -> io::Result<()>,
     ) -> io::Result<()> {
+        let _phase = Packing::phase(Phase::Write);
         self.publish_with(
             &mut FilePublisher {
                 temporary: temporary_path(destination),
@@ -1613,18 +1615,19 @@ struct FilePublisher {
     destination: PathBuf,
 }
 impl AtomicPublisher for FilePublisher {
-    type Writer = File;
-    fn create(&mut self) -> io::Result<File> {
+    type Writer = Budgeted<File>;
+    fn create(&mut self) -> io::Result<Self::Writer> {
         OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(&self.temporary)
+            .map(Budgeted::new)
     }
-    fn sync(&mut self, writer: &mut File) -> io::Result<()> {
-        writer.sync_all()
+    fn sync(&mut self, writer: &mut Self::Writer) -> io::Result<()> {
+        writer.get_ref().sync_all()
     }
-    fn replace(&mut self, writer: File) -> io::Result<()> {
+    fn replace(&mut self, writer: Self::Writer) -> io::Result<()> {
         drop(writer);
         replace_file(&self.temporary, &self.destination)
     }
@@ -1926,11 +1929,72 @@ fn collect<R: SpoolRecord>(
     campaign_id: &[u8],
     existing: Option<&Replay>,
     interval: u32,
-    observe: Observer<'_>,
+    mut observe: Observer<'_>,
     mut frames: Frames<'_>,
     block_limit: usize,
     ahead: Option<Ahead>,
 ) -> io::Result<Pending> {
+    let _phase = Packing::phase(Phase::Pack);
+    if let Some(mut ahead) = ahead {
+        ahead.renumber();
+        let kept: Vec<_> = segments
+            .iter()
+            .enumerate()
+            .map(|(at, records)| {
+                (
+                    at as u32,
+                    records
+                        .iter()
+                        .map(|record| match record.view() {
+                            RecordRef::Metadata(frame) => Ok(Recovered::Frame(frame.clone())),
+                            RecordRef::SessionStart(value) => {
+                                Ok(Recovered::SessionStart(value.clone()))
+                            }
+                            RecordRef::BranchStart(value) => {
+                                Ok(Recovered::BranchStart(value.clone()))
+                            }
+                            RecordRef::Gap(value) => Ok(Recovered::Gap(value.clone())),
+                            RecordRef::Control(value) => Ok(Recovered::Control(value.clone())),
+                            RecordRef::Frame(_) => Err(invalid_static(
+                                "retained writer requires recovered metadata",
+                            )),
+                        })
+                        .collect::<io::Result<Vec<_>>>(),
+                )
+            })
+            .map(|(number, records)| records.map(|records| (number, records)))
+            .collect::<io::Result<Vec<_>>>()?;
+        let unwritten = kept
+            .iter()
+            .flat_map(|(_, records)| records)
+            .filter(|record| matches!(record, Recovered::Frame(_)))
+            .count()
+            .saturating_sub(ahead.written());
+        let records: Vec<_> = kept
+            .iter()
+            .map(|(number, records)| (*number, records.as_slice()))
+            .collect();
+        let shared = match &frames {
+            Frames::Shared(read, _) => Some(*read),
+            _ => None,
+        };
+        let read = |number, metadata: &FrameMetadata| match shared {
+            Some(read) => read(number as usize, metadata),
+            None => metadata.frame(),
+        };
+        let pending = ahead.finish(campaign_id, &records, read, |hour| match &mut observe {
+            Observer::Hours(observe) => observe(hour),
+            Observer::Nothing => Ok(()),
+            Observer::Frames(_) => Err(invalid_static("retained writer reports observed hours")),
+        })?;
+        if let Frames::Shared(_, progress) = &mut frames {
+            for _ in 0..unwritten {
+                progress()?;
+            }
+        }
+        return Ok(pending);
+    }
+    let ahead: Option<Ahead> = None;
     let threads = pack::workers();
     let (mut hours, mut whole) = match observe {
         Observer::Nothing => (None, None),
@@ -1939,7 +2003,8 @@ fn collect<R: SpoolRecord>(
     };
     let (mut reported, mut progressed) = (ahead.as_ref().map_or(0, Ahead::hours), 0);
     let mut ahead = ahead;
-    if threads > 1 && whole.is_none() {
+    // Legacy lanes wait on one another; budgeted saves lend only finite work to their pool.
+    if !Packing::active() && threads > 1 && whole.is_none() {
         let mut quiet = || Ok(());
         let parallel = match &mut frames {
             Frames::Kept => Some((None, &mut quiet as &mut dyn FnMut() -> io::Result<()>)),
@@ -2067,6 +2132,7 @@ fn write_blocks<R: SpoolRecord>(
         let mut needs_keyframe = true;
         let mut segment_state = SegmentState::default();
         for record in *segment {
+            pack::refresh();
             let record = record.view();
             segment_state.accept_view(&record)?;
             match record {
@@ -2269,6 +2335,7 @@ impl Writing {
         observe: &mut FrameObserver<'_>,
         split: Option<&mut dyn FnMut(grouped::BlockWriter) -> io::Result<()>>,
     ) -> io::Result<bool> {
+        pack::refresh();
         let decoded = self.decoder.advance(frame)?;
         validate_campaign(decoded, campaign_id)?;
         let mut payload = Vec::new();
@@ -2655,7 +2722,10 @@ fn parallel_tables<T: Sync, R: Send>(
         .min(items.len().div_ceil(PARALLEL_FRAMES))
         .max(1);
     if workers <= 1 {
-        return engine_allocation::collect_vec(items.iter().map(&work));
+        return engine_allocation::collect_vec(items.iter().map(|item| {
+            pack::readback_table();
+            work(item)
+        }));
     }
     // One slot per item, filled by whichever thread takes it.
     let mut slots =
@@ -2663,6 +2733,7 @@ fn parallel_tables<T: Sync, R: Send>(
     let next = std::sync::atomic::AtomicUsize::new(0);
     let take = || {
         while let Some(&at) = order.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+            pack::readback_table();
             let result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&items[at])));
             *slots[at]
@@ -2675,40 +2746,58 @@ fn parallel_tables<T: Sync, R: Send>(
     // Measurement only: the workers' CPU is the caller's family's.
     let cpu_family = crate::cpu::family();
     let cpu_block = crate::cpu::current_block();
-    let worker_panic = std::thread::scope(|scope| {
-        let mut handles = engine_allocation::vec(workers)?;
-        for _ in 0..workers {
-            let priority = job_priority::JobPriority::current();
-            let spawned = if refused_worker() {
-                None
-            } else {
-                std::thread::Builder::new()
-                    .name("replay parallel decode".into())
-                    .spawn_scoped(scope, move || {
-                        priority.enter(job_priority::Level::Normal);
-                        on_worker();
-                        let _cpu = crate::cpu::scope("decode", cpu_family);
-                        let _cpu_block = crate::cpu::block(cpu_block);
-                        take();
-                    })
-                    .ok()
-            };
-            handles.push(spawned);
-        }
-        // A worker the OS refused leaves its share of the queue to this thread.
-        if handles.iter().any(Option::is_none) {
-            take();
-        }
-        let mut worker_panic = None;
-        for handle in handles.into_iter().flatten() {
-            if let Err(panic) = handle.join()
-                && worker_panic.is_none()
-            {
-                worker_panic = Some(panic);
+    let worker_panic = if Packing::active() {
+        Packing::scope(|scope| {
+            for _ in 1..workers {
+                scope.spawn(move |_| {
+                    pack::refresh();
+                    on_worker();
+                    let _cpu = crate::cpu::scope("decode", cpu_family);
+                    let _cpu_block = crate::cpu::block(cpu_block);
+                    take();
+                });
             }
-        }
-        Ok::<_, io::Error>(worker_panic)
-    })?;
+            pack::refresh();
+            on_worker();
+            take();
+        });
+        None
+    } else {
+        std::thread::scope(|scope| {
+            let mut handles = engine_allocation::vec(workers)?;
+            for _ in 0..workers {
+                let priority = job_priority::JobPriority::current();
+                let spawned = if refused_worker() {
+                    None
+                } else {
+                    std::thread::Builder::new()
+                        .name("replay parallel decode".into())
+                        .spawn_scoped(scope, move || {
+                            priority.enter(job_priority::Level::Normal);
+                            on_worker();
+                            let _cpu = crate::cpu::scope("decode", cpu_family);
+                            let _cpu_block = crate::cpu::block(cpu_block);
+                            take();
+                        })
+                        .ok()
+                };
+                handles.push(spawned);
+            }
+            // A worker the OS refused leaves its share of the queue to this thread.
+            if handles.iter().any(Option::is_none) {
+                take();
+            }
+            let mut worker_panic = None;
+            for handle in handles.into_iter().flatten() {
+                if let Err(panic) = handle.join()
+                    && worker_panic.is_none()
+                {
+                    worker_panic = Some(panic);
+                }
+            }
+            Ok::<_, io::Error>(worker_panic)
+        })?
+    };
     // Item panics rank first in registry order; setup panics follow spawn order.
     for slot in &mut slots {
         let outcome = slot
@@ -2750,8 +2839,9 @@ thread_local! {
 
 mod grouped;
 pub(crate) mod pack;
+pub use pack::{Budgeted, Packing, Phase};
 mod units;
-pub use units::Ahead;
+pub use units::{Ahead, Outstanding};
 pub mod patch;
 pub use grouped::{
     ColumnSize, ColumnSizes, LATER_CHUNK_HOURS, STORED_LEVEL, Section, SectionLevels, SectionSize,

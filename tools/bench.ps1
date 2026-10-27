@@ -895,14 +895,25 @@ function Get-ExactMetrics($attached, [string]$runDir, [int]$firstHour, [int]$las
     throw ('Exact callback metrics could not be verified; check that -MetricsTool supports this replay format. ' + ($failures -join '; '))
 }
 function Get-SizeSummary([string]$runDir) {
-    # The finalization summary printed by `record --once` (recorder replay_io Summary::print).
     $lines = @(Get-Content -LiteralPath (Join-Path $runDir 'recorder.stdout.log') -Encoding UTF8)
-    $size = [ordered]@{}; $tables = New-Object Collections.ArrayList; $inTables = $false; $finalizations = 0
+    $size = [ordered]@{ stop_to_save_ready_s = $null; raw_encoded_bytes = $null; raw_bytes_per_hour = $null; spool_bytes_per_hour = $null; replay_bytes_per_hour = $null }
+    $tables = New-Object Collections.ArrayList; $inTables = $false; $finalizations = 0; $deferred = $false; $ready = $null
     foreach ($line in $lines) {
-        if ($line -match '^finalize_s=([\d.]+) replay_bytes=(\d+) spool_bytes=(\d+)$') {
-            $finalizations++; $size.finalize_s = [double]$Matches[1]; $size.replay_bytes = [int64]$Matches[2]; $size.spool_bytes = [int64]$Matches[3]; continue
+        if ($line -match '^finalize_s=([\d.]+|not_observed) replay_bytes=(\d+) spool_bytes=(\d+)$') {
+            $finalizations++; $size.finalize_s = if ($Matches[1] -eq 'not_observed') { $null } else { [double]$Matches[1] }
+            $size.replay_bytes = [int64]$Matches[2]; $size.spool_bytes = [int64]$Matches[3]; continue
         }
-        if ($line -match '^hours=(\d+) total_p50_ms=') { $size.hours = [int64]$Matches[1]; continue }
+        if ($line -match '^Stop to save-ready: (\{.*\})$') {
+            $ready = $Matches[1] | ConvertFrom-Json
+            $size.stop_to_save_ready_s = $ready.stop_to_save_ready_s
+            $size.stop_diagnostics = $ready
+            continue
+        }
+        if ($line -match '^hours=(\d+) total_p50_ms=(\S+)') {
+            $size.hours = [int64]$Matches[1]
+            $deferred = $Matches[2] -in @('not_observed', 'not_summarized')
+            continue
+        }
         if ($line -match '^table raw_encoded_bytes ') { $inTables = $true; continue }
         if (-not $inTables) { continue }
         $f = $line -split ' '
@@ -910,16 +921,24 @@ function Get-SizeSummary([string]$runDir) {
         [void]$tables.Add([ordered]@{ table = $f[0]; raw_bytes = [int64]$f[1]; read_p50_ms = [double]$f[3]; read_p95_ms = [double]$f[4]; read_max_ms = [double]$f[5]
             snapshots = [int64]$f[6]; deltas = [int64]$f[7]; unchanged = [int64]$f[8]; truncated = [int64]$f[9]; unavailable = [int64]$f[10] })
     }
-    if ($finalizations -ne 1 -or -not $size.Contains('hours') -or $size.hours -le 0 -or $tables.Count -eq 0) {
+    if ($finalizations -ne 1 -or -not $size.Contains('hours') -or (-not $deferred -and ($size.hours -le 0 -or $tables.Count -eq 0))) {
         throw "Finalization summary missing or ambiguous in recorder.stdout.log (finalizations=$finalizations, tables=$($tables.Count))."
     }
-    $raw = [int64]0; foreach ($t in $tables) { $raw += $t.raw_bytes }
-    if ($raw -le 0 -or $size.spool_bytes -le 0 -or $size.replay_bytes -le 0) { throw 'Finalization summary reports zero bytes.' }
-    Write-Json (Join-Path $runDir 'tables.json') @($tables)
-    $size.raw_encoded_bytes = $raw
-    $size.raw_bytes_per_hour = [math]::Round($raw / $size.hours, 1)
-    $size.spool_bytes_per_hour = [math]::Round($size.spool_bytes / $size.hours, 1)
-    $size.replay_bytes_per_hour = [math]::Round($size.replay_bytes / $size.hours, 1)
+    if ($size.spool_bytes -le 0 -or $size.replay_bytes -le 0) { throw 'Finalization summary reports zero bytes.' }
+    if ($deferred) {
+        if (-not $ready -or $ready.save_ready -ne $true) { throw 'Deferred statistics lack a durable save-ready status.' }
+        # Known evidence hours need not cover the recording: never turn unavailable ratios into zero.
+        $size.summary_scope = 'known evidence; full capture statistics deferred to offline inspection'
+        [IO.File]::WriteAllText((Join-Path $runDir 'tables.json'), '[]', $utf8)
+    } else {
+        $raw = [int64]0; foreach ($t in $tables) { $raw += $t.raw_bytes }
+        if ($raw -le 0) { throw 'Finalization summary reports zero raw bytes.' }
+        Write-Json (Join-Path $runDir 'tables.json') @($tables)
+        $size.raw_encoded_bytes = $raw
+        $size.raw_bytes_per_hour = [math]::Round($raw / $size.hours, 1)
+        $size.spool_bytes_per_hour = [math]::Round($size.spool_bytes / $size.hours, 1)
+        $size.replay_bytes_per_hour = [math]::Round($size.replay_bytes / $size.hours, 1)
+    }
     $size
 }
 
@@ -1371,7 +1390,7 @@ foreach ($candidate in @($spec.candidates | Where-Object { $_.frozen })) {
         }
     }
     $recorderPeaks = @($screens | ForEach-Object { [math]::Max([double]$_.memory.recorder_private_peak_window, [double]$_.memory.recorder_private_peak_detach) / $mb })
-    [void]$summaryLines.Add(("| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} |" -f $candidate.name, $screens.Count,
+    [void]$summaryLines.Add(("| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} | {13} |" -f $candidate.name, $screens.Count,
         (Format-Interval (Get-Interval $slowdowns) '{0:n2}'), (Format-Interval (Get-Interval $extras) '{0:n2}'),
         (Format-Interval (Get-Interval @($screens | ForEach-Object { $_.exact.callback_p95_ms })) '{0:n2}'),
         (Format-Interval (Get-Interval $peakDeltas) '{0:n0}'), (Format-Interval (Get-Interval $endDeltas) '{0:n0}'),
@@ -1379,7 +1398,8 @@ foreach ($candidate in @($spec.candidates | Where-Object { $_.frozen })) {
         (Format-Interval (Get-Interval @($screens | ForEach-Object { $_.size.raw_bytes_per_hour })) '{0:n0}'),
         (Format-Interval (Get-Interval @($screens | ForEach-Object { $_.size.spool_bytes_per_hour })) '{0:n0}'),
         (Format-Interval (Get-Interval @($screens | ForEach-Object { $_.size.replay_bytes_per_hour })) '{0:n0}'),
-        (Format-Interval (Get-Interval @($screens | ForEach-Object { $_.size.finalize_s })) '{0:n2}')))
+        (Format-Interval (Get-Interval @($screens | ForEach-Object { $_.size.finalize_s })) '{0:n2}'),
+        (Format-Interval (Get-Interval @($screens | ForEach-Object { $_.size.stop_to_save_ready_s })) '{0:n2}')))
     # Tables: mean bytes per recorded hour and read times across this candidate's screens.
     $byTable = @{}
     foreach ($r in $screens) {
@@ -1389,6 +1409,7 @@ foreach ($candidate in @($spec.candidates | Where-Object { $_.frozen })) {
             [void]$byTable[$t.table].Add([pscustomobject]@{ per_hour = [double]$t.raw_bytes / [double]$r.size.hours; p95 = [double]$t.read_p95_ms; max = [double]$t.read_max_ms; snapshots = [int64]$t.snapshots; deltas = [int64]$t.deltas; unchanged = [int64]$t.unchanged })
         }
     }
+    if ($byTable.Count -eq 0) { continue }
     $total = 0.0
     $cost = foreach ($key in $byTable.Keys) {
         $samples = $byTable[$key]
@@ -1410,9 +1431,9 @@ foreach ($candidate in @($spec.candidates | Where-Object { $_.frozen })) {
 }
 if ($summaryLines.Count) {
     $md += @('', '## Candidate summary', '',
-        "Mean +/- 95% t interval across passed screens. Slowdown and extra ms pair each screen with the same repeat's no-recorder screens. hoi4.exe private bytes compare with the mean no-recorder screen at the same game hour (peak and end of window). Recorder peak covers the window, drain and finalization. Sizes are per recorded hour.", '',
-        '| candidate | screens | slowdown % | extra ms/game-hour | callback p95 ms | the game private delta peak MB | the game private delta end MB | recorder peak MB | pool max MB | raw B/hour | spool B/hour | replay B/hour | finalize s |',
-        '|---|---|---|---|---|---|---|---|---|---|---|---|---|') + @($summaryLines) + @($costSections)
+        "Mean +/- 95% t interval across passed screens. Slowdown and extra ms pair each screen with the same repeat's no-recorder screens. hoi4.exe private bytes compare with the mean no-recorder screen at the same game hour (peak and end of window). Recorder peak covers the window, drain and finalization. Sizes are per recorded hour when complete evidence exists; blank cells are unavailable, not zero. Stop to ready is the true durable completion timer, not cumulative finalize_s.", '',
+        '| candidate | screens | slowdown % | extra ms/game-hour | callback p95 ms | the game private delta peak MB | the game private delta end MB | recorder peak MB | pool max MB | raw B/hour | spool B/hour | replay B/hour | finalize s | Stop to ready s |',
+        '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|') + @($summaryLines) + @($costSections)
 }
 [IO.File]::WriteAllText((Join-Path $Out 'results.md'), ($md -join "`n") + "`n", $utf8)
 $md -join "`n"

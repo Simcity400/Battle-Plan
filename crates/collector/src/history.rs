@@ -14,7 +14,9 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+};
 
 struct Prepared {
     campaign_id: Vec<u8>,
@@ -149,15 +151,18 @@ impl PreparedCampaigns {
     }
 
     fn read(path: &Path, name: &str, session: &SessionStart) -> io::Result<Prepared> {
-        // Held until detach, except while the recorder saves this campaign.
-        let mut lease = lease(path)?;
+        // Freeze the initial copy; the callback subsequently uses only the resident snapshot.
+        let mut snapshot = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)?;
         let mut bytes = Vec::new();
         let length =
-            usize::try_from(lease.metadata()?.len()).map_err(|_| engine_allocation::oom())?;
+            usize::try_from(snapshot.metadata()?.len()).map_err(|_| engine_allocation::oom())?;
         engine_allocation::reserve_exact(&mut bytes, length)?;
         let mut chunk = [0_u8; 8192];
         loop {
-            let count = match lease.read(&mut chunk) {
+            let count = match snapshot.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(count) => count,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -166,6 +171,8 @@ impl PreparedCampaigns {
             engine_allocation::reserve(&mut bytes, count)?;
             bytes.extend_from_slice(&chunk[..count]);
         }
+        let lease = lease(path)?;
+        drop(snapshot);
         let replay = Replay::open(bytes)?;
         if replay.format != FormatVersion::CURRENT {
             return Err(invalid(format!(
@@ -346,11 +353,11 @@ fn recordings(folder: &Path) -> io::Result<Vec<(String, PathBuf)>> {
     Ok(paths)
 }
 
-/// Readers remain allowed; no one may change the history beneath the collector.
+/// The collector owns a resident history snapshot; append and rollback never change that snapshot.
 pub(crate) fn lease(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .read(true)
-        .share_mode(FILE_SHARE_READ)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .open(path)
 }
 

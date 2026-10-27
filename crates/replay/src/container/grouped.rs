@@ -1771,6 +1771,10 @@ fn put_keyframe(
 }
 
 impl BlockWriter {
+    pub(crate) fn work_bytes(&self) -> u64 {
+        self.headers as u64 + self.plain.iter().map(|bytes| *bytes as u64).sum::<u64>()
+    }
+
     pub(crate) fn new(frame: &Frame) -> io::Result<Self> {
         #[cfg(test)]
         let layout = WRITTEN_LAYOUT.get();
@@ -2172,6 +2176,27 @@ pub(crate) struct Compressing {
 }
 
 impl Compressing {
+    pub(crate) fn work_bytes(&self) -> u64 {
+        if self.sections.is_empty() {
+            self.block
+                .plain
+                .iter()
+                .zip(&self.chosen)
+                .filter(|(_, chosen)| chosen.is_none())
+                .map(|(bytes, _)| *bytes as u64)
+                .sum()
+        } else {
+            self.unstored
+                .iter()
+                .map(|at| self.sections[*at].2.len() as u64)
+                .sum()
+        }
+    }
+
+    pub(crate) fn raw_bytes(&self) -> u64 {
+        self.block.work_bytes()
+    }
+
     pub(crate) fn new(block: BlockWriter) -> Self {
         let chosen = block.tables.iter().map(|_| None).collect();
         Self {

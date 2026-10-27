@@ -30,6 +30,39 @@ pub fn background_thread() {
     enter_background_mode();
 }
 
+/// Leave background CPU, I/O and memory mode on the calling worker only.
+pub fn foreground_thread() {
+    let _ = worker(false);
+}
+
+pub fn is_background_thread() -> bool {
+    BACKGROUND.get()
+}
+
+/// Apply a promotable recorder job without claiming a refused mode transition succeeded.
+pub fn worker(background: bool) -> std::io::Result<()> {
+    if BACKGROUND.get() == background {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
+            THREAD_MODE_BACKGROUND_END,
+        };
+        let mode = if background {
+            THREAD_MODE_BACKGROUND_BEGIN
+        } else {
+            THREAD_MODE_BACKGROUND_END
+        };
+        if SetThreadPriority(GetCurrentThread(), mode) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    BACKGROUND.set(background);
+    Ok(())
+}
+
 fn enter_background_mode() {
     #[cfg(windows)]
     unsafe {
@@ -273,6 +306,18 @@ mod tests {
             background.store(false, Ordering::Release);
             assert_eq!(started_at(&job, Level::Normal), THREAD_PRIORITY_NORMAL);
         });
+    }
+
+    #[test]
+    fn a_persistent_recorder_worker_leaves_and_reenters_background_mode() {
+        std::thread::spawn(|| {
+            for requested in [true, false, true, false] {
+                worker(requested).unwrap();
+                assert_eq!(BACKGROUND.get(), requested);
+            }
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

@@ -355,16 +355,12 @@ fn finalized_ahead(
         }
     }
     assert!(ahead.continues(&[(0, kept[0].1.records.as_slice())]));
-    // The sequential writer writes every frame again; the parallel one only those not written ahead.
+    // Stop takes over the same encoder even when only one CPU credit is available.
     let frames = records
         .iter()
         .filter(|record| matches!(record, Record::Frame(_)))
         .count();
-    let written = if workers > 1 {
-        frames - ahead.written()
-    } else {
-        frames
-    };
+    let written = frames - ahead.written();
     pack::WORKERS.set(Some(workers));
     let mut observe = |hour: &Observed| {
         hours.push((hour.hour, hour.sizes, hour.updates));
@@ -974,4 +970,132 @@ fn hours_observed_ahead_and_after_match_a_full_scan() {
             assert_eq!(hours, expected, "{steps:?} {workers} workers");
         }
     }
+}
+
+#[test]
+fn retained_stop_does_not_restore_any_encoded_frame_twice_even_on_one_core() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let records = scaled_records(1_500, 2, 3);
+    let segments = [(
+        0,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records,
+            valid_bytes: 0,
+            damage: None,
+        },
+    )];
+    let metadata = kept(&segments);
+    let reads: Vec<_> = segments[0]
+        .1
+        .records
+        .iter()
+        .map(|_| AtomicUsize::new(0))
+        .collect();
+    let read = |number, frame: &crate::spool::FrameMetadata| {
+        assert_eq!(
+            reads[frame.placement.offset].fetch_add(1, Ordering::Relaxed),
+            0
+        );
+        restore(&segments, number, frame)
+    };
+    let mut ahead = Ahead::new(None).unwrap();
+    ahead
+        .advance(
+            CAMPAIGN,
+            &[(0, &metadata[0].1.records[..6])],
+            read,
+            |_| Ok(()),
+            &|| false,
+        )
+        .unwrap();
+    pack::WORKERS.set(Some(1));
+    let result = Replay::from_recovered_with_reader(
+        CAMPAIGN.into(),
+        &metadata,
+        read,
+        || Ok(()),
+        |_| Ok(()),
+        Some(ahead),
+    );
+    pack::WORKERS.set(None);
+    let result = result.unwrap();
+    assert_eq!(result.index.len(), 2);
+    for (record, count) in segments[0].1.records.iter().zip(reads) {
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            usize::from(matches!(record, Record::Frame(_)))
+        );
+    }
+}
+
+#[test]
+fn retained_raw_size_splits_match_sequential_bytes_without_restoring_frames_twice() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let records = scaled_records(50, 3, 5);
+    let largest = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::Frame(frame) => {
+                Some(*frame.table_encoded_sizes().unwrap().iter().max().unwrap())
+            }
+            _ => None,
+        })
+        .max()
+        .unwrap();
+    let limit = largest + largest / 2;
+    let expected = packed_on(1, &records, &mut |_| Ok(()), limit).unwrap();
+    let segments = [(
+        0,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records,
+            valid_bytes: 0,
+            damage: None,
+        },
+    )];
+    let metadata = kept(&segments);
+    let reads: Vec<_> = segments[0]
+        .1
+        .records
+        .iter()
+        .map(|_| AtomicUsize::new(0))
+        .collect();
+    let read = |number, frame: &crate::spool::FrameMetadata| {
+        assert_eq!(
+            reads[frame.placement.offset].fetch_add(1, Ordering::Relaxed),
+            0
+        );
+        restore(&segments, number, frame)
+    };
+    let mut ahead = Ahead::new(None).unwrap();
+    ahead.limit_for_test(limit);
+    let mut observed = Vec::new();
+    ahead
+        .advance(
+            CAMPAIGN,
+            &[(0, &metadata[0].1.records[..7])],
+            read,
+            |hour| {
+                observed.push(seen(hour));
+                Ok(())
+            },
+            &|| false,
+        )
+        .unwrap();
+    let result = Replay::from_recovered_with_reader(
+        CAMPAIGN.into(),
+        &metadata,
+        read,
+        || Ok(()),
+        |hour| {
+            observed.push(seen(hour));
+            Ok(())
+        },
+        Some(ahead),
+    )
+    .unwrap();
+    assert!(result.index.len() > 3);
+    assert_eq!(result.bytes(), expected.bytes());
+    assert_eq!(observed, scanned(&[&segments[0].1.records]));
 }

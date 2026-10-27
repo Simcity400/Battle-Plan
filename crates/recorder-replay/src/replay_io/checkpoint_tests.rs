@@ -2198,7 +2198,7 @@ fn one_campaigns_cleanup_error_does_not_stop_the_other_campaigns() {
 }
 
 #[test]
-fn record_once_prints_one_complete_timed_summary_after_multiple_checkpoints() {
+fn record_once_reports_known_counts_without_sorting_the_campaign_at_stop() {
     for context_only in [false, true] {
         let fixture = Fixture::new(&format!("checkpoint-once-summary-{context_only}"));
         begin_admissions(&fixture.session, &fixture.output).unwrap();
@@ -2282,7 +2282,7 @@ fn record_once_prints_one_complete_timed_summary_after_multiple_checkpoints() {
                 .iter()
                 .filter(|line| line.starts_with("table raw_encoded_bytes "))
                 .count(),
-            1
+            0
         );
         let finalization = lines
             .iter()
@@ -2298,7 +2298,7 @@ fn record_once_prints_one_complete_timed_summary_after_multiple_checkpoints() {
             "{finalization}"
         );
         let mut expected_text = Vec::new();
-        expected.write(spool_bytes, &mut expected_text).unwrap();
+        expected.write_known(&mut expected_text).unwrap();
         let expected_text = String::from_utf8(expected_text).unwrap();
         assert!(
             output.ends_with(&expected_text),
@@ -2314,46 +2314,28 @@ fn record_once_prints_one_complete_timed_summary_after_multiple_checkpoints() {
 }
 
 #[test]
-fn final_summary_includes_checkpointed_hours_when_live_statistics_are_unavailable() {
+fn final_summary_never_redecodes_retired_history_for_missing_statistics() {
     let fixture = Fixture::new("checkpoint-recovered-summary");
     let campaign = fixture.campaign(&fixture.session);
-    for path in [
-        write_load_segment(&campaign, 0, 9, 2..=4, 19),
-        write_load_segment(&campaign, 1, 10, 5..=6, 21),
-    ] {
-        let mut records = replay::spool::recover_prefix(&fs::read(&path).unwrap()).records;
-        for record in &mut records {
-            if let Record::Frame(frame) = record {
-                frame.metrics.table_ns.fill(1_000_000);
-            }
-        }
-        fs::write(
-            &path,
-            records
-                .iter()
-                .flat_map(|record| replay::spool::encode_record(record).unwrap())
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
-    }
+    write_load_segment(&campaign, 0, 9, 2..=4, 19);
+    write_load_segment(&campaign, 1, 10, 5..=6, 21);
     let checkpoint = fixture.checkpoint(0, true, &mut Ahead::default());
     assert_eq!(checkpoint.deleted, 1);
+    let _capture = OutputCapture::new();
     let saved = finalize_session(&fixture.session, &fixture.output)
         .unwrap()
         .remove(0);
-    let replay = Replay::open_path(&saved).unwrap();
+    assert_eq!(recorded_frames(&saved).len(), 5);
+    let output = FINALIZATION_OUTPUT.with_borrow(|output| output.as_ref().unwrap().concat());
+    assert!(output.contains("hours=2 "), "{output}");
+    assert!(!output.contains("hours=5 "), "{output}");
     let mut report = FinalizationReport::default();
-    report.complete(&replay, &|| Ok(())).unwrap();
-    assert_eq!(report.summary.totals.len(), 5);
+    let unknown = report.text(0).unwrap();
+    assert!(unknown.contains("finalize_s=not_observed"));
+    assert!(unknown.contains("total_p50_ms=not_observed"));
     assert_eq!(
         report.summary.read_times(TableId::Clock),
         "not_recorded not_recorded not_recorded"
-    );
-    assert!(
-        report
-            .text(replay.saved_length())
-            .unwrap()
-            .contains("hours=5 ")
     );
 }
 
@@ -2440,17 +2422,20 @@ fn restarted_finalization_counts_checkpointed_and_pending_spool_segments_once() 
                 headers[0].ends_with(&format!("spool_bytes={bytes}")),
                 "{output}"
             );
+            let known_hours = if repeat {
+                0
+            } else if live_checkpoint_after_restart {
+                4
+            } else {
+                2
+            };
             assert!(
                 output
                     .lines()
-                    .any(|line| line.starts_with(&format!("hours={hours} "))),
+                    .any(|line| line.starts_with(&format!("hours={known_hours} "))),
                 "{output}"
             );
-            assert!(
-                output.lines().any(|line| line
-                    == format!("spool_bytes_per_hour={:.3}", bytes as f64 / hours as f64)),
-                "{output}"
-            );
+            assert!(!output.contains("spool_bytes_per_hour="), "{output}");
         }
     }
 }
@@ -2499,7 +2484,7 @@ fn an_ended_checkpoint_without_spools_still_finalizes_and_reports_its_saved_byte
             "{output}"
         );
         assert!(
-            output.lines().any(|line| line.starts_with("hours=3 ")),
+            output.lines().any(|line| line.starts_with("hours=0 ")),
             "{output}"
         );
     }
@@ -2544,5 +2529,204 @@ fn an_unverifiable_saved_only_revision_is_refused_even_with_terminal_ranges() {
         assert_eq!(fs::read(&checkpoint.recording).unwrap(), bytes);
         assert_eq!(fs::read(campaign.join(SAVED_FILE)).unwrap(), bookkeeping);
         assert!(segment_paths(&campaign).unwrap().is_empty());
+    }
+}
+
+fn continuous_fixture(fixture: &Fixture) -> (PathBuf, PathBuf, Ahead) {
+    let campaign = fixture.campaign(&fixture.session);
+    fs::create_dir_all(&campaign).unwrap();
+    let records = super::tests::long_finalization_records(Some(12));
+    let split = records
+        .iter()
+        .position(|record| matches!(record, Record::Frame(frame) if frame.hour == 12))
+        .unwrap();
+    let first = campaign.join("spool.0000.h4s");
+    let second = campaign.join("spool.0001.h4s");
+    let encode = |records: &[Record]| {
+        records
+            .iter()
+            .flat_map(|record| replay::spool::encode_record(record).unwrap())
+            .collect::<Vec<_>>()
+    };
+    fs::write(&first, encode(&records[..split])).unwrap();
+    let mut later = records[..2].to_vec();
+    later.extend_from_slice(&records[split..]);
+    fs::write(&second, encode(&later)).unwrap();
+    let mut ahead = Ahead::default();
+    ahead.read(&fixture.session, &fixture.output).unwrap();
+    ahead
+        .write(&fixture.session, &fixture.output, &|| false)
+        .unwrap();
+    assert_eq!(ahead.hours(), 10);
+    assert_eq!(ahead.written(), 20);
+    (first, second, ahead)
+}
+
+#[test]
+fn natural_commit_keeps_the_open_encoder_and_stop_observes_each_hour_once() {
+    let fixture = Fixture::new("continuous-retained-stop");
+    let (first, second, mut ahead) = continuous_fixture(&fixture);
+    let campaign = fixture.campaign(&fixture.session);
+    assert_eq!(ahead.completed_through(&campaign), Some(0));
+    let written = ahead.campaigns[&campaign]
+        .written
+        .as_ref()
+        .unwrap()
+        .0
+        .written();
+    let done = fixture.checkpoint(0, true, &mut ahead);
+    assert_eq!(done.hours, 10);
+    assert!(!first.exists());
+    assert!(second.exists());
+    let retained = &ahead.campaigns[&campaign].written.as_ref().unwrap().0;
+    assert_eq!(retained.written(), written - 10);
+    assert_eq!(retained.hours(), 0);
+    assert!(
+        retained
+            .existing()
+            .unwrap()
+            .same_revision(&held_recording(&done.recording).unwrap())
+    );
+    let saved = read_saved(&campaign).unwrap();
+    assert_eq!(
+        saved.revision,
+        held_recording(&done.recording).unwrap().revision()
+    );
+    assert_eq!(saved.segments.keys().copied().collect::<Vec<_>>(), [0]);
+    let done = finalize_session_ahead(
+        &fixture.session,
+        &fixture.output,
+        &|| Ok(()),
+        ahead,
+        fixture.naming(),
+        &|_| Destination::Recording,
+    )
+    .unwrap();
+    assert!(done.errors.is_empty(), "{:?}", done.errors);
+    assert_eq!(
+        recorded_frames(&done.replays[0]),
+        (2..=21).map(|hour| (9, hour)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn continuous_commits_crashed_at_each_barrier_recover_without_losing_saved_hours() {
+    for existing in [false, true] {
+        for step in [
+            CheckpointStep::Preparing,
+            CheckpointStep::Prepared,
+            CheckpointStep::Written,
+            CheckpointStep::Verified,
+            CheckpointStep::Journaled,
+            CheckpointStep::Watermarked,
+            CheckpointStep::Handed,
+            CheckpointStep::Trimmed,
+        ] {
+            let fixture = Fixture::new(&format!("continuous-crash-{existing}-{step:?}"));
+            let original = existing.then(|| waiting_copy(&fixture));
+            let (first, _, mut ahead) = continuous_fixture(&fixture);
+            let source = fs::read(&first).unwrap();
+            let hook = StepHook::fail(step);
+            assert!(
+                checkpoint_campaign(
+                    &fixture.session,
+                    &fixture.output,
+                    Fixture::name(),
+                    0,
+                    false,
+                    &mut ahead,
+                    fixture.naming(),
+                    &|| Ok(())
+                )
+                .is_err()
+            );
+            drop(hook);
+            drop(ahead);
+            if first.exists() {
+                assert_eq!(fs::read(&first).unwrap(), source);
+            }
+            let paths = finalize_session(&fixture.session, &fixture.output).unwrap();
+            let saved = held_recording(&paths[0]).unwrap();
+            if let Some(original) = original {
+                assert!(
+                    saved
+                        .contains_revision(Replay::open(original).unwrap().revision())
+                        .unwrap()
+                );
+            }
+            let expected: Vec<_> = existing
+                .then_some((8, 1))
+                .into_iter()
+                .chain((2..=21).map(|hour| (9, hour)))
+                .collect();
+            assert_eq!(recorded_frames(&paths[0]), expected);
+        }
+    }
+}
+
+#[test]
+fn a_wrong_revision_watermark_cannot_retire_a_continuously_packed_segment() {
+    let fixture = Fixture::new("continuous-stale-watermark");
+    let (first, _, mut ahead) = continuous_fixture(&fixture);
+    let done = fixture.checkpoint(0, true, &mut ahead);
+    let campaign = fixture.campaign(&fixture.session);
+    let bytes = replay::spool::encode_record(&allocation_records()[0]).unwrap();
+    fs::write(&first, &bytes).unwrap();
+    let mut saved = read_saved(&campaign).unwrap();
+    saved.revision.crc ^= 1;
+    saved.segments.insert(0, bytes.len() as u64);
+    write_saved(&campaign, &saved).unwrap();
+    assert_eq!(drop_checkpointed(&campaign).unwrap(), 0);
+    assert!(first.exists());
+    assert_eq!(recorded_frames(&done.recording).len(), 10);
+}
+
+#[test]
+fn stop_after_an_interrupted_live_commit_keeps_the_open_encoder() {
+    for step in [
+        CheckpointStep::Preparing,
+        CheckpointStep::Written,
+        CheckpointStep::Verified,
+        CheckpointStep::Journaled,
+        CheckpointStep::Watermarked,
+        CheckpointStep::Handed,
+        CheckpointStep::Trimmed,
+    ] {
+        let fixture = Fixture::new(&format!("continuous-stop-error-{step:?}"));
+        let (_, _, mut ahead) = continuous_fixture(&fixture);
+        let campaign = fixture.campaign(&fixture.session);
+        let hook = StepHook::fail(step);
+        assert!(
+            checkpoint_campaign(
+                &fixture.session,
+                &fixture.output,
+                Fixture::name(),
+                0,
+                false,
+                &mut ahead,
+                fixture.naming(),
+                &|| Ok(())
+            )
+            .is_err()
+        );
+        drop(hook);
+        let retained = &ahead.campaigns[&campaign];
+        assert!(!retained.stopped);
+        assert!(retained.written.is_some());
+        assert!(retained.written.as_ref().unwrap().0.written() >= 10);
+        let done = finalize_session_ahead(
+            &fixture.session,
+            &fixture.output,
+            &|| Ok(()),
+            ahead,
+            fixture.naming(),
+            &|_| Destination::Recording,
+        )
+        .unwrap();
+        assert!(done.errors.is_empty(), "{step:?}: {:?}", done.errors);
+        assert_eq!(
+            recorded_frames(&done.replays[0]),
+            (2..=21).map(|hour| (9, hour)).collect::<Vec<_>>()
+        );
     }
 }

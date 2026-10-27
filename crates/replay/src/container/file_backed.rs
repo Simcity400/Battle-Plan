@@ -65,7 +65,9 @@ impl Replay {
     }
 
     pub(super) fn open_file_metadata(file: &mut (impl Read + Seek)) -> io::Result<Self> {
-        let mut replay = Self::open_metadata(commit::locate(&mut commit::Seeking(file))?)?;
+        let mut replay = Self::open_metadata(commit::locate(&mut commit::Seeking(
+            &mut Budgeted::new(file),
+        ))?)?;
         replay.held_length = replay.revision.end;
         Ok(replay)
     }
@@ -216,11 +218,11 @@ impl Replay {
                         bytes.set(Some(total + output.len() as u64));
                     }
                 });
-                PositionalReader {
+                Budgeted::new(PositionalReader {
                     file,
                     offset,
                     remaining: output.len() as u64,
-                }
+                })
                 .read_exact(output)
             }
             None => {

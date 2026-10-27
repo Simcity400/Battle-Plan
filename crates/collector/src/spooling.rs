@@ -1465,7 +1465,10 @@ impl<B: SegmentBackend> Campaign<B> {
         work.frame_encoding = Some(current_qpc() - encoding_started);
         let mut prepared = frame?;
         let span = span.switch(crate::spool_phases::Phase::Write);
-        let mut context = self.context(restarting, 2)?;
+        let encoded = prepared.take_frame();
+        // Rotate only at an already encoded keyframe; never reset the capture encoder for packing.
+        let rotate = restarting || encoded.keyframe();
+        let mut context = self.context(rotate, 2)?;
         if unknown != 0 {
             context.push(Record::Control(ControlRecord::GapSummary {
                 session: self.session.id,
@@ -1481,7 +1484,6 @@ impl<B: SegmentBackend> Campaign<B> {
             hour,
             load_signal: signal,
         }));
-        let encoded = prepared.take_frame();
         let queued = self.spool.is_queued();
         #[cfg(test)]
         crate::allocation_failure_tests::before_spool_publication();
@@ -1493,11 +1495,10 @@ impl<B: SegmentBackend> Campaign<B> {
             self.commit_baseline(prepared)?;
             set_viewed(&mut work.viewed, viewed_flag(&self.encoder))?;
             work.staged = Some(crate::spool_writer::Output::<B>::stage_frame(
-                context, encoded, restarting,
+                context, encoded, rotate,
             )?);
         } else {
-            let staged =
-                crate::spool_writer::Output::<B>::stage_frame(context, encoded, restarting)?;
+            let staged = crate::spool_writer::Output::<B>::stage_frame(context, encoded, rotate)?;
             self.spool.write_frame(staged, 0)?;
             if crate::allocation::failed() {
                 return Err(io::ErrorKind::OutOfMemory.into());
@@ -8912,6 +8913,19 @@ mod tests {
             }
         }
         assert_eq!(keyframes, [0, 720]);
+        let counts: Vec<_> = store
+            .borrow()
+            .segments
+            .values()
+            .map(|bytes| {
+                recover_prefix(bytes)
+                    .records
+                    .iter()
+                    .filter(|record| matches!(record, Record::Frame(_)))
+                    .count()
+            })
+            .collect();
+        assert_eq!(counts, [720, 26]);
     }
 
     fn frames_of(store: &Rc<RefCell<Store>>) -> Vec<replay_frame::frame::Frame> {

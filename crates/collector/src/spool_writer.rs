@@ -849,6 +849,7 @@ impl<B: SegmentBackend> Output<B> {
         match self {
             Self::Direct(spool) => {
                 if restarting {
+                    spool.finish_segment()?;
                     spool.start_sealed_segment(records)
                 } else {
                     records

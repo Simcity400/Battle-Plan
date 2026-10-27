@@ -515,6 +515,7 @@ impl Replay {
         prepare: impl FnOnce(Revision) -> io::Result<()>,
         mutated: &mut bool,
     ) -> io::Result<()> {
+        let _phase = Packing::phase(Phase::Write);
         let slot = self.slot.unwrap() as u64;
         let before = self.revision;
         let previous = Some((before.trailer, before.length));
@@ -549,7 +550,7 @@ impl Replay {
             *mutated = true;
             self.cut_to(before)?;
         }
-        let file = self.file.as_mut().unwrap();
+        let mut file = Budgeted::new(self.file.as_mut().unwrap());
         // A crash from here on reopens the recording as the save the slot names.
         let mut named = [0; SLOT_SIZE];
         file.seek(SeekFrom::Start(slot))?;
@@ -558,7 +559,7 @@ impl Replay {
             *mutated = true;
             file.seek(SeekFrom::Start(slot))?;
             file.write_all(&before.slot())?;
-            file.sync_data()?;
+            file.get_ref().sync_data()?;
         }
         file.seek(SeekFrom::Start(before.end))?;
         *mutated = true;
@@ -567,17 +568,18 @@ impl Replay {
         }
         let (body, footer) = trailer.split_at(trailer.len() - FOOTER_SIZE);
         file.write_all(body)?;
-        file.sync_data()?;
+        file.get_ref().sync_data()?;
         // The footer at the end commits the save.
         file.write_all(footer)?;
-        file.sync_data()?;
+        file.get_ref().sync_data()?;
         file.seek(SeekFrom::Start(slot))?;
         file.write_all(&revision.slot())?;
-        file.sync_data()
+        file.get_ref().sync_data()
     }
 
     /// Reopen the save just written and read every block it added back whole.
     fn reread(&mut self, before: Revision) -> io::Result<()> {
+        let _phase = Packing::phase(Phase::Readback);
         let mut file = self.file.take().unwrap();
         let reopened = Self::open_file_metadata(&mut file);
         self.file = Some(file);
@@ -602,7 +604,13 @@ impl Replay {
         let added = self.index.len();
         *self = reopened;
         for block in self.index[added..].to_vec() {
-            self.read_block(&block)?;
+            self.read_block_parallel(
+                &block,
+                &Parallel {
+                    workers: pack::workers(),
+                    on_worker: &pack::refresh,
+                },
+            )?;
         }
         Ok(())
     }
@@ -639,7 +647,7 @@ impl Replay {
                 use std::os::windows::fs::OpenOptionsExt;
                 options.share_mode(0);
             }
-            let mut output = options.open(&temporary)?;
+            let mut output = Budgeted::new(options.open(&temporary)?);
             let mut chunk = engine_allocation::filled(1 << 20, 0)?;
             let mut at = 0;
             while at < revision.end {
@@ -652,7 +660,7 @@ impl Replay {
                 output.seek(SeekFrom::Start(slot as u64))?;
                 output.write_all(&revision.slot())?;
             }
-            output.sync_all()?;
+            output.get_ref().sync_all()?;
             drop(output);
             let checked = Self::open_path(&temporary)?;
             checked.require_undamaged()?;
@@ -694,7 +702,7 @@ impl Replay {
 
     /// Copy the recording's complete saves to a new file at `path`, flushed.
     pub fn copy_saved(&self, path: &Path) -> io::Result<()> {
-        let mut output = OpenOptions::new().write(true).create_new(true).open(path)?;
+        let mut output = Budgeted::new(OpenOptions::new().write(true).create_new(true).open(path)?);
         let copied = (|| {
             let mut chunk = engine_allocation::filled(1 << 20, 0)?;
             let mut at = 0;
@@ -704,7 +712,7 @@ impl Replay {
                 output.write_all(&chunk[..length])?;
                 at += length as u64;
             }
-            output.sync_all()
+            output.get_ref().sync_all()
         })();
         if copied.is_err() {
             drop(output);

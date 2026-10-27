@@ -125,17 +125,17 @@ struct RenamePublisher<'a> {
 }
 
 impl AtomicPublisher for RenamePublisher<'_> {
-    type Writer = File;
+    type Writer = <FilePublisher as AtomicPublisher>::Writer;
 
-    fn create(&mut self) -> io::Result<File> {
+    fn create(&mut self) -> io::Result<Self::Writer> {
         self.inner.create()
     }
 
-    fn sync(&mut self, writer: &mut File) -> io::Result<()> {
+    fn sync(&mut self, writer: &mut Self::Writer) -> io::Result<()> {
         self.inner.sync(writer)
     }
 
-    fn replace(&mut self, writer: File) -> io::Result<()> {
+    fn replace(&mut self, writer: Self::Writer) -> io::Result<()> {
         drop(writer);
         replace_file_with(
             &self.inner.temporary,
