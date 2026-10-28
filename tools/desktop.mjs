@@ -62,7 +62,8 @@ const explicitProfile = flagValue(cargoArgs, "--profile");
 const release = mode === "build"
   ? !(cliArgs.includes("--debug") || cliArgs.includes("-d"))
   : cliArgs.includes("--release") || cargoArgs.includes("--release") || cargoArgs.includes("-r");
-const profile = explicitProfile ?? (release ? "release" : "dev");
+// A shipped build inlines across crates (Cargo.toml's release-lto profile).
+const profile = explicitProfile ?? (mode === "build" && release ? "release-lto" : release ? "release" : "dev");
 const target = flagValue(cliArgs, "--target", "-t") ?? flagValue(cargoArgs, "--target");
 const targetArgs = target === undefined ? [] : ["--target", target];
 // Cargo resolves relative target directories from cwd, which differs between these builds.
@@ -74,7 +75,7 @@ if (targetDir === "" || (targetDir === undefined && cargoArgs.includes("--target
 }
 const targetDirArgs = targetDir === undefined ? [] : ["--target-dir", path.resolve(root, targetDir)];
 // Tauri leaves out its own `--release` only for a separate `--profile` argument.
-const forwardedCargoArgs = [];
+const forwardedCargoArgs = explicitProfile === undefined && profile === "release-lto" ? ["--profile", profile] : [];
 for (let index = 0; index < cargoArgs.length; index++) {
   const arg = cargoArgs[index];
   if (arg.startsWith("--profile=")) forwardedCargoArgs.push("--profile", arg.slice("--profile=".length));
@@ -108,7 +109,7 @@ try {
   } });
   // Keep both separators and use the same profile for the host and viewer.
   const args = mode === "build"
-    ? ["--no-bundle", ...cliArgs, ...(separator < 0 ? [] : ["--", ...forwardedRunnerArgs])]
+    ? ["--no-bundle", ...cliArgs, ...(separator < 0 && forwardedRunnerArgs.length === 0 ? [] : ["--", ...forwardedRunnerArgs])]
     : [...cliArgs, "--", ...forwardedRunnerArgs];
   await run(process.execPath, [cli, mode, "--config", hooks, ...args], path.join(root, "crates", "desktop"));
   if (mode === "build") {

@@ -10,7 +10,8 @@ including chained fragments. A function is attributed by its own start address,
 never by the nearest preceding symbol. Names come from the PDB's procedure records
 when it has debug information, otherwise from its publics; functions with neither
 show as `<0xADDRESS>`. A `--release` build names the roots; for every name, build
-the same code with `--config profile.release.package.collector.debug=2`.
+the same code with `--config profile.release.package.collector.debug=2`. A
+`--profile release-lto` build keeps the collector's line tables, which name its functions.
 
 --check follows direct calls and tail jumps from each root (GAME_THREAD_ROOTS: the
 hourly hook, which runs acquisition on the game's main thread). It fails when a
