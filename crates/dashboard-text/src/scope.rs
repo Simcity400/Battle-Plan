@@ -280,6 +280,13 @@ impl Query {
             Query::Describe(Target::State(_) | Target::Character(_)) => Vec::new(),
             Query::ResolveTag(_) => Self::tag_dependence(),
             Query::Resolve(ScopeKey(Scope::Country(_)), _) => Self::tag_dependence(),
+            // Every appearance row's overlord resolves through the links;
+            // refusals name the scoped country by its tag.
+            Query::Resolve(ScopeKey(Scope::Keyword(Keyword::Overlord)), _) => vec![
+                TableRead::fields(TableId::CountryAppearance, &["overlord"]),
+                TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
+                tags(),
+            ],
             _ => return None,
         })
     }

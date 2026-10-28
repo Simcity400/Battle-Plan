@@ -59,7 +59,8 @@ use replay::container::Replay;
 use replay_data::{
     format::FormatVersion, rows::CharacterPortraitRow, rows::CharacterRow,
     rows::LandCombatDetailsRow, rows::NavalCombatDetailsRow, rows::Recorded, rows::TableId,
-    rows::UnitLeaderRow, rows::UnitLeaderTraitRow, rows::full_mask, rows::tables,
+    rows::UnitLeaderRow, rows::UnitLeaderTraitExperienceRow, rows::UnitLeaderTraitRow,
+    rows::full_mask, rows::tables,
 };
 use replay_frame::{
     frame::DecodedFrame, frame::FrameDecoder, frame::SharedView, frame::ViewIdentity,
@@ -1151,6 +1152,17 @@ fn content_loads() -> usize {
     CONTENT_LOADS.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
+thread_local! {
+    static PROGRESS_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The leader progress values this thread built rather than carried.
+#[cfg(test)]
+fn progress_builds() -> usize {
+    PROGRESS_BUILDS.with(std::cell::Cell::get)
+}
+
 impl Content {
     pub fn for_catalogue(
         source: &Source,
@@ -1293,6 +1305,10 @@ struct LastRead {
     owner_epoch: u64,
     trait_epoch: u64,
     holder: Option<(u32, u32)>,
+    /// The scan's progress epochs at this read, and the leader's training
+    /// rows then (None while their table is incomplete).
+    progress_epochs: [u64; 2],
+    training: Option<Vec<UnitLeaderTraitExperienceRow>>,
 }
 
 /// The identity table rows an hour changed, each table's keys sorted, when
@@ -1499,6 +1515,16 @@ fn append_stored_run(
     }
 }
 
+/// The training rows of the leader `reference`, which lead their key.
+fn training_rows(
+    rows: &[UnitLeaderTraitExperienceRow],
+    reference: u64,
+) -> &[UnitLeaderTraitExperienceRow] {
+    let first = rows.partition_point(|p| p.leader_reference < reference);
+    let last = rows.partition_point(|p| p.leader_reference <= reference);
+    &rows[first..last]
+}
+
 fn trait_slice<'a>(
     rows: &'a [UnitLeaderTraitRow],
     reference: u64,
@@ -1655,6 +1681,12 @@ pub(crate) struct Scan {
     trait_table: Option<(ViewIdentity, bool)>,
     #[serde(skip)]
     trait_epoch: u64,
+    /// The training rows' and the tokens' views at the last read, and how
+    /// often each changed at the hours read, as `identity_epoch` counts.
+    #[serde(skip)]
+    progress_tables: Option<[ViewIdentity; 2]>,
+    #[serde(skip)]
+    progress_epochs: [u64; 2],
     #[serde(skip)]
     formation_names: HashMap<u64, (Option<Vec<u8>>, Option<String>)>,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
@@ -2458,6 +2490,8 @@ impl Scan {
             owner_epoch,
             trait_table,
             trait_epoch,
+            progress_tables,
+            progress_epochs,
             formation_names,
             roles,
             rank_names,
@@ -2639,6 +2673,17 @@ impl Scan {
             });
         let progress_rows = decoded.complete::<tables::UnitLeaderTraitExperience>().ok();
         let progress_tokens = decoded.complete::<tables::LexicalTokens>().ok();
+        let now_progress = [TableId::UnitLeaderTraitExperience, TableId::LexicalTokens]
+            .map(|t| &decoded.tables[t.index()]);
+        for (at, now) in now_progress.iter().enumerate() {
+            if progress_tables
+                .as_ref()
+                .is_none_or(|last| !last[at].is(now))
+            {
+                progress_epochs[at] += 1;
+            }
+        }
+        *progress_tables = Some(now_progress.map(SharedView::identity));
         let mut trait_cursor = 0;
         let mut complete = true;
         let now_traits = &decoded.tables[TableId::UnitLeaderTraits.index()];
@@ -2890,93 +2935,119 @@ impl Scan {
                 .then_some(traits)
                 .flatten()
                 .map(|ts| trait_slice(ts, reference, &mut trait_cursor));
-            let training = progress_rows.map(|rows| {
-                let start = rows.partition_point(|p| p.leader_reference < reference);
-                rows[start..]
-                    .iter()
-                    .take_while(|p| p.leader_reference == reference)
-                    .filter(|p| p.list == 0)
-                    .map(|p| {
-                        let token = progress_tokens
-                            .and_then(|tokens| {
-                                tokens
-                                    .binary_search_by_key(&(p.token_id as u32), |t| t.token)
+            // Progress is a function of these fields, the leader's training
+            // rows and the tokens naming them: equal to the last read's, it
+            // is the last run's.
+            let progress_same = state.last_run.is_some()
+                && state.last_read.as_ref().is_some_and(|last| {
+                    (
+                        last.row.experience,
+                        last.row.skill_status,
+                        last.row.skill_level,
+                        last.row.category,
+                    ) == (
+                        row.experience,
+                        row.skill_status,
+                        row.skill_level,
+                        row.category,
+                    ) && last.progress_epochs[1] == progress_epochs[1]
+                        && (last.progress_epochs[0] == progress_epochs[0]
+                            || last.training.as_deref()
+                                == progress_rows.map(|rows| training_rows(rows, reference)))
+                });
+            let progress = (!progress_same).then(|| {
+                #[cfg(test)]
+                PROGRESS_BUILDS.with(|builds| builds.set(builds.get() + 1));
+                let training = progress_rows.map(|rows| {
+                    training_rows(rows, reference)
+                        .iter()
+                        .filter(|p| p.list == 0)
+                        .map(|p| {
+                            let token = progress_tokens
+                                .and_then(|tokens| {
+                                    tokens
+                                        .binary_search_by_key(&(p.token_id as u32), |t| t.token)
+                                        .ok()
+                                        .map(|i| &tokens[i])
+                                })
+                                .and_then(|t| {
+                                    std::str::from_utf8(installed_content_core::parser::c_string(
+                                        &t.literal,
+                                    ))
                                     .ok()
-                                    .map(|i| &tokens[i])
-                            })
-                            .and_then(|t| {
-                                std::str::from_utf8(installed_content_core::parser::c_string(&t.literal))
+                                });
+                            if token.is_none() {
+                                refusals.note(
+                                    "Training trait token is unavailable",
+                                    format!("{reference}:{}", p.ordinal),
+                                );
+                            }
+                            let required = token
+                                .and_then(|token| content.and_then(|c| c.leaders.traits.get(token)))
+                                .map(|t| i64::from(t.required_experience()) * 100_000);
+                            LeaderTraining {
+                                token: token.map(str::to_owned),
+                                name: token.and_then(|token| {
+                                    content.and_then(|c| c.catalogue.localised(token, View::Plain))
+                                }),
+                                experience_raw: p.experience.to_string(),
+                                required_raw: required.map(|v| v.to_string()),
+                            }
+                        })
+                        .collect()
+                });
+                let factors = progress_rows.map(|rows| {
+                    training_rows(rows, reference)
+                        .iter()
+                        .filter(|p| p.list == 1)
+                        .map(|p| {
+                            let token = progress_tokens
+                                .and_then(|tokens| {
+                                    tokens
+                                        .binary_search_by_key(&(p.token_id as u32), |t| t.token)
+                                        .ok()
+                                        .map(|i| &tokens[i])
+                                })
+                                .and_then(|t| {
+                                    std::str::from_utf8(installed_content_core::parser::c_string(
+                                        &t.literal,
+                                    ))
                                     .ok()
-                            });
-                        if token.is_none() {
-                            refusals.note(
-                                "Training trait token is unavailable",
-                                format!("{reference}:{}", p.ordinal),
-                            );
-                        }
-                        let required = token
-                            .and_then(|token| content.and_then(|c| c.leaders.traits.get(token)))
-                            .map(|t| i64::from(t.required_experience()) * 100_000);
-                        LeaderTraining {
-                            token: token.map(str::to_owned),
-                            name: token.and_then(|token| {
-                                content.and_then(|c| c.catalogue.localised(token, View::Plain))
-                            }),
-                            experience_raw: p.experience.to_string(),
-                            required_raw: required.map(|v| v.to_string()),
-                        }
-                    })
-                    .collect()
+                                });
+                            if token.is_none() {
+                                refusals.note(
+                                    "Training trait token is unavailable",
+                                    format!("{reference}:{}", p.ordinal),
+                                );
+                            }
+                            LeaderTrainingFactor {
+                                token: token.map(str::to_owned),
+                                name: token.and_then(|token| {
+                                    content.and_then(|c| c.catalogue.localised(token, View::Plain))
+                                }),
+                                factor_raw: p.experience.to_string(),
+                            }
+                        })
+                        .collect()
+                });
+                Some(LeaderProgress {
+                    experience_raw: row.experience.to_string(),
+                    next_required_raw: (row.skill_status != 0)
+                        .then_some(content)
+                        .flatten()
+                        .and_then(|c| {
+                            c.leaders
+                                .skills
+                                .next_required_experience(row.skill_level, row.category)
+                        })
+                        .flatten()
+                        .map(|v| (i64::from(v) * 100_000).to_string()),
+                    training,
+                    factors,
+                })
             });
-            let factors = progress_rows.map(|rows| {
-                let start = rows.partition_point(|p| p.leader_reference < reference);
-                rows[start..]
-                    .iter()
-                    .take_while(|p| p.leader_reference == reference)
-                    .filter(|p| p.list == 1)
-                    .map(|p| {
-                        let token = progress_tokens
-                            .and_then(|tokens| {
-                                tokens
-                                    .binary_search_by_key(&(p.token_id as u32), |t| t.token)
-                                    .ok()
-                                    .map(|i| &tokens[i])
-                            })
-                            .and_then(|t| {
-                                std::str::from_utf8(installed_content_core::parser::c_string(&t.literal))
-                                    .ok()
-                            });
-                        if token.is_none() {
-                            refusals.note(
-                                "Training trait token is unavailable",
-                                format!("{reference}:{}", p.ordinal),
-                            );
-                        }
-                        LeaderTrainingFactor {
-                            token: token.map(str::to_owned),
-                            name: token.and_then(|token| {
-                                content.and_then(|c| c.catalogue.localised(token, View::Plain))
-                            }),
-                            factor_raw: p.experience.to_string(),
-                        }
-                    })
-                    .collect()
-            });
-            let progress = Some(LeaderProgress {
-                experience_raw: row.experience.to_string(),
-                next_required_raw: (row.skill_status != 0)
-                    .then_some(content)
-                    .flatten()
-                    .and_then(|c| {
-                        c.leaders
-                            .skills
-                            .next_required_experience(row.skill_level, row.category)
-                    })
-                    .flatten()
-                    .map(|v| (i64::from(v) * 100_000).to_string()),
-                training,
-                factors,
-            });
+            let training = (!progress_same)
+                .then(|| progress_rows.map(|rows| training_rows(rows, reference).to_vec()));
             let leader = &mut state.career;
             let previous_run = state.last_run.map(|i| &stored_runs[i].run);
             let previous_hour = previous_run.map(|r| r.last_hour);
@@ -3001,7 +3072,11 @@ impl Scan {
                     && last.row.skill_status == row.skill_status
                     && last.row.skill_level == row.skill_level
                     && last.row.components == row.components
-                    && previous_run.is_some_and(|run| run.value.progress == progress)
+                    && previous_run.is_some_and(|run| {
+                        progress
+                            .as_ref()
+                            .is_none_or(|progress| run.value.progress == *progress)
+                    })
                     && traits_unchanged
                     && (owner_unchanged
                         || reply.roles[last.role as usize].owner.as_deref() == owner)
@@ -3022,6 +3097,10 @@ impl Scan {
                 read.owner_epoch = *owner_epoch;
                 read.trait_epoch = *trait_epoch;
                 read.holder = holder;
+                read.progress_epochs = *progress_epochs;
+                if let Some(training) = training {
+                    read.training = training;
+                }
                 if admission_changed {
                     admit(reference, &reply.roles[read.role as usize], holder);
                 }
@@ -3137,6 +3216,10 @@ impl Scan {
                 last.owner_epoch = *owner_epoch;
                 last.trait_epoch = *trait_epoch;
                 last.holder = holder;
+                last.progress_epochs = *progress_epochs;
+                if let Some(training) = training {
+                    last.training = training;
+                }
             } else {
                 state.last_read = Some(LastRead {
                     row: row.clone(),
@@ -3148,8 +3231,16 @@ impl Scan {
                     owner_epoch: *owner_epoch,
                     trait_epoch: *trait_epoch,
                     holder,
+                    progress_epochs: *progress_epochs,
+                    training: training.unwrap_or_else(|| {
+                        progress_rows.map(|rows| training_rows(rows, reference).to_vec())
+                    }),
                 });
             }
+            let progress = progress.unwrap_or_else(|| {
+                let last = state.last_run.expect("the progress's last run");
+                stored_runs[last].run.value.progress.clone()
+            });
             let value = LeaderValues {
                 person: person_id,
                 role,

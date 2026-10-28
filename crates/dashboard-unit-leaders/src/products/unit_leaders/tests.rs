@@ -2940,3 +2940,115 @@ fn experience_changes_create_visible_runs_and_keep_complete_ordered_training() {
         i64::MAX.to_string()
     );
 }
+
+#[test]
+fn a_leaders_progress_is_built_again_only_when_its_own_inputs_change() {
+    use replay_data::rows::{LexicalTokenRow, TableRows, UnitLeaderTraitExperienceRow};
+    use replay_frame::frame::TableView;
+    let reference = |id: u32| (u64::from(id) << 32) | 4713;
+    // Leader 5's experience and training move every hour; leader 6's never
+    // do. The token naming their training is renamed at 103.
+    let make = |hour: i32| {
+        let mut frame = dashboard_core::test_fixtures::source(1, hour, None);
+        let leader = |id: u32, experience: i64| UnitLeaderRow {
+            id,
+            reference_type: 4713,
+            owner: 11,
+            kind: 1,
+            category: 1,
+            character_id: id + 4,
+            skill_status: 2,
+            skill_level: 3,
+            experience,
+            ..Default::default()
+        };
+        *frame.tables[TableId::UnitLeaders.index()] = TableView::Complete(
+            TableRows::UnitLeaders(vec![leader(5, i64::from(hour)), leader(6, 7)]),
+        );
+        *frame.tables[TableId::UnitLeaderTraits.index()] =
+            TableView::Complete(TableRows::UnitLeaderTraits(Vec::new()));
+        let training = |id: u32, experience: i64| UnitLeaderTraitExperienceRow {
+            leader_reference: reference(id),
+            list: 0,
+            ordinal: 0,
+            token_id: 100,
+            definition_ordinal: 7,
+            experience,
+        };
+        *frame.tables[TableId::UnitLeaderTraitExperience.index()] =
+            TableView::Complete(TableRows::UnitLeaderTraitExperience(vec![
+                training(5, i64::from(hour) * 10),
+                training(6, 70),
+            ]));
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 100,
+                literal: if hour < 103 {
+                    b"mod_training".to_vec()
+                } else {
+                    b"mod_drill".to_vec()
+                },
+            }]));
+        frame
+    };
+    let replay = Replay::from_records(
+        dashboard_core::test_fixtures::CAMPAIGN.to_vec(),
+        &[dashboard_core::test_fixtures::records(
+            1,
+            (100..=104).map(make).collect(),
+        )],
+    )
+    .unwrap();
+    let before = progress_builds();
+    let reply = scan(&replay, &all_params(), None, &AtomicBool::new(false)).unwrap();
+    // Both at 100 and at the rename, leader 5 alone at every other hour.
+    assert_eq!(progress_builds() - before, 7);
+    let runs = |id: u32| {
+        let reference = reference(id).to_string();
+        let leader = reply
+            .leaders
+            .iter()
+            .find(|leader| leader.reference == reference)
+            .unwrap();
+        leader
+            .runs
+            .iter()
+            .map(|run| {
+                let progress = run.value.progress.as_ref().unwrap();
+                let training = &progress.training.as_ref().unwrap()[0];
+                (
+                    run.first_hour,
+                    run.last_hour,
+                    progress.experience_raw.clone(),
+                    training.token.clone().unwrap(),
+                    training.experience_raw.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let run = |first, last, experience: &str, token: &str, trained: &str| {
+        (
+            first,
+            last,
+            experience.to_owned(),
+            token.to_owned(),
+            trained.to_owned(),
+        )
+    };
+    assert_eq!(
+        runs(6),
+        [
+            run(100, 102, "7", "mod_training", "70"),
+            run(103, 104, "7", "mod_drill", "70"),
+        ]
+    );
+    assert_eq!(
+        runs(5),
+        (100..=104)
+            .map(|hour| {
+                let token = if hour < 103 { "mod_training" } else { "mod_drill" };
+                run(hour, hour, &hour.to_string(), token, &(hour * 10).to_string())
+            })
+            .collect::<Vec<_>>()
+    );
+}

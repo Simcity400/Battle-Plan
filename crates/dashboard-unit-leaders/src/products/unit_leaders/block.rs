@@ -263,7 +263,7 @@ const POLICY: &[(TableId, Watch, Keep, Reach)] = &[
     ),
     (
         TableId::CountryAppearance,
-        Watch::Named(&["original_tag_reference"]),
+        Watch::Named(&["original_tag_reference", "overlord"]),
         Keep::Whole,
         Reach::Content,
     ),
