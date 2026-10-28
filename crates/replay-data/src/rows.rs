@@ -622,6 +622,12 @@ pub trait RowCodec: Default + Clone + Eq {
         self.encode_fields_reserved(output)
     }
     fn encode_fields_reserved(&self, output: &mut Vec<u8>) -> io::Result<()>;
+    /// The fields [`Self::encode_fields`] writes, but those this row did not record, which
+    /// it skips; and a bit per skipped field.
+    fn encode_recorded_fields(&self, output: &mut Vec<u8>) -> io::Result<u64> {
+        self.encode_fields(output)?;
+        Ok(0)
+    }
     fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self>;
     /// Takes ownership so an unchanged string or list keeps its existing allocation.
     fn apply_delta(delta: &DeltaRow, previous: Option<Self>) -> io::Result<Self>;
@@ -839,6 +845,15 @@ macro_rules! define_tables {
             }
             pub fn encode_rows(&self, output: &mut Vec<u8>) -> io::Result<()> {
                 match self { $(Self::$table(rows) => encode_typed(rows, output)),+ }
+            }
+            /// One row's fields in schema order, without its key.
+            pub fn encode_row_fields(&self, index: usize, output: &mut Vec<u8>) -> io::Result<()> {
+                match self { $(Self::$table(rows) => rows.get(index).ok_or_else(|| invalid("row index out of range"))?.encode_fields(output)),+ }
+            }
+            /// One row's recorded fields in schema order, without its key, and a bit per
+            /// field it did not record (skipped).
+            pub fn encode_row_recorded_fields(&self, index: usize, output: &mut Vec<u8>) -> io::Result<u64> {
+                match self { $(Self::$table(rows) => rows.get(index).ok_or_else(|| invalid("row index out of range"))?.encode_recorded_fields(output)),+ }
             }
             pub fn encode_changes(&self, previous: &Self, output: &mut Vec<u8>, deleted: &mut Vec<u8>) -> io::Result<bool> {
                 match (self, previous) {
@@ -2752,6 +2767,19 @@ macro_rules! typed_codec {
                     }
                 )+
                 Ok(Some(delta))
+            }
+            fn encode_recorded_fields(&self, output: &mut Vec<u8>) -> io::Result<u64> {
+                let mut size = 0;
+                let mut skipped = 0;
+                $(match native_wire_field(&self.$($field)+) {
+                    Field::NotRecorded => skipped |= 1 << $index,
+                    field => size = allocation::add(size, field.encoded_bytes()?)?,
+                })+
+                allocation::reserve(output, size)?;
+                $(if skipped & 1 << $index == 0 {
+                    encode_native_field(&self.$($field)+, $crate::value::display_step!($($step)?), output).map_err(|error| crate::codec::error_context(error, format_args!("row {} column {}", self.key(), stringify!($($field)+))))?;
+                })+
+                Ok(skipped)
             }
             fn encode_fields_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
                 $(encode_native_field(&self.$($field)+, $crate::value::display_step!($($step)?), output).map_err(|error| crate::codec::error_context(error, format_args!("row {} column {}", self.key(), stringify!($($field)+))))?;)+

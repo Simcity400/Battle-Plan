@@ -9093,6 +9093,7 @@ dependencies = [
  "job-priority",
  "rayon",
  "replay",
+ "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -9101,6 +9102,14 @@ dependencies = [
  "test-unify",
  "windows-sys 0.61.2",
  "zstd",
+]
+
+[[package]]
+name = "replay-columnar"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "foldhash 0.2.0",
 ]
 
 [[package]]

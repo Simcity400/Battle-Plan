@@ -40,6 +40,7 @@ map-products = { path = "crates/map-products" }
 map-display-data = { path = "crates/map-display-data" }
 map-snow = { path = "crates/map-snow" }
 collector-naval-management = { path = "crates/collector-naval-management" }
+replay-columnar = { path = "crates/replay-columnar" }
 replay-frame = { path = "crates/replay-frame" }
 replay-derive = { path = "crates/replay-derive" }
 weather-period = { path = "crates/weather-period" }

@@ -17,6 +17,7 @@ test-support = ["replay-frame/test-support"]
 rayon.workspace = true
 engine-allocation.workspace = true
 job-priority.workspace = true
+replay-columnar.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 blake3.workspace = true
