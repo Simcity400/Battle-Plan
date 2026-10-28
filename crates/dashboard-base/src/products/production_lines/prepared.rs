@@ -240,6 +240,15 @@ pub struct Directory {
     aliases: Vec<Alias>,
 }
 
+/// What icon rules read beyond the catalogue: only an hour that chooses icons depends on them.
+pub(super) const PICTURED: [TableId; 5] = [
+    TableId::PoliticalParties,
+    TableId::Politics,
+    TableId::Factions,
+    TableId::FactionMembers,
+    TableId::States,
+];
+
 pub fn directory_section(branch: u64) -> String {
     format!("production-lines-directory-v1-{branch}")
 }
@@ -468,13 +477,7 @@ impl Prepared {
         ];
         tables.extend(VariantCatalogue::TABLES);
         if pictured {
-            tables.extend([
-                TableId::PoliticalParties,
-                TableId::Politics,
-                TableId::Factions,
-                TableId::FactionMembers,
-                TableId::States,
-            ]);
+            tables.extend(PICTURED);
         }
         tables
     }

@@ -99,6 +99,10 @@ pub(super) struct World {
     mio_countries: BTreeMap<u32, BTreeSet<u64>>,
     mio_owners: BTreeMap<u32, BTreeSet<u64>>,
     mio_owner_slots: BTreeMap<u64, u32>,
+    /// Names a refused quiet check already took from this hour's variant events, for its extract.
+    naming: Option<(i32, Vec<(u64, crate::products::equipment::VariantVersion)>)>,
+    /// An icon rule's table changed at a quiet hour without a census since the last extract.
+    pictured_changed: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -213,11 +217,15 @@ impl World {
                         .sampled_at()
                         .or_else(|| frame.tables[TableId::VariantModules.index()].sampled_at())))
             || (reads[TableId::VariantDefinitions.index()] && !(evidence && empty_catalogue))
-            || equipment::design_changed(frame)
         {
             return false;
         }
+        let census = reads[TableId::ProductionLines.index()];
         for table in PreparedTables::tables() {
+            // Variant events are judged below by what they name.
+            if table == TableId::VariantChanges {
+                continue;
+            }
             if self
                 .views
                 .get(&table)
@@ -239,11 +247,38 @@ impl World {
             if unchanged {
                 self.views
                     .insert(table, frame.tables[table.index()].identity());
+            } else if !census && super::prepared::PICTURED.contains(&table) {
+                // An hour without a census that stays quiet chooses no icon; the next census
+                // chooses them again.
+                self.pictured_changed = true;
+                self.views
+                    .insert(table, frame.tables[table.index()].identity());
             } else {
                 return false;
             }
         }
-        self.variants.advance_changed(frame, changes);
+        if census && self.pictured_changed {
+            return false;
+        }
+        if equipment::design_changed(frame) {
+            // Variant events that change no definition and name no new version leave every input
+            // as it was; names they do produce go to this hour's extract.
+            let definitions = &frame.tables[TableId::VariantDefinitions.index()];
+            if !self
+                .definition_view
+                .as_ref()
+                .is_some_and(|old| old.is(definitions))
+            {
+                return false;
+            }
+            let naming = self.variants.observe_changed(replay.format, frame, changes);
+            if !naming.is_empty() {
+                self.naming = Some((frame.hour, naming));
+                return false;
+            }
+        } else {
+            self.variants.advance_changed(frame, changes);
+        }
         self.last_hour = Some(frame.hour);
         crate::prepared::prepass::note("production-lines.quiet_hour");
         true
@@ -309,7 +344,10 @@ impl World {
         let links = frame.complete::<tables::CountryLinks>().ok();
         let lexical = frame.complete::<tables::LexicalTokens>().ok();
         let variant_hour = VariantCatalogue::hour_read(frame, read(TableId::VariantDefinitions));
-        let naming = self.variants.observe_changed(replay.format, frame, changes);
+        let naming = match self.naming.take() {
+            Some((named, naming)) if named == hour => naming,
+            _ => self.variants.observe_changed(replay.format, frame, changes),
+        };
         self.pending_bytes += naming
             .iter()
             .map(|(_, version)| pages::record_bytes(version))
@@ -859,6 +897,7 @@ impl World {
             .into_iter()
             .map(|table| (table, frame.tables[table.index()].identity()))
             .collect();
+        self.pictured_changed = false;
         if countries_changed {
             self.country_keys = countries
                 .into_iter()

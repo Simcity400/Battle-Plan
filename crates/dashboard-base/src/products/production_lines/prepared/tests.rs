@@ -3207,3 +3207,106 @@ fn restored_history_records_charge_what_they_add_to_the_next_page() {
         );
     }
 }
+
+/// One branch's frames in blocks of `hours` hours each.
+fn replay_blocks(frames: Vec<DecodedFrame>, hours: usize) -> Replay {
+    let mut blocks = frames.chunks(hours).map(<[DecodedFrame]>::to_vec);
+    let mut replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, blocks.next().unwrap())]).unwrap();
+    for block in blocks {
+        replay = replay
+            .append(&[continuation_records(&replay, 1, block)])
+            .unwrap();
+    }
+    replay
+}
+
+/// The quiet hours a preparation of branch 1 keeps when it reads the icon rules' tables, as
+/// one with icon content does.
+fn pictured_quiet_hours(replay: &Replay) -> usize {
+    let flag = AtomicBool::new(false);
+    let mut prepared = Prepared::new(replay, 1, ["GER".into()], None);
+    let mut pages = fixtures::FixturePages::default();
+    let before = crate::prepared::prepass::noted("production-lines.quiet_hour");
+    for block in &replay.index {
+        replay
+            .read_block_recorded_alone(
+                block,
+                &Prepared::tables(true),
+                |updates, frame| {
+                    let changes =
+                        prepared
+                            .world
+                            .recorded_changes(replay, frame, (*updates).clone());
+                    prepared.observe_changed_into(&mut pages, replay, frame, None, &flag, &changes)
+                },
+                || Ok(()),
+            )
+            .unwrap();
+    }
+    crate::prepared::prepass::noted("production-lines.quiet_hour") - before
+}
+
+#[test]
+fn variant_events_naming_nothing_and_state_edits_between_censuses_stay_quiet_and_exact() {
+    use replay_data::rows::{StateRow, TableRows, VariantChangeRow};
+    use replay_frame::frame::TableView;
+    let mut base = authored(FIRST, &[(5, 70, 8, 0), (6, 71, 3, 0)], &[]);
+    // A table the fixture leaves unavailable decodes to a new view every hour, which no hour
+    // carries quietly; per-line modifier samples keep a census from carrying the hours after it.
+    for table in Prepared::tables(true) {
+        if matches!(
+            &*base.tables[table.index()],
+            TableView::Unavailable { .. } | TableView::NotRecorded { .. }
+        ) {
+            *base.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+        }
+    }
+    *base.tables[TableId::ProductionLineModifiers.index()] =
+        TableView::Complete(TableRows::ProductionLineModifiers(Vec::new()));
+    // Two blocks of 24 hours with a census every 12 hours, the state edited at `edits`.
+    let recording = |edits: &[i32]| {
+        let mut frames = Vec::new();
+        for offset in 0..48 {
+            let mut frame = base.clone();
+            frame.hour = FIRST + offset;
+            if offset > 0 {
+                frame.metrics.table_ns.fill(0);
+            }
+            // Every hour logs a variant event that names nothing new.
+            *frame.tables[TableId::VariantChanges.index()] =
+                TableView::Complete(TableRows::VariantChanges(vec![VariantChangeRow {
+                    sequence: offset as u64 + 1,
+                    hour: frame.hour,
+                    variant: 70,
+                    flags: Some([0; 3]),
+                    ..Default::default()
+                }]));
+            *frame.tables[TableId::States.index()] =
+                TableView::Complete(TableRows::States(vec![StateRow {
+                    id: 7,
+                    manpower_available: edits.iter().filter(|&&at| at <= offset).count() as _,
+                    ..Default::default()
+                }]));
+            frame.metrics.table_ns[TableId::VariantChanges.index()] = 1;
+            frame.metrics.table_ns[TableId::States.index()] = 1;
+            if offset % 12 == 0 {
+                frame.metrics.table_ns[TableId::ProductionLines.index()] = 1;
+            }
+            frames.push(frame);
+        }
+        replay_blocks(frames, 24)
+    };
+    let undisturbed = recording(&[]);
+    // Edits between censuses, none at a census hour.
+    let edited = recording(&[5, 30]);
+    // Every publication mode publishes as the reference does, the hours between censuses quiet.
+    let before = crate::prepared::prepass::noted("production-lines.quiet_hour");
+    assert_reference_publication_modes(&edited, |_| {});
+    assert!(crate::prepared::prepass::noted("production-lines.quiet_hour") - before >= 4 * 40);
+    // Read with the icon rules' tables, the census after each edit chooses its icons again.
+    assert_eq!(
+        pictured_quiet_hours(&undisturbed) - pictured_quiet_hours(&edited),
+        2
+    );
+}
