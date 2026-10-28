@@ -2,7 +2,8 @@
 //! campaign answers its widgets without reading the recording again.
 //!
 //! A reply is a pure function of the recording, this build, the request, the
-//! game content the recording pins by hash in the user's game language, and the
+//! game content the recording pins by hash (or the installed bytes of a layer that
+//! changed since, named by their hash) in the user's game language, and the
 //! visual mods its widgets show (the source's presentation, whose revision
 //! changes when a mod is installed, updated or removed). An entry is keyed by
 //! all of them. A reply that read content outside the
@@ -54,6 +55,7 @@ impl Entry {
         context: &LoadContext,
     ) -> Option<Self> {
         let content = context.content.as_ref()?;
+        let mut changed = String::new();
         if content_dependent {
             crate::content::check_replay(
                 source.replay_ref(),
@@ -61,13 +63,20 @@ impl Entry {
                 &mut Vec::new(),
             )
             .ok()?;
-            source.content(&content.options).ok()?;
+            for layer in &source.content(&content.options).ok()?.changed {
+                changed.push_str(&format!(
+                    "{} {} {}\n",
+                    layer.kind,
+                    layer.id,
+                    hex(&layer.installed)
+                ));
+            }
         }
         let settings = installed_content_settings::settings::read_keys(&content.options.user_dir).ok()?;
         let language = settings.language().ok()?;
         let decode = settings.texture_decode();
         let key = format!(
-            "{}\n{}\n{product}\n{params}\n{}\n{}\n{}\n{language}\n{decode:?}\n{:?}",
+            "{}\n{}\n{product}\n{params}\n{}\n{}\n{}\n{language}\n{decode:?}\n{:?}\n{changed}",
             String::from_utf8_lossy(MAGIC),
             build()?,
             content.options.game_dir.display(),

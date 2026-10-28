@@ -118,7 +118,10 @@ fn unchanged_warm_hash_cache_preserves_bytes_and_verification() {
 
     let mut mismatching = fixture.identity.clone();
     mismatching.vanilla_hash[0] ^= 1;
-    let error = resolve(&mismatching, &fixture.options).unwrap_err();
+    let error = resolve(&mismatching, &fixture.options)
+        .unwrap()
+        .exact()
+        .unwrap_err();
     assert!(
         error
             .to_string()
@@ -205,7 +208,10 @@ fn changed_hash_entries_persist_even_when_identity_verification_fails() {
     let file = fixture.options.game_dir.join("common/a.txt");
     let replacement = b"changed content with a different size";
     fs::write(&file, replacement).unwrap();
-    let error = resolve(&fixture.identity, &fixture.options).unwrap_err();
+    let error = resolve(&fixture.identity, &fixture.options)
+        .unwrap()
+        .exact()
+        .unwrap_err();
     assert!(
         error
             .to_string()
@@ -223,7 +229,10 @@ fn changed_hash_entries_persist_even_when_identity_verification_fails() {
     assert_ne!(fs::read(fixture.cache_path()).unwrap(), previous);
 
     let marked = fixture.mark_cache_bytes();
-    let repeated = resolve(&fixture.identity, &fixture.options).unwrap_err();
+    let repeated = resolve(&fixture.identity, &fixture.options)
+        .unwrap()
+        .exact()
+        .unwrap_err();
     assert_eq!(repeated.to_string(), error.to_string());
     assert_eq!(fs::read(fixture.cache_path()).unwrap(), marked);
 }
@@ -266,14 +275,10 @@ fn missing_or_malformed_hash_cache_is_rebuilt_before_first_hash_failure() {
         } else {
             fs::write(fixture.cache_path(), b"incomplete hash cache {").unwrap();
         }
-        let mut wrong_size = fixture.identity.clone();
-        wrong_size.exe_size += 1;
-        let error = resolve(&wrong_size, &fixture.options).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("Game hoi4.exe: byte size mismatch")
-        );
+        // A missing executable fails before any file is hashed.
+        fs::remove_file(fixture.options.game_dir.join("hoi4.exe")).unwrap();
+        let error = resolve(&fixture.identity, &fixture.options).unwrap_err();
+        assert!(error.to_string().starts_with("Game hoi4.exe: "), "{error}");
         let actual = fixture.cache();
         assert!(actual.entries.is_empty());
         assert!(!actual.dirty);

@@ -199,6 +199,7 @@ pub fn run(
     let resolved = Arc::new(ResolvedContent {
         layers: content.layers,
         stats: content.stats,
+        changed: content.changed,
     });
     let mut log = Log {
         values,

@@ -108,6 +108,7 @@ impl Presented {
             content: Arc::new(ResolvedContent {
                 layers,
                 stats: recorded.stats.clone(),
+                changed: recorded.changed.clone(),
             }),
             refusals,
         })

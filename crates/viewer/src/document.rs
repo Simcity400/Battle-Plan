@@ -1451,6 +1451,7 @@ impl Document {
         // Replay::open requires every session to have the same content identity.
         // The recorded layer ids and hashes, rather than launcher state, select it.
         let mut content = installed_content_core::resolve(&replay.identity, options)?;
+        content.append_changed_to(&mut warnings);
         let uncovered_reads = content.layers.report_uncovered_reads();
         let mut visual_revision = String::new();
         let mut fallback = None;

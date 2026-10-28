@@ -903,6 +903,7 @@ fn settings_and_widgets_build_the_area_raster_once_per_content_source_even_when_
         Arc::new(installed_content_core::ResolvedContent {
             layers: installed_content_core::ResolvedLayers::from_folders(&[]).unwrap(),
             stats: Default::default(),
+            changed: Vec::new(),
         })
     };
     let resolved = content();
@@ -1215,6 +1216,7 @@ fn raster_builds_release_the_cache_lock_keep_first_insert_and_never_cache_cancel
     let resolved = Arc::new(installed_content_core::ResolvedContent {
         layers: installed_content_core::ResolvedLayers::from_folders(&[]).unwrap(),
         stats: Default::default(),
+        changed: Vec::new(),
     });
     let cancelled = AtomicBool::new(false);
     cached_areas(&cache, Arc::clone(&resolved), &cancelled, |_| {

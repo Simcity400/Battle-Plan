@@ -164,7 +164,7 @@ fn content(
     // The movement speed's modifier keys are checked against the installation's
     // executable metadata, as the save comparison checks them.
     engine_executable::executable_tables::initialize(&options.game_dir)?;
-    let resolved = installed_content_core::resolve(&session.identity, &options)?;
+    let resolved = installed_content_core::resolve(&session.identity, &options)?.exact()?;
     let defines = installed_content_core::defines::read(&resolved.layers)?;
     let defines = day_night::Defines::read(
         |section, name| defines.int32(section, name),

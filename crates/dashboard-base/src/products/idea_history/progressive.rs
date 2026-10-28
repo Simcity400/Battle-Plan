@@ -245,7 +245,7 @@ pub fn query(
     reply.identity_starts = identity_starts;
     reply.approximate = approximate;
     reply.held = held;
-    source.append_content_warnings(&mut reply.warnings);
+    source.append_reply_warnings(&mut reply.warnings, Some(options));
     prefix.sampled(&reply.approximate);
     let mut data = serde_json::to_value(reply)?;
     prefix.mark(&mut data)?;

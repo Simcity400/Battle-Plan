@@ -998,6 +998,7 @@ impl Catalogue {
         let content = Arc::new(ResolvedContent {
             layers,
             stats: Default::default(),
+            changed: Vec::new(),
         });
         Self::from_content(
             content,
@@ -2305,6 +2306,7 @@ pub mod tests {
             content: Arc::new(ResolvedContent {
                 layers,
                 stats: Default::default(),
+                changed: Vec::new(),
             }),
             presentation: Presentation::default(),
             localisation: Arc::new(localisation),

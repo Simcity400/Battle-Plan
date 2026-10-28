@@ -2090,6 +2090,7 @@ mod tests {
             Arc::new(installed_content_core::content::ResolvedContent {
                 layers,
                 stats: Default::default(),
+                changed: Vec::new(),
             }),
             String::new(),
         )

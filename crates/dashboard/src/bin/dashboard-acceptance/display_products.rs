@@ -20,6 +20,7 @@ pub(super) fn run(options: &Options, path: &Path) -> io::Result<bool> {
     let resolved = installed_content_core::resolve(&replay.identity, &resolve)?;
     let mut warnings = Vec::new();
     dashboard::content::check_replay(&replay, options.allow_unverified, &mut warnings)?;
+    resolved.append_changed_to(&mut warnings);
     let language = dashboard::content::language(&resolve)?;
     let pilot =
         dashboard_game_window::display_products::Pilot::load(&resolved.layers, user, &language)?;

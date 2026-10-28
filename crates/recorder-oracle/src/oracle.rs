@@ -236,7 +236,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         options.game_dir.display(),
         options.user_dir.display()
     );
-    let content = installed_content_core::resolve(&session.identity, &options)?;
+    let content = installed_content_core::resolve(&session.identity, &options)?.exact()?;
     engine_executable::executable_tables::initialize(&options.game_dir)?;
     let uncovered_reads = content.layers.report_uncovered_reads();
     println!(

@@ -24,7 +24,7 @@ export async function gatherPreparedFocusParity(client: FocusPreparedClient, sou
     if (BigInt(completed.length) !== BigInt(row.completed.rows)) throw new Error('Prepared focus parity omitted completions.');
   }
   const tokens = [...new Set([...completed.map(entry => entry.token), ...[row?.current, row?.continuous].filter((token): token is string => !!token)])].sort();
-  for (const item of await loadPreparedFocusStaticText(client, source, tokens.filter(token => !staticByToken.has(token)), signal)) staticByToken.set(item.token, item);
+  for (const item of (await loadPreparedFocusStaticText(client, source, tokens.filter(token => !staticByToken.has(token)), signal)).text) staticByToken.set(item.token, item);
   if (row) for (const openedOrdinal of openedOrdinals) {
     const entry = completed.find(item => item.ordinal === openedOrdinal);
     if (entry) {

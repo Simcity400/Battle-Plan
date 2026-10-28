@@ -1844,12 +1844,16 @@ fn query_data(
             {
                 return Err(crate::invalid("Invalid focus static text token"));
             }
-            serde_json::to_value(crate::prepared_focus::art::static_text(
-                source,
-                content,
-                &params.tokens,
-                cancelled,
-            )?)?
+            // Its own warning list, which serving fills with the content's diagnostics.
+            serde_json::json!({
+                "texts": crate::prepared_focus::art::static_text(
+                    source,
+                    content,
+                    &params.tokens,
+                    cancelled,
+                )?,
+                "warnings": [],
+            })
         }
         "focus-hour" => {
             let params: FocusPoint = serde_json::from_value(request.params.clone())?;

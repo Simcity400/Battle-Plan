@@ -125,6 +125,7 @@ fn bind(source: &dashboard_base::Source, stack: &Stack) -> ContentOptions {
         Arc::new(ResolvedContent {
             layers: stack.layers(&["map/strategicregions"]),
             stats: Default::default(),
+            changed: Vec::new(),
         }),
     );
     options

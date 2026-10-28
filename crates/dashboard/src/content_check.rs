@@ -1726,6 +1726,7 @@ mod tests {
             Arc::new(ResolvedContent {
                 layers: installed_content_core::ResolvedLayers::from_folders(&[]).unwrap(),
                 stats: Default::default(),
+                changed: Vec::new(),
             }),
             "english",
         );

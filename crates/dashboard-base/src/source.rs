@@ -177,8 +177,23 @@ impl Source {
         )
     }
 
-    /// Report the live read set even for cached metadata and product replies.
+    /// Report the live read set and the changed content layers even for cached metadata and
+    /// product replies.
     pub fn append_content_warnings(&self, warnings: &mut Vec<String>) {
+        if let Some((_, content, reads)) = self
+            .content
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            reads.append_to(warnings);
+            content.append_changed_to(warnings);
+        }
+    }
+
+    /// Report the live read set only: a reply that reads no game content is the same whatever
+    /// layers changed, and is kept on disk without them.
+    pub fn append_read_warnings(&self, warnings: &mut Vec<String>) {
         if let Some((_, _, reads)) = self
             .content
             .lock()
@@ -187,6 +202,29 @@ impl Source {
         {
             reads.append_to(warnings);
         }
+    }
+
+    /// Name the layers that changed since the recording in the content a reply was admitted
+    /// under: its own folders' content, resolved again if the source has bound others since, so
+    /// a reply never names another content's changes nor loses its own.
+    pub fn append_changed_warnings(
+        &self,
+        warnings: &mut Vec<String>,
+        content: Option<&ContentOptions>,
+    ) {
+        if let Some(own) = content.and_then(|content| self.content(&content.options).ok()) {
+            own.append_changed_to(warnings);
+        }
+    }
+
+    /// A content reply's live diagnostics: the read set and its own content's changed layers.
+    pub fn append_reply_warnings(
+        &self,
+        warnings: &mut Vec<String>,
+        content: Option<&ContentOptions>,
+    ) {
+        self.append_read_warnings(warnings);
+        self.append_changed_warnings(warnings, content);
     }
 
     /// What the binding a content reply was admitted under cannot show

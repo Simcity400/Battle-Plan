@@ -2849,6 +2849,7 @@ fn air_superiority_faction_names_follow_native_operands_and_dictionary_reads() {
         Arc::new(installed_content_core::content::ResolvedContent {
             layers,
             stats: Default::default(),
+            changed: Vec::new(),
         }),
     );
     let AirReply::Moment(reply) = AirSuperiority::load(
@@ -2925,6 +2926,7 @@ fn air_superiority_region_names_preserve_empty_results_and_distinguish_missing_k
         Arc::new(installed_content_core::content::ResolvedContent {
             layers: installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap(),
             stats: Default::default(),
+            changed: Vec::new(),
         }),
     );
     let mut request = params(AirView::Choices, 0, 0);
@@ -3009,6 +3011,7 @@ fn air_superiority_theatre_names_preserve_raw_bytes_and_guard_the_recording_lang
         Arc::new(installed_content_core::content::ResolvedContent {
             layers,
             stats: Default::default(),
+            changed: Vec::new(),
         }),
     );
     let context = LoadContext {

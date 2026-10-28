@@ -77,7 +77,7 @@ test('the prepared widget supplies its settled page and description to one parit
         fixture.calls.push(product);
         if (product === 'focus-hour') return { ...row, at: params.hour };
         if (product === 'focus-order-page') return Array.from({length:Math.min(128, size()-Number(params.page)*128)}, (_, index) => entry(Number(params.page)*128+index));
-        if (product === 'focus-static-text') return params.tokens.map(staticArt);
+        if (product === 'focus-static-text') return { texts: params.tokens.map(staticArt), warnings: [] };
         throw new Error(product);
       },
       product: async (request: any) => {

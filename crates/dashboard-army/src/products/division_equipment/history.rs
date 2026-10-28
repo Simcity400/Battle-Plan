@@ -292,7 +292,7 @@ pub fn served_lines(
     content: Option<&dashboard_core::config::ContentOptions>,
 ) -> Vec<String> {
     let mut lines = Vec::new();
-    source.append_content_warnings(&mut lines);
+    source.append_reply_warnings(&mut lines, content);
     source.append_presentation_warnings(&mut lines, content);
     lines
 }

@@ -88,8 +88,8 @@ pub mod unit_medals;
 pub mod variable_builtins;
 
 pub use content::{
-    GatherOptions, GatheredContent, HashStats, ResolveOptions, ResolvedContent, ResolvedLayer,
-    ResolvedLayers, gather, resolve,
+    ChangedLayer, GatherOptions, GatheredContent, HashStats, ResolveOptions, ResolvedContent,
+    ResolvedLayer, ResolvedLayers, gather, resolve,
 };
 
 /// Severity assigned where a content reader creates a diagnostic.

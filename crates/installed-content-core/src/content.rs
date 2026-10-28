@@ -121,6 +121,60 @@ pub struct ResolveOptions {
 pub struct ResolvedContent {
     pub layers: ResolvedLayers,
     pub stats: HashStats,
+    /// Recorded layers whose installed bytes differ: the installed bytes are read (owner, 28 Oct).
+    pub changed: Vec<ChangedLayer>,
+}
+
+impl ResolvedContent {
+    /// This content when every layer is the recording's own, or the first changed layer's refusal.
+    pub fn exact(self) -> io::Result<Self> {
+        match self.changed.first() {
+            Some(changed) => Err(changed.refusal()),
+            None => Ok(self),
+        }
+    }
+
+    /// Refresh `warnings` with one line naming each changed layer.
+    pub fn append_changed_to(&self, warnings: &mut Vec<String>) {
+        warnings.retain(|line| !line.ends_with(CHANGED_LAYER));
+        warnings.extend(self.changed.iter().map(ToString::to_string));
+    }
+}
+
+const CHANGED_LAYER: &str =
+    "changed since the recording (content hash mismatch); the installed files are used";
+
+/// A recorded content layer whose installed bytes differ from the recording's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangedLayer {
+    /// "Game" (the executable or the vanilla files), "DLC" or "Mod".
+    pub kind: &'static str,
+    pub id: String,
+    pub recorded: [u8; 32],
+    pub installed: [u8; 32],
+}
+
+impl ChangedLayer {
+    /// What a reader that needs the recorded bytes refuses with.
+    pub fn refusal(&self) -> io::Error {
+        invalid(format!(
+            "{} {}: content hash mismatch (expected {}, found {})",
+            self.kind,
+            self.id,
+            hex(self.recorded),
+            hex(self.installed)
+        ))
+    }
+}
+
+impl std::fmt::Display for ChangedLayer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} {} {CHANGED_LAYER}", self.kind, self.id)
+    }
+}
+
+fn hex(hash: [u8; 32]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[derive(Clone, Debug, Default)]
@@ -748,6 +802,8 @@ pub struct GatheredContent {
     /// Each mod's descriptor file name under `mod/`, in `mods` order: the
     /// name the game's mod map holds while the mod is active.
     pub mod_descriptors: Vec<String>,
+    /// The recorded layers whose installed bytes differ; empty for a new recording.
+    pub changed: Vec<ChangedLayer>,
 }
 
 impl GatheredContent {
@@ -3601,18 +3657,21 @@ fn recorded_mod_paths(user_dir: &Path, recorded: &[Mod]) -> io::Result<Vec<Strin
     .collect()
 }
 
-fn check_hash(kind: &str, id: &str, actual: [u8; 32], expected: [u8; 32]) -> io::Result<()> {
-    if actual == expected {
-        return Ok(());
+fn check_hash(
+    changed: &mut Vec<ChangedLayer>,
+    kind: &'static str,
+    id: &str,
+    actual: [u8; 32],
+    expected: [u8; 32],
+) {
+    if actual != expected {
+        changed.push(ChangedLayer {
+            kind,
+            id: id.to_owned(),
+            recorded: expected,
+            installed: actual,
+        });
     }
-    fn hex(hash: [u8; 32]) -> String {
-        hash.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
-    Err(invalid(format!(
-        "{kind} {id}: content hash mismatch (expected {}, found {})",
-        hex(expected),
-        hex(actual)
-    )))
 }
 
 fn builtin_layer(
@@ -3693,6 +3752,7 @@ pub fn resolve(identity: &Identity, options: &ResolveOptions) -> io::Result<Reso
     Ok(ResolvedContent {
         layers: content.layers,
         stats: content.stats,
+        changed: content.changed,
     })
 }
 
@@ -3733,23 +3793,17 @@ fn gather_selected(
         });
     let result = (|| {
         let mut stats = HashStats::default();
+        let mut changed = Vec::new();
         if let Some(identity) = recorded {
             let executable = game_dir.join("hoi4.exe");
-            let size = fs::metadata(&executable)
-                .map_err(|error| named_error("Game", "hoi4.exe", error))?
-                .len();
-            if size != identity.exe_size {
-                return Err(invalid(format!(
-                    "Game hoi4.exe: byte size mismatch (expected {}, found {size})",
-                    identity.exe_size
-                )));
-            }
+            fs::metadata(&executable).map_err(|error| named_error("Game", "hoi4.exe", error))?;
             check_hash(
+                &mut changed,
                 "Game",
                 "hoi4.exe",
                 cache.file(&executable, &mut stats)?,
                 identity.exe_hash,
-            )?;
+            );
         }
         let mut vanilla = ResolvedLayer {
             coverage,
@@ -3891,7 +3945,7 @@ fn gather_selected(
                     .ok_or_else(|| {
                         invalid(format!("DLC {id}: descriptor id changed during resolution"))
                     })?;
-                check_hash("DLC", &id, dlc.hash, expected.hash)?;
+                check_hash(&mut changed, "DLC", &id, dlc.hash, expected.hash);
             }
             discovered_order.push(id.clone());
             if dlc_layers.insert(id, (layer, dlc)).is_some() {
@@ -3976,7 +4030,7 @@ fn gather_selected(
                         expected.id
                     )));
                 }
-                check_hash("Mod", &id, hash, expected.hash)?;
+                check_hash(&mut changed, "Mod", &id, hash, expected.hash);
             }
             layers.layers.push(layer);
             mods.push(Mod {
@@ -4014,7 +4068,13 @@ fn gather_selected(
         }
         let vanilla_hash = layer_hash(&vanilla_files)?;
         if let Some(identity) = recorded {
-            check_hash("Game", "vanilla", vanilla_hash, identity.vanilla_hash)?;
+            check_hash(
+                &mut changed,
+                "Game",
+                "vanilla",
+                vanilla_hash,
+                identity.vanilla_hash,
+            );
         }
         let expected_mounts = layers
             .layers
@@ -4038,6 +4098,7 @@ fn gather_selected(
             order_note,
             expected_mounts,
             mod_descriptors,
+            changed,
         })
     })();
     // Preserve successfully hashed files even when a later descriptor is bad.

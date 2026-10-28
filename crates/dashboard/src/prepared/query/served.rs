@@ -19,6 +19,7 @@ impl<'a> Served<'a> {
         let paths = content_warning_paths(product, name);
         let mut reply = Self::decorate(data, paths, Vec::new(), |warnings| {
             source.append_stack_warnings(warnings);
+            source.append_changed_warnings(warnings, content);
         });
         reply.add_lines(paths, served_lines(source, content, fallbacks));
         if product == crate::products::division_equipment::history::QUERY && data.is_object() {

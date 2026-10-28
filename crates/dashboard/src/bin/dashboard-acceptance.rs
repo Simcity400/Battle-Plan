@@ -1361,9 +1361,13 @@ fn production(
                         serde_json::to_value(&reference.types)?,
                         actual["types"].clone(),
                     )?;
+                    // A served reply names the content's changed layers; the oracle's load does not.
+                    let mut expected_warnings = reference.warnings.clone();
+                    source
+                        .append_changed_warnings(&mut expected_warnings, context.content.as_ref());
                     evidence.compare(
                         &format!("{page_label}/warnings"),
-                        json!(reference.warnings),
+                        json!(expected_warnings),
                         actual["warnings"].clone(),
                     )?;
                     evidence.compare(
@@ -1540,9 +1544,11 @@ fn measure(
                     )?;
                 }
             }
+            let mut expected_warnings = reference.warnings.clone();
+            source.append_changed_warnings(&mut expected_warnings, context.content.as_ref());
             evidence.compare(
                 &format!("{label}/warnings"),
-                json!(reference.warnings),
+                json!(expected_warnings),
                 actual["warnings"].clone(),
             )?;
         }

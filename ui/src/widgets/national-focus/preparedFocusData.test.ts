@@ -45,7 +45,8 @@ test('visible completion page and active tail read art at their own hours and in
   const client = { ...artClient(requests), preparedQuery: async (_source: DashboardSource, product: string, params: any) => {
     requests.push({ product, params });
     if (product === 'focus-order-page') return Array.from({ length: 128 }, (_, ordinal) => ({ ordinal, token: 'focus_' + ordinal, completedByHour: 100 }));
-    if (product === 'focus-static-text') return params.tokens.map((token: string) => ({ ...art(token).artwork, description: 'Static ' + token }));
+    if (product === 'focus-static-text') return { texts: params.tokens.map((token: string) => ({ ...art(token).artwork, description: 'Static ' + token })),
+      warnings: ['Standing content notice', 'Static text content notice'] };
     throw new Error(product);
   } } as unknown as FocusPreparedClient;
   const result = await loadPreparedFocusPage(client, source, '1', 'opaque/mod/tag', 101, row, 0n, new AbortController().signal);
@@ -58,14 +59,14 @@ test('visible completion page and active tail read art at their own hours and in
   const arts = requests.filter(item => item.product === 'focus-art');
   assert.deepEqual(arts.map(item => [item.params.hour, item.params.tokens.length, item.params.mode]), [[100, 128, 'display'], [101, 1, 'display']]);
   assert.deepEqual(arts[0].params.tokens, [...arts[0].params.tokens].sort(focusTokenOrder));
-  assert.deepEqual(result.warnings, ['Standing content notice']);
+  assert.deepEqual(result.warnings, ['Standing content notice', 'Static text content notice']);
   assert.equal(requests[0].params.pages.first, '9007199254740993');
 });
 test('cancelled pages and omitted artwork never publish successful empty data', async () => {
   const controller = new AbortController();
   const client = { ...artClient([]), preparedQuery: async (_source: DashboardSource, product: string) => {
     controller.abort();
-    return product === 'focus-order-page' ? [{ ordinal: 0, token: 'current', completedByHour: null }] : [art('current').artwork];
+    return product === 'focus-order-page' ? [{ ordinal: 0, token: 'current', completedByHour: null }] : { texts: [art('current').artwork], warnings: [] };
   } } as unknown as FocusPreparedClient;
   const one = { ...row, completed: { first: '0', count: '1', rows: '1' } };
   await assert.rejects(loadPreparedFocusPage(client, source, '1', 'tag', 101, one, 0n, controller.signal), /cancelled/);
@@ -79,7 +80,7 @@ test('completion and active instances of one token use their own recorded hours'
   const client = { ...artClient([], (token, params) => { dates.push(params.hour); return { ...art(token), artwork: { ...art(token).artwork, name: 'At ' + params.hour } }; }),
     preparedQuery: async (_source: DashboardSource, product: string, params: any) => {
       if (product === 'focus-order-page') return [{ ordinal: 0, token: 'current', completedByHour: 100 }];
-      if (product === 'focus-static-text') return params.tokens.map((token: string) => art(token).artwork);
+      if (product === 'focus-static-text') return { texts: params.tokens.map((token: string) => art(token).artwork), warnings: [] };
       throw new Error(product);
     } } as unknown as FocusPreparedClient;
   const result = await loadPreparedFocusPage(client, source, '1', 'tag', 120, requested, 0n, new AbortController().signal);
@@ -92,7 +93,8 @@ test('a refused or failed dated art request retains independent recorded order a
   const one = { ...row, current: null, completed: { first: '0', count: '1', rows: '1' } };
   const query = { preparedQuery: async (_source: DashboardSource, product: string, params: any) => {
     if (product === 'focus-order-page') return [{ ordinal: 0, token: 'mod', completedByHour: 100 }];
-    if (product === 'focus-static-text') return params.tokens.map((token: string) => art(token).artwork);
+    if (product === 'focus-static-text') return { texts: params.tokens.map((token: string) => ({ ...art(token).artwork, description: 'Static ' + token })),
+      warnings: ['Static text content notice'] };
     throw new Error(product);
   } };
   const refused = { ...query, product: async () => { throw new Error('named content refusal'); } } as unknown as FocusPreparedClient;
@@ -100,6 +102,9 @@ test('a refused or failed dated art request retains independent recorded order a
   assert.equal(result.order[0].token, 'mod');
   assert.equal(result.art.get(preparedArtKey(100, 'mod'))?.artwork.name, null);
   assert.equal(result.art.get(preparedArtKey(100, 'mod'))?.reason, 'named content refusal');
+  // With every art request refused, the static description still names its content's warnings.
+  assert.equal(result.art.get(preparedArtKey(100, 'mod'))?.artwork.description, 'Static mod');
+  assert.deepEqual(result.warnings, ['Static text content notice']);
   const failed = { ...query, ...artClient([], token => art(token), () => ({ art: [], warnings: [], failures: [{ reason: 'Content stack refused', tokens: 1 }] })) } as unknown as FocusPreparedClient;
   const named = await loadPreparedFocusPage(failed, source, '1', 'tag', 101, one, 0n, new AbortController().signal);
   assert.equal(named.art.get(preparedArtKey(100, 'mod'))?.reason, 'Content stack refused');

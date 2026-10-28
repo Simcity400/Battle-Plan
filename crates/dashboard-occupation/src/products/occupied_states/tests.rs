@@ -486,6 +486,7 @@ fn mod_added_law_uses_overridden_localisation_and_sprite() {
     cat.content = Arc::new(installed_content_core::ResolvedContent {
         layers,
         stats: Default::default(),
+        changed: Vec::new(),
     });
     let laws = installed_content_core::occupation_laws::read(&cat.content.layers).unwrap();
     assert_eq!(laws.definitions["mod_law"].sprite, "overridden_sprite");

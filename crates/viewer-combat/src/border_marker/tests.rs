@@ -274,6 +274,7 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
         Arc::new(installed_content_core::content::ResolvedContent {
             layers,
             stats: Default::default(),
+            changed: Vec::new(),
         }),
         "english".into(),
     )

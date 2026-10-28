@@ -40,6 +40,7 @@ pub fn texture_catalogue(
     catalogue.content = Arc::new(ResolvedContent {
         layers,
         stats: Default::default(),
+        changed: Vec::new(),
     });
     (catalogue, [base, modification])
 }

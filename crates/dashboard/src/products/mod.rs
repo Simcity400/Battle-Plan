@@ -202,7 +202,11 @@ fn load_json<P: Product>(
             let (data, own) =
                 crate::catalogue::capture(|| P::load(source, &params, context, cancelled));
             let mut data = data.map_err(|error| error.to_string())?;
-            source.append_content_warnings(data.warnings_mut());
+            if P::CONTENT_DEPENDENT {
+                source.append_reply_warnings(data.warnings_mut(), context.content.as_ref());
+            } else {
+                source.append_read_warnings(data.warnings_mut());
+            }
             // What the presentation the request was admitted under shows, never the source's now.
             source.append_presentation_warnings(data.warnings_mut(), context.content.as_ref());
             data.warnings_mut().extend(own.fallback_line());

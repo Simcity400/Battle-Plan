@@ -73,7 +73,7 @@ pub struct FlagContent {
 
 impl FlagContent {
     pub fn load(identity: &Identity, options: &ResolveOptions) -> io::Result<Self> {
-        let content = installed_content_core::resolve(identity, options)?;
+        let content = installed_content_core::resolve(identity, options)?.exact()?;
         let defines = installed_content_core::defines::read(&content.layers)?;
         Ok(Self {
             cell: FlagSet::Normal.cell(&defines)?,

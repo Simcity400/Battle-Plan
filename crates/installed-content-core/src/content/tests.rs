@@ -486,7 +486,14 @@ fn coverage_policy_four_hashes_and_verifies_event_tooltip_font_effect_and_volume
             resolved.layers.read_uncovered(path).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
-        let error = resolve(&identity, &options).unwrap_err().to_string();
+        let changed = resolve(&identity, &options).unwrap();
+        assert_eq!(changed.layers.read(path).unwrap(), b"changed content");
+        assert_eq!(changed.changed.len(), 1);
+        let layer = &changed.changed[0];
+        assert_eq!((layer.kind, layer.id.as_str()), ("Game", "vanilla"));
+        assert_eq!(layer.recorded, identity.vanilla_hash);
+        assert_ne!(layer.installed, layer.recorded);
+        let error = changed.exact().unwrap_err().to_string();
         assert!(
             error.contains("Game vanilla: content hash mismatch"),
             "{path}: {error}"
@@ -580,7 +587,9 @@ fn older_coverage_policies_verify_their_own_roots_and_leave_newer_roots_uncovere
                 resolved.layers.read_uncovered(path).unwrap_err().kind(),
                 io::ErrorKind::InvalidData
             );
-            let error = resolve(&identity, &options).unwrap_err().to_string();
+            let changed = resolve(&identity, &options).unwrap();
+            assert_eq!(changed.layers.read(path).unwrap(), b"changed covered bytes");
+            let error = changed.exact().unwrap_err().to_string();
             assert!(
                 error.contains("Game vanilla: content hash mismatch"),
                 "{error}"
@@ -866,7 +875,14 @@ fn older_coverage_policy_roots_apply_to_builtin_dlc_and_mod_layers() {
         ("dlc/synthetic/events/dlc.txt", "DLC synthetic"),
     ] {
         write(&game.join(relative), b"changed covered bytes");
-        let error = resolve(&identity, &options).unwrap_err().to_string();
+        let changed = resolve(&identity, &options).unwrap();
+        let names: Vec<_> = changed
+            .changed
+            .iter()
+            .map(|layer| format!("{} {}", layer.kind, layer.id))
+            .collect();
+        assert_eq!(names, [named]);
+        let error = changed.exact().unwrap_err().to_string();
         assert!(
             error.contains(&format!("{named}: content hash mismatch")),
             "{error}"
@@ -2583,13 +2599,35 @@ fn gui_and_gfx_files_are_enumerated_by_their_bytes() {
 
 #[test]
 fn hash_mismatch_names_the_layer_and_both_digests() {
-    check_hash("DLC", "dlc034_no_step_back", [7; 32], [7; 32]).unwrap();
-    let error = check_hash("DLC", "dlc034_no_step_back", [8; 32], [7; 32])
-        .unwrap_err()
-        .to_string();
+    let mut changed = Vec::new();
+    check_hash(&mut changed, "DLC", "dlc034_no_step_back", [7; 32], [7; 32]);
+    assert!(changed.is_empty());
+    check_hash(&mut changed, "DLC", "dlc034_no_step_back", [8; 32], [7; 32]);
+    assert_eq!(
+        changed,
+        [ChangedLayer {
+            kind: "DLC",
+            id: "dlc034_no_step_back".into(),
+            recorded: [7; 32],
+            installed: [8; 32],
+        }]
+    );
+    assert_eq!(
+        changed[0].to_string(),
+        "DLC dlc034_no_step_back changed since the recording (content hash mismatch); the installed files are used"
+    );
+    let error = changed[0].refusal().to_string();
     assert!(error.contains("DLC dlc034_no_step_back"));
     assert!(error.contains(&"07".repeat(32)));
     assert!(error.contains(&"08".repeat(32)));
+    let mut warnings = vec!["kept".to_owned(), changed[0].to_string()];
+    let content = ResolvedContent {
+        layers: ResolvedLayers::default(),
+        stats: Default::default(),
+        changed,
+    };
+    content.append_changed_to(&mut warnings);
+    assert_eq!(warnings, ["kept".to_owned(), content.changed[0].to_string()]);
 }
 
 fn mod_order(mods: &[(&str, &str)]) -> (io::Result<Vec<String>>, Vec<String>) {
@@ -2707,7 +2745,26 @@ fn a_new_recording_takes_the_engine_mod_order_and_a_replay_keeps_it() {
     assert!(layers.collect::<Vec<_>>().ends_with(&["b_base.mod", "42"]));
     assert_eq!(resolved.layers.read("common/file.txt").unwrap(), b"top");
     write("user/layers/base/common/file.txt", "changed");
-    let error = resolve(&identity, &options).unwrap_err().to_string();
+    let changed = resolve(&identity, &options).unwrap();
+    // The top mod still supplies the file; only the changed layer is named.
+    assert_eq!(changed.layers.read("common/file.txt").unwrap(), b"top");
+    let names: Vec<_> = changed
+        .changed
+        .iter()
+        .map(|layer| layer.id.as_str())
+        .collect();
+    assert_eq!(names, ["b_base.mod"]);
+    assert_eq!(changed.changed[0].kind, "Mod");
+    let mut executable = identity.clone();
+    executable.exe_hash[0] ^= 1;
+    let both = resolve(&executable, &options).unwrap();
+    let names: Vec<_> = both
+        .changed
+        .iter()
+        .map(|layer| format!("{} {}", layer.kind, layer.id))
+        .collect();
+    assert_eq!(names, ["Game hoi4.exe", "Mod b_base.mod"]);
+    let error = changed.exact().unwrap_err().to_string();
     assert!(
         error.contains("Mod b_base.mod: content hash mismatch"),
         "{error}"

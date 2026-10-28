@@ -210,17 +210,22 @@ export async function loadPreparedFocusDetail(client: FocusPreparedClient, sourc
 }
 
 export const preparedArtKey = (hour: number, token: string) => JSON.stringify([hour, token]);
+/** The tokens' static text, and the content warnings its replies name once. */
 export async function loadPreparedFocusStaticText(client: FocusPreparedClient, source: DashboardSource, tokens: readonly string[], signal: AbortSignal) {
   const text: Artwork[] = [];
+  const warnings = new Set<string>();
   for (let first = 0; first < tokens.length; first += 128) {
     if (signal.aborted) throw new DOMException('Focus static text cancelled', 'AbortError');
     const wanted = tokens.slice(first, first + 128);
-    const values = await client.preparedQuery!<unknown>(source, 'focus-static-text', { tokens: wanted }, { signal });
-    if (!Array.isArray(values) || values.length !== wanted.length || !values.every((item, index) => artworkEntry(item) && item.token === wanted[index]))
+    const reply = await client.preparedQuery!<unknown>(source, 'focus-static-text', { tokens: wanted }, { signal }) as { texts?: unknown; warnings?: unknown } | null;
+    const values = reply?.texts;
+    if (!reply || !Array.isArray(reply.warnings) || !reply.warnings.every(item => typeof item === 'string')
+      || !Array.isArray(values) || values.length !== wanted.length || !values.every((item, index) => artworkEntry(item) && item.token === wanted[index]))
       throw new Error('Prepared focus static text omitted requested tokens.');
     text.push(...values);
+    for (const warning of reply.warnings as string[]) warnings.add(warning);
   }
-  return text;
+  return { text, warnings: [...warnings] };
 }
 /** One page of completed focuses, each with its art as evaluated at the hour
  * that confirmed it, and the active focus's art at `hour`. */
@@ -243,7 +248,7 @@ export async function loadPreparedFocusPage(client: FocusPreparedClient, source:
   const [staticText] = await Promise.all([loadPreparedFocusStaticText(client, source,
     [...new Set([...order.map(entry => entry.token), ...(active ? [active] : [])])].sort(), signal).catch(error => {
       if (signal.aborted) throw error;
-      staticReason = error instanceof Error ? error.message : String(error); return [];
+      staticReason = error instanceof Error ? error.message : String(error); return { text: [] as Artwork[], warnings: [] as string[] };
     }), Promise.all([...wanted].map(async ([date, tokens]) => {
     try {
       const dated = await loadFocusArt(client, source, branchId, tag, date, [...tokens], 'display', signal);
@@ -258,8 +263,10 @@ export async function loadPreparedFocusPage(client: FocusPreparedClient, source:
   if (signal.aborted) throw new DOMException('Focus query cancelled', 'AbortError');
   if (order.some(entry => !art.has(preparedArtKey(entry.completedByHour ?? row.orderFirstHour ?? row.at, entry.token)))
     || active && !art.has(preparedArtKey(hour, active))) throw new Error('Prepared focus artwork omitted requested tokens.');
-  const text = new Map(staticText.map(item => [item.token, item]));
+  // Static descriptions can stand in for refused art, so their content's warnings are the page's.
+  for (const warning of staticText.warnings) warnings.add(warning);
+  const text = new Map(staticText.text.map(item => [item.token, item]));
   for (const [key, item] of art) art.set(key, { ...item, reason: item.reason ?? staticReason, artwork: { ...item.artwork,
     description: item.artwork.description ?? text.get(item.artwork.token)?.description ?? null } });
-  return { order, art, staticText, displayHour: hour, warnings: [...warnings] };
+  return { order, art, staticText: staticText.text, displayHour: hour, warnings: [...warnings] };
 }

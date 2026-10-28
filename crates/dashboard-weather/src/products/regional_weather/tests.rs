@@ -955,6 +955,7 @@ fn mod_replace_paths_region_names_empty_titles_and_recorded_modifier_labels() {
             ])
             .unwrap(),
             stats: Default::default(),
+            changed: Vec::new(),
         }),
     );
     let params = json!({"branchId":"1", "regions":["73"]});

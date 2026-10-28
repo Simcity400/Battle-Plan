@@ -4260,6 +4260,7 @@ impl NamingStack {
                 }
                 let options = content.as_ref().map_err(String::clone)?;
                 let resolved = installed_content_core::resolve(&self.identity, options)
+                    .and_then(installed_content_core::ResolvedContent::exact)
                     .map_err(|error| error.to_string())?;
                 self.resolved = Some(resolved);
             }

@@ -185,7 +185,44 @@ fn changed_recorded_mod_is_verified_before_serving_a_cached_reply() {
     assert_eq!(
         entry.get().unwrap(),
         stored,
-        "failed verification must not replace the entry"
+        "a reply from changed content must not replace the recorded content's entry"
+    );
+    // The changed layer's installed hash keys its own entry.
+    let changed_entry = Entry::new(&changed, "war-casualties", true, &params, &context).unwrap();
+    assert_ne!(changed_entry.path, entry.path);
+    // A served reply names its own content's changed layer once, however often it is decorated.
+    let mut stack = vec!["kept".to_owned()];
+    changed.append_changed_warnings(&mut stack, context.content.as_ref());
+    changed.append_changed_warnings(&mut stack, context.content.as_ref());
+    let named: Vec<_> = stack
+        .iter()
+        .filter(|line| line.contains("hash mismatch"))
+        .collect();
+    assert_eq!(named.len(), 1, "{stack:?}");
+    assert_eq!(stack[0], "kept");
+    // A reply admitted under other folders names its own folders' content, whatever is bound now.
+    let mut other = context.content.clone().unwrap();
+    other.options.cache_dir = root.join("other-cache");
+    let mut own = vec!["kept".to_owned()];
+    changed.append_changed_warnings(&mut own, Some(&other));
+    assert_eq!(own, stack);
+    changed.append_changed_warnings(&mut stack, context.content.as_ref());
+    assert_eq!(own, stack);
+    // A reply that reads no game content is kept without it.
+    let recorded_only = load_product(
+        "world-tension",
+        &changed,
+        "changed",
+        &json!({"branchId":"1"}),
+        &context,
+    );
+    assert!(
+        !recorded_only["data"]["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str().unwrap().contains("hash mismatch")),
+        "{recorded_only}"
     );
     fs::remove_dir_all(root).unwrap();
 }

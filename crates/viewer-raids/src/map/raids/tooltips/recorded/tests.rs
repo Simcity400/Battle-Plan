@@ -312,6 +312,7 @@ fn scripted_content_with_files(
     let content = installed_content_core::content::ResolvedContent {
         layers,
         stats: Default::default(),
+        changed: Vec::new(),
     };
     let scripted =
         dashboard_text::scripted_text::ScriptedContent::read(Arc::new(content), String::new())
