@@ -9,16 +9,16 @@ use serde_json::{Value, json};
 use std::ops::RangeInclusive;
 
 #[derive(Clone, Copy)]
-struct Combat {
-    id: u64,
-    province: u32,
-    zero: i32,
-    attackers: u64,
-    lost: Option<i32>,
+pub(super) struct Combat {
+    pub(super) id: u64,
+    pub(super) province: u32,
+    pub(super) zero: i32,
+    pub(super) attackers: u64,
+    pub(super) lost: Option<i32>,
 }
 
 impl Combat {
-    fn new(id: u64, zero: i32) -> Self {
+    pub(super) fn new(id: u64, zero: i32) -> Self {
         Self {
             id,
             province: id as u32,
@@ -28,7 +28,7 @@ impl Combat {
         }
     }
 }
-fn hour_frame(branch: u64, hour: i32, mut present: Vec<Combat>) -> DecodedFrame {
+pub(super) fn hour_frame(branch: u64, hour: i32, mut present: Vec<Combat>) -> DecodedFrame {
     present.sort_unstable_by_key(|combat| combat.id);
     let mut sample = frame(hour, 8, 0);
     sample.branch = branch;
@@ -117,7 +117,7 @@ fn add_result(sample: &mut DecodedFrame, combat: u64, end: i32, from: i32) {
             ..Default::default()
         }]));
 }
-fn recording(blocks: Vec<Vec<DecodedFrame>>) -> Source {
+pub(super) fn recording(blocks: Vec<Vec<DecodedFrame>>) -> Source {
     let count = blocks.len();
     let mut replay: Option<Replay> = None;
     for frames in blocks {
@@ -496,11 +496,12 @@ fn forward_diagnostics_keep_early_variant_read_refusals() {
 
 #[test]
 fn forward_variant_reads_keep_changed_operands_and_refusals() {
+    use crate::products::land_battles::prepared::KEEP_ALL;
     use dashboard_base::products::equipment::VariantCatalogue;
     use std::collections::BTreeSet;
     let quiet = |_: i32| -> Vec<Combat> { Vec::new() };
-    // Each block must hold a daily variant read.
-    let names: [&[u8]; 4] = [b"First", b"Second", b"Second", &[0xff]];
+    // Each block must hold a daily variant read; the refusing name is read first.
+    let names: [&[u8]; 4] = [&[0xff], b"Second", b"Second", b"First"];
     let blocks: Vec<_> = (0..4)
         .map(|day| {
             let mut frames = block(1, 100 + 24 * day..=123 + 24 * day, &quiet);
@@ -542,11 +543,8 @@ fn forward_variant_reads_keep_changed_operands_and_refusals() {
             })
             .collect()
     };
-    let fixture = Fixture::new();
-    let census = forward(&source, 1, &fixture);
-    let in_order = census.variants;
-    assert_eq!(
-        in_order
+    let names = |variants: &VariantCatalogue| {
+        variants
             .versions
             .iter()
             .map(|(&id, versions)| {
@@ -554,30 +552,52 @@ fn forward_variant_reads_keep_changed_operands_and_refusals() {
                     id,
                     versions
                         .iter()
-                        .map(|version| version.raw.as_ref().map(|raw| raw.display_name.as_str()))
+                        .map(|version| version.raw.as_ref().map(|raw| raw.display_name.clone()))
                         .collect::<Vec<_>>(),
                 )
             })
-            .collect::<Vec<_>>(),
+            .collect::<Vec<_>>()
+    };
+    KEEP_ALL.set(true);
+    let kept = forward(&source, 1, &Fixture::new()).variants;
+    KEEP_ALL.set(false);
+    assert_eq!(
+        names(&kept),
         [
-            (7, vec![Some("First"), Some("Second"), Some("")]),
-            (8, vec![Some("Constant")]),
+            (
+                7,
+                vec![
+                    Some(String::new()),
+                    Some("Second".into()),
+                    Some("First".into())
+                ]
+            ),
+            (8, vec![Some("Constant".into())]),
         ],
         "the repeated Second read and unchanged variant 8 add no versions"
     );
     assert_eq!(
-        operands(&in_order).len(),
+        operands(&kept).len(),
         4,
         "three names of variant 7 and one of variant 8"
     );
     assert!(
-        in_order
-            .warnings()
+        kept.warnings()
             .iter()
             .any(|warning| warning.contains("not UTF-8")),
         "{:?}",
-        in_order.warnings()
+        kept.warnings()
     );
+    // Paging keeps each variant's current operands and every refusal read before them.
+    let paged = forward(&source, 1, &Fixture::new()).variants;
+    assert_eq!(
+        names(&paged),
+        [
+            (7, vec![Some("First".into())]),
+            (8, vec![Some("Constant".into())]),
+        ]
+    );
+    assert_eq!(paged.warnings(), kept.warnings());
 }
 
 #[test]

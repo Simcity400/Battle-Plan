@@ -3895,13 +3895,27 @@ pub fn write_reply<W: super::pages::Pages + ?Sized>(
     value: &impl Serialize,
 ) -> io::Result<()> {
     let json = serde_json::to_vec(value)?;
-    let compressed = compress(json.as_slice(), 3)?;
-    writer.write_at(section, ordinal, compressed.as_slice())?;
+    write_compressed(writer, section, ordinal, &compress(json.as_slice(), 3)?)
+}
+/// `value`'s JSON compressed as it is serialized, so a long reply is never held whole.
+pub fn compress_serialized(value: &impl Serialize, level: i32) -> io::Result<Vec<u8>> {
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), level)?;
+    serde_json::to_writer(&mut encoder, value)?;
+    encoder.finish()
+}
+/// Writes a compressed reply as [`write_reply`] does.
+pub fn write_compressed<W: super::pages::Pages + ?Sized>(
+    writer: &mut W,
+    section: &str,
+    ordinal: u64,
+    compressed: &[u8],
+) -> io::Result<()> {
+    writer.write_at(section, ordinal, compressed)?;
     #[cfg(any(test, feature = "test-support"))]
     writer.note_framing(
         section,
         ordinal,
-        super::pages::framing::compressed(&compressed),
+        super::pages::framing::compressed(compressed),
     );
     Ok(())
 }

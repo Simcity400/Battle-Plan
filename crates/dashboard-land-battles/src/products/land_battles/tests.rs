@@ -6,7 +6,56 @@ use replay_data::{
 use replay_frame::frame::TableView;
 
 mod forward;
+mod paging;
 mod speed;
+mod warnings;
+
+/// What a census still holds after paging matches the oracle, which never pages:
+/// a battle keeps its newest runs and loss reads, with the peaks of the runs it
+/// paged out as its earlier peaks.
+fn assert_held(prepared: &Census, oracle: &Census) {
+    for (at, episode) in &prepared.episodes {
+        let whole = &oracle.episodes[at];
+        let runs = whole.runs.len() - episode.runs.len();
+        let losses = whole.losses.len() - episode.losses.len();
+        let mut expected = whole.clone();
+        expected.runs.drain(..runs);
+        expected.losses.drain(..losses);
+        if let Some(last) = whole.runs[..runs].last() {
+            expected.prior_peaks = [
+                whole.peak_before(last.first_hour),
+                whole.side_peak_before(last.first_hour, 0),
+                whole.side_peak_before(last.first_hour, 1),
+            ];
+        }
+        expected.history = episode.history;
+        assert_eq!(episode.history.is_some(), runs + losses > 0, "battle {at}");
+        assert_eq!(
+            serde_json::to_value(episode).unwrap(),
+            serde_json::to_value(&expected).unwrap(),
+            "battle {at}"
+        );
+    }
+    let since = prepared.paged_before.unwrap_or(i32::MIN);
+    for (at, episode) in &oracle.episodes {
+        if !prepared.episodes.contains_key(at) {
+            assert!(
+                episode.end.as_ref().is_some_and(|(hour, _)| *hour < since),
+                "battle {at} is paged out only once it ended before {since}"
+            );
+        }
+    }
+    assert_eq!(prepared.warnings, oracle.warnings.between(since, i32::MAX));
+    assert!(oracle.observed.ends_with(&prepared.observed));
+    assert!(
+        prepared
+            .observed
+            .iter()
+            .skip(1)
+            .all(|(_, last)| *last >= since),
+        "no more than one span ending before {since} is held"
+    );
+}
 
 fn frame(hour: i32, countries: u32, combats: u32) -> DecodedFrame {
     let mut frame = dashboard_base::test_fixtures::source(1, hour, Some(0));
@@ -146,7 +195,7 @@ fn land_battles_wire_joins_hourly_losses_missing_reads_and_terminal_verdict() {
     )
     .unwrap();
     let census = scan(&replay, 1, &AtomicBool::new(false), None).unwrap();
-    let row = &census.episodes[0];
+    let row = &census.episodes[&0];
     assert_eq!(census.episodes.len(), 1);
     assert_eq!(row.casualties_at(100), Some(9.0));
     assert_eq!(row.casualties_at(101), None);
@@ -180,7 +229,7 @@ fn land_battles_loss_fields_remain_independent_and_equipment_stays_exact() {
     }
     let mut census = Census::default();
     census.observe(&sample).unwrap();
-    assert_eq!(census.episodes[0].casualties_at(100), Some(9.0));
+    assert_eq!(census.episodes[&0].casualties_at(100), Some(9.0));
     let reply = census.reply(&params(None), &windows(100, 100)).unwrap();
     let LandLossTotals::Read([attacker, defender]) = &reply.rows[0].losses[0].sides else {
         panic!("recorded counters");
@@ -191,7 +240,7 @@ fn land_battles_loss_fields_remain_independent_and_equipment_stays_exact() {
     assert!(
         matches!(defender, LandLossTotal::Known { manpower: LandManpower::Known(5), equipment } if equipment == "-9223372036854775807")
     );
-    let id = census.episodes[0].id.clone();
+    let id = census.episodes[&0].id.clone();
     let course = census.course(&id).unwrap();
     assert_eq!(course.designs, [design(8)]);
     let LandLossSides::Read([attacker, defender]) = &course.battle.losses[0].sides else {
@@ -264,11 +313,11 @@ fn land_battles_course_names_designs_without_their_handles() {
         })
         .is_err()
     );
-    let id = census.episodes[0].id.clone();
+    let id = census.episodes[&0].id.clone();
     let course = census.course(&id).unwrap();
     // Without content the name stays unknown; the handle is never part of it.
     assert_eq!(course.designs, [design(7)]);
-    assert_eq!(course.battle.runs, census.episodes[0].runs);
+    assert_eq!(course.battle.runs, census.episodes[&0].runs);
     assert_eq!(
         serde_json::to_value(&course.designs).unwrap(),
         serde_json::json!([{ "name": null, "variant": "7" }])
@@ -280,15 +329,16 @@ fn land_battles_rows_carry_each_sides_most_divisions_at_once() {
     for hour in 100..=103 {
         census.observe(&frame(hour, 5, 1)).unwrap();
     }
-    let run = census.episodes[0].runs[0].clone();
-    census.episodes[0].runs = [(100, 100, [5, 1]), (101, 101, [2, 6]), (102, 103, [1, 1])]
-        .map(|(first_hour, last_hour, counts)| LandBattleRun {
-            first_hour,
-            last_hour,
-            counts,
-            ..run.clone()
-        })
-        .to_vec();
+    let run = census.episodes[&0].runs[0].clone();
+    census.episodes.get_mut(&0).unwrap().runs =
+        [(100, 100, [5, 1]), (101, 101, [2, 6]), (102, 103, [1, 1])]
+            .map(|(first_hour, last_hour, counts)| LandBattleRun {
+                first_hour,
+                last_hour,
+                counts,
+                ..run.clone()
+            })
+            .to_vec();
     let windows = [
         BattleWindow {
             first_hour: 100,
@@ -337,12 +387,12 @@ fn land_battles_terminal_only_rows_keep_unknown_rosters_and_do_not_join_across_g
     }
     census.observe(&ended).unwrap();
     assert_eq!(census.episodes.len(), 2);
-    assert!(census.episodes[0].result.is_none());
+    assert!(census.episodes[&0].result.is_none());
     assert!(matches!(
-        &census.episodes[0].end,
+        &census.episodes[&0].end,
         Some((_, BattleEnd::Unknown { .. }))
     ));
-    let terminal = &census.episodes[1];
+    let terminal = &census.episodes[&1];
     assert!(terminal.runs[0].roster_unknown);
     assert!(terminal.peak_before(105).is_none());
     assert_eq!(terminal.casualties_at(105), Some(21.0));
@@ -442,7 +492,7 @@ fn land_battles_windows_clip_reads_retain_prior_peak_and_scope_warnings() {
     }
     census.warn(101, "earlier warning");
     census.warn(105, "later warning");
-    census.episodes[0].runs[0].counts = [4, 1];
+    census.episodes.get_mut(&0).unwrap().runs[0].counts = [4, 1];
     let windows = [
         BattleWindow {
             first_hour: 100,
@@ -496,7 +546,7 @@ fn land_battles_no_chosen_row_or_country_limits_and_only_reply_budget_refuses() 
         .is_err()
     );
     let length = MAX_PRODUCT_REPLY_BYTES / census.episodes.len() + 1;
-    for episode in &mut census.episodes {
+    for episode in census.episodes.values_mut() {
         episode.runs[0].countries[0][0] = "x".repeat(length);
     }
     assert!(
@@ -528,11 +578,7 @@ fn land_battles_wire_scan_keeps_branch_tail_and_absent_read_end() {
         dashboard_base::test_fixtures::CAMPAIGN.into(),
         &[dashboard_base::test_fixtures::records(
             1,
-            vec![
-                frame(100, 5, 1),
-                frame(101, 5, 0),
-                frame(102, 5, 1),
-            ],
+            vec![frame(100, 5, 1), frame(101, 5, 0), frame(102, 5, 1)],
         )],
     )
     .unwrap();
@@ -577,7 +623,7 @@ fn land_battles_counter_runs_are_exact_and_split_non_unit_steps() {
         }
         census.observe(&sample).unwrap();
     }
-    let episode = &census.episodes[0];
+    let episode = &census.episodes[&0];
     assert_eq!(episode.counter_base, 50);
     assert_eq!(episode.runs.len(), 3);
     assert_eq!(episode.runs[0].duration_at(101), 51);
@@ -632,7 +678,7 @@ fn land_battles_ranking_filters_before_top_n_and_keeps_unknown_participants() {
             .len(),
         3
     );
-    assert!(census.episodes[0].end.is_none());
+    assert!(census.episodes[&0].end.is_none());
 }
 #[test]
 fn land_battles_ranking_keeps_hourly_participants_for_a_result_side_without_countries() {
@@ -651,7 +697,7 @@ fn land_battles_ranking_keeps_hourly_participants_for_a_result_side_without_coun
         rows[0].sides[1].countries.clear();
     }
     census.observe(&ended).unwrap();
-    let result = census.episodes[0].result.as_ref().unwrap();
+    let result = census.episodes[&0].result.as_ref().unwrap();
     assert_eq!(result.countries_unknown, [false, true]);
     let mut params = ranking_params(100, 101, 10, "Peak size");
     // The hourly read recorded the defender, so an unrelated country no longer matches.
@@ -752,7 +798,7 @@ fn land_battles_casualties_window_carries_one_read_and_keeps_terminal_dated() {
         census.observe(&frame(hour, 5, 1)).unwrap();
     }
     census.observe(&frame(104, 5, 0)).unwrap();
-    census.episodes[0].losses = vec![
+    census.episodes.get_mut(&0).unwrap().losses = vec![
         loss_read(100, false, [1, 2]),
         loss_read(101, false, [3, 4]),
         loss_read(103, true, [7, 8]),
@@ -765,8 +811,8 @@ fn land_battles_casualties_window_carries_one_read_and_keeps_terminal_dated() {
     assert_eq!(ended.rows[0].losses.len(), 1);
     assert_eq!(ended.rows[0].losses[0].hour, 103);
     assert!(ended.rows[0].losses[0].terminal);
-    assert_eq!(census.episodes[0].casualties_at(102), Some(7.0));
-    assert_eq!(census.episodes[0].casualties_at(103), Some(15.0));
+    assert_eq!(census.episodes[&0].casualties_at(102), Some(7.0));
+    assert_eq!(census.episodes[&0].casualties_at(103), Some(15.0));
 }
 
 #[test]
@@ -775,12 +821,12 @@ fn land_battles_casualties_rank_so_far_and_terminal_manpower_before_top_n() {
     for hour in 100..=102 {
         census.observe(&frame(hour, 5, 3)).unwrap();
     }
-    census.episodes[0].runs[0].counts = [10, 10];
-    census.episodes[0].losses = vec![
+    census.episodes.get_mut(&0).unwrap().runs[0].counts = [10, 10];
+    census.episodes.get_mut(&0).unwrap().losses = vec![
         loss_read(101, false, [1, 2]),
         loss_read(102, true, [100, 200]),
     ];
-    census.episodes[1].losses = vec![loss_read(101, false, [10, 20])];
+    census.episodes.get_mut(&1).unwrap().losses = vec![loss_read(101, false, [10, 20])];
     let reply = census
         .ranked(
             &ranking_params(100, 101, 1, "Casualties"),
@@ -822,7 +868,7 @@ fn land_battles_casualties_rank_so_far_and_terminal_manpower_before_top_n() {
 fn land_battles_casualties_unknown_side_is_not_zero_and_recorded_zero_ranks() {
     let mut census = Census::default();
     census.observe(&frame(100, 5, 1)).unwrap();
-    census.episodes[0].losses = vec![loss_read(100, false, [0, 0])];
+    census.episodes.get_mut(&0).unwrap().losses = vec![loss_read(100, false, [0, 0])];
     let params = ranking_params(100, 100, 1, "Casualties");
     assert_eq!(
         census
@@ -831,8 +877,12 @@ fn land_battles_casualties_unknown_side_is_not_zero_and_recorded_zero_ranks() {
             .effective_measure,
         "Casualties"
     );
-    census.episodes[0].losses[0].sides.as_mut().unwrap()[1].manpower = None;
-    assert_eq!(census.episodes[0].casualties_at(100), None);
+    census.episodes.get_mut(&0).unwrap().losses[0]
+        .sides
+        .as_mut()
+        .unwrap()[1]
+        .manpower = None;
+    assert_eq!(census.episodes[&0].casualties_at(100), None);
     assert_eq!(
         census
             .ranked(&params, &AtomicBool::new(false))
@@ -1029,7 +1079,7 @@ fn land_battles_compact_loss_reads_rebuild_every_full_read() {
             )
         })
         .collect();
-    let id = census.episodes[0].id.clone();
+    let id = census.episodes[&0].id.clone();
     let course = census.course(&id).unwrap();
     let labels = design_labels(&course.designs);
     assert_eq!(decode(&labels, &course.battle.losses), full);
@@ -1151,7 +1201,7 @@ fn land_battles_busy_block_sends_changed_losses_far_below_their_full_reads() {
     let window = json_len(&reply, MAX_PRODUCT_REPLY_BYTES).unwrap();
     assert!(window * 4 < MAX_PRODUCT_REPLY_BYTES, "{window}");
     // One battle's course lists only changed amounts after its first read.
-    let id = census.episodes[0].id.clone();
+    let id = census.episodes[&0].id.clone();
     let course = census.course(&id).unwrap();
     let labels = design_labels(&course.designs);
     let mut full = 0;
@@ -1182,7 +1232,7 @@ fn land_battles_busy_block_sends_changed_losses_far_below_their_full_reads() {
 
 #[test]
 fn prepared_land_matches_oracle_across_commits_resume_append_and_census() {
-    use dashboard_base::prepared::series::{self, tests::Fixture};
+    use dashboard_base::prepared::series::tests::Fixture;
     let flag = AtomicBool::new(false);
     let mut inputs = Vec::new();
     for hour in 100..104 {
@@ -1299,7 +1349,7 @@ fn prepared_land_matches_oracle_across_commits_resume_append_and_census() {
             );
         }
     }
-    for episode in oracle.episodes.iter().take(3) {
+    for episode in oracle.episodes.values().take(3) {
         let params = LandBattleCourseParams {
             branch_id: "1".into(),
             id: episode.id.clone(),
@@ -1318,11 +1368,20 @@ fn prepared_land_matches_oracle_across_commits_resume_append_and_census() {
             serde_json::to_value(oracle.course(&episode.id).unwrap()).unwrap()
         );
     }
-    let (keys, ()) =
-        series::read_catalogue::<()>(&fixture.store, &fixture.key, "land-battle-keys", 1)
-            .unwrap()
-            .unwrap();
-    assert!(!keys.contains_key("missing"));
+    let missing = prepared::query(
+        &source,
+        "land-battle-course",
+        serde_json::to_value(LandBattleCourseParams {
+            branch_id: "1".into(),
+            id: "missing".into(),
+        })
+        .unwrap(),
+        &fixture.store,
+        &fixture.key,
+        &flag,
+    )
+    .unwrap_err();
+    assert_eq!(missing.to_string(), "Battle not in this recording branch");
 }
 
 #[test]

@@ -9,7 +9,11 @@ fn step(census: &mut Census, input: &DecodedFrame, tracker: &mut FrameChangeTrac
     census.observe_prepared(input, &changes).unwrap();
 }
 
+/// A census that paged out earlier hours answers from memory only for those it holds.
 fn assert_replies(prepared: &Census, oracle: &Census, first: i32, last: i32) {
+    let first = prepared
+        .paged_before
+        .map_or(first, |before| first.max(before));
     observer_tests::assert_reply_parity(
         &prepared
             .reply(&params(Some(0)), &windows(first, last))
@@ -27,7 +31,13 @@ fn assert_replies(prepared: &Census, oracle: &Census, first: i32, last: i32) {
         )
         .unwrap();
     }
-    for episode in oracle.episodes.iter().take(3) {
+    // A battle that paged out runs or reads has its whole course only in the store.
+    for episode in prepared
+        .episodes
+        .values()
+        .filter(|episode| episode.history.is_none())
+        .take(3)
+    {
         observer_tests::assert_reply_parity(
             &prepared.course(&episode.id).unwrap(),
             &oracle.course(&episode.id).unwrap(),
@@ -62,7 +72,7 @@ fn unchanged_work(combats: u32, hours: usize, unknown: bool) -> io::Result<Work>
     )?;
     // These read open state without forcing the stored census to expand.
     assert_replies(&prepared, &oracle, 100, 100 + hours as i32);
-    assert_eq!(prepared.episodes[0].runs.len(), 1);
+    assert_eq!(prepared.episodes[&0].runs.len(), 1);
     assert_eq!(prepared.deferred_through, Some(100 + hours as i32));
     prepared.materialize()?;
     assert_replies(&prepared, &oracle, 100, 100 + hours as i32);
@@ -155,8 +165,8 @@ fn land_shared_driver_unavailable_inputs_materialize_old_frontier_and_keep_diagn
     prepared.materialize().unwrap();
     observer_tests::assert_reply_parity(&prepared.episodes, &oracle.episodes).unwrap();
     assert_eq!(prepared.warnings, oracle.warnings);
-    assert_eq!(prepared.episodes[0].runs.last().unwrap().last_hour, 105);
-    assert_eq!(prepared.episodes[0].end.as_ref().unwrap().0, 106);
+    assert_eq!(prepared.episodes[&0].runs.last().unwrap().last_hour, 105);
+    assert_eq!(prepared.episodes[&0].end.as_ref().unwrap().0, 106);
 }
 
 fn fixture_inputs(combats: u32) -> Vec<Vec<DecodedFrame>> {
@@ -290,8 +300,7 @@ fn publication_parity(combats: u32) {
             .unwrap();
         writer.commit().unwrap();
         assert!(prepared.deferred_through.is_none());
-        observer_tests::assert_reply_parity(&prepared.episodes, &oracle.episodes).unwrap();
-        assert_eq!(prepared.warnings, oracle.warnings);
+        assert_held(&prepared, &oracle);
         if ordinal == 1 || ordinal == 2 {
             prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
             prepared.configure(&source, &context);
@@ -336,7 +345,7 @@ fn publication_parity(combats: u32) {
                 .unwrap();
         }
     }
-    for episode in oracle.episodes.iter().take(3) {
+    for episode in oracle.episodes.values().take(3) {
         let params = LandBattleCourseParams {
             branch_id: "1".into(),
             id: episode.id.clone(),

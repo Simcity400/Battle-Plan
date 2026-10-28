@@ -46,7 +46,7 @@ use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
@@ -60,6 +60,7 @@ use {
 mod losses;
 pub mod prepared;
 mod terrain;
+mod warnings;
 pub use terrain::LandBattleTerrains;
 pub use terrain::check_content as check_terrain_content;
 
@@ -343,6 +344,20 @@ struct Episode {
     result: Option<LandBattleResultRead>,
     loss_inputs: Option<[losses::SideLossInputs; 2]>,
     prior_peaks: [Option<LandBattlePeak>; 3],
+    /// The newest page of the runs and loss reads paged out before these
+    /// (`prepared::page_out`), whose peaks `prior_peaks` holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    history: Option<u64>,
+}
+/// A finalizer for a combat whose newest battle may be paged out: publication
+/// reads that battle and ends it, or keeps this finalizer's own battle.
+#[derive(Serialize, Deserialize)]
+struct Pending {
+    combat: u64,
+    from_hour: i32,
+    /// The finalizer's own battle, already ended, at the ordinal it was given.
+    at: usize,
+    own: Episode,
 }
 /// Keys numbered in first-use order, so a reply sends each text once.
 #[derive(Default)]
@@ -475,6 +490,24 @@ impl Episode {
             (None, peak) => peak,
         }
     }
+    /// Folds `runs`, which precede every run held, into the earlier peaks.
+    fn fold_peaks(&mut self, runs: &[LandBattleRun]) {
+        for run in runs.iter().filter(|run| !run.roster_unknown) {
+            let [attackers, defenders] = run.counts.map(u64::from);
+            for (peak, value) in
+                self.prior_peaks
+                    .iter_mut()
+                    .zip([attackers + defenders, attackers, defenders])
+            {
+                if peak.as_ref().is_none_or(|peak| value > peak.value) {
+                    *peak = Some(LandBattlePeak {
+                        value,
+                        hour: run.first_hour,
+                    });
+                }
+            }
+        }
+    }
     /// The largest known roster value in runs starting at or before `hour`, at its earliest hour.
     fn peak_by(&self, hour: i32, value: impl Fn(&[u32; 2]) -> u64) -> Option<LandBattlePeak> {
         self.runs
@@ -502,13 +535,18 @@ pub struct Census {
     /// ([`dashboard_text::metadata::slot_read`]).
     #[serde(skip)]
     format: replay_data::format::FormatVersion,
-    episodes: Vec<Episode>,
+    /// Battles in memory by ordinal, their order of creation: every open one
+    /// and every one a publication may still draw (`prepared::page_out`).
+    episodes: BTreeMap<usize, Episode>,
+    /// Battles created, so the next one's ordinal.
+    created: usize,
+    /// The earliest start of any battle, which opens the first ranking interval.
+    first_start: Option<i32>,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
     open: HashMap<u64, usize>,
     links: LinkTags,
     observed: Vec<(i32, i32)>,
-    #[serde(with = "dashboard_core::map_pairs")]
-    warnings: BTreeMap<(i32, String), usize>,
+    warnings: warnings::Warnings,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
     latest: HashMap<u64, usize>,
     variants: dashboard_base::products::equipment::VariantCatalogue,
@@ -520,14 +558,19 @@ pub struct Census {
     #[serde(default)]
     refusals: dashboard_text::catalogue::OwnRefusals,
     designs: losses::Designs,
-    pages: BTreeMap<String, u64>,
+    /// Ordinals whose course pages are published.
+    keyed: usize,
+    /// Battles that ended before this hour, and warnings dated before it,
+    /// are paged out to the prepared store.
+    paged_before: Option<i32>,
+    pending: Vec<Pending>,
     windows: dashboard_base::prepared::series::Accumulator,
     reads: dashboard_base::prepared::series::Accumulator,
     available: bool,
     #[serde(skip)]
     configured: bool,
     #[serde(skip)]
-    dirty: std::collections::BTreeSet<usize>,
+    dirty: BTreeSet<usize>,
     /// Only successful adjacent reads with identical live operands advance it.
     /// observed retains the materialized endpoint until the carry is expanded.
     deferred_through: Option<i32>,
@@ -594,9 +637,25 @@ impl LiveSide {
         }
     }
 }
+/// A battle the census holds in memory.
+fn held(episodes: &mut BTreeMap<usize, Episode>, at: usize) -> &mut Episode {
+    episodes.get_mut(&at).expect("battle held in memory")
+}
 impl Census {
-    fn warn(&mut self, hour: i32, reason: impl Into<String>) {
-        *self.warnings.entry((hour, reason.into())).or_default() += 1;
+    fn warn(&mut self, hour: i32, reason: impl AsRef<str> + Into<String>) {
+        self.warnings.add(hour, reason, 1);
+    }
+    /// The ordinal of a new battle starting at `hour`.
+    fn begin(&mut self, hour: i32) -> usize {
+        self.started(hour);
+        self.reserve()
+    }
+    fn reserve(&mut self) -> usize {
+        self.created += 1;
+        self.created - 1
+    }
+    fn started(&mut self, hour: i32) {
+        self.first_start = Some(self.first_start.map_or(hour, |first| first.min(hour)));
     }
     fn advance(&mut self, hour: i32) {
         self.deferred_through = Some(hour);
@@ -606,7 +665,7 @@ impl Census {
             return Ok(());
         };
         for &at in self.open.values() {
-            let emitted = self.episodes[at].expand_constant(through);
+            let emitted = held(&mut self.episodes, at).expand_constant(through);
             if emitted != 0 {
                 self.dirty.insert(at);
             }
@@ -621,7 +680,7 @@ impl Census {
             *last += 1;
             self.reads.event(0, *last, &*last)?;
             for (reason, count) in &self.live_warnings {
-                *self.warnings.entry((*last, reason.clone())).or_default() += count;
+                self.warnings.add(*last, reason.as_str(), *count);
             }
         }
         Ok(())
@@ -654,13 +713,18 @@ impl Census {
                 (first, last)
             })
     }
-    fn warning_counts(&self, first: i32, last: i32) -> BTreeMap<(i32, String), usize> {
-        let mut warnings: BTreeMap<_, _> = self
-            .warnings
-            .iter()
-            .filter(|((hour, _), _)| *hour >= first && *hour <= last)
-            .map(|(key, count)| (key.clone(), *count))
-            .collect();
+    fn warning_counts(&self, first: i32, last: i32) -> warnings::Warnings {
+        self.counts_in(&self.warnings, first, last)
+    }
+    /// `warnings` dated `first` through `last`, with the reads deferred since
+    /// the last census read.
+    fn counts_in(
+        &self,
+        warnings: &warnings::Warnings,
+        first: i32,
+        last: i32,
+    ) -> warnings::Warnings {
+        let mut warnings = warnings.between(first, last);
         if let Some(through) = self.deferred_through {
             let base = self.observed.last().expect("accepted live census").1;
             let mut hour = base;
@@ -668,7 +732,7 @@ impl Census {
                 hour += 1;
                 if hour >= first {
                     for (reason, count) in &self.live_warnings {
-                        *warnings.entry((hour, reason.clone())).or_default() += count;
+                        warnings.add(hour, reason.as_str(), *count);
                     }
                 }
             }
@@ -695,8 +759,9 @@ impl Census {
         self.materialize()?;
         for (_, at) in self.open.drain() {
             self.dirty.insert(at);
-            self.episodes[at].lose_losses(hour);
-            self.episodes[at].end = Some((
+            let episode = held(&mut self.episodes, at);
+            episode.lose_losses(hour);
+            episode.end = Some((
                 hour,
                 BattleEnd::Unknown {
                     unknown: "Ending not recorded".into(),
@@ -843,7 +908,7 @@ impl Census {
             let at = self.open.remove(&id).expect("open battle");
             // A gap already closes open episodes as unknown; only adjacent absence reaches here.
             self.dirty.insert(at);
-            self.episodes[at].end = Some((
+            held(&mut self.episodes, at).end = Some((
                 hour,
                 BattleEnd::Moment(BattleMoment {
                     hour,
@@ -872,7 +937,7 @@ impl Census {
             let countries_unknown = side.unknown;
             for (reason, count) in side.warnings {
                 *self.live_warnings.entry(reason.clone()).or_default() += count;
-                *self.warnings.entry((hour, reason)).or_default() += count;
+                self.warnings.add(hour, reason, count);
             }
             let distinct = |handles: &[u64]| -> io::Result<u32> {
                 u32::try_from(handles.iter().collect::<HashSet<_>>().len())
@@ -880,6 +945,7 @@ impl Census {
             };
             // Duration and other combat fields move hourly. A delta that
             // leaves both rosters alone preserves their distinct counts.
+            let current = self.open.get(&row.id).map(|at| (*at, &self.episodes[at]));
             let counts = roster_changes.and_then(|(changed, deleted)| {
                 let key = u128::from(row.id);
                 if deleted.binary_search(&key).is_ok() {
@@ -890,8 +956,7 @@ impl Census {
                 {
                     return None;
                 }
-                let at = self.open.get(&row.id)?;
-                self.episodes[*at].runs.last().map(|run| run.counts)
+                current?.1.runs.last().map(|run| run.counts)
             });
             let counts = match counts {
                 Some(counts) => counts,
@@ -901,21 +966,21 @@ impl Census {
                     [distinct(&row.attackers)?, distinct(&row.defenders)?]
                 }
             };
-            let continuing = self.open.get(&row.id).copied().filter(|at| {
-                let episode = &self.episodes[*at];
-                episode.province == row.province
-                    && episode
-                        .runs
-                        .last()
-                        .is_none_or(|run| i64::from(row.duration) >= run.duration_at(run.last_hour))
-            });
+            let continuing = current
+                .filter(|(_, episode)| {
+                    episode.province == row.province
+                        && episode.runs.last().is_none_or(|run| {
+                            i64::from(row.duration) >= run.duration_at(run.last_hour)
+                        })
+                })
+                .map(|(at, _)| at);
             let at = match continuing {
                 Some(at) => at,
                 None => {
                     opened.push(row.id);
                     if let Some(old) = self.open.remove(&row.id) {
                         self.dirty.insert(old);
-                        self.episodes[old].end = Some((
+                        held(&mut self.episodes, old).end = Some((
                             hour,
                             BattleEnd::Moment(BattleMoment {
                                 hour,
@@ -923,33 +988,37 @@ impl Census {
                             }),
                         ));
                     }
-                    let at = self.episodes.len();
-                    self.episodes.push(Episode {
-                        id: format!("{}:{}:{hour}", frame.branch, row.id),
-                        province: row.province,
-                        start: BattleMoment {
-                            hour,
-                            bound: if adjacent {
-                                BattleBound::Exact
-                            } else {
-                                BattleBound::By
+                    let at = self.begin(hour);
+                    self.episodes.insert(
+                        at,
+                        Episode {
+                            id: format!("{}:{}:{hour}", frame.branch, row.id),
+                            province: row.province,
+                            start: BattleMoment {
+                                hour,
+                                bound: if adjacent {
+                                    BattleBound::Exact
+                                } else {
+                                    BattleBound::By
+                                },
                             },
+                            end: None,
+                            counter_base: if adjacent { 0 } else { row.duration },
+                            runs: Vec::with_capacity(1),
+                            losses: Vec::new(),
+                            result: None,
+                            loss_inputs: None,
+                            prior_peaks: [None, None, None],
+                            history: None,
                         },
-                        end: None,
-                        counter_base: if adjacent { 0 } else { row.duration },
-                        runs: Vec::with_capacity(1),
-                        losses: Vec::new(),
-                        result: None,
-                        loss_inputs: None,
-                        prior_peaks: [None, None, None],
-                    });
+                    );
                     self.open.insert(row.id, at);
                     self.latest.insert(row.id, at);
                     at
                 }
             };
             self.dirty.insert(at);
-            let runs = &mut self.episodes[at].runs;
+            let runs = &mut held(&mut self.episodes, at).runs;
             if let Some(run) = runs.last_mut().filter(|run| {
                 run.last_hour.checked_add(1) == Some(hour)
                     && run.counts == counts
@@ -987,8 +1056,9 @@ impl Census {
         let mut reasons = Numbered::default();
         let counts = self.warning_counts(first, last);
         let warnings = counts
-            .iter()
-            .map(|((hour, reason), count)| (*hour, reasons.index(reason.as_str()), *count))
+            .hourly()
+            .into_iter()
+            .map(|(hour, reason, count)| (hour, reasons.index(reason), count))
             .collect();
         (
             reasons.into_vec().into_iter().map(String::from).collect(),
@@ -1013,7 +1083,7 @@ impl Census {
             .filter(|(first, last)| *first <= window.last_hour && *last >= window.first_hour)
             .map(|(first, last)| (first.max(window.first_hour), last.min(window.last_hour)))
             .collect();
-        for episode in &self.episodes {
+        for episode in self.episodes.values() {
             let episode = self.effective_episode(episode);
             if episode.start.hour > window.last_hour {
                 continue;
@@ -1092,7 +1162,7 @@ impl Census {
         };
         let episodes: Vec<_> = self
             .episodes
-            .iter()
+            .values()
             .map(|episode| self.effective_episode(episode))
             .collect();
         let mut ranked = Vec::new();
@@ -1184,24 +1254,15 @@ impl Census {
             census_hour,
             effective_measure: effective.into(),
             content_warnings: self.content_warnings(),
-            warnings: {
-                let mut summary: BTreeMap<&str, (i32, usize)> = BTreeMap::new();
-                let warnings = self.warning_counts(params.first_hour, params.last_hour);
-                for ((hour, reason), count) in &warnings {
-                    if *hour >= params.first_hour && *hour <= params.last_hour {
-                        let entry = summary.entry(reason).or_insert((*hour, 0));
-                        entry.1 += count;
-                    }
-                }
-                summary
-                    .into_iter()
-                    .map(|(reason, (hour, count))| BattleWarning {
-                        hour,
-                        reason: reason.into(),
-                        count,
-                    })
-                    .collect()
-            },
+            warnings: self
+                .warning_counts(params.first_hour, params.last_hour)
+                .totals()
+                .map(|(reason, hour, count)| BattleWarning {
+                    hour,
+                    reason: reason.into(),
+                    count,
+                })
+                .collect(),
         })
     }
 }
@@ -1232,7 +1293,7 @@ impl Census {
     fn course(&self, id: &str) -> io::Result<LandBattleCourseReply> {
         let episode = self
             .episodes
-            .iter()
+            .values()
             .find(|episode| episode.id == id)
             .ok_or_else(|| dashboard_core::invalid("Battle not in this recording branch"))?;
         let mut designs = Numbered::default();
@@ -1606,8 +1667,17 @@ impl Census {
     ) -> dashboard_base::prepared::state_census::Line {
         let (window_keys, window_active) = self.windows.census_keys();
         let (read_keys, read_active) = self.reads.census_keys();
+        let largest_open = self
+            .open
+            .values()
+            .filter_map(|at| {
+                dashboard_base::prepared::state_census::json_bytes(&self.episodes[at]).ok()
+            })
+            .max()
+            .unwrap_or(0);
         line.field("land_episodes", self.episodes.len())
             .json("land_episodes_json", &self.episodes)
+            .field("land_largest_open_json", largest_open)
             .field("land_open", self.open.len())
             .field("land_latest", self.latest.len())
             .field("land_observed", self.observed.len())
@@ -1617,8 +1687,8 @@ impl Census {
             .json("land_links_json", &self.links)
             .json("land_variants_json", &self.variants)
             .json("land_designs_json", &self.designs)
-            .field("land_pages", self.pages.len())
-            .json("land_pages_json", &self.pages)
+            .field("land_created", self.created)
+            .field("land_pending", self.pending.len())
             .field("land_window_keys", window_keys)
             .field("land_window_active", window_active)
             .json("land_windows_json", &self.windows)

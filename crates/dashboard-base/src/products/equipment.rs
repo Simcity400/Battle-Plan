@@ -841,6 +841,9 @@ pub struct VariantCatalogue {
     pub versions: BTreeMap<u64, Vec<VariantVersion>>,
     last_hour: Option<i32>,
     known: BTreeSet<u64>,
+    /// The refusals of versions [`Self::keep_current`] dropped.
+    #[serde(default, skip_serializing_if = "crate::catalogue::Refusals::is_empty")]
+    refused: crate::catalogue::Refusals,
     #[serde(skip)]
     reads: VariantReads,
     /// A complete read was applied and nothing was forgotten since, so every
@@ -1286,9 +1289,23 @@ impl VariantCatalogue {
             .unwrap_or_default()
     }
 
+    /// Drops each variant's versions before its current one, keeping their
+    /// refusals for [`Self::warnings`]: for products that name a variant only
+    /// as it is when they read it.
+    pub fn keep_current(&mut self) {
+        for (id, versions) in &mut self.versions {
+            let earlier = versions.len().saturating_sub(1);
+            for version in versions.drain(..earlier) {
+                for (_, why) in version.raw.iter().flat_map(|raw| &raw.refusals) {
+                    self.refused.note(why.as_str(), id.to_string());
+                }
+            }
+        }
+    }
+
     /// Invalid strings refuse only names/design identity, never numeric rows.
     pub fn warnings(&self) -> Vec<String> {
-        let mut refusals = crate::catalogue::Refusals::default();
+        let mut refusals = self.refused.clone();
         for (id, versions) in &self.versions {
             for raw in versions.iter().filter_map(|version| version.raw.as_ref()) {
                 for (_, why) in &raw.refusals {

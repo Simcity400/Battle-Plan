@@ -105,9 +105,9 @@ impl LossRead {
     }
     /// A side lists every design when its designs or order differ from its
     /// previous read in the reply, else only the positions whose amounts changed.
-    pub(super) fn wire<'a>(
-        &'a self,
-        previous: &mut [Option<&'a [(usize, i64)]>; 2],
+    pub(super) fn wire(
+        &self,
+        previous: &mut [Option<Vec<(usize, i64)>>; 2],
         designs: &mut Numbered<usize>,
     ) -> LandBattleCourseRead {
         let sides = match &self.sides {
@@ -121,7 +121,7 @@ impl LossRead {
                         unknown: NOT_RECORDED.into(),
                     };
                 };
-                match previous[index].replace(variants).filter(|before| {
+                match previous[index].replace(variants.clone()).filter(|before| {
                     before.len() == variants.len()
                         && before
                             .iter()
@@ -270,12 +270,13 @@ impl Census {
             });
             if let Some(losses) = losses {
                 // Repeated confirmations need no repeated values in the reply.
-                if self.episodes[at].loss_inputs.as_ref() == Some(&losses) {
+                if self.episodes[&at].loss_inputs.as_ref() == Some(&losses) {
                     continue;
                 }
                 let sides = self.side_reads(frame.hour, &losses);
-                self.episodes[at].loss_inputs = Some(losses);
-                self.episodes[at].losses.push(LossRead {
+                let episode = held(&mut self.episodes, at);
+                episode.loss_inputs = Some(losses);
+                episode.losses.push(LossRead {
                     hour: frame.hour,
                     terminal: false,
                     sides: Ok(sides),
@@ -283,7 +284,7 @@ impl Census {
             } else {
                 let reason = "Hourly losses not recorded";
                 self.dirty.insert(at);
-                let episode = &mut self.episodes[at];
+                let episode = held(&mut self.episodes, at);
                 episode.loss_inputs = None;
                 if episode
                     .losses
@@ -353,51 +354,54 @@ impl Census {
                 countries[index].dedup();
                 countries_unknown[index] |= countries[index].is_empty();
             }
-            let existing = self.latest.get(&result.combat).copied().filter(|&at| {
-                let episode = &self.episodes[at];
-                episode.province == result.province
-                    && episode.result.is_none()
-                    && episode.start.hour <= result.end_hour
-                    && episode.runs.last().is_some_and(|run| {
-                        run.last_hour >= coverage.from_hour
-                            && run.last_hour <= result.end_hour
-                            && run
-                                .last_hour
-                                .checked_add(1)
-                                .is_some_and(|next| result.end_hour <= next)
-                    })
+            let latest = self.latest.get(&result.combat).copied();
+            let existing = latest.filter(|at| {
+                self.episodes[at].ends(result.province, result.end_hour, coverage.from_hour)
             });
+            // A paged battle ended before `paged_before`, so only a finalizer
+            // whose coverage reaches back past it can end one.
+            let pending = latest.is_none()
+                && self
+                    .paged_before
+                    .is_some_and(|before| coverage.from_hour < before);
             let at = existing.unwrap_or_else(|| {
-                let at = self.episodes.len();
-                self.episodes.push(Episode {
-                    id: format!("{}:{}:result:{}", frame.branch, result.combat, result.id),
-                    province: result.province,
-                    start: BattleMoment {
-                        hour: result.end_hour,
-                        bound: BattleBound::By,
+                let at = self.reserve();
+                if !pending {
+                    self.started(result.end_hour);
+                }
+                self.episodes.insert(
+                    at,
+                    Episode {
+                        id: format!("{}:{}:result:{}", frame.branch, result.combat, result.id),
+                        province: result.province,
+                        start: BattleMoment {
+                            hour: result.end_hour,
+                            bound: BattleBound::By,
+                        },
+                        end: None,
+                        counter_base: 0,
+                        losses: Vec::new(),
+                        loss_inputs: None,
+                        result: None,
+                        prior_peaks: [None, None, None],
+                        history: None,
+                        runs: vec![LandBattleRun {
+                            first_hour: result.end_hour,
+                            last_hour: result.end_hour,
+                            counts: [0; 2],
+                            roster_unknown: true,
+                            countries: countries.clone(),
+                            countries_unknown,
+                            duration: result.duration,
+                        }],
                     },
-                    end: None,
-                    counter_base: 0,
-                    losses: Vec::new(),
-                    loss_inputs: None,
-                    result: None,
-                    prior_peaks: [None, None, None],
-                    runs: vec![LandBattleRun {
-                        first_hour: result.end_hour,
-                        last_hour: result.end_hour,
-                        counts: [0; 2],
-                        roster_unknown: true,
-                        countries: countries.clone(),
-                        countries_unknown,
-                        duration: result.duration,
-                    }],
-                });
+                );
                 at
             });
             let losses = result.losses.each_ref().map(SideLossInputs::from);
             let sides = self.side_reads(result.end_hour, &losses);
             self.dirty.insert(at);
-            let episode = &mut self.episodes[at];
+            let episode = held(&mut self.episodes, at);
             // The combat finalizer mask is distinct from the leader on-action verdict.
             let winner = match result.winners {
                 1 => battles::BattleWinner::Side { side: 0 },
@@ -431,7 +435,34 @@ impl Census {
             if self.open.get(&result.combat) == Some(&at) {
                 self.open.remove(&result.combat);
             }
+            if pending {
+                self.dirty.remove(&at);
+                let own = self.episodes.remove(&at).expect("finalizer's own battle");
+                self.pending.push(Pending {
+                    combat: result.combat,
+                    from_hour: coverage.from_hour,
+                    at,
+                    own,
+                });
+            }
         }
         Ok(())
+    }
+}
+impl Episode {
+    /// Whether a finalizer of this battle's combat, dated `end_hour` and
+    /// covering the hours after `from_hour`, ends it.
+    pub(super) fn ends(&self, province: u32, end_hour: i32, from_hour: i32) -> bool {
+        self.province == province
+            && self.result.is_none()
+            && self.start.hour <= end_hour
+            && self.runs.last().is_some_and(|run| {
+                run.last_hour >= from_hour
+                    && run.last_hour <= end_hour
+                    && run
+                        .last_hour
+                        .checked_add(1)
+                        .is_some_and(|next| end_hour <= next)
+            })
     }
 }
