@@ -3912,6 +3912,7 @@ dependencies = [
  "dashboard-wars",
  "engine-executable",
  "engine-native",
+ "foldhash 0.2.0",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-localisation",

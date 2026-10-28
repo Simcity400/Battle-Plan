@@ -345,12 +345,12 @@ struct Hour {
     world: World,
     /// `world.relations` keys in recorded WarRelations row order.
     relation_order: Vec<Pair>,
-    tags: HashMap<u32, String>,
-    identities: HashMap<u32, (u32, u32)>,
-    raw_to_slot: HashMap<u32, u32>,
+    tags: foldhash::HashMap<u32, String>,
+    identities: foldhash::HashMap<u32, (u32, u32)>,
+    raw_to_slot: foldhash::HashMap<u32, u32>,
     view: u32,
     recorded_view: Option<u32>,
-    goal_owned: HashMap<Pair, rows::WarOwnedRelationRow>,
+    goal_owned: foldhash::HashMap<Pair, rows::WarOwnedRelationRow>,
 }
 #[derive(Clone)]
 struct HeldHour {
@@ -384,7 +384,7 @@ impl Hour {
         let links = frame
             .complete::<tables::CountryLinks>()
             .map_err(|e| e.to_string())?;
-        let tags: HashMap<_, _> = countries
+        let tags: foldhash::HashMap<_, _> = countries
             .iter()
             .map(|c| {
                 std::str::from_utf8(&c.tag)
@@ -392,7 +392,8 @@ impl Hour {
                     .map_err(|_| "country tag is not UTF-8".to_owned())
             })
             .collect::<Result<_, _>>()?;
-        let raw_to_slot: HashMap<_, _> = links.iter().map(|r| (r.id, r.canonical_slot)).collect();
+        let raw_to_slot: foldhash::HashMap<_, _> =
+            links.iter().map(|r| (r.id, r.canonical_slot)).collect();
         let identities = countries
             .iter()
             .map(|r| (r.canonical_slot, (r.canonical_slot, r.id)))
@@ -424,17 +425,17 @@ impl Hour {
             None => recorded_view.ok_or("Not recorded: local playing/observer country")?,
         };
         let mut world = World {
-            owned: HashMap::new(),
-            relations: HashMap::new(),
-            adjacent: HashMap::new(),
-            factions: HashMap::new(),
-            scores: HashMap::new(),
+            owned: Default::default(),
+            relations: Default::default(),
+            adjacent: Default::default(),
+            factions: Default::default(),
+            scores: Default::default(),
         };
         let owned = frame
             .complete::<tables::WarOwnedRelations>()
             .map_err(|e| e.to_string())?;
         // Keys preserve the complete vector's ordinals, not a tag sort.
-        let mut goal_owned = HashMap::new();
+        let mut goal_owned = foldhash::HashMap::default();
         for r in owned {
             let (owner, a, b) = (
                 slot(r.owner)?,

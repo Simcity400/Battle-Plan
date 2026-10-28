@@ -1,6 +1,6 @@
 //! War overview grouping over canonical recorded countries.
+use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use replay_data::{rows::WarOverviewCountryRow, rows::WarRelationRow};
-use std::collections::{HashMap, HashSet};
 
 pub(super) type Pair = (u32, u32);
 pub(super) fn pair(a: u32, b: u32) -> Pair {

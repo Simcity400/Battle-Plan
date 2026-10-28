@@ -775,10 +775,10 @@ fn fallback_goal_name_preserves_plain_state_text_and_first_country_operands() {
 fn world(edges: &[(u32, u32, i32)], owned: &[(u32, &[u32])]) -> World {
     let mut w = World {
         owned: owned.iter().map(|(s, v)| (*s, v.to_vec())).collect(),
-        relations: HashMap::new(),
-        adjacent: HashMap::new(),
-        factions: HashMap::new(),
-        scores: HashMap::new(),
+        relations: Default::default(),
+        adjacent: Default::default(),
+        factions: Default::default(),
+        scores: Default::default(),
     };
     for &(a, b, start) in edges {
         w.relations.insert(
