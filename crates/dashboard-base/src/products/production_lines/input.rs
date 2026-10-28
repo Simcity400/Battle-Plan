@@ -1,6 +1,8 @@
 use super::*;
 use crate::prepared::frame_changes::{FrameChanges, field_mask};
-use replay_data::rows::{CountryProductionModifiersRow, ProductionLineModifiersRow, RowCodec};
+use replay_data::rows::{
+    CountryProductionModifiersRow, ProductionLineModifiersRow, RowCodec, full_mask,
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct ReadEvidence {
@@ -869,7 +871,8 @@ impl World {
     }
 }
 
-pub(super) fn observe_design(scanned: &mut ScannedLines, input: &HourInput, variant: u64) {
+/// The bytes the scan now holds beyond what it did.
+pub(super) fn observe_design(scanned: &mut ScannedLines, input: &HourInput, variant: u64) -> usize {
     let read = DesignRead {
         first_hour: input.hour,
         read_hour: input
@@ -878,7 +881,7 @@ pub(super) fn observe_design(scanned: &mut ScannedLines, input: &HourInput, vari
             .and_then(|_| input.design_read_hour),
         ..input.designs.get(&variant).copied().unwrap_or_default()
     };
-    version(scanned.designs.entry(variant).or_default(), read, |a, b| {
+    let pushed = version(scanned.designs.entry(variant).or_default(), read, |a, b| {
         DesignRead {
             first_hour: 0,
             ..*a
@@ -887,19 +890,20 @@ pub(super) fn observe_design(scanned: &mut ScannedLines, input: &HourInput, vari
             ..*b
         }
     });
+    let mut added = usize::from(pushed) * std::mem::size_of::<DesignRead>();
     if let Some(author) = read.author.filter(|id| *id != 0)
         && input.author_names_due
         && !scanned.organisations.contains_key(&author)
         && let Some(raw) = input.author_names.get(&author)
     {
-        scanned.organisations.insert(
-            author,
-            vec![RawOrganisation {
-                first_hour: input.hour,
-                ..raw.clone()
-            }],
-        );
+        let raw = RawOrganisation {
+            first_hour: input.hour,
+            ..raw.clone()
+        };
+        added += pages::record_bytes(&raw);
+        scanned.organisations.insert(author, vec![raw]);
     }
+    added
 }
 
 struct PreparedTables;
@@ -910,15 +914,17 @@ impl PreparedTables {
 }
 
 fn relevant(changes: &FrameChanges, table: TableId) -> bool {
+    // A country's id is its row key: a new country is a row carrying every field.
     let fields: &[&str] = match table {
-        TableId::Countries => &["id", "canonical_slot", "tag"],
+        TableId::Countries => &["canonical_slot", "tag"],
         _ => return changes.rows_changed[table.index()],
     };
+    let identity = field_mask(table, fields);
     changes.rows(table).is_none_or(|(rows, deleted)| {
         !deleted.is_empty()
             || rows
                 .iter()
-                .any(|row| row.mask & field_mask(table, fields) != 0)
+                .any(|row| row.mask & identity != 0 || row.mask == full_mask(row.recorded_fields))
     })
 }
 fn candidates<T: RowCodec>(changes: &FrameChanges, table: TableId, rows: &[T]) -> BTreeSet<u128> {

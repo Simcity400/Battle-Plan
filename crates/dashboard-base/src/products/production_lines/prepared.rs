@@ -154,6 +154,27 @@ impl CountryState {
         pages::tail(&mut self.result.output_hours);
         pages::tail(&mut self.result.organisation_hours);
         pages::tail(&mut self.result.unread_output);
+        // The next page encodes the kept versions again, and each shared or cached row once.
+        let mut rows = BTreeSet::new();
+        let kept = self
+            .result
+            .modifiers
+            .values()
+            .flatten()
+            .map(|run| &run.country);
+        for row in kept.chain(&self.last_modifier_country) {
+            if rows.insert(Arc::as_ptr(row)) {
+                self.pending_bytes += modifier_country_bytes(row);
+            }
+        }
+        self.pending_bytes += self.result.designs.values().map(Vec::len).sum::<usize>()
+            * std::mem::size_of::<DesignRead>();
+        for icon in self.result.icons.values().flatten() {
+            self.pending_bytes += pages::record_bytes(icon);
+        }
+        for organisation in self.result.organisations.values().flatten() {
+            self.pending_bytes += pages::record_bytes(organisation);
+        }
         Ok(())
     }
 
@@ -638,25 +659,7 @@ impl Prepared {
                 .flatten()
                 .all(|row| LineKind::of(row.kind).is_some());
         if self.evidence_ready {
-            self.evidence_base_bytes = self.world.pending_bytes
-                + self.absent.state.pending_bytes
-                + self
-                    .native
-                    .values()
-                    .map(|country| country.state.pending_bytes)
-                    .sum::<usize>()
-                + self
-                    .aliases
-                    .values()
-                    .filter_map(TagCountry::projection)
-                    .map(|country| country.state.pending_bytes)
-                    .sum::<usize>()
-                + self
-                    .directory
-                    .aliases
-                    .iter()
-                    .map(|alias| std::mem::size_of::<Alias>() + alias.tag.capacity())
-                    .sum::<usize>();
+            self.evidence_base_bytes = self.pending_total();
             self.evidence_design_bytes = self
                 .native
                 .values()
@@ -735,7 +738,16 @@ impl Prepared {
             }
             return Ok(());
         }
-        let bytes = self.world.pending_bytes
+        let bytes = self.pending_total();
+        if crate::prepared::pages::publication_due(true, false, false, || (bytes, 0)) {
+            self.flush(writer, cancelled)?;
+        }
+        Ok(())
+    }
+
+    /// The bytes the next page holds: every country's pending records and the kept aliases.
+    fn pending_total(&self) -> usize {
+        self.world.pending_bytes
             + self.absent.state.pending_bytes
             + self
                 .native
@@ -753,11 +765,7 @@ impl Prepared {
                 .aliases
                 .iter()
                 .map(|alias| std::mem::size_of::<Alias>() + alias.tag.capacity())
-                .sum::<usize>();
-        if crate::prepared::pages::publication_due(true, false, false, || (bytes, 0)) {
-            self.flush(writer, cancelled)?;
-        }
-        Ok(())
+                .sum::<usize>()
     }
 
     fn drain_quiet<W: Pages + ?Sized>(&mut self, writer: &mut W) -> io::Result<()> {
@@ -1250,7 +1258,7 @@ impl Prepared {
             .map(|(index, alias)| (alias.tag.clone(), index))
             .collect();
         self.world.pending_bytes = 0;
-        self.evidence_base_bytes = 0;
+        self.evidence_base_bytes = self.pending_total();
         self.directory.pages += 1;
         Ok(())
     }
@@ -1656,8 +1664,8 @@ impl CountryState {
             }
             if changed {
                 for &variant in &self.active_variants {
-                    self.pending_bytes += input.design_bytes(variant);
-                    record_design(&mut self.result, facts, self.history, input, variant)?;
+                    self.pending_bytes +=
+                        record_design(&mut self.result, facts, self.history, input, variant)?;
                 }
             }
             if !read.lines_read {
@@ -1678,7 +1686,8 @@ impl CountryState {
             if read.organisation_changed {
                 for id in &named {
                     if let Some(raw) = input.organisations.get(id) {
-                        load_organisation(&mut self.result, facts, self.history, *id)?;
+                        self.pending_bytes +=
+                            load_organisation(&mut self.result, facts, self.history, *id)?;
                         let mut raw = RawOrganisation {
                             first_hour: read.hour,
                             ..raw.clone()
@@ -1686,20 +1695,18 @@ impl CountryState {
                         if let Some(state) = &mut raw.state {
                             state.read_hour = read.organisation_read_hour;
                         }
-                        self.pending_bytes += pages::record_bytes(&raw);
-                        version(
-                            self.result.organisations.entry(*id).or_default(),
-                            raw,
-                            |a, b| {
-                                RawOrganisation {
-                                    first_hour: 0,
-                                    ..a.clone()
-                                } == RawOrganisation {
-                                    first_hour: 0,
-                                    ..b.clone()
-                                }
-                            },
-                        );
+                        let versions = self.result.organisations.entry(*id).or_default();
+                        if version(versions, raw, |a, b| {
+                            RawOrganisation {
+                                first_hour: 0,
+                                ..a.clone()
+                            } == RawOrganisation {
+                                first_hour: 0,
+                                ..b.clone()
+                            }
+                        }) {
+                            self.pending_bytes += pages::record_bytes(versions.last().unwrap());
+                        }
                     }
                 }
             }
@@ -1788,8 +1795,7 @@ impl CountryState {
             if carried && designs_changed {
                 let demanded = active_variants.iter().copied();
                 for variant in demanded {
-                    pending_bytes += input.design_bytes(variant);
-                    record_design(&mut result, facts, history, input, variant)?;
+                    pending_bytes += record_design(&mut result, facts, history, input, variant)?;
                 }
             }
             if !input.lines_read {
@@ -1843,6 +1849,7 @@ impl CountryState {
             mine.sort_by_key(|row| row.handle);
             let modifier_country = input.modifier_countries.get(&identity.1).map(|country| {
                 if last_modifier_country.as_deref() != Some(country) {
+                    pending_bytes += modifier_country_bytes(country);
                     last_modifier_country = Some(Arc::new(country.clone()));
                 }
                 Arc::clone(
@@ -1860,10 +1867,8 @@ impl CountryState {
                     .or_default() += 1;
             }
             for row in &mine {
-                pending_bytes += std::mem::size_of::<ScannedLine>()
-                    + 40
-                    + std::mem::size_of::<RawRun>()
-                    + input.design_bytes(row.variant);
+                pending_bytes +=
+                    std::mem::size_of::<ScannedLine>() + 40 + std::mem::size_of::<RawRun>();
                 let Some(kind) = LineKind::of(row.kind) else {
                     result.unknown_kinds += 1;
                     continue;
@@ -1895,7 +1900,7 @@ impl CountryState {
                     (result.lines.len() - 1, true)
                 };
                 latest.insert(row.handle, index);
-                record_design(&mut result, facts, history, input, row.variant)?;
+                pending_bytes += record_design(&mut result, facts, history, input, row.variant)?;
                 let values = RawRun {
                     first_hour: hour,
                     last_hour: hour,
@@ -1932,7 +1937,7 @@ impl CountryState {
                     ) {
                         let organisation_name =
                             input.organisation_names.get(&row.mio).cloned().flatten();
-                        pending_bytes += modifier_bytes(country, operands)
+                        pending_bytes += modifier_bytes(operands)
                             + organisation_name.as_ref().map_or(0, String::capacity);
                         result.modifiers.entry(line.key.clone()).or_default().push(
                             breakdown::RawModifierRun {
@@ -2076,8 +2081,7 @@ impl CountryState {
                     .collect();
                 for id in named {
                     if let Some(raw) = input.organisations.get(&id) {
-                        load_organisation(&mut result, facts, history, id)?;
-                        pending_bytes += pages::record_bytes(raw);
+                        pending_bytes += load_organisation(&mut result, facts, history, id)?;
                         let mut raw = RawOrganisation {
                             first_hour: hour,
                             ..raw.clone()
@@ -2085,7 +2089,8 @@ impl CountryState {
                         if let Some(state) = &mut raw.state {
                             state.read_hour = input.organisation_read_hour;
                         }
-                        version(result.organisations.entry(id).or_default(), raw, |a, b| {
+                        let versions = result.organisations.entry(id).or_default();
+                        if version(versions, raw, |a, b| {
                             RawOrganisation {
                                 first_hour: 0,
                                 ..a.clone()
@@ -2093,7 +2098,9 @@ impl CountryState {
                                 first_hour: 0,
                                 ..b.clone()
                             }
-                        });
+                        }) {
+                            pending_bytes += pages::record_bytes(versions.last().unwrap());
+                        }
                     }
                 }
             }
@@ -2107,14 +2114,16 @@ impl CountryState {
                     if !result.icons.contains_key(&id)
                         && let Some(last) = private::get(facts, history, &format!("icon-{id}"))?
                     {
+                        pending_bytes += pages::record_bytes(&last);
                         result.icons.insert(id, vec![last]);
                     }
-                    pending_bytes += pages::record_bytes(icon);
-                    version(
+                    if version(
                         result.icons.entry(id).or_default(),
                         (hour, icon.clone()),
                         |a, b| a.1 == b.1,
-                    );
+                    ) {
+                        pending_bytes += pages::record_bytes(icon);
+                    }
                 }
             }
 
@@ -2549,10 +2558,13 @@ fn read_country_at(
     Ok(None)
 }
 
-fn modifier_bytes(
-    country: &replay_data::rows::CountryProductionModifiersRow,
-    line: &replay_data::rows::ProductionLineModifiersRow,
-) -> usize {
+// A page encodes each shared country row once, so a run charges only its own operands.
+fn modifier_bytes(line: &replay_data::rows::ProductionLineModifiersRow) -> usize {
+    2 * (std::mem::size_of::<breakdown::RawModifierRun>()
+        + line.factory_efficiencies.capacity() * std::mem::size_of::<i64>())
+}
+
+fn modifier_country_bytes(country: &replay_data::rows::CountryProductionModifiersRow) -> usize {
     let trees = country
         .trees
         .iter()
@@ -2568,10 +2580,7 @@ fn modifier_bytes(
                     .sum::<usize>()
         })
         .sum::<usize>();
-    2 * (std::mem::size_of::<breakdown::RawModifierRun>()
-        + std::mem::size_of_val(country)
-        + trees
-        + line.factory_efficiencies.capacity() * std::mem::size_of::<i64>())
+    2 * (std::mem::size_of_val(country) + trees)
 }
 
 fn history_section(branch: u64) -> String {
@@ -2678,13 +2687,15 @@ fn load_organisation(
     facts: &mut dyn private::Facts,
     history: private::Root,
     id: u64,
-) -> io::Result<()> {
+) -> io::Result<usize> {
     if !result.organisations.contains_key(&id)
         && let Some(last) = private::get(facts, history, &format!("organisation-{id}"))?
     {
+        let bytes = pages::record_bytes(&last);
         result.organisations.insert(id, vec![last]);
+        return Ok(bytes);
     }
-    Ok(())
+    Ok(0)
 }
 fn record_design(
     result: &mut ScannedLines,
@@ -2692,15 +2703,16 @@ fn record_design(
     history: private::Root,
     input: &HourInput,
     variant: u64,
-) -> io::Result<()> {
+) -> io::Result<usize> {
+    let mut added = 0;
     if !result.designs.contains_key(&variant)
         && let Some(last) = private::get(facts, history, &format!("design-{variant}"))?
     {
         result.designs.insert(variant, vec![last]);
+        added += std::mem::size_of::<DesignRead>();
     }
     if let Some(author) = input.designs.get(&variant).and_then(|read| read.author) {
-        load_organisation(result, facts, history, author)?;
+        added += load_organisation(result, facts, history, author)?;
     }
-    observe_design(result, input, variant);
-    Ok(())
+    Ok(added + observe_design(result, input, variant))
 }

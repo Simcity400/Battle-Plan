@@ -2967,3 +2967,243 @@ fn an_old_private_section_identity_forces_repreparation() {
             .is_none()
     );
 }
+
+#[test]
+fn a_census_charges_a_shared_modifier_row_once_and_repeated_samples_nothing() {
+    use replay_data::rows::{
+        CountryProductionModifiersRow, ModifierBreakdownNode, ProductionLineModifiersRow,
+        ProductionLineRow, ProductionModifierTree,
+    };
+    let kind = engine_native::cequipment_production_line::KIND_MILITARY;
+    let rows: Vec<ProductionLineRow> = (1..=40)
+        .map(|handle| ProductionLineRow {
+            handle,
+            country: 9001,
+            variant: 70,
+            kind,
+            active_factories: 2,
+            ..Default::default()
+        })
+        .collect();
+    let country = CountryProductionModifiersRow {
+        country: 9001,
+        trees: replay_derive::fixed_layout::PRODUCTION_MODIFIERS
+            .keys
+            .iter()
+            .map(|key| ProductionModifierTree {
+                key: *key,
+                failure: vec![],
+                nodes: vec![ModifierBreakdownNode {
+                    value: 1,
+                    name: b"Synthetic total".to_vec(),
+                    children: 0,
+                }],
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let operands: BTreeMap<u64, ProductionLineModifiersRow> = rows
+        .iter()
+        .map(|row| {
+            (
+                row.handle,
+                ProductionLineModifiersRow {
+                    line: row.handle,
+                    country: row.country,
+                    variant: row.variant,
+                    organisation: row.mio,
+                    kind: row.kind,
+                    active_factories: row.active_factories,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+    let input = |hour| HourInput {
+        rows_complete: true,
+        linked: BTreeSet::from([(7, 9001)]),
+        identities_changed: false,
+        author_names_due: false,
+        hour,
+        last_hour: hour,
+        countries: None,
+        holders: BTreeMap::new(),
+        lines_complete: true,
+        lines_read: true,
+        output_read: false,
+        output_complete: false,
+        organisations_complete: false,
+        organisations_named: false,
+        modifiers_complete: true,
+        modifiers_read: true,
+        modifier_refusal: None,
+        lines: BTreeMap::from([(7, rows.clone())]),
+        unlinked_lines: Vec::new(),
+        output: BTreeMap::new(),
+        unlinked_output: Vec::new(),
+        modifier_countries: BTreeMap::from([(9001, country.clone())]),
+        modifier_lines: operands.clone(),
+        organisations: BTreeMap::new(),
+        author_names: BTreeMap::new(),
+        organisation_names: BTreeMap::new(),
+        designs: BTreeMap::new(),
+        design_revision: 0,
+        design_read_hour: None,
+        organisation_read_hour: None,
+        icons: BTreeMap::new(),
+        localisation: None,
+        language: Arc::from("english"),
+    };
+    let mut stored = fixtures::FixturePages::default();
+    let mut facts = private::Store::new(&mut stored, 1);
+    let mut state = CountryState::default();
+    let fold = std::mem::size_of::<i32>()
+        + 6 * std::mem::size_of::<crate::products::country_groups::HourSpan>();
+    let line = std::mem::size_of::<ScannedLine>() + 40 + std::mem::size_of::<RawRun>();
+    let runs: usize = operands.values().map(modifier_bytes).sum();
+    let first = input(FIRST);
+    state
+        .observe_input(&mut facts, &first, Some(Country::Found(7, 9001)))
+        .unwrap();
+    assert_eq!(state.result.modifiers.len(), rows.len());
+    assert_eq!(
+        state.pending_bytes,
+        fold + rows.len() * line
+            + std::mem::size_of::<DesignRead>()
+            + modifier_country_bytes(&country)
+            + runs
+    );
+    let charged = state.pending_bytes;
+    state
+        .observe_input(&mut facts, &input(FIRST + 1), Some(Country::Found(7, 9001)))
+        .unwrap();
+    assert!(
+        state
+            .result
+            .modifiers
+            .values()
+            .all(|runs| runs.len() == 2 && Arc::ptr_eq(&runs[0].country, &runs[1].country))
+    );
+    assert_eq!(state.result.designs[&70].len(), 1);
+    assert_eq!(
+        state.pending_bytes - charged,
+        fold + rows.len() * line + runs
+    );
+    // A flush keeps each line's last run and the design version, which the next page encodes again.
+    let kept = modifier_country_bytes(&country) + std::mem::size_of::<DesignRead>();
+    state.compact(&mut facts).unwrap();
+    assert!(state.result.modifiers.values().all(|runs| runs.len() == 1));
+    assert_eq!(state.pending_bytes, kept);
+    state
+        .observe_input(&mut facts, &input(FIRST + 2), Some(Country::Found(7, 9001)))
+        .unwrap();
+    assert_eq!(state.pending_bytes, kept + fold + rows.len() * line + runs);
+    // Lines that all closed before the flush keep no run, but the cached row stays charged.
+    let mut closed = CountryState::default();
+    closed
+        .observe_input(&mut facts, &input(FIRST), Some(Country::Found(7, 9001)))
+        .unwrap();
+    let mut ended = input(FIRST + 1);
+    ended.lines.insert(7, Vec::new());
+    closed
+        .observe_input(&mut facts, &ended, Some(Country::Found(7, 9001)))
+        .unwrap();
+    closed.compact(&mut facts).unwrap();
+    assert!(closed.result.modifiers.is_empty() && closed.result.designs.is_empty());
+    assert_eq!(closed.pending_bytes, modifier_country_bytes(&country));
+    closed
+        .observe_input(&mut facts, &input(FIRST + 2), Some(Country::Found(7, 9001)))
+        .unwrap();
+    assert_eq!(
+        closed.pending_bytes,
+        modifier_country_bytes(&country)
+            + fold
+            + rows.len() * line
+            + std::mem::size_of::<DesignRead>()
+            + runs
+    );
+}
+
+#[test]
+fn restored_history_records_charge_what_they_add_to_the_next_page() {
+    use replay_data::rows::ProductionLineRow;
+    let kind = engine_native::cequipment_production_line::KIND_MILITARY;
+    let restored_icon = IconChoice::unknown("synthetic restored icon".into());
+    let input = |icon: &IconChoice| HourInput {
+        rows_complete: true,
+        linked: BTreeSet::from([(7, 9001)]),
+        identities_changed: false,
+        author_names_due: false,
+        hour: FIRST,
+        last_hour: FIRST,
+        countries: None,
+        holders: BTreeMap::new(),
+        lines_complete: true,
+        lines_read: true,
+        output_read: false,
+        output_complete: false,
+        organisations_complete: false,
+        organisations_named: false,
+        modifiers_complete: false,
+        modifiers_read: false,
+        modifier_refusal: None,
+        lines: BTreeMap::from([(
+            7,
+            vec![ProductionLineRow {
+                handle: 1,
+                country: 9001,
+                variant: 70,
+                kind,
+                active_factories: 2,
+                ..Default::default()
+            }],
+        )]),
+        unlinked_lines: Vec::new(),
+        output: BTreeMap::new(),
+        unlinked_output: Vec::new(),
+        modifier_countries: BTreeMap::new(),
+        modifier_lines: BTreeMap::new(),
+        organisations: BTreeMap::new(),
+        author_names: BTreeMap::new(),
+        organisation_names: BTreeMap::new(),
+        designs: BTreeMap::new(),
+        design_revision: 0,
+        design_read_hour: None,
+        organisation_read_hour: None,
+        icons: BTreeMap::from([(70, icon.clone())]),
+        localisation: None,
+        language: Arc::from("english"),
+    };
+    let fold = std::mem::size_of::<i32>()
+        + 6 * std::mem::size_of::<crate::products::country_groups::HourSpan>();
+    let line = std::mem::size_of::<ScannedLine>() + 40 + std::mem::size_of::<RawRun>();
+    let icon_at: IconAt = (FIRST - 5, restored_icon.clone());
+    let design = DesignRead {
+        first_hour: FIRST - 5,
+        ..Default::default()
+    };
+    // The same records restored, then a sample equal to them and one that differs.
+    let changed = IconChoice::unknown("synthetic changed icon".into());
+    for (icon, versions, sample) in [
+        (&restored_icon, 1, 0),
+        (&changed, 2, pages::record_bytes(&changed)),
+    ] {
+        let mut stored = fixtures::FixturePages::default();
+        let mut facts = private::Store::new(&mut stored, 1);
+        let mut state = CountryState::default();
+        private::put(&mut facts, &mut state.history, "icon-70", &icon_at).unwrap();
+        private::put(&mut facts, &mut state.history, "design-70", &design).unwrap();
+        state
+            .observe_input(&mut facts, &input(icon), Some(Country::Found(7, 9001)))
+            .unwrap();
+        assert_eq!(state.result.icons[&70].len(), versions);
+        assert_eq!(state.result.designs[&70], vec![design]);
+        assert_eq!(
+            state.pending_bytes,
+            fold + line
+                + std::mem::size_of::<DesignRead>()
+                + pages::record_bytes(&icon_at)
+                + sample
+        );
+    }
+}

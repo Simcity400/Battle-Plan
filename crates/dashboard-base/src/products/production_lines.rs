@@ -658,11 +658,17 @@ fn output_of(rows: &[(&ProductionLineOutputRow, bool)], hour: i32) -> RawOutput 
     }
 }
 
-/// Pushes a version when it differs from the last, whatever hour it is from.
-fn version<T: Clone + PartialEq>(versions: &mut Vec<T>, value: T, same: impl Fn(&T, &T) -> bool) {
-    if versions.last().is_none_or(|last| !same(last, &value)) {
+/// Pushes a version when it differs from the last, whatever hour it is from; whether it did.
+fn version<T: Clone + PartialEq>(
+    versions: &mut Vec<T>,
+    value: T,
+    same: impl Fn(&T, &T) -> bool,
+) -> bool {
+    let differs = versions.last().is_none_or(|last| !same(last, &value));
+    if differs {
         versions.push(value);
     }
+    differs
 }
 
 /// Overlay the design's independent versions only in the requested line detail.
