@@ -4,8 +4,13 @@ use super::*;
 use dashboard_base::prepared::series::{self, Reader};
 use replay_data::codec::Decoder;
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex},
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::Duration,
 };
 
 /// Viewpoint walks kept per source, the most recently used first.
@@ -151,6 +156,119 @@ struct Walker<'r, 'a> {
     selected: Option<&'r HashSet<(u32, u32)>>,
     cat: Option<&'r Catalogue>,
     cancelled: &'r AtomicBool,
+    /// Inputs decoded ahead of the walk while it steps its tail.
+    ahead: Option<Ahead>,
+}
+
+/// Inputs a walk's tail has read ahead of the one it takes.
+const AHEAD: u64 = 16;
+
+/// The tail's inputs read here, in order, and decoded on another core: each input's read or
+/// decode failure is returned only when the walk takes that input.
+struct Ahead {
+    /// The next input the walk takes, and the first not yet read.
+    next: u64,
+    read: u64,
+    end: u64,
+    /// The read inputs not yet taken: each one's hour, or why its read failed.
+    queued: VecDeque<io::Result<i32>>,
+    rows: mpsc::Sender<(i32, Vec<u8>)>,
+    decoded: mpsc::Receiver<io::Result<(Vec<usize>, DecodedFrame)>>,
+}
+
+impl Ahead {
+    /// Decodes inputs `next..end` on a thread of `scope`, which ends once this is dropped or
+    /// `stopped` is set.
+    fn start<'s>(
+        scope: &'s std::thread::Scope<'s, '_>,
+        next: u64,
+        end: u64,
+        stopped: &'s AtomicBool,
+    ) -> Self {
+        let (rows, work) = mpsc::channel::<(i32, Vec<u8>)>();
+        let (done, decoded) = mpsc::channel();
+        scope.spawn(move || {
+            loop {
+                match work.recv_timeout(Duration::from_millis(50)) {
+                    Ok((hour, row)) => {
+                        if done.send(decode(hour, &row)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) if !stopped.load(Ordering::Acquire) => {}
+                    Err(_) => return,
+                }
+            }
+        });
+        Self {
+            next,
+            read: next,
+            end,
+            queued: VecDeque::new(),
+            rows,
+            decoded,
+        }
+    }
+
+    /// The input at `self.next`, after reading the rows up to [`AHEAD`] inputs beyond it.
+    fn take(&mut self, topology: &mut Reader<'_>) -> io::Result<(i32, Vec<usize>, DecodedFrame)> {
+        while self.read < self.end && self.read <= self.next + AHEAD {
+            let read = raw(topology, self.read);
+            self.read += 1;
+            match read {
+                Ok((hour, row)) => {
+                    self.queued.push_back(
+                        self.rows
+                            .send((hour, row))
+                            .map(|()| hour)
+                            .map_err(|_| io::Error::other("Wars input decoding stopped")),
+                    );
+                }
+                Err(error) => {
+                    // The walk stops at this input: nothing after it is read.
+                    self.queued.push_back(Err(error));
+                    self.end = self.read;
+                }
+            }
+        }
+        self.next += 1;
+        let hour = self
+            .queued
+            .pop_front()
+            .ok_or_else(|| invalid("Wars inputs ran out ahead of the walk"))??;
+        let (changed, packet) = self
+            .decoded
+            .recv()
+            .map_err(|_| io::Error::other("Wars input decoding stopped"))??;
+        Ok((hour, changed, packet))
+    }
+}
+
+/// The change input row at `ordinal` and the hour it was published.
+fn raw(topology: &mut Reader<'_>, ordinal: u64) -> io::Result<(i32, Vec<u8>)> {
+    topology
+        .event_raw(0, ordinal)
+        .map_err(|error| io::Error::new(error.kind(), format!("Wars change inputs: {error}")))
+}
+
+/// A change input row's changed tables' indices and its decoded packet.
+fn decode(hour: i32, row: &[u8]) -> io::Result<(Vec<usize>, DecodedFrame)> {
+    let (changes, packet) = decode_input(row)?;
+    let bytes = series::decompress(packet)
+        .map_err(|error| io::Error::new(error.kind(), format!("Wars input at {hour}: {error}")))?;
+    let mut input = Decoder::new(&bytes);
+    let packet = DecodedFrame::decode_checkpoint(&mut input)?;
+    input.finish()?;
+    let changed = changes
+        .iter()
+        .map(|&table| {
+            TableId::ALL
+                .iter()
+                .position(|id| *id as u16 == table)
+                .ok_or_else(|| invalid("Unknown wars input table"))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok((changed, packet))
 }
 impl Walker<'_, '_> {
     /// The coverage of the input at `ordinal`, published at `hour`.
@@ -166,25 +284,11 @@ impl Walker<'_, '_> {
     /// The change input at `ordinal`: its hour, its changed tables' indices
     /// and its decoded packet.
     fn input(&mut self, ordinal: u64) -> io::Result<(i32, Vec<usize>, DecodedFrame)> {
-        let (hour, row) = self.topology.event_raw(0, ordinal).map_err(|error| {
-            io::Error::new(error.kind(), format!("Wars change inputs: {error}"))
-        })?;
-        let (changes, packet) = decode_input(&row)?;
-        let bytes = series::decompress(packet).map_err(|error| {
-            io::Error::new(error.kind(), format!("Wars input at {hour}: {error}"))
-        })?;
-        let mut input = Decoder::new(&bytes);
-        let packet = DecodedFrame::decode_checkpoint(&mut input)?;
-        input.finish()?;
-        let changed = changes
-            .iter()
-            .map(|&table| {
-                TableId::ALL
-                    .iter()
-                    .position(|id| *id as u16 == table)
-                    .ok_or_else(|| invalid("Unknown wars input table"))
-            })
-            .collect::<io::Result<Vec<_>>>()?;
+        if let Some(ahead) = self.ahead.as_mut().filter(|ahead| ahead.next == ordinal) {
+            return ahead.take(self.topology);
+        }
+        let (hour, row) = raw(self.topology, ordinal)?;
+        let (changed, packet) = decode(hour, &row)?;
         Ok((hour, changed, packet))
     }
     /// The walk `point` copied, with the decoded inputs it walked through and
@@ -498,6 +602,7 @@ pub(super) fn walk(
         selected,
         cat: cat.map(|cat| &**cat),
         cancelled,
+        ahead: None,
     };
     let holds = match guard.as_ref() {
         Some(entry) => entry.holds(&mut walker, base, end)?,
@@ -535,14 +640,32 @@ pub(super) fn walk(
         hydrate(&resume.walk, span)?;
     }
     let mut known = None;
-    while entry.tail.next < end {
-        let span = entry.tail.step(&mut walker, known)?;
-        known = Some(span);
-        entry.mark();
-        if wanted.contains(&(entry.tail.next - 1)) {
-            hydrate(&entry.tail.walk, span)?;
+    let stopped = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        // Ends the decoding thread before the scope joins it, however the walk ends.
+        struct Stop<'s>(&'s AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
         }
-    }
+        let _stop = Stop(&stopped);
+        walker.ahead =
+            (entry.tail.next < end).then(|| Ahead::start(scope, entry.tail.next, end, &stopped));
+        let walked = (|| {
+            while entry.tail.next < end {
+                let span = entry.tail.step(&mut walker, known)?;
+                known = Some(span);
+                entry.mark();
+                if wanted.contains(&(entry.tail.next - 1)) {
+                    hydrate(&entry.tail.walk, span)?;
+                }
+            }
+            io::Result::Ok(())
+        })();
+        walker.ahead = None;
+        walked
+    })?;
     let mut walk = entry.tail.walk.clone();
     if let Some(hour) = entry.tail.hour {
         let span = match known {
@@ -600,6 +723,7 @@ fn published(
         selected: None,
         cat,
         cancelled,
+        ahead: None,
     };
     let mut work: Option<Resume> = None;
     for &ordinal in &wanted {
