@@ -916,6 +916,14 @@ impl Prepared {
             ..Default::default()
         })
     }
+    /// The catalogue's fields with their keys.
+    fn fields(&self) -> io::Result<Vec<(Field, u64)>> {
+        self.keys
+            .iter()
+            .map(|(field, &id)| serde_json::from_str::<Field>(field).map(|field| (field, id)))
+            .collect::<Result<_, _>>()
+            .map_err(Into::into)
+    }
     #[allow(clippy::too_many_arguments)]
     fn samples(
         &self,
@@ -924,6 +932,7 @@ impl Prepared {
         key: &store::SourceKey,
         branch: u64,
         params: &AirParams,
+        fields: &std::sync::OnceLock<Vec<(Field, u64)>>,
         groups: &dashboard_base::products::country_groups::Scan,
         anchors: &assignment::SideAnchors,
         sides: &mut Vec<AirSide>,
@@ -977,11 +986,13 @@ impl Prepared {
             format!("air-superiority-{branch}-operands"),
             cancelled,
         )?;
-        let fields: Vec<_> = self
-            .keys
-            .iter()
-            .map(|(field, &id)| serde_json::from_str::<Field>(field).map(|field| (field, id)))
-            .collect::<Result<_, _>>()?;
+        let fields = match fields.get() {
+            Some(fields) => fields,
+            None => {
+                let parsed = self.fields()?;
+                fields.get_or_init(|| parsed)
+            }
+        };
         let cpu = replay_frame::cpu::scope_phase("air_superiority:query_values");
         let observed = values::samples(
             source,
@@ -990,7 +1001,7 @@ impl Prepared {
             self.previous_hour,
             params.view == AirView::Timeline,
             &wanted,
-            &fields,
+            fields,
             &mut hours,
             &mut values,
             &mut events,
@@ -1052,6 +1063,79 @@ fn read_groups(
     dashboard_base::products::country_groups::Scan::read(io::BufReader::new(file))
 }
 
+/// What every query of a complete branch reads alike, whatever its hours:
+/// the continuation's operands, the country groups, the side catalogue and,
+/// once a sampled view parses them, the catalogue's fields.
+struct Hourless {
+    state: Prepared,
+    groups: dashboard_base::products::country_groups::Scan,
+    cache: DayCache,
+    fields: std::sync::OnceLock<Vec<(Field, u64)>>,
+}
+
+impl Hourless {
+    fn bytes(&self) -> usize {
+        use dashboard_base::prepared::query::observations::serde_bytes;
+        let anchors = &self.cache.anchors;
+        std::mem::size_of::<Self>()
+            + serde_bytes(&self.state)
+            + serde_bytes(&self.state.keys)
+            + serde_bytes(&self.groups)
+            + self.groups.dictionary_bytes()
+            + serde_bytes(&(
+                &self.cache.regions,
+                &self.cache.countries,
+                &self.cache.theatres,
+                &*self.cache.sides,
+                &self.cache.warnings,
+            ))
+            + serde_bytes(&(
+                &anchors.countries,
+                &anchors.factions,
+                &anchors.faction_hours,
+                &anchors.country_reads,
+                &anchors.faction_reads,
+            ))
+            // The keys again: the fields a sampled view parses from them later.
+            + serde_bytes(&self.state.keys)
+    }
+}
+
+/// [`Hourless`], kept for the source while the pages it reads are unchanged.
+fn hourless(
+    source: &Source,
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Arc<Hourless>> {
+    let page = |section: String| -> io::Result<Option<[u64; 3]>> {
+        Ok(store.read(key, &section, 0)?.map(|file| file.id().cache_key()))
+    };
+    let pages = (
+        page(format!("air-superiority-{branch}"))?,
+        series::catalogue_pages(store, key, "air-superiority", branch)?,
+        page(super::block::groups_section(branch))?,
+        page(format!("country-groups-{branch}"))?,
+    );
+    dashboard_base::prepared::query::observations::scope(
+        source,
+        "air-superiority:hourless",
+        Some(key),
+    )
+    .get_entry(branch, &(), &pages, cancelled, Hourless::bytes, || {
+        let state = Prepared::read_query(store, key, branch)?;
+        let groups = read_groups(store, key, branch)?;
+        let cache = state.catalogue(&groups);
+        Ok(Hourless {
+            state,
+            groups,
+            cache,
+            fields: std::sync::OnceLock::new(),
+        })
+    })
+}
+
 pub fn query(
     source: &Source,
     params: serde_json::Value,
@@ -1095,9 +1179,9 @@ pub fn query(
         return first_view::query(source, &params, context, coverage, cancelled);
     }
     let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
-    let state = Prepared::read_query(&store, &key, branch)?;
-    let groups = read_groups(&store, &key, branch)?;
-    let mut cache = state.catalogue(&groups);
+    let hourless = hourless(source, &store, &key, branch, cancelled)?;
+    let (state, groups) = (&hourless.state, &hourless.groups);
+    let mut cache = hourless.cache.clone();
     let naming_hour = params
         .last_hour
         .unwrap_or_else(|| dashboard_text::metadata::branch_bounds(replay, start).1);
@@ -1158,7 +1242,7 @@ pub fn query(
         return serde_json::to_value(cache_reply(
             source,
             replay,
-            &groups,
+            groups,
             &cache,
             &params,
             context,
@@ -1174,11 +1258,20 @@ pub fn query(
         Vec::new()
     };
     let samples = state.samples(
-        source, &store, &key, branch, &params, &groups, &anchors, &mut sides, cancelled,
+        source,
+        &store,
+        &key,
+        branch,
+        &params,
+        &hourless.fields,
+        groups,
+        &anchors,
+        &mut sides,
+        cancelled,
     )?;
     let reply = if params.view == AirView::Moment {
-        let mut reply = AirReply::Moment(moment_reply(samples, sides, &groups, &params, &anchors)?);
-        resolve_names(source, &groups, context, naming_hour, None, &mut reply);
+        let mut reply = AirReply::Moment(moment_reply(samples, sides, groups, &params, &anchors)?);
+        resolve_names(source, groups, context, naming_hour, None, &mut reply);
         check_reply_size(&reply)?;
         reply
     } else {
@@ -1193,7 +1286,7 @@ pub fn query(
         cache_reply(
             source,
             replay,
-            &groups,
+            groups,
             &cache,
             &params,
             context,
@@ -1508,6 +1601,92 @@ mod tests {
         }
     }
 
+    /// Kept reads parse no field: choices never read them, and a sampled view
+    /// parses them only after reading its coverage.
+    #[test]
+    fn kept_reads_leave_damaged_field_names_to_sampled_views_after_coverage() {
+        use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+        let fixture = Fixture::new();
+        let flag = AtomicBool::new(false);
+        let frames: Vec<_> = (0..=49).map(|hour| air(hour, 200000)).collect();
+        let replay = recording(frames.clone());
+        let mut groups = dashboard_base::products::country_groups::Scan::new(&replay, 1);
+        let mut state = Prepared::default();
+        let mut tracker = FrameChangeTracker::new();
+        for frame in &frames {
+            groups.observe(frame).unwrap();
+            state
+                .observe_changed(
+                    frame,
+                    &replay,
+                    &mut groups,
+                    &tracker.observe(frame, replay.format),
+                )
+                .unwrap();
+        }
+        groups.finish(&replay, 1);
+        state.publish_day(&groups, true).unwrap();
+        let next = state.keys.len() as u64;
+        state.keys.insert("not a field".into(), next);
+        let mut writer = fixture.writer();
+        state.flush(&mut writer, 1, &flag).unwrap();
+        writer
+            .write_at("country-groups-1", 0, groups.saved_bytes().unwrap().as_slice())
+            .unwrap();
+        writer.commit().unwrap();
+        let source = Source::from_replay(
+            dashboard_base::source::SourceKey {
+                source_id: "air-damaged-fields".into(),
+                revision: "1".into(),
+            },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let kept = hourless(&source, &fixture.store, &fixture.key, 1, &flag).unwrap();
+        assert!(kept.fields.get().is_none(), "choices read no field");
+        let field = kept.state.fields().err().unwrap().to_string();
+        let sample = |fields: &std::sync::OnceLock<Vec<(Field, u64)>>| {
+            let mut sides = Vec::new();
+            kept.state
+                .samples(
+                    &source,
+                    &fixture.store,
+                    &fixture.key,
+                    1,
+                    &params(AirView::Timeline, 0, 49),
+                    fields,
+                    &kept.groups,
+                    &kept.cache.anchors,
+                    &mut sides,
+                    &flag,
+                )
+                .err()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(sample(&kept.fields), field);
+        let mut writer = fixture.writer();
+        writer
+            .write_at("air-superiority-1-hours", 0, b"damaged".as_slice())
+            .unwrap();
+        writer.commit().unwrap();
+        let coverage = Reader::new(
+            &fixture.store,
+            &fixture.key,
+            "air-superiority-1-hours".into(),
+            &flag,
+        )
+        .unwrap()
+        .runs(0, 0, 49)
+        .err()
+        .unwrap()
+        .to_string();
+        assert_ne!(coverage, field);
+        assert_eq!(sample(&std::sync::OnceLock::new()), coverage);
+    }
+
     fn parity(fixture: &Fixture, frames: &[DecodedFrame], theatres: Option<Vec<String>>) {
         let replay = Arc::new(recording(frames.to_vec()));
         let source = Source::from_replay(
@@ -1588,6 +1767,7 @@ mod tests {
                         &fixture.key,
                         1,
                         &request,
+                        &std::sync::OnceLock::new(),
                         &groups,
                         &cache.anchors,
                         &mut sides,

@@ -404,6 +404,7 @@ impl Prepared {
         }
         Ok(())
     }
+    #[cfg(test)]
     fn manifest(
         &mut self,
         source: &Source,
@@ -413,6 +414,24 @@ impl Prepared {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<AirAcesReply> {
+        let cat = context
+            .content()
+            .and_then(|options| catalogue::catalogue(source, options));
+        let manifest =
+            self.named_manifest(source, store, key, params, cat.as_deref().ok(), cancelled)?;
+        with_warnings(manifest, cat.as_deref())
+    }
+    /// The manifest with its variants named through `cat`, before the
+    /// content's warnings join it.
+    fn named_manifest(
+        &mut self,
+        source: &Source,
+        store: &store::Store,
+        key: &store::SourceKey,
+        params: &AirAcesParams,
+        cat: Option<&Catalogue>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<AirAcesManifestReply> {
         let branch = params.branch_id.parse::<u64>().expect("validated branch");
         let replay = source.replay_ref();
         let declaration = replay
@@ -466,31 +485,127 @@ impl Prepared {
             };
             cursor = next;
         }
-        let cat = context
-            .content()
-            .and_then(|options| catalogue::catalogue(source, options));
-        let mut reply = AirAcesReply::Manifest(manifest(
-            &self.scan,
-            params,
-            cat.as_deref().ok(),
-            cancelled,
-        )?);
-        ace_warnings(&mut reply, cat.as_deref());
-        bounded(reply, "manifest")
+        manifest(&self.scan, params, cat, cancelled)
     }
+    #[cfg(test)]
     fn portrait_at(&self, id: u64, hour: i32) -> Option<PortraitOperands> {
-        let runs = self.portraits.get(&id)?;
-        let index = runs
-            .partition_point(|run| run.first <= hour)
-            .checked_sub(1)?;
-        let run = &runs[index];
-        let last = if index + 1 == runs.len() && self.portrait_active.contains(&id) {
-            self.portrait_through.unwrap_or(run.last)
-        } else {
-            run.last
-        };
-        (hour <= last).then(|| run.operands.clone())
+        portrait_at(
+            &self.portraits,
+            self.portrait_through,
+            &self.portrait_active,
+            id,
+            hour,
+        )
     }
+}
+
+fn portrait_at(
+    portraits: &BTreeMap<u64, Vec<PortraitRun>>,
+    through: Option<i32>,
+    active: &BTreeSet<u64>,
+    id: u64,
+    hour: i32,
+) -> Option<PortraitOperands> {
+    let runs = portraits.get(&id)?;
+    let index = runs
+        .partition_point(|run| run.first <= hour)
+        .checked_sub(1)?;
+    let run = &runs[index];
+    let last = if index + 1 == runs.len() && active.contains(&id) {
+        through.unwrap_or(run.last)
+    } else {
+        run.last
+    };
+    (hour <= last).then(|| run.operands.clone())
+}
+
+/// The continuation's portrait runs, which are all a portrait reply reads.
+type Portraits = (BTreeMap<u64, Vec<PortraitRun>>, Option<i32>, BTreeSet<u64>);
+
+/// [`Portraits`] of a complete branch, kept for the source while its
+/// continuation is unchanged.
+fn kept_portraits(
+    source: &Source,
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Arc<Portraits>> {
+    let page = store
+        .read(key, &format!("air-aces-{branch}"), 0)?
+        .map(|file| file.id().cache_key());
+    dashboard_base::prepared::query::observations::scope(source, "air-aces:portraits", Some(key))
+        .get_entry(
+            branch,
+            &(),
+            &page,
+            cancelled,
+            dashboard_base::prepared::query::observations::serde_bytes,
+            || {
+                let state = Prepared::read(store, key, None, branch)?;
+                Ok((
+                    state.portraits,
+                    state.portrait_through,
+                    state.portrait_active,
+                ))
+            },
+        )
+}
+
+/// `manifest` with the content's warnings as they are now, within the reply bound.
+fn with_warnings(
+    manifest: AirAcesManifestReply,
+    cat: Result<&Catalogue, &io::Error>,
+) -> io::Result<AirAcesReply> {
+    let mut reply = AirAcesReply::Manifest(manifest);
+    ace_warnings(&mut reply, cat);
+    bounded(reply, "manifest")
+}
+
+/// The branch's manifest, which does not depend on the hour asked: its named
+/// variants are kept for the source while the pages they read and the
+/// catalogue naming them are unchanged, and each reply takes the catalogue's
+/// warnings as they are then.
+fn kept_manifest(
+    source: &Source,
+    store: &store::Store,
+    key: &store::SourceKey,
+    params: &AirAcesParams,
+    cat: &io::Result<Arc<Catalogue>>,
+    cancelled: &AtomicBool,
+) -> io::Result<AirAcesReply> {
+    let branch = params.branch_id.parse::<u64>().expect("validated branch");
+    // The catalogue's address names it: the kept weak reference keeps the
+    // address from naming another catalogue while the manifest is kept.
+    let pages = (
+        store
+            .read(key, &format!("air-aces-{branch}"), 0)?
+            .map(|file| file.id().cache_key()),
+        series::catalogue_pages(store, key, "air-aces", branch)?,
+        Reader::new(store, key, format!("air-aces-{branch}-series"), cancelled)?.pages()?,
+        cat.as_ref().ok().map(|cat| Arc::as_ptr(cat) as usize),
+    );
+    let kept = dashboard_base::prepared::query::observations::scope(
+        source,
+        "air-aces:manifest",
+        Some(key),
+    )
+    .get_entry(
+        branch,
+        &params.branch_id,
+        &pages,
+        cancelled,
+        |(_, manifest): &(Option<std::sync::Weak<Catalogue>>, AirAcesManifestReply)| {
+            dashboard_base::prepared::query::observations::serde_bytes(manifest)
+        },
+        || {
+            let mut state = Prepared::read(store, key, None, branch)?;
+            let manifest =
+                state.named_manifest(source, store, key, params, cat.as_deref().ok(), cancelled)?;
+            Ok((cat.as_ref().ok().map(Arc::downgrade), manifest))
+        },
+    )?;
+    with_warnings(kept.1.clone(), cat.as_deref())
 }
 
 fn sample_roster(
@@ -600,9 +715,11 @@ fn roster(
         .as_ref()
         .is_some_and(|prefix| params.hour <= prefix.coverage.last_hour)
     {
-        let mut state = Prepared::read(&store, &key, None, branch)?;
+        let cat = context
+            .content()
+            .and_then(|options| catalogue::catalogue(source, options));
         let AirAcesReply::Manifest(manifest) =
-            state.manifest(source, &store, &key, &request, context, cancelled)?
+            kept_manifest(source, &store, &key, &request, &cat, cancelled)?
         else {
             unreachable!()
         };
@@ -727,13 +844,14 @@ pub fn query(
             )?)
             .map_err(Into::into);
         }
-        let state = Prepared::read(&store, &key, None, branch)?;
+        let portraits = kept_portraits(source, &store, &key, branch, cancelled)?;
+        let (runs, through, active) = &*portraits;
         return serde_json::to_value(portrait_reply(
             source,
             &params,
             context,
             cancelled,
-            |id, hour| state.portrait_at(id, hour),
+            |id, hour| portrait_at(runs, *through, active, id, hour),
         )?)
         .map_err(Into::into);
     }
@@ -777,18 +895,23 @@ pub fn query(
     if !coverage.complete {
         return Ok(serde_json::Value::Null);
     }
-    let mut state = Prepared::read(&store, &key, None, branch)?;
-    if matches!(params.view, AirAcesView::Catalogue) {
-        return Ok(
-            serde_json::json!({"available": !state.scan.observed.is_empty(),
-            "unavailable": if state.scan.observed.is_empty() { Some(if state.scan.unread {
-                "AirAces availability could not be checked"
-            } else { "AirAces was unavailable, incomplete or never read in this recording." }) } else { None }}),
-        );
+    if !matches!(params.view, AirAcesView::Catalogue) {
+        check_cancel(cancelled)?;
+        let cat = context
+            .content()
+            .and_then(|options| catalogue::catalogue(source, options));
+        return serde_json::to_value(kept_manifest(
+            source, &store, &key, &params, &cat, cancelled,
+        )?)
+        .map_err(Into::into);
     }
-    check_cancel(cancelled)?;
-    serde_json::to_value(state.manifest(source, &store, &key, &params, context, cancelled)?)
-        .map_err(Into::into)
+    let state = Prepared::read(&store, &key, None, branch)?;
+    Ok(
+        serde_json::json!({"available": !state.scan.observed.is_empty(),
+        "unavailable": if state.scan.observed.is_empty() { Some(if state.scan.unread {
+            "AirAces availability could not be checked"
+        } else { "AirAces was unavailable, incomplete or never read in this recording." }) } else { None }}),
+    )
 }
 
 #[cfg(test)]
@@ -1328,6 +1451,82 @@ mod tests {
         assert!(
             state.portrait_at(1, 12).is_none(),
             "a recording gap cannot supply a portrait"
+        );
+    }
+
+    #[test]
+    fn kept_manifests_take_each_requests_content_warnings() {
+        let fixture = Fixture::new();
+        let frames = vec![super::super::tests::frame(
+            10,
+            vec![super::super::tests::ace(1, true)],
+        )];
+        let recorded =
+            source(Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap());
+        let mut state = Prepared::default();
+        let mut map = dashboard_base::prepared_map::Builder::new(
+            NonZeroU32::new(24).unwrap(),
+            dashboard_base::prepared_map::selected_tables(),
+            Default::default(),
+        )
+        .unwrap();
+        let mut writer = fixture.writer();
+        publish(&mut state, &mut writer, &mut map, &recorded, 0);
+        writer.commit().unwrap();
+        let (cat, _folder) = catalogue::tests::folder_catalogue(&[]);
+        let cat: io::Result<Arc<Catalogue>> = Ok(Arc::new(cat));
+        let params = AirAcesParams {
+            branch_id: "1".into(),
+            view: AirAcesView::Manifest,
+            window: None,
+        };
+        let flag = AtomicBool::new(false);
+        let read = || {
+            serde_json::to_value(
+                kept_manifest(
+                    &recorded,
+                    &fixture.store,
+                    &fixture.key,
+                    &params,
+                    &cat,
+                    &flag,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let refused = |reply: &serde_json::Value| {
+            reply["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line.as_str().unwrap().contains("synthetic refusal"))
+        };
+        let before = read();
+        assert!(!refused(&before));
+        // Another product's refusal joins the shared catalogue between two reads.
+        cat.as_ref().unwrap().refuse("synthetic refusal", "another text");
+        let after = read();
+        assert!(refused(&after));
+        let mut fresh = Prepared::read(&fixture.store, &fixture.key, None, 1).unwrap();
+        let expected = with_warnings(
+            fresh
+                .named_manifest(
+                    &recorded,
+                    &fixture.store,
+                    &fixture.key,
+                    &params,
+                    cat.as_deref().ok(),
+                    &flag,
+                )
+                .unwrap(),
+            cat.as_deref(),
+        )
+        .unwrap();
+        assert_eq!(after, serde_json::to_value(expected).unwrap());
+        assert_eq!(
+            dashboard_base::prepared::query::observations::usage(&recorded, "air-aces:manifest").2,
+            1
         );
     }
 

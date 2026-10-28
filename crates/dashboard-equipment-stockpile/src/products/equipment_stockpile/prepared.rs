@@ -2115,6 +2115,17 @@ fn observe_at(
     Ok(data)
 }
 
+/// The stockpile catalogue: every key, and each holder, variant name, warning,
+/// design, first design and classification, as preparation published them.
+type StockpileCatalogue = series::Catalogue<(
+    BTreeMap<String, Holder>,
+    VariantCatalogue,
+    Vec<String>,
+    BTreeMap<u64, BTreeSet<String>>,
+    BTreeMap<u64, (i32, String)>,
+    choices::Metadata,
+)>;
+
 fn read_window(
     source: &Source,
     request: Request,
@@ -2130,15 +2141,25 @@ fn read_window(
         tag: request.tag.clone(),
     };
     let branch = country.branch();
+    // Every holder's keys and names, kept while the catalogue is unchanged.
+    let catalogue_pages = series::catalogue_pages(store, key, "stockpile", branch)?;
+    let catalogue = dashboard_base::prepared::query::observations::scope(
+        source,
+        "stockpile:catalogue",
+        Some(key),
+    )
+    .get_entry(
+        branch,
+        &(),
+        &catalogue_pages,
+        cancelled,
+        |catalogue: &Option<StockpileCatalogue>| {
+            dashboard_base::prepared::query::observations::serde_bytes(catalogue)
+        },
+        || series::read_catalogue(store, key, "stockpile", branch),
+    )?;
     let Some((keys, (holders, names, warnings, designs, first_design, choice_metadata))) =
-        series::read_catalogue::<(
-            BTreeMap<String, Holder>,
-            VariantCatalogue,
-            Vec<String>,
-            BTreeMap<u64, BTreeSet<String>>,
-            BTreeMap<u64, (i32, String)>,
-            choices::Metadata,
-        )>(store, key, "stockpile", branch)?
+        catalogue.as_ref()
     else {
         return Ok(None);
     };
@@ -2311,9 +2332,9 @@ fn read_window(
         context,
         store,
         key,
-        &keys,
+        keys,
         &holder,
-        &choice_metadata,
+        choice_metadata,
         cancelled,
     )?;
     if let Some(width) = request.width {
@@ -2346,7 +2367,7 @@ fn read_window(
         )?;
     }
     let mut scanned = ScannedStockpile {
-        variants: names,
+        variants: names.clone(),
         costless: holder.costless,
         other_kinds: holder.other_kinds,
         missing_available: holder.missing_available,
@@ -2676,7 +2697,14 @@ fn read_window(
     scanned.balance.overflowed = holder.overflowed[5];
     scanned.logistics_stock.overflowed = holder.overflowed[6];
     scanned.available.overflowed = holder.overflowed[7];
-    let reply = reply(source, &country, context, &scanned, warnings, cancelled)?;
+    let reply = reply(
+        source,
+        &country,
+        context,
+        &scanned,
+        warnings.clone(),
+        cancelled,
+    )?;
     let logistics: BTreeMap<_, _> = holder
         .logistics
         .iter()
@@ -2732,7 +2760,31 @@ fn read_window(
             display.ai_recorded,
         ] = recorded;
     }
-    display.choices = choices.peaks(within)?;
+    // The peaks span the holder's membership, not the hours asked: every view
+    // reuses them while the pages they read are unchanged.
+    let mut pages = catalogue_pages;
+    pages.extend(choices.pages()?);
+    display.choices = (*dashboard_base::prepared::query::observations::scope(
+        source,
+        "stockpile:peaks",
+        Some(key),
+    )
+    .get_entry(
+        branch,
+        &(
+            &request.tag,
+            within,
+            &request.included,
+            context.content.as_ref().map(catalogue::binding),
+        ),
+        &pages,
+        cancelled,
+        |peaks: &BTreeMap<String, choices::StockpileChoicePeak>| {
+            dashboard_base::prepared::query::observations::serde_bytes(peaks)
+        },
+        || choices.peaks(within),
+    )?)
+    .clone();
     if let Some(width) = request.width {
         for group in &request.groups {
             if group.starts_with("[\"variant\",") {

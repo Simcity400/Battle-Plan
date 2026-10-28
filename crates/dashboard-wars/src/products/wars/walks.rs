@@ -3,7 +3,10 @@
 use super::*;
 use dashboard_base::prepared::series::{self, Reader};
 use replay_data::codec::Decoder;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Mutex},
+};
 
 /// Viewpoint walks kept per source, the most recently used first.
 pub(super) const CACHED_WALKS: usize = 4;
@@ -25,6 +28,8 @@ const NOMINAL_ROW_BYTES: usize = 64;
 thread_local! {
     /// Change inputs decoded on this thread.
     pub(super) static DECODED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Change inputs decoded on this thread to resume from a point.
+    pub(super) static RESTORED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// A smaller resume point budget for this thread's walks.
     pub(super) static POINT_BYTES: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
@@ -99,6 +104,8 @@ struct Resume {
     hour: Option<i32>,
     walk: Walk,
     decoded: Option<DecodedFrame>,
+    /// The input each of `decoded`'s tables was last read from.
+    sources: Vec<u64>,
 }
 
 struct Entry {
@@ -111,16 +118,28 @@ struct Entry {
     interval: u64,
 }
 
-/// A resumable copy and its estimated bytes, apart from its table views.
+/// A resumable copy of the walk without its decoded inputs and held hour,
+/// which resuming reads again from the inputs `sources` names, as a published
+/// point's are, and its estimated bytes.
 struct Point {
-    resume: Resume,
+    next: u64,
+    hour: Option<i32>,
+    walk: Walk,
+    held: bool,
+    sources: Vec<u64>,
     bytes: usize,
 }
 impl Point {
-    fn new(resume: Resume) -> Self {
+    fn new(resume: &Resume) -> Self {
+        let mut walk = resume.walk.resumable();
+        let held = walk.held.take().is_some();
         Self {
-            bytes: resume.walk_bytes(),
-            resume,
+            bytes: walk_bytes(&walk) + resume.sources.len() * std::mem::size_of::<u64>(),
+            next: resume.next,
+            hour: resume.hour,
+            walk,
+            held,
+            sources: resume.sources.clone(),
         }
     }
 }
@@ -144,6 +163,121 @@ impl Walker<'_, '_> {
             .filter(|span| span.value == i128::from(ordinal - self.base) && span.first_hour == hour)
             .ok_or_else(|| invalid("Wars change coverage is missing"))
     }
+    /// The change input at `ordinal`: its hour, its changed tables' indices
+    /// and its decoded packet.
+    fn input(&mut self, ordinal: u64) -> io::Result<(i32, Vec<usize>, DecodedFrame)> {
+        let (hour, row) = self.topology.event_raw(0, ordinal).map_err(|error| {
+            io::Error::new(error.kind(), format!("Wars change inputs: {error}"))
+        })?;
+        let (changes, packet) = decode_input(&row)?;
+        let bytes = series::decompress(packet).map_err(|error| {
+            io::Error::new(error.kind(), format!("Wars input at {hour}: {error}"))
+        })?;
+        let mut input = Decoder::new(&bytes);
+        let packet = DecodedFrame::decode_checkpoint(&mut input)?;
+        input.finish()?;
+        let changed = changes
+            .iter()
+            .map(|&table| {
+                TableId::ALL
+                    .iter()
+                    .position(|id| *id as u16 == table)
+                    .ok_or_else(|| invalid("Unknown wars input table"))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        Ok((hour, changed, packet))
+    }
+    /// The walk `point` copied, with the decoded inputs it walked through and
+    /// the hour it held read again.
+    fn restore(&mut self, point: &Point) -> io::Result<Resume> {
+        let mut walk = point.walk.clone();
+        let decoded = match point.next.checked_sub(1).filter(|last| *last >= self.base) {
+            Some(last) => {
+                // The first input supplies every table not read since, and
+                // the last one the frame's branch and hour.
+                let ordinals: BTreeSet<u64> = std::iter::once(self.base)
+                    .chain(point.sources.iter().copied())
+                    .chain(std::iter::once(last))
+                    .collect();
+                let mut packets = BTreeMap::new();
+                for ordinal in ordinals {
+                    #[cfg(any(test, feature = "test-support"))]
+                    RESTORED.with(|count| count.set(count.get() + 1));
+                    packets.insert(ordinal, self.input(ordinal)?.2);
+                }
+                let mut frame = packets[&self.base].clone();
+                for (index, ordinal) in point.sources.iter().enumerate() {
+                    frame.tables[index] = packets[ordinal].tables[index].clone();
+                }
+                frame.branch = packets[&last].branch;
+                frame.hour = packets[&last].hour;
+                Some(frame)
+            }
+            None => None,
+        };
+        if point.held {
+            let frame = decoded
+                .as_ref()
+                .ok_or_else(|| invalid("Wars resume point holds inputs without their frame"))?;
+            walk.hold(frame, self.view, self.selected, self.cat);
+        }
+        Ok(Resume {
+            next: point.next,
+            hour: point.hour,
+            walk,
+            decoded,
+            sources: point.sources.clone(),
+        })
+    }
+}
+
+/// Estimated bytes held by `walk`.
+fn walk_bytes(walk: &Walk) -> usize {
+    let reply = &walk.reply;
+    let mut count = reply.viewpoints.len()
+        + reply.unobserved.len()
+        + reply.capitulations_unobserved.len()
+        + reply.wars.len()
+        + walk
+            .open
+            .iter()
+            .map(|war| 1 + war.relations.len() + war.loss_pairs.len())
+            .sum::<usize>()
+        + walk.seen_caps.len()
+        + walk.dated_caps.values().map(Vec::len).sum::<usize>()
+        + walk.identity_since.len()
+        + walk.warnings.len()
+        + walk.country_labels.entries();
+    for war in &reply.wars {
+        count += war.observations.len()
+            + war.casualties.len()
+            + war.participants.len()
+            + war.capitulations.len()
+            + war.relations.len()
+            + war.open_participants.len()
+            + war.open_relations.len();
+    }
+    if let Some(Ok((inputs, observed))) = walk.held.as_ref().map(|held| &held.observed) {
+        let world = &inputs.world;
+        count += world.relations.len()
+            + world.owned.values().map(Vec::len).sum::<usize>()
+            + world.adjacent.values().map(Vec::len).sum::<usize>()
+            + world.factions.len()
+            + world.scores.len()
+            + inputs.relation_order.len()
+            + inputs.tags.len()
+            + inputs.identities.len()
+            + inputs.raw_to_slot.len()
+            + inputs.goal_owned.len();
+        for observation in observed {
+            count += 1
+                + observation.relations.len()
+                + observation.loss_pairs.len()
+                + observation.data.viewpoint_side.len()
+                + observation.data.opposing_side.len();
+        }
+    }
+    count * NOMINAL_ROW_BYTES
 }
 
 impl Resume {
@@ -153,6 +287,7 @@ impl Resume {
             hour: None,
             walk: Walk::new(branch, first),
             decoded: None,
+            sources: Vec::new(),
         }
     }
     /// Observe the next change input and return its coverage. `known` is the
@@ -164,27 +299,9 @@ impl Resume {
     ) -> io::Result<series::Run> {
         dashboard_text::metadata::check_cancel(walker.cancelled)?;
         let ordinal = self.next;
-        let (hour, row) = walker.topology.event_raw(0, ordinal).map_err(|error| {
-            io::Error::new(error.kind(), format!("Wars change inputs: {error}"))
-        })?;
-        let (changes, packet) = decode_input(&row)?;
-        let bytes = series::decompress(packet).map_err(|error| {
-            io::Error::new(error.kind(), format!("Wars input at {hour}: {error}"))
-        })?;
-        let mut input = Decoder::new(&bytes);
-        let packet = DecodedFrame::decode_checkpoint(&mut input)?;
-        input.finish()?;
+        let (hour, changed, packet) = walker.input(ordinal)?;
         #[cfg(any(test, feature = "test-support"))]
         DECODED.with(|count| count.set(count.get() + 1));
-        let changed = changes
-            .iter()
-            .map(|&table| {
-                TableId::ALL
-                    .iter()
-                    .position(|id| *id as u16 == table)
-                    .ok_or_else(|| invalid("Unknown wars input table"))
-            })
-            .collect::<io::Result<Vec<_>>>()?;
         let before = match (self.hour, known) {
             (Some(_), Some(known)) => Some(known),
             (Some(previous), None) => Some(walker.span(ordinal - 1, previous)?),
@@ -195,11 +312,18 @@ impl Resume {
         if let Some(before) = before {
             self.walk.extend(before.last_hour);
         }
-        let mut current = self.decoded.take().unwrap_or_else(|| packet.clone());
+        let mut current = self.decoded.take().unwrap_or_else(|| {
+            self.sources = vec![ordinal; packet.tables.len()];
+            packet.clone()
+        });
         current.branch = packet.branch;
         current.hour = packet.hour;
         for index in changed {
             current.tables[index] = packet.tables[index].clone();
+            // A published point's walk keeps no points of its own.
+            if let Some(source) = self.sources.get_mut(index) {
+                *source = ordinal;
+            }
         }
         let frame = self.decoded.insert(current);
         self.walk
@@ -209,56 +333,13 @@ impl Resume {
         Ok(span)
     }
     /// Estimated bytes held by this copy's walk.
+    #[cfg(test)]
     fn walk_bytes(&self) -> usize {
-        let walk = &self.walk;
-        let reply = &walk.reply;
-        let mut count = reply.viewpoints.len()
-            + reply.unobserved.len()
-            + reply.capitulations_unobserved.len()
-            + reply.wars.len()
-            + walk
-                .open
-                .iter()
-                .map(|war| 1 + war.relations.len() + war.loss_pairs.len())
-                .sum::<usize>()
-            + walk.seen_caps.len()
-            + walk.dated_caps.values().map(Vec::len).sum::<usize>()
-            + walk.identity_since.len()
-            + walk.warnings.len()
-            + walk.country_labels.entries();
-        for war in &reply.wars {
-            count += war.observations.len()
-                + war.casualties.len()
-                + war.participants.len()
-                + war.capitulations.len()
-                + war.relations.len()
-                + war.open_participants.len()
-                + war.open_relations.len();
-        }
-        if let Some(Ok((inputs, observed))) = walk.held.as_ref().map(|held| &held.observed) {
-            let world = &inputs.world;
-            count += world.relations.len()
-                + world.owned.values().map(Vec::len).sum::<usize>()
-                + world.adjacent.values().map(Vec::len).sum::<usize>()
-                + world.factions.len()
-                + world.scores.len()
-                + inputs.relation_order.len()
-                + inputs.tags.len()
-                + inputs.identities.len()
-                + inputs.raw_to_slot.len()
-                + inputs.goal_owned.len();
-            for observation in observed {
-                count += 1
-                    + observation.relations.len()
-                    + observation.loss_pairs.len()
-                    + observation.data.viewpoint_side.len()
-                    + observation.data.opposing_side.len();
-            }
-        }
-        count * NOMINAL_ROW_BYTES
+        walk_bytes(&self.walk)
     }
     /// Estimated bytes of this copy's table views. Views already named in
     /// `tables` are shared with another copy and not counted again.
+    #[cfg(test)]
     fn table_bytes(&self, tables: &mut HashSet<usize>) -> usize {
         let mut count = 0;
         for view in self.decoded.iter().flat_map(|frame| &frame.tables) {
@@ -281,7 +362,7 @@ impl Entry {
         let start = Resume::start(branch, first, base);
         Self {
             base,
-            points: vec![Point::new(start.clone())],
+            points: vec![Point::new(&start)],
             tail: start,
             interval: 1,
         }
@@ -303,36 +384,25 @@ impl Entry {
         if !(self.tail.next - self.base).is_multiple_of(self.interval) {
             return;
         }
-        self.points.push(Point::new(Resume {
-            next: self.tail.next,
-            hour: self.tail.hour,
-            walk: self.tail.walk.resumable(),
-            decoded: self.tail.decoded.clone(),
-        }));
+        self.points.push(Point::new(&self.tail));
         while self.points.len() > 1
             && (self.points.len() > WALK_POINTS || self.point_bytes() > point_budget())
         {
             self.interval *= 2;
             let (base, interval) = (self.base, self.interval);
             self.points
-                .retain(|point| (point.resume.next - base).is_multiple_of(interval));
+                .retain(|point| (point.next - base).is_multiple_of(interval));
         }
     }
     fn point_bytes(&self) -> usize {
-        let mut tables = HashSet::new();
-        self.points
-            .iter()
-            .map(|point| point.bytes + point.resume.table_bytes(&mut tables))
-            .sum()
+        self.points.iter().map(|point| point.bytes).sum()
     }
     /// The nearest resume point at or before the state after input `ordinal`.
     /// Every multiple of the interval up to the tail is kept, so it is fewer
     /// than `interval` inputs before.
-    fn point(&self, ordinal: u64) -> &Resume {
-        let at = self
-            .points
-            .partition_point(|point| point.resume.next <= ordinal + 1);
-        &self.points[at.max(1) - 1].resume
+    fn point(&self, ordinal: u64) -> &Point {
+        let at = self.points.partition_point(|point| point.next <= ordinal + 1);
+        &self.points[at.max(1) - 1]
     }
 }
 
@@ -451,7 +521,7 @@ pub(super) fn walk(
             .as_ref()
             .is_some_and(|work| point.next <= work.next && work.next <= ordinal + 1)
         {
-            work = Some(point.clone());
+            work = Some(walker.restore(point)?);
         }
         let resume = work.as_mut().expect("resume point");
         let mut known = None;
@@ -555,6 +625,7 @@ fn published(
                     hour,
                     walk,
                     decoded: Some(decoded),
+                    sources: Vec::new(),
                 }
             });
         }

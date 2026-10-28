@@ -49,6 +49,286 @@ pub fn json_bytes(value: &serde_json::Value) -> usize {
         }
 }
 
+/// Capacity charge for a value kept in its deserialized form, estimated from
+/// what it serializes: 16 bytes a scalar, a string or byte buffer its header
+/// and length rounded up to 8, a sequence its header and twice its elements
+/// for spare capacity, and a map its header and three times each entry for
+/// its tree nodes. Fields a type skips are charged by its caller.
+pub fn serde_bytes(value: &impl Serialize) -> usize {
+    let mut estimate = estimate::Estimate(0);
+    match value.serialize(&mut estimate) {
+        Ok(()) => estimate.0,
+        Err(_) => usize::MAX,
+    }
+}
+
+mod estimate {
+    use serde::ser::{self, Serialize};
+
+    pub(super) struct Estimate(pub(super) usize);
+
+    const SCALAR: usize = 16;
+    const HEADER: usize = 24;
+
+    impl Estimate {
+        fn add(&mut self, bytes: usize) {
+            self.0 = self.0.saturating_add(bytes);
+        }
+        fn text(&mut self, len: usize) {
+            self.add(HEADER.saturating_add(len.next_multiple_of(8)));
+        }
+        /// `value`, charged `times` over.
+        fn times<T: Serialize + ?Sized>(
+            &mut self,
+            value: &T,
+            times: usize,
+        ) -> Result<(), serde_json::Error> {
+            let before = self.0;
+            value.serialize(&mut *self)?;
+            let added = self.0 - before;
+            self.add(added.saturating_mul(times - 1));
+            Ok(())
+        }
+    }
+
+    impl ser::Serializer for &mut Estimate {
+        type Ok = ();
+        type Error = serde_json::Error;
+        type SerializeSeq = Self;
+        type SerializeTuple = Self;
+        type SerializeTupleStruct = Self;
+        type SerializeTupleVariant = Self;
+        type SerializeMap = Self;
+        type SerializeStruct = Self;
+        type SerializeStructVariant = Self;
+
+        fn serialize_bool(self, _: bool) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_i8(self, _: i8) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_i16(self, _: i16) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_i32(self, _: i32) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_i64(self, _: i64) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_i128(self, _: i128) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_u8(self, _: u8) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_u16(self, _: u16) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_u32(self, _: u32) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_u64(self, _: u64) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_u128(self, _: u128) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_f32(self, _: f32) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_f64(self, _: f64) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_char(self, _: char) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_str(self, value: &str) -> Result<(), Self::Error> {
+            self.text(value.len());
+            Ok(())
+        }
+        fn serialize_bytes(self, value: &[u8]) -> Result<(), Self::Error> {
+            self.text(value.len());
+            Ok(())
+        }
+        fn serialize_none(self) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_some<T: Serialize + ?Sized>(self, value: &T) -> Result<(), Self::Error> {
+            value.serialize(self)
+        }
+        fn serialize_unit(self) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_unit_struct(self, _: &'static str) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_unit_variant(
+            self,
+            _: &'static str,
+            _: u32,
+            _: &'static str,
+        ) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            Ok(())
+        }
+        fn serialize_newtype_struct<T: Serialize + ?Sized>(
+            self,
+            _: &'static str,
+            value: &T,
+        ) -> Result<(), Self::Error> {
+            value.serialize(self)
+        }
+        fn serialize_newtype_variant<T: Serialize + ?Sized>(
+            self,
+            _: &'static str,
+            _: u32,
+            _: &'static str,
+            value: &T,
+        ) -> Result<(), Self::Error> {
+            self.add(SCALAR);
+            value.serialize(self)
+        }
+        fn serialize_seq(self, _: Option<usize>) -> Result<Self, Self::Error> {
+            self.add(HEADER);
+            Ok(self)
+        }
+        fn serialize_tuple(self, _: usize) -> Result<Self, Self::Error> {
+            Ok(self)
+        }
+        fn serialize_tuple_struct(self, _: &'static str, _: usize) -> Result<Self, Self::Error> {
+            Ok(self)
+        }
+        fn serialize_tuple_variant(
+            self,
+            _: &'static str,
+            _: u32,
+            _: &'static str,
+            _: usize,
+        ) -> Result<Self, Self::Error> {
+            self.add(SCALAR);
+            Ok(self)
+        }
+        fn serialize_map(self, _: Option<usize>) -> Result<Self, Self::Error> {
+            self.add(HEADER);
+            Ok(self)
+        }
+        fn serialize_struct(self, _: &'static str, _: usize) -> Result<Self, Self::Error> {
+            Ok(self)
+        }
+        fn serialize_struct_variant(
+            self,
+            _: &'static str,
+            _: u32,
+            _: &'static str,
+            _: usize,
+        ) -> Result<Self, Self::Error> {
+            self.add(SCALAR);
+            Ok(self)
+        }
+    }
+
+    impl ser::SerializeSeq for &mut Estimate {
+        type Ok = ();
+        type Error = serde_json::Error;
+        fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), Self::Error> {
+            self.times(value, 2)
+        }
+        fn end(self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+    impl ser::SerializeTuple for &mut Estimate {
+        type Ok = ();
+        type Error = serde_json::Error;
+        fn serialize_element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), Self::Error> {
+            value.serialize(&mut **self)
+        }
+        fn end(self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+    impl ser::SerializeTupleStruct for &mut Estimate {
+        type Ok = ();
+        type Error = serde_json::Error;
+        fn serialize_field<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), Self::Error> {
+            value.serialize(&mut **self)
+        }
+        fn end(self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+    impl ser::SerializeTupleVariant for &mut Estimate {
+        type Ok = ();
+        type Error = serde_json::Error;
+        fn serialize_field<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), Self::Error> {
+            value.serialize(&mut **self)
+        }
+        fn end(self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+    impl ser::SerializeMap for &mut Estimate {
+        type Ok = ();
+        type Error = serde_json::Error;
+        fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> Result<(), Self::Error> {
+            self.times(key, 3)
+        }
+        fn serialize_value<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), Self::Error> {
+            self.times(value, 3)
+        }
+        fn end(self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+    impl ser::SerializeStruct for &mut Estimate {
+        type Ok = ();
+        type Error = serde_json::Error;
+        fn serialize_field<T: Serialize + ?Sized>(
+            &mut self,
+            _: &'static str,
+            value: &T,
+        ) -> Result<(), Self::Error> {
+            value.serialize(&mut **self)
+        }
+        fn end(self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+    impl ser::SerializeStructVariant for &mut Estimate {
+        type Ok = ();
+        type Error = serde_json::Error;
+        fn serialize_field<T: Serialize + ?Sized>(
+            &mut self,
+            _: &'static str,
+            value: &T,
+        ) -> Result<(), Self::Error> {
+            value.serialize(&mut **self)
+        }
+        fn end(self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Key {
     product: &'static str,
@@ -505,6 +785,24 @@ mod tests {
     use super::*;
     use crate::test_fixtures::{file_source, replay, source as frame};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn serde_estimates_charge_at_least_what_held_values_count() {
+        use crate::prepared::prepass::HeldBytes;
+        fn held<T: crate::prepared::prepass::Held>(value: &T) -> usize {
+            HeldBytes::default().value(value).total() as usize
+        }
+        let text = "x".repeat(100);
+        let numbers: Vec<u64> = (0..1000).collect();
+        let names: BTreeMap<u64, String> = (0..1000).map(|key| (key, key.to_string())).collect();
+        let nested: BTreeMap<String, Vec<i32>> = (0..100)
+            .map(|key| (format!("key {key}"), (0..key).collect()))
+            .collect();
+        assert!(serde_bytes(&text) >= held(&text));
+        assert!(serde_bytes(&numbers) >= held(&numbers));
+        assert!(serde_bytes(&names) >= held(&names));
+        assert!(serde_bytes(&nested) >= held(&nested));
+    }
 
     #[test]
     fn continuation_receives_only_the_completed_predecessor_of_its_request() {

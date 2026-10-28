@@ -361,8 +361,33 @@ fn canonical_reply_matches_legacy_after_two_commits_resume_append_and_gaps() {
     )
     .unwrap()
     .unwrap();
+    let choices = actual["prepared"]["choices"].clone();
     actual.as_object_mut().unwrap().remove("prepared");
     assert_eq!(actual, serde_json::to_value(legacy).unwrap());
+    // The peaks span the holder's membership, so moved windows reuse them.
+    for (from, to) in [
+        (frames[0].hour, frames[3].hour),
+        (frames[2].hour, frames.last().unwrap().hour),
+    ] {
+        let moved = read_window(
+            &source,
+            serde_json::from_value(
+                serde_json::json!({"branchId":"1","tag":"GER","from":from,"to":to,"width":4}),
+            )
+            .unwrap(),
+            &context,
+            &fixture.store,
+            &fixture.key,
+            &cancelled,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(moved["prepared"]["choices"], choices);
+    }
+    assert_eq!(
+        dashboard_base::prepared::query::observations::usage(&source, "stockpile:peaks").2,
+        1
+    );
 
     // A read in the middle of an unchanged supplying interval keeps both whole
     // endpoints, rather than adopting the publication/viewport boundaries.

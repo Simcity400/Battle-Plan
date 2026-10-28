@@ -763,8 +763,26 @@ pub fn query(
     let Some(file) = store.read(&key, &format!("country-groups-{branch}"), 0)? else {
         return unprepared();
     };
-    let scan = country_groups::Scan::read(io::BufReader::new(file))?;
-    let history = scan.faction_history(cancelled)?;
+    // The history spans the branch, not the hours asked: it is kept while its
+    // groups page is unchanged, charged at least what its scan holds.
+    let page = file.id().cache_key();
+    let history = Arc::clone(
+        &crate::prepared::query::observations::scope(source, "faction-totals:history", Some(&key))
+            .get_entry(
+                branch,
+                &(),
+                &page,
+                cancelled,
+                |(_, bytes): &(Arc<country_groups::FactionHistory>, usize)| *bytes,
+                || {
+                    let scan = country_groups::Scan::read(io::BufReader::new(file))?;
+                    let bytes = crate::prepared::query::observations::serde_bytes(&scan)
+                        + scan.dictionary_bytes();
+                    Ok((scan.faction_history(cancelled)?, bytes))
+                },
+            )?
+            .0,
+    );
     let Some(identities) = super::super::country_history::prepared_branch_histories(
         source,
         branch,

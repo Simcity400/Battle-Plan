@@ -1059,7 +1059,10 @@ fn token_changes_affect_both_groups_and_unnamed_intervals_affect_completeness() 
         ("c", vec![(2, 3)]),
     ] {
         assert_eq!(
-            affected(&series::field_key("type", group), &history, &final_names)
+            affected(
+                &series::field_key("type", group),
+                &moves(&history, &final_names)
+            )
                 .iter()
                 .map(|span| (span.first_hour, span.last_hour))
                 .collect::<Vec<_>>(),

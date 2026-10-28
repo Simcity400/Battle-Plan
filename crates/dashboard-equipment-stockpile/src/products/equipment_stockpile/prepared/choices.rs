@@ -279,8 +279,12 @@ fn group_key(group: &str, measure: &str) -> String {
     format!("group-{measure}:{group}")
 }
 
+/// A group member with its classification and its two groups.
+type Member<'a, K> = (K, &'a Classification, &'a [String; 2]);
+
 /// Shared by observation and retrospective correction. Presence is separate
 /// from zero: an unresolved zero logistics row still invalidates domain need.
+#[cfg(test)]
 fn evaluate(
     group: &str,
     variants: &BTreeMap<u64, Classification>,
@@ -288,49 +292,88 @@ fn evaluate(
     stock_known: bool,
     balance_known: bool,
     retained: Option<&Logistics>,
-    mut read: impl FnMut(usize, u64) -> io::Result<Operand>,
+    read: impl FnMut(usize, u64) -> io::Result<Operand>,
 ) -> io::Result<[Option<i128>; 4]> {
     let (grouping, key): (String, String) = serde_json::from_str(group)?;
+    let variant_groups: Vec<_> = variants
+        .iter()
+        .map(|(&id, classification)| classification.groups(Some(id)))
+        .collect();
+    let logistics_groups: Vec<_> = logistics
+        .values()
+        .map(|classification| classification.groups(None))
+        .collect();
+    let variants: Vec<_> = variants
+        .iter()
+        .zip(&variant_groups)
+        .map(|((&id, classification), groups)| (id, classification, groups))
+        .collect();
+    let logistics: Vec<_> = logistics
+        .iter()
+        .zip(&logistics_groups)
+        .map(|((&id, classification), groups)| (id, classification, groups))
+        .collect();
+    evaluate_members(
+        group,
+        (&grouping, &key),
+        &variants,
+        &logistics,
+        stock_known,
+        balance_known,
+        retained,
+        read,
+    )
+}
+
+/// [`evaluate`] over members in id order whose groups are already named, and
+/// of a group already parsed into its grouping and key.
+#[allow(clippy::too_many_arguments)]
+fn evaluate_members(
+    group: &str,
+    (grouping, key): (&str, &str),
+    variants: &[Member<'_, u64>],
+    logistics: &[Member<'_, u32>],
+    stock_known: bool,
+    balance_known: bool,
+    retained: Option<&Logistics>,
+    mut read: impl FnMut(usize, u64) -> io::Result<Operand>,
+) -> io::Result<[Option<i128>; 4]> {
     let mut stock = stock_known.then_some(0_i128);
-    for (&id, classification) in variants {
+    for &(id, classification, groups) in variants {
         let value = read(0, id)?;
         if classification.kind.is_none() && value.present && value.value != Some(0) {
             stock = None;
         }
-        if classification
-            .groups(Some(id))
-            .iter()
-            .any(|key| key == group)
-        {
+        if groups.iter().any(|key| key == group) {
             stock = stock.and_then(|sum| value.value.map(|value| sum + value));
         }
     }
     // The UI key map uses the last logistics token for a duplicate archetype.
-    let types: BTreeMap<_, _> = logistics
+    let types: BTreeMap<&str, Member<'_, u32>> = logistics
         .iter()
-        .filter(|&(&id, classification)| {
+        .filter(|&&(id, _, groups)| {
             retained.is_none_or(|retained| {
                 retained
                     .representatives
-                    .get(&classification.groups(None)[0])
+                    .get(&groups[0])
                     .is_some_and(|(representative, _)| *representative == id)
             })
         })
-        .map(|(&id, classification)| (classification.groups(None)[0].clone(), (id, classification)))
+        .map(|&member| (member.2[0].as_str(), member))
         .collect();
     let own: Vec<_> = types
         .values()
         .copied()
-        .filter(|(_, classification)| classification.groups(None).iter().any(|key| key == group))
+        .filter(|(_, _, groups)| groups.iter().any(|key| key == group))
         .collect();
     let evidence = retained
         .map(|retained| retained.groups.get(group).copied().unwrap_or_default())
         .unwrap_or_else(|| LogisticsEvidence {
             own: own.len(),
-            unresolved: own.iter().filter(|(_, class)| class.kind.is_none()).count(),
+            unresolved: own.iter().filter(|(_, class, _)| class.kind.is_none()).count(),
             required: own
                 .iter()
-                .filter(|(_, class)| {
+                .filter(|(_, class, _)| {
                     class
                         .kind
                         .as_ref()
@@ -344,7 +387,7 @@ fn evaluate(
     let mut balance = (balance_known && evidence.own > 0).then_some(0_i128);
     let mut need = balance;
     let mut recorded_required = 0;
-    for (id, classification) in own {
+    for (id, classification, _) in own {
         let b = read(5, u64::from(id))?.value;
         let s = read(6, u64::from(id))?.value;
         balance = balance.and_then(|sum| b.zip(s).map(|(value, _)| sum + value));
@@ -379,9 +422,9 @@ fn evaluate(
         need = None;
     }
     if grouping == "domain" && key != "unresolved" {
-        for (&id, _) in logistics
+        for &(id, _, _) in logistics
             .iter()
-            .filter(|(_, classification)| classification.kind.is_none())
+            .filter(|(_, classification, _)| classification.kind.is_none())
         {
             let b = read(5, u64::from(id))?;
             let s = read(6, u64::from(id))?;
@@ -1096,30 +1139,53 @@ impl Choices {
     }
 }
 
-fn affected(
-    group: &str,
+/// A classification window of a variant whose final classification differs,
+/// in history order, with both classifications' groups.
+struct Move {
+    id: u64,
+    first: i32,
+    last: i32,
+    /// Either classification is unresolved.
+    unresolved: bool,
+    old: [String; 2],
+    new: [String; 2],
+}
+
+/// The windows of `history` whose classification is not the variant's final one.
+fn moves(
     history: &BTreeMap<u64, Vec<ClassifiedSpan>>,
     final_names: &BTreeMap<u64, Classification>,
-) -> Vec<HourSpan> {
-    let mut spans: Vec<_> = history
+) -> Vec<Move> {
+    let mut moves = Vec::new();
+    for (&id, history) in history {
+        for span in history {
+            let final_name = &final_names[&id];
+            if span.classification != *final_name {
+                moves.push(Move {
+                    id,
+                    first: span.first,
+                    last: span.last,
+                    unresolved: span.classification.kind.is_none() || final_name.kind.is_none(),
+                    old: span.classification.groups(Some(id)),
+                    new: final_name.groups(Some(id)),
+                });
+            }
+        }
+    }
+    moves
+}
+
+fn affected(group: &str, moves: &[Move]) -> Vec<HourSpan> {
+    let mut spans: Vec<_> = moves
         .iter()
-        .flat_map(|(&id, history)| {
-            history.iter().filter_map(move |span| {
-                let final_name = &final_names[&id];
-                (span.classification != *final_name
-                    && (span.classification.kind.is_none()
-                        || final_name.kind.is_none()
-                        || span
-                            .classification
-                            .groups(Some(id))
-                            .iter()
-                            .any(|key| key == group)
-                        || final_name.groups(Some(id)).iter().any(|key| key == group)))
-                .then_some(HourSpan {
-                    first_hour: span.first,
-                    last_hour: span.last,
-                })
-            })
+        .filter(|change| {
+            change.unresolved
+                || change.old.iter().any(|key| key == group)
+                || change.new.iter().any(|key| key == group)
+        })
+        .map(|change| HourSpan {
+            first_hour: change.first,
+            last_hour: change.last,
         })
         .collect();
     spans.sort_by_key(|span| span.first_hour);
@@ -1179,6 +1245,57 @@ fn exact_max(
         .ok_or_else(|| dashboard_core::invalid("Missing stockpile maximum"))
 }
 
+/// Runs read from one series window, searched for an hour as a linear scan
+/// finds it: by bisection when they are ordered and disjoint.
+struct Runs {
+    runs: Vec<series::Run>,
+    disjoint: bool,
+}
+impl Runs {
+    fn new(runs: Vec<series::Run>) -> Self {
+        let disjoint = runs.iter().all(|run| run.first_hour <= run.last_hour)
+            && runs
+                .windows(2)
+                .all(|pair| pair[0].last_hour < pair[1].first_hour);
+        Self { runs, disjoint }
+    }
+    /// The first run holding `hour`.
+    fn at(&self, hour: i32) -> Option<&series::Run> {
+        if !self.disjoint {
+            return self
+                .runs
+                .iter()
+                .find(|run| run.first_hour <= hour && hour <= run.last_hour);
+        }
+        self.runs
+            .partition_point(|run| run.first_hour <= hour)
+            .checked_sub(1)
+            .map(|index| &self.runs[index])
+            .filter(|run| run.last_hour >= hour)
+    }
+    /// Whether a run holding `hour` satisfies `test`.
+    fn any(&self, hour: i32, test: impl Fn(&series::Run) -> bool) -> bool {
+        if !self.disjoint {
+            return self
+                .runs
+                .iter()
+                .any(|run| run.first_hour <= hour && hour <= run.last_hour && test(run));
+        }
+        self.at(hour).is_some_and(test)
+    }
+    /// Whether a run starting at `hour` breaks from the one before.
+    fn starts_broken(&self, hour: i32) -> bool {
+        if !self.disjoint {
+            return self
+                .runs
+                .iter()
+                .any(|run| run.first_hour == hour && run.break_before);
+        }
+        self.at(hour)
+            .is_some_and(|run| run.first_hour == hour && run.break_before)
+    }
+}
+
 pub(super) struct Query<'a> {
     keys: &'a BTreeMap<String, u64>,
     tag: &'a str,
@@ -1192,6 +1309,18 @@ pub(super) struct Query<'a> {
     coverage: Reader<'a>,
     bounds: (i32, i32),
     included: &'a [String],
+    /// Each variant's and logistics type's groups, named once.
+    variant_groups: BTreeMap<u64, [String; 2]>,
+    logistics_groups: BTreeMap<u32, [String; 2]>,
+    /// What one reply derives more than once, kept for the reply.
+    moves: Option<Arc<Vec<Move>>>,
+    affected: HashMap<String, Arc<Vec<HourSpan>>>,
+    corrected: HashMap<(String, i32, i32), Arc<[Vec<series::Run>; 4]>>,
+    operands: HashMap<(bool, usize, u64, i32, i32), Arc<Runs>>,
+    covered: HashMap<(usize, i32, i32), Arc<Runs>>,
+    subsets: HashMap<String, Arc<(BTreeSet<String>, BTreeSet<String>)>>,
+    /// The classification section's pages, read once by [`Self::new`].
+    classification: Vec<[u64; 3]>,
 }
 impl<'a> Query<'a> {
     #[allow(clippy::too_many_arguments)]
@@ -1213,7 +1342,7 @@ impl<'a> Query<'a> {
         .branch();
         let mut classifier = Choices::default();
         classifier.bind_content(&Content::load(source, context.content.as_ref()));
-        let variants = holder
+        let variants: BTreeMap<_, _> = holder
             .variants
             .iter()
             .filter_map(|id| {
@@ -1248,6 +1377,7 @@ impl<'a> Query<'a> {
             }
             history.insert(id, spans);
         }
+        let classification = intervals.pages()?;
         let [a, b, c, d] = MEASURES.map(|field| {
             Reader::new(
                 store,
@@ -1269,16 +1399,25 @@ impl<'a> Query<'a> {
             )
         });
         let present = [a?, b?, c?, d?];
+        let logistics: BTreeMap<_, _> = holder
+            .logistics
+            .iter()
+            .map(|&id| (id, classifier.classify_logistics(holder, id)))
+            .collect();
         Ok(Self {
             keys,
             tag: &request.tag,
             holder,
-            variants,
-            logistics: holder
-                .logistics
+            variant_groups: variants
                 .iter()
-                .map(|&id| (id, classifier.classify_logistics(holder, id)))
+                .map(|(&id, classification)| (id, classification.groups(Some(id))))
                 .collect(),
+            logistics_groups: logistics
+                .iter()
+                .map(|(&id, classification)| (id, classification.groups(None)))
+                .collect(),
+            variants,
+            logistics,
             history,
             aggregates,
             amounts,
@@ -1291,10 +1430,84 @@ impl<'a> Query<'a> {
             )?,
             bounds: (metadata.first.unwrap_or(metadata.last), metadata.last),
             included: &request.included,
+            moves: None,
+            affected: HashMap::new(),
+            corrected: HashMap::new(),
+            operands: HashMap::new(),
+            covered: HashMap::new(),
+            subsets: HashMap::new(),
+            classification,
         })
+    }
+    /// Every prepared page [`Self::peaks`] reads beyond the catalogue.
+    pub(super) fn pages(&mut self) -> io::Result<Vec<[u64; 3]>> {
+        let mut pages = self.classification.clone();
+        for reader in self
+            .aggregates
+            .iter_mut()
+            .chain(self.amounts.iter_mut())
+            .chain(self.present.iter_mut())
+            .chain(std::iter::once(&mut self.coverage))
+        {
+            pages.extend(reader.pages()?);
+        }
+        Ok(pages)
     }
     fn actor(&self, field: &str) -> Option<u64> {
         self.keys.get(&series::field_key(self.tag, field)).copied()
+    }
+    fn moves(&mut self) -> Arc<Vec<Move>> {
+        Arc::clone(
+            self.moves
+                .get_or_insert_with(|| Arc::new(moves(&self.history, &self.variants))),
+        )
+    }
+    /// The windows over which `group`'s observation-time runs are corrected.
+    fn affected(&mut self, group: &str) -> Arc<Vec<HourSpan>> {
+        if let Some(spans) = self.affected.get(group) {
+            return Arc::clone(spans);
+        }
+        let spans = Arc::new(affected(group, &self.moves()));
+        self.affected.insert(group.to_owned(), Arc::clone(&spans));
+        spans
+    }
+    /// A variant's or logistics type's amounts, or with `present` its
+    /// presence, over `from..=to`.
+    fn operand(
+        &mut self,
+        present: bool,
+        (field, slot): (usize, usize),
+        id: u64,
+        (from, to): (i32, i32),
+    ) -> io::Result<Arc<Runs>> {
+        let Some(actor) = self.actor(&format!("{}:{id}", FIELDS[field])) else {
+            return Ok(Arc::new(Runs::new(Vec::new())));
+        };
+        if let Some(runs) = self.operands.get(&(present, slot, actor, from, to)) {
+            return Ok(Arc::clone(runs));
+        }
+        let reader = if present {
+            &mut self.present[slot]
+        } else {
+            &mut self.amounts[slot]
+        };
+        let runs = Arc::new(Runs::new(reader.runs(actor, from, to)?));
+        self.operands
+            .insert((present, slot, actor, from, to), Arc::clone(&runs));
+        Ok(runs)
+    }
+    /// The stock (`slot` 0) or balance (1) coverage over `from..=to`.
+    fn covered(&mut self, slot: usize, from: i32, to: i32) -> io::Result<Arc<Runs>> {
+        if let Some(runs) = self.covered.get(&(slot, from, to)) {
+            return Ok(Arc::clone(runs));
+        }
+        let field = ["stock-hours", "balance-hours"][slot];
+        let runs = Arc::new(Runs::new(match self.actor(field) {
+            Some(actor) => self.coverage.runs(actor, from, to)?,
+            None => Vec::new(),
+        }));
+        self.covered.insert((slot, from, to), Arc::clone(&runs));
+        Ok(runs)
     }
     pub(super) fn relevant(&self, field: usize, id: u64, groups: &[String], dense: bool) -> bool {
         if groups.is_empty() {
@@ -1308,8 +1521,7 @@ impl<'a> Query<'a> {
                 return false;
             }
             return self.variants.get(&id).is_some_and(|classification| {
-                classification
-                    .groups(Some(id))
+                self.variant_groups[&id]
                     .iter()
                     .any(|key| groups.contains(key))
                     || classification.kind.is_none()
@@ -1324,8 +1536,7 @@ impl<'a> Query<'a> {
         self.logistics
             .get(&(id as u32))
             .is_some_and(|classification| {
-                classification
-                    .groups(None)
+                self.logistics_groups[&(id as u32)]
                     .iter()
                     .any(|key| groups.contains(key))
                     || classification.kind.is_none()
@@ -1339,53 +1550,62 @@ impl<'a> Query<'a> {
                                 .contains(&format!("{UNRESOLVED_MARK}{}", classification.token)))
             })
     }
-    fn corrected(&mut self, group: &str, from: i32, to: i32) -> io::Result<[Vec<series::Run>; 4]> {
-        if let Some(values) = self.correct_known(group, from, to)? {
-            return Ok(values);
+    fn corrected(
+        &mut self,
+        group: &str,
+        from: i32,
+        to: i32,
+    ) -> io::Result<Arc<[Vec<series::Run>; 4]>> {
+        let key = (group.to_owned(), from, to);
+        if let Some(values) = self.corrected.get(&key) {
+            return Ok(Arc::clone(values));
         }
+        let values = Arc::new(match self.correct_known(group, from, to)? {
+            Some(values) => values,
+            None => self.reconstructed(group, from, to)?,
+        });
+        self.corrected.insert(key, Arc::clone(&values));
+        Ok(values)
+    }
+    fn reconstructed(
+        &mut self,
+        group: &str,
+        from: i32,
+        to: i32,
+    ) -> io::Result<[Vec<series::Run>; 4]> {
         // An unknown observation-time total cannot be adjusted arithmetically.
         // Recover only its final members and the unresolved completeness operands.
-        let variants: BTreeMap<_, _> = self
+        let variants: Vec<u64> = self
             .variants
             .iter()
             .filter(|(id, classification)| {
                 classification.kind.is_none()
-                    || classification
-                        .groups(Some(**id))
-                        .iter()
-                        .any(|key| key == group)
+                    || self.variant_groups[*id].iter().any(|key| key == group)
             })
-            .map(|(id, classification)| (*id, classification.clone()))
+            .map(|(id, _)| *id)
             .collect();
-        let (kind, _): (String, String) = serde_json::from_str(group)?;
-        let logistics: BTreeMap<_, _> = self
+        let (kind, key): (String, String) = serde_json::from_str(group)?;
+        let logistics: Vec<u32> = self
             .logistics
             .iter()
-            .filter(|(_, classification)| {
-                classification.groups(None).iter().any(|key| key == group)
+            .filter(|(id, classification)| {
+                self.logistics_groups[*id].iter().any(|key| key == group)
                     || kind == "domain" && classification.kind.is_none()
             })
-            .map(|(id, classification)| (*id, classification.clone()))
+            .map(|(id, _)| *id)
             .collect();
         let mut dates = BTreeSet::from([from]);
-        let mut operands = BTreeMap::<(usize, u64), (Vec<series::Run>, Vec<series::Run>)>::new();
+        let mut operands = BTreeMap::<(usize, u64), (Arc<Runs>, Arc<Runs>)>::new();
         for (field, slot) in [(0, 0), (5, 1), (6, 2), (7, 3)] {
             let ids: Vec<_> = if field == 0 {
-                variants.keys().copied().collect()
+                variants.clone()
             } else {
-                logistics.keys().map(|id| u64::from(*id)).collect()
+                logistics.iter().map(|id| u64::from(*id)).collect()
             };
             for id in ids {
-                let (values, present) =
-                    if let Some(actor) = self.actor(&format!("{}:{id}", FIELDS[field])) {
-                        (
-                            self.amounts[slot].runs(actor, from, to)?,
-                            self.present[slot].runs(actor, from, to)?,
-                        )
-                    } else {
-                        (Vec::new(), Vec::new())
-                    };
-                for run in values.iter().chain(&present) {
+                let values = self.operand(false, (field, slot), id, (from, to))?;
+                let present = self.operand(true, (field, slot), id, (from, to))?;
+                for run in values.runs.iter().chain(&present.runs) {
                     dates.insert(run.first_hour);
                     if let Some(end) = run.last_hour.checked_add(1).filter(|end| *end <= to) {
                         dates.insert(end);
@@ -1394,28 +1614,31 @@ impl<'a> Query<'a> {
                 operands.insert((field, id), (values, present));
             }
         }
-        let mut coverage = [Vec::new(), Vec::new()];
-        for (slot, field) in [(0, "stock-hours"), (1, "balance-hours")] {
-            if let Some(actor) = self.actor(field) {
-                coverage[slot] = self.coverage.runs(actor, from, to)?;
-            }
-            for run in &coverage[slot] {
+        let coverage = [self.covered(0, from, to)?, self.covered(1, from, to)?];
+        for runs in &coverage {
+            for run in &runs.runs {
                 dates.insert(run.first_hour);
                 if let Some(end) = run.last_hour.checked_add(1).filter(|end| *end <= to) {
                     dates.insert(end);
                 }
             }
         }
+        let variants: Vec<Member<'_, u64>> = variants
+            .iter()
+            .map(|id| (*id, &self.variants[id], &self.variant_groups[id]))
+            .collect();
+        let logistics: Vec<Member<'_, u32>> = logistics
+            .iter()
+            .map(|id| (*id, &self.logistics[id], &self.logistics_groups[id]))
+            .collect();
         let dates: Vec<_> = dates.into_iter().collect();
         let mut result: [Vec<series::Run>; 4] = Default::default();
         for (index, &hour) in dates.iter().enumerate() {
             let last = dates.get(index + 1).map_or(to, |next| next - 1);
-            let known = coverage.each_ref().map(|runs| {
-                runs.iter()
-                    .any(|run| run.first_hour <= hour && hour <= run.last_hour)
-            });
-            let values = evaluate(
+            let known = coverage.each_ref().map(|runs| runs.any(hour, |_| true));
+            let values = evaluate_members(
                 group,
+                (&kind, &key),
                 &variants,
                 &logistics,
                 known[0],
@@ -1424,19 +1647,12 @@ impl<'a> Query<'a> {
                 |field, id| {
                     let (values, present) = &operands[&(field, id)];
                     Ok(Operand {
-                        value: values
-                            .iter()
-                            .find(|run| run.first_hour <= hour && hour <= run.last_hour)
-                            .map(|run| run.value)
-                            .or_else(|| {
-                                (!present.iter().any(|run| {
-                                    run.first_hour <= hour && hour <= run.last_hour && run.value < 0
-                                }) && known[usize::from(field != 0)])
-                                .then_some(0)
-                            }),
-                        present: present.iter().any(|run| {
-                            run.first_hour <= hour && hour <= run.last_hour && run.value != 0
+                        value: values.at(hour).map(|run| run.value).or_else(|| {
+                            (!present.any(hour, |run| run.value < 0)
+                                && known[usize::from(field != 0)])
+                            .then_some(0)
                         }),
+                        present: present.any(hour, |run| run.value != 0),
                     })
                 },
             )?;
@@ -1445,9 +1661,7 @@ impl<'a> Query<'a> {
                     let previous = result[slot].last();
                     let broken = previous
                         .is_none_or(|run| run.last_hour.checked_add(1) != Some(hour))
-                        || coverage[usize::from(slot != 0)]
-                            .iter()
-                            .any(|run| run.first_hour == hour && run.break_before);
+                        || coverage[usize::from(slot != 0)].starts_broken(hour);
                     if let Some(previous) = result[slot]
                         .last_mut()
                         .filter(|run| !broken && run.value == value)
@@ -1469,21 +1683,12 @@ impl<'a> Query<'a> {
         from: i32,
         to: i32,
     ) -> io::Result<Option<[Vec<series::Run>; 4]>> {
-        let final_names = &self.variants;
-        let moves: Vec<_> = self
-            .history
+        let all = self.moves();
+        let moves: Vec<&Move> = all
             .iter()
-            .flat_map(|(&id, history)| {
-                history.iter().filter_map(move |span| {
-                    let final_name = &final_names[&id];
-                    (span.first <= to && span.last >= from && span.classification != *final_name)
-                        .then_some((id, span.clone(), final_name.clone()))
-                })
-            })
+            .filter(|change| change.first <= to && change.last >= from)
             .collect();
-        if moves.iter().any(|(_, span, final_name)| {
-            span.classification.kind.is_none() || final_name.kind.is_none()
-        }) {
+        if moves.iter().any(|change| change.unresolved) {
             return Ok(None);
         }
         let Some(actor) = self.aggregate_key(group, 0) else {
@@ -1505,59 +1710,41 @@ impl<'a> Query<'a> {
         for run in &base {
             dates.insert(run.first_hour);
         }
-        for (id, span, final_name) in &moves {
-            let old = span
-                .classification
-                .groups(Some(*id))
-                .iter()
-                .any(|key| key == group);
-            let new = final_name.groups(Some(*id)).iter().any(|key| key == group);
+        let base = Runs::new(base);
+        for change in &moves {
+            let old = change.old.iter().any(|key| key == group);
+            let new = change.new.iter().any(|key| key == group);
             if old == new {
                 continue;
             }
-            dates.insert(span.first.max(from));
-            if let Some(end) = span.last.checked_add(1).filter(|end| *end <= to) {
+            dates.insert(change.first.max(from));
+            if let Some(end) = change.last.checked_add(1).filter(|end| *end <= to) {
                 dates.insert(end);
             }
-            let values = if let Some(actor) = self.actor(&format!("stock:{id}")) {
-                self.amounts[0].runs(actor, from, to)?
-            } else {
-                Vec::new()
-            };
-            for run in &values {
+            let values = self.operand(false, (0, 0), change.id, (from, to))?;
+            for run in &values.runs {
                 dates.insert(run.first_hour);
                 if let Some(end) = run.last_hour.checked_add(1).filter(|end| *end <= to) {
                     dates.insert(end);
                 }
             }
-            operands.insert(*id, values);
+            operands.insert(change.id, values);
         }
         let dates: Vec<_> = dates.into_iter().collect();
         let mut result: [Vec<series::Run>; 4] = Default::default();
         for (index, &hour) in dates.iter().enumerate() {
-            let supplied = base
-                .iter()
-                .find(|run| run.first_hour <= hour && hour <= run.last_hour)
-                .expect("covered group stock");
+            let supplied = base.at(hour).expect("covered group stock");
             let mut value = supplied.value;
-            for (id, span, final_name) in moves
+            for change in moves
                 .iter()
-                .filter(|(_, span, _)| span.first <= hour && hour <= span.last)
+                .filter(|change| change.first <= hour && hour <= change.last)
             {
-                let old = span
-                    .classification
-                    .groups(Some(*id))
-                    .iter()
-                    .any(|key| key == group);
-                let new = final_name.groups(Some(*id)).iter().any(|key| key == group);
+                let old = change.old.iter().any(|key| key == group);
+                let new = change.new.iter().any(|key| key == group);
                 if old == new {
                     continue;
                 }
-                let Some(amount) = operands[id]
-                    .iter()
-                    .find(|run| run.first_hour <= hour && hour <= run.last_hour)
-                    .map(|run| run.value)
-                else {
+                let Some(amount) = operands[&change.id].at(hour).map(|run| run.value) else {
                     return Ok(None);
                 };
                 value += if new { amount } else { -amount };
@@ -1590,24 +1777,37 @@ impl<'a> Query<'a> {
         Ok(kind == "domain" && !self.included.is_empty())
     }
     /// User subsets merge the selected types' change points, never their maxima.
-    fn subset(&mut self, group: &str, within: &[HourSpan]) -> io::Result<[Vec<series::Run>; 4]> {
+    /// The selected types a user subset of `group` merges, and those of them
+    /// with logistics balances.
+    fn subset_types(
+        &mut self,
+        group: &str,
+    ) -> io::Result<Arc<(BTreeSet<String>, BTreeSet<String>)>> {
+        if let Some(types) = self.subsets.get(group) {
+            return Ok(Arc::clone(types));
+        }
         let mut types = BTreeSet::new();
         let mut balanced = BTreeSet::new();
-        for (&id, classification) in &self.variants {
-            let groups = classification.groups(Some(id));
+        for groups in self.variant_groups.values() {
             let (_, key): (String, String) = serde_json::from_str(&groups[0])?;
             if groups[1] == group && self.included.contains(&key) {
                 types.insert(groups[0].clone());
             }
         }
-        for classification in self.logistics.values() {
-            let groups = classification.groups(None);
+        for groups in self.logistics_groups.values() {
             let (_, key): (String, String) = serde_json::from_str(&groups[0])?;
             if groups[1] == group && self.included.contains(&key) {
                 types.insert(groups[0].clone());
                 balanced.insert(groups[0].clone());
             }
         }
+        let types = Arc::new((types, balanced));
+        self.subsets.insert(group.to_owned(), Arc::clone(&types));
+        Ok(types)
+    }
+    fn subset(&mut self, group: &str, within: &[HourSpan]) -> io::Result<[Vec<series::Run>; 4]> {
+        let selected = self.subset_types(group)?;
+        let (types, balanced) = &*selected;
         let mut inputs = BTreeMap::new();
         let mut dates = BTreeSet::new();
         for span in within {
@@ -1616,7 +1816,7 @@ impl<'a> Query<'a> {
                 dates.insert(end);
             }
         }
-        for key in &types {
+        for key in types {
             let mut values: [Vec<series::Run>; 3] = Default::default();
             for (slot, rows) in values.iter_mut().enumerate() {
                 if slot != 0 && !balanced.contains(key) {
@@ -1764,9 +1964,7 @@ impl<'a> Query<'a> {
         let own: Vec<_> = self
             .logistics
             .iter()
-            .filter(|(_, classification)| {
-                classification.groups(None).iter().any(|key| key == group)
-            })
+            .filter(|(id, _)| self.logistics_groups[*id].iter().any(|key| key == group))
             .collect();
         if (slot == 0
             && own
@@ -1808,9 +2006,7 @@ impl<'a> Query<'a> {
             return Ok(self.subset(group, within)?[slot].clone());
         }
         let mut result = Vec::new();
-        for (first, last, changed) in
-            pieces(within, &affected(group, &self.history, &self.variants))
-        {
+        for (first, last, changed) in pieces(within, &self.affected(group)) {
             let mut runs = if changed {
                 self.corrected(group, first, last)?[slot].clone()
             } else if let Some(actor) = self.aggregate_key(group, slot) {
@@ -1840,7 +2036,8 @@ impl<'a> Query<'a> {
                 .first()
                 .map(|run| run.value));
         }
-        if affected(group, &self.history, &self.variants)
+        if self
+            .affected(group)
             .iter()
             .any(|span| span.first_hour <= hour && hour <= span.last_hour)
         {
@@ -1895,7 +2092,7 @@ impl<'a> Query<'a> {
                 runs: Some(Vec::new()),
             }
         };
-        let changed = affected(group, &self.history, &self.variants);
+        let changed = self.affected(group);
         let mut values = template.clone();
         for (bucket, covered) in values.buckets.iter_mut().zip(&template.buckets) {
             *bucket = None;
@@ -1914,13 +2111,13 @@ impl<'a> Query<'a> {
                 for (first, last, corrected) in pieces(&clipped, &changed) {
                     if corrected || self.filtered(group)? {
                         let runs = if self.filtered(group)? {
-                            self.subset(
+                            Arc::new(self.subset(
                                 group,
                                 &[HourSpan {
                                     first_hour: first,
                                     last_hour: last,
                                 }],
-                            )?
+                            )?)
                         } else {
                             self.corrected(group, first, last)?
                         };
@@ -2068,9 +2265,7 @@ impl<'a> Query<'a> {
                 share_drawable: values[3].iter().any(|run| run.value == 1),
             });
         }
-        for (first, last, changed) in
-            pieces(within, &affected(group, &self.history, &self.variants))
-        {
+        for (first, last, changed) in pieces(within, &self.affected(group)) {
             if changed {
                 let values = self.corrected(group, first, last)?;
                 for run in values[0].iter().chain(&values[2]) {
@@ -2114,14 +2309,11 @@ impl<'a> Query<'a> {
         within: &[HourSpan],
     ) -> io::Result<BTreeMap<String, StockpileChoicePeak>> {
         let groups: BTreeSet<_> = self
-            .variants
-            .iter()
-            .flat_map(|(&id, classification)| classification.groups(Some(id)))
-            .chain(
-                self.logistics
-                    .values()
-                    .flat_map(|classification| classification.groups(None)),
-            )
+            .variant_groups
+            .values()
+            .chain(self.logistics_groups.values())
+            .flatten()
+            .cloned()
             .collect();
         let mut result = BTreeMap::new();
         for group in groups {

@@ -235,6 +235,15 @@ fn lock(shared: &Mutex<Versions>) -> MutexGuard<'_, Versions> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The bytes of a `BTreeMap` leaf and internal node of `K` and `V`, at the
+/// least their fields take: a parent link, its index and length, eleven
+/// keys and values, and an internal node's twelve child links.
+fn tree_nodes<K, V>() -> (usize, usize) {
+    use std::mem::size_of;
+    let leaf = size_of::<usize>() + 2 * size_of::<u16>() + 11 * (size_of::<K>() + size_of::<V>());
+    (leaf, leaf + 12 * size_of::<usize>())
+}
+
 fn fold(literal: Option<&[u8]>) -> Option<Box<[u8]>> {
     literal.map(|literal| literal.to_ascii_lowercase().into_boxed_slice())
 }
@@ -391,6 +400,82 @@ impl DictionaryHistory {
 
     pub fn count(&self) -> u32 {
         self.count
+    }
+
+    /// What the shared versions hold, with the lookup a first name builds
+    /// counted as if built at the most it can reach: each named spelling may
+    /// fold to a name of its own, a name takes at most four table slots as the
+    /// table grows, and each name's tokens and outcomes start at four elements
+    /// and at most double what reaches them: a token per named spelling, an
+    /// outcome for each name every spelling leaves or joins.
+    pub fn held_bytes(&self) -> usize {
+        use std::mem::size_of;
+        // An allocation of `len` bytes, with room for its allocator's rounding.
+        let allocated = |len: usize| if len == 0 { 0 } else { len + len / 4 + 16 };
+        let versions = lock(&self.shared);
+        let (mut spellings, mut named) = (0, 0);
+        // The shared allocation's counts beside the mutex and its versions.
+        let mut bytes = allocated(2 * size_of::<usize>() + size_of::<Mutex<Versions>>());
+        // Every node is a full allocation; a leaf but a lone root holds at
+        // least five entries, and an internal node at least two children.
+        let (leaf, internal) = tree_nodes::<u32, Spellings>();
+        let leaves = versions.spellings.len().div_ceil(5);
+        bytes += leaves * allocated(leaf) + leaves.saturating_sub(1) * allocated(internal);
+        for held in versions.spellings.values() {
+            bytes += allocated(held.capacity() * size_of::<(u32, Option<Box<[u8]>>)>());
+            for (_, literal) in held {
+                spellings += 1;
+                if let Some(literal) = literal {
+                    named += 1;
+                    // The literal, and its folded name in the lookup.
+                    bytes += 2 * allocated(literal.len());
+                }
+            }
+        }
+        let tokens = (4 * named + 2 * named) * size_of::<u32>();
+        let outcomes = (4 * named + 4 * spellings) * size_of::<(u32, Outcome)>();
+        bytes
+            + allocated(4 * named * (size_of::<(Box<[u8]>, Folded)>() + 1) + 16)
+            + allocated(tokens)
+            + allocated(outcomes)
+            + 2 * named * 16
+    }
+
+    /// The least the shared versions can hold now, from their allocations'
+    /// capacities and the map's node layout: at least one full leaf per
+    /// eleven entries and the internal nodes joining them, twelve to a node.
+    #[cfg(test)]
+    fn measured_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let versions = lock(&self.shared);
+        let mut bytes = 2 * size_of::<usize>() + size_of::<Mutex<Versions>>();
+        let (leaf, internal) = tree_nodes::<u32, Spellings>();
+        let leaves = versions.spellings.len().div_ceil(11);
+        bytes += leaves * leaf + leaves.saturating_sub(1).div_ceil(11) * internal;
+        for held in versions.spellings.values() {
+            bytes += held.capacity() * size_of::<(u32, Option<Box<[u8]>>)>()
+                + held
+                    .iter()
+                    .map(|(_, literal)| literal.as_ref().map_or(0, |literal| literal.len()))
+                    .sum::<usize>();
+        }
+        if let Some(folded) = &versions.folded {
+            // A power of two buckets, seven eighths of which a table fills.
+            let capacity = folded.capacity();
+            let buckets = if capacity < 8 {
+                capacity + 1
+            } else {
+                capacity * 8 / 7
+            }
+            .next_power_of_two();
+            bytes += buckets * (size_of::<(Box<[u8]>, Folded)>() + 1) + 16;
+            for (key, name) in folded {
+                bytes += key.len()
+                    + name.tokens.capacity() * size_of::<u32>()
+                    + name.outcomes.capacity() * size_of::<(u32, Outcome)>();
+            }
+        }
+        bytes
     }
 
     pub fn version(&self, version: u32) -> Option<HistoricalDictionary> {
@@ -769,6 +854,42 @@ mod tests {
         let mut bytes = Vec::new();
         history.encode(&mut bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    fn dictionary_charges_hold_what_the_versions_and_their_lookup_take() {
+        // Distinct short names on each side of the lookup table's growth, then
+        // respellings that move tokens between names and add outcomes.
+        for count in [1_u32, 3, 4, 7, 8, 14, 15, 28, 29, 56, 57, 112, 113, 224, 225, 448, 449] {
+            let mut history = DictionaryHistory::default();
+            let mut dictionary = history
+                .add(&lexical_table(
+                    (0..count).map(|token| (token, format!("n{token}").into_bytes())),
+                ))
+                .unwrap()
+                .unwrap();
+            for version in 1..4 {
+                let charged = history.held_bytes();
+                assert!(charged >= history.measured_bytes(), "{count} before a lookup");
+                dictionary.token_of(b"n0").unwrap();
+                assert!(
+                    charged >= history.measured_bytes(),
+                    "{count} after a lookup at version {version}"
+                );
+                dictionary = history
+                    .add(&lexical_table((0..count).map(|token| {
+                        let name = if token % 2 == 0 {
+                            format!("N{}", token / 2)
+                        } else {
+                            format!("v{version}x{token}")
+                        };
+                        (token, name.into_bytes())
+                    })))
+                    .unwrap()
+                    .unwrap();
+            }
+            assert!(history.held_bytes() >= history.measured_bytes(), "{count}");
+        }
     }
 
     #[test]

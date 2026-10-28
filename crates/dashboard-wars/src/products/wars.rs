@@ -1224,23 +1224,7 @@ impl Walk {
                     .is_ok_and(|(inputs, _)| inputs.refresh_losses(decoded))
         });
         if !same {
-            self.held = Some(HeldHour {
-                tables: self
-                    .compared
-                    .iter()
-                    .map(|table| decoded.tables[table.index()].identity())
-                    .collect(),
-                observed: identities
-                    .map_or_else(
-                        || Ok(view.map(str::to_owned)),
-                        |selected| selected_view(decoded, selected).map(Some),
-                    )
-                    .and_then(|view| Hour::read(decoded, view.as_deref()))
-                    .map(|inputs| {
-                        let observations = inputs.observe(decoded, cat);
-                        (inputs, observations)
-                    }),
-            });
+            self.hold(decoded, view, identities, cat);
         }
         if let Ok((inputs, observed)) = &self.held.as_ref().expect("held hour").observed {
             if self.labels && (!same || self.previous.is_none()) {
@@ -1371,6 +1355,32 @@ impl Walk {
             self.identity_since.clear();
             self.held = None;
         }
+    }
+    /// Hold the inputs `view` reads at `decoded` and the groups it observes there.
+    fn hold(
+        &mut self,
+        decoded: &DecodedFrame,
+        view: Option<&str>,
+        identities: Option<&HashSet<(u32, u32)>>,
+        cat: Option<&Catalogue>,
+    ) {
+        self.held = Some(HeldHour {
+            tables: self
+                .compared
+                .iter()
+                .map(|table| decoded.tables[table.index()].identity())
+                .collect(),
+            observed: identities
+                .map_or_else(
+                    || Ok(view.map(str::to_owned)),
+                    |selected| selected_view(decoded, selected).map(Some),
+                )
+                .and_then(|view| Hour::read(decoded, view.as_deref()))
+                .map(|inputs| {
+                    let observations = inputs.observe(decoded, cat);
+                    (inputs, observations)
+                }),
+        });
     }
     /// Extend unchanged inputs across accepted hours without walking those hours.
     fn extend(&mut self, last: i32) {

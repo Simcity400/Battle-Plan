@@ -149,7 +149,16 @@ pub(super) fn moment(
     let (first, _) = hours(params)?;
     let samples = if coverage.is_some() && first <= reached.last_hour.unwrap_or(first) {
         Prepared::read_query(&store, &key, branch)?.samples(
-            source, &store, &key, branch, &reached, &groups, &anchors, &mut sides, cancelled,
+            source,
+            &store,
+            &key,
+            branch,
+            &reached,
+            &std::sync::OnceLock::new(),
+            &groups,
+            &anchors,
+            &mut sides,
+            cancelled,
         )?
     } else {
         Vec::new()
@@ -210,6 +219,7 @@ pub(super) fn query(
                 &key,
                 branch,
                 &reached,
+                &std::sync::OnceLock::new(),
                 &groups,
                 &cache.anchors,
                 &mut sides,

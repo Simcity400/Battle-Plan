@@ -1348,6 +1348,10 @@ pub fn name_runs<'a>(
 }
 
 impl Scan {
+    /// What the scan holds beyond what it serializes: its names' dictionaries.
+    pub fn dictionary_bytes(&self) -> usize {
+        self.continuation.dictionaries.held_bytes()
+    }
     /// Sum requests share one raw projection per immutable scan. Appends build
     /// another scan with an empty projection, including bounds-only changes.
     pub fn faction_history(&self, cancelled: &AtomicBool) -> io::Result<Arc<FactionHistory>> {

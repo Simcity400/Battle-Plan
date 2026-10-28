@@ -1148,6 +1148,27 @@ pub fn committed_coverage(
         ..partial.clone()
     }))
 }
+/// The identities of the pages [`read_catalogue`] reads for `family`.
+pub fn catalogue_pages(
+    store: &store::Store,
+    key: &store::SourceKey,
+    family: &str,
+    branch: u64,
+) -> io::Result<Vec<[u64; 3]>> {
+    let Some(session) = store.session(key)? else {
+        return Ok(Vec::new());
+    };
+    let section = catalogue_section(family, branch);
+    let mut pages = Vec::new();
+    while let Some(range) = session.read(&section, pages.len() as u64)? {
+        if range.is_empty() {
+            break;
+        }
+        pages.push(range.id().cache_key());
+    }
+    Ok(pages)
+}
+
 pub fn read_catalogue<T: DeserializeOwned>(
     store: &store::Store,
     key: &store::SourceKey,
@@ -2580,6 +2601,12 @@ impl<'a> Reader<'a> {
             self.files.insert(batch, file);
         }
         Ok(self.files.get_mut(&batch).unwrap())
+    }
+    /// The identities of this section's batch pages, in batch order.
+    pub fn pages(&mut self) -> io::Result<Vec<[u64; 3]>> {
+        (0..self.count)
+            .map(|batch| Ok(self.file(batch)?.id().cache_key()))
+            .collect()
     }
     /// A batch's first and last hour, read from its header once.
     fn hours(&mut self, batch: u64) -> io::Result<(i32, i32)> {
