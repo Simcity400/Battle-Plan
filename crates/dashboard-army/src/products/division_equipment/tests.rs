@@ -1568,7 +1568,7 @@ fn a_missing_dictionary_row_is_refused_before_unreadable_icons_as_served() {
 }
 
 #[test]
-fn a_stockpile_read_rebuilds_every_country_that_hour() {
+fn a_stockpile_read_alone_rebuilds_no_country() {
     let count = 3;
     // Only stockpiles are read: their first read is at 8, and nothing else changes.
     let frames: Vec<_> = (2..=10)
@@ -1595,10 +1595,261 @@ fn a_stockpile_read_rebuilds_every_country_that_hour() {
             (60_000_005, 0),
             (60_000_006, 0),
             (60_000_007, 0),
-            (60_000_008, every),
+            (60_000_008, 0),
             (60_000_009, 0),
             (60_000_010, 0),
         ]
+    );
+}
+
+/// [`scale_frame`] with designs 70 to 72, each country `at` holding `held(at)` in stock.
+fn stock_frame(count: u32, offset: i32, held: impl Fn(u32) -> Vec<(u64, i64)>) -> DecodedFrame {
+    let mut f = scale_frame(count, offset);
+    let mut rows = Vec::new();
+    for at in 0..count {
+        for (ordinal, (variant_handle, amount_raw)) in held(at).into_iter().enumerate() {
+            rows.push(StockpileRow {
+                country: 100 + at,
+                ordinal: ordinal as u32,
+                variant_handle,
+                amount_raw,
+            });
+        }
+    }
+    *f.tables[TableId::Stockpiles.index()] = TableView::Complete(TableRows::Stockpiles(rows));
+    *f.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(
+            (70..=72)
+                .map(|id| VariantDefinitionRow {
+                    id,
+                    equipment_token: 3,
+                    creator_link: 100,
+                    display_name: format!("Model {id}").into_bytes(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    f
+}
+
+/// The value `series` of `reply` holds at `hour`.
+fn held_value(reply: &history::DivisionEquipmentHistoryReply, series: &str, hour: i32) -> String {
+    reply
+        .window
+        .series
+        .iter()
+        .find(|held| held.name == series)
+        .and_then(|held| held.runs.iter().find(|run| run.0 <= hour && hour <= run.1))
+        .map(|run| run.2.clone())
+        .unwrap_or_else(|| panic!("{series} holds nothing at {hour}"))
+}
+
+#[test]
+fn a_stockpile_read_patches_every_country_another_change_does_not_rebuild_as_rebuilding_would() {
+    let count = 5;
+    // At 56 C0000 mints a division and holds design 72, ahead of the others numbering 71 anew.
+    let frames = (2..=60)
+        .map(|offset| {
+            let mut f = stock_frame(count, offset, |at| match at {
+                0 if offset >= 56 => vec![(70, 5_000_000), (72, 7)],
+                _ => vec![(70, 5_000_000), (71, i64::from(at) * 1_000)],
+            });
+            if offset >= 56 {
+                *f.tables[TableId::NewDivisionEquipment.index()] = TableView::Complete(
+                    TableRows::NewDivisionEquipment(vec![equipment(1, 0, 70, 1_000_000)]),
+                );
+            }
+            f
+        })
+        .collect();
+    let (source, context, _folder) = content_blocks(frames, &[], "stockpile-one");
+    let (fixtures, hours) = compare_numeric_preparation(&source, &context);
+    let every = 2 * count as usize;
+    let at = |offset: i32| {
+        hours
+            .iter()
+            .find(|&&(hour, _, _)| hour == 60_000_000 + offset)
+            .map(|&(_, builds, reference)| (builds, reference))
+    };
+    assert_eq!(at(56), Some((2, every)));
+    assert_eq!(at(57), Some((0, 0)));
+    let tags = ["C0000", "C0001", "C0002", "C0003", "C0004"];
+    assert_numeric_histories_equal(&source, &context, &fixtures, &tags, 60_000_060);
+    // A country patched at 56 publishes its read's hour and its designs as read at 46.
+    let patched = history_of(
+        &source,
+        &context,
+        &fixtures[0],
+        "C0001",
+        ArmyAttribution::Owner,
+        Some(60_000_060),
+    );
+    assert_ne!(
+        held_value(&patched, "stockDesign|71", 60_000_055),
+        held_value(&patched, "stockDesign|71", 60_000_056)
+    );
+    for (hour, read) in [(60_000_055, 60_000_032), (60_000_056, 60_000_056)] {
+        let reply = history::reply_at(&patched, hour).unwrap();
+        assert!(!reply.types.is_empty());
+        assert!(
+            reply
+                .types
+                .iter()
+                .all(|kind| kind.stockpile_hour == Some(read)),
+            "{hour}: {:?}",
+            reply.types
+        );
+    }
+}
+
+#[test]
+fn designs_number_as_their_first_equal_design_keeping_only_reads_still_looked_up() {
+    let raw = |id: u64, first_hour: i32, name: &str| equipment::RawVariant {
+        id,
+        first_hour,
+        token: "widgets_1".into(),
+        display_name: name.into(),
+        ..Default::default()
+    };
+    let mut designs = history::Designs::default();
+    let mut first: Vec<equipment::RawVariant> = Vec::new();
+    let mut check = |designs: &mut history::Designs, design: equipment::RawVariant| {
+        let expected = match first.iter().position(|seen| *seen == design) {
+            Some(number) => number,
+            None => {
+                first.push(design.clone());
+                first.len() - 1
+            }
+        };
+        assert_eq!(designs.number(&design), expected, "{design:?}");
+    };
+    // Twelve daily reads of three designs, one renamed from the seventh and one asked twice,
+    // each with a refused operand, and the read before asked again as a stockpile read asks it.
+    let mut before = None;
+    for read in 0..12 {
+        let hour = 60_000_022 + 24 * read;
+        designs.keep(&[Some(hour), before]);
+        for id in [70, 71, 72, 70] {
+            let name = if id == 71 && read >= 6 {
+                "Renamed"
+            } else {
+                "Model"
+            };
+            check(&mut designs, raw(id, hour, name));
+        }
+        let mut refused = raw(70, hour, "Model");
+        refused
+            .refusals
+            .push(("name tag".into(), "unresolved".into()));
+        check(&mut designs, refused);
+        if let Some(before) = before {
+            for id in [70, 72] {
+                check(&mut designs, raw(id, before, "Model"));
+            }
+        }
+        // Two reads' designs at most, however many reads went before.
+        assert!(designs.kept() <= 8, "{}", designs.kept());
+        before = Some(hour);
+    }
+    assert_eq!(designs.len(), 48);
+    designs.keep(&[None, None]);
+    assert_eq!(designs.kept(), 0);
+}
+
+/// Three countries holding designs 70 and 71 or 72, read through two designs reads.
+fn design_frames() -> Vec<DecodedFrame> {
+    (2..=50)
+        .map(|offset| {
+            stock_frame(3, offset, |at| {
+                vec![(70, 1_000), (71 + u64::from(at % 2), i64::from(at) + 5)]
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn a_pending_page_is_measured_as_long_as_its_flush_writes_it() {
+    let (source, context, _folder) = content_blocks(design_frames(), &[], "design-page");
+    let (prepared, _) = observed_hours(&source, &context);
+    assert!(prepared.designs().len() > 0);
+    let (measured, written) = prepared.pending_page();
+    assert!(written > 0);
+    assert_eq!(measured, written);
+}
+
+#[test]
+fn restored_designs_keep_their_count_and_nothing_to_find_again() {
+    let (source, context, _folder) = content_blocks(design_frames(), &[], "design-restore");
+    let (mut prepared, _) = observed_hours(&source, &context);
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let mut writer = fixture.writer();
+    prepared
+        .flush(&mut writer, 1, &AtomicBool::new(false))
+        .unwrap();
+    writer.commit().unwrap();
+    // A flushed page leaves only the designs of the reads still looked up.
+    assert_eq!(prepared.pending_page(), (0, 0));
+    assert!(prepared.designs().kept() > 0);
+    let mut restored: history::Prepared =
+        serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+    restored
+        .restore(|at| {
+            fixture
+                .store
+                .read(&fixture.key, &history::catalogue_section(1), at)
+        })
+        .unwrap();
+    let count = prepared.designs().len();
+    assert!(count > 0);
+    assert_eq!(restored.designs().len(), count);
+    assert_eq!(restored.designs().kept(), 0);
+}
+
+#[test]
+fn stockpile_reads_every_reply_reads_alike_are_patched_as_rebuilding_every_country_would() {
+    let count = 3;
+    // 8: the first read; 32: the first designs read with it; 56: an unlinked row; 80: refused.
+    let frames = (2..=80)
+        .map(|offset| {
+            let mut f = stock_frame(count, offset, |at| vec![(70, i64::from(at + 1) * 1_000)]);
+            if let TableView::Complete(TableRows::Stockpiles(rows)) =
+                &mut *f.tables[TableId::Stockpiles.index()]
+                && offset >= 56
+            {
+                rows.push(StockpileRow {
+                    country: 999,
+                    ordinal: 0,
+                    variant_handle: 70,
+                    amount_raw: 1,
+                });
+            }
+            if offset == 80 {
+                *f.tables[TableId::Stockpiles.index()] = TableView::Unavailable {
+                    reason: "stockpile walk refused".into(),
+                };
+            }
+            f
+        })
+        .collect();
+    let (source, context, _folder) = content_blocks(frames, &[], "stockpile-every");
+    let (fixtures, hours) = compare_numeric_preparation(&source, &context);
+    let every = 2 * count as usize;
+    for offset in [8, 32, 56, 80] {
+        assert_eq!(
+            hours
+                .iter()
+                .find(|&&(hour, _, _)| hour == 60_000_000 + offset)
+                .map(|&(_, builds, reference)| (builds, reference)),
+            Some((0, every)),
+            "{offset}"
+        );
+    }
+    assert_numeric_histories_equal(
+        &source,
+        &context,
+        &fixtures,
+        &["C0000", "C0001", "C0002"],
+        60_000_080,
     );
 }
 

@@ -136,7 +136,7 @@ pub fn text(bytes: &[u8], what: &str) -> Result<String, String> {
 }
 
 /// A variant's naming operands at one read of the variant table.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RawVariant {
     pub id: u64,
     pub first_hour: i32,

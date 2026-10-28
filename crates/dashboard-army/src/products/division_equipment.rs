@@ -478,6 +478,18 @@ pub(crate) struct Looked {
     pub(crate) operand: Option<army_content::DesignOperand>,
 }
 
+impl Looked {
+    /// `variant`'s lookup in `designs`.
+    pub(crate) fn of(designs: &dyn DesignsOf, variant: u64) -> Self {
+        let mut notes = Refusals::default();
+        let operand = designs.operand(variant, &mut notes);
+        Self {
+            notes: notes.counted(),
+            operand,
+        }
+    }
+}
+
 /// Counted divisions by attribution (owner, host) and slot, as [`members`] selects them.
 #[derive(Clone, Default)]
 pub(crate) struct Members {
@@ -580,23 +592,9 @@ impl<'c> Lookups<'c> {
             let looked = match self.shared.as_deref_mut() {
                 Some(shared) => shared
                     .entry(variant)
-                    .or_insert_with(|| {
-                        let mut notes = Refusals::default();
-                        let operand = self.designs.operand(variant, &mut notes);
-                        Looked {
-                            notes: notes.counted(),
-                            operand,
-                        }
-                    })
+                    .or_insert_with(|| Looked::of(self.designs, variant))
                     .clone(),
-                None => {
-                    let mut notes = Refusals::default();
-                    let operand = self.designs.operand(variant, &mut notes);
-                    Looked {
-                        notes: notes.counted(),
-                        operand,
-                    }
-                }
+                None => Looked::of(self.designs, variant),
             };
             for (note, times) in looked.notes {
                 refusals.note_times(note, times);
@@ -1051,8 +1049,45 @@ pub fn build(
 /// A reply and the designs its stockpile context looked up.
 pub(crate) struct Built {
     pub(crate) reply: DivisionEquipmentReply,
-    /// The stockpile's designs looked up, by handle.
-    pub(crate) stock_designs: Vec<u64>,
+    pub(crate) stock: StockPart,
+}
+
+/// What a reply reads of the national stockpile, decided by its holder and the stockpile's reads.
+#[derive(Default)]
+pub(crate) struct StockPart {
+    /// Each archetype's stock; none where it is withheld.
+    pub(crate) totals: Option<BTreeMap<String, i128>>,
+    /// The notes reading it made, counted.
+    pub(crate) notes: Vec<(String, usize)>,
+    /// The designs it looked up, by handle.
+    pub(crate) designs: Vec<u64>,
+}
+
+/// `holder`'s [`StockPart`], its designs looked up in `shared` when given.
+pub(crate) fn stock_part(
+    holder: army_content::Holder,
+    context: &Context<'_>,
+    shared: Option<&mut BTreeMap<u64, Looked>>,
+    grouped: Option<&Result<Grouped, ()>>,
+    ids: Option<&Result<BTreeMap<u32, u32>, ()>>,
+    cancelled: &AtomicBool,
+) -> io::Result<StockPart> {
+    let mut designs = Lookups::new(context.stock_designs, context.labels, shared);
+    let mut notes = Refusals::default();
+    let totals = stock_totals(
+        holder,
+        context,
+        grouped,
+        ids,
+        &mut designs,
+        &mut notes,
+        cancelled,
+    )?;
+    Ok(StockPart {
+        totals,
+        notes: notes.counted(),
+        designs: designs.handles().collect(),
+    })
 }
 
 /// [`build`], sharing what every country's reply at the hour shares when `shared` is given.
@@ -1090,7 +1125,7 @@ pub(crate) fn build_in(
         reply.absent = true;
         return Ok(Built {
             reply,
-            stock_designs: Vec::new(),
+            stock: StockPart::default(),
         });
     };
     let slot = holder.slot;
@@ -1176,17 +1211,17 @@ pub(crate) fn build_in(
             reply.pool = Some(pool(frame, &division, context, refusals)?);
         }
     }
-    let mut stock_designs = Lookups::new(context.stock_designs, context.labels, stock_shared);
-    let stocks = stock_totals(
+    let stock = stock_part(
         holder,
         context,
+        stock_shared,
         stock_rows,
         stock_ids,
-        &mut stock_designs,
-        refusals,
         cancelled,
     )?;
-    let stock_handles = stock_designs.handles().collect();
+    for (note, times) in &stock.notes {
+        refusals.note_times(note.clone(), *times);
+    }
     for (key, mut total) in types {
         total.unknown.extend(&unknown);
         let (name, name_missing) = match &key {
@@ -1196,10 +1231,7 @@ pub(crate) fn build_in(
             },
             None => (None, Some("Equipment archetype is unclassified".into())),
         };
-        let stock = stocks.as_ref().and_then(|stocks| {
-            key.as_ref()
-                .map(|key| stocks.get(key).copied().unwrap_or(0))
-        });
+        let held = stock_held(&stock, key.as_deref());
         reply.types.push(EquipmentType {
             archetype: key,
             name,
@@ -1210,8 +1242,8 @@ pub(crate) fn build_in(
             missing_raw: total.missing.map(|amount| amount.to_string()),
             divisions_short: total.short,
             unknown_divisions: count(total.unknown.len())?,
-            stockpile_raw: stock.map(|amount| amount.to_string()),
-            stockpile_hour: stock.and(context.stock.map(|frame| frame.hour)),
+            stockpile_raw: held.map(|amount| amount.to_string()),
+            stockpile_hour: held.and(context.stock.map(|frame| frame.hour)),
             variants: total.held.variants(),
         });
     }
@@ -1241,10 +1273,13 @@ pub(crate) fn build_in(
             unknown_divisions: total.unknown,
         });
     }
-    Ok(Built {
-        reply,
-        stock_designs: stock_handles,
-    })
+    Ok(Built { reply, stock })
+}
+
+/// The stock of an archetype a [`StockPart`] shows; none where withheld or unclassified.
+pub(crate) fn stock_held(stock: &StockPart, archetype: Option<&str>) -> Option<i128> {
+    let totals = stock.totals.as_ref()?;
+    Some(totals.get(archetype?).copied().unwrap_or(0))
 }
 
 /// A row of a template's divisions.
