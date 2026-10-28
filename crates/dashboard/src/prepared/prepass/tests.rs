@@ -1952,12 +1952,13 @@ fn a_walk_behind_every_paced_family_lane_keeps_the_pool() {
 
 #[test]
 fn production_prepass_worker_policy_is_independent_of_measurement_session() {
-    for cores in [1, 2, 16, 1500] {
-        assert_eq!(workers(cores), 1);
+    let expected = [(1, 1), (2, 2), (16, 2), (1500, 2)];
+    for (cores, count) in expected {
+        assert_eq!(workers(cores), count);
     }
     let session = runtime::Session::start().unwrap();
-    for cores in [1, 2, 16, 1500] {
-        assert_eq!(workers(cores), 1);
+    for (cores, count) in expected {
+        assert_eq!(workers(cores), count);
     }
     drop(session);
 }

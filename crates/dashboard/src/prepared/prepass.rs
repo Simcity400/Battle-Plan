@@ -89,13 +89,14 @@ pub(crate) fn enabled() -> bool {
     true
 }
 
-/// One live prepass limits duplicated decoder state; other preparation work remains parallel.
-pub(crate) fn workers(_parallelism: usize) -> usize {
+/// Two blocks read at once: the families waiting on the pre-pass take blocks twice as
+/// fast, for about the decoder state of one block more; a third costs far more memory.
+pub(crate) fn workers(parallelism: usize) -> usize {
     #[cfg(test)]
     if let Some(workers) = TEST_WORKERS.with(std::cell::Cell::get) {
         return workers;
     }
-    1
+    parallelism.clamp(1, 2)
 }
 
 /// The read-ahead budget (default [`AHEAD_BYTES`]) and test-only fault
