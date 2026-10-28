@@ -975,9 +975,7 @@ impl Table {
 
     /// A value written to `slots` of `column` is recorded.
     fn recorded_again(&mut self, column: usize, slots: &[u32]) {
-        if let Some(bits) = self.unrecorded.get_mut(column)
-            && bits.words().iter().any(|&word| word != 0)
-        {
+        if let Some(bits) = self.unrecorded.get_mut(column) {
             for &slot in slots {
                 bits.clear(slot);
             }
