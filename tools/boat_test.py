@@ -27,6 +27,8 @@ class FakeBoat:
         self.calls = []
         self.remote_calls = []
         self.acquire_status = {}
+        self.acquire_output = {}
+        self.sync_status = 0
         self.fail_downloads = False
         self.cargo_exit = 0
         self.renewed = threading.Event()
@@ -62,16 +64,16 @@ class FakeBoat:
         self.remote_calls.append((vmid, *args))
         mode = args[0]
         if mode == "acquire":
-            return self.acquire_status.get(vmid, 0), "{}"
-        if mode in {"release", "sync", "discard-bundle"}:
+            return self.acquire_status.get(vmid, 0), self.acquire_output.get(vmid, "{}")
+        if mode == "sync":
+            return self.sync_status, ""
+        if mode == "release":
             return 0, ""
         if mode == "check":
             return self.cargo_exit, ""
         if mode == "build":
             artifact = {"path": f"{bt.REMOTE}/target/{bt.TARGET}/release/viewer.exe", "sha256": "0" * 64}
-            return 0, "BOAT_ARTIFACTS=" + json.dumps([artifact]) + f"\nBOAT_BUNDLE={bt.REMOTE}/artifacts-x.tar.xz\n"
-        if mode == "split-bundle":
-            return 0, json.dumps([f"{bt.REMOTE}/artifacts-x.part-0"])
+            return 0, "BOAT_ARTIFACTS=" + json.dumps([artifact]) + "\nBOAT_PARTS=" + json.dumps([f"{bt.REMOTE}/artifacts-x.part-0"]) + "\n"
         raise AssertionError(f"unexpected remote call {args}")
 
     def ttl_calls(self, vmid):
@@ -106,6 +108,11 @@ class Rank(unittest.TestCase):
     def test_running_before_stopped_then_lane_then_size(self):
         states = {vmid: vm(vmid, state, type) for vmid, state, type in [("a", "stopped", "large"), ("b", "idle", "default"), ("c", "idle", "large"), ("d", "idle", "large")]}
         self.assertEqual(bt.rank(sorted(states), states, "d", "default", lambda _: False), ["d", "b", "c", "a"])
+
+    def test_takes_the_vm_another_lane_left_longest_ago(self):
+        states = {vmid: vm(vmid) for vmid in "abc"}
+        used = {"a": 300, "b": 100, "c": 200}.get
+        self.assertEqual(bt.rank(sorted(states), states, "c", "large", lambda _: False, used), ["c", "b", "a"])
 
     def test_never_picks_stopping_cooling_or_unlisted_vms(self):
         states = {"a": vm("a", "stopping"), "b": vm("b"), "c": vm("c", "stopped")}
@@ -154,25 +161,39 @@ class Acquire(Harness):
         fake = self.use(FakeBoat([vm("a", "stopped", hydrated=False)]))
         bt.HYDRATION_SECONDS = 0
         with self.assertRaises(bt.Failure):
-            bt.acquire(self.state, "lane", "large", "t", {})
+            bt.acquire(self.state, "lane", "large", "t", {}, self.root)
         self.assertEqual(fake.ttl_calls("a")[-1], bt.IDLE_SECONDS)
         self.assertTrue(self.state.cooling("a", 0))
         self.state.lock("a").close()
 
     def test_resume_never_shrinks_a_large_vm(self):
         fake = self.use(FakeBoat([vm("a", "stopped", "large")]))
-        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "default", "t", {})
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "default", "t", {}, self.root)
         lease.end()
         lock.close()
         resume = next(call for call in fake.calls if call[0] == "resume")
         self.assertNotIn("--type", resume)
         self.assertEqual(fake.vms["a"]["type"], "large")
 
+    def test_the_runner_is_installed_before_the_claim(self):
+        fake = self.use(FakeBoat([vm("a")]))
+        installed = []
+
+        def remote(vmid, *args, stream=False):
+            installed.append(any(call[0] == "scp" and call[2].endswith("/remote.py") for call in fake.calls))
+            return fake.remote(vmid, *args, stream=stream)
+
+        bt.remote = remote
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", {}, self.root)
+        lease.end()
+        lock.close()
+        self.assertEqual((fake.remote_calls, installed), ([("a", "acquire", "t")], [True]))
+
     def test_a_vm_holding_another_claim_is_quarantined_and_released(self):
         fake = self.use(FakeBoat([vm("a"), vm("b")]))
         fake.acquire_status["a"] = bt.REMOTE_CLAIMED
         record = {}
-        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record, self.root)
         lease.end()
         lock.close()
         self.assertEqual(vmid, "b")
@@ -180,6 +201,17 @@ class Acquire(Harness):
         self.assertEqual(self.state.quarantined(), ["a"])
         self.assertEqual(self.state.registered(), ["b"])
         self.assertEqual(fake.ttl_calls("a"), [bt.LEASE_SECONDS, bt.IDLE_SECONDS])
+
+    def test_a_vm_still_finishing_a_job_is_passed_by_and_stays_in_the_pool(self):
+        fake = self.use(FakeBoat([vm("a"), vm("b")]))
+        fake.acquire_status["a"] = bt.REMOTE_CLAIMED
+        fake.acquire_output["a"] = "busy\n"
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", {}, self.root)
+        lease.end()
+        lock.close()
+        self.assertEqual(vmid, "b")
+        self.assertEqual(self.state.quarantined(), [])
+        self.assertEqual(self.state.registered(), ["a", "b"])
 
     def test_lease_renews_until_ended(self):
         fake = self.use(FakeBoat([vm("a")]))
@@ -223,6 +255,14 @@ class Run(Harness):
         self.assertEqual(set(record["phases"]), {"allocate", "sync", "run"})
         self.assertEqual(fake.ttl_calls("a")[-1], bt.IDLE_SECONDS)
         self.state.lock("a").close()
+
+    def test_a_failed_sync_releases_the_claim_and_marks_the_vm_used(self):
+        fake = self.use(FakeBoat([vm("a")]))
+        fake.sync_status = 1
+        self.assertEqual(bt.main(["check", "-p", "x"]), bt.UNAVAILABLE)
+        self.assertEqual(self.last_record()["failure_phase"], "sync")
+        self.assertEqual(fake.remote_calls[-1][:2], ("a", "release"))
+        self.assertGreater(self.state.entry("a")["used"], 0)
 
     def test_failed_download_is_not_a_success(self):
         fake = self.use(FakeBoat([vm("a")]))

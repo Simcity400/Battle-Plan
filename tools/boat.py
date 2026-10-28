@@ -327,9 +327,21 @@ class State:
         path = self.lanes / (lane + ".json")
         return json.loads(path.read_text()).get("id") if path.exists() else None
 
+    def entry(self, vmid):
+        path = self.pool / (vmid + ".json")
+        try:
+            return json.loads(path.read_text())
+        except (FileNotFoundError, ValueError):
+            return {}
 
-def rank(registered, states, lane_vm, size, cooling):
-    """Usable VMs, best first: running before stopped, then the lane's own, then the right size."""
+    def update(self, vmid, **fields):
+        # Only the holder of the VM's lock writes its entry.
+        if (self.pool / (vmid + ".json")).exists():
+            atomic_json(self.pool / (vmid + ".json"), {**self.entry(vmid), **fields})
+
+
+def rank(registered, states, lane_vm, size, cooling, used=lambda vmid: 0):
+    """Usable VMs, best first: running before stopped, then the lane's own, then the right size, then the least recently used."""
     ranked = []
     for vmid in registered:
         vm = states.get(vmid)
@@ -339,7 +351,8 @@ def rank(registered, states, lane_vm, size, cooling):
         stopped = vm["state"] == "stopped"
         if size == "large" and vm.get("type") != "large" and not stopped:
             continue
-        ranked.append((stopped, vmid != lane_vm, vm.get("type") != size, vmid))
+        # Another lane's VM holds that lane's build cache: take the one whose lane has been away longest.
+        ranked.append((stopped, vmid != lane_vm, vm.get("type") != size, used(vmid), vmid))
     return [row[-1] for row in sorted(ranked)]
 
 
@@ -397,14 +410,15 @@ class Lease:
             say(f"WARNING: {self.vmid} stops when its {LEASE_SECONDS} s lease runs out: {error}")
 
 
-def choose(state, lane, size):
-    """Locks the best free VM, or clones a new one; returns (vmid, vm, lock, created)."""
+def choose(state, lane, size, passed=()):
+    """Locks the best free VM not passed by, or clones a new one; returns (vmid, vm, lock, created)."""
     allocator = state.allocator()
     try:
         states = listing()
         reconcile(state, states)
         now = time.time()
-        for vmid in rank(state.registered(), states, state.lane_vm(lane), size, lambda vmid: state.cooling(vmid, now)):
+        registered = [vmid for vmid in state.registered() if vmid not in passed]
+        for vmid in rank(registered, states, state.lane_vm(lane), size, lambda vmid: state.cooling(vmid, now), lambda vmid: state.entry(vmid).get("used", 0)):
             try:
                 return vmid, states[vmid], state.lock(vmid), False
             except OSError:
@@ -443,14 +457,16 @@ def wait_hydrated(vmid):
         time.sleep(3)
 
 
-def acquire(state, lane, size, token, record):
+def acquire(state, lane, size, token, record, stage):
     """Claims a VM locally and remotely; returns (vmid, lock, lease, remote source manifest)."""
+    passed = set()
     for _ in range(3):
-        vmid, vm, lock, created = choose(state, lane, size)
+        vmid, vm, lock, created = choose(state, lane, size, passed)
         record.update(vm=vmid, vm_type=vm.get("type"), vm_state=vm.get("state"), created=created)
         say(f"Boat VM {vmid} ({vm.get('type')}, {vm.get('state')}), lane {lane[:10]}")
         lease = None
         try:
+            started = time.monotonic()
             if vm["state"] == "stopped":
                 grow = resume_type(vm.get("type"), size)
                 boat("resume", vmid, "--ttl", str(LEASE_SECONDS), *(["--type", grow] if grow else []))
@@ -463,14 +479,21 @@ def acquire(state, lane, size, token, record):
             except Failure:
                 state.cool(vmid, "hydration")
                 raise
+            record["ready_seconds"] = round(time.monotonic() - started, 2)
+            # Before the claim, so every VM decides claims by this runner's rules.
+            install_runner(state, vmid, stage)
             status, manifest = remote(vmid, "acquire", token)
             if status == 0:
                 return vmid, lock, lease, json.loads(manifest)
             if status != REMOTE_CLAIMED:
                 remote(vmid, "release", token)
                 raise Failure(f"{vmid}: initialization failed ({status}); see the remote output above")
-            state.quarantine(vmid)
-            say(f"{vmid} holds another run's remote claim; quarantined")
+            if manifest.strip() == "busy":
+                passed.add(vmid)
+                say(f"{vmid} is still finishing a job whose run ended; passing it by")
+            else:
+                state.quarantine(vmid)
+                say(f"{vmid} holds processes a job could not stop; quarantined")
         except BaseException:
             if lease:
                 lease.end()
@@ -551,6 +574,8 @@ def push_source(vmid, worktree, manifest, old, stage, token):
         destination = upload / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(worktree / name, destination)
+        # A file edited since it was hashed is sent as copied, so the remote checksums always match.
+        manifest[name] = hashlib.sha256(destination.read_bytes()).hexdigest()
     (upload / "__boat_manifest__.json").write_text(json.dumps(manifest), encoding="utf-8")
     # captures/ is ignored, and boat push sends only what Git would; give the upload its own index.
     subprocess.run(["git", "-c", "core.hideDotFiles=false", "init", "--quiet", str(upload)], check=True)
@@ -564,16 +589,13 @@ def push_source(vmid, worktree, manifest, old, stage, token):
     return incoming
 
 
-def deliver(vmid, token, output, outdir, stage):
-    line = next((line for line in output.splitlines() if line.startswith("BOAT_ARTIFACTS=")), None)
-    if not line:
+def deliver(vmid, output, outdir, stage):
+    lines = {key: value for key, _, value in (line.partition("=") for line in output.splitlines()) if key in {"BOAT_ARTIFACTS", "BOAT_PARTS"}}
+    if len(lines) != 2:
         raise Failure("The build returned no artifact manifest")
-    artifacts = json.loads(line.split("=", 1)[1])
+    artifacts = json.loads(lines["BOAT_ARTIFACTS"])
     if not artifacts:
         raise Failure("The build produced no exe, dll or pdb")
-    status, parts_json = remote(vmid, "split-bundle", token)
-    if status:
-        raise Failure("Could not split the artifact bundle for download")
 
     def fetch(item):
         index, source = item
@@ -582,7 +604,7 @@ def deliver(vmid, token, output, outdir, stage):
         return destination
 
     with ThreadPoolExecutor(max_workers=4) as downloads:
-        parts = list(downloads.map(fetch, enumerate(json.loads(parts_json))))
+        parts = list(downloads.map(fetch, enumerate(json.loads(lines["BOAT_PARTS"]))))
     bundle = stage / "artifacts.tar.xz"
     with bundle.open("wb") as assembled:
         for part in parts:
@@ -602,7 +624,6 @@ def deliver(vmid, token, output, outdir, stage):
         if digest != artifact["sha256"]:
             raise Failure(f"Artifact checksum mismatch: {destination}")
         print(f"{destination}\nSHA-256 {digest}", flush=True)
-    remote(vmid, "discard-bundle", token)
     return artifacts
 
 
@@ -701,22 +722,22 @@ def run(argv):
         phase, mark = name, time.monotonic()
 
     lock = lease = stage = vmid = None
-    claimed = sync_started = sync_ok = running = False
+    claimed = syncing = running = False
     cargo_exit = None
     failure = None
     try:
-        vmid, lock, lease, old = acquire(state, lane, machine_size(mode, cargo), token, record)
-        claimed = True
-        enter("sync")
         stage = state.jobs / token
         stage.mkdir()
-        install_runner(state, vmid, stage)
+        vmid, lock, lease, old = acquire(state, lane, machine_size(mode, cargo), token, record, stage)
+        claimed = True
+        enter("sync")
         incoming = push_source(vmid, worktree, manifest, old, stage, token)
-        sync_started = True
+        source_digest = record["source_sha256"] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+        syncing = True
         status, _ = remote(vmid, "sync", token, incoming, stream=True)
+        syncing = False
         if status:
-            raise Failure(f"Remote source synchronization failed ({status}); the claim stays to quarantine the partial tree")
-        sync_ok = True
+            raise Failure(f"Remote source synchronization failed ({status})")
         atomic_json(state.lanes / (lane + ".json"), {"id": vmid, "worktree": str(worktree)})
         enter("run")
         running = True
@@ -724,7 +745,7 @@ def run(argv):
         claimed = False
         if mode == "build" and cargo_exit == 0:
             enter("deliver")
-            artifacts = deliver(vmid, token, output, outdir, stage)
+            artifacts = deliver(vmid, output, outdir, stage)
             record["artifacts_verified"] = True
             record_artifacts(outdir, artifacts, cargo, vmid, worktree, revision, source_digest)
             if refresh:
@@ -735,7 +756,8 @@ def run(argv):
         failure = (phase, "interrupted" if isinstance(error, KeyboardInterrupt) else str(error))
         raise
     finally:
-        if vmid and claimed and not running and (not sync_started or sync_ok):
+        # A failed sync leaves a tree the next sync repairs; one whose result was lost may still run, so it keeps the claim.
+        if vmid and claimed and not running and not syncing:
             try:
                 remote(vmid, "release", token)
             except Failure as error:
@@ -743,6 +765,7 @@ def run(argv):
         if lease:
             lease.end()
         if lock:
+            state.update(vmid, used=time.time())
             lock.close()
         if stage:
             remove_stage(state, stage)

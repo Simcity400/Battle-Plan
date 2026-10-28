@@ -15,6 +15,8 @@ import time
 ROOT = Path('/home/user/hoi4')
 SRC = ROOT / 'src'
 CLAIM = ROOT / 'claim'
+# Beside the claim, which older runners release with rmdir: the token and boot of a job whose processes outlived it.
+STRANDED = ROOT / 'stranded'
 MANIFEST = ROOT / 'source-manifest.json'
 TARGET = 'x86_64-pc-windows-msvc'
 
@@ -106,6 +108,39 @@ def manifest():
 def owned(token):
     return (CLAIM / 'token').read_text() == token
 
+def split(bundle):
+    """Cuts the bundle into up to four parts for parallel downloads; returns their paths."""
+    chunk = max(1, (bundle.stat().st_size + 3) // 4)
+    parts = []
+    with bundle.open('rb') as source:
+        for index in range(4):
+            data = source.read(chunk)
+            if not data:
+                break
+            part = bundle.with_name(bundle.name.removesuffix('.tar.xz') + '.part-' + str(index))
+            part.write_bytes(data)
+            parts.append(str(part))
+    bundle.unlink()
+    return parts
+
+def boot_id():
+    return Path('/proc/sys/kernel/random/boot_id').read_text()
+
+def busy():
+    """True while a job holds the running lock or Cargo left behind by one still runs."""
+    with (ROOT / 'running.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    for comm in Path('/proc').glob('[0-9]*/comm'):
+        try:
+            if comm.read_text().strip() in {'cargo', 'cargo-xwin', 'rustc'}:
+                return True
+        except OSError:
+            pass
+    return False
+
 def safe_path(name):
     p = SRC / name
     if not name or name.startswith('/') or '..' in Path(name).parts or p.is_symlink():
@@ -135,34 +170,31 @@ elif mode == 'acquire':
     try:
         CLAIM.mkdir()
     except FileExistsError:
-        print('VM has an existing remote claim; refusing to overlap', file=sys.stderr)
-        sys.exit(73)
+        # The caller holds the VM's local lock, so the claim's own run is gone; only its remote work may remain.
+        holder = (CLAIM / 'token').read_text() if (CLAIM / 'token').exists() else None
+        if STRANDED.exists() and STRANDED.read_text() == f'{holder}\n{boot_id()}':
+            print('VM holds processes a job could not stop; refusing to overlap', file=sys.stderr)
+            sys.exit(73)
+        if busy():
+            # Older helpers quarantine on 73; this one reads the marker and only passes the VM by.
+            print('busy')
+            print('VM is still finishing a detached job', file=sys.stderr)
+            sys.exit(73)
+        # Its run may have stopped mid-sync: without a manifest the tree is rehashed below.
+        MANIFEST.unlink(missing_ok=True)
+        shutil.rmtree(CLAIM)
+        CLAIM.mkdir()
+        print('Took over the claim of a run that ended without releasing it', file=sys.stderr)
+    STRANDED.unlink(missing_ok=True)
     (CLAIM / 'token').write_text(token)
+    # Earlier runs' downloads and uploads are done with by now.
+    for leftover in [*ROOT.glob('artifacts-*'), *ROOT.glob('incoming-*')]:
+        if leftover.is_dir() and not leftover.is_symlink():
+            shutil.rmtree(leftover)
+        else:
+            leftover.unlink()
     restore_metadata()
     print(json.dumps(manifest()))
-elif mode == 'split-bundle':
-    token = sys.argv[2]
-    if len(token) != 32 or any(char not in '0123456789abcdef' for char in token):
-        raise RuntimeError('Invalid bundle token')
-    bundle = ROOT / ('artifacts-' + token + '.tar.xz')
-    chunk = max(1, (bundle.stat().st_size + 3) // 4)
-    parts = []
-    with bundle.open('rb') as source:
-        for index in range(4):
-            data = source.read(chunk)
-            if not data:
-                break
-            part = ROOT / ('artifacts-' + token + '.part-' + str(index))
-            part.write_bytes(data)
-            parts.append(str(part))
-    print(json.dumps(parts))
-elif mode == 'discard-bundle':
-    token = sys.argv[2]
-    if len(token) != 32 or any(char not in '0123456789abcdef' for char in token):
-        raise RuntimeError('Invalid bundle token')
-    (ROOT / ('artifacts-' + token + '.tar.xz')).unlink(missing_ok=True)
-    for index in range(4):
-        (ROOT / ('artifacts-' + token + '.part-' + str(index))).unlink(missing_ok=True)
 elif mode == 'release':
     token = sys.argv[2]
     if CLAIM.exists() and owned(token):
@@ -171,46 +203,53 @@ elif mode == 'release':
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 sys.exit(73)
-            (CLAIM / 'token').unlink()
-            CLAIM.rmdir()
+            shutil.rmtree(CLAIM)
 elif mode == 'sync':
     token, incoming = sys.argv[2:4]
     assert owned(token)
     incoming = Path(incoming)
-    new = json.loads((incoming / '__boat_manifest__.json').read_text())
-    old = manifest()
-    changed = [name for name, digest in new.items() if old.get(name) != digest]
-    for name in changed:
-        path = incoming / name
-        if hashlib.sha256(path.read_bytes()).hexdigest() != new[name]:
-            raise RuntimeError(f'Upload checksum mismatch: {name}')
-    for name in new:
-        safe_path(name)
-    for name in old.keys() - new.keys():
-        path = safe_path(name)
-        if path.exists():
-            path.unlink()
-    old_dirs = {parent.as_posix() for name in old for parent in Path(name).parents if parent != Path('.')}
-    new_dirs = {parent.as_posix() for name in new for parent in Path(name).parents if parent != Path('.')}
-    for name in sorted(old_dirs - new_dirs, key=lambda name: name.count('/'), reverse=True):
-        path = safe_path(name)
-        if path.is_dir():
-            shutil.rmtree(path)
-    for name in changed:
-        path = safe_path(name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(incoming / name, path)
-    temporary = MANIFEST.with_suffix('.tmp')
-    temporary.write_text(json.dumps(new))
-    temporary.replace(MANIFEST)
-    shutil.rmtree(incoming)
+    # Held so that a run taking over this claim sees an unfinished sync as busy.
+    with (ROOT / 'running.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            new = json.loads((incoming / '__boat_manifest__.json').read_text())
+            old = manifest()
+            changed = [name for name, digest in new.items() if old.get(name) != digest]
+            for name in changed:
+                path = incoming / name
+                if hashlib.sha256(path.read_bytes()).hexdigest() != new[name]:
+                    raise RuntimeError(f'Upload checksum mismatch: {name}')
+            for name in new:
+                safe_path(name)
+            # Nothing has changed yet; from here an interrupted sync leaves no manifest, so the next run rehashes the tree.
+            MANIFEST.unlink(missing_ok=True)
+            for name in old.keys() - new.keys():
+                path = safe_path(name)
+                if path.exists():
+                    path.unlink()
+            old_dirs = {parent.as_posix() for name in old for parent in Path(name).parents if parent != Path('.')}
+            new_dirs = {parent.as_posix() for name in new for parent in Path(name).parents if parent != Path('.')}
+            for name in sorted(old_dirs - new_dirs, key=lambda name: name.count('/'), reverse=True):
+                path = safe_path(name)
+                if path.is_dir():
+                    shutil.rmtree(path)
+            for name in changed:
+                path = safe_path(name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(incoming / name, path)
+            temporary = MANIFEST.with_suffix('.tmp')
+            temporary.write_text(json.dumps(new))
+            temporary.replace(MANIFEST)
+        finally:
+            shutil.rmtree(incoming, ignore_errors=True)
     print(f'Source synchronized: {len(changed)} changed, {len(old.keys() - new.keys())} deleted, {len(new)} total')
 elif mode in {'check', 'build', 'ui'}:
     token = sys.argv[2]
     assert owned(token)
     args = sys.argv[3:]
     memory_gib = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / (1024 ** 3)
-    os.environ['CARGO_BUILD_JOBS'] = str((4 if memory_gib > 10 else 2) if mode == 'build' else (6 if memory_gib > 10 else 3))
+    # Releasing recorder, collector and viewer with 8 jobs left 1.2 of 15.6 GiB free on a large VM (28 Oct); 7 leave room.
+    os.environ['CARGO_BUILD_JOBS'] = str(max(1, min(os.cpu_count() or 1, int(memory_gib / 2.2))))
     with (ROOT / 'running.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = None
@@ -284,7 +323,8 @@ elif mode in {'check', 'build', 'ui'}:
                         out.append({'path': name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'bytes': path.stat().st_size})
                     bundle = ROOT / ('artifacts-' + token + '.tar.xz')
                     with bundle.open('wb') as compressed:
-                        packer = subprocess.Popen(['xz', '-T4', '-6', '-c'], stdin=subprocess.PIPE, stdout=compressed)
+                        # Level 6 on four threads took 28 s for the viewer; level 2 on every core is 16% larger and takes seconds.
+                        packer = subprocess.Popen(['xz', '-T0', '-2', '-c'], stdin=subprocess.PIPE, stdout=compressed)
                         with tarfile.open(fileobj=packer.stdin, mode='w|') as archive:
                             for artifact in out:
                                 path = Path(artifact['path'])
@@ -293,7 +333,7 @@ elif mode in {'check', 'build', 'ui'}:
                         if packer.wait():
                             raise RuntimeError('Artifact compression failed')
                     print('BOAT_ARTIFACTS=' + json.dumps(out), flush=True)
-                    print('BOAT_BUNDLE=' + str(bundle), flush=True)
+                    print('BOAT_PARTS=' + json.dumps(split(bundle)), flush=True)
             sys.exit(result.returncode)
         finally:
             # The job's command group (Cargo, npm check) must not outlive its claim: the next job prunes incremental files under it.
@@ -302,8 +342,9 @@ elif mode in {'check', 'build', 'ui'}:
             checkpoint()
             if not drained:
                 print('WARNING: processes of this job are still running; the claim stays for quarantine', file=sys.stderr, flush=True)
+                if CLAIM.exists() and owned(token):
+                    STRANDED.write_text(f'{token}\n{boot_id()}')
             elif CLAIM.exists() and owned(token):
-                (CLAIM / 'token').unlink()
-                CLAIM.rmdir()
+                shutil.rmtree(CLAIM)
 else:
     raise RuntimeError(f'Unknown mode: {mode}')
