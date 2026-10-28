@@ -1309,14 +1309,14 @@ fn flags_follow_the_visual_mods_and_fall_back_to_the_recording_by_name() {
     };
     visual::apply(&mut layers, &options, &[choice], &[], &Default::default()).unwrap();
     let mut cache = FlagCache::default();
-    let mut search = |tag: &str| {
+    let search = |cache: &mut FlagCache, tag: &str| {
         installed_content_core::content::observe_overlay_refusals(|| {
             match find_flag(
                 &layers,
                 &[FlagSet::Normal],
                 &[[2, 1]; 3],
                 &[tag.into()],
-                &mut cache,
+                cache,
             )
             .unwrap()
             .0
@@ -1326,9 +1326,9 @@ fn flags_follow_the_visual_mods_and_fall_back_to_the_recording_by_name() {
             }
         })
     };
-    let (pixel, fallbacks) = search("AAA");
+    let (pixel, fallbacks) = search(&mut cache, "AAA");
     assert_eq!((pixel, fallbacks.len()), (GREEN.to_vec(), 0));
-    let (pixel, fallbacks) = search("BBB");
+    let (pixel, fallbacks) = search(&mut cache, "BBB");
     assert_eq!(pixel, RED.to_vec(), "the recording's own flag");
     assert_eq!(fallbacks.len(), 1);
     assert!(
@@ -1340,9 +1340,23 @@ fn flags_follow_the_visual_mods_and_fall_back_to_the_recording_by_name() {
         "{fallbacks:?}"
     );
     assert_eq!(
-        search("BBB"),
-        (RED.to_vec(), fallbacks),
+        search(&mut cache, "BBB"),
+        (RED.to_vec(), fallbacks.clone()),
         "a kept file names it again"
+    );
+    // A later request keeping the same layers' files reads none of them again: with the mod's
+    // files gone it still draws both flags and names the fallback as before.
+    std::fs::remove_file(art.join("gfx/flags/AAA.tga")).unwrap();
+    std::fs::remove_file(art.join("gfx/flags/BBB.tga")).unwrap();
+    let mut later = FlagCache::over(cache.files());
+    assert_eq!(
+        search(&mut later, "AAA"),
+        (GREEN.to_vec(), Default::default())
+    );
+    assert_eq!(
+        search(&mut later, "BBB"),
+        (RED.to_vec(), fallbacks),
+        "a shared file names it again"
     );
 }
 

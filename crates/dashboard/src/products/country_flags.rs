@@ -20,7 +20,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{
-        Arc,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -171,22 +171,29 @@ impl Product for CountryFlags {
             None => {
                 // Flags follow the source's visual mods; recorded facts read the recorded layers.
                 let resolved = Arc::clone(&presented.content);
-                // The cells are content facts: kept across hours, reread with new content.
+                // The cells and flag files are content facts: kept across hours, reread with
+                // new content.
                 let cells = state
                     .contexts
                     .iter()
                     .find(|cached| Arc::ptr_eq(&cached.content, &resolved))
-                    .map(|cached| (cached.cells, cached.cell_fallbacks.clone()));
+                    .map(|cached| {
+                        (
+                            cached.cells,
+                            cached.cell_fallbacks.clone(),
+                            Arc::clone(&cached.files),
+                        )
+                    });
                 // Other hours' requests use the cache while this one reads the recording.
                 drop(state);
-                let (cells, cell_fallbacks) = match cells {
+                let (cells, cell_fallbacks, files) = match cells {
                     Some(cells) => cells,
                     None => {
                         let (cells, fallbacks) =
                             installed_content_core::content::observe_overlay_refusals(|| {
                                 flag_cells(&resolved.layers)
                             });
-                        (cells?, fallbacks)
+                        (cells?, fallbacks, Arc::default())
                     }
                 };
                 let mut loaded = FlagContext::load(
@@ -200,6 +207,7 @@ impl Product for CountryFlags {
                 )?;
                 loaded.presentation = presented.presentation.clone();
                 loaded.cell_fallbacks = cell_fallbacks;
+                loaded.files = files;
                 state = shared.lock().unwrap_or_else(|error| error.into_inner());
                 state.contexts.insert(0, loaded);
                 state.contexts.truncate(RECENT_HOURS);
@@ -284,6 +292,8 @@ pub(crate) struct ShieldStyle {
     /// it and the flags it frames are read from, as the recording draws them. `None` reads the
     /// presentation of the flag context's content.
     recorded: Option<(installed_content_core::ResolvedLayers, [[u32; 2]; 3])>,
+    /// The flag files read from `recorded`, kept with this shield.
+    recorded_files: Arc<FlagFiles>,
     decode: installed_content_image::native::Decode,
     pub(crate) warnings: Vec<String>,
 }
@@ -341,6 +351,7 @@ impl ShieldStyle {
             shield,
             panel,
             recorded,
+            recorded_files: Arc::default(),
             decode,
             warnings,
         })
@@ -376,16 +387,21 @@ impl ShieldStyle {
         Ok(shield)
     }
 
-    /// The layers and cells the flags this shield frames are read at: the recording's when it
-    /// is the recording's shield, else the flag context's own.
+    /// The layers and cells the flags this shield frames are read at, with the files kept for
+    /// them: the recording's when it is the recording's shield, else the flag context's own.
     fn flags_from<'a>(
         &'a self,
         layers: &'a installed_content_core::ResolvedLayers,
         cells: &'a [[u32; 2]; 3],
-    ) -> (&'a installed_content_core::ResolvedLayers, &'a [[u32; 2]; 3]) {
+        files: &'a Arc<FlagFiles>,
+    ) -> (
+        &'a installed_content_core::ResolvedLayers,
+        &'a [[u32; 2]; 3],
+        &'a Arc<FlagFiles>,
+    ) {
         match &self.recorded {
-            Some((recorded, cells)) => (recorded, cells),
-            None => (layers, cells),
+            Some((recorded, cells)) => (recorded, cells, &self.recorded_files),
+            None => (layers, cells, files),
         }
     }
 
@@ -483,40 +499,74 @@ struct Reported {
 /// One decoding per file/set, shared across the country's key ladders.
 #[derive(Default)]
 pub(crate) struct FlagCache {
-    /// Each file as decoded, by the stack it was read from, its set and its path.
-    files: BTreeMap<(Stack, usize, String), FlagFile>,
+    /// The files read: this search's own, or kept for every search of the same layers.
+    files: Arc<FlagFiles>,
+    reported: Reported,
+}
+
+impl FlagCache {
+    /// A search reading through `files`, which other searches of the same layers keep.
+    pub(crate) fn over(files: Arc<FlagFiles>) -> Self {
+        Self {
+            files,
+            reported: Reported::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn files(&self) -> Arc<FlagFiles> {
+        Arc::clone(&self.files)
+    }
+}
+
+/// One stack of layers' flag files as read and decoded, each with the overlay refusals its
+/// read noted, which every later use credits again: the files cannot change while mounted.
+#[derive(Default)]
+pub(crate) struct FlagFiles {
+    /// Each file by the stack it was read from, its set, its path and the cell it is decoded at.
+    files: Mutex<BTreeMap<(Stack, usize, String, [u32; 2]), (FlagFile, BTreeSet<String>)>>,
     /// The recorded layers below the visual mods, searched when the mods' search fails, and
     /// the cells of the recording's own defines their files are decoded at.
-    recorded: Option<(
-        installed_content_core::ResolvedLayers,
-        Result<[[u32; 2]; 3], String>,
+    recorded: OnceLock<(
+        (
+            installed_content_core::ResolvedLayers,
+            Result<[[u32; 2]; 3], String>,
+        ),
+        BTreeSet<String>,
     )>,
-    reported: Reported,
 }
 
 /// The file at `asset` of `layers` in set `set_index`, decoded at `cell`, once per `stack`.
 fn flag_file(
-    files: &mut BTreeMap<(Stack, usize, String), FlagFile>,
+    files: &FlagFiles,
     stack: Stack,
     layers: &installed_content_core::ResolvedLayers,
     set_index: usize,
     asset: &str,
     cell: [u32; 2],
 ) -> io::Result<FlagFile> {
-    let key = (stack, set_index, asset.to_owned());
-    if let Some(file) = files.get(&key) {
+    let key = (stack, set_index, asset.to_owned(), cell);
+    if let Some((file, noted)) = lock(&files.files).get(&key) {
+        installed_content_core::content::credit_overlay_refusals(noted);
         return Ok(file.clone());
     }
-    let file = match layers.read_uncovered(asset) {
-        Ok(bytes) => match installed_content_core::flags::decode_checked(&bytes, cell) {
-            Ok(image) => FlagFile::Image(Arc::new(image)),
-            Err(reason) => FlagFile::Refused(reason),
-        },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => FlagFile::Missing,
-        Err(error) => return Err(error),
-    };
-    files.insert(key, file.clone());
+    let (file, noted) = installed_content_core::content::observe_overlay_refusals(|| {
+        io::Result::Ok(match layers.read_uncovered(asset) {
+            Ok(bytes) => match installed_content_core::flags::decode_checked(&bytes, cell) {
+                Ok(image) => FlagFile::Image(Arc::new(image)),
+                Err(reason) => FlagFile::Refused(reason),
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => FlagFile::Missing,
+            Err(error) => return Err(error),
+        })
+    });
+    let file = file?;
+    lock(&files.files).insert(key, (file.clone(), noted));
     Ok(file)
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|error| error.into_inner())
 }
 
 /// Searches `sets` in order, and in each the candidates in order: a missing
@@ -539,13 +589,10 @@ pub(crate) fn find_flag(
     candidates: &[String],
     cache: &mut FlagCache,
 ) -> io::Result<(FlagSearch, Vec<crate::content_check::Finding>)> {
-    let FlagCache {
-        files,
-        recorded,
-        reported,
-    } = cache;
+    let FlagCache { files, reported } = cache;
+    let files = &**files;
     let presentation = layers.presentation();
-    let plain = |files: &mut BTreeMap<_, _>, reported: &mut Reported| {
+    let plain = |files: &FlagFiles, reported: &mut Reported| {
         let Ok(found) = ladder(
             Stack::Shown,
             presentation,
@@ -564,12 +611,14 @@ pub(crate) fn find_flag(
     if !presentation.shows_visual_mods() {
         return plain(files, reported);
     }
-    let (recorded, recorded_cells) = recorded.get_or_insert_with(|| {
-        let recorded = layers.recorded_only();
-        let cells = flag_cells(&recorded).map_err(|error| error.to_string());
-        (recorded, cells)
+    let ((recorded, recorded_cells), noted) = files.recorded.get_or_init(|| {
+        installed_content_core::content::observe_overlay_refusals(|| {
+            let recorded = layers.recorded_only();
+            let cells = flag_cells(&recorded).map_err(|error| error.to_string());
+            (recorded, cells)
+        })
     });
-    let recorded = &*recorded;
+    installed_content_core::content::credit_overlay_refusals(noted);
     // Without the recording's own cells nothing can be drawn from the recording: the mods'
     // search stands as it is.
     let Ok(recorded_cells) = recorded_cells.as_ref() else {
@@ -629,7 +678,7 @@ fn ladder(
     sets: &[FlagSet],
     cells: &[[u32; 2]; 3],
     candidates: &[String],
-    files: &mut BTreeMap<(Stack, usize, String), FlagFile>,
+    files: &FlagFiles,
     reported: &mut Reported,
 ) -> io::Result<Result<(FlagSearch, Vec<crate::content_check::Finding>), Broken>> {
     use crate::content_check::{Finding, Kind};
@@ -844,6 +893,8 @@ pub struct FlagContext {
     /// What reading `cells` drew from the recording instead of the visual mods' defines,
     /// credited to every reply.
     cell_fallbacks: BTreeSet<String>,
+    /// The flag files read from `content`, kept by every context of it.
+    files: Arc<FlagFiles>,
     /// The first choice per tag, in raw country id order.
     choices: HashMap<String, FlagChoice>,
     branch_id: String,
@@ -905,6 +956,7 @@ impl FlagContext {
             content,
             cells,
             cell_fallbacks: BTreeSet::new(),
+            files: Arc::default(),
             choices: by_tag,
             branch_id: request.branch_id.clone(),
             hour: request.hour,
@@ -943,7 +995,12 @@ impl FlagContext {
             }
             None => None,
         };
-        let mut cache = FlagCache::default();
+        // A recorded shield frames the recording's own flags, at its own cells.
+        let (flag_layers, cells, files) = shield_style
+            .map_or((&self.content.layers, &self.cells, &self.files), |style| {
+                style.flags_from(&self.content.layers, &self.cells, &self.files)
+            });
+        let mut cache = FlagCache::over(Arc::clone(files));
         if let Some(style) = shield_style {
             warnings.extend(style.warnings.iter().cloned());
         }
@@ -964,11 +1021,6 @@ impl FlagContext {
             // A flag key is the recorded tag (any bytes but NUL, spaces
             // included) with a cosmetic tag or party token; one this reader
             // cannot resolve costs only this country's flag.
-            // A recorded shield frames the recording's own flags, at its own cells.
-            let (flag_layers, cells) = shield_style
-                .map_or((&self.content.layers, &self.cells), |style| {
-                    style.flags_from(&self.content.layers, &self.cells)
-                });
             let (found, findings) = find_flag(
                 flag_layers,
                 shield_style.map_or_else(|| request.size.sets(), ShieldStyle::sets),
@@ -1426,6 +1478,7 @@ mod tests {
                 content: Arc::clone(&catalogue.content),
                 cells: [[1, 1]; 3],
                 cell_fallbacks: BTreeSet::new(),
+                files: Arc::default(),
                 choices: HashMap::from([(
                     "mod tag".into(),
                     FlagChoice {
@@ -1498,6 +1551,7 @@ mod tests {
             content: Arc::clone(&catalogue.content),
             cells: [[1, 1]; 3],
             cell_fallbacks: BTreeSet::new(),
+            files: Arc::default(),
             choices: HashMap::new(),
             branch_id: "1".into(),
             hour: 0,
@@ -1697,6 +1751,7 @@ mod tests {
             content: Arc::clone(&catalogue.content),
             cells,
             cell_fallbacks: BTreeSet::new(),
+            files: Arc::default(),
             choices: HashMap::from([(
                 "MOD".to_owned(),
                 FlagChoice {
@@ -1831,6 +1886,7 @@ mod tests {
                 content: Arc::clone(&catalogue.content),
                 cells,
                 cell_fallbacks: BTreeSet::new(),
+                files: Arc::default(),
                 choices: HashMap::from([(
                     "MOD".to_owned(),
                     FlagChoice {
