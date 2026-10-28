@@ -1165,6 +1165,34 @@ fn assert_reference_publication_tags(
                 "{tag}: spill={spill}, checkpoint={checkpoint}"
             );
         }
+        // A query keeps one fold of the variant pages for every country.
+        let fold = Arc::new(
+            fold_variants(
+                &prepared.directory,
+                &flag,
+                &mut |section: &str, range: u64| pages.read_at(section, range),
+            )
+            .unwrap(),
+        );
+        let every = std::iter::once(("GER", &baseline))
+            .chain(others.iter().copied().zip(other_baselines.iter()));
+        for (tag, baseline) in every {
+            let actual = assemble_with(
+                &prepared.directory,
+                &tag_key(tag),
+                None,
+                recorded_language(replay),
+                &flag,
+                |section, range| pages.read_at(section, range),
+                |_| Ok(Arc::clone(&fold)),
+            )
+            .unwrap();
+            assert_eq!(
+                saved_bytes(&actual),
+                *baseline,
+                "{tag} from a shared fold: spill={spill}, checkpoint={checkpoint}"
+            );
+        }
         let source = fixture_source(replay, pages);
         for origin in [
             None,
@@ -2315,6 +2343,38 @@ impl Drop for NamingOperands {
             counter.set(count);
         });
     }
+}
+
+#[test]
+fn a_kept_variant_fold_charges_every_version_slot_it_holds() {
+    let mut page = VariantPage {
+        catalogue: VariantCatalogue::default(),
+        icons: Vec::new(),
+    };
+    page.catalogue.versions = (0..1000)
+        .map(|id| {
+            let absent = equipment::VariantVersion {
+                first_hour: FIRST,
+                raw: None,
+            };
+            (id, vec![absent])
+        })
+        .collect();
+    let mut fold = VariantFold::new();
+    fold.push(page);
+    // Each list grew by a push: its buffer may hold more slots than versions.
+    let slots: usize = fold
+        .versions
+        .values()
+        .map(|list| list.capacity() * std::mem::size_of::<equipment::VariantVersion>())
+        .sum();
+    let entries = 1000 * std::mem::size_of::<(u64, Vec<equipment::VariantVersion>)>();
+    assert!(
+        fold.bytes() >= slots + entries,
+        "{} < {}",
+        fold.bytes(),
+        slots + entries
+    );
 }
 
 #[test]

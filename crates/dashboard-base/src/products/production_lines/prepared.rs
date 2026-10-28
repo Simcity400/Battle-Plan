@@ -1581,17 +1581,167 @@ impl Prepared {
     }
 }
 
+type PageRead<'a> = dyn FnMut(&str, u64) -> io::Result<Option<Vec<u8>>> + 'a;
+
+/// Every variant page folded in order. It holds no country's lines, so a query keeps it per page identity.
+struct VariantFold {
+    versions: BTreeMap<u64, Vec<equipment::VariantVersion>>,
+    catalogue: VariantCatalogue,
+    icons: Vec<(u64, i32, IconChoice, bool)>,
+}
+
+impl VariantFold {
+    fn new() -> Self {
+        Self {
+            versions: BTreeMap::new(),
+            catalogue: VariantCatalogue::default(),
+            icons: Vec::new(),
+        }
+    }
+
+    /// One page folded after those before it.
+    fn push(&mut self, page: VariantPage) {
+        let VariantPage {
+            catalogue: mut next,
+            icons,
+        } = page;
+        for (id, versions) in std::mem::take(&mut next.versions) {
+            let known = self.versions.entry(id).or_default();
+            for version in versions {
+                match known
+                    .last_mut()
+                    .filter(|last| last.first_hour == version.first_hour)
+                {
+                    Some(last) => *last = version,
+                    None => known.push(version),
+                }
+            }
+        }
+        self.catalogue = next;
+        self.icons.extend(icons);
+    }
+
+    /// Every buffer at capacity with its inline elements, the tree's nodes, and what elements own.
+    fn bytes(&self) -> usize {
+        use crate::prepared::query::observations::serde_bytes;
+        use std::mem::size_of;
+        let entry = size_of::<(u64, Vec<equipment::VariantVersion>)>();
+        let versions = self
+            .versions
+            .values()
+            .map(|list| {
+                3 * entry
+                    + list.capacity() * size_of::<equipment::VariantVersion>()
+                    + list.iter().map(serde_bytes).sum::<usize>()
+            })
+            .sum::<usize>();
+        let icons = self.icons.capacity() * size_of::<(u64, i32, IconChoice, bool)>()
+            + self
+                .icons
+                .iter()
+                .map(|(_, _, icon, _)| serde_bytes(icon))
+                .sum::<usize>();
+        // One full leaf however few entries; the catalogue's skipped read state at its inline size.
+        size_of::<Self>()
+            + 12 * entry
+            + versions
+            + icons
+            + size_of::<VariantCatalogue>()
+            + serde_bytes(&self.catalogue)
+    }
+}
+
+fn fold_variants(
+    directory: &Directory,
+    cancelled: &AtomicBool,
+    read: &mut PageRead<'_>,
+) -> io::Result<VariantFold> {
+    let _naming = replay_frame::cpu::scope("production naming", Some("production-lines"));
+    let mut reader = ReadPages(read);
+    let mut facts = private::Store::new(&mut reader, directory.branch);
+    let mut fold = VariantFold::new();
+    let mut cursor = directory.variants.cursor(0)?;
+    while let Some(next) =
+        cursor.next::<VariantPage>(&mut facts, &variant_section(directory.branch))?
+    {
+        crate::metadata::check_cancel(cancelled)?;
+        #[cfg(test)]
+        let _workspace = tests::NamingOperands::hold(&next.catalogue, &fold.versions);
+        fold.push(next);
+    }
+    Ok(fold)
+}
+
+/// The variant pages, opened: their identities name the bytes the fold of them reads.
+fn variant_ranges(
+    directory: &Directory,
+    store: &store::Store,
+    key: &store::SourceKey,
+    section: &str,
+    cancelled: &AtomicBool,
+    read: &mut PageRead<'_>,
+) -> io::Result<Vec<store::Range>> {
+    let mut reader = ReadPages(read);
+    let mut facts = private::Store::new(&mut reader, directory.branch);
+    let mut cursor = directory.variants.cursor(0)?;
+    let mut pages = Vec::new();
+    while let Some(range) = cursor.next_range(&mut facts)? {
+        crate::metadata::check_cancel(cancelled)?;
+        pages.push(
+            store
+                .read(key, section, range)?
+                .ok_or_else(|| crate::invalid("Missing production history page"))?,
+        );
+        cursor.skip();
+    }
+    Ok(pages)
+}
+
+/// [`fold_variants`] over pages already opened.
+fn fold_ranges(ranges: Vec<store::Range>, cancelled: &AtomicBool) -> io::Result<VariantFold> {
+    use std::io::Read;
+    let _naming = replay_frame::cpu::scope("production naming", Some("production-lines"));
+    let mut fold = VariantFold::new();
+    for mut range in ranges {
+        let mut bytes = Vec::new();
+        range.read_to_end(&mut bytes)?;
+        let page: VariantPage = pages::read(&bytes)?;
+        crate::metadata::check_cancel(cancelled)?;
+        fold.push(page);
+    }
+    Ok(fold)
+}
+
 fn assemble(
     directory: &Directory,
     selected: &str,
     icons: Option<&IconContent>,
     language: Arc<str>,
     cancelled: &AtomicBool,
+    read: impl FnMut(&str, u64) -> io::Result<Option<Vec<u8>>>,
+) -> io::Result<ScannedLines> {
+    assemble_with(
+        directory,
+        selected,
+        icons,
+        language,
+        cancelled,
+        read,
+        |read| fold_variants(directory, cancelled, read).map(Arc::new),
+    )
+}
+
+/// [`assemble`] with the variant pages' fold from `fold`.
+fn assemble_with(
+    directory: &Directory,
+    selected: &str,
+    icons: Option<&IconContent>,
+    language: Arc<str>,
+    cancelled: &AtomicBool,
     mut read: impl FnMut(&str, u64) -> io::Result<Option<Vec<u8>>>,
+    fold: impl FnOnce(&mut PageRead<'_>) -> io::Result<Arc<VariantFold>>,
 ) -> io::Result<ScannedLines> {
     let mut assembled = pages::Assembler::default();
-    let mut variants: BTreeMap<u64, Vec<equipment::VariantVersion>> = BTreeMap::new();
-    let mut catalogue = VariantCatalogue::default();
     let localisation = icons
         .and_then(|icons| icons.catalogue.as_ref())
         .map(|catalogue| Arc::clone(&catalogue.localisation));
@@ -1630,64 +1780,40 @@ fn assemble(
         crate::metadata::check_cancel(cancelled)?;
         assembled.push(page, localisation.clone(), Arc::clone(&language))?;
     }
-    {
-        let _naming = replay_frame::cpu::scope("production naming", Some("production-lines"));
-        let mut cursor = directory.variants.cursor(0)?;
-        while let Some(next) =
-            cursor.next::<VariantPage>(&mut facts, &variant_section(directory.branch))?
-        {
-            crate::metadata::check_cancel(cancelled)?;
-            #[cfg(test)]
-            let _workspace = tests::NamingOperands::hold(&next.catalogue, &variants);
-            let VariantPage {
-                catalogue: mut next,
-                icons,
-            } = next;
-            for (id, versions) in std::mem::take(&mut next.versions) {
-                let known = variants.entry(id).or_default();
-                for version in versions {
-                    match known
-                        .last_mut()
-                        .filter(|last| last.first_hour == version.first_hour)
-                    {
-                        Some(last) => *last = version,
-                        None => known.push(version),
-                    }
-                }
-            }
-            catalogue = next;
-            for (id, hour, icon, definition_changed) in icons {
-                if let Some(versions) = assembled.result.icons.get_mut(&id)
-                    && versions.first().is_some_and(|first| first.0 <= hour)
-                {
-                    let at = versions.partition_point(|(at, _)| *at <= hour);
-                    let pending = at != 0
-                        && versions[at - 1]
-                            .1
-                            .otherwise
-                            .as_ref()
-                            .err()
-                            .is_some_and(|reason| {
-                                matches!(
-                                    reason.as_str(),
-                                    "the variant's definition is not recorded yet"
-                                        | "the variant's definition is not recorded at this time"
-                                )
-                            });
-                    if (definition_changed || pending) && (at == 0 || versions[at - 1].1 != icon) {
-                        versions.insert(at, (hour, icon));
-                    }
-                }
-            }
-        }
-        catalogue.versions = variants;
-    }
-
     drop(facts);
     drop(reader);
+    let fold = fold(&mut read)?;
+    // Icons only touch this country's lines, so applying each page's after every page folds keeps their order.
+    for (id, hour, icon, definition_changed) in &fold.icons {
+        crate::metadata::check_cancel(cancelled)?;
+        let (id, hour, definition_changed) = (*id, *hour, *definition_changed);
+        if let Some(versions) = assembled.result.icons.get_mut(&id)
+            && versions.first().is_some_and(|first| first.0 <= hour)
+        {
+            let at = versions.partition_point(|(at, _)| *at <= hour);
+            let pending = at != 0
+                && versions[at - 1]
+                    .1
+                    .otherwise
+                    .as_ref()
+                    .err()
+                    .is_some_and(|reason| {
+                        matches!(
+                            reason.as_str(),
+                            "the variant's definition is not recorded yet"
+                                | "the variant's definition is not recorded at this time"
+                        )
+                    });
+            if (definition_changed || pending) && (at == 0 || versions[at - 1].1 != *icon) {
+                versions.insert(at, (hour, icon.clone()));
+            }
+        }
+    }
     for versions in assembled.result.icons.values_mut() {
         versions.dedup_by(|a, b| a.1 == b.1);
     }
+    let mut catalogue = fold.catalogue.clone();
+    catalogue.versions = fold.versions.clone();
     assembled.result.variants = catalogue;
     let sleep = if selected.starts_with("native-") {
         private::get::<CountrySnapshot>(
@@ -1869,7 +1995,13 @@ pub(super) fn query(
             native_key(&country)
         }
     };
-    let result = assemble(
+    let kept = crate::prepared::query::observations::scope(
+        source,
+        "production-lines:variants",
+        Some(&key),
+    );
+    let section = variant_section(branch);
+    let result = assemble_with(
         &directory,
         &selected,
         icons,
@@ -1884,6 +2016,24 @@ pub(super) fn query(
                     Ok(bytes)
                 })
                 .transpose()
+        },
+        |read| match variant_ranges(&directory, &store, &key, &section, cancelled, read) {
+            Ok(ranges) => {
+                // Each page's store identity, taken from the handle the fold reads.
+                let pages: Vec<[u64; 3]> =
+                    ranges.iter().map(|range| range.id().cache_key()).collect();
+                kept.get_entry(
+                    branch,
+                    &(),
+                    &(crate::prepared::coverage::SCHEMA, pages),
+                    cancelled,
+                    VariantFold::bytes,
+                    || fold_ranges(ranges, cancelled),
+                )
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
+            // The fold reads them again and fails as it would have uncached.
+            Err(_) => fold_variants(&directory, cancelled, read).map(Arc::new),
         },
     )?;
     if !directory.coverage.complete {

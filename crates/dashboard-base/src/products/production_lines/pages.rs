@@ -317,11 +317,9 @@ impl PageCursor {
         facts: &mut private::Store<'_, impl Pages + ?Sized>,
         section: &str,
     ) -> io::Result<Option<T>> {
-        if self.next == self.log.len {
+        let Some(range) = self.next_range(facts)? else {
             return Ok(None);
-        }
-        let range: u64 = private::get(facts, self.log.root, &format!("{:016x}", self.next))?
-            .ok_or_else(|| crate::invalid("Missing production page ordinal"))?;
+        };
         let bytes = facts
             .pages
             .read_at(section, range)?
@@ -329,6 +327,24 @@ impl PageCursor {
         let page = read(&bytes)?;
         self.next += 1;
         Ok(Some(page))
+    }
+
+    /// The range of the page [`Self::next`] reads, without reading it.
+    pub fn next_range(
+        &mut self,
+        facts: &mut private::Store<'_, impl Pages + ?Sized>,
+    ) -> io::Result<Option<u64>> {
+        if self.next == self.log.len {
+            return Ok(None);
+        }
+        private::get(facts, self.log.root, &format!("{:016x}", self.next))?
+            .ok_or_else(|| crate::invalid("Missing production page ordinal"))
+            .map(Some)
+    }
+
+    /// Steps past the page [`Self::next_range`] named.
+    pub fn skip(&mut self) {
+        self.next += 1;
     }
 }
 
