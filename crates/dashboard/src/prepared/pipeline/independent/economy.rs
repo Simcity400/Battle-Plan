@@ -41,16 +41,15 @@ use crate::{
 };
 use replay::{container::QuietHours, container::Replay, container::TableFields};
 use replay_data::{format::FormatVersion, rows::TableId};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, FrameLog};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{any::Any, io, ops::Range, sync::atomic::AtomicBool};
 
 /// One hour of a block's facts for a ledger, in hour order.
-#[allow(clippy::large_enum_variant)] // Each observed hour owns its frame.
 enum Hour {
-    /// An hour the family observes, with its frame and change facts.
+    /// An hour the family observes, with its change facts; its frame is the
+    /// next the block's kept frames hold.
     Observed {
-        frame: DecodedFrame,
         changes: FrameChanges,
         demand: Option<replay_data::rows::TableRows>,
     },
@@ -65,6 +64,7 @@ enum Hour {
 /// A ledger's facts of one block.
 struct Facts {
     hours: Vec<Hour>,
+    kept: FrameLog,
     /// Frames the extract was given: read or built at its deadlines.
     #[cfg(test)]
     frames: usize,
@@ -79,6 +79,7 @@ struct DailyExtract {
     reads: &'static [TableId],
     fuel: bool,
     hours: Vec<Hour>,
+    kept: FrameLog,
     /// The last hour given a frame.
     last: Option<i32>,
     /// After an [`Hour::Hourly`], nothing more is kept.
@@ -94,6 +95,7 @@ impl DailyExtract {
             reads,
             fuel: reads == FUEL_READS,
             hours: Vec::new(),
+            kept: FrameLog::new(),
             last: None,
             stopped: false,
             #[cfg(test)]
@@ -118,18 +120,17 @@ impl Extract for DailyExtract {
         let mut held = dashboard_base::prepared::prepass::HeldBytes::default();
         held.add(self.hours.capacity() * size_of::<Hour>());
         for hour in &self.hours {
-            if let Hour::Observed {
-                frame,
-                changes,
-                demand,
-            } = hour
-            {
-                held.frame(frame).changes(changes);
+            if let Hour::Observed { changes, demand } = hour {
+                held.changes(changes);
                 if let Some(rows) = demand {
                     held.add(rows.heap_bytes());
                 }
             }
         }
+        for view in self.kept.views() {
+            held.view(view);
+        }
+        held.add(self.kept.bytes());
         held.total()
     }
 
@@ -171,8 +172,8 @@ impl Extract for DailyExtract {
                 }
                 .into();
         }
+        self.kept.push(&kept)?;
         self.hours.push(Hour::Observed {
-            frame: kept,
             demand,
             changes: FrameChanges {
                 rows_changed: changes.rows_changed,
@@ -231,6 +232,7 @@ impl Extract for DailyExtract {
         }
         Ok(Box::new(Facts {
             hours: self.hours,
+            kept: self.kept,
             #[cfg(test)]
             frames: self.frames,
         }))
@@ -291,17 +293,20 @@ fn fold(
     #[cfg(test)]
     count(family.name, |counts| counts.frames += facts.frames);
     ledger.prepare(block)?;
+    let Facts { hours, kept, .. } = *facts;
+    let mut kept = kept.into_frames();
     let mut reached = None;
     let mut last: Option<DecodedFrame> = None;
-    for hour in facts.hours {
+    for hour in hours {
         let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
-            Hour::Observed {
-                frame,
-                changes,
-                demand,
-            } => {
+            Hour::Observed { changes, demand } => {
+                // Released first, so the next frame changes it in place.
+                drop(last.take());
+                let frame = kept.next().ok_or_else(|| {
+                    io::Error::other("Ledger facts lack an observed hour's frame")
+                })??;
                 reached = Some(frame.hour);
                 #[cfg(test)]
                 count(family.name, |counts| counts.observed += 1);
@@ -1458,10 +1463,12 @@ mod tests {
             before
         );
         assert_eq!(facts.hours.len(), 3);
-        for hour in facts.hours {
-            let Hour::Observed { frame, demand, .. } = hour else {
+        let Facts { hours, kept, .. } = *facts;
+        for (hour, frame) in hours.into_iter().zip(kept.into_frames()) {
+            let Hour::Observed { demand, .. } = hour else {
                 panic!("each read is observed")
             };
+            let frame = frame.unwrap();
             assert!(frame.complete::<tables::FuelDemandParts>().is_err());
             let demand = demand.unwrap();
             let rows = demand.rows::<tables::CountryFuel>().unwrap();

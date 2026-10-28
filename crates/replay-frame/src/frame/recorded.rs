@@ -357,6 +357,12 @@ pub trait FrameSource {
     fn keyframe(&self) -> bool;
     fn metrics(&self) -> &Metrics;
     fn update(&self, index: usize) -> &TableUpdate;
+    /// The update at `index` when the source shares it, which a decoder can
+    /// then keep without copying it.
+    fn shared_update(&self, index: usize) -> Option<&Arc<TableUpdate>> {
+        let _ = index;
+        None
+    }
 }
 macro_rules! source {
     ($name:ty) => {
@@ -380,7 +386,29 @@ macro_rules! source {
     };
 }
 source!(Frame);
-source!(RecordedFrame);
+impl FrameSource for RecordedFrame {
+    fn branch(&self) -> BranchId {
+        self.branch
+    }
+    fn hour(&self) -> Hour {
+        self.hour
+    }
+    fn keyframe(&self) -> bool {
+        self.keyframe
+    }
+    fn metrics(&self) -> &Metrics {
+        &self.metrics
+    }
+    fn update(&self, index: usize) -> &TableUpdate {
+        &self.tables[index]
+    }
+    fn shared_update(&self, index: usize) -> Option<&Arc<TableUpdate>> {
+        match &self.tables.0 {
+            Backing::Frame(_) => None,
+            Backing::Tables { slots, updates, .. } => slots[index].map(|slot| &updates[slot]),
+        }
+    }
+}
 macro_rules! forwarded_source {
     ($wrapper:ty) => {
         impl<T: FrameSource + ?Sized> FrameSource for $wrapper {
@@ -398,6 +426,9 @@ macro_rules! forwarded_source {
             }
             fn update(&self, index: usize) -> &TableUpdate {
                 (**self).update(index)
+            }
+            fn shared_update(&self, index: usize) -> Option<&Arc<TableUpdate>> {
+                (**self).shared_update(index)
             }
         }
     };
@@ -438,7 +469,7 @@ fn copy_updates<'a>(
     Ok(copied.try_into().unwrap())
 }
 
-fn copy_update(update: &TableUpdate) -> io::Result<TableUpdate> {
+pub(super) fn copy_update(update: &TableUpdate) -> io::Result<TableUpdate> {
     Ok(match update {
         TableUpdate::Snapshot(rows) => TableUpdate::Snapshot(rows.try_clone_validated()?),
         TableUpdate::Truncated { rows, missing } => TableUpdate::Truncated {

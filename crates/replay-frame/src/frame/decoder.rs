@@ -144,6 +144,7 @@ pub struct FrameDecoder {
     current: Option<Arc<DecodedFrame>>,
     selected: Option<[bool; TABLE_COUNT]>,
     change_budget: Option<allocation::credit::MemoryBudget>,
+    spares: Spares,
 }
 
 impl FrameDecoder {
@@ -162,6 +163,7 @@ impl FrameDecoder {
             current: None,
             selected: Some(selected),
             change_budget: None,
+            spares: Spares::default(),
         }
     }
 
@@ -310,6 +312,7 @@ impl FrameDecoder {
                 }
             }
         }
+        self.spares.reserve()?;
         let mut advancing = FrameAdvance::begin_shared(self.current.take(), frame, &selected)?;
         let mut spent = Vec::new();
         for table in TableId::ALL {
@@ -319,10 +322,12 @@ impl FrameDecoder {
             }
             let started = if measured { crate::cpu::stamp() } else { 0 };
             let previous = advancing.take_previous(table);
-            let mut view = advance_public_table(
+            let mut view = advance_public_table_reusing(
                 table,
                 frame.update(index),
+                frame.shared_update(index),
                 previous,
+                self.spares.slot(index),
                 frame.hour(),
                 frame.metrics().table_ns[index] != 0,
             )?;
@@ -451,6 +456,64 @@ pub fn keyframe_update(update: &TableUpdate) -> bool {
     )
 }
 
+/// The views deltas replaced while another holder still shared them, one
+/// per table, kept until that table's next update.
+#[derive(Clone, Default)]
+pub struct Spares(Vec<Option<Spare>>);
+
+impl Spares {
+    /// Room for every table's spare, made once.
+    pub fn reserve(&mut self) -> io::Result<()> {
+        if self.0.is_empty() {
+            self.0 = allocation::vec(TABLE_COUNT)?;
+            self.0.resize_with(TABLE_COUNT, || None);
+        }
+        Ok(())
+    }
+
+    /// `index`'s spare; [`Self::reserve`] made room for it.
+    pub fn slot(&mut self, index: usize) -> &mut Option<Spare> {
+        &mut self.0[index]
+    }
+}
+
+/// A view a delta replaced while another holder still shared it, that delta,
+/// and the view the delta made. Once nothing else holds the replaced view,
+/// the next delta catches it up in place instead of copying the shared view
+/// again, so a holder keeping each hour's view until the next costs one copy,
+/// not one each hour.
+#[derive(Clone, Debug)]
+pub struct Spare {
+    view: SharedView,
+    delta: Arc<TableUpdate>,
+    made: std::sync::Weak<TableView>,
+}
+
+impl Spare {
+    /// `current`'s rows, owned, when `current` is the view the spare's delta
+    /// made and nothing else holds the spare's view.
+    fn take_rows(self, current: &SharedView) -> io::Result<Option<crate::rows::TableRows>> {
+        let Self { view, delta, made } = self;
+        if !std::ptr::eq(made.as_ptr(), Arc::as_ptr(&current.0)) {
+            return Ok(None);
+        }
+        let TableUpdate::Delta {
+            changed, deleted, ..
+        } = &*delta
+        else {
+            return Ok(None);
+        };
+        let Ok(TableView::Complete(rows)) = view.try_unwrap() else {
+            return Ok(None);
+        };
+        match rows.apply_delta_validated(changed, deleted) {
+            Ok(rows) => Ok(Some(rows)),
+            Err(error) if allocation::is_allocation_error(&error) => Err(error),
+            Err(_) => Ok(None),
+        }
+    }
+}
+
 /// Apply a public table view, separately attributed from private alias source applications.
 pub fn advance_public_table(
     table: TableId,
@@ -461,6 +524,35 @@ pub fn advance_public_table(
 ) -> io::Result<SharedView> {
     let _cpu = crate::cpu::reader("reader_public_apply", table);
     advance_table(table, update, previous, hour, read)
+}
+
+/// [`advance_public_table`] keeping the view a delta replaces while another
+/// holder still shares it in `spare`, with the delta (`shared` when the
+/// source shares it, else a copy), for the table's next update to reuse.
+pub fn advance_public_table_reusing(
+    table: TableId,
+    update: &TableUpdate,
+    shared: Option<&Arc<TableUpdate>>,
+    previous: Option<(Hour, SharedView)>,
+    spare: &mut Option<Spare>,
+    hour: Hour,
+    read: bool,
+) -> io::Result<SharedView> {
+    let _cpu = crate::cpu::reader("reader_public_apply", table);
+    advance_table_with(
+        table,
+        update,
+        previous,
+        Some(Reuse { shared, spare }),
+        hour,
+        read,
+    )
+}
+
+/// What a reader keeps to reuse replaced views ([`Spare`]).
+struct Reuse<'a> {
+    shared: Option<&'a Arc<TableUpdate>>,
+    spare: &'a mut Option<Spare>,
 }
 
 /// One table's view at `hour`, from its update and the hour before's complete
@@ -475,8 +567,19 @@ pub fn advance_table(
     hour: Hour,
     read: bool,
 ) -> io::Result<SharedView> {
+    advance_table_with(table, update, previous, None, hour, read)
+}
+
+fn advance_table_with(
+    table: TableId,
+    update: &TableUpdate,
+    previous: Option<(Hour, SharedView)>,
+    reuse: Option<Reuse<'_>>,
+    hour: Hour,
+    read: bool,
+) -> io::Result<SharedView> {
     let _table = replay_data::measurement::table(table);
-    match apply_table(table, update, previous, hour) {
+    match apply_table(table, update, previous, reuse, hour) {
         Ok(mut view) => {
             // The collector exports zero timing for skipped tables
             // (sampling::exported_table_ticks). Equality may encode a
@@ -532,8 +635,14 @@ fn apply_table(
     table: TableId,
     update: &TableUpdate,
     previous: Option<(Hour, SharedView)>,
+    reuse: Option<Reuse<'_>>,
     hour: Hour,
 ) -> io::Result<SharedView> {
+    // A spare serves only the update right after the delta that kept it.
+    let (spare, reuse) = match reuse {
+        Some(Reuse { shared, spare }) => (spare.take(), Some((shared, spare))),
+        None => (None, None),
+    };
     match update {
         TableUpdate::Snapshot(values) => {
             validate_complete(table, values, hour)?;
@@ -585,30 +694,60 @@ fn apply_table(
             } = update
             {
                 validate_delta(table, changed, deleted)?;
-                // The baseline passed full row validation, so an in-place
-                // delta checks only the keys it can have changed.
+                // The baseline passed full row validation, so a delta, in
+                // place or on a copy, checks only the keys it can have changed.
+                let mut replaced = None;
                 let rows = match previous_view.try_unwrap() {
                     Ok(TableView::Complete(previous_rows)) => {
                         previous_rows.apply_delta_validated(changed, deleted)?
                     }
-                    Err(shared) => match &*shared {
-                        TableView::Complete(previous_rows) => {
-                            let started = if crate::cpu::enabled() {
-                                crate::cpu::stamp()
-                            } else {
-                                0
-                            };
-                            let rows = previous_rows.apply_delta_shared(changed, deleted)?;
-                            crate::cpu::copied(table, previous_rows.len(), started);
-                            rows.validate_keys()?;
-                            rows
-                        }
-                        _ => unreachable!("only complete tables become baselines"),
-                    },
+                    Err(shared) => {
+                        let TableView::Complete(previous_rows) = &*shared else {
+                            unreachable!("only complete tables become baselines")
+                        };
+                        let started = if crate::cpu::enabled() {
+                            crate::cpu::stamp()
+                        } else {
+                            0
+                        };
+                        let caught = match spare {
+                            Some(spare) => spare.take_rows(&shared)?,
+                            None => None,
+                        };
+                        let rows = match caught {
+                            Some(rows) => {
+                                crate::cpu::reused(table, rows.len(), started);
+                                rows.apply_delta_validated(changed, deleted)?
+                            }
+                            None => {
+                                let rows =
+                                    previous_rows.apply_delta_shared_validated(changed, deleted)?;
+                                crate::cpu::copied(table, previous_rows.len(), started);
+                                rows
+                            }
+                        };
+                        replaced = Some(shared);
+                        rows
+                    }
                     Ok(_) => unreachable!("only complete tables become baselines"),
                 };
                 validate_applied(table, &rows, hour)?;
-                Ok(TableView::Complete(rows).into())
+                let view: SharedView = TableView::Complete(rows).into();
+                if let (Some(mut replaced), Some((shared, slot))) = (replaced, reuse) {
+                    let delta = match shared {
+                        Some(shared) => Some(Arc::clone(shared)),
+                        None => super::recorded::copy_update(update).ok().map(Arc::new),
+                    };
+                    // Only its rows are reused; its change facts' credit goes back now.
+                    replaced.2 = None;
+                    replaced.3 = None;
+                    *slot = delta.map(|delta| Spare {
+                        view: replaced,
+                        delta,
+                        made: Arc::downgrade(&view.0),
+                    });
+                }
+                Ok(view)
             } else {
                 // This private baseline already passed full row validation. Only
                 // the singleton's relation to the new enclosing hour can have changed.

@@ -878,6 +878,34 @@ macro_rules! define_tables {
             pub fn apply_delta_shared(&self, changed: &[DeltaRow], deleted: &[u128]) -> io::Result<Self> {
                 Ok(match self { $(Self::$table(rows) => Self::$table(apply_typed_shared(rows, changed, deleted)?)),+ })
             }
+            /// [`Self::apply_delta_validated`] for a baseline that stays shared.
+            pub fn apply_delta_shared_validated(&self, changed: &[DeltaRow], deleted: &[u128]) -> io::Result<Self> {
+                Ok(match self { $(Self::$table(rows) => Self::$table(apply_typed_shared_validated(rows, changed, deleted)?)),+ })
+            }
+            /// What `self` changed since `previous`, both valid rows of one
+            /// table: each row it holds that `previous` does not hold equal at
+            /// its key, copied, and each key of `previous` it lacks. None when
+            /// they hold different tables.
+            pub fn changes_since(&self, previous: &Self) -> io::Result<Option<RowChanges>> {
+                // One arm per table, not per pair of tables: pair matches are costly to compile.
+                Ok(match self { $(Self::$table(rows) => match <tables::$table as TableSchema>::borrow(previous) {
+                    Some(previous) => {
+                        let (changed, deleted) = changes_typed(rows, previous)?;
+                        Some(RowChanges { rows: Self::$table(changed), deleted })
+                    }
+                    None => None,
+                }),+ })
+            }
+            /// The rows [`Self::changes_since`] found `changes` from: each of
+            /// its rows set at its key and each of its deleted keys removed.
+            pub fn apply_changes(self, changes: RowChanges) -> io::Result<Self> {
+                let RowChanges { rows: changed, deleted } = changes;
+                match self { $(Self::$table(rows) => {
+                    let changed = <tables::$table as TableSchema>::take(changed)
+                        .map_err(|_| invalid("row changes of another table"))?;
+                    Ok(Self::$table(apply_changes_typed(rows, changed, &deleted)?))
+                }),+ }
+            }
         }
         impl RowRef<'_> {
             pub fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
@@ -1926,7 +1954,7 @@ fn apply_typed_at<T: RowCodec>(
         let Ok(position) = locate(&previous, from, key) else {
             // The merge reports an absent key where a row-by-row walk meets it.
             let len = previous.len();
-            return merge_typed(previous, len, changed, deleted, Ok).map(|rows| (rows, None));
+            return merge_typed(previous, len, changed, deleted, Ok, None).map(|rows| (rows, None));
         };
         from = position + 1;
         gone.push(position);
@@ -2114,33 +2142,63 @@ fn apply_typed_shared<T: RowCodec>(
         changed,
         deleted,
         RowCodec::try_clone,
+        None,
     )
 }
 
+/// [`apply_typed_shared`] of a validated baseline: kept rows are copied
+/// without checking them again, and only the changed rows are checked, in
+/// whole-validation error order.
+fn apply_typed_shared_validated<T: RowCodec>(
+    previous: &[T],
+    changed: &[DeltaRow],
+    deleted: &[u128],
+) -> io::Result<Vec<T>> {
+    let mut at = allocation::vec(changed.len())?;
+    let rows = merge_typed(
+        previous,
+        previous.len(),
+        changed,
+        deleted,
+        RowCodec::try_clone_validated,
+        Some(&mut at),
+    )?;
+    validate_typed_at(&rows, &at)?;
+    Ok(rows)
+}
+
 /// `own` turns a baseline row into an output row; it runs only for rows the
-/// merge keeps or changes.
+/// merge keeps or changes. `at` receives the changed rows' positions.
 fn merge_typed<T: RowCodec, R: std::borrow::Borrow<T>>(
     previous: impl IntoIterator<Item = R>,
     len: usize,
     changed: &[DeltaRow],
     deleted: &[u128],
     own: impl Fn(R) -> io::Result<T>,
+    mut at: Option<&mut Vec<usize>>,
 ) -> io::Result<Vec<T>> {
     let mut rows = allocation::vec(allocation::add(len, changed.len())?)?;
     measurement::count(Counter::MergedRows, len);
     let mut changed = changed.iter().peekable();
     let mut deleted = deleted.iter().peekable();
+    let mut note = |rows: &Vec<T>| {
+        if let Some(at) = at.as_deref_mut() {
+            at.push(rows.len());
+        }
+    };
     for previous in previous {
         let key = previous.borrow().key();
         if deleted.peek().is_some_and(|deleted| **deleted < key) {
             return Err(invalid("delta deletes an absent key"));
         }
         while changed.peek().is_some_and(|delta| delta.key < key) {
+            note(&rows);
             rows.push(changed.next().unwrap().apply::<T>(None)?);
         }
         if deleted.peek().is_some_and(|deleted| **deleted == key) {
             deleted.next();
         } else if changed.peek().is_some_and(|delta| delta.key == key) {
+            note(&rows);
             rows.push(changed.next().unwrap().apply(Some(own(previous)?))?);
         } else {
             rows.push(own(previous)?);
@@ -2150,9 +2208,106 @@ fn merge_typed<T: RowCodec, R: std::borrow::Borrow<T>>(
         return Err(invalid("delta deletes an absent key"));
     }
     for delta in changed {
+        note(&rows);
         rows.push(delta.apply::<T>(None)?);
     }
     Ok(rows)
+}
+
+/// The rows a later version of a table changed or added since an earlier
+/// one, and the keys it dropped ([`TableRows::changes_since`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowChanges {
+    rows: TableRows,
+    deleted: Vec<u128>,
+}
+
+impl RowChanges {
+    /// Bytes its rows and deleted keys hold.
+    pub fn heap_bytes(&self) -> usize {
+        self.rows.heap_bytes() + self.deleted.capacity() * size_of::<u128>()
+    }
+}
+
+#[inline(never)]
+fn changes_typed<T: RowCodec>(rows: &[T], previous: &[T]) -> io::Result<(Vec<T>, Vec<u128>)> {
+    let (mut changed, mut deleted) = (Vec::new(), Vec::new());
+    let (mut at, mut was) = (0, 0);
+    loop {
+        let order = match (rows.get(at), previous.get(was)) {
+            (None, None) => break,
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (Some(row), Some(old)) => row.key().cmp(&old.key()),
+        };
+        match order {
+            std::cmp::Ordering::Greater => {
+                allocation::reserve(&mut deleted, 1)?;
+                deleted.push(previous[was].key());
+                was += 1;
+            }
+            order => {
+                let row = &rows[at];
+                if order == std::cmp::Ordering::Less || *row != previous[was] {
+                    allocation::reserve(&mut changed, 1)?;
+                    changed.push(row.try_clone_validated()?);
+                }
+                at += 1;
+                was += usize::from(order == std::cmp::Ordering::Equal);
+            }
+        }
+    }
+    Ok((changed, deleted))
+}
+
+#[inline(never)]
+fn apply_changes_typed<T: RowCodec>(
+    mut rows: Vec<T>,
+    changed: Vec<T>,
+    deleted: &[u128],
+) -> io::Result<Vec<T>> {
+    // Rows changed in place keep the table's order; only an insertion or a
+    // deletion moves the rows after it.
+    if deleted.is_empty() {
+        let mut at = allocation::vec(changed.len())?;
+        let mut from = 0;
+        for row in &changed {
+            match locate(&rows, from, row.key()) {
+                Ok(position) => {
+                    at.push(position);
+                    from = position + 1;
+                }
+                Err(_) => break,
+            }
+        }
+        if at.len() == changed.len() {
+            for (position, row) in at.into_iter().zip(changed) {
+                rows[position] = row;
+            }
+            return Ok(rows);
+        }
+    }
+    let mut out = allocation::vec(allocation::add(rows.len(), changed.len())?)?;
+    let mut changed = changed.into_iter().peekable();
+    let mut deleted = deleted.iter().peekable();
+    for row in rows {
+        let key = row.key();
+        while let Some(change) = changed.next_if(|change| change.key() < key) {
+            out.push(change);
+        }
+        if deleted.peek().is_some_and(|deleted| **deleted < key) {
+            return Err(invalid("row changes delete an absent key"));
+        }
+        if deleted.next_if(|deleted| **deleted == key).is_some() {
+            continue;
+        }
+        out.push(changed.next_if(|change| change.key() == key).unwrap_or(row));
+    }
+    out.extend(changed);
+    if deleted.next().is_some() {
+        return Err(invalid("row changes delete an absent key"));
+    }
+    Ok(out)
 }
 
 #[doc(hidden)]

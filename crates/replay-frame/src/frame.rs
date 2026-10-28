@@ -17,6 +17,8 @@ mod hour_input;
 pub use hour_input::{ChangeDiscontinuity, HourChanges, HourInput, TableChanges};
 mod encoder;
 pub mod endpoint_step;
+mod log;
+pub use log::{FrameLog, LoggedFrames};
 mod provenance;
 mod source;
 pub use source::{
@@ -33,11 +35,14 @@ mod wire;
 #[doc(hidden)]
 pub use self::decoder::count_unselected;
 #[doc(hidden)]
-pub use self::decoder::{advance_public_table, advance_table, keyframe_update, not_selected};
+pub use self::decoder::{
+    advance_public_table, advance_public_table_reusing, advance_table, keyframe_update,
+    not_selected,
+};
 #[doc(hidden)]
 pub use self::wire::decode_update;
 pub use self::{
-    decoder::{FrameAdvance, FrameDecoder},
+    decoder::{FrameAdvance, FrameDecoder, Spare, Spares},
     encoder::{FrameContext, FrameEncoder, PreparedFrame, Retired, TableSegment},
 };
 use engine_allocation as allocation;

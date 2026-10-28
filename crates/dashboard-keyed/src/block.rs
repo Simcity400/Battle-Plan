@@ -20,7 +20,7 @@ use dashboard_base::prepared::{
 };
 use replay::container::{BlockIndex, QuietHours, Replay};
 use replay_data::format::FormatVersion;
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, FrameLog};
 use std::{any::Any, io, marker::PhantomData, ops::Range};
 
 /// The pre-pass entry of observer `O`, named `name` with its timing rows.
@@ -45,6 +45,7 @@ fn start<O: Observer>(format: FormatVersion) -> Box<dyn Extract> {
     Box::new(BlockExtract::<O> {
         format,
         hours: Vec::new(),
+        kept: FrameLog::new(),
         frames: 0,
         keeper: O::keeper(),
         observer: PhantomData,
@@ -77,7 +78,8 @@ pub trait Keeper<O: Observer>: Send {
 }
 
 enum Input<O: Observer> {
-    Frame(DecodedFrame),
+    /// The hour's frame: the next its block's kept frames hold.
+    Frame,
     Operands(Box<dyn Operands<O>>),
 }
 
@@ -122,6 +124,7 @@ enum Hour<O: Observer> {
 /// A block's hours as the extract kept them.
 struct BlockFacts<O: Observer> {
     hours: Vec<Hour<O>>,
+    kept: FrameLog,
     #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     frames: usize,
 }
@@ -129,6 +132,7 @@ struct BlockFacts<O: Observer> {
 struct BlockExtract<O: Observer> {
     format: FormatVersion,
     hours: Vec<Hour<O>>,
+    kept: FrameLog,
     frames: usize,
     keeper: Option<Box<dyn Keeper<O>>>,
     observer: PhantomData<fn() -> O>,
@@ -141,11 +145,8 @@ impl<O: Observer> Extract for BlockExtract<O> {
         for hour in &self.hours {
             match hour {
                 Hour::Observed { input, changes, .. } => {
-                    match input {
-                        Input::Frame(frame) => {
-                            held.frame(frame);
-                        }
-                        Input::Operands(input) => input.held(&mut held),
+                    if let Input::Operands(input) = input {
+                        input.held(&mut held);
                     }
                     held.changes(changes);
                 }
@@ -157,6 +158,10 @@ impl<O: Observer> Extract for BlockExtract<O> {
         if let Some(keeper) = &self.keeper {
             keeper.held(&mut held);
         }
+        for view in self.kept.views() {
+            held.view(view);
+        }
+        held.add(self.kept.bytes());
         held.total()
     }
 
@@ -169,7 +174,10 @@ impl<O: Observer> Extract for BlockExtract<O> {
         self.frames += 1;
         let input = match &mut self.keeper {
             Some(keeper) => Input::Operands(keeper.keep(self.format, frame)?),
-            None => Input::Frame(frame.clone()),
+            None => {
+                self.kept.push(frame)?;
+                Input::Frame
+            }
         };
         self.hours.try_reserve(1).map_err(io::Error::other)?;
         self.hours.push(Hour::Observed {
@@ -214,6 +222,7 @@ impl<O: Observer> Extract for BlockExtract<O> {
         }
         Ok(Box::new(BlockFacts::<O> {
             hours: self.hours,
+            kept: self.kept,
             frames: self.frames,
         }))
     }
@@ -234,8 +243,10 @@ pub fn fold<O: Observer>(
         .map_err(|_| io::Error::other("Pre-pass facts of another family"))?;
     #[cfg(any(test, feature = "test-support"))]
     note_frames(O::family().name, facts.frames);
+    let BlockFacts { hours, kept, .. } = *facts;
+    let mut kept = kept.into_frames();
     let mut reached = None;
-    for hour in facts.hours {
+    for hour in hours {
         check()?;
         match hour {
             Hour::Observed {
@@ -247,7 +258,12 @@ pub fn fold<O: Observer>(
                 #[cfg(any(test, feature = "test-support"))]
                 note_observed(O::family().name);
                 let result = match &input {
-                    Input::Frame(frame) => scan.prepare_changed(replay.format, frame, &changes),
+                    Input::Frame => {
+                        let frame = kept.next().ok_or_else(|| {
+                            io::Error::other("Pre-pass facts lack an observed hour's frame")
+                        })??;
+                        scan.prepare_changed(replay.format, &frame, &changes)
+                    }
                     Input::Operands(input) => scan.prepare_kept(hour, &changes, input.as_ref()),
                 };
                 if !observed(hour, result)? {

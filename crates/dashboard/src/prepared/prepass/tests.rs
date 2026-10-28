@@ -753,6 +753,7 @@ fn capture(
 ) -> (
     Vec<Vec<Captured>>,
     [[u64; 2]; replay_data::rows::TABLE_COUNT],
+    [[u64; 2]; replay_data::rows::TABLE_COUNT],
 ) {
     struct Restore(bool);
     impl Drop for Restore {
@@ -761,7 +762,10 @@ fn capture(
         }
     }
     let _restore = Restore(RELEASING.with(|value| value.replace(releasing)));
-    let before = replay_frame::cpu::delta_copies();
+    let (copies, reuses) = (
+        replay_frame::cpu::delta_copies(),
+        replay_frame::cpu::delta_reuses(),
+    );
     let events = extract_block_measured(
         replay,
         &replay.index[0],
@@ -777,12 +781,16 @@ fn capture(
         Outcome::Declined(error) | Outcome::Failed(error) => panic!("extract failed: {error}"),
     })
     .collect();
-    let after = replay_frame::cpu::delta_copies();
-    (
-        events,
+    let since = |before: [[u64; 2]; replay_data::rows::TABLE_COUNT],
+                 after: [[u64; 2]; replay_data::rows::TABLE_COUNT]| {
         std::array::from_fn(|table| {
             std::array::from_fn(|field| after[table][field] - before[table][field])
-        }),
+        })
+    };
+    (
+        events,
+        since(copies, replay_frame::cpu::delta_copies()),
+        since(reuses, replay_frame::cpu::delta_reuses()),
     )
 }
 
@@ -1008,20 +1016,28 @@ fn a_setup_panic_names_only_its_family_and_preserves_healthy_sibling_facts() {
 fn follow_releases_replaced_views_before_the_next_delta() {
     let count = 32;
     let replay = moving_tables(count, false);
-    let (before, copies_before) = capture(&replay, &[&CAPTURE_POWER, &CAPTURE_ALL], false);
-    let (after, copies_after) = capture(&replay, &[&CAPTURE_POWER, &CAPTURE_ALL], true);
+    let (before, copies_before, reuses_before) =
+        capture(&replay, &[&CAPTURE_POWER, &CAPTURE_ALL], false);
+    let (after, copies_after, reuses_after) =
+        capture(&replay, &[&CAPTURE_POWER, &CAPTURE_ALL], true);
     assert_eq!(before, after);
     for table in [TableId::Countries, TableId::States] {
         assert_eq!(
             copies_before[table.index()],
-            [10, 10 * u64::from(count)],
-            "{table:?}: a full baseline per changed hour"
+            [1, u64::from(count)],
+            "{table:?}: the first changed hour copies the baseline held"
+        );
+        assert_eq!(
+            reuses_before[table.index()],
+            [9, 9 * u64::from(count)],
+            "{table:?}: later ones catch up the view the hour before replaced"
         );
         assert_eq!(
             copies_after[table.index()],
             [0, 0],
             "{table:?}: no framework-held baseline copies"
         );
+        assert_eq!(reuses_after[table.index()], [0, 0]);
     }
 }
 

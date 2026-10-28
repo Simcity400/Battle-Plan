@@ -58,6 +58,24 @@ fn merged(rows: &TableRows, changed: &[DeltaRow], deleted: &[u128]) -> io::Resul
 }
 
 #[test]
+fn shared_deltas_leave_the_baseline_and_check_only_their_rows() {
+    let baseline = links(1000);
+    let changed = [
+        slot_change(500, 1),
+        slot_change(501, -1),
+        slot_change(1500, 7),
+    ];
+    let deleted = [3, 5, 7];
+    let (rows, checked) = validated(|| baseline.apply_delta_shared_validated(&changed, &deleted));
+    assert_eq!(
+        rows.unwrap(),
+        merged(&baseline, &changed, &deleted).unwrap()
+    );
+    assert_eq!(checked, changed.len());
+    assert_eq!(baseline, links(1000));
+}
+
+#[test]
 fn a_few_insertions_and_deletions_apply_in_place_checking_only_their_rows() {
     let changed = [slot_change(500, 1), slot_change(1500, 7)];
     let (rows, checked) = validated(|| links(1000).apply_delta_validated(&changed, &[3]));
@@ -114,6 +132,10 @@ fn every_mix_of_changes_insertions_and_deletions_matches_the_merge() {
             .apply_delta_validated(&changed, &deleted)
             .map_err(|error| error.to_string());
         assert_eq!(actual, expected, "changed {changed:?} deleted {deleted:?}");
+        let shared = table()
+            .apply_delta_shared_validated(&changed, &deleted)
+            .map_err(|error| error.to_string());
+        assert_eq!(shared, expected, "changed {changed:?} deleted {deleted:?}");
         if let Ok(rows) = actual {
             kept += 1;
             edited += usize::from(rows.len() != 20 || !deleted.is_empty());
@@ -201,6 +223,58 @@ fn bulk_merge_keeps_apply_before_final_validation_and_absent_delete_precedence()
                 (expected.kind(), expected.to_string()),
                 "{changed:?} {deleted:?}"
             );
+            let shared = baseline
+                .apply_delta_shared_validated(&changed, &deleted)
+                .unwrap_err();
+            assert_eq!(
+                (shared.kind(), shared.to_string()),
+                (expected.kind(), expected.to_string()),
+                "{changed:?} {deleted:?}"
+            );
         }
     }
+}
+
+/// A later version rebuilt from an earlier one and the rows it changed,
+/// added and dropped is that version, whatever mix of edits it made.
+#[test]
+fn row_changes_rebuild_every_later_version() {
+    let mut state = 0x2545_f491_u32;
+    let mut random = |bound: u32| {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        state % bound
+    };
+    let mut table = |keep: u32| {
+        TableRows::CountryLinks(
+            (1..=40)
+                .filter(|_| random(keep) != 0)
+                .map(|id| CountryLinkRow {
+                    id,
+                    canonical_slot: id,
+                })
+                .collect(),
+        )
+    };
+    for round in 0..2000 {
+        let previous = table(2 + round % 7);
+        let mut later = table(2 + round % 5);
+        if let TableRows::CountryLinks(rows) = &mut later {
+            for row in rows.iter_mut().filter(|row| row.id % 3 == round % 3) {
+                row.canonical_slot += 1;
+            }
+        }
+        let changes = later.changes_since(&previous).unwrap().unwrap();
+        assert_eq!(previous.clone().apply_changes(changes).unwrap(), later);
+        let unchanged = later.changes_since(&later).unwrap().unwrap();
+        assert_eq!(unchanged.heap_bytes(), 0);
+        assert_eq!(later.clone().apply_changes(unchanged).unwrap(), later);
+    }
+    assert!(
+        links(3)
+            .changes_since(&TableRows::Countries(Vec::new()))
+            .unwrap()
+            .is_none()
+    );
 }

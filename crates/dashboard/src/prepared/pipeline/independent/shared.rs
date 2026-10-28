@@ -1164,6 +1164,7 @@ mod tests {
         let index = &replay.index[0];
         let table = TableId::Countries;
         let before = replay_frame::cpu::delta_copies()[table.index()];
+        let reused = replay_frame::cpu::delta_reuses()[table.index()];
         let mut expected = None;
         replay
             .read_block_alone(
@@ -1176,8 +1177,12 @@ mod tests {
                 || Ok(()),
             )
             .unwrap();
+        // The first delta copies the frame kept; later ones catch up the
+        // view the hour before replaced, which the visitor let go.
         let retained = replay_frame::cpu::delta_copies()[table.index()];
-        assert_eq!([retained[0] - before[0], retained[1] - before[1]], [3, 3]);
+        assert_eq!([retained[0] - before[0], retained[1] - before[1]], [1, 1]);
+        let reuses = replay_frame::cpu::delta_reuses()[table.index()];
+        assert_eq!([reuses[0] - reused[0], reuses[1] - reused[1]], [2, 2]);
         let final_frame = read_last(&replay, index, &[table]).unwrap();
         assert_eq!(replay_frame::cpu::delta_copies()[table.index()], retained);
         assert_eq!(final_frame, expected);

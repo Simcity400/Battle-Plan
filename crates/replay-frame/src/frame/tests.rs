@@ -611,6 +611,136 @@ fn unchanged_tables_are_shared_and_a_delta_copies_on_write() {
     assert_eq!(second.tables[countries], next.tables[countries]);
 }
 
+/// Hours whose Countries row changes by `step` an hour, the first a keyframe.
+fn moving_countries(hours: Hour, step: i64) -> Vec<Frame> {
+    let mut encoder = FrameEncoder::new();
+    (0..hours)
+        .map(|hour| {
+            let mut state = source(1, hour);
+            change_country(&mut state, i64::from(hour) * step);
+            encoder.encode(state, hour == 0).unwrap()
+        })
+        .collect()
+}
+
+/// Every table's rows and sample hour, as a decoder nobody shares hands them.
+fn assert_same_frame(actual: &DecodedFrame, expected: &DecodedFrame) {
+    assert_eq!(actual, expected);
+    for (actual, expected) in actual.tables.iter().zip(&expected.tables) {
+        assert_eq!(actual.sampled_at(), expected.sampled_at());
+    }
+}
+
+/// A caller keeping each hour's frame until the next makes the decoder copy
+/// the table it shares once; every later delta catches up the view the hour
+/// before replaced, which nothing holds any more, in place. A caught-up view
+/// is a new allocation: no earlier hour's identity names it.
+#[test]
+fn a_view_kept_until_the_next_hour_is_copied_once_then_reused() {
+    let countries = TableId::Countries.index();
+    let frames = moving_countries(6, 3);
+    let (mut decoder, mut alone) = (FrameDecoder::new(), FrameDecoder::new());
+    let (copies, reuses) = (
+        crate::cpu::delta_copies()[countries],
+        crate::cpu::delta_reuses()[countries],
+    );
+    let mut held = None;
+    let mut earlier: Vec<ViewIdentity> = Vec::new();
+    for frame in &frames {
+        let actual = decoder.advance(frame).unwrap();
+        assert_same_frame(actual, alone.advance(frame).unwrap());
+        let view = &actual.tables[countries];
+        assert!(earlier.iter().all(|identity| !identity.is(view)));
+        earlier.push(view.identity());
+        held = Some(actual.clone());
+    }
+    assert!(held.is_some());
+    assert_eq!(crate::cpu::delta_copies()[countries][0] - copies[0], 1);
+    assert_eq!(crate::cpu::delta_reuses()[countries][0] - reuses[0], 4);
+}
+
+/// A caller keeping every hour's frame holds every replaced view, so each
+/// delta copies and none is reused; each kept frame keeps its own rows.
+#[test]
+fn views_kept_every_hour_are_copied_every_hour() {
+    let countries = TableId::Countries.index();
+    let frames = moving_countries(5, 2);
+    let (mut decoder, mut alone) = (FrameDecoder::new(), FrameDecoder::new());
+    let (copies, reuses) = (
+        crate::cpu::delta_copies()[countries],
+        crate::cpu::delta_reuses()[countries],
+    );
+    let mut held = Vec::new();
+    for frame in &frames {
+        held.push(decoder.advance(frame).unwrap().clone());
+    }
+    assert_eq!(crate::cpu::delta_copies()[countries][0] - copies[0], 4);
+    assert_eq!(crate::cpu::delta_reuses()[countries][0] - reuses[0], 0);
+    for (frame, held) in frames.iter().zip(&held) {
+        assert_same_frame(held, alone.advance(frame).unwrap());
+    }
+}
+
+/// The view a delta replaced is kept only until its table's next update: an
+/// hour leaving the table unchanged releases it, and the next delta copies.
+#[test]
+fn an_unchanged_hour_releases_the_replaced_view() {
+    let countries = TableId::Countries.index();
+    let mut encoder = FrameEncoder::new();
+    let frames: Vec<Frame> = [0, 5, 5, 9]
+        .into_iter()
+        .enumerate()
+        .map(|(hour, value)| {
+            let mut state = source(1, hour as Hour);
+            change_country(&mut state, value);
+            encoder.encode(state, hour == 0).unwrap()
+        })
+        .collect();
+    assert!(matches!(
+        frames[2].tables[countries],
+        TableUpdate::Unchanged { .. }
+    ));
+    let mut decoder = FrameDecoder::new();
+    let zero = decoder.advance(&frames[0]).unwrap().clone();
+    let first = zero.tables[countries].identity();
+    let one = decoder.advance(&frames[1]).unwrap().clone();
+    drop(zero);
+    assert!(first.is_alive(), "the decoder keeps the view it replaced");
+    let two = decoder.advance(&frames[2]).unwrap().clone();
+    assert!(!first.is_alive());
+    drop(one);
+    let copies = crate::cpu::delta_copies()[countries];
+    let reuses = crate::cpu::delta_reuses()[countries];
+    let three = decoder.advance(&frames[3]).unwrap().clone();
+    drop((two, three));
+    assert_eq!(crate::cpu::delta_copies()[countries][0] - copies[0], 1);
+    assert_eq!(crate::cpu::delta_reuses()[countries], reuses);
+}
+
+/// A frame log refuses a frame whose views carry change facts, by name: the
+/// views it gives back are new allocations, which those facts would not name
+/// as their predecessors. A frame without them it keeps.
+#[test]
+fn a_frame_log_refuses_change_facts() {
+    let countries = TableId::Countries.index();
+    let frames = moving_countries(2, 4);
+    let budget = allocation::credit::MemoryBudget::new(1 << 30);
+    let mut decoder = FrameDecoder::new().with_change_facts(budget);
+    let first = decoder.advance(&frames[0]).unwrap().clone();
+    let second = decoder.advance(&frames[1]).unwrap().clone();
+    assert!(first.tables.iter().all(|view| view.2.is_none()));
+    assert!(
+        second.tables[countries]
+            .changes_since(&first.tables[countries].identity())
+            .is_some()
+    );
+    let mut log = FrameLog::new();
+    log.push(&first).unwrap();
+    let refused = log.push(&second).unwrap_err();
+    assert_eq!(refused.to_string(), "a frame log keeps no change facts");
+    assert_eq!(log.len(), 1);
+}
+
 /// A selected decoder reconstructs its tables as the whole decoder does,
 /// hour by hour through deltas, a keyframe and a branch change: rows, sample
 /// hours and which hours share an allocation. Every other table is the one

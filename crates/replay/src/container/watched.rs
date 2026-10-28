@@ -27,10 +27,13 @@
 //! A watch whose visit fails stops there with its error, and the others go on.
 
 use super::*;
-use crate::frame::{IntoRecordedFrame, RecordedFrame, advance_public_table, recorded::Updates};
+use crate::frame::{
+    FrameSource, IntoRecordedFrame, RecordedFrame, advance_public_table,
+    advance_public_table_reusing, recorded::Updates,
+};
 use crate::{
     BranchId,
-    frame::{SharedView, TableUpdate, keyframe_update, not_selected},
+    frame::{SharedView, Spares, TableUpdate, keyframe_update, not_selected},
     rows::{compatibility::HISTORY, full_mask},
 };
 use std::sync::Arc;
@@ -345,6 +348,7 @@ struct BlockTables<'r> {
     rebuilt: Vec<bool>,
     count: Vec<Option<usize>>,
     before: Vec<Option<SharedView>>,
+    spares: Spares,
 }
 
 impl<'r> BlockTables<'r> {
@@ -369,6 +373,11 @@ impl<'r> BlockTables<'r> {
             rebuilt: engine_allocation::collect_vec(tables.iter().map(|_| false))?,
             count: engine_allocation::collect_vec(tables.iter().map(|_| None))?,
             before: engine_allocation::collect_vec(tables.iter().map(|_| None))?,
+            spares: {
+                let mut spares = Spares::default();
+                spares.reserve()?;
+                spares
+            },
             tables,
             slots: Arc::new(slots),
             last_hour: None,
@@ -448,8 +457,18 @@ impl<'r> BlockTables<'r> {
                 self.count[position] = before.as_deref().and_then(complete_len);
                 self.before[position] = None;
                 self.rebuilt[position] = true;
-                advance_public_table(table, update, baseline(before_hour, before), hour, read)?
+                advance_public_table_reusing(
+                    table,
+                    update,
+                    frame.shared_update(table.index()),
+                    baseline(before_hour, before),
+                    self.spares.slot(table.index()),
+                    hour,
+                    read,
+                )?
             } else {
+                // A spare serves only the delta right after the one that kept it.
+                self.spares.slot(table.index()).take();
                 let view = advance_public_table(
                     table,
                     update,

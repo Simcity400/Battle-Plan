@@ -37,7 +37,7 @@ use crate::{
 use dashboard_base::prepared::kept::{Reduced, consecutive, kept_changes, observe_hours};
 use replay::{container::QuietHours, container::Replay, container::TableFields};
 use replay_data::{format::FormatVersion, rows::CountryRow, rows::TableId};
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, FrameLog};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{any::Any, io, ops::Range, sync::atomic::AtomicBool};
 
@@ -264,13 +264,10 @@ fn repair_start(format: FormatVersion) -> Box<dyn Extract> {
 // --- Extract and fold ------------------------------------------------------
 
 /// One hour of a census block's facts, in hour order.
-#[allow(clippy::large_enum_variant)] // Each observed hour owns its frame.
 enum Hour {
-    /// An hour the census observes, with its frame and change facts.
-    Observed {
-        frame: DecodedFrame,
-        changes: FrameChanges,
-    },
+    /// An hour the census observes, with its change facts; its frame is the
+    /// next the block's kept frames hold.
+    Observed { changes: FrameChanges },
     /// Consecutive recorded hours from `first`, after the hour before them,
     /// at which no key, link, availability or row the census reads changed:
     /// whether its table was read at each.
@@ -280,6 +277,7 @@ enum Hour {
 /// A census block's hours as the extract kept them.
 struct Facts {
     hours: Vec<Hour>,
+    kept: FrameLog,
     /// Frames the extract was given or built.
     #[cfg(test)]
     frames: usize,
@@ -292,6 +290,7 @@ struct CensusExtract {
     /// Additional daily reads which need a retained frame, not only a read bit.
     boundaries: &'static [TableId],
     hours: Vec<Hour>,
+    kept: FrameLog,
     countries: Reduced<CountryRow>,
     /// The last hour given, observed or quiet, and whether its table was
     /// read there.
@@ -307,6 +306,7 @@ impl CensusExtract {
             table,
             boundaries: &[],
             hours: Vec::new(),
+            kept: FrameLog::new(),
             countries: Reduced::new(TableId::Countries),
             last: None,
             #[cfg(test)]
@@ -323,14 +323,18 @@ impl Extract for CensusExtract {
         held.add(self.hours.capacity() * size_of::<Hour>());
         for hour in &self.hours {
             match hour {
-                Hour::Observed { frame, changes } => {
-                    held.frame(frame).changes(changes);
+                Hour::Observed { changes } => {
+                    held.changes(changes);
                 }
                 Hour::Quiet { reads, .. } => {
                     held.add(reads.capacity());
                 }
             }
         }
+        for view in self.kept.views() {
+            held.view(view);
+        }
+        held.add(self.kept.bytes());
         held.total()
     }
 
@@ -352,8 +356,8 @@ impl Extract for CensusExtract {
         self.last = Some((frame.hour, read));
         let mut kept = frame.clone();
         self.countries.countries(&mut kept);
+        self.kept.push(&kept)?;
         self.hours.push(Hour::Observed {
-            frame: kept,
             changes: kept_changes(changes),
         });
         Ok(())
@@ -418,6 +422,7 @@ impl Extract for CensusExtract {
         }
         Ok(Box::new(Facts {
             hours: self.hours,
+            kept: self.kept,
             #[cfg(test)]
             frames: self.frames,
         }))
@@ -442,12 +447,17 @@ fn fold<C: Census>(
     };
     #[cfg(test)]
     dashboard_base::prepared::kept::note_frames(C::family().name, facts.frames);
+    let Facts { hours, kept, .. } = *facts;
+    let mut kept = kept.into_frames();
     let mut reached = None;
-    for hour in facts.hours {
+    for hour in hours {
         let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
-            Hour::Observed { frame, changes } => {
+            Hour::Observed { changes } => {
+                let frame = kept.next().ok_or_else(|| {
+                    io::Error::other("Census facts lack an observed hour's frame")
+                })??;
                 reached = Some(frame.hour);
                 #[cfg(test)]
                 dashboard_base::prepared::kept::note_observed(C::family().name);

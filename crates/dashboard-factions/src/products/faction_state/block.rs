@@ -14,7 +14,7 @@ use replay_data::{
     format::FormatVersion,
     rows::{CountryRow, TableId},
 };
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, FrameLog};
 use std::{
     any::Any,
     io,
@@ -95,12 +95,9 @@ fn fields() -> io::Result<Vec<TableFields>> {
         })
         .collect()
 }
-#[allow(clippy::large_enum_variant)]
 enum Hour {
-    Observed {
-        frame: DecodedFrame,
-        changes: FrameChanges,
-    },
+    /// Its frame is the next the block's kept frames hold.
+    Observed { changes: FrameChanges },
     Quiet {
         first: i32,
         last: i32,
@@ -109,9 +106,11 @@ enum Hour {
 }
 struct Facts {
     hours: Vec<Hour>,
+    kept: FrameLog,
 }
 struct Extraction {
     hours: Vec<Hour>,
+    kept: FrameLog,
     countries: Reduced<CountryRow>,
     format: FormatVersion,
     deadline: Option<i32>,
@@ -119,6 +118,7 @@ struct Extraction {
 fn start(format: FormatVersion) -> Box<dyn Extract> {
     Box::new(Extraction {
         hours: Vec::new(),
+        kept: FrameLog::new(),
         countries: Reduced::new(TableId::Countries),
         format,
         deadline: None,
@@ -129,10 +129,14 @@ impl Extract for Extraction {
         let mut bytes = HeldBytes::default();
         bytes.add(self.hours.capacity() * size_of::<Hour>());
         for hour in &self.hours {
-            if let Hour::Observed { frame, changes } = hour {
-                bytes.frame(frame).changes(changes);
+            if let Hour::Observed { changes } = hour {
+                bytes.changes(changes);
             }
         }
+        for view in self.kept.views() {
+            bytes.view(view);
+        }
+        bytes.add(self.kept.bytes());
         bytes.total()
     }
     fn observe(
@@ -154,8 +158,8 @@ impl Extract for Extraction {
         };
         let mut kept = frame.clone();
         self.countries.countries(&mut kept);
+        self.kept.push(&kept)?;
         self.hours.push(Hour::Observed {
-            frame: kept,
             changes: kept_changes(changes),
         });
         Ok(())
@@ -190,7 +194,10 @@ impl Extract for Extraction {
         Ok(())
     }
     fn finish(self: Box<Self>) -> io::Result<Box<dyn Any + Send>> {
-        Ok(Box::new(Facts { hours: self.hours }))
+        Ok(Box::new(Facts {
+            hours: self.hours,
+            kept: self.kept,
+        }))
     }
 }
 #[allow(clippy::too_many_arguments)]
@@ -208,11 +215,16 @@ pub fn fold(
     let facts = facts
         .downcast::<Facts>()
         .map_err(|_| io::Error::other("Faction pre-pass facts have another family"))?;
+    let Facts { hours, kept } = *facts;
+    let mut kept = kept.into_frames();
     let mut reached = None;
-    for hour in facts.hours {
+    for hour in hours {
         check()?;
         match hour {
-            Hour::Observed { frame, changes } => {
+            Hour::Observed { changes } => {
+                let frame = kept.next().ok_or_else(|| {
+                    io::Error::other("Faction pre-pass facts lack an observed hour's frame")
+                })??;
                 // Dynamic names need whole frames; kept frames may contain stale trigger inputs.
                 if state.needs_whole(source, context, &frame) {
                     let reached = observe_block(
