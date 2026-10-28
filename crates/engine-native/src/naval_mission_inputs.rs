@@ -66,7 +66,7 @@ pub const FUEL: usize = 0x4f8;
 /// Stored stat block reset and merged by ability refresh.
 pub const STAT_RANGE: usize = 0x1b0;
 /// Stored navy supply-hub province IDs in state/building order, retaining repeats.
-pub const HUBS: usize = 0x188;
+pub const HUBS: usize = 0x170;
 
 /// Task-force own modifier accumulator, reached only while it has a location.
 pub const LOCAL_MODIFIERS: usize = 0x668;
@@ -102,7 +102,7 @@ pub const MISSION_RANGE: usize = 0xf8;
 
 /// Region runtime slot to convoy-escort count-ring map. Region runtime slot
 /// and ID are initialized together and have equal values.
-pub const PRESENCE: usize = 0x160;
+pub const PRESENCE: usize = 0x148;
 const PRESENCE_ENTRIES: usize = PRESENCE + 0x08;
 const PRESENCE_MASK: usize = PRESENCE + 0x14;
 const PRESENCE_PROBE: usize = PRESENCE + 0x18;
