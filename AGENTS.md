@@ -15,9 +15,10 @@
 - Needs Rust 1.96+ with the x64 MSVC toolchain, Visual Studio C++ Build Tools with a Windows SDK, and Node.js 22.12+.
 - Desktop app: `npm.cmd ci`, then `npm.cmd run dev` (add `-- -- -- "<replay>"` to open one). Release build: `npm.cmd run build:desktop`.
 - Command-line recorder: `python tools/boat.py build --out <dir> --release -p recorder -p collector`.
-- Compile on Boat, not this machine, with `tools/boat.py` from inside your worktree: `python tools/boat.py check --all-targets -p <crate>...` (or `--workspace`), `python tools/boat.py ui`, and `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>` for release binaries. It uploads the worktree's current source, picks, isolates and stops the VM, and passes Cargo's exit code through. Don't drive `boat` by hand or pass `-j`. Check only the affected crates while iterating.
+- Compile on Boat, not this machine, with `tools/boat.py` from inside your worktree: `python tools/boat.py check --all-targets -p <crate>...` (or `--workspace`), `python tools/boat.py ui`, and `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>` for release binaries. It uploads the worktree's current source, picks, isolates and stops the VM, and passes Cargo's exit code through. Don't drive `boat` by hand or pass `-j`. Check only the affected crates.
 - Exit 75 means Boat itself failed: run it on Boat again, never locally.
 - Compare benchmarks only between binaries built the same way.
+- Only do compile checks once PR is ready to merge, not as you go.
 
 ## Where things are
 
@@ -68,6 +69,7 @@
 
 - One complete PR per task. Never leave residuals unless you are actually blocked and state what and why is blocked.
 - After merging, delete your branch, worktree, build folder and captures.
+- All pull requests must be reviewed by gpt 6.1 sol xhigh in a loop until ready to merge. Don't be afraid to push back and avoid scope creep.
 
 ## Reverse engineering
 
