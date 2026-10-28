@@ -1,5 +1,7 @@
-//! Receiver for the design family's sole variant writer patches.
+//! Receiver for the design family's sole variant writer patches: division
+//! panel operands and ShipModels' held variants.
 use crate::design_changes::{self, Availability, Forwarder, Phase, Writer};
+use crate::ship_model_changes as ships;
 use collector_observers::division_panel_changes as changes;
 static RECEIVER: Forwarder = Forwarder {
     call: receive,
@@ -10,9 +12,33 @@ fn enabled(availability: Availability) {
         availability.stamp(),
         design_changes::availability_is_current,
     );
+    ships::variant_availability(
+        availability.stamp(),
+        design_changes::availability_is_current,
+    );
 }
 unsafe fn receive(writer: Writer, receiver: usize, phase: Phase) {
+    let every = !matches!(
+        writer,
+        Writer::RebuildStats
+            | Writer::RefreshDerivedState
+            | Writer::MoveAssign
+            | Writer::Update
+            | Writer::Publish
+            | Writer::Destroy
+            | Writer::Edit
+    );
+    match (every, phase) {
+        (true, Phase::Before) => ships::variants_before(),
+        (true, Phase::After) => ships::variants_after(false),
+        (true, Phase::Unwound) => ships::variants_after(true),
+        (false, Phase::Before) => ships::variant_before(receiver),
+        (false, Phase::After) => ships::variant_after(receiver, false),
+        (false, Phase::Unwound) => ships::variant_after(receiver, true),
+    }
     match writer {
+        // Division operands keep their earlier writer set.
+        Writer::Edit | Writer::Roster => return,
         Writer::SourceInvalidation
         | Writer::IdeaInvalidation
         | Writer::ProviderInvalidation
@@ -83,6 +109,15 @@ mod tests {
             }
             assert_ne!(changes::variant_sequence(0x200), Some(old));
             assert_eq!(changes::sequence(0x100), Some(pool));
+        }
+        // Edits and bulk upgrades are forwarded for ShipModels only.
+        for writer in [Writer::Edit, Writer::Roster] {
+            let old = changes::variant_sequence(0x200).unwrap();
+            unsafe {
+                receive(writer, 0x200, Phase::Before);
+                receive(writer, 0x200, Phase::After);
+            }
+            assert_eq!(changes::variant_sequence(0x200), Some(old));
         }
         let mut retired = Vec::new();
         changes::take_lifetimes(|pointer| retired.push(pointer)).unwrap();

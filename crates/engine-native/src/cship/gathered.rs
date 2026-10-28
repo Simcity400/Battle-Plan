@@ -146,15 +146,17 @@ const SPRITE_BYTES: usize = super::MODEL_TEXT_CAPACITY + 1;
 /// it.
 const MEDAL_MODIFIERS: usize = 0x1b0;
 
-/// Task-force fields: vtable, handle, roster owner, location, fleet and the mine exposure its
-/// modifier accumulator (`TASK_MODIFIERS`) is built from.
-const TASK: [(usize, usize); 6] = [
+/// Task-force fields: vtable, handle, roster owner, location, fleet, the mine exposure its
+/// modifier accumulator (`TASK_MODIFIERS`) is built from, and the attached-headquarters array
+/// header, which the pre-hourly update clears and refills every hour.
+const TASK: [(usize, usize); 7] = [
     (0, 8),
     (cunit::HANDLE, 8),
     (cunit::ROSTER_OWNER, 4),
     (cunit::LOCATION, 8),
     (ctask_force::FLEET, 8),
     (MINE_EXPOSURE, 8),
+    (ctask_force::ATTACHED_HEADQUARTERS, 16),
 ];
 /// Mine-exposure updating rebuilds `TASK_MODIFIERS` every hour from this value and content alone.
 const MINE_EXPOSURE: usize = 0x650;
@@ -472,6 +474,11 @@ impl HeldVariant {
     pub fn same(&self, other: &Self) -> bool {
         self.0.same(&other.0, &VARIANT) && same_naval_power(&self.0, &self.1, &other.1)
     }
+
+    /// Every field the readers read was gathered, its power suffix included.
+    pub fn complete(&self) -> bool {
+        variant_complete(&self.0) && (self.1.pointer == 0 || self.1.completed == NAVAL_POWER.len())
+    }
 }
 
 impl HeldShip {
@@ -592,7 +599,7 @@ fn pool_complete(ship: &Object<16>, heap: &Heap) -> bool {
 pub struct ShipFields {
     base: usize,
     ship: Object<16>,
-    task: Object<6>,
+    task: Object<7>,
     location: Object<2>,
     globals: Object<1>,
     heap: Heap,
@@ -654,6 +661,34 @@ impl ShipFields {
         self.visit_shared(memory);
         self.heap = held.heap;
         self.visit_variants(memory);
+    }
+
+    /// [`Self::visit_held`] serving `held`'s variants too, which the caller
+    /// certified unchanged since they were gathered: nothing of the ship or
+    /// its variants is read.
+    pub fn visit_held_certified(&mut self, memory: &impl Memory, held: &HeldShip) {
+        if !held.revalidation_complete() {
+            self.visit(memory, held.ship.pointer);
+            return;
+        }
+        self.ship = held.ship;
+        self.visit_shared(memory);
+        self.heap = held.heap;
+        self.current = [None; POOL_ENTRIES];
+        self.current_power = None;
+        for (index, (variant, power)) in held.variants.iter().zip(&held.naval_variants).enumerate()
+        {
+            if variant.pointer == 0 {
+                continue;
+            }
+            let slot = self.slot(variant.pointer).unwrap_or_else(|slot| slot);
+            self.variants[slot] = *variant;
+            self.naval_variants[slot] = *power;
+            self.current[index] = Some(slot);
+            if power.pointer != 0 {
+                self.current_power = Some(index);
+            }
+        }
     }
 
     /// The visited ship's task force: its pointer, handle, roster owner, mine
@@ -753,26 +788,36 @@ impl ShipFields {
             .map(|slot| slot.map_or(Object::NONE, |slot| self.variants[slot]))
     }
 
-    /// The task force `held`'s ship named, with its location and the game
-    /// singleton gathered as [`Self::visit_held`] gathers them, without
-    /// serving the ship: for reading its terms ahead of its ships.
+    /// The task force `held`'s ship named and the game singleton, without
+    /// serving the ship or gathering the location ([`Self::visit_location`]):
+    /// for reading its terms ahead of its ships.
     pub fn task_force_of(
         &mut self,
         memory: &impl Memory,
         held: &HeldShip,
     ) -> Option<TaskForceFields> {
-        self.visit_task(memory, held.task_force());
+        self.visit_task_only(memory, held.task_force());
         self.task_force()
     }
 
-    /// Gather the task force named by a certified ship's compact record.
+    /// Gather the task force named by a certified ship's compact record, as
+    /// [`Self::task_force_of`] does.
     pub fn task_force_at(
         &mut self,
         memory: &impl Memory,
         pointer: usize,
     ) -> Option<TaskForceFields> {
-        self.visit_task(memory, pointer);
+        self.visit_task_only(memory, pointer);
         self.task_force()
+    }
+
+    /// Gather the visited task force's location, unless it is the one
+    /// gathered last; a location whose terms are held needs none.
+    pub fn visit_location(&mut self, memory: &impl Memory) {
+        let location = self.task.word(TASK_LOCATION);
+        if location != self.location.pointer {
+            self.location = Object::gather(memory, location, LOCATION);
+        }
     }
 
     fn visit_shared(&mut self, memory: &impl Memory) {
@@ -780,15 +825,16 @@ impl ShipFields {
     }
 
     fn visit_task(&mut self, memory: &impl Memory, task: usize) {
+        self.visit_task_only(memory, task);
+        self.visit_location(memory);
+    }
+
+    fn visit_task_only(&mut self, memory: &impl Memory, task: usize) {
         if self.globals.pointer == 0 {
             self.globals = Object::gather(memory, self.base, GLOBALS);
         }
         if task != self.task.pointer {
             self.task = Object::gather(memory, task, TASK);
-        }
-        let location = self.task.word(TASK_LOCATION);
-        if location != self.location.pointer {
-            self.location = Object::gather(memory, location, LOCATION);
         }
     }
 
@@ -842,21 +888,32 @@ impl ShipFields {
     /// The slot holding `variant`, gathering it into the next slot no
     /// variant of the visited ship holds when it is not kept.
     fn variant(&mut self, memory: &impl Memory, variant: usize) -> usize {
+        match self.slot(variant) {
+            Ok(slot) => slot,
+            Err(slot) => {
+                self.variants[slot] = Object::gather(memory, variant, VARIANT);
+                self.naval_variants[slot] = Object::NONE;
+                slot
+            }
+        }
+    }
+
+    /// The slot keeping `variant`, else the next slot no variant of the
+    /// visited ship holds, for the caller to fill.
+    fn slot(&mut self, variant: usize) -> Result<usize, usize> {
         if let Some(slot) = self
             .variants
             .iter()
             .position(|kept| kept.pointer == variant)
         {
-            return slot;
+            return Ok(slot);
         }
         while self.current.contains(&Some(self.next_variant)) {
             self.next_variant = (self.next_variant + 1) % VARIANT_SLOTS;
         }
         let slot = self.next_variant;
         self.next_variant = (slot + 1) % VARIANT_SLOTS;
-        self.variants[slot] = Object::gather(memory, variant, VARIANT);
-        self.naval_variants[slot] = Object::NONE;
-        slot
+        Err(slot)
     }
 
     fn naval_variant(&mut self, memory: &impl Memory, slot: usize) {

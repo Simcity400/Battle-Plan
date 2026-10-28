@@ -158,17 +158,16 @@ fn forwarded_writers_match_the_owned_descriptors_and_variant_receivers() {
         .iter()
         .enumerate()
         .filter_map(|(site, descriptor)| {
-            writer(site).map(|writer| {
-                assert!(matches!(
-                    descriptor.receiver,
-                    Receiver::Variant
-                        | Receiver::Removed
-                        | Receiver::Published
-                        | Receiver::CreateCommand
-                        | Receiver::Command
-                ));
-                (writer, descriptor.name)
-            })
+            let writer = writer(site);
+            assert_eq!(
+                writer.is_none(),
+                matches!(descriptor.receiver, Receiver::CreateCommand),
+                "{}",
+                descriptor.name
+            );
+            writer
+                .filter(|writer| !matches!(writer, Writer::Edit | Writer::Roster))
+                .map(|writer| (writer, descriptor.name))
         })
         .collect();
     assert_eq!(
@@ -182,6 +181,20 @@ fn forwarded_writers_match_the_owned_descriptors_and_variant_receivers() {
             (Writer::Update, "Update"),
         ]
     );
+    for (site, descriptor) in MUTATIONS.iter().enumerate() {
+        match descriptor.receiver {
+            Receiver::Roster => assert_eq!(writer(site), Some(Writer::Roster)),
+            Receiver::Variant | Receiver::Command
+                if !matches!(
+                    descriptor.name,
+                    "RebuildStats" | "RefreshDerivedState" | "MoveAssign" | "Update"
+                ) =>
+            {
+                assert_eq!(writer(site), Some(Writer::Edit), "{}", descriptor.name)
+            }
+            _ => {}
+        }
+    }
 }
 
 #[test]

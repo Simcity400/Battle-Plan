@@ -741,6 +741,8 @@ fn organisation_weather_packet_rejects_changed_location_and_definition_sources()
             f.word(PROVINCE + 0xc8, OTHER as u64);
             f.word(OTHER + 0x30, TERRAIN_SOURCE as u64);
             f.dword(OTHER + 0x58, 1);
+            // A province keeps its definition; the memo holds it as read.
+            memo.location = None;
         } else {
             f.word(TASK + cunit::LOCATION, OTHER as u64);
             f.word(OTHER, (IMAGE + crate::cprovince::VTABLE_RVA) as u64);
@@ -1672,4 +1674,41 @@ fn organisation_memo_shares_an_influence_across_task_forces() {
             .any(|&(address, _)| address == 0x17000 || address == 0x18000),
         "the commander was read again"
     );
+}
+
+/// A later capture served the held location's definition and terrain and the
+/// held fleet's leader terms reads neither the province, its terrain graph,
+/// the fleet, its leader binding nor the leader's tree.
+#[test]
+fn held_location_and_fleet_terms_read_no_province_fleet_or_leader() {
+    use super::gathered::FaultAt;
+    let f = weather_fixture();
+    let mut memo = OrganisationMemo::default();
+    let terms = current_task_terms(&f, &mut memo);
+    let (definition, terrain) = memo.location_source(PROVINCE).unwrap();
+    let (leader, fleet_terms) = memo.fleet_source(FLEET).unwrap();
+    assert_eq!(leader, Some(LEADER));
+    let trace = FaultAt::new(&f, None);
+    let mut next = OrganisationMemo::default();
+    next.hold_location(PROVINCE, definition, terrain);
+    next.hold_fleet(FLEET, leader, fleet_terms);
+    assert_eq!(current_task_terms(&trace, &mut next), terms);
+    for (name, source) in [
+        ("province", PROVINCE),
+        ("province definition", PROVINCE + 0xc8),
+        ("terrain graph", PROVINCE_DEFINITION + 0x30),
+        ("fleet", FLEET),
+        ("fleet leader binding", FLEET + 0xb0),
+        ("leader", LEADER),
+        ("leader tree", LEADER + 0x418),
+    ] {
+        assert!(
+            !trace
+                .reads
+                .borrow()
+                .iter()
+                .any(|&(address, len)| (address..address + len.max(1)).contains(&source)),
+            "{name} read again"
+        );
+    }
 }

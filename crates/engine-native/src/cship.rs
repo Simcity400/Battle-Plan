@@ -909,6 +909,8 @@ pub struct OrganisationMemo {
     influences: Recent<u64, Option<[i64; 4]>, 16>,
     /// Province definition -> its terrain.
     terrain: Recent<usize, usize, RECENT>,
+    /// The latest location and its province definition, fixed for a province.
+    location: Option<(usize, usize)>,
     /// Terrain lookup's ocean fallback, content resolved once per capture.
     ocean: Option<usize>,
     /// A task force's ships alternate classes and subunits, so these keep
@@ -972,6 +974,32 @@ impl OrganisationMemo {
     /// The latest location terms this capture observed, if complete.
     pub fn weather(&self) -> Option<OrganisationWeather> {
         self.weather
+    }
+
+    /// Serve `location`'s province definition and terrain from an earlier
+    /// hour: neither changes for a province.
+    pub fn hold_location(&mut self, location: usize, definition: usize, terrain: usize) {
+        self.location = Some((location, definition));
+        self.terrain.insert(definition, terrain);
+    }
+
+    /// `location`'s province definition and terrain this capture observed.
+    pub fn location_source(&self, location: usize) -> Option<(usize, usize)> {
+        let (_, definition) = self.location.filter(|&(held, _)| held == location)?;
+        Some((definition, self.terrain.get(&definition)?))
+    }
+
+    /// Serve `fleet`'s leader and the leader's tree terms from an earlier
+    /// hour that the leader binding and tree certificates keep.
+    pub fn hold_fleet(&mut self, fleet: usize, leader: Option<usize>, terms: [i64; 4]) {
+        self.fleet = Some((fleet, leader, terms));
+    }
+
+    /// `fleet`'s leader and its tree terms this capture observed.
+    pub fn fleet_source(&self, fleet: usize) -> Option<(Option<usize>, [i64; 4])> {
+        self.fleet
+            .filter(|&(held, _, _)| held == fleet)
+            .map(|(_, leader, terms)| (leader, terms))
     }
 
     /// The task-force terms ship modifier calculation combined into this
@@ -1437,8 +1465,15 @@ pub fn read_task_terms(
     }
     let location = ptr(task_at, cunit::LOCATION)?;
     if location != 0 {
-        auth(location, crate::cprovince::VTABLE_RVA)?;
-        let definition = ptr(location, 0xc8)?;
+        let definition = match memo.location {
+            Some((held, definition)) if held == location => definition,
+            _ => {
+                auth(location, crate::cprovince::VTABLE_RVA)?;
+                let definition = ptr(location, 0xc8)?;
+                memo.location = Some((location, definition));
+                definition
+            }
+        };
         if memo.terrain.get(&definition).is_none() {
             let terrain = sources::terrain_kept(memory, base, definition, &mut memo.ocean)?;
             memo.terrain.insert(definition, terrain);
@@ -1668,8 +1703,15 @@ fn read_organisation_observation(
     let mut weather_factor = None;
     let mut terrain_values = [0; 4];
     let location_terms = if location != 0 {
-        auth(location, crate::cprovince::VTABLE_RVA)?;
-        let definition = ptr(location, 0xc8)?;
+        let definition = match memo.location {
+            Some((held, definition)) if held == location => definition,
+            _ => {
+                auth(location, crate::cprovince::VTABLE_RVA)?;
+                let definition = ptr(location, 0xc8)?;
+                memo.location = Some((location, definition));
+                definition
+            }
+        };
         // Ship modifier calculation selects terrain from the province
         // definition; terrain-class adjustment adds only the ship's class. Both
         // sources are shared until the stopped callback returns, including the

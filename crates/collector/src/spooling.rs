@@ -469,7 +469,7 @@ fn intel_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a IntelShadow>) -
 }
 
 /// Tables whose packs witness their captures ([`crate::projection::Witness`]).
-const REPUBLISHING: [(&str, TableId); 8] = [
+const REPUBLISHING: [(&str, TableId); 9] = [
     ("division_templates", TableId::DivisionTemplates),
     ("division_templates", TableId::DivisionTemplateIcons),
     ("division_templates", TableId::CountryTemplateState),
@@ -478,6 +478,7 @@ const REPUBLISHING: [(&str, TableId); 8] = [
     ("hired_advisors", TableId::CountryCharacters),
     ("hired_advisors", TableId::AdvisorTokens),
     ("hired_advisors", TableId::CountryRetiredCharacters),
+    ("ship_models", TableId::ShipModels),
 ];
 
 fn quiet_republish_status<'a>(
@@ -503,7 +504,7 @@ fn quiet_republish_status<'a>(
         .zip(counts)
         .chain(std::iter::once((("intel", TableId::ScriptFlags), flags)));
     status!({
-        "scope": "cumulative hours across retained campaigns, including later rejected or failed writes: republished compared equal without a projection because this hour's capture read nothing of the table and its witness (writer tokens or held-rows generation) equals the previous hour's on this branch, whose frame committed the encoder's baseline (ScriptFlags: published the previous hour's shared rows uncompared); converted ran the table's projection or comparison",
+        "scope": "cumulative hours across retained campaigns, including later rejected or failed writes: republished compared equal without a projection because this hour's capture published the previous hour's rows unchanged and its witness (writer tokens or held-rows generation) equals the previous hour's on this branch, whose frame committed the encoder's baseline (ScriptFlags: published the previous hour's shared rows uncompared); converted ran the table's projection or comparison",
         "tables": sequence(tables.map(|((pack, table), [republished, converted])| status!({
             "pack": pack,
             "table": DebugValue(table),

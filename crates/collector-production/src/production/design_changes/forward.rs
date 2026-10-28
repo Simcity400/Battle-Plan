@@ -18,6 +18,11 @@ pub enum Writer {
     ProviderInvalidation,
     CountryInvalidation,
     ContentInvalidation,
+    /// Every other writer naming one variant: organisation, obsolescence,
+    /// highlight, upgrade, niche and command edits.
+    Edit,
+    /// A bulk upgrade over a pointer array; its receiver is zero.
+    Roster,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -293,14 +298,20 @@ pub(super) fn invalidate() {
     FORWARDING.invalidate();
 }
 fn writer(site: usize) -> Option<Writer> {
-    match engine_native::cequipment_variant::mutations::MUTATIONS[site].name {
+    use engine_native::cequipment_variant::mutations::{MUTATIONS, Receiver};
+    match MUTATIONS[site].name {
         "RebuildStats" => Some(Writer::RebuildStats),
         "RefreshDerivedState" => Some(Writer::RefreshDerivedState),
         "MoveAssign" => Some(Writer::MoveAssign),
         "Update" => Some(Writer::Update),
         "Publish" => Some(Writer::Publish),
         "Destroy" => Some(Writer::Destroy),
-        _ => None,
+        _ => match MUTATIONS[site].receiver {
+            Receiver::Roster => Some(Writer::Roster),
+            // Creation publishes its new variant through Publish.
+            Receiver::CreateCommand => None,
+            _ => Some(Writer::Edit),
+        },
     }
 }
 pub(super) unsafe fn begin(site: usize, variant: usize) -> Option<Invocation<'static>> {

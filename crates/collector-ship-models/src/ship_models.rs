@@ -12,26 +12,35 @@
 //!
 //! Each capture range also holds its ships' own objects ([`cship::HeldShip`])
 //! and experience and medal-store modifier arrays ([`ShipStore`]) with their
-//! certificates ([`crate::ship_model_changes`]). A later hour serves a ship
-//! whose handle, task force and certificate are those of its held read from
-//! them, reading only its task force, location, country, weather, variants
-//! and the other shared sources; the readers and their arithmetic are the
-//! same, so the row is the one a fresh read makes.
+//! certificates ([`crate::ship_model_changes`]), in one store per range that
+//! the family's captures share across the frame pool ([`SHARED`]). A later
+//! hour serves a ship whose handle, task force and certificate are those of
+//! its held read from them, reading only its task force's gather and the
+//! shared sources no certificate holds; the readers and their arithmetic are
+//! the same, so the row is the one a fresh read makes.
 //!
 //! A task force's terms (country, pride ship, doctrine, terrain and location
 //! weather, fleet leader with its tree certificate, HQ support) are read once
-//! for its first ship in the range ([`cship::OrganisationMemo::task_terms`]);
-//! a later ship of it whose own inputs are certified, whose held row was made
-//! with equal terms, whose variants' bytes are unchanged and which has no
-//! carrier base takes its held row without running the readers.
-//! Compact records follow census order, with a pointer index for reordered
-//! entries; a carried row touches no cold ship object or model text. Shared
-//! terms get one identity per task force, and distinct held variant observations
-//! are compared once per capture. Changed terms combine the certified own
-//! organisation packet with current shared terms through the reader arithmetic.
+//! for its first ship in the range ([`cship::OrganisationMemo::task_terms`]),
+//! each held one served while its certificate holds; a later ship of it whose
+//! own inputs are certified, whose held row was made with equal terms, whose
+//! held variants no design writer touched and which has no carrier base
+//! takes its held row without running the readers. Compact records follow
+//! census order, with a pointer index for reordered entries; a carried row
+//! touches no cold ship object or model text. Shared terms get one identity
+//! per task force, and a held variant is gathered again only after a design
+//! writer or while the design domain is unobserved. Changed terms combine the
+//! certified own organisation packet with current shared terms through the
+//! reader arithmetic.
+//!
+//! A range whose every ship took its held row whole, at the roster position
+//! that row was published with, one ship per held row, published exactly the
+//! previous capture's rows: it keeps their generation, and a family whose
+//! ranges all did witnesses them ([`Witness`]), so the spool republishes the
+//! table without converting it.
 use crate::{
     clock::qpc,
-    projection::{Projection, project_table},
+    projection::{Projection, Witness, held_input, project_table},
     ship_model_changes::{self, Certificate, Changes, Counts, NO_SLOTS, Slots},
     table_capture::{CaptureRows, grow_capacity},
 };
@@ -473,10 +482,9 @@ struct Held {
     row: Option<(cship::ModelRow, Terms)>,
     organisation: Option<cship::OrganisationOperands>,
     terms_identity: u64,
-    /// Where this capture's rows buffer holds that row: it wrote the row
-    /// there the hour it held this read, and the buffer keeps its contents
-    /// between hours (`usize::MAX`: nowhere).
-    at: usize,
+    /// Which capture wrote that row ([`Captured::rows_serial`]) and where:
+    /// its rows buffer keeps its contents until that buffer's next capture.
+    at: (u64, usize),
 }
 
 /// A task force's terms in one capture and its fleet leader's tree
@@ -516,11 +524,16 @@ struct Hot {
     terms_identity: u64,
     modifier_guard: u16,
     criticals: bool,
-    at: usize,
+    /// The roster position its latest published row had.
+    roster_ordinal: u32,
+    at: (u64, usize),
 }
 
 struct Variant {
     fields: cship::HeldVariant,
+    /// The design domain's certificate, taken by a capture no design writer
+    /// interrupted ([`ShipStore::certify_variants`]).
+    certificate: Option<(u64, u64)>,
     unchanged: Option<bool>,
     next: Option<usize>,
 }
@@ -575,6 +588,9 @@ struct ShipStore {
     next_variant_index: Vec<(usize, usize)>,
     quiet: Option<(u64, u64)>,
     generation: u64,
+    /// Names the rows the latest capture published, while every one is held
+    /// ([`crate::projection::generation`]).
+    rows: Option<u64>,
 }
 
 impl ShipStore {
@@ -623,6 +639,7 @@ impl ShipStore {
         let index = self.next_variants.len();
         self.next_variants.push(Variant {
             fields,
+            certificate: None,
             unchanged: None,
             next: None,
         });
@@ -630,24 +647,76 @@ impl ShipStore {
         Some(index)
     }
 
-    /// One comparison per distinct held observation this hour; ships share
-    /// indices only when both its pointer and every gathered byte agree.
+    /// Whether no design writer touched held variant `old` since its
+    /// certificate was taken; nothing is read.
+    fn certified(&mut self, changes: &dyn Changes, old: usize, counts: &mut Counts) -> bool {
+        let variant = &self.variants[old];
+        if variant.unchanged == Some(true) {
+            return true;
+        }
+        let certified = variant.unchanged.is_none()
+            && variant.certificate.is_some()
+            && changes.variant_sequence(variant.fields.pointer()) == variant.certificate;
+        if certified {
+            self.variants[old].unchanged = Some(true);
+            counts.variants_carried += 1;
+        }
+        certified
+    }
+
+    /// Every held variant of `hot` is certified unchanged.
+    fn variants_certified(
+        &mut self,
+        changes: &dyn Changes,
+        hot: &Hot,
+        counts: &mut Counts,
+    ) -> bool {
+        hot.variants
+            .iter()
+            .all(|&old| old == usize::MAX || self.certified(changes, old, counts))
+    }
+
+    /// The hour's held variants take their design certificates, valid only
+    /// when no design writer ran since `quiet`, taken before the first read.
+    fn certify_variants(&mut self, changes: &dyn Changes, quiet: Option<(u64, u64)>) {
+        for variant in &mut self.next_variants {
+            variant.certificate = variant
+                .fields
+                .complete()
+                .then(|| changes.variant_sequence(variant.fields.pointer()))
+                .flatten();
+        }
+        if quiet.is_none() || changes.variant_quiet() != quiet {
+            for variant in &mut self.next_variants {
+                variant.certificate = None;
+            }
+        }
+    }
+
+    /// One comparison per distinct held observation this hour, reading only
+    /// a variant a design writer touched; ships share indices only when both
+    /// its pointer and every gathered byte agree.
     fn variants_unchanged(
         &mut self,
         memory: &impl Memory,
         fields: &mut cship::ShipFields,
         hot: &mut Hot,
+        changes: &dyn Changes,
+        counts: &mut Counts,
     ) -> bool {
         for index in &mut hot.variants {
             if *index == usize::MAX {
                 continue;
             }
             let old = *index;
-            let unchanged = match self.variants[old].unchanged {
+            let known = self.variants[old].unchanged;
+            let unchanged = match known {
                 Some(unchanged) => unchanged,
+                None if self.certified(changes, old, counts) => true,
                 None => {
                     #[cfg(any(test, feature = "test-support"))]
                     carry_cost(|cost| cost.variant_compares += 1);
+                    counts.variants_read += 1;
                     let unchanged =
                         fields.held_variant_unchanged(memory, &self.variants[old].fields);
                     self.variants[old].unchanged = Some(unchanged);
@@ -703,6 +772,7 @@ impl ShipStore {
             },
             modifier_guard: held.organisation.map_or(0, |own| own.modifier_guard()),
             criticals: held.organisation.is_some_and(|own| own.has_criticals()),
+            roster_ordinal: held.row.as_ref().map_or(0, |(row, _)| row.roster_ordinal),
             at: held.at,
         })
     }
@@ -832,6 +902,7 @@ impl ShipStore {
         self.next_variant_index.clear();
         self.quiet = None;
         self.generation = 0;
+        self.rows = None;
     }
 
     fn allocated_bytes(&self) -> usize {
@@ -869,8 +940,9 @@ impl ShipStore {
 /// One task force's held terms: its handle and roster owner, the country that owner resolved to,
 /// its doctrine contribution with the certificate (doctrine tree writer, country tree) it was read
 /// under, its mine exposure with the immutable modifier array the hourly
-/// task-force modifier rebuild built from it, and its location's weather terms with their
-/// certificate (region writer, country tree) and the province's applied night factor.
+/// task-force modifier rebuild built from it, its location's weather terms with their
+/// certificate (region writer, country tree) and the province's applied night factor, its
+/// location's province definition and terrain, and its fleet's leader terms.
 #[derive(Clone)]
 struct HeldTask {
     pointer: usize,
@@ -884,7 +956,37 @@ struct HeldTask {
     mine_exposure: u64,
     modifiers: Option<Arc<Vec<[u8; 16]>>>,
     weather: Option<HeldWeather>,
+    /// Location, province definition and terrain, fixed for a province
+    /// within the observation epoch they were read in.
+    location: Option<(u64, usize, usize, usize)>,
+    fleet: Option<HeldFleet>,
     terms: Option<(Terms, u64)>,
+}
+
+/// A held fleet term: the fleet, its leader and the leader's tree terms,
+/// with the fleet's leader-binding and the leader's tree certificates.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct HeldFleet {
+    fleet: usize,
+    leader: Option<usize>,
+    terms: [i64; 4],
+    certificate: FleetCertificate,
+}
+
+type FleetCertificate = ((u64, u64), Option<(u64, u64)>);
+
+/// A fleet's certificate: its leader binding's sequence, taken before the
+/// read, and its leader's tree certificate.
+fn fleet_certificate(
+    changes: &dyn Changes,
+    sequence: Option<(u64, u64)>,
+    leader: Option<usize>,
+) -> Option<FleetCertificate> {
+    let tree = match leader {
+        Some(leader) => Some(changes.tree_sequence(leader)?),
+        None => None,
+    };
+    Some((sequence?, tree))
 }
 
 /// A held doctrine contribution: the two certificates it was read under and
@@ -899,6 +1001,8 @@ type HeldWeather = (cship::OrganisationWeather, [(u64, u64); 2], u64);
 struct TaskState {
     fields: cship::TaskForceFields,
     sequence: Option<(u64, u64)>,
+    /// The fleet's leader-binding sequence, taken before its first read.
+    fleet_sequence: Option<(u64, u64)>,
     held: Option<HeldTask>,
     /// The held weather terms' province night factor, as read this hour.
     night_factor: Option<u64>,
@@ -937,8 +1041,6 @@ pub struct Captured {
     worker_growth: bool,
     defer_owned: bool,
     pending_owned: bool,
-    pending_hold: bool,
-    pending_quiet: Option<(u64, u64)>,
     copied: Cell<(usize, usize)>,
     modifiers: RefCell<SnapshotArena>,
     required_modifiers: SnapshotCapacity,
@@ -968,10 +1070,60 @@ pub struct Captured {
     /// Part captures for the further ranges; empty in a part itself.
     extra: Vec<Captured>,
     /// This range's held reads; kept across hours, unlike everything else.
+    /// Under the hooks' domain they live in [`SHARED`] between captures.
     store: ShipStore,
     air_capacity: crate::air_capacity::Store,
     naval_power: cship::NavalPowerCache,
+    /// The census range this capture details: 0 for the family's, else its
+    /// part's ([`SHARED`] slot).
+    range: usize,
+    /// The latest capture took and returned the shared held reads.
+    shared: bool,
+    /// The capture whose rows this buffer holds, and the one before it.
+    rows_serial: u64,
+    previous_serial: u64,
+    /// Rows this capture carried whole at the roster position their held
+    /// row was published with.
+    unchanged_rows: usize,
+    /// The held-rows generation this range's complete capture published.
+    witness: Option<u64>,
 }
+
+/// One census range's held reads between captures.
+#[derive(Default)]
+struct Shared {
+    store: ShipStore,
+    air_capacity: crate::air_capacity::Store,
+}
+
+type SharedSlots = [std::sync::Mutex<Option<Shared>>; MAX_PARTS];
+
+/// The latest complete hour's held reads by census range, for the family's
+/// capture in whichever pooled frame details the next hour.
+#[cfg(not(test))]
+static SHARED: SharedSlots = [const { std::sync::Mutex::new(None) }; MAX_PARTS];
+#[cfg(test)]
+thread_local! {
+    // Each test thread is its own process-wide family.
+    static SHARED: SharedSlots = const { [const { std::sync::Mutex::new(None) }; MAX_PARTS] };
+}
+
+fn shared_slot<R>(range: usize, visit: impl FnOnce(&mut Option<Shared>) -> R) -> R {
+    let with = |slots: &SharedSlots| {
+        visit(
+            &mut slots[range]
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    };
+    #[cfg(not(test))]
+    return with(&SHARED);
+    #[cfg(test)]
+    SHARED.with(with)
+}
+
+/// Capture serials, unique across every buffer.
+static SERIALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Captured {
     /// Allocation-free placeholder while acquisition owns the original buffers.
@@ -991,7 +1143,12 @@ impl Captured {
             },
         };
         Self {
-            extra: (1..MAX_PARTS).map(|_| Self::part(&share)).collect(),
+            extra: (1..MAX_PARTS)
+                .map(|range| Self {
+                    range,
+                    ..Self::part(&share)
+                })
+                .collect(),
             ..Self::part(capacity)
         }
     }
@@ -1007,8 +1164,6 @@ impl Captured {
             worker_growth: false,
             defer_owned: false,
             pending_owned: false,
-            pending_hold: false,
-            pending_quiet: None,
             optional_refusals: [0; OPTIONAL_REFUSAL_REASONS.len()],
             rows: CaptureRows::new(capacity.rows),
             row_heap_bytes: OnceLock::new(),
@@ -1031,6 +1186,12 @@ impl Captured {
             extra: Vec::new(),
             store: ShipStore::default(),
             air_capacity: crate::air_capacity::Store::default(),
+            range: 0,
+            shared: false,
+            rows_serial: 0,
+            previous_serial: 0,
+            unchanged_rows: 0,
+            witness: None,
         }
     }
     pub fn reset(&mut self) {
@@ -1039,6 +1200,7 @@ impl Captured {
             self.release_sources();
             self.pending_owned = false;
         }
+        self.witness = None;
         self.defer_owned = false;
         for part in &mut self.extra {
             part.reset();
@@ -1120,6 +1282,7 @@ impl Captured {
             self.release_sources();
             self.pending_owned = false;
         }
+        self.witness = None;
         self.defer_owned = false;
         self.worker_growth = false;
         self.terminal_failure = None;
@@ -1278,10 +1441,9 @@ impl Captured {
     }
 
     fn forget_stores(&mut self) {
-        self.pending_hold = false;
-        self.pending_quiet = None;
         self.store.forget();
         self.air_capacity.clear();
+        shared_slot(self.range, |slot| *slot = None);
         for part in &mut self.extra {
             part.forget_stores();
         }
@@ -1289,6 +1451,7 @@ impl Captured {
 
     fn begin_details(&mut self) {
         self.len = 0;
+        self.unchanged_rows = 0;
         self.failure = None;
         // Clear the fixed-fixture accounting for every part.
         self.copied.set((0, 0));
@@ -1307,9 +1470,12 @@ impl Captured {
     }
     /// Before the first ship of a task force in the range: finish the
     /// previous task force, then serve this one's held terms that still hold:
-    /// its modifier array while its mine exposure is the held one, and its
+    /// its modifier array while its mine exposure is the held one, its
     /// doctrine contribution while its doctrine tree writer and its country's
-    /// tree certificate held still.
+    /// tree certificate held still, its location's province definition and
+    /// terrain while it is at the held location, and its fleet's leader terms
+    /// while the fleet and its leader-binding and leader tree certificates
+    /// are the held ones.
     fn begin_task(
         &mut self,
         memory: &impl Memory,
@@ -1321,8 +1487,12 @@ impl Captured {
             self.store.task(task.pointer).cloned().filter(|held| {
                 held.handle == task.handle && held.roster_owner == task.roster_owner
             });
-        // The doctrine tree's certificate precedes the read it certifies.
+        // The doctrine tree's and leader binding's certificates precede the
+        // reads they certify.
         let sequence = carrying.changes.sequence(task.pointer);
+        let fleet_sequence = (task.fleet != 0)
+            .then(|| carrying.changes.sequence(task.fleet))
+            .flatten();
         // The applied night factor of the held location, which the reader's
         // province terms follow.
         let night_factor = held
@@ -1361,10 +1531,27 @@ impl Captured {
                 self.doctrine.hold_weather(weather);
                 carrying.counts.task_terms_carried += 1;
             }
+            if let Some((epoch, location, definition, terrain)) = held.location
+                && location == task.location
+                && sequence.is_some_and(|(current, _)| current == epoch)
+            {
+                self.doctrine.hold_location(location, definition, terrain);
+                carrying.counts.task_terms_carried += 1;
+            }
+            if let Some(fleet) = held.fleet
+                && fleet.fleet == task.fleet
+                && fleet_certificate(carrying.changes, fleet_sequence, fleet.leader)
+                    == Some(fleet.certificate)
+            {
+                self.doctrine
+                    .hold_fleet(fleet.fleet, fleet.leader, fleet.terms);
+                carrying.counts.task_terms_carried += 1;
+            }
         }
         carrying.task = Some(TaskState {
             fields: task,
             sequence,
+            fleet_sequence,
             held,
             night_factor,
         });
@@ -1419,6 +1606,21 @@ impl Captured {
                 let certificate = weather_certificate(carrying.changes, &weather, country)?;
                 Some((weather, certificate, factor))
             });
+        let location = state
+            .sequence
+            .zip(self.doctrine.location_source(task.location))
+            .map(|((epoch, _), (definition, terrain))| (epoch, task.location, definition, terrain));
+        let fleet = self
+            .doctrine
+            .fleet_source(task.fleet)
+            .and_then(|(leader, terms)| {
+                Some(HeldFleet {
+                    fleet: task.fleet,
+                    leader,
+                    terms,
+                    certificate: fleet_certificate(carrying.changes, state.fleet_sequence, leader)?,
+                })
+            });
         let held = HeldTask {
             pointer: task.pointer,
             handle: task.handle,
@@ -1429,6 +1631,8 @@ impl Captured {
             mine_exposure: task.mine_exposure,
             modifiers: state.held.as_ref().and_then(|held| held.modifiers.clone()),
             weather,
+            location,
+            fleet,
             terms: carrying
                 .terms
                 .filter(|(pointer, _)| *pointer == task.pointer)
@@ -1465,6 +1669,9 @@ impl Captured {
         };
         if carrying.task.as_ref().map(|state| state.fields.pointer) != Some(task.pointer) {
             self.begin_task(memory, task, carrying);
+        }
+        if self.doctrine.location_source(task.location).is_none() {
+            fields.visit_location(memory);
         }
         let gathered = fields.memory(memory);
         let read = ModifierMemory {
@@ -1510,7 +1717,13 @@ impl Captured {
         else {
             return false;
         };
-        if !self.store.variants_unchanged(memory, fields, hot) {
+        if !self.store.variants_unchanged(
+            memory,
+            fields,
+            hot,
+            carrying.changes,
+            &mut carrying.counts,
+        ) {
             return false;
         }
         let same_terms = hot.terms_identity == carrying.terms_identity;
@@ -1584,7 +1797,7 @@ impl Captured {
             Some(organisation)
         };
         let len = self.len;
-        if hot.at == len
+        if hot.at == (self.previous_serial, len)
             && self
                 .rows
                 .rows
@@ -1606,12 +1819,14 @@ impl Captured {
             self.record(|_| Ok(row));
         }
         if self.len != len {
-            hot.at = len;
+            let unchanged = hot.roster_ordinal == source.roster_ordinal;
+            hot.at = (self.rows_serial, len);
+            hot.roster_ordinal = source.roster_ordinal;
             if let Some(organisation) = organisation {
                 let (row, kept) = held.row.as_mut().expect("a carried row");
                 row.maximum_organisation = organisation;
                 *kept = *terms;
-                held.at = len;
+                held.at = hot.at;
                 held.terms_identity = carrying.terms_identity;
                 held.organisation = self
                     .doctrine
@@ -1623,6 +1838,7 @@ impl Captured {
                 carrying.counts.models_carried += 1;
             } else {
                 carrying.counts.rows_carried += 1;
+                self.unchanged_rows += usize::from(unchanged);
             }
         }
         true
@@ -1764,6 +1980,9 @@ impl Captured {
             if carrying.task.as_ref().map(|state| state.fields.pointer) != Some(task.pointer) {
                 self.begin_task(memory, task, carrying);
             }
+            if self.doctrine.location_source(task.location).is_none() {
+                fields.visit_location(memory);
+            }
             let gathered = fields.memory(memory);
             let read = ModifierMemory {
                 inner: &gathered,
@@ -1786,6 +2005,15 @@ impl Captured {
         // read equal), it has no carrier base, the task force's terms this
         // hour (read for an earlier ship of it) are its row's and its
         // variants' gathered bytes held: only the variants are gathered.
+        // Held variants are gathered only when a design writer touched one
+        // or the design domain is unobserved.
+        let certified = carry
+            .as_ref()
+            .is_some_and(|held| held.fields.variants_complete())
+            && original_hot.is_some_and(|hot| {
+                self.store
+                    .variants_certified(carrying.changes, &hot, &mut carrying.counts)
+            });
         let variants_and_terms = !carrying.guard_fallback
             && carry.as_ref().is_some_and(|held| {
                 held.fields.carrier_air_base() == 0
@@ -1795,7 +2023,10 @@ impl Captured {
                                 task == held.fields.task_force() && current == *terms
                             })
                     })
-                    && fields.held_variants_unchanged(memory, &held.fields)
+                    && (certified || {
+                        carrying.counts.variants_read += 1;
+                        fields.held_variants_unchanged(memory, &held.fields)
+                    })
             });
         let revalidated_criticals = carrying.revalidated
             && carry
@@ -1859,7 +2090,11 @@ impl Captured {
                         .row
                         .as_ref()
                         .is_some_and(|(row, _)| model_carry_complete(row))
-                    && {
+                    && if certified {
+                        fields.visit_held_certified(memory, &held.fields);
+                        true
+                    } else {
+                        carrying.counts.variants_read += 1;
                         fields.visit_held(memory, &held.fields);
                         fields.same_variants(&held.fields)
                     }
@@ -1875,7 +2110,7 @@ impl Captured {
         });
         if row_carry && let Some(mut held) = carry.take() {
             let len = self.len;
-            if held.at == len
+            if held.at == (self.previous_serial, len)
                 && self
                     .rows
                     .rows
@@ -1894,7 +2129,13 @@ impl Captured {
             }
             if self.len != len {
                 carrying.counts.rows_carried += 1;
-                held.at = len;
+                self.unchanged_rows += usize::from(
+                    original_hot.is_some_and(|hot| hot.roster_ordinal == row.roster_ordinal),
+                );
+                if let Some((kept, _)) = held.row.as_mut() {
+                    kept.roster_ordinal = row.roster_ordinal;
+                }
+                held.at = (self.rows_serial, len);
                 if !self.store.keep_held(held) {
                     carrying.counts.uncertified += 1;
                 }
@@ -1957,7 +2198,7 @@ impl Captured {
             held.row = made;
             held.organisation = self.doctrine.organisation_operands(pointer);
             held.terms_identity = carrying.terms_identity;
-            held.at = self.len - 1;
+            held.at = (self.rows_serial, self.len - 1);
             if !self.store.keep_held(held) {
                 carrying.counts.uncertified += 1;
             }
@@ -1987,7 +2228,7 @@ impl Captured {
             slots[0] = slot;
             Some((certificate, slots))
         });
-        let at = self.len - 1;
+        let at = (self.rows_serial, self.len - 1);
         let kept = observation.is_some_and(|(certificate, slots)| {
             let [experience_at, medals_at] = read.accumulators();
             // A spare box keeps its arrays' storage.
@@ -2280,8 +2521,9 @@ impl Captured {
         self.capture_carrying(memory, context, &ship_model_changes::Observer)
     }
 
-    /// Native demand and certificate checks finish here; the frame retains
-    /// the next store and scratch until FIFO settlement.
+    /// Native demand and certificate checks finish here and a complete range
+    /// holds its reads at once; the frame retains its scratch until FIFO
+    /// settlement.
     pub fn capture_deferred(
         &mut self,
         memory: &impl Memory,
@@ -2313,16 +2555,11 @@ impl Captured {
     /// Only owned store indexes, memo storage and seed identity tokens remain.
     pub fn settle_owned(&mut self) {
         if self.pending_owned {
-            if self.pending_hold && self.store.hold() {
-                self.store.quiet = self.pending_quiet;
-            }
             self.release_sources();
             self.doctrine = cship::OrganisationMemo::default();
             if crate::allocation::failed() {
                 self.forget_stores();
             }
-            self.pending_hold = false;
-            self.pending_quiet = None;
             self.pending_owned = false;
         }
         for part in &mut self.extra {
@@ -2338,10 +2575,24 @@ impl Captured {
         changes: &dyn Changes,
     ) -> CaptureReport {
         self.context = Some(context);
+        self.previous_serial = self.rows_serial;
+        self.rows_serial = SERIALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        self.shared = ship_model_changes::CARRY && changes.shared_store();
+        if self.shared {
+            let held = shared_slot(self.range, Option::take).unwrap_or_default();
+            self.store = held.store;
+            self.air_capacity = held.air_capacity;
+        }
         let power_certificate = self.worker_growth.then(naval_power_certificate).flatten();
         if self.naval_power.prepare(power_certificate) {
             self.store.forget();
         }
+        self.witness = None;
+        // The previous capture's rows, each held: their generation and count.
+        let held_rows = self
+            .store
+            .rows
+            .map(|generation| (generation, self.store.hot.len()));
         self.air_capacity.begin(self.detail_len, self.worker_growth);
         // One range's gathered objects; nothing outlives this capture.
         let mut fields = cship::ShipFields::new(context.base);
@@ -2351,6 +2602,7 @@ impl Captured {
         // Taken before the first registration/read, so an unchanged token
         // proves every previously held receiver's certificate without probing.
         let quiet = changes.quiet();
+        let variant_quiet = changes.variant_quiet();
         let carrying = RefCell::new(Carrying {
             store: ship_model_changes::CARRY && self.terminal_failure.is_none(),
             changes,
@@ -2432,25 +2684,38 @@ impl Captured {
         let mut carrying = carrying.into_inner();
         let complete =
             self.terminal_failure.is_none() && matches!(self.rows.outcome, Outcome::Rows { .. });
+        let mut carriers = 0;
         if complete {
             self.air_capacity.finish();
-            if self.defer_owned {
-                self.pending_hold = true;
-                self.pending_quiet = quiet;
-            } else if self.store.hold() {
+            carriers = self.air_capacity.len();
+            self.store.certify_variants(changes, variant_quiet);
+            if self.store.hold() {
                 self.store.quiet = quiet;
+            }
+            // Every row carried whole at its published roster position, one
+            // per held row: the previous capture's rows again.
+            self.store.rows = (self.store.held.len() == self.len).then(|| match held_rows {
+                Some((generation, held)) if held == self.len && self.unchanged_rows == self.len => {
+                    generation
+                }
+                _ => crate::projection::generation(),
+            });
+            self.witness = self.store.rows;
+            if self.shared {
+                let held = Shared {
+                    store: std::mem::take(&mut self.store),
+                    air_capacity: std::mem::take(&mut self.air_capacity),
+                };
+                shared_slot(self.range, |slot| *slot = Some(held));
             }
         } else {
             self.forget_stores();
         }
         if carrying.store {
             // Every census ship's receivers: itself, its medal store, its
-            // carrier base and its task force. The family capture's census is
-            // the whole one.
-            carrying.counts.receivers = self
-                .seed_len
-                .saturating_mul(4)
-                .saturating_add(self.air_capacity.len());
+            // carrier base, its task force and that task force's fleet. The
+            // family capture's census is the whole one.
+            carrying.counts.receivers = self.seed_len.saturating_mul(5).saturating_add(carriers);
             ship_model_changes::record(&carrying.counts, complete);
             if complete {
                 // Ships of a task force are consecutive in the census.
@@ -2534,6 +2799,29 @@ impl Captured {
         })
     }
     pub fn table_inputs(&self, projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
+        [held_input::<tables::ShipModels>(
+            projection,
+            self.held_witness(),
+            |projection| self.project(projection),
+        )]
+    }
+
+    /// The census split and each range's held-rows generation, when the
+    /// family completed and every range published exactly its held rows.
+    fn held_witness(&self) -> Option<Witness> {
+        if !matches!(self.outcomes()[0], Outcome::Rows { .. }) {
+            return None;
+        }
+        let mut words = [0; MAX_PARTS + 1];
+        words[0] = self.split as u64;
+        words[1] = self.witness?;
+        for (word, part) in words[2..].iter_mut().zip(self.extra.get(..self.split - 1)?) {
+            *word = part.witness?;
+        }
+        Some(Witness::new(words))
+    }
+
+    fn project(&self, projection: Option<&mut Projection<'_>>) -> TableInput {
         // A split census's rows live in its parts; join them in census order
         // here, on the spool thread.
         let joined;
@@ -2541,9 +2829,7 @@ impl Captured {
             let parts = &self.extra[..self.split - 1];
             let mut rows = Vec::new();
             if reserve(&mut rows, self.len).is_err() {
-                return [
-                    crate::table_conversion::unavailable("collector allocation failed").into(),
-                ];
+                return crate::table_conversion::unavailable("collector allocation failed").into();
             }
             rows.extend_from_slice(&self.rows.rows[..self.part_len.min(self.rows.rows.len())]);
             for part in parts {
@@ -2554,7 +2840,7 @@ impl Captured {
         } else {
             &self.rows.rows[..]
         };
-        [project_table::<tables::ShipModels, _>(
+        project_table::<tables::ShipModels, _>(
             projection,
             self.outcomes()[0],
             rows,
@@ -2612,7 +2898,7 @@ impl Captured {
                     positive_equipment_flags: r.positive_equipment_flags,
                 }),
             },
-        )]
+        )
     }
 }
 

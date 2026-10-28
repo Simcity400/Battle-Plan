@@ -4,7 +4,8 @@
 //! modifiers, its medal store's modifiers and its carrier air base pointer,
 //! and of its task force's doctrine tree and its weather region's
 //! modifiers, which ShipModels carries with the country's naval tree
-//! certificate.
+//! certificate, and of a fleet's leader binding, which selects the
+//! commander whose tree terms ShipModels carries with its task force.
 //! A detour only notifies the shared watch registry ([`WatchRegistry`]) for
 //! the ship, air base or medal store its receiver argument names, counts the
 //! call and calls the original; it never changes game behaviour. The writers
@@ -31,14 +32,22 @@ const DESTROY_AIR_BASE: usize = 4;
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
 /// Carried and read ships; ships read without a certificate to hold; carried
-/// task-force terms; carried rows.
-static READS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+/// task-force terms; carried rows; carried models; revalidated ships;
+/// variants carried under their design certificate and variants gathered.
+static READS: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
 /// Receivers the latest complete capture registered, for off-thread sizing.
 static RECEIVERS: AtomicUsize = AtomicUsize::new(0);
+/// Design writers forwarded now (the design family's paired notifications).
+static VARIANT_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static VARIANT_AVAILABILITY: AtomicU64 = AtomicU64::new(0);
+static VARIANT_VALIDATE: AtomicUsize = AtomicUsize::new(0);
+static VARIANT_CALLS: AtomicU64 = AtomicU64::new(0);
 
-/// One observation domain: the watched receivers and the writers' calls.
+/// One observation domain: the watched receivers and the writers' calls,
+/// and the equipment variants the design family's writers notify.
 pub struct Watches {
     registry: WatchRegistry,
+    variants: WatchRegistry,
     calls: [AtomicU64; SITES],
 }
 
@@ -52,6 +61,7 @@ impl Watches {
     pub const fn new() -> Self {
         Self {
             registry: WatchRegistry::new(),
+            variants: WatchRegistry::new(),
             calls: [const { AtomicU64::new(0) }; SITES],
         }
     }
@@ -75,9 +85,11 @@ impl Watches {
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(receivers: usize) -> Self {
         let watches = Self::new();
-        watches.registry.offer(receivers);
-        watches.registry.boundary(false);
-        watches.registry.set_enabled(true);
+        for registry in [&watches.registry, &watches.variants] {
+            registry.offer(receivers);
+            registry.boundary(false);
+            registry.set_enabled(true);
+        }
         watches
     }
 
@@ -85,6 +97,19 @@ impl Watches {
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
         self.registry.boundary(invalidate);
+        self.variants.boundary(invalidate);
+    }
+
+    /// Tests: a design writer is about to change `variant`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn notify_variant(&self, variant: usize) -> Notification<'_> {
+        self.variants.notify(variant)
+    }
+
+    /// Tests: the design domain lost observation.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn disable_variants(&self) {
+        self.variants.set_enabled(false);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -122,6 +147,21 @@ pub trait Changes: Sync {
     /// `(epoch, sequence)` of a country's or commander's modifier tree, which the naval tree family
     /// certifies.
     fn tree_sequence(&self, country: usize) -> Option<(u64, u64)>;
+
+    /// `(epoch, sequence)` of an equipment variant, which the design family's
+    /// writers move; `None` while that domain is unobserved.
+    fn variant_sequence(&self, _variant: usize) -> Option<(u64, u64)> {
+        None
+    }
+    /// `(epoch, revision)` of the variant domain with no design writer running.
+    fn variant_quiet(&self) -> Option<(u64, u64)> {
+        None
+    }
+    /// Whether captures under this domain share one held store across the
+    /// frame pool's buffers, as the process-wide hooks' domain does.
+    fn shared_store(&self) -> bool {
+        false
+    }
 
     /// The certificate of a ship with `receivers` (ship, medal store,
     /// carrier base; zero for none), or `None` when one cannot be observed.
@@ -176,6 +216,12 @@ impl Changes for Watches {
     fn tree_sequence(&self, country: usize) -> Option<(u64, u64)> {
         self.registry.sequence(country)
     }
+    fn variant_sequence(&self, variant: usize) -> Option<(u64, u64)> {
+        self.variants.sequence(variant)
+    }
+    fn variant_quiet(&self) -> Option<(u64, u64)> {
+        self.variants.quiet()
+    }
 }
 
 /// The hooks' domain.
@@ -200,6 +246,77 @@ impl Changes for Observer {
     fn tree_sequence(&self, country: usize) -> Option<(u64, u64)> {
         crate::naval_tree_changes::sequence(country)
     }
+    fn variant_sequence(&self, variant: usize) -> Option<(u64, u64)> {
+        variant_observed(|| WATCHES.variants.sequence(variant))
+    }
+    fn variant_quiet(&self) -> Option<(u64, u64)> {
+        variant_observed(|| WATCHES.variants.quiet())
+    }
+    fn shared_store(&self) -> bool {
+        true
+    }
+}
+
+/// `read` while the design family's capability is current and none of its
+/// forwarded writers runs, before and after.
+fn variant_observed(read: impl FnOnce() -> Option<(u64, u64)>) -> Option<(u64, u64)> {
+    let stamp = VARIANT_AVAILABILITY.load(Ordering::SeqCst);
+    if !variant_capability_is_current(stamp) || VARIANT_ACTIVE.load(Ordering::SeqCst) != 0 {
+        return None;
+    }
+    let result = read();
+    (VARIANT_ACTIVE.load(Ordering::SeqCst) == 0 && variant_capability_is_current(stamp))
+        .then_some(result)
+        .flatten()
+}
+
+fn variant_capability_is_current(stamp: u64) -> bool {
+    let validator = VARIANT_VALIDATE.load(Ordering::SeqCst);
+    if stamp == 0 || validator == 0 || VARIANT_AVAILABILITY.load(Ordering::SeqCst) != stamp {
+        return false;
+    }
+    // SAFETY: only `variant_availability` stores this, from a `fn(u64) -> bool`.
+    let validate: fn(u64) -> bool = unsafe { std::mem::transmute(validator) };
+    validate(stamp) && VARIANT_AVAILABILITY.load(Ordering::SeqCst) == stamp
+}
+
+/// The design family's forwarding capability, from its receiver; never waits.
+pub fn variant_availability(stamp: u64, validate: fn(u64) -> bool) {
+    VARIANT_VALIDATE.store(validate as *const () as usize, Ordering::SeqCst);
+    VARIANT_AVAILABILITY.store(stamp, Ordering::SeqCst);
+    WATCHES.variants.set_enabled(validate(stamp));
+}
+
+/// A forwarded design writer is about to change `variant`.
+pub fn variant_before(variant: usize) {
+    VARIANT_CALLS.fetch_add(1, Ordering::Relaxed);
+    VARIANT_ACTIVE.fetch_add(1, Ordering::SeqCst);
+    drop(WATCHES.variants.notify(variant));
+}
+
+/// Its return; an unwound writer leaves the domain unobserved.
+pub fn variant_after(variant: usize, unwound: bool) {
+    if unwound {
+        WATCHES.variants.poison();
+    }
+    drop(WATCHES.variants.notify(variant));
+    VARIANT_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// A forwarded writer whose variants cannot be named (bulk upgrades and
+/// source, provider, country or content invalidation) is about to run.
+pub fn variants_before() {
+    VARIANT_CALLS.fetch_add(1, Ordering::Relaxed);
+    VARIANT_ACTIVE.fetch_add(1, Ordering::SeqCst);
+    drop(WATCHES.variants.notify_every());
+}
+
+pub fn variants_after(unwound: bool) {
+    if unwound {
+        WATCHES.variants.poison();
+    }
+    drop(WATCHES.variants.notify_every());
+    VARIANT_ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 
 /// Whether ShipModels holds ships' reads to carry them.
@@ -207,7 +324,10 @@ pub const CARRY: bool = cfg!(feature = "ship_model_changes");
 
 /// Notifications running now.
 pub fn active() -> usize {
-    WATCHES.registry.active()
+    WATCHES
+        .registry
+        .active()
+        .saturating_add(VARIANT_ACTIVE.load(Ordering::SeqCst))
 }
 
 /// Game thread, in the hourly callback before any capture. `invalidate`
@@ -215,6 +335,7 @@ pub fn active() -> usize {
 /// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
+    WATCHES.variants.boundary(invalidate);
 }
 
 /// Off the game thread: size the watches for the receivers the latest
@@ -225,12 +346,14 @@ pub fn presize() {
     let receivers = RECEIVERS.load(Ordering::Relaxed);
     if receivers != 0 {
         WATCHES.registry.offer(receivers);
+        WATCHES.variants.offer(receivers);
     }
 }
 
 /// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
+    WATCHES.variants.collect();
 }
 
 /// One capture range's ships.
@@ -251,6 +374,11 @@ pub struct Counts {
     /// Ships whose certificate moved but whose own objects and modifier
     /// arrays read this hour equal the held read's, carried again.
     pub revalidated: u64,
+    /// Distinct held variants served under their design certificate, and
+    /// held variants gathered again because a design writer touched them or
+    /// the design domain was unobserved.
+    pub variants_carried: u64,
+    pub variants_read: u64,
     /// Receivers the census's ships can register, for sizing.
     pub receivers: usize,
     /// Sampled ships (every [`PATH_SAMPLE`]th row) and their QPC ticks by
@@ -291,6 +419,8 @@ pub fn record(counts: &Counts, complete: bool) {
         counts.rows_carried,
         counts.models_carried,
         counts.revalidated,
+        counts.variants_carried,
+        counts.variants_read,
     ]) {
         target.fetch_add(value, Ordering::Relaxed);
     }
@@ -379,10 +509,15 @@ pub fn status() -> impl serde::Serialize {
         "carried_rows": reads[4],
         "carried_models": reads[5],
         "revalidated_ships": reads[6],
+        "carried_variants": reads[7],
+        "read_variants": reads[8],
         "timing": timing_status(),
         "events": events,
+        "design_writers": VARIANT_CALLS.load(Ordering::Relaxed),
         "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a ship's finished row is carried when its handle, task force and receiver certificates hold, its task force's terms read this hour equal those of its held row, its selected variant gathers and optional suffixes are complete, its variant bytes are unchanged, its present organisation modifier keys keep their current eligibility and clamp metadata, and it has no carrier base; compact held records follow census order with a sorted-index fallback, domain quiet tokens rechecked before each ship spare receiver lookups, and validated slot indices spare watch hashing otherwise; task-force terms are compared once per task force, variants once per distinct held observation and organisation modifier eligibility and clamp metadata once per distinct guard per capture; under the same conditions with changed task-force terms or modifier eligibility (carried_models), the row's model part (every field but maximum organisation and roster ordinal) is carried and maximum organisation uses the shared reader arithmetic over certified ship operands and current shared terms, critical counts and pointees, and terrain-class and leader-subunit contributions; a ship whose certificate moved is gathered again and, when complete own-object and heap payload observations and modifier arrays equal its held read's, carried under the new certificate (revalidated_ships) with fresh critical counts and pointees when its critical header is nonempty, or with only organisation inputs changed in the same epoch keeps its model part after complete model-byte, census-class and variant comparisons; otherwise its fixed fields, pool entries, heap fallback sprite, experience and medal-store modifiers are served from its held read while its handle, task force and certificates hold; task-force doctrine contributions require the doctrine writer and country naval tree certificates to hold, its modifier accumulator requires unchanged mine exposure, and location weather terms require the region writer and country tree certificates to hold with unchanged applied night factor; location, fleet, headquarters and uncertified sources are read each hour; an incomplete family forgets every range's held ships, tasks, variants, arrays and quiet token, including truncation and terminal failure"
+        "variant_watches": WATCHES.variants.status(),
+        "variants_poisoned": WATCHES.variants.poisoned(),
+        "scope": "cumulative since attach; a ship's finished row is carried when its handle, task force and receiver certificates hold, its task force's terms this hour equal those of its held row, its held variants are certified by the design writers' domain (or, after a design writer touched one or while that domain is unobserved, gathered again with unchanged bytes), its optional suffixes are complete, its present organisation modifier keys keep their current eligibility and clamp metadata, and it has no carrier base; carried_variants and read_variants count distinct held variants served under their design certificate and held variants gathered again; held reads live in one store per census range that the family's captures share across the frame pool, a complete range holding at once; compact held records follow census order with a sorted-index fallback, domain quiet tokens rechecked before each ship spare receiver lookups, and validated slot indices spare watch hashing otherwise; task-force terms are compared once per task force and organisation modifier eligibility and clamp metadata once per distinct guard per capture; under the same conditions with changed task-force terms or modifier eligibility (carried_models), the row's model part (every field but maximum organisation and roster ordinal) is carried and maximum organisation uses the shared reader arithmetic over certified ship operands and current shared terms, critical counts and pointees, and terrain-class and leader-subunit contributions; a ship whose certificate moved is gathered again and, when complete own-object and heap payload observations and modifier arrays equal its held read's, carried under the new certificate (revalidated_ships) with fresh critical counts and pointees when its critical header is nonempty, or with only organisation inputs changed in the same epoch keeps its model part after complete model-byte and census-class comparisons and certified or compared variants; otherwise its fixed fields, pool entries, heap fallback sprite, experience and medal-store modifiers are served from its held read while its handle, task force and certificates hold; each task force is gathered once per hour (vtable, handle, roster owner, location and fleet, mine exposure and the attached-headquarters header, which the game rebuilds every hour); its doctrine contribution requires the doctrine writer and country naval tree certificates to hold, its modifier accumulator unchanged mine exposure, its location weather terms the region writer and country tree certificates with unchanged applied night factor, its location's province definition and terrain the held location in the same epoch, and its fleet's leader and leader tree terms the held fleet with unchanged leader-binding and leader tree certificates; the applied night factor, pride ship, attached headquarters' commanders and uncertified sources are read each hour; a range whose every row was carried whole at the roster position it was last published with, one per row its store held, keeps that store's held-rows generation, and a complete family whose ranges all kept theirs witnesses the previous capture's rows (quiet_republish); an incomplete family forgets every range's held ships, tasks, variants, arrays, rows generation and quiet token, including truncation and terminal failure",
     })
 }
 
@@ -414,6 +549,8 @@ impl Hooks {
                 rebuild_medal_modifiers as *const () as usize,
                 rebuild_doctrine_tree as *const () as usize,
                 rebuild_region_weather_modifiers as *const () as usize,
+                bind_fleet_leader as *const () as usize,
+                reset_reserve_fleet as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
@@ -462,7 +599,8 @@ impl Drop for Hooks {
     fn drop(&mut self) {
         // SAFETY: like each Hook's relay, the watch tables are dropped only
         // once the hooks were never enabled, or were removed and drained
-        // after the last capture.
+        // after the last capture. The variant table stays: the design
+        // family's forwarder notifies it.
         unsafe { WATCHES.registry.release() };
     }
 }
@@ -499,8 +637,9 @@ macro_rules! detours {
 
 // [`MUTATIONS`] order: recalculate equipment stats(ship, flag), refit
 //(ship, ...), ship experience modifier rebuild(ship), add carrier air base(manager,
-// ship), air base destruction(base), medal modifier rebuild(store), task-force doctrine rebuild(task force) and
-// Weather region modifier rebuild (weather region).
+// ship), air base destruction(base), medal modifier rebuild(store), task-force doctrine rebuild(task force),
+// Weather region modifier rebuild (weather region), fleet leader binding (fleet, leader)
+// and reserve fleet conversion (fleet).
 detours! {
     recalculate_equipment_stats = 0;
     refit = 1;
@@ -510,6 +649,8 @@ detours! {
     rebuild_medal_modifiers = 5;
     rebuild_doctrine_tree = 6;
     rebuild_region_weather_modifiers = 7;
+    bind_fleet_leader = 8;
+    reset_reserve_fleet = 9;
 }
 
 #[cfg(test)]

@@ -53,12 +53,15 @@
 //!   factor differs from the applied factor, then stores that factor.
 //!   Equality preserves the accumulator; ShipModels compares the factor
 //!   instead of hooking the hourly pass.
+//! - Only fleet leader binding stores a fleet's leader reference
+//!   (`cfleet::LEADER`): the set-leader and HQ-admiral commands, leader
+//!   removal and fleet addition call it; fleet loading invalidates the hour.
 
 pub use crate::advisor_mutations::MutationSite;
 
 /// The writers, each forwarded RCX..R9 by its detour (none takes a stack
 /// argument). [`RECEIVER_ARGUMENT`] names the argument that is the receiver.
-pub const MUTATIONS: [MutationSite; 8] = [
+pub const MUTATIONS: [MutationSite; 10] = [
     // The four-byte DL spill to its home slot and saving RBP relocate.
     MutationSite {
         name: "recalculate_equipment_stats",
@@ -128,13 +131,31 @@ pub const MUTATIONS: [MutationSite; 8] = [
             0xc1, 0x58,
         ],
     },
+    // The five-byte RBX spill to R8's home slot relocates.
+    MutationSite {
+        name: "bind_fleet_leader",
+        rva: 0xdc_04e0,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec,
+            0x30, 0x83,
+        ],
+    },
+    // Reserve conversion clears the fleet's leader without the binder; the RBX spill relocates.
+    MutationSite {
+        name: "reset_reserve_fleet",
+        rva: 0xdc_07a0,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x56,
+            0x48, 0x83,
+        ],
+    },
 ];
 
 /// Receiver argument (0 = RCX, 1 = RDX): the ship, except carrier-base
 /// addition's manager-first call, base destruction, medal refresh, doctrine
-/// refresh and weather refresh name the ship, base, store, task force and
-/// weather region respectively.
-pub const RECEIVER_ARGUMENT: [usize; 8] = [0, 0, 0, 1, 0, 0, 0, 0];
+/// refresh, weather refresh, leader binding and reserve conversion name the
+/// ship, base, store, task force, weather region and fleet respectively.
+pub const RECEIVER_ARGUMENT: [usize; 10] = [0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
 
 #[cfg(test)]
 mod tests {

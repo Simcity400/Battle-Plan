@@ -1429,6 +1429,222 @@ fn held_ships_are_carried_until_a_writer_touches_them() {
     assert!(!watches.poisoned());
 }
 
+/// A held ship's variant is gathered only after a design writer touched it,
+/// or every hour while the design domain is unobserved; a quiet hour, and
+/// the hour after the touched one, gather none. An invalidated hour reads
+/// it afresh.
+#[test]
+fn held_variants_are_read_only_after_a_design_writer() {
+    use crate::ship_model_changes::Watches;
+    let watches = Watches::enabled(64);
+    let world = Fleet::new();
+    let mut capture = Captured::with_capacities(&Capacities {
+        rows: fleet::SHIPS,
+        modifiers: SnapshotCapacity {
+            nodes: 64,
+            entries: 64,
+        },
+    });
+    let hour = |capture: &mut Captured| {
+        capture.begin_sources();
+        for index in 0..fleet::SHIPS {
+            capture.visit_source(fleet::ship(index), &fleet::census(index));
+        }
+        capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
+        world.hits.set(0);
+        capture.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
+        assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
+        (capture.rows.rows[..fleet::SHIPS].to_vec(), world.hits.get())
+    };
+    world.watched.set(fleet::VARIANT);
+    let (fresh, read) = hour(&mut capture);
+    assert!(read > 0);
+    let (carried, quiet) = hour(&mut capture);
+    assert_eq!(carried, fresh);
+    assert_eq!(quiet, 0, "a certified variant is not gathered");
+    drop(watches.notify_variant(fleet::VARIANT));
+    let (rows, touched) = hour(&mut capture);
+    assert_eq!(rows, fresh);
+    assert_eq!(touched, 1, "the touched variant is gathered once");
+    assert_eq!(hour(&mut capture).1, 0, "and certified again");
+    drop(watches.notify_variant(fleet::VARIANT + 0x1000));
+    assert_eq!(hour(&mut capture).1, 0, "another variant's writer");
+    watches.boundary(true);
+    let (rows, invalidated) = hour(&mut capture);
+    assert_eq!(rows, fresh);
+    assert!(invalidated > 0, "an invalidated hour reads afresh");
+    watches.disable_variants();
+    for _ in 0..2 {
+        let (rows, unobserved) = hour(&mut capture);
+        assert_eq!(rows, fresh);
+        assert!(
+            unobserved > 0,
+            "an unobserved design domain certifies nothing"
+        );
+    }
+    assert!(!watches.poisoned());
+}
+
+/// A task force's held fleet-leader terms serve its next hour only while it
+/// names the same fleet and neither that fleet's leader binding nor the
+/// leader's tree was written since they were read.
+#[test]
+fn held_fleet_terms_follow_the_leader_binding_and_tree_certificates() {
+    use crate::ship_model_changes::Watches;
+    const TASK: usize = 0x10_0000;
+    const FLEET: usize = 0x20_0000;
+    const LEADER: usize = 0x30_0000;
+    let watches = Watches::enabled(64);
+    let world = Fleet::new();
+    let task = cship::TaskForceFields {
+        pointer: TASK,
+        handle: 7,
+        roster_owner: 1,
+        location: 0,
+        fleet: FLEET,
+        mine_exposure: 0,
+        modifiers: TASK + 0x668,
+    };
+    let certificate = || {
+        (
+            watches.sequence(FLEET).unwrap(),
+            Some(watches.tree_sequence(LEADER).unwrap()),
+        )
+    };
+    let served = |task: cship::TaskForceFields, certificate: FleetCertificate| {
+        let mut capture = Captured::part(&capacities(4, 4));
+        capture.store.tasks.push(HeldTask {
+            pointer: TASK,
+            handle: 7,
+            roster_owner: 1,
+            country: fleet::COUNTRY,
+            country_terms: None,
+            doctrine: None,
+            mine_exposure: 0,
+            modifiers: None,
+            weather: None,
+            location: None,
+            fleet: Some(HeldFleet {
+                fleet: FLEET,
+                leader: Some(LEADER),
+                terms: [1, 2, 3, 4],
+                certificate,
+            }),
+            terms: None,
+        });
+        capture.begin_details();
+        let mut carrying = Carrying {
+            store: true,
+            changes: &watches,
+            counts: Counts::default(),
+            task: None,
+            task_modifiers: None,
+            terms: None,
+            terms_identity: 0,
+            quiet: None,
+            guard_fallback: false,
+            revalidated: false,
+        };
+        capture.begin_task(&world, task, &mut carrying);
+        capture.doctrine.fleet_source(task.fleet)
+    };
+    let held = certificate();
+    assert_eq!(served(task, held), Some((Some(LEADER), [1, 2, 3, 4])));
+    let other = cship::TaskForceFields {
+        fleet: FLEET + 0x1000,
+        ..task
+    };
+    assert_eq!(served(other, held), None, "another fleet");
+    // The leader binding (`bind_fleet_leader`) names the fleet.
+    drop(watches.notify(FLEET, 8));
+    assert_eq!(served(task, held), None, "the leader binding was written");
+    let held = certificate();
+    assert!(served(task, held).is_some());
+    drop(watches.notify(LEADER, 0));
+    assert_eq!(served(task, held), None, "the leader's tree was written");
+    assert_eq!(world.calls.get(), 0, "no fleet or leader byte is read");
+}
+
+/// Under a domain whose captures share one store, consecutive hours in
+/// different pooled frames carry from the latest complete hour, whichever
+/// frame read it; a forgotten store reads every ship again.
+#[test]
+fn pooled_frames_share_the_latest_held_reads() {
+    use crate::ship_model_changes::Watches;
+    struct Shared<'a>(&'a Watches);
+    impl Changes for Shared<'_> {
+        fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+            self.0.sequence(receiver)
+        }
+        fn sequence_at(&self, receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
+            self.0.sequence_at(receiver, slot)
+        }
+        fn quiet(&self) -> Option<(u64, u64)> {
+            self.0.quiet()
+        }
+        fn certificate_at(
+            &self,
+            receivers: [usize; 3],
+            slots: Slots,
+        ) -> Option<(Certificate, Slots)> {
+            self.0.certificate_at(receivers, slots)
+        }
+        fn tree_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+            self.0.tree_sequence(receiver)
+        }
+        fn variant_sequence(&self, variant: usize) -> Option<(u64, u64)> {
+            self.0.variant_sequence(variant)
+        }
+        fn variant_quiet(&self) -> Option<(u64, u64)> {
+            self.0.variant_quiet()
+        }
+        fn shared_store(&self) -> bool {
+            true
+        }
+    }
+    let watches = Watches::enabled(64);
+    let changes = Shared(&watches);
+    let world = Fleet::new();
+    let frame = || {
+        Captured::with_capacities(&Capacities {
+            rows: fleet::SHIPS,
+            modifiers: SnapshotCapacity {
+                nodes: 64,
+                entries: 64,
+            },
+        })
+    };
+    let mut frames = [frame(), frame()];
+    let hour = |capture: &mut Captured| {
+        capture.begin_sources();
+        for index in 0..fleet::SHIPS {
+            capture.visit_source(fleet::ship(index), &fleet::census(index));
+        }
+        capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
+        world.calls.set(0);
+        capture.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &changes);
+        assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
+        (
+            capture.rows.rows[..fleet::SHIPS].to_vec(),
+            world.calls.get(),
+        )
+    };
+    let (fresh, read) = hour(&mut frames[0]);
+    assert!(frames[0].store.held.is_empty(), "held between captures");
+    for index in 1..5 {
+        let (rows, served) = hour(&mut frames[index % 2]);
+        assert_eq!(rows, fresh);
+        assert!(
+            read >= served + 2 * fleet::SHIPS,
+            "hour {index}: {served} guarded calls carried, {read} read"
+        );
+    }
+    frames[0].forget_stores();
+    let (rows, reread) = hour(&mut frames[1]);
+    assert_eq!(rows, fresh);
+    assert_eq!(reread, read, "a forgotten store reads every ship again");
+}
+
 #[test]
 fn deferred_ship_store_publication_preserves_carry_and_discards_unfinished_stores() {
     use crate::ship_model_changes::Watches;
@@ -3269,6 +3485,222 @@ mod carry_cost_bench {
         assert!(!watches.poisoned());
     }
 
+    /// A quiet hour gathers no held location; a task force that moved
+    /// gathers its new one, and its rows equal a fresh read's.
+    #[test]
+    fn a_held_location_is_gathered_only_after_its_task_force_moves() {
+        let mut world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut held = capture(world.census.len());
+        let fresh = hour(&world, &mut held, &watches);
+        world.memory.watched.set(world.locations[0]);
+        world.memory.hits.set(0);
+        assert_eq!(hour(&world, &mut held, &watches), fresh);
+        assert_eq!(
+            world.memory.hits.get(),
+            0,
+            "a held location is not gathered"
+        );
+        world.move_tasks(1);
+        world.memory.watched.set(world.locations[1]);
+        world.memory.hits.set(0);
+        let moved = hour(&world, &mut held, &watches);
+        assert!(world.memory.hits.get() > 0, "the new location is gathered");
+        let mut direct = capture(world.census.len());
+        assert_eq!(moved, fresh_hour(&world, &mut direct, &watches));
+        world.memory.hits.set(0);
+        assert_eq!(hour(&world, &mut held, &watches), moved);
+        assert_eq!(world.memory.hits.get(), 0, "and held again");
+    }
+
+    /// A task force replaced by a new one at the same address (a new handle)
+    /// rereads its own ships; every other ship stays carried unread.
+    #[test]
+    fn a_replaced_task_force_rereads_only_its_ships() {
+        let mut world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut held = capture(world.census.len());
+        hour(&world, &mut held, &watches);
+        let replaced = (77_u64 << 32) | u64::from(engine_native::ctask_force::DEFAULT_HANDLE_TYPE);
+        let at = world.tasks[1] + cunit::HANDLE - fleet::LOW;
+        world.memory.low[at..at + 8].copy_from_slice(&replaced.to_le_bytes());
+        for row in &mut world.census[PER_TASK..2 * PER_TASK] {
+            row.task_force = replaced;
+        }
+        let memory = ShipReads {
+            inner: &world.memory,
+            ships: RefCell::new(vec![0; world.census.len()]),
+        };
+        world.seed(&mut held);
+        held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
+        assert_eq!(
+            held.outcomes(),
+            [Outcome::Rows {
+                len: world.census.len()
+            }]
+        );
+        for (index, &reads) in memory.ships.borrow().iter().enumerate() {
+            let own = (PER_TASK..2 * PER_TASK).contains(&index);
+            assert_eq!(reads, usize::from(own), "ship {index}");
+        }
+        let rows = held.rows.rows[..world.census.len()].to_vec();
+        let mut direct = capture(world.census.len());
+        assert_eq!(rows, fresh_hour(&world, &mut direct, &watches));
+    }
+
+    /// An invalidated hour (load, gap, recovery) certifies nothing: every
+    /// ship is read afresh, its location gathered again.
+    #[test]
+    fn an_invalidated_hour_reads_every_ship_and_location() {
+        let world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut held = capture(world.census.len());
+        let fresh = hour(&world, &mut held, &watches);
+        watches.boundary(true);
+        let memory = ShipReads {
+            inner: &world.memory,
+            ships: RefCell::new(vec![0; world.census.len()]),
+        };
+        world.memory.watched.set(world.locations[0]);
+        world.memory.hits.set(0);
+        world.seed(&mut held);
+        held.capture_carrying(&memory, CaptureContext::new(fleet::IMAGE), &watches);
+        assert_eq!(held.rows.rows[..world.census.len()], fresh);
+        assert!(memory.ships.borrow().iter().all(|&reads| reads == 1));
+        assert!(world.memory.hits.get() > 0, "locations are gathered again");
+    }
+
+    /// The held-rows generation survives only an hour whose every ship took
+    /// its held row whole at its published roster position; a moved roster
+    /// position, a recomputed row, a removed task force or a forgotten store
+    /// name new rows, and an incomplete hour none.
+    #[test]
+    fn only_wholly_carried_hours_keep_the_held_rows_witness() {
+        let mut world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut held = capture(world.census.len());
+        hour(&world, &mut held, &watches);
+        let first = held.held_witness().expect("a complete hour names its rows");
+        hour(&world, &mut held, &watches);
+        assert_eq!(held.held_witness(), Some(first), "a quiet hour");
+        world.census[0].roster_ordinal += 7;
+        hour(&world, &mut held, &watches);
+        let moved = held.held_witness().unwrap();
+        assert_ne!(moved, first, "a moved roster position");
+        hour(&world, &mut held, &watches);
+        assert_eq!(held.held_witness(), Some(moved));
+        let at = fleet::ship(1) + cship::BASE_ORGANISATION - fleet::LOW;
+        world.memory.low[at..at + 8].copy_from_slice(&30_000_000_i64.to_le_bytes());
+        drop(watches.notify(fleet::ship(1), 0));
+        hour(&world, &mut held, &watches);
+        let recomputed = held.held_witness().unwrap();
+        assert_ne!(recomputed, moved, "a recomputed row");
+        world.census.truncate(3 * PER_TASK);
+        hour(&world, &mut held, &watches);
+        let removed = held.held_witness().unwrap();
+        assert_ne!(removed, recomputed, "a removed task force");
+        hour(&world, &mut held, &watches);
+        assert_eq!(held.held_witness(), Some(removed));
+        held.forget_stores();
+        hour(&world, &mut held, &watches);
+        assert_ne!(held.held_witness(), Some(removed), "a forgotten store");
+        world.seed(&mut held);
+        held.parent = Outcome::Truncated {
+            len: world.census.len(),
+            unread_rows: 1,
+        };
+        held.capture_carrying(&world.memory, CaptureContext::new(fleet::IMAGE), &watches);
+        assert_eq!(held.held_witness(), None, "an incomplete hour");
+    }
+
+    /// A quiet hour republishes the previous hour's rows unprojected and
+    /// encodes as their conversion does; a change hour converts.
+    #[test]
+    fn quiet_hours_republish_ship_models_unconverted() {
+        use crate::projection::ProjectionScratch;
+        use replay_frame::frame::{FrameEncoder, FrameInput, Metrics};
+        let mut world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut held = capture(world.census.len());
+        let scratch = ProjectionScratch::default();
+        let mut optimized = FrameEncoder::new();
+        let mut reference = FrameEncoder::new();
+        let frame = |hour, [table]: [TableInput; N]| {
+            let mut frame = FrameInput {
+                branch: 1,
+                hour,
+                metrics: Metrics::default(),
+                tables: std::array::from_fn(|_| {
+                    crate::table_conversion::unavailable("fixture table").into()
+                }),
+            };
+            frame.tables[TABLES[0].index()] = table;
+            frame
+        };
+        // Hour 2 moves a roster position; hour 4 reads every ship afresh.
+        for (at, republished) in [(0, 0), (1, 1), (2, 1), (3, 2), (4, 2), (5, 3)] {
+            if at == 2 {
+                world.census[0].roster_ordinal += 7;
+            }
+            if at == 4 {
+                held.forget_stores();
+            }
+            hour(&world, &mut held, &watches);
+            let mut projection = Projection::new(&optimized, 1, at, false, &scratch);
+            let [input] = held.table_inputs(Some(&mut projection));
+            assert_eq!(
+                scratch.republish_counts(TableId::ShipModels)[0],
+                republished,
+                "hour {at}"
+            );
+            assert_eq!(
+                matches!(input, TableInput::ComparedEqual(_)),
+                matches!(at, 1 | 3 | 4 | 5),
+                "hour {at}"
+            );
+            assert_eq!(
+                optimized.encode_input(frame(at, [input]), false).unwrap(),
+                reference
+                    .encode_input(frame(at, held.table_inputs(None)), false)
+                    .unwrap(),
+                "hour {at}"
+            );
+        }
+    }
+
+    /// A split family witnesses its rows only while every range kept its
+    /// generation; one range's change names new rows.
+    #[test]
+    fn a_split_family_witnesses_only_when_every_range_is_quiet() {
+        let mut world = World::new(4);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut held = Captured::with_capacities(&Capacities {
+            rows: world.census.len(),
+            modifiers: SnapshotCapacity {
+                nodes: 64,
+                entries: 64,
+            },
+        });
+        let witness = |world: &World, held: &mut Captured| {
+            world.seed(held);
+            split_hour(held, &world.memory, &watches);
+            assert_eq!(
+                held.outcomes(),
+                [Outcome::Rows {
+                    len: world.census.len()
+                }]
+            );
+            held.held_witness()
+        };
+        let first = witness(&world, &mut held).expect("a complete split family");
+        assert_eq!(witness(&world, &mut held), Some(first), "a quiet hour");
+        let last = world.census.len() - 1;
+        world.census[last].roster_ordinal += 7;
+        let changed = witness(&world, &mut held).unwrap();
+        assert_ne!(changed, first, "one range's moved roster position");
+        assert_eq!(witness(&world, &mut held), Some(changed));
+    }
+
     fn split_hour(capture: &mut Captured, memory: &impl Memory, changes: &dyn Changes) {
         let parts = capture.split_details(3);
         capture.capture_carrying(memory, CaptureContext::new(fleet::IMAGE), changes);
@@ -3295,6 +3727,8 @@ mod carry_cost_bench {
             assert!(store.next_variant_index.is_empty());
             assert_eq!(store.quiet, None);
             assert_eq!(store.generation, 0);
+            assert_eq!(store.rows, None);
+            assert!(shared_slot(range.range, |slot| slot.is_none()));
         }
     }
 
