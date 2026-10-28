@@ -1825,12 +1825,15 @@ impl Shared {
     /// Requires the frame's exclusive queue lease; clock preparation may allocate.
     pub(crate) fn prepare_frame_for_reuse(&self, index: usize) {
         let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
+        // Reset drops charged per-hour storage, so measure before it.
+        let before = frame.allocated_bytes();
         frame.reset_verdicts();
         frame.verdicts_reset = true;
-        let before = frame.allocated_bytes();
         let result = frame.prepare_clock(self.clock_required());
-        self.pool_bytes
-            .fetch_add((frame.allocated_bytes() - before) as u64, Ordering::Relaxed);
+        self.pool_bytes.fetch_add(
+            (frame.allocated_bytes() as u64).wrapping_sub(before as u64),
+            Ordering::Relaxed,
+        );
         if result.is_err() {
             self.cancel_buffer_wait.store(true, Ordering::Release);
             self.recording.store(false, Ordering::Release);
