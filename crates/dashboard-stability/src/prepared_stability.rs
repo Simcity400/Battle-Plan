@@ -102,6 +102,10 @@ pub struct StabilityAccumulator {
     pub test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
 }
 impl StabilityAccumulator {
+    /// Read again from the recording what a restored state saved by hour.
+    pub fn restore(&mut self, replay: &replay::container::Replay, branch: u64) -> io::Result<()> {
+        self.parts.restore(replay, branch)
+    }
     pub fn buffered_bytes(&self) -> usize {
         self.batch.bytes() + self.parts.bytes()
     }

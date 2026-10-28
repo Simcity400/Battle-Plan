@@ -91,6 +91,7 @@ fn production_scan_and_prepared_values_reads_gaps_and_resume_agree() {
             publish(&mut accumulator, &fixture);
             accumulator =
                 serde_json::from_slice(&serde_json::to_vec(&accumulator).unwrap()).unwrap();
+            accumulator.restore(&replay, 1).unwrap();
         }
     }
     for (measure, expected) in [

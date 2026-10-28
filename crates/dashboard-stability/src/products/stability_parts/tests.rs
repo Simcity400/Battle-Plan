@@ -412,7 +412,9 @@ fn prepared_parts_match_the_product_with_missing_lines_character_reads_and_resum
             let saved = serde_json::to_vec(&prepared).unwrap();
             assert_eq!(saved, serde_json::to_vec(&sampled).unwrap());
             prepared = serde_json::from_slice(&saved).unwrap();
+            prepared.restore(&source.replay(), 1).unwrap();
             sampled = serde_json::from_slice(&saved).unwrap();
+            sampled.restore(&source.replay(), 1).unwrap();
             sampled.sampled_projection = true;
         }
     }
@@ -557,21 +559,41 @@ fn prepared_parts_match_the_product_with_missing_lines_character_reads_and_resum
 }
 
 #[test]
-fn recent_naming_views_are_saved_once_and_stay_shared_after_resume() {
+fn recent_naming_views_are_saved_by_hour_and_read_again_on_restore() {
     use super::*;
     let frame = stability_frame(0, stability_inputs(), 0, vec![]);
+    let frames: Vec<_> = (0..20)
+        .map(|hour| {
+            let mut frame = frame.clone();
+            frame.hour = hour;
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     let mut scan = Scan::default();
-    for hour in 0..20 {
-        let mut frame = frame.clone();
-        frame.hour = hour;
-        scan.step(&frame, None, None, |_, _, _, _, _, _| Ok(()))
-            .unwrap();
-    }
+    replay
+        .read_block_alone(
+            &replay.index[0],
+            &TableId::ALL,
+            |_, frame| scan.step(frame, None, None, |_, _, _, _, _, _| Ok(())),
+            || Ok(()),
+        )
+        .unwrap();
+    // Each hour and its views' indices: every hour holds the same two views.
     let json = serde_json::to_value(&scan).unwrap();
-    assert_eq!(json["recent_names"][0].as_array().unwrap().len(), 20);
-    assert_eq!(json["recent_names"][1].as_array().unwrap().len(), 2);
-    let resumed: Scan = serde_json::from_value(json).unwrap();
-    assert_eq!(resumed.recent_names, scan.recent_names);
+    assert_eq!(
+        json["recent_names"],
+        serde_json::json!((0..20).map(|hour| [hour, 0, 0]).collect::<Vec<_>>())
+    );
+    let mut resumed: Scan = serde_json::from_value(json.clone()).unwrap();
+    assert!(resumed.recent_names.is_empty());
+    assert_eq!(
+        serde_json::to_value(&resumed).unwrap(),
+        json,
+        "saved as restored"
+    );
+    resumed.restore_names(&replay, 1).unwrap();
+    assert_eq!(*resumed.recent_names, *scan.recent_names);
     assert!(SharedView::ptr_eq(
         &resumed.recent_names[0].1,
         &resumed.recent_names[19].1
@@ -580,6 +602,90 @@ fn recent_naming_views_are_saved_once_and_stay_shared_after_resume() {
         &resumed.recent_names[0].2,
         &resumed.recent_names[19].2
     ));
+    assert_eq!(serde_json::to_value(&resumed).unwrap(), json);
+}
+
+/// A frame whose SliceReads date countries 1 and 2's inputs at `reads`
+/// (and country 1's lines at 5), with its inputs read whole or truncated.
+fn reads_frame(hour: i32, reads: [i32; 2], truncated: bool) -> DecodedFrame {
+    use replay_data::rows::SliceReadRow;
+    let mut frame = stability_frame(hour, stability_inputs(), hour, vec![]);
+    let read = |table: TableId, owner, sample_hour| SliceReadRow {
+        table: table as u32,
+        owner,
+        sample_hour,
+    };
+    let mut rows = vec![
+        read(TableId::CountryStabilityInputs, 1, reads[0]),
+        read(TableId::CountryStabilityInputs, 2, reads[1]),
+        read(TableId::CountryStabilityLines, 1, 5),
+    ];
+    rows.sort_by_key(|row| (row.table, row.owner));
+    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(rows));
+    if truncated {
+        let inputs = &mut *frame.tables[TableId::CountryStabilityInputs.index()];
+        let TableView::Complete(rows) = inputs.clone() else {
+            panic!("the fixture's inputs are complete");
+        };
+        *inputs = TableView::Truncated { rows, missing: 1 };
+    }
+    frame
+}
+
+#[test]
+fn retired_read_hours_keep_how_many_recorded_no_lines() {
+    use super::*;
+    let mut scan = Scan::default();
+    let track = scan.tracks.entry("GER".into()).or_default();
+    track.unlined = [10, 20, 30, 40].into();
+    track.lined = [20, 25, 40].into();
+    let before = scan.warnings("GER");
+    assert!(before[0].starts_with("GER: 2 reads"), "{before:?}");
+    // Every country's inputs were last read whole at 30 or later; lines'
+    // reads do not count.
+    scan.admit_reads(&reads_frame(41, [30, 35], false));
+    scan.retire_reads();
+    let track = &scan.tracks["GER"];
+    assert_eq!(track.unlined, BTreeSet::from([30, 40]));
+    assert_eq!(track.lined, BTreeSet::from([40]));
+    assert_eq!(track.unlined_before, 1, "10 never recorded lines; 20 did");
+    assert_eq!(scan.warnings("GER"), before);
+    // Without an hour whose inputs were read whole nothing retires.
+    let mut fresh = Scan::default();
+    fresh.tracks.insert("GER".into(), Track::default());
+    fresh.tracks.get_mut("GER").unwrap().unlined.insert(10);
+    fresh.admit_reads(&reads_frame(41, [30, 35], true));
+    fresh.retire_reads();
+    assert_eq!(fresh.tracks["GER"].unlined, BTreeSet::from([10]));
+}
+
+#[test]
+fn a_truncated_inputs_read_retires_no_read_its_recovery_reads_again() {
+    use super::*;
+    let mut scan = Scan::default();
+    // Country 1's read 10 recorded no lines.
+    scan.tracks
+        .entry("GER".into())
+        .or_default()
+        .unlined
+        .insert(10);
+    scan.admit_reads(&reads_frame(12, [10, 30], false));
+    // A truncated read returns country 1 at 20, in its own frame only.
+    scan.admit_reads(&reads_frame(20, [20, 30], true));
+    scan.retire_reads();
+    assert_eq!(scan.tracks["GER"].unlined, BTreeSet::from([10]));
+    assert_eq!(scan.tracks["GER"].unlined_before, 0);
+    // The next hour dates country 1 by its complete read 10 again, which
+    // still recorded no lines: it is the same missing read.
+    scan.tracks.get_mut("GER").unwrap().unlined.insert(10);
+    assert!(scan.warnings("GER")[0].starts_with("GER: 1 reads"));
+    // Once every country's complete read has moved past 10 it retires, and
+    // still counts once.
+    scan.admit_reads(&reads_frame(41, [40, 30], false));
+    scan.retire_reads();
+    assert!(scan.tracks["GER"].unlined.is_empty());
+    assert_eq!(scan.tracks["GER"].unlined_before, 1);
+    assert!(scan.warnings("GER")[0].starts_with("GER: 1 reads"));
 }
 
 #[test]
@@ -687,6 +793,7 @@ fn appearance_frame(hour: i32, lined: bool, cosmetic: Option<&str>) -> DecodedFr
 fn assert_parts_restore_continues(frames: &[DecodedFrame]) {
     use super::*;
     let flag = AtomicBool::new(false);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();
     dashboard_base::prepared::observer_tests::assert_restore_continues(
         replay_data::format::FormatVersion::CURRENT,
         &[&frames[..4], &frames[4..]],
@@ -703,14 +810,16 @@ fn assert_parts_restore_continues(frames: &[DecodedFrame]) {
                 .unwrap();
         },
         |fixture| {
-            serde_json::from_reader::<_, Prepared>(
+            let mut prepared = serde_json::from_reader::<_, Prepared>(
                 fixture
                     .store
                     .read(&fixture.key, "parts-continuation-1", 0)
                     .unwrap()
                     .unwrap(),
             )
-            .unwrap()
+            .unwrap();
+            prepared.restore(&replay, 1).unwrap();
+            prepared
         },
     );
 }

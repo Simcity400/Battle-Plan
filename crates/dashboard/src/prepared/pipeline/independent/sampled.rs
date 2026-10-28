@@ -440,6 +440,18 @@ impl Sampled for StabilityAccumulator {
         Self::default()
     }
 
+    /// The state its last commit saved, with the naming views it saved by
+    /// hour read again from the recording.
+    fn load(load: &Load<'_>, branch: u64) -> io::Result<Option<Self>> {
+        let Some(mut state) =
+            census::read::<Self>(load, &census::continuation(Self::family().name, branch))?
+        else {
+            return Ok(None);
+        };
+        state.restore(load.replay, branch)?;
+        Ok(Some(state))
+    }
+
     fn observe(
         &mut self,
         frame: &DecodedFrame,

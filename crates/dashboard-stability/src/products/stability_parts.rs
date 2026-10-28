@@ -25,7 +25,7 @@ use dashboard_text::{
     identity::NamingCountry,
     metadata::{mapped_slot, validate_campaign},
 };
-use replay::container::Replay;
+use replay::container::{Replay, SeekResult};
 use replay_data::{rows::TableId, rows::tables};
 use replay_frame::{frame::FrameDecoder, frame::SharedView, frame::TableView};
 use serde::{Deserialize, Serialize};
@@ -369,6 +369,8 @@ struct Track {
     current: Option<ReadParts>,
     unlined: BTreeSet<i32>,
     lined: BTreeSet<i32>,
+    /// How many retired reads recorded no lines ([`Scan::retire_reads`]).
+    unlined_before: usize,
     available: bool,
     naming: Option<NamingCountry>,
     refused: dashboard_text::catalogue::Refusals,
@@ -378,8 +380,7 @@ struct Scan {
     #[cfg(test)]
     calculated_reads: usize,
     tracks: BTreeMap<String, Track>,
-    #[serde(with = "recent_views")]
-    recent_names: VecDeque<(i32, SharedView, SharedView)>,
+    recent_names: RecentNames,
     hour: Option<i32>,
     active: BTreeSet<String>,
     #[serde(skip)]
@@ -389,6 +390,10 @@ struct Scan {
     /// The last complete SliceReads read, held as the frame's own view.
     #[serde(skip)]
     reads: Option<SharedView>,
+    /// The last complete SliceReads read at an hour whose inputs were read
+    /// whole ([`Self::admit_reads`]).
+    #[serde(skip)]
+    admitted: Option<SharedView>,
     #[serde(skip)]
     removed: Vec<String>,
     #[serde(skip)]
@@ -420,7 +425,147 @@ fn appearance(
     }
 }
 
+/// The recorded hours whose character tables name a read's characters, each
+/// with its Characters and LexicalTokens views. Saved as each hour and which
+/// hours share each view; a restored scan reads the views again from the
+/// recording ([`Scan::restore_names`]).
+#[derive(Default)]
+struct RecentNames {
+    views: VecDeque<(i32, SharedView, SharedView)>,
+    /// Restored hours not yet read again, each with its two views' indices.
+    pending: Vec<(i32, usize, usize)>,
+}
+
+impl std::ops::Deref for RecentNames {
+    type Target = VecDeque<(i32, SharedView, SharedView)>;
+    fn deref(&self) -> &Self::Target {
+        &self.views
+    }
+}
+
+impl std::ops::DerefMut for RecentNames {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.views
+    }
+}
+
+impl Serialize for RecentNames {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if !self.pending.is_empty() {
+            return self.pending.serialize(serializer);
+        }
+        let mut indices: [BTreeMap<*const TableView, usize>; 2] = Default::default();
+        let mut index = |table: usize, view: &SharedView| {
+            let next = indices[table].len();
+            *indices[table].entry(view.as_ptr()).or_insert(next)
+        };
+        self.views
+            .iter()
+            .map(|(hour, characters, lexical)| (*hour, index(0, characters), index(1, lexical)))
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for RecentNames {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self {
+            views: VecDeque::new(),
+            pending: Vec::deserialize(deserializer)?,
+        })
+    }
+}
+
 impl Scan {
+    /// Read again from the recording the naming views a restored scan
+    /// saved by hour: each view once, at the first hour holding it, whose
+    /// tables are the ones the scan held there.
+    fn restore_names(&mut self, replay: &Replay, branch: u64) -> io::Result<()> {
+        let pending = std::mem::take(&mut self.recent_names.pending);
+        let mut views: [BTreeMap<usize, SharedView>; 2] = Default::default();
+        for &(hour, characters, lexical) in &pending {
+            if views[0].contains_key(&characters) && views[1].contains_key(&lexical) {
+                continue;
+            }
+            let frame = match replay.seek_selected(
+                branch,
+                hour,
+                Some(&[
+                    TableId::Campaign,
+                    TableId::Characters,
+                    TableId::LexicalTokens,
+                ]),
+            )? {
+                SeekResult::Frame(frame) => frame,
+                SeekResult::Gap { reason, .. } => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Stability naming hour {hour} is not in the recording: {reason}"),
+                    ));
+                }
+            };
+            views[0]
+                .entry(characters)
+                .or_insert_with(|| frame.tables[TableId::Characters.index()].clone());
+            views[1]
+                .entry(lexical)
+                .or_insert_with(|| frame.tables[TableId::LexicalTokens.index()].clone());
+        }
+        self.recent_names.views = pending
+            .into_iter()
+            .map(|(hour, characters, lexical)| {
+                (
+                    hour,
+                    views[0][&characters].clone(),
+                    views[1][&lexical].clone(),
+                )
+            })
+            .collect();
+        Ok(())
+    }
+
+    /// Keep the hour's SliceReads as the admitted reads when its inputs are
+    /// complete. A truncated read dates the countries it returned at its own
+    /// hour in its frame only; the hours after it date them by their earlier
+    /// complete reads again.
+    fn admit_reads(&mut self, decoded: &replay_frame::frame::DecodedFrame) {
+        if decoded.complete::<tables::CountryStabilityInputs>().is_ok()
+            && decoded.complete::<tables::SliceReads>().is_ok()
+        {
+            self.admitted = Some(decoded.tables[TableId::SliceReads.index()].clone());
+        }
+    }
+
+    /// Retire each track's read hours below the earliest read the admitted
+    /// reads date any country's inputs by, keeping how many recorded no
+    /// lines. A complete read's hour only moves on, and a truncated read's
+    /// is its own hour, so no later hour reads a retired one again.
+    fn retire_reads(&mut self) {
+        let floor = self
+            .admitted
+            .as_deref()
+            .and_then(|view| match view {
+                TableView::Complete(rows) => rows.rows::<tables::SliceReads>(),
+                _ => None,
+            })
+            .and_then(|rows| {
+                rows.iter()
+                    .filter(|row| row.table == TableId::CountryStabilityInputs as u32)
+                    .map(|row| row.sample_hour)
+                    .min()
+            });
+        let Some(floor) = floor else {
+            return;
+        };
+        for track in self.tracks.values_mut() {
+            let unlined = track.unlined.split_off(&floor);
+            let lined = track.lined.split_off(&floor);
+            track.unlined_before += track.unlined.difference(&track.lined).count();
+            track.unlined = unlined;
+            track.lined = lined;
+        }
+    }
+
     /// The naming projection of changed appearance rows. Other appearance
     /// fields do not rename a part; a new row still enters the projection.
     fn apply_appearances(
@@ -541,6 +686,12 @@ impl Scan {
         ) -> io::Result<()>,
     ) -> io::Result<()> {
         let cpu = ::replay_frame::cpu::scope_phase("stability:observe_apply");
+        if !self.recent_names.pending.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Stability naming views were not read again after a restore",
+            ));
+        }
         let hour = decoded.hour;
         let previous = self.hour;
         let adjacent = previous.and_then(|hour| hour.checked_add(1)) == Some(hour);
@@ -601,6 +752,7 @@ impl Scan {
                 .is_some()
                 .then(|| decoded.tables[TableId::SliceReads.index()].clone());
         }
+        self.admit_reads(decoded);
         if changed(TableId::CountryStabilityLines)
             && !self.apply_lines(decoded, delta(TableId::CountryStabilityLines), &mut dirty)
         {
@@ -882,7 +1034,9 @@ impl Scan {
     }
     fn warnings(&self, tag: &str) -> Vec<String> {
         let track = self.tracks.get(tag);
-        let missing = track.map_or(0, |track| track.unlined.difference(&track.lined).count());
+        let missing = track.map_or(0, |track| {
+            track.unlined_before + track.unlined.difference(&track.lined).count()
+        });
         let mut warnings = Vec::new();
         if missing != 0 {
             warnings.push(format!(
@@ -1052,98 +1206,6 @@ pub(crate) fn scan_parts(
 
 #[cfg(test)]
 mod tests;
-
-// Naming consumes rows at the retained hour, never SharedView acquisition dates.
-// Save each row allocation once, including equal rows read at different dates.
-// The existing checkpoint codec retains complete/truncated/unavailable inputs.
-mod recent_views {
-    use super::*;
-    use replay_frame::frame::DecodedFrame;
-    type Names = VecDeque<(i32, SharedView, SharedView)>;
-    type Archive = (Vec<(i32, usize, usize)>, Vec<(usize, Vec<u8>)>);
-    pub fn serialize<S: serde::Serializer>(
-        views: &Names,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        let mut indices = BTreeMap::new();
-        let mut snapshots = Vec::new();
-        let mut save = |hour, table: TableId, view: &SharedView| -> io::Result<usize> {
-            let next = snapshots.len();
-            if let Some(index) = indices.get(&(table.index(), view.as_ptr())) {
-                return Ok(*index);
-            }
-            let mut frame = DecodedFrame {
-                branch: 0,
-                hour,
-                metrics: Default::default(),
-                tables: std::array::from_fn(|_| {
-                    TableView::Unavailable {
-                        reason: "Unused naming input".into(),
-                    }
-                    .into()
-                }),
-            };
-            frame.tables[table.index()] = view.clone();
-            let mut bytes = Vec::new();
-            frame.encode_checkpoint(&mut bytes)?;
-            snapshots.push((
-                table.index(),
-                zstd::stream::encode_all(bytes.as_slice(), 3)?,
-            ));
-            indices.insert((table.index(), view.as_ptr()), next);
-            Ok(next)
-        };
-        let hours = views
-            .iter()
-            .map(|(hour, characters, lexical)| {
-                Ok((
-                    *hour,
-                    save(*hour, TableId::Characters, characters)?,
-                    save(*hour, TableId::LexicalTokens, lexical)?,
-                ))
-            })
-            .collect::<io::Result<Vec<_>>>()
-            .map_err(serde::ser::Error::custom)?;
-        (hours, snapshots).serialize(serializer)
-    }
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Names, D::Error> {
-        let (hours, snapshots) = Archive::deserialize(deserializer)?;
-        let snapshots = snapshots
-            .into_iter()
-            .map(|(table, bytes)| {
-                let bytes = zstd::stream::decode_all(bytes.as_slice())?;
-                let mut decoder = replay_data::codec::Decoder::new(&bytes);
-                let frame = DecodedFrame::decode_checkpoint(&mut decoder)?;
-                decoder.finish()?;
-                frame
-                    .tables
-                    .get(table)
-                    .cloned()
-                    .ok_or_else(|| dashboard_core::invalid("Invalid naming table"))
-            })
-            .collect::<io::Result<Vec<_>>>()
-            .map_err(serde::de::Error::custom)?;
-        hours
-            .into_iter()
-            .map(|(hour, characters, lexical)| {
-                Ok((
-                    hour,
-                    snapshots
-                        .get(characters)
-                        .cloned()
-                        .ok_or_else(|| dashboard_core::invalid("Missing naming characters"))?,
-                    snapshots
-                        .get(lexical)
-                        .cloned()
-                        .ok_or_else(|| dashboard_core::invalid("Missing naming tokens"))?,
-                ))
-            })
-            .collect::<io::Result<_>>()
-            .map_err(serde::de::Error::custom)
-    }
-}
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
@@ -1337,12 +1399,17 @@ impl Prepared {
         }
         Ok(())
     }
+    /// Read again from the recording what a restored state saved by hour.
+    pub(crate) fn restore(&mut self, replay: &Replay, branch: u64) -> io::Result<()> {
+        self.scan.restore_names(replay, branch)
+    }
     pub fn flush(
         &mut self,
         writer: &mut store::Writer,
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        self.scan.retire_reads();
         crate::prepared_stability::flush(
             &self.actors,
             &mut self.batch,

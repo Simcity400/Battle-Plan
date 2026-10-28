@@ -300,6 +300,7 @@ fn stability_measures_answer_unprepared_spans_from_the_shared_sampler_as_prepara
 
     // Complete preparation through the production observer.
     accumulator = serde_json::from_slice(&serde_json::to_vec(&accumulator).unwrap()).unwrap();
+    accumulator.restore(&replay, 1).unwrap();
     for frame in &frames[4..] {
         accumulator.observe(frame).unwrap();
     }

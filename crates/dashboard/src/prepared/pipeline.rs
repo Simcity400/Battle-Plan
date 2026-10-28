@@ -1832,6 +1832,7 @@ fn load_branch(
     if state.schema != SCHEMA {
         return Err(invalid("Unsupported prepared branch schema"));
     }
+    state.stability.restore(replay, branch)?;
     if independent::hourly("production") && state.production.schema != 1 {
         return Err(invalid("Unsupported prepared production state schema"));
     }
