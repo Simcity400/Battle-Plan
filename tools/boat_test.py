@@ -127,11 +127,85 @@ class Rank(unittest.TestCase):
         states = {"a": vm("a", "idle", "default"), "b": vm("b", "stopped", "default")}
         self.assertEqual(bt.rank(["a", "b"], states, None, "large", lambda _: False), ["b"])
 
+    def test_the_running_vm_with_the_least_to_compile_again_comes_first(self):
+        states = {vmid: vm(vmid, state) for vmid, state in [("a", "stopped"), ("b", "idle"), ("c", "idle"), ("d", "idle")]}
+        rebuilds = {"a": (0, 0), "b": (60, 0), "c": (3, 0), "d": (60, 0)}.get
+        self.assertEqual(bt.rank(sorted(states), states, "d", "large", lambda _: False, rebuilds=rebuilds), ["c", "d", "b", "a"])
+
     def test_resume_only_grows(self):
         self.assertEqual(bt.resume_type("default", "large"), "large")
         self.assertIsNone(bt.resume_type("large", "default"))
         self.assertIsNone(bt.resume_type("large", "large"))
         self.assertIsNone(bt.resume_type("default", "default"))
+
+
+class Plan(unittest.TestCase):
+    """A workspace where top depends on middle, middle on base, and top's tests on probe."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        (self.root / "Cargo.toml").write_text('[workspace]\nmembers = ["crates/*"]\n[workspace.dependencies]\nbase = { path = "crates/base" }\nserde = "1"\n')
+        crates = {
+            "base": "",
+            "middle": "[dependencies]\nbase.workspace = true\nserde.workspace = true\n",
+            "top": '[dependencies]\nmid = { path = "../middle", package = "middle" }\n[dev-dependencies]\nprobe = { path = "../probe" }\n',
+            "probe": "",
+        }
+        for name, body in crates.items():
+            (self.root / "crates" / name).mkdir(parents=True)
+            (self.root / "crates" / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n{body}')
+        self.manifest = {f"crates/{name}/src/lib.rs": name for name in crates} | {"Cargo.lock": "lock", "README.md": "readme"}
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def plan(self, *args, manifest=None):
+        return bt.Plan(self.root, manifest or self.manifest, list(args))
+
+    def built(self, plan, used=1.0):
+        return {"used": used, **bt.left_trees({}, {plan.key: plan.compiled_tree({}, True)}, used)}
+
+    def test_compiles_the_named_crates_with_their_dependencies_and_only_the_named_crates_tests(self):
+        self.assertEqual(self.plan("build", "--release", "-p", "top").compiled, {"top", "middle", "base"})
+        self.assertEqual(self.plan("check", "--all-targets", "-ptop").compiled, {"top", "middle", "base", "probe"})
+        self.assertEqual(self.plan("check", "-p", "top", "--test", "dump").compiled, {"top", "middle", "base", "probe"})
+        self.assertEqual(self.plan("check", "-p", "top", "--example=demo").compiled, {"top", "middle", "base", "probe"})
+        self.assertEqual(self.plan("check", "--package=middle").compiled, {"middle", "base"})
+        self.assertEqual(self.plan("check", "--workspace").compiled, {"top", "middle", "base", "probe"})
+
+    def test_a_changed_crate_compiles_again_with_everything_depending_on_it(self):
+        entry = self.built(self.plan("build", "--release", "-p", "top"))
+        for changed, expected in [("base", 3), ("middle", 2), ("top", 1), ("probe", 0)]:
+            plan = self.plan("build", "--release", "-p", "top", manifest={**self.manifest, f"crates/{changed}/src/lib.rs": "new"})
+            self.assertEqual(plan.rebuilds(entry), (expected, 0), changed)
+        self.assertEqual(self.plan("build", "--release", "-p", "top", manifest={**self.manifest, "README.md": "new"}).rebuilds(entry), (0, 0))
+        self.assertEqual(self.plan("build", "--release", "-p", "top", manifest={**self.manifest, "Cargo.lock": "new"}).rebuilds(entry), (3, 0))
+
+    def test_crates_the_cache_compiled_before_come_back_from_it(self):
+        first = self.plan("build", "--release", "-p", "top")
+        other = self.plan("build", "--release", "-p", "top", manifest={**self.manifest, "crates/base/src/lib.rs": "new"})
+        entry = {"used": 1.0, **bt.left_trees({}, {first.key: first.compiled_tree({}, True)}, 1.0), first.cache: first.cached_after({})}
+        entry = {**entry, "used": 2.0, **bt.left_trees(entry, {other.key: other.compiled_tree(entry, True)}, 2.0), other.cache: other.cached_after(entry)}
+        # The VM's target holds the other tree, its cache both.
+        self.assertEqual((first.rebuilds(entry), other.rebuilds(entry)), ((0, 3), (0, 0)))
+        # Another helper's run since voids the tree, never the cache; checks have none.
+        self.assertEqual(first.rebuilds({**entry, "used": 3.0}), (0, 3))
+        self.assertEqual(self.plan("check", "-p", "top").rebuilds(entry), (3, 0))
+
+    def test_a_tree_stands_only_until_another_run_uses_the_vm_and_only_for_its_profile(self):
+        release = self.plan("build", "--release", "-p", "top")
+        entry = self.built(release)
+        self.assertEqual(release.rebuilds({**entry, "used": 2.0}), (3, 0))
+        self.assertEqual(self.plan("check", "-p", "top").rebuilds(entry), (3, 0))
+        self.assertEqual(self.plan("build", "--profile", "release-lto", "-p", "top").rebuilds(entry), (3, 0))
+        check = self.plan("check", "-p", "middle")
+        after = {"used": 2.0, **bt.left_trees(entry, {check.key: check.compiled_tree(entry, True)}, 2.0)}
+        self.assertEqual((release.rebuilds(after), check.rebuilds(after)), ((0, 0), (0, 0)))
+        failed = {"used": 3.0, **bt.left_trees(after, {release.key: release.compiled_tree(after, False)}, 3.0)}
+        self.assertEqual(release.rebuilds(failed), (3, 0))
+        lost = {"used": 4.0, **bt.left_trees(after, {release.key: None}, 4.0)}
+        self.assertEqual((release.rebuilds(lost), check.rebuilds(lost)), ((3, 0), (0, 0)))
 
 
 class Parse(unittest.TestCase):
@@ -140,9 +214,11 @@ class Parse(unittest.TestCase):
         mode, cargo, outdir, refresh = bt.parse(["build", "--refresh-image", "--out", "x", "--release", "-p", "viewer"])
         self.assertEqual((mode, cargo, outdir, refresh), ("build", ["build", "--release", "-p", "viewer"], Path("x"), True))
         self.assertEqual(bt.parse(["ui"]), ("ui", [], None, False))
+        mode, cargo, outdir, _ = bt.parse(["build", "--out", "x", "--profile", "release-lto", "-p", "collector", "--lib"])
+        self.assertEqual((mode, cargo, outdir, bt.profile(cargo)), ("build", ["build", "--profile", "release-lto", "-p", "collector", "--lib"], Path("x"), "release-lto"))
 
     def test_refuses_what_the_tool_owns(self):
-        for args in (["check", "-j", "3"], ["check", "-j3"], ["check", "--jobs=2"], ["check", "--target", "x"], ["check", "--target-dir=x"], ["check", "--message-format=json"], ["build", "--out", "x", "-p", "viewer"], ["build", "--release"], ["ui", "x"], ["test"], []):
+        for args in (["check", "-j", "3"], ["check", "-j3"], ["check", "--jobs=2"], ["check", "--target", "x"], ["check", "--target-dir=x"], ["check", "--message-format=json"], ["build", "--out", "x", "-p", "viewer"], ["build", "--out", "x", "--profile", "dev"], ["build", "--out", "x", "--profile=test"], ["build", "--release"], ["ui", "x"], ["test"], []):
             with self.subTest(args=args), self.assertRaises(bt.Failure):
                 bt.parse(args)
 

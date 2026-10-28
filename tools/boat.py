@@ -4,6 +4,7 @@
     python tools/boat.py check --workspace --all-targets
     python tools/boat.py ui
     python tools/boat.py build --out <dir> --release -p viewer --bin viewer
+    python tools/boat.py build --out <dir> --profile release-lto -p collector --lib
     python tools/boat.py reconcile
 
 Run it inside the worktree. Its tracked and unignored files, uncommitted changes included, are
@@ -19,7 +20,9 @@ GUI builds with `custom-protocol` build and embed the current UI on the VM.
 Worktrees share VMs, locks and `logs/timings.jsonl` under the main checkout's `captures/boat`
 (BOAT_STATE_DIR overrides). A run keeps its VM alive with a short lease it renews, and leaves
 it with a 5-minute idle tail, so the next run reuses it warm and an interrupted run strands it
-for minutes, not hours.
+for minutes, not hours. Of the running VMs, a run takes the one whose last build of its profile
+leaves the fewest of the run's crates to compile again; release builds also reuse, through a
+compile cache on each VM, any crate that VM compiled before from the same inputs.
 `reconcile`, which every run also does, ends long lifetimes on VMs no run holds.
 """
 
@@ -38,6 +41,7 @@ import subprocess
 import sys
 import tarfile
 import threading
+import tomllib
 import time
 import uuid
 
@@ -366,8 +370,8 @@ class State:
             atomic_json(self.pool / (vmid + ".json"), {**self.entry(vmid), **fields})
 
 
-def rank(registered, states, lane_vm, size, cooling, used=lambda vmid: 0):
-    """Usable VMs, best first: running before stopped, then the lane's own, then the right size, then the least recently used."""
+def rank(registered, states, lane_vm, size, cooling, used=lambda vmid: 0, rebuilds=lambda vmid: (0, 0)):
+    """Usable VMs, best first: running before stopped, then the fewest crates to compile anew and to take from the cache, the lane's own, the right size, the least recently used."""
     ranked = []
     for vmid in registered:
         vm = states.get(vmid)
@@ -378,8 +382,148 @@ def rank(registered, states, lane_vm, size, cooling, used=lambda vmid: 0):
         if size == "large" and vm.get("type") != "large" and not stopped:
             continue
         # Another lane's VM holds that lane's build cache: take the one whose lane has been away longest.
-        ranked.append((stopped, vmid != lane_vm, vm.get("type") != size, used(vmid), vmid))
+        ranked.append((stopped, rebuilds(vmid), vmid != lane_vm, vm.get("type") != size, used(vmid), vmid))
     return [row[-1] for row in sorted(ranked)]
+
+
+# Files outside crates/ that every crate's build reads.
+SHARED_FILES = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"}
+SHARED_DIRS = {".cargo", "vendor"}
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value).encode()).hexdigest()[:16]
+
+
+def trees(manifest):
+    """A digest of each crate directory's files, and (`*`) of the files outside crates/ every build reads."""
+    groups = {}
+    for name, digest in manifest.items():
+        parts = name.split("/")
+        if parts[0] == "crates" and len(parts) > 2:
+            unit = "/".join(parts[:2])
+        elif name in SHARED_FILES or parts[0] in SHARED_DIRS:
+            unit = "*"
+        else:
+            continue
+        groups.setdefault(unit, []).append((name, digest))
+    return {unit: hashlib.sha256(json.dumps(sorted(files)).encode()).hexdigest()[:16] for unit, files in groups.items()}
+
+
+def workspace(worktree):
+    """Each workspace crate's directory by package name, and the workspace crates its targets and its tests depend on."""
+    try:
+        shared = tomllib.loads((worktree / "Cargo.toml").read_text(encoding="utf-8")).get("workspace", {}).get("dependencies", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}, {}, {}
+    dirs, needs, tests = {}, {}, {}
+
+    def package(name, spec):
+        if isinstance(spec, dict) and spec.get("workspace"):
+            spec = shared.get(name)
+        return spec.get("package", name) if isinstance(spec, dict) and "path" in spec else None
+
+    for path in sorted((worktree / "crates").glob("*/Cargo.toml")):
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        name = data.get("package", {}).get("name")
+        if not name:
+            continue
+        dirs[name] = "crates/" + path.parent.name
+        tables = [data, *data.get("target", {}).values()]
+        needs[name] = {package(dep, spec) for table in tables for kind in ("dependencies", "build-dependencies") for dep, spec in table.get(kind, {}).items()}
+        tests[name] = {package(dep, spec) for table in tables for dep, spec in table.get("dev-dependencies", {}).items()}
+    return dirs, {name: deps & dirs.keys() for name, deps in needs.items()}, {name: deps & dirs.keys() for name, deps in tests.items()}
+
+
+class Plan:
+    """The workspace crates a run compiles, and how many of them a VM compiles again after its last build of the profile."""
+
+    def __init__(self, worktree, manifest, cargo):
+        # A check's metadata and a build's code are kept apart, per profile.
+        self.key = f"tree_{cargo[0]}_{profile(cargo)}"
+        # Only release builds go through the compile cache.
+        self.cache = f"cache_{cargo[0]}_{profile(cargo)}" if cargo[0] == "build" else None
+        self.trees = trees(manifest)
+        self.dirs, needs, tests = workspace(worktree)
+        named = {arg.split("=", 1)[1] if "=" in arg else arg[2:] for arg in cargo if arg.startswith(("--package=", "-p")) and arg not in {"-p", "--package"}}
+        named |= {cargo[at + 1] for at, arg in enumerate(cargo[:-1]) if arg in {"-p", "--package"}}
+        roots = set(self.dirs) if "--workspace" in cargo or not named else named & self.dirs.keys()
+        # Any test, bench or example target compiles the named crates' dev-dependencies.
+        tested = any(arg in {"--all-targets", "--tests", "--benches", "--examples", "--test", "--bench", "--example"} or arg.startswith(("--test=", "--bench=", "--example=")) for arg in cargo)
+        self.compiled, pending = set(), [dep for root in roots for dep in (needs.get(root, set()) | (tests.get(root, set()) if tested else set()))] + list(roots)
+        while pending:
+            crate = pending.pop()
+            if crate not in self.compiled:
+                self.compiled.add(crate)
+                pending.extend(needs.get(crate, ()))
+        # Each crate's inputs, as Cargo and the compile cache tell its builds apart: its files, the
+        # files every build reads and its dependencies' inputs; a tested crate's, its dev-dependencies' too.
+        self.inputs = {}
+
+        def inputs(crate):
+            if crate not in self.inputs:
+                deps = sorted(inputs(dep) for dep in needs.get(crate, set()) & self.compiled)
+                self.inputs[crate] = digest([self.trees.get("*"), self.trees.get(self.dirs[crate]), deps])
+            return self.inputs[crate]
+
+        for crate in sorted(self.compiled):
+            inputs(crate)
+        if tested:
+            # After their dependants', which build against the library alone.
+            for root in sorted(roots & self.compiled):
+                self.inputs[root] = digest([self.inputs[root], sorted(self.inputs[dev] for dev in tests.get(root, set()) & self.compiled)])
+
+    def rebuilds(self, entry):
+        """The crates a VM compiles anew, then those its compile cache gives back."""
+        # A tree stands only while no run has used the VM since it was recorded; older helpers record none.
+        tree = (entry.get(self.key) if entry.get(self.key + "_used") == entry.get("used") else None) or {}
+        cached = (entry.get(self.cache) or {}) if self.cache else {}
+        stale = [crate for crate in self.compiled if tree.get(crate) != self.inputs[crate]]
+        hits = sum(self.inputs[crate] in cached.get(crate, ()) for crate in stale)
+        return (len(stale) - hits, hits)
+
+    def compiled_tree(self, entry, built):
+        """The VM's tree of the profile after this run compiled its crates (`built`), or left them half compiled."""
+        tree = dict((entry.get(self.key) if entry.get(self.key + "_used") == entry.get("used") else None) or {})
+        for crate in self.compiled:
+            if built:
+                tree[crate] = self.inputs[crate]
+            else:
+                tree.pop(crate, None)
+        return tree
+
+    def cached_after(self, entry):
+        """The VM's compile cache after this run built its crates: the latest inputs of each crate it compiled."""
+        cached = {crate: list(seen) for crate, seen in (entry.get(self.cache) or {}).items()}
+        for crate in self.compiled:
+            seen = [inputs for inputs in cached.get(crate, []) if inputs != self.inputs[crate]]
+            cached[crate] = (seen + [self.inputs[crate]])[-CACHED_INPUTS:]
+        return cached
+
+
+# The inputs of a crate the compile cache is taken to keep: a few lanes' worth, well inside its 16 GB.
+CACHED_INPUTS = 8
+
+
+def profile(cargo):
+    """The Cargo profile the arguments build with."""
+    named = [cargo[at + 1] for at, arg in enumerate(cargo[:-1]) if arg == "--profile"] + [arg.split("=", 1)[1] for arg in cargo if arg.startswith("--profile=")]
+    return named[-1] if named else "release" if "--release" in cargo else "dev"
+
+
+def left_trees(entry, changed, now):
+    """The VM's trees as a run leaves them at `now`: `changed` replaces those it compiled (None: unknown)."""
+    fields = {}
+    for key in {*changed, *(key for key in entry if key.startswith("tree_") and not key.endswith("_used"))}:
+        if key in changed:
+            fields[key] = changed[key]
+        else:
+            fields[key] = entry.get(key) if entry.get(key + "_used") == entry.get("used") else None
+        fields[key + "_used"] = now
+    return fields
 
 
 def resume_type(current, size):
@@ -436,7 +580,7 @@ class Lease:
             say(f"WARNING: {self.vmid} stops when its {LEASE_SECONDS} s lease runs out: {error}")
 
 
-def choose(state, lane, size, passed=()):
+def choose(state, lane, size, passed=(), rebuilds=lambda vmid: (0, 0)):
     """Locks the best free VM not passed by, or clones a new one; returns (vmid, vm, lock, created)."""
     allocator = state.allocator()
     try:
@@ -444,7 +588,7 @@ def choose(state, lane, size, passed=()):
         reconcile(state, states)
         now = time.time()
         registered = [vmid for vmid in state.registered() if vmid not in passed]
-        for vmid in rank(registered, states, state.lane_vm(lane), size, lambda vmid: state.cooling(vmid, now), lambda vmid: state.entry(vmid).get("used", 0)):
+        for vmid in rank(registered, states, state.lane_vm(lane), size, lambda vmid: state.cooling(vmid, now), lambda vmid: state.entry(vmid).get("used", 0), rebuilds):
             try:
                 return vmid, states[vmid], state.lock(vmid), False
             except OSError:
@@ -483,11 +627,11 @@ def wait_hydrated(vmid):
         time.sleep(3)
 
 
-def acquire(state, lane, size, token, record):
+def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0)):
     """Claims a VM locally and remotely; returns (vmid, lock, lease, remote source manifest)."""
     passed = set()
     for _ in range(3):
-        vmid, vm, lock, created = choose(state, lane, size, passed)
+        vmid, vm, lock, created = choose(state, lane, size, passed, rebuilds)
         record.update(vm=vmid, vm_type=vm.get("type"), vm_state=vm.get("state"), created=created)
         say(f"Boat VM {vmid} ({vm.get('type')}, {vm.get('state')}), lane {lane[:10]}")
         lease = None
@@ -728,7 +872,7 @@ def refresh_image(vmid, token, worktree, revision):
 def parse(argv):
     """Returns (mode, cargo arguments, output directory, refresh image)."""
     if not argv or argv[0] not in {"check", "build", "ui", "reconcile"}:
-        raise Failure("Usage: boat.py check <cargo args> | build --out <dir> [--refresh-image] --release <cargo args> | ui | reconcile")
+        raise Failure("Usage: boat.py check <cargo args> | build --out <dir> [--refresh-image] --release|--profile <name> <cargo args> | ui | reconcile")
     mode, rest = argv[0], list(argv[1:])
     outdir, refresh = None, False
     if mode in {"ui", "reconcile"}:
@@ -745,8 +889,9 @@ def parse(argv):
             else:
                 outdir = Path(rest[1])
                 del rest[:2]
-        if outdir is None or "--release" not in rest:
-            raise Failure("build needs --out <dir> and --release")
+        # Release builds only: an optimised profile such as release-lto inherits release.
+        if outdir is None or profile(rest) in {"dev", "test"}:
+            raise Failure("build needs --out <dir> and --release or --profile <optimised profile>")
     for arg in rest:
         if arg in {"--target", "--target-dir"} or arg.startswith(("--target=", "--target-dir=", "--message-format")):
             raise Failure("The target, target directory and message format belong to the tool")
@@ -792,24 +937,34 @@ def run(argv):
 
     lock = lease = stage = vmid = None
     claimed = running = False
+    changed, cached = {}, {}
     cargo_exit = None
     failure = None
     try:
         stage = state.jobs / token
         stage.mkdir()
-        vmid, lock, lease, old = acquire(state, lane, machine_size(mode, cargo), token, record)
+        plan = Plan(worktree, manifest, cargo) if mode != "ui" else None
+        rebuilds = (lambda vmid: plan.rebuilds(state.entry(vmid))) if plan else (lambda vmid: (0, 0))
+        vmid, lock, lease, old = acquire(state, lane, machine_size(mode, cargo), token, record, rebuilds)
+        record["rebuilds"] = rebuilds(vmid)
         claimed = True
         enter("sync")
         source = send_source(vmid, worktree, manifest, old, stage, token)
         source_digest = record["source_sha256"] = manifest_digest(manifest)
         enter("run")
         running = True
+        if plan:
+            changed[plan.key] = None
         # The job synchronizes the tree first; it releases its claim whether that or Cargo fails.
         status, output = remote(vmid, "ui" if mode == "ui" else mode, token, "--sync", source, *([] if mode == "ui" else cargo), stream=True)
         claimed = False
         if status == SYNC_FAILED:
             raise Failure("Remote source synchronization failed; see the remote output above")
         cargo_exit = status
+        if plan:
+            changed[plan.key] = plan.compiled_tree(state.entry(vmid), cargo_exit == 0)
+            if plan.cache and cargo_exit == 0:
+                cached = {plan.cache: plan.cached_after(state.entry(vmid))}
         atomic_json(state.lanes / (lane + ".json"), {"id": vmid, "worktree": str(worktree)})
         if mode == "build" and cargo_exit == 0:
             enter("deliver")
@@ -818,6 +973,7 @@ def run(argv):
             record_artifacts(outdir, artifacts, cargo, vmid, worktree, revision, source_digest)
             if refresh:
                 enter("refresh")
+                changed["tree_check_dev"] = None
                 refresh_image(vmid, token, worktree, revision)
         return cargo_exit
     except BaseException as error:
@@ -833,7 +989,8 @@ def run(argv):
         if lease:
             lease.end()
         if lock:
-            state.update(vmid, used=time.time())
+            now = time.time()
+            state.update(vmid, **left_trees(state.entry(vmid), changed, now), **cached, used=now)
             lock.close()
         if stage:
             remove_stage(state, stage)
