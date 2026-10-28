@@ -281,7 +281,6 @@ impl Hooks {
             let callbacks: [usize; UNAPPOINT] = [
                 update_advisor_status as *const () as usize,
                 add_advisor as *const () as usize,
-                generate_advisor as *const () as usize,
                 retire_character as *const () as usize,
                 transfer_characters as *const () as usize,
                 remove_advisor_role as *const () as usize,
@@ -395,41 +394,39 @@ macro_rules! callback {
 callback!(update_advisor_status, 0, (pool, record));
 // Add advisor (pool, character key, template).
 callback!(add_advisor, 1, (pool, key, template));
-// Generate advisor (pool, slot, template).
-callback!(generate_advisor, 2, (pool, slot, template));
 // Retire character (pool, character, record, flags) -> bool.
-callback!(retire_character, 3, (pool, character, record, flags));
+callback!(retire_character, 2, (pool, character, record, flags));
 // Transfer characters (source pool, list, destination party).
-callback!(transfer_characters, 4, (pool, list, party));
+callback!(transfer_characters, 3, (pool, list, party));
 // Remove advisor role (effect, scope): names no pool.
-callback!(remove_advisor_role, 5, (effect, scope));
+callback!(remove_advisor_role, 4, (effect, scope));
 // Country character pool construction(pool, country) -> pool.
-callback!(construct_pool, 6, (pool, country));
+callback!(construct_pool, 5, (pool, country));
 // Country character pool destruction(pool).
-callback!(destroy_pool, 7, (pool));
+callback!(destroy_pool, 6, (pool));
 // Update advisor tokens (manager, character, erase list, insert list).
 callback!(
     update_advisor_tokens,
-    8,
+    7,
     (manager, character, erase, insert)
 );
 // Clear character manager (manager, flags).
-callback!(clear_character_manager, 9, (manager, flags));
+callback!(clear_character_manager, 8, (manager, flags));
 // Character manager construction(manager) -> manager. It also
 // builds a new roster, which the roster family observes through this patch.
 unsafe extern "system" fn construct_character_manager(manager: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::AdvisorPoolChanges);
     let _roster = crate::roster_changes::manager_constructed();
-    let _notification = WATCHES.notify(receiver(MUTATIONS[10].1, manager), 10);
+    let _notification = WATCHES.notify(receiver(MUTATIONS[9].1, manager), 9);
     let original: unsafe extern "system" fn(usize) -> usize =
-        unsafe { std::mem::transmute(ORIGINAL[10].load(Ordering::Acquire)) };
+        unsafe { std::mem::transmute(ORIGINAL[9].load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(manager) })
 }
 // Character manager destruction(manager, flags) -> manager.
-callback!(destroy_character_manager, 11, (manager, flags));
+callback!(destroy_character_manager, 10, (manager, flags));
 // Insert appointed advisor (pool, advisor).
-callback!(insert_appointed_advisor, 12, (pool, advisor));
+callback!(insert_appointed_advisor, 11, (pool, advisor));
 // Character registration (pool, character, flag).
-callback!(register_character, 13, (pool, character, flag));
+callback!(register_character, 12, (pool, character, flag));
 // Civil-war retired-record copy (destination pool, source pool).
-callback!(copy_retired_characters, 14, (pool, source));
+callback!(copy_retired_characters, 13, (pool, source));

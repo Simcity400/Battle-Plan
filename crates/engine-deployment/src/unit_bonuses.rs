@@ -32,11 +32,11 @@ use crate::{
 /// List entry stride.
 pub const STRIDE: usize = 0x70;
 /// Entry vtable.
-pub const VTABLE_RVA: usize = 0x0295_faa8;
+pub const VTABLE_RVA: usize = 0x029d_c3a8;
 /// The entry's embedded bonus payload.
 pub const PAYLOAD: usize = 0x08;
 /// The payload's vtable.
-pub const PAYLOAD_VTABLE_RVA: usize = 0x027e_1110;
+pub const PAYLOAD_VTABLE_RVA: usize = 0x0285_e838;
 /// Payload CPdxArray of exact sub-unit targets: pointers to owned bonus
 /// definitions, whose token names the target sub-unit.
 pub const EXACT_TARGETS: usize = 0x08;

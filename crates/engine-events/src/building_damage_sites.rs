@@ -42,7 +42,7 @@ use crate::{
 
 /// Damage entry. Its relocated five-byte instruction stores RBX in caller
 /// home space without changing RSP or nonvolatile registers.
-pub const APPLY_DAMAGE_RVA: usize = 0x010d_c2a0;
+pub const APPLY_DAMAGE_RVA: usize = 0x0116_3c60;
 pub const APPLY_DAMAGE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xf9,
 ];
@@ -66,16 +66,16 @@ pub enum Cause {
 /// original wrapper must retain its incoming return address before calling
 /// the trampoline; the trampoline's own return address is not a caller.
 pub const CALLERS: [(usize, Cause); 10] = [
-    (0x00f7_bd3b, Cause::AirMission),
-    (0x0197_c65b, Cause::AirNaval),
-    (0x012a_c097, Cause::LandCombat),
-    (0x012a_c23c, Cause::LandCombat),
-    (0x012a_c304, Cause::LandCombat),
-    (0x012a_c407, Cause::LandCombat),
-    (0x0030_ec9e, Cause::Scripted),
-    (0x009e_0e21, Cause::Weekly),
-    (0x0144_32d1, Cause::ProgramTeardown),
-    (0x0144_20f7, Cause::AbortDismantle),
+    (0x0100_025b, Cause::AirMission),
+    (0x01a0_edbb, Cause::AirNaval),
+    (0x0133_be17, Cause::LandCombat),
+    (0x0133_bfac, Cause::LandCombat),
+    (0x0133_c088, Cause::LandCombat),
+    (0x0133_c187, Cause::LandCombat),
+    (0x0032_713e, Cause::Scripted),
+    (0x00a2_bae1, Cause::Weekly),
+    (0x014d_f3d1, Cause::ProgramTeardown),
+    (0x014d_e237, Cause::AbortDismantle),
 ];
 
 /// Source kind selecting an air-wing payload.

@@ -2,11 +2,11 @@
 //! field is a raw country reference.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x29a_2358;
+pub const VTABLE_RVA: usize = 0x2a1_e108;
 /// Strategic-operative allocation size.
 pub const SIZE: usize = 0x1c8;
 /// Constructor initializing vtable and owner.
-pub const CONSTRUCTOR_RVA: usize = 0x11f_1ae0;
+pub const CONSTRUCTOR_RVA: usize = 0x127_efa0;
 /// Raw owner country reference, u32.
 pub const OWNER: usize = 0x08;
 /// Intel-network pointer-vector data.

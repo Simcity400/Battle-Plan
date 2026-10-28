@@ -3,7 +3,7 @@
 pub(crate) mod fuel;
 
 /// Wing-pool primary vtable.
-pub const VTABLE_RVA: usize = 0x0297_ae38;
+pub const VTABLE_RVA: usize = 0x029f_7638;
 /// Wing-pool allocation size.
 pub const SIZE: usize = 0x48;
 /// Full CAirBase reference containing u32 type and id.
@@ -18,6 +18,6 @@ pub const WINGS_COUNT: usize = 0x34;
 /// Owning strategic-air object supplying the country reference.
 pub const OWNER: usize = 0x40;
 /// Constructor installing the vtable and wing vector.
-pub const CONSTRUCTOR_RVA: usize = 0x00f5_a410;
+pub const CONSTRUCTOR_RVA: usize = 0x00fd_e920;
 /// Destructor unregistering through the base reference.
-pub const DESTRUCTOR_RVA: usize = 0x00f5_a9e0;
+pub const DESTRUCTOR_RVA: usize = 0x00fd_eee0;

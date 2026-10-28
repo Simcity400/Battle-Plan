@@ -7,7 +7,7 @@
 //! is not persistent ship identity.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_7de8;
+pub const VTABLE_RVA: usize = 0x029d_4758;
 /// CSunkShipInfo allocation size 0xa8.
 pub const SIZE: usize = 0xa8;
 /// CSunkShipInfo std::string victim name.
@@ -45,7 +45,7 @@ pub const ASSISTED_KILL: usize = 0xa1;
 /// Serializer emitting names, countries, classes, level, date and optional
 /// resolving references.
 #[cfg(test)]
-pub const SAVE_RVA: usize = 0x00c2_e7d0;
+pub const SAVE_RVA: usize = 0x00c8_4e80;
 
 use crate::{
     Memory, cgame_date, cgame_state, cpdx_array::Array, cprovince, csub_unit_definition,

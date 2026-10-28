@@ -724,7 +724,7 @@ impl OptionalModelSource {
             definition + cequipment_type::HULL_SPRITE + msvc_string::CAPACITY,
             &15_u64.to_le_bytes(),
         );
-        source.put(definition + 0x418, &1_i32.to_le_bytes());
+        source.put(definition + 0x478, &1_i32.to_le_bytes());
         source.put(
             database,
             &(cequipment_database::VTABLE_RVA as u64).to_le_bytes(),
@@ -868,7 +868,7 @@ fn current_hull_packet_and_field_refusals_are_named_and_preserve_independent_ope
         ),
         (6, 0x3000 + engine_native::cequipment_variant::DEFINITION),
         (7, 0x5000),
-        (7, 0x5000 + 0x418),
+        (7, 0x5000 + 0x478),
         (7, engine_native::cequipment_database::SINGLETON_RVA),
         (7, 0x5700),
         (7, 0x5700 + 0x68),
@@ -1149,7 +1149,7 @@ mod fleet {
         put(VARIANT + 0xc4, &3_i32.to_le_bytes());
         put(DEFINITION, &word(IMAGE + cequipment_type::VTABLE_RVA));
         put(DEFINITION + cequipment_type::TOKEN, &11_u32.to_le_bytes());
-        put(DEFINITION + 0x418, &1_i32.to_le_bytes());
+        put(DEFINITION + 0x478, &1_i32.to_le_bytes());
         put(DATABASE, &word(IMAGE + cequipment_database::VTABLE_RVA));
         put(DATABASE + 0x68, &array(DEFINITIONS, 2));
         put(DEFINITIONS + 8, &word(DEFINITION));

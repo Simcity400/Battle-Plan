@@ -3,7 +3,7 @@
 use crate::{Memory, cpdx_array::Array, read, read_slice};
 
 /// Pointer to the array header of ordered registered category pointers.
-pub const REGISTRY_RVA: usize = 0x0333_0450;
+pub const REGISTRY_RVA: usize = 0x033d_e940;
 /// Category name string at object start.
 pub const NAME: usize = 0x00;
 /// Category u32 token used to key serialized weights.

@@ -219,6 +219,23 @@ fn ai_strategy_helpers_follow_type_and_read_lists_as_values() {
 }
 
 #[test]
+fn ai_strategy_fuel_stockpile_helper_reads_its_thresholds() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+    let result = read(
+        b"body = { add_ai_strategy = { type = stockpile_fuel stop_above = 2 start_below = 1 invalid = { @hidden = 9 } @kept = 3 value = @kept } } kept = @kept hidden = @hidden",
+        &KeyNames::default(),
+    );
+    let strategy = block(block(&result.items, "body"), "add_ai_strategy");
+    assert_eq!(scalar(strategy, "stop_above"), b"2");
+    assert_eq!(scalar(strategy, "start_below"), b"1");
+    assert_eq!(scalar(&result.items, "kept"), b"3");
+    assert_eq!(scalar(&result.items, "hidden"), b"@hidden");
+    assert!(result.unsettled.is_none(), "{result:?}");
+    no_deferred(&result);
+}
+
+#[test]
 fn ai_strategy_trigger_helpers_accept_repeated_children() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");

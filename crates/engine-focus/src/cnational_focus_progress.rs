@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// CNationalFocusProgress primary vtable.
-pub const VTABLE_RVA: usize = 0x0273_9d50;
+pub const VTABLE_RVA: usize = 0x027b_7a98;
 /// Focus progress's owning country pointer; the constructor stores its RDX
 /// argument here.
 pub const COUNTRY: usize = 0x08;
@@ -29,10 +29,10 @@ pub const COMPLETED_STRIDE: usize = 8;
 pub const PAUSED: usize = 0xb0;
 
 /// Focus daily update follows country/diplomacy joins and completes before hourly return.
-pub const DAILY_UPDATE_RVA: usize = 0x002d_0260;
+pub const DAILY_UPDATE_RVA: usize = 0x002e_8b60;
 
 /// National-focus completion entry; no event hook is installed.
-pub const COMPLETED_RVA: usize = 0x002c_f380;
+pub const COMPLETED_RVA: usize = 0x002e_7c90;
 /// Exact national-focus completion entry bytes.
 pub const COMPLETED_SENTINEL: [u8; 16] = [
     0x4c, 0x89, 0x4c, 0x24, 0x20, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,

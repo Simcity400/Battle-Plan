@@ -3,7 +3,7 @@
 //! the parked acquisition boundary.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0278_9e08;
+pub const VTABLE_RVA: usize = 0x0280_76f0;
 /// CSubUnitDefinition cached defense, i64/100000.
 pub const DEFENSE: usize = 0xa8;
 /// CSubUnitDefinition cached breakthrough, i64/100000.
@@ -223,7 +223,7 @@ pub const ARCHETYPE_REQUIREMENT_STRIDE: usize = 0x10;
 /// is global only when the database holds this exact pointer at that index.
 pub const DATABASE_INDEX: usize = 0x58c;
 /// Global subunit database with indexed definition pointers and null entry zero.
-pub const DATABASE_RVA: usize = 0x0332_f090;
+pub const DATABASE_RVA: usize = 0x033d_d4d8;
 /// The database's CPdxArray of definition pointers.
 pub const DATABASE_VECTOR: usize = 0x40;
 
@@ -358,13 +358,13 @@ pub(crate) fn category_of(bytes: &[u8; CATEGORY_LEN]) -> i32 {
     }
 }
 /// Subunit-definition constructor, also used for the null subtype.
-pub const CONSTRUCTOR_RVA: usize = 0x0101_8f60;
+pub const CONSTRUCTOR_RVA: usize = 0x0109_eda0;
 /// Null-subtype singleton pointer.
-pub const NULL_OBJECT_RVA: usize = 0x0333_a210;
+pub const NULL_OBJECT_RVA: usize = 0x033e_7be0;
 /// Null-singleton getter used by default air-wing pools.
-pub const GET_NULL_OBJECT_RVA: usize = 0x00b9_e9c0;
+pub const GET_NULL_OBJECT_RVA: usize = 0x00bf_1ce0;
 /// Null-subtype primary vtable.
-pub const NULL_VTABLE_RVA: usize = 0x0294_3ec0;
+pub const NULL_VTABLE_RVA: usize = 0x029c_1148;
 /// Persistent null-subunit lexer token, checked against its loaded spelling.
 pub const NULL_TOKEN: u32 = 0x165;
 
@@ -373,9 +373,9 @@ pub const MOVEMENT_TERRAIN_ADJUSTERS: usize = 0x3f8;
 /// Cached anti-air stat used by combat power calculation.
 pub const MOVEMENT_AIR_DEFENSE: usize = 0x220;
 /// Combat anti-air denominator define, signed fixed point.
-pub const AIR_DEFENSE_DENOMINATOR_RVA: usize = 0x0333_6af0;
+pub const AIR_DEFENSE_DENOMINATOR_RVA: usize = 0x033e_18b8;
 /// Combat anti-air maximum-reduction define, signed fixed point.
-pub const AIR_DEFENSE_REDUCTION_RVA: usize = 0x0333_6a78;
+pub const AIR_DEFENSE_REDUCTION_RVA: usize = 0x033e_1830;
 
 fn movement_identity(
     memory: &impl crate::Memory,
@@ -402,8 +402,8 @@ pub fn movement_terrain(
     terrain: usize,
 ) -> Result<i64, &'static str> {
     // Authenticate terrain type and its embedded unit adjuster.
-    const TERRAIN_VTABLE: usize = 0x029c_0ea0;
-    const ADJUSTER_VTABLE: usize = 0x0278_9cd0;
+    const TERRAIN_VTABLE: usize = 0x02a3_ad30;
+    const ADJUSTER_VTABLE: usize = 0x0280_75b8;
     const UNREADABLE: &str = "movement stat operand unreadable";
     // A null or overflowing leaf is an unreadable operand without a read; the
     // scattered copy stops at its zero address exactly where the leaf stops.
@@ -585,12 +585,12 @@ mod movement_tests {
             .copy_from_slice(&1_u32.to_le_bytes());
         bytes[stats + MOVEMENT_TERRAIN_ADJUSTERS + 12..stats + MOVEMENT_TERRAIN_ADJUSTERS + 16]
             .copy_from_slice(&1_u32.to_le_bytes());
-        bytes[terrain..terrain + 8].copy_from_slice(&((base + 0x029c_0ea0) as u64).to_le_bytes());
+        bytes[terrain..terrain + 8].copy_from_slice(&((base + 0x02a3_ad30) as u64).to_le_bytes());
         bytes[terrain + 8..terrain + 12].copy_from_slice(&123_u32.to_le_bytes());
         bytes[terrain + 0x88..terrain + 0x8c].copy_from_slice(&1_i32.to_le_bytes());
         for pointer in [cache, terrain + 0x168] {
             bytes[pointer..pointer + 8]
-                .copy_from_slice(&((base + 0x0278_9cd0) as u64).to_le_bytes());
+                .copy_from_slice(&((base + 0x0280_75b8) as u64).to_le_bytes());
         }
         bytes[cache + 8..cache + 12].copy_from_slice(&123_u32.to_le_bytes());
         bytes[cache + 0x20..cache + 0x28].copy_from_slice(&i64::MAX.to_le_bytes());
@@ -622,7 +622,7 @@ mod movement_tests {
 
 /// The `CUnitAdjuster` vtable of each entry of [`MOVEMENT_TERRAIN_ADJUSTERS`]
 /// and of a terrain's own adjuster.
-pub const UNIT_ADJUSTER_VTABLE_RVA: usize = 0x0278_9cd0;
+pub const UNIT_ADJUSTER_VTABLE_RVA: usize = 0x0280_75b8;
 /// Unit adjuster stride and its attack component, used by additive adjustment.
 pub const UNIT_ADJUSTER_STRIDE: usize = 0x28;
 pub const UNIT_ADJUSTER_ATTACK: usize = 0x10;

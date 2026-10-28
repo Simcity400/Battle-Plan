@@ -141,10 +141,10 @@ impl Renderer<'_, '_, '_> {
             return true; // also random selectors.
         }
         match self.effect_class(item).map(|class| class.vtable) {
-            Some(0x142776140) => field(children(item), "tooltip")
+            Some(0x1427f3a30) => field(children(item), "tooltip")
                 .and_then(|item| item.value.scalar())
                 .is_some_and(|key| !key.is_empty()),
-            Some(0x1427D4A60) => self
+            Some(0x142852790) => self
                 .if_chain(item, branches, scopes, 0, true)
                 .is_some_and(|text| !text.is_empty()),
             _ => {
@@ -182,14 +182,14 @@ impl Renderer<'_, '_, '_> {
     ) -> Option<String> {
         let class = self.effect_class(item)?;
         let result = match class.vtable {
-            0x1429B66D8 => self.scripted_effect(item, scopes, indent),
-            0x1429B7000 => self.random_effect(item, scopes, indent),
-            0x1429B7170 => self
+            0x142A311C0 => self.scripted_effect(item, scopes, indent),
+            0x142A31A70 => self.random_effect(item, scopes, indent),
+            0x142A31BE0 => self
                 .random_list(item, scopes)
                 .map(|text| format!("{}{text}", "   ".repeat(indent))),
-            0x142776140 => self.scope_loop(item, scopes, indent),
-            0x142777AE0 => self.meta_effect(item, scopes, indent),
-            0x1429B6F08 => self.override_tooltip(item, scopes, indent),
+            0x1427f3a30 => self.scope_loop(item, scopes, indent),
+            0x1427F5400 => self.meta_effect(item, scopes, indent),
+            0x142A31978 => self.override_tooltip(item, scopes, indent),
             _ => return None,
         };
         Some(match result {

@@ -2,7 +2,7 @@
 use super::*;
 
 /// The loaded low-organisation attack threshold, fixed5.
-pub const LOW_ORGANISATION_FOR_ATTACK_RVA: usize = 0x0333_59b8;
+pub const LOW_ORGANISATION_FOR_ATTACK_RVA: usize = 0x033e_0898;
 
 fn below_threshold(current: i64, maximum: i64, threshold: i64) -> Result<bool, &'static str> {
     let share = if (current as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {

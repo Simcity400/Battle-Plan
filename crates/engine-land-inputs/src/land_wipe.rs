@@ -21,10 +21,10 @@ use crate::{
     cprovince, cunit, read,
 };
 
-pub const RETURN_RVA: usize = 0x13e3d16;
+pub const RETURN_RVA: usize = 0x147f616;
 /// Base lifecycle after land leader-experience effects. Naval combatants
 /// share this virtual path and their vtable is excluded below.
-pub const LIFECYCLE_RVA: usize = 0x13e1760;
+pub const LIFECYCLE_RVA: usize = 0x147d070;
 pub const LIFECYCLE_SENTINEL: [u8; 16] = [
     0x40, 0x53, 0x41, 0x57, 0x48, 0x83, 0xec, 0x58, 0x48, 0x8b, 0x02, 0x4c, 0x8b, 0xfa, 0x48, 0x89,
 ];

@@ -204,7 +204,7 @@ fn naval_management_integration_registers_every_installed_patch() {
         .iter()
         .filter(|patch| patch.family == "naval_management_changes")
         .collect();
-    assert_eq!(naval.len(), 66);
+    assert_eq!(naval.len(), 67);
     assert!(
         naval
             .iter()
@@ -425,8 +425,8 @@ fn faction_phase_and_advisor_sites_are_registered_and_shared_resource_helpers_ar
             .any(|name| name.contains("extraction_call") || *name == "rebuild_advisor_slots")
     );
     // These are the generic pool helpers, not faction-specific simulation stores.
-    const SHARED_POOL_CLEAR: usize = 0xbccb50;
-    const SHARED_POOL_ADD_ASSIGN: usize = 0xbcb530;
+    const SHARED_POOL_CLEAR: usize = 0xc22490;
+    const SHARED_POOL_ADD_ASSIGN: usize = 0xc20e70;
     for rva in [SHARED_POOL_CLEAR, SHARED_POOL_ADD_ASSIGN] {
         assert!(
             !engine_mutations::faction_companion_mutations::MUTATIONS

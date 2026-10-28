@@ -21,7 +21,7 @@ pub struct CountryMarket {
     pub inventory: Pool,
     pub prices: Vec<Level>,
     pub subsidies: Vec<Subsidy>,
-    pub automation: [bool; 3],
+    pub auto_send_market_access: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Terms {
@@ -182,12 +182,10 @@ pub fn country(fields: &[Item]) -> io::Result<Option<CountryMarket>> {
         required_block(fields, b"market_request_automation")?,
         b"option",
     )?;
-    let flag = |key| {
-        field(automation, key)?
-            .map(boolean)
-            .transpose()?
-            .ok_or_else(|| invalid("market automation flag absent"))
-    };
+    let auto_send_market_access = field(automation, b"auto_send_market_access")?
+        .map(boolean)
+        .transpose()?
+        .ok_or_else(|| invalid("market automation flag absent"))?;
     Ok(Some(CountryMarket {
         inventory: production::parse_pool(required_block(
             required_block(fields, b"market_stockpile")?,
@@ -195,11 +193,7 @@ pub fn country(fields: &[Item]) -> io::Result<Option<CountryMarket>> {
         )?)?,
         prices: levels(required_block(fields, b"price_levels")?)?,
         subsidies: subsidies(required_block(fields, b"subsidies")?)?,
-        automation: [
-            flag(b"auto_accept_market_access")?,
-            flag(b"auto_send_market_access")?,
-            flag(b"auto_accept_purchase")?,
-        ],
+        auto_send_market_access,
     }))
 }
 pub fn definition(id: u64, fields: &[Item]) -> io::Result<Terms> {
@@ -350,10 +344,10 @@ mod tests {
         let parsed = terms(&document.items).unwrap().unwrap();
         assert!(parsed[0].request);
         assert_eq!(parsed[0].id, (2_u64 << 32) | 82);
-        let document=installed_content_core::parser::parse(br#"equipment_market={market_stockpile={equipments={allow_zero_entries=no}} price_levels={levels={}} subsidies={} market_request_automation={option={auto_accept_market_access=yes auto_send_market_access=no auto_accept_purchase=yes}}}"#).unwrap();
+        let document=installed_content_core::parser::parse(br#"equipment_market={market_stockpile={equipments={allow_zero_entries=no}} price_levels={levels={}} subsidies={} market_request_automation={option={auto_send_market_access=yes}}}"#).unwrap();
         let parsed = country(&document.items).unwrap().unwrap();
         assert!(parsed.inventory.equipment.is_empty());
-        assert_eq!(parsed.automation, [true, false, true]);
+        assert!(parsed.auto_send_market_access);
         assert!(country(&[]).unwrap().is_none());
     }
 }

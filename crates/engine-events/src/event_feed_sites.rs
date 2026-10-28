@@ -19,20 +19,20 @@ pub struct CallSite {
 /// Second war-link CALL: RCX status, RDX candidate retained in RDI.
 /// The continuation initializes the war bookkeeping discriminators.
 pub const WAR: CallSite = CallSite {
-    rva: 0x00d2_9c38,
-    return_rva: 0x00d2_9c3d,
-    target_rva: 0x00d2_d1d0,
+    rva: 0x00d8_b648,
+    return_rva: 0x00d8_b64d,
+    target_rva: 0x00d8_ebe0,
     sentinel: [
-        0xe8, 0x93, 0x35, 0, 0, 0x41, 0xbf, 0x60, 0x08, 0, 0, 0x41, 0xbe, 0x10, 0, 0,
+        0xe8, 0x93, 0x35, 0, 0, 0x41, 0xbf, 0xe8, 0x20, 0, 0, 0x41, 0xbe, 0x10, 0, 0,
     ],
 };
 /// Annex dispatch CALL: R8 the primary scope's frame slot, R9D zero.
 pub const ANNEX: CallSite = CallSite {
-    rva: 0x006d_5976,
-    return_rva: 0x006d_597b,
-    target_rva: 0x00a7_9ba0,
+    rva: 0x0071_d458,
+    return_rva: 0x0071_d45d,
+    target_rva: 0x00ac_aef0,
     sentinel: [
-        0xe8, 0x25, 0x42, 0x3a, 0, 0x90, 0x48, 0x8b, 0x55, 0x30, 0x48, 0x83, 0xfa, 0x0f, 0x76, 0x31,
+        0xe8, 0x93, 0xda, 0x3a, 0, 0x90, 0x48, 0x8b, 0x55, 0x38, 0x48, 0x83, 0xfa, 0x0f, 0x76, 0x31,
     ],
 };
 
@@ -256,33 +256,33 @@ fn candidate(
 fn war_source(memory: &impl Memory, base: usize, frame: WarFrame) -> Result<Source, &'static str> {
     // Include return-address space for every intervening call when validating
     // the three nested frame extents.
-    if value::<u64>(memory, frame.rsp_before_call, 0x1d8)? != at(base, 0x00d2_02af)? as u64
-        || value::<u64>(memory, frame.rsp_before_call, 0x448)? != at(base, 0x00d1_fd2d)? as u64
+    if value::<u64>(memory, frame.rsp_before_call, 0x1d8)? != at(base, 0x00d8_1b8f)? as u64
+        || value::<u64>(memory, frame.rsp_before_call, 0x448)? != at(base, 0x00d8_160d)? as u64
         || pointer(memory, frame.rsp_before_call, 0x438)? != frame.rcx
     {
         return Err("event feed war creator frame mismatch");
     }
     // The original route includes virtual dispatch and war-relation creation.
-    if read::<[u8; 6]>(memory, at(base, 0x00d2_02a9)?) != Some([0xff, 0x90, 0xa8, 0, 0, 0])
-        || read::<[u8; 5]>(memory, at(base, 0x00d1_fd28)?) != Some([0xe8, 0x03, 0x05, 0, 0])
+    if read::<[u8; 6]>(memory, at(base, 0x00d8_1b89)?) != Some([0xff, 0x90, 0xa8, 0, 0, 0])
+        || read::<[u8; 5]>(memory, at(base, 0x00d8_1608)?) != Some([0xe8, 0x03, 0x05, 0, 0])
     {
         return Err("event feed war creator instruction differs");
     }
     let source_pc = value::<u64>(memory, frame.rsp_before_call, 0x4a8)?;
     // Declaration, join and transfer routes have independent caller identities.
-    let (source, call_rva, bytes) = if source_pc == at(base, 0x00d3_504e)? as u64 {
+    let (source, call_rva, bytes) = if source_pc == at(base, 0x00d9_89ae)? as u64 {
         (
             Source::Declaration,
-            0x00d3_5049,
-            [0xe8, 0x32, 0xab, 0xfe, 0xff],
+            0x00d9_89a9,
+            [0xe8, 0xb2, 0x8a, 0xfe, 0xff],
         )
-    } else if source_pc == at(base, 0x00d3_b20a)? as u64 {
-        (Source::Join, 0x00d3_b205, [0xe8, 0x76, 0x49, 0xfe, 0xff])
-    } else if source_pc == at(base, 0x010e_0d08)? as u64 {
+    } else if source_pc == at(base, 0x00d9_ec9a)? as u64 {
+        (Source::Join, 0x00d9_ec95, [0xe8, 0xc6, 0x27, 0xfe, 0xff])
+    } else if source_pc == at(base, 0x0116_86b8)? as u64 {
         (
             Source::CivilWarWarTransfer,
-            0x010e_0d03,
-            [0xe8, 0x78, 0xee, 0xc3, 0xff],
+            0x0116_86b3,
+            [0xe8, 0xa8, 0x8d, 0xc1, 0xff],
         )
     } else {
         return Err("event feed war producer is unclassified");

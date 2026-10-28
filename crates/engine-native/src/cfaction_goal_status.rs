@@ -5,7 +5,7 @@
 use crate::{Memory, allocation, cgame_date, cpdx_array::Array, read};
 
 pub const STATUS: usize = 0x620;
-pub const VTABLE_RVA: usize = 0x0293_aff8;
+pub const VTABLE_RVA: usize = 0x029b_8d48;
 pub const OWNER: usize = 0x08;
 pub const MANIFEST: usize = 0x10;
 pub const GOALS: usize = 0x18;
@@ -21,7 +21,7 @@ pub const GOAL_PROGRESS_STATUS: usize = 0x10;
 /// trigger again could produce a newer value than the game currently shows.
 pub const GOAL_PROGRESS: usize = 0x520;
 pub const GOAL_DATE: usize = 0x528;
-pub const DEFINITION_VTABLE_RVA: usize = 0x0271_99e8;
+pub const DEFINITION_VTABLE_RVA: usize = 0x0279_7990;
 pub const DEFINITION_TOKEN: usize = 0x08;
 pub const DATE_STRIDE: usize = 0x18;
 

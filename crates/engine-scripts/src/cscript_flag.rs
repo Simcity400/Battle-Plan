@@ -8,17 +8,17 @@ use crate::{
 /// CScriptFlag stride.
 pub const STRIDE: usize = 0x30;
 /// CScriptFlag primary vtable.
-pub const VTABLE_RVA: usize = 0x0272_1338;
+pub const VTABLE_RVA: usize = 0x0279_f310;
 /// CScriptFlag token id.
 pub const TOKEN_ID: usize = 0x08;
 /// CScriptFlag CGameDate primary vtable.
-pub const DATE_VTABLE_RVA: usize = 0x0271_83a8;
+pub const DATE_VTABLE_RVA: usize = 0x0279_63d0;
 /// CScriptFlag date primary object.
 pub const DATE: usize = 0x10;
 /// Latest-set raw hour copied from the current game date.
 pub const SET_HOUR: usize = 0x18;
 /// CScriptFlag CGameDate secondary vtable.
-pub const DATE_SECONDARY_VTABLE_RVA: usize = 0x0271_83d8;
+pub const DATE_SECONDARY_VTABLE_RVA: usize = 0x0279_6400;
 /// CScriptFlag date secondary interface.
 pub const DATE_SECONDARY: usize = 0x20;
 /// CScriptFlag signed i16 value.

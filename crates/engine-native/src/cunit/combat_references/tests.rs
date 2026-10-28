@@ -74,7 +74,7 @@ fn fixture() -> (Image, [u8; 16]) {
             crate::cland_border_war_combat::VTABLE_RVA,
             crate::cland_border_war_combat::BODY_VTABLE_RVA,
         ),
-        (crate::cnaval_combat::VTABLE_RVA, 0x029d_dbe0),
+        (crate::cnaval_combat::VTABLE_RVA, 0x02a5_6730),
     ];
     for ((pointer, handle), (primary, secondary)) in OBJECTS.into_iter().zip(HANDLES).zip(classes) {
         word(&mut bytes, pointer, primary as u64);

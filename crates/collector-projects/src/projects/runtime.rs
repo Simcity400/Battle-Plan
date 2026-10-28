@@ -729,7 +729,7 @@ mod tests {
         project_variable_changes::project_hooks_enabled(true);
         let mut bytes = vec![0; 0x900];
         bytes[0x20..0x28].copy_from_slice(&0x1418u64.to_le_bytes());
-        bytes[0x400..0x408].copy_from_slice(&0x294_0798u64.to_le_bytes());
+        bytes[0x400..0x408].copy_from_slice(&0x29b_deb8u64.to_le_bytes());
         bytes[0x418 + 0x358..0x418 + 0x360].copy_from_slice(&0x1800u64.to_le_bytes());
         bytes[0x418 + 0x360..0x418 + 0x364].copy_from_slice(&1u32.to_le_bytes());
         bytes[0x418 + 0x364..0x418 + 0x368].copy_from_slice(&1i32.to_le_bytes());

@@ -43,7 +43,7 @@ pub const WING: usize = 0xf_0000;
 pub const WING_HANDLE: u64 = (1_u64 << 32) | 52;
 // Strategic-region template identity for the shared main/branch fixture.
 // Its custom-modifier vector is read by the capture.
-pub const TEMPLATE_VTABLE_RVA: usize = 0x029d_be50;
+pub const TEMPLATE_VTABLE_RVA: usize = 0x02a5_4c08;
 
 #[derive(Clone, Copy)]
 pub enum Hour {
@@ -688,9 +688,9 @@ impl Memory for Fixture {
             let witness = IMAGE + engine_native::cpdx_lexer::INITIALIZED_RVA;
             let served = if (witness..witness + 64).contains(&address) {
                 Some(LEXER + (address - witness))
-            } else if address == IMAGE + 0x0338_b3f0 || address == IMAGE + 0x0338_b3e8 {
+            } else if address == IMAGE + 0x0343_9158 || address == IMAGE + 0x0343_9150 {
                 Some(LEXER + 0x40)
-            } else if address == IMAGE + 0x0308_6bd8 {
+            } else if address == IMAGE + 0x030f_eba8 {
                 Some(LEXER + 0x48)
             } else {
                 None

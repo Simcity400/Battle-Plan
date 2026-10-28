@@ -21,7 +21,7 @@ pub use hull_variant::{HullVariantInputs, read_hull_variant};
 pub use naval_power::{NavalPowerCache, read_naval_power};
 
 /// CShip primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_7f28;
+pub const VTABLE_RVA: usize = 0x029d_4858;
 /// CShip reference handle {u32 type, u32 id}.
 pub const HANDLE: usize = 0x08;
 /// CShip reference type 51.
@@ -80,10 +80,10 @@ pub const TASK_FORCE: usize = 0x728;
 /// CShip allocation size.
 pub const SIZE: usize = 0x938;
 /// Ship constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00c2_fea0;
+pub const CONSTRUCTOR_RVA: usize = 0x00c8_6540;
 /// Shared type-0x33 unit-ID high-water counter, signed i32, serialized as
 /// `unit` and restored on load. Divisions share this type with ships.
-pub const NEXT_ID_RVA: usize = 0x0308_725c;
+pub const NEXT_ID_RVA: usize = 0x030f_f228;
 /// Scalar fixed5 scale for signed i64 serialization.
 pub const FIXED_SCALE: i64 = 100_000;
 
@@ -1637,7 +1637,7 @@ fn read_organisation_observation(
         }
     };
     let pride_values = if pride == handle {
-        let root = ptr(base, 0x0333_0098)?;
+        let root = ptr(base, 0x033d_e590)?;
         values(add(ptr(root, 0xb0)?, 0x10)?)?
     } else {
         [0; 4]
@@ -1861,7 +1861,7 @@ pub fn read_maximum_organisation_from_terms(
     };
     let values = |address| organisation_modifier_values(memory, base, address, definitions);
     let pride = if operands.handle == terms.pride {
-        let root = field::<u64>(memory, base, 0x0333_0098)? as usize;
+        let root = field::<u64>(memory, base, 0x033d_e590)? as usize;
         let source = field::<u64>(memory, root, 0xb0)? as usize;
         values(add(source, 0x10)?)?
     } else {

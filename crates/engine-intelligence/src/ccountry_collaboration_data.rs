@@ -3,7 +3,7 @@
 use crate::Memory;
 
 /// Collaboration-data vtable.
-pub const VTABLE_RVA: usize = 0x029b_cc18;
+pub const VTABLE_RVA: usize = 0x02a3_6fb8;
 /// Target country link, u32.
 pub const TARGET_COUNTRY: usize = 0x08;
 /// Progress, signed i64 scaled by 100000.

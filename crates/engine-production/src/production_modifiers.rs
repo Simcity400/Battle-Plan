@@ -25,18 +25,18 @@ pub const KEYS: [u32; 11] = [
 ];
 /// Seven production categories mapped through the runtime token table, distinct from token IDs.
 pub const BONUS_COUNT: usize = 7;
-const BONUS_KEYS_RVA: usize = 0x0338_a560;
+const BONUS_KEYS_RVA: usize = 0x0343_8320;
 
 /// Signed i32 start/cap percentages, signed fixed5 gain/balance and four fixed5 factory rates.
 const DEFINE_RVAS: [usize; 8] = [
-    0x0333_6790,
-    0x0333_6830,
-    0x0333_68b0,
-    0x0333_6940,
-    0x0333_6508,
-    0x0333_66e0,
-    0x0333_6468,
-    0x0333_6638,
+    0x033e_0dec,
+    0x033e_0e68,
+    0x033e_0ef0,
+    0x033e_0f98,
+    0x033e_0bc0,
+    0x033e_0d68,
+    0x033e_0b28,
+    0x033e_0cd8,
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -74,11 +74,11 @@ impl Context {
             result
                 .retention
                 .iter_mut()
-                .zip([0x0333_69c0, 0x0333_6a58, 0x0333_6ad8, 0x0333_6b90])
+                .zip([0x033e_1020, 0x033e_109c, 0x033e_1130, 0x033e_11b4])
         {
             *value = i64::from(field::<i32>(memory, base, rva)?).wrapping_mul(1000);
         }
-        result.conversion = field(memory, base, 0x0333_8068)?;
+        result.conversion = field(memory, base, 0x033e_23e8)?;
         // Equipment-category feature gates.
         let mask = field::<u32>(memory, base, crate::dlc_feature_state::MASK_RVA)?;
         result.module_mask = (if mask & (1 << 4) != 0 {
@@ -527,7 +527,7 @@ fn capture_buffer(
             *row = Country {
                 country: country.id,
                 accumulator,
-                power_raw: field(memory, status, 0x3a8)?,
+                power_raw: field(memory, status, 0x3c0)?,
                 slot,
             };
             out.country_len += 1;
@@ -669,8 +669,8 @@ fn capture_buffer(
             // Refit selects true; the others select zero. Refuse a different implementation.
             let refit_output =
                 match field::<u64>(memory, vtable as usize, 0xd8)?.checked_sub(base as u64) {
-                    Some(0x0018_07b0) => true,
-                    Some(0x0011_d220) => false,
+                    Some(0x0018_8d90) => true,
+                    Some(0x0011_d530) => false,
                     _ => return Err("unreached production refit virtual implementation"),
                 };
             out.lines[out.line_len] = Line {

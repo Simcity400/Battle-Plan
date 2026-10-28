@@ -13,12 +13,12 @@ pub const NAMES: [&str; 6] = [
 ];
 // Loaded globals authenticated by their installed name bytes, with warning operands read as qwords.
 pub const RVAS: [usize; 6] = [
-    0x0333_62e0,
-    0x0333_6390,
-    0x0333_1178,
-    0x0333_6760,
-    0x0295_2fd0,
-    0x0295_2fc8,
+    0x033e_1140,
+    0x033e_11d8,
+    0x033e_3278,
+    0x033e_1520,
+    0x029c_fa00,
+    0x029c_f9f8,
 ];
 const UNREADABLE: [&str; 6] = [
     "river_small global unreadable",

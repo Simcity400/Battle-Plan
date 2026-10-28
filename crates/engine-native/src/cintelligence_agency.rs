@@ -17,7 +17,7 @@ use crate::{
 };
 
 /// CIntelligenceAgency primary vtable.
-pub const VTABLE_RVA: usize = 0x0298_1f68;
+pub const VTABLE_RVA: usize = 0x029f_e2b0;
 /// CIntelligenceAgency inline COperativeRecruitment.
 pub const RECRUITMENT: usize = 0x08;
 /// CIntelligenceAgency owning CCountry pointer.
@@ -33,25 +33,25 @@ pub const CREATED: usize = 0xc0;
 /// CIntelligenceAgency signed i64 progress /100000.
 pub const UPGRADE_PROGRESS: usize = 0xc8;
 /// CIntelligenceAgency COperativeLeader pointer-vector data.
-pub const OPERATIVES: usize = 0xd8;
+pub const OPERATIVES: usize = 0xf0;
 /// CIntelligenceAgency active-vector i32 size.
 #[cfg(test)]
-pub const OPERATIVE_COUNT: usize = 0xe4;
+pub const OPERATIVE_COUNT: usize = 0xfc;
 /// Unidentified agency dword initialized with `OPERATIVE_ADMISSION_CEILING`, read as u32. It does
 /// not establish available operative slots.
-pub const UNKNOWN_F0: usize = 0xf0;
+pub const UNKNOWN_F0: usize = 0x108;
 /// Signed operative-admission ceiling; ordinary admission requires count below it.
-pub const OPERATIVE_ADMISSION_CEILING: usize = 0xf4;
+pub const OPERATIVE_ADMISSION_CEILING: usize = 0x10c;
 /// CIntelligenceAgency CCapturedOperativeReference inline-array data.
-pub const CAPTURED_OPERATIVE_REFERENCES: usize = 0x108;
+pub const CAPTURED_OPERATIVE_REFERENCES: usize = 0x120;
 /// CIntelligenceAgency CCryptology pointer.
-pub const CRYPTOLOGY: usize = 0x120;
+pub const CRYPTOLOGY: usize = 0x138;
 /// CIntelligenceAgency signed i64 defense /100000.
-pub const DEFENSE: usize = 0x128;
+pub const DEFENSE: usize = 0x140;
 /// CIntelligenceAgency constructor RVA.
-pub const CONSTRUCTOR_RVA: usize = 0x00fd_7020;
+pub const CONSTRUCTOR_RVA: usize = 0x0105_bd40;
 /// Operative-admission override byte; nonzero permits count above ceiling.
-pub const ADMISSION_OVERRIDE_RVA: usize = 0x0332_f62e;
+pub const ADMISSION_OVERRIDE_RVA: usize = 0x033d_da9e;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -640,7 +640,7 @@ pub(crate) mod test_support {
         let countries = objects.len() as u32 - 1;
         for (slot, &country) in objects.iter().enumerate().skip(1) {
             let slot = slot as u32;
-            let agency = image.alloc(0x140);
+            let agency = image.alloc(0x160);
             image.u64(agency, image.vtable(VTABLE_RVA));
             image.u64(agency + OWNER_COUNTRY, country as u64);
             image.u64(agency + NAME, u64::from_le_bytes(*b"AGENCY\0\0"));
@@ -687,7 +687,7 @@ pub(crate) mod test_support {
     ) -> (crate::crelation_status::bench::Arena, usize) {
         use crate::crelation_status::bench::{Arena, countries as census};
         let object = ccountry::INTELLIGENCE_AGENCY + 8;
-        let per_country = 12 + object + 16 + 0x140 + 0x40 + states as usize * state::STRIDE + 48;
+        let per_country = 12 + object + 16 + 0x160 + 0x40 + states as usize * state::STRIDE + 48;
         let mut arena = Arena::new(0x10_0000 + (countries + 1) * per_country);
         let (game_state, objects) = census(&mut arena, countries, object);
         populate(&mut arena, &objects, states);

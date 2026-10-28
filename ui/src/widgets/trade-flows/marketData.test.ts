@@ -25,7 +25,7 @@ test('market catalogue card is a switchable Trade flows view', () => {
 test('market unavailable collections remain unknown and malformed nested values refuse', () => {
   const reply = { branchId: '1', hour: 7, offers: null, contracts: [], agreements: [], deliveries: [], warnings: ['writer unavailable'] };
   assert.equal(validateMarketReply(reply).offers, null);
-  assert.throws(() => validateMarketReply({ ...reply, offers: [{ country: 5000, tag: 'AA', inventory: [{ variant: '1', name: null, amountRaw: 1 }], prices: [], subsidies: [], subsidyTotalRaw: '0', automation: [false, false, false] }] }));
+  assert.throws(() => validateMarketReply({ ...reply, offers: [{ country: 5000, tag: 'AA', inventory: [{ variant: '1', name: null, amountRaw: 1 }], prices: [], subsidies: [], subsidyTotalRaw: '0', autoSendMarketAccess: false }] }));
 });
 test('market requests preserve source, revision, date and unlimited country demand', () => {
   const track = { source: { id: 'source', revision: 'revision' }, branch: { id: '4' } };
@@ -43,7 +43,7 @@ test('Trade flows market presentation keeps terms, schedules and terminal delive
     const { default: View } = await vite.ssrLoadModule('/ui/src/widgets/trade-flows/TradeMarketView.tsx');
     const item = { variant: '31', name: 'Mod equipment', amountRaw: '9007199254740993' };
     const data = validateMarketReply({ branchId: '1', hour: 77, warnings: [],
-      offers: [{ country: 5000, tag: 'AAA', inventory: [item], prices: [{ variant: '31', name: 'Mod equipment', level: 2 }], subsidies: [], subsidyTotalRaw: '17', automation: [true, false, true] }],
+      offers: [{ country: 5000, tag: 'AAA', inventory: [item], prices: [{ variant: '31', name: 'Mod equipment', level: 2 }], subsidies: [], subsidyTotalRaw: '17', autoSendMarketAccess: true }],
       contracts: [{ id: '17', seller: 'AAA', buyer: 'BBB', request: false, speed: 3, equipment: [item], prices: [{ ...item, amountRaw: '12345' }], levels: [], subsidies: [] }],
       agreements: [{ id: '18', giver: 'AAA', receiver: 'BBB', revision: '3', activeSince: 1, lastDelivery: 77,
         monthly: [item], percentage: [], once: [], delivered: [item], sunk: [], fuelDailyRaw: '32769', fuelPercentageRaw: '10001', fuelSentRaw: '17', fuelSunkRaw: '0', lastFuelDeliveredRaw: '17' }],

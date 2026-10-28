@@ -167,7 +167,7 @@ fn a_changed_infrastructure_operand_rereads_every_state() {
     struct PerLevel<'a>(&'a Traced<'a>, i64);
     impl Memory for PerLevel<'_> {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if address == 0x0333_31b0 && destination.len() == 8 {
+            if address == 0x033e_5080 && destination.len() == 8 {
                 destination.copy_from_slice(&self.1.to_le_bytes());
                 return true;
             }

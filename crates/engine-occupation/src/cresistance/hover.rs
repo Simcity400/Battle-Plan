@@ -32,8 +32,8 @@ pub const ADDED_CONTROLLER: usize = 0x1c;
 pub const ADDED_OCCUPIED: usize = 0x20;
 pub const ADDED_LOCALISATION: usize = 0x28;
 pub const GAIN_RATIO: usize = 0x2d0;
-pub const EXILE_HOST: usize = 0x1a8;
-pub const LEGITIMACY: usize = 0x1b0;
+pub const EXILE_HOST: usize = 0x1f0;
+pub const LEGITIMACY: usize = 0x1f8;
 pub const RELATION_MODIFIERS: usize = 0x140;
 pub const MODIFIER_ACCUMULATOR: usize = 0x10;
 

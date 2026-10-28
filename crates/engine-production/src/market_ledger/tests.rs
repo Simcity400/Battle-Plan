@@ -43,7 +43,7 @@ fn market_automation_demand_never_reads_inventory_prices_or_subsidies() {
     );
     u64(&mut bytes, STATUS + status::MANAGER, MANAGER as u64);
     u64(&mut bytes, STATUS + COUNTRY_BACKLINK, native.pointer as u64);
-    bytes[STATUS + AUTOMATION..STATUS + AUTOMATION + 3].copy_from_slice(&[2, 0, 255]);
+    bytes[STATUS + AUTOMATION] = 1;
     struct Selected<'a> {
         memory: SliceMemory<'a>,
         country: usize,
@@ -55,7 +55,7 @@ fn market_automation_demand_never_reads_inventory_prices_or_subsidies() {
                     (self.country + ccountry::EQUIPMENT_MARKET_STATUS, 8),
                     (STATUS + status::MANAGER, 8),
                     (STATUS + COUNTRY_BACKLINK, 8),
-                    (STATUS + AUTOMATION, 3),
+                    (STATUS + AUTOMATION, 1),
                 ]
                 .contains(&(address, output.len())),
                 "unselected market fact was read"
@@ -84,9 +84,7 @@ fn market_automation_demand_never_reads_inventory_prices_or_subsidies() {
     )
     .unwrap();
     assert_eq!(output.country, 5000);
-    assert!(output.auto_accept_market_access);
-    assert!(!output.auto_send_market_access);
-    assert!(output.auto_accept_purchase);
+    assert!(output.auto_send_market_access);
     assert_eq!(output.stockpile.equipment[0].amount_raw, -71);
 }
 

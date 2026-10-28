@@ -131,12 +131,12 @@ pub const DYNAMIC_CONSTANT: usize = 0xf8;
 pub const DYNAMIC_VALUE_ROWS: usize = 0x1b8;
 pub const DYNAMIC_VALUE_ROW_STRIDE: usize = 0xd8;
 /// Static-modifier database holding the bound static slots.
-pub const STATIC_DATABASE_RVA: usize = 0x0333_0098;
+pub const STATIC_DATABASE_RVA: usize = 0x033d_e590;
 /// Static-modifier script name stored as an MSVC string and hashed for lookup.
 pub const STATIC_NAME: usize = 0x1a8;
 /// Diplomacy word tested by mode-1 war predicates on the counterpart;
 /// only values below one admit the war.
-pub const DIPLOMACY_HOSTING: usize = 0x1a8;
+pub const DIPLOMACY_HOSTING: usize = 0x1f0;
 
 /// Interception-ring layout: a data pointer, a signed size, a signed head and a wrapped byte. Each
 /// slot points to an i64 row pointer; column 1 is summed with the stored saturation limit.
@@ -149,18 +149,18 @@ const RING_SATURATION: i64 = 0x53e2_d620_fb40;
 /// Define globals in `CountryStabilityInputRow` field order. Loaded values
 /// use fixed5 except interception war-support scale, which uses Q15.
 pub const DEFINE_RVAS: [usize; DEFINES] = [
-    0x0333_0f30, // BASE_STABILITY_WAR_FACTOR
-    0x0333_0fc8, // BASE_STABILITY_PARTY_POPULARITY_FACTOR
-    0x0333_2e98, // MIN_STABILITY
-    0x0333_2df8, // MAX_STABILITY
-    0x0333_1310, // WAR_SUPPORT_OFFNSIVE_WAR
-    0x0333_13b8, // WAR_SUPPORT_DEFENSIVE_WAR
-    0x0333_1438, // WAR_SUPPORT_TENSION_IMPACT
-    0x0333_2fe8, // MIN_WAR_SUPPORT
-    0x0333_2f38, // MAX_WAR_SUPPORT
-    0x0333_4d08, // INTERCEPTION_WAR_SUPPORT_SCALE, Q15
-    0x0333_4de0, // INTERCEPTION_BOMBING_WAR_SUPPORT_IMPACT
-    0x0333_51e0, // BASE_MAX_COMMAND_POWER
+    0x033e_2868, // BASE_STABILITY_WAR_FACTOR
+    0x033e_2908, // BASE_STABILITY_PARTY_POPULARITY_FACTOR
+    0x033e_4480, // MIN_STABILITY
+    0x033e_4400, // MAX_STABILITY
+    0x033e_2c48, // WAR_SUPPORT_OFFNSIVE_WAR
+    0x033e_2ce0, // WAR_SUPPORT_DEFENSIVE_WAR
+    0x033e_2d70, // WAR_SUPPORT_TENSION_IMPACT
+    0x033e_45d8, // MIN_WAR_SUPPORT
+    0x033e_4528, // MAX_WAR_SUPPORT
+    0x033d_f5f0, // INTERCEPTION_WAR_SUPPORT_SCALE, Q15
+    0x033d_f678, // INTERCEPTION_BOMBING_WAR_SUPPORT_IMPACT
+    0x033d_f9e0, // BASE_MAX_COMMAND_POWER
 ];
 pub const DEFINES: usize = 12;
 

@@ -132,7 +132,7 @@ mod tests {
         let tables = engine_executable::executable_tables::initialize_for_tests()
             .expect("set BATTLE_PLAN_GAME_DIR to the supported installation");
         let names = &tables.keywords.names;
-        assert_eq!(names.len(), 10_765);
+        assert_eq!(names.len(), 10_767);
         assert!(names.iter().all(|(_, name)| name.is_ascii()));
         assert_eq!(static_keyword(b"SpriteTypes"), Some("spritetypes"));
         assert_eq!(static_keyword(b"SpriteTypes\0other"), Some("spritetypes"));

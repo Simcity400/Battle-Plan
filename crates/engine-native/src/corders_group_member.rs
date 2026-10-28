@@ -11,7 +11,7 @@ pub const ROOT_ORDER: usize = 0x20;
 /// Order-cache dirty byte; root and fallback queries refresh before reading it.
 pub const ORDER_CACHE_DIRTY: usize = 0x28;
 /// Root-order resolver used by the grouping predicate.
-pub const ROOT_ORDER_RVA: usize = 0x00be_f990;
+pub const ROOT_ORDER_RVA: usize = 0x00c4_52a0;
 /// Membership-base offset within its host unit.
 pub const HOST_OFFSET: usize = crate::cunit::SCHEDULED_MEMBER;
 /// Virtual-dispatch offset of the membership-base unit accessor.

@@ -102,9 +102,9 @@ fn doctrine_fixture(count: usize) -> Fixture {
     }
     f.globals.push((IMAGE + lexer::INITIALIZED_RVA, witness));
     for (rva, value) in [
-        (0x0338_b3f0, GENERATOR),
-        (0x0338_b3e8, GENERATOR),
-        (0x0308_6bd8, DICTIONARY),
+        (0x0343_9158, GENERATOR),
+        (0x0343_9150, GENERATOR),
+        (0x030f_eba8, DICTIONARY),
     ] {
         f.globals
             .push((IMAGE + rva, (value as u64).to_le_bytes().to_vec()));
@@ -329,7 +329,7 @@ fn dictionary_exceeds_65536_nodes() {
 fn kept_doctrine_keys_walk_the_dictionary_once_per_selector() {
     let mut f = doctrine_fixture(1);
     let mut keys = DoctrineKeys::default();
-    f.fail = Some(IMAGE + 0x0308_6bd8);
+    f.fail = Some(IMAGE + 0x030f_eba8);
     assert!(doctrine_keys_kept::<true>(&f, IMAGE, 1, &mut keys).is_err());
     assert!(keys.is_empty());
     f.fail = None;
@@ -436,7 +436,7 @@ fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
     let key = *b"abcde";
     for length in [257, 4097, 5000] {
         let mut memory = fixture();
-        memory.globals.push((IMAGE + 0x0297_9170, key.to_vec()));
+        memory.globals.push((IMAGE + 0x029f_59b8, key.to_vec()));
         memory.globals.push((
             IMAGE + crate::cterrain_database::SINGLETON_RVA,
             (DATABASE as u64).to_le_bytes().to_vec(),
@@ -500,7 +500,7 @@ fn a_capture_scans_the_terrain_database_for_the_ocean_once() {
     const OCEAN: usize = 0x3400;
     let key = *b"ocean";
     let mut memory = fixture();
-    memory.globals.push((IMAGE + 0x0297_9170, key.to_vec()));
+    memory.globals.push((IMAGE + 0x029f_59b8, key.to_vec()));
     memory.globals.push((
         IMAGE + crate::cterrain_database::SINGLETON_RVA,
         (DATABASE as u64).to_le_bytes().to_vec(),

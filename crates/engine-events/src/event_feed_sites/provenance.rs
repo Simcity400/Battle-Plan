@@ -53,18 +53,18 @@ pub struct Entry {
 /// else the one named. Its five callers are below.
 pub const JOIN_WAR: Entry = Entry {
     name: "JoinWar",
-    rva: 0x00d4_06f0,
+    rva: 0x00da_4e00,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24, 0x20,
         0x55,
     ],
     callers: &[
-        caller(0x0110_5e8d, "DeclarationJoin"),
-        caller(0x0034_ca2f, "AddToWarEffect"),
-        caller(0x00d2_822b, "SubjectJoinsOverlord"),
-        caller(0x00d2_839b, "OverlordJoinsSubject"),
-        caller(0x0110_7dea, "JoinAlly"),
-        caller(0x0113_c6e2, "CallAlly"),
+        caller(0x0118_c2cd, "DeclarationJoin"),
+        caller(0x0036_4f9f, "AddToWarEffect"),
+        caller(0x00d8_9aeb, "SubjectJoinsOverlord"),
+        caller(0x00d8_9dab, "OverlordJoinsSubject"),
+        caller(0x0118_e39a, "JoinAlly"),
+        caller(0x011c_6142, "CallAlly"),
     ],
 };
 
@@ -73,18 +73,18 @@ pub const JOIN_WAR: Entry = Entry {
 /// readable at entry.
 pub const END_WAR: Entry = Entry {
     name: "EndWar",
-    rva: 0x00d1_cc40,
+    rva: 0x00d7_e550,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
         0x48,
     ],
     callers: &[
-        caller(0x010e_0e88, "CivilWarTransferEnd"),
-        caller(0x006d_551a, "AnnexEnd"),
-        caller(0x00d2_7e0e, "SubjectOverlordEnd"),
-        caller(0x00d2_7f95, "SubjectWarsEnd"),
-        caller(0x00d1_e77b, "StatusResetEnd"),
-        caller(0x00e4_23a2, "PeaceEnd"),
+        caller(0x0116_8838, "CivilWarTransferEnd"),
+        caller(0x0071_cffa, "AnnexEnd"),
+        caller(0x00d8_96ce, "SubjectOverlordEnd"),
+        caller(0x00d8_9861, "SubjectWarsEnd"),
+        caller(0x00d8_008b, "StatusResetEnd"),
+        caller(0x00eb_1462, "PeaceEnd"),
     ],
 };
 
@@ -93,17 +93,17 @@ pub const END_WAR: Entry = Entry {
 /// then the winner; creation queues it and starts it through [`START_CONFERENCE`] before returning.
 pub const CREATE_CONFERENCE: Entry = Entry {
     name: "CreateConference",
-    rva: 0x00bb_ead0,
+    rva: 0x00c1_25c0,
     sentinel: [
         0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x5b, 0x10, 0x49, 0x89, 0x6b, 0x18, 0x49, 0x89, 0x73, 0x20,
         0x57,
     ],
     callers: &[
-        caller(0x0029_8c64, "ConsolePeace"),
-        caller(0x0036_6a75, "StartPeaceConferenceEffect"),
-        caller(0x0036_925f, "WhitePeaceEffect"),
-        caller(0x006e_2d56, "Surrender"),
-        caller(0x0110_8bdd, "PeaceProposal"),
+        caller(0x002b_01d4, "ConsolePeace"),
+        caller(0x0037_efd5, "StartPeaceConferenceEffect"),
+        caller(0x0038_17bf, "WhitePeaceEffect"),
+        caller(0x0072_a896, "Surrender"),
+        caller(0x0118_f18d, "PeaceProposal"),
     ],
 };
 
@@ -111,7 +111,7 @@ pub const CREATE_CONFERENCE: Entry = Entry {
 /// wars and annex its losers at once.
 pub const START_CONFERENCE: Entry = Entry {
     name: "StartConference",
-    rva: 0x00e4_f240,
+    rva: 0x00eb_e370,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20,
         0x55,
@@ -125,7 +125,7 @@ pub const START_CONFERENCE: Entry = Entry {
 /// processing, so it is one route.
 pub const APPLY_CONFERENCE: Entry = Entry {
     name: "ApplyConference",
-    rva: 0x00e4_1bb0,
+    rva: 0x00eb_0c70,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54, 0x41,
         0x56,
@@ -139,22 +139,22 @@ pub const APPLY_CONFERENCE: Entry = Entry {
 /// feed's [`super::ANNEX`] call.
 pub const ANNEX: Entry = Entry {
     name: "Annex",
-    rva: 0x006d_3f00,
+    rva: 0x0071_b9e0,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x18, 0x44, 0x88, 0x4c, 0x24, 0x20, 0x89, 0x54, 0x24, 0x10, 0x48,
         0x89,
     ],
     callers: &[
-        caller(0x010d_f6a7, "CivilWarAnnex"),
-        caller(0x0023_ec69, "ConsoleAnnex"),
-        caller(0x0023_ee98, "ConsoleAnnexSecond"),
-        caller(0x0067_8883, "Integration"),
-        caller(0x013e_ec7a, "BorderWarAnnex"),
-        caller(0x013e_eddc, "BorderWarAnnexSecond"),
-        caller(0x0145_55b6, "PeaceAnnex"),
-        caller(0x0034_da0e, "AnnexEffect"),
-        caller(0x0031_2c95, "TransferStateToAnnex"),
-        caller(0x0036_7b67, "TransferStateAnnex"),
+        caller(0x0116_7057, "CivilWarAnnex"),
+        caller(0x0025_62a9, "ConsoleAnnex"),
+        caller(0x0025_64d8, "ConsoleAnnexSecond"),
+        caller(0x006b_fdf3, "Integration"),
+        caller(0x0148_a57a, "BorderWarAnnex"),
+        caller(0x0148_a6dc, "BorderWarAnnexSecond"),
+        caller(0x014f_16b6, "PeaceAnnex"),
+        caller(0x0036_5f7e, "AnnexEffect"),
+        caller(0x0032_b125, "TransferStateToAnnex"),
+        caller(0x0038_00c7, "TransferStateAnnex"),
     ],
 };
 
@@ -162,17 +162,17 @@ pub const ANNEX: Entry = Entry {
 /// moving each core state of the target through released-state transfer.
 pub const RELEASE: Entry = Entry {
     name: "Release",
-    rva: 0x0070_c990,
+    rva: 0x0075_4aa0,
     sentinel: [
-        0x40, 0x56, 0x57, 0x41, 0x54, 0x41, 0x57, 0x48, 0x83, 0xec, 0x48, 0x80, 0x3d, 0xb0, 0x51,
-        0xed,
+        0x40, 0x56, 0x57, 0x41, 0x54, 0x41, 0x57, 0x48, 0x83, 0xec, 0x48, 0x80, 0x3d, 0x5f, 0xab,
+        0xf3,
     ],
     callers: &[
-        caller(0x0034_629f, "ReleasePuppetEffect"),
-        caller(0x0034_5fff, "ReleasePuppetOnControlledEffect"),
-        caller(0x0034_5f78, "ReleaseEffect"),
-        caller(0x0034_5f28, "ReleaseOnControlledEffect"),
-        caller(0x0035_c74a, "ReleaseAutonomyEffect"),
+        caller(0x0035_e81f, "ReleasePuppetEffect"),
+        caller(0x0035_e57f, "ReleasePuppetOnControlledEffect"),
+        caller(0x0035_e4f8, "ReleaseEffect"),
+        caller(0x0035_e4a8, "ReleaseOnControlledEffect"),
+        caller(0x0037_4caa, "ReleaseAutonomyEffect"),
     ],
 };
 
@@ -180,12 +180,12 @@ pub const RELEASE: Entry = Entry {
 /// and a u8 argument, returns a u8 result and follows the same state walk.
 pub const RELEASE_COMMAND: Entry = Entry {
     name: "ReleaseCommand",
-    rva: 0x0070_cab0,
+    rva: 0x0075_4bc0,
     sentinel: [
-        0x40, 0x56, 0x57, 0x41, 0x57, 0x48, 0x83, 0xec, 0x40, 0x80, 0x3d, 0x92, 0x50, 0xed, 0x02,
+        0x40, 0x56, 0x57, 0x41, 0x57, 0x48, 0x83, 0xec, 0x40, 0x80, 0x3d, 0x41, 0xaa, 0xf3, 0x02,
         0x00,
     ],
-    callers: &[caller(0x0115_855b, "ReleaseCommand")],
+    callers: &[caller(0x011e_2259, "ReleaseCommand")],
 };
 
 pub const ENTRIES: [Entry; 8] = [
@@ -201,48 +201,48 @@ pub const ENTRIES: [Entry; 8] = [
 
 /// The callers of diplomatic action dispatch, which takes an action pointer.
 pub const DIPLOMACY_CALLERS: [Caller; 9] = [
-    caller(0x0110_48e0, "DiplomaticCommand"),
-    caller(0x0035_4369, "DeclareWarEffect"),
-    caller(0x010d_fcc4, "CivilWarDeclaration"),
-    caller(0x0035_8380, "GiveGuaranteeEffect"),
-    caller(0x0035_85d3, "GiveMilitaryAccessEffect"),
-    caller(0x0035_5f63, "EmbargoEffect"),
-    caller(0x0030_511e, "GiveMarketAccessEffect"),
-    caller(0x0160_3e30, "OfferJoinFaction"),
-    caller(0x0024_423c, "ConsoleDiplomacy"),
+    caller(0x0118_ac47, "DiplomaticCommand"),
+    caller(0x0036_c8d9, "DeclareWarEffect"),
+    caller(0x0116_7674, "CivilWarDeclaration"),
+    caller(0x0037_08e0, "GiveGuaranteeEffect"),
+    caller(0x0037_0b33, "GiveMilitaryAccessEffect"),
+    caller(0x0036_e4d3, "EmbargoEffect"),
+    caller(0x0031_d6d3, "GiveMarketAccessEffect"),
+    caller(0x0169_c4c0, "OfferJoinFaction"),
+    caller(0x0025_b863, "ConsoleDiplomacy"),
 ];
 
 /// The callers of civil-war start.
 pub const CIVIL_WAR_CALLERS: [Caller; 4] = [
-    caller(0x0036_65c6, "StartCivilWarEffect"),
-    caller(0x00ad_ac46, "Coup"),
-    caller(0x0024_2dd3, "ConsoleCivilWar"),
-    caller(0x0024_2e8b, "ConsoleCivilWarSecond"),
+    caller(0x0037_eb26, "StartCivilWarEffect"),
+    caller(0x00b2_d8c6, "Coup"),
+    caller(0x0025_a413, "ConsoleCivilWar"),
+    caller(0x0025_a4cb, "ConsoleCivilWarSecond"),
 ];
 
 /// The callers of state owner assignment, which takes a state pointer, u32
 /// owner and two u8 arguments.
 pub const STATE_OWNER_CALLERS: [Caller; 20] = [
-    caller(0x001f_1b2c, "StateOwnerFix"),
-    caller(0x006d_4d6d, "StateAnnex"),
-    caller(0x0036_46cb, "SetStateOwnerEffect"),
-    caller(0x0145_5b1d, "StatePeaceWinner"),
-    caller(0x009d_7632, "StateDaily"),
-    caller(0x009d_bef3, "StateRead"),
-    caller(0x010d_ff52, "StateCivilWar"),
-    caller(0x010e_0188, "StateCivilWarSecond"),
-    caller(0x0028_543a, "ConsoleStateOwner"),
-    caller(0x0145_98de, "StatePeaceLiberated"),
-    caller(0x0031_2bfc, "TransferStateToEffect"),
-    caller(0x0070_cc81, "StateRelease"),
-    caller(0x0145_4f3f, "StatePeaceBeneficiary"),
-    caller(0x013e_ec23, "StateBorderWar"),
-    caller(0x013e_ed85, "StateBorderWarSecond"),
-    caller(0x0036_7ae6, "TransferStateEffect"),
-    caller(0x010e_02c3, "StateCivilWarTransfer"),
-    caller(0x0031_1670, "SetStateOwnerToEffect"),
-    caller(0x009d_da11, "StateImpassable"),
-    caller(0x015a_0d3c, "StateHistory"),
+    caller(0x0020_7c4c, "StateOwnerFix"),
+    caller(0x0071_c84d, "StateAnnex"),
+    caller(0x0037_cc2b, "SetStateOwnerEffect"),
+    caller(0x014f_1c1d, "StatePeaceWinner"),
+    caller(0x00a2_22f2, "StateDaily"),
+    caller(0x00a2_6bb4, "StateRead"),
+    caller(0x0116_7902, "StateCivilWar"),
+    caller(0x0116_7b38, "StateCivilWarSecond"),
+    caller(0x0029_c9ba, "ConsoleStateOwner"),
+    caller(0x014f_58ee, "StatePeaceLiberated"),
+    caller(0x0032_b08c, "TransferStateToEffect"),
+    caller(0x0075_4d91, "StateRelease"),
+    caller(0x014f_103f, "StatePeaceBeneficiary"),
+    caller(0x0148_a523, "StateBorderWar"),
+    caller(0x0148_a685, "StateBorderWarSecond"),
+    caller(0x0038_0046, "TransferStateEffect"),
+    caller(0x0116_7c73, "StateCivilWarTransfer"),
+    caller(0x0032_9b10, "SetStateOwnerToEffect"),
+    caller(0x00a2_86d1, "StateImpassable"),
+    caller(0x0163_d1bc, "StateHistory"),
 ];
 
 /// The route of a call returning to `return_rva`, if `callers` lists it.

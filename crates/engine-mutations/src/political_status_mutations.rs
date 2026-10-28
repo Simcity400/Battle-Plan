@@ -86,7 +86,7 @@ impl Domain {
 }
 
 /// The clamped popularity setter (party, value) invoked by the call sites.
-pub const SET_POPULARITY_RVA: usize = 0x11a_5ea0;
+pub const SET_POPULARITY_RVA: usize = 0x123_30a0;
 
 /// Each site, how it is patched and the domain its call moves.
 pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
@@ -95,7 +95,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_capital",
-            rva: 0x71_0dd0,
+            rva: 0x75_8ee0,
             sentinel: [
                 0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x5b, 0x08, 0x49, 0x89, 0x6b, 0x18, 0x49, 0x89, 0x73,
                 0x20, 0x57,
@@ -109,7 +109,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_politics",
-            rva: 0xba_7d80,
+            rva: 0xbf_b0b0,
             sentinel: [
                 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70,
                 0x18, 0x57,
@@ -123,7 +123,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "force_ruling_party",
-            rva: 0xba_d750,
+            rva: 0xc0_0a80,
             sentinel: [
                 0x40, 0x55, 0x48, 0x83, 0xec, 0x30, 0x8b, 0x41, 0x2c, 0x48, 0x8b, 0xe9, 0x48, 0x89,
                 0x5c, 0x24,
@@ -136,7 +136,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_ruling_party",
-            rva: 0xba_e690,
+            rva: 0xc0_19c0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec,
                 0x60, 0x48,
@@ -150,7 +150,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_ideas",
-            rva: 0xba_f050,
+            rva: 0xc0_2380,
             sentinel: [
                 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x4c, 0x89, 0x40, 0x18, 0x48, 0x89, 0x50,
                 0x10, 0x55,
@@ -163,7 +163,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "add_popularity",
-            rva: 0x11a_3500,
+            rva: 0x123_0700,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
                 0x20, 0x57,
@@ -177,7 +177,7 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_popularity_redistributing",
-            rva: 0x11a_5d70,
+            rva: 0x123_2f70,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
                 0x20, 0x57,
@@ -190,9 +190,9 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_political_party_popularity",
-            rva: 0x36_3f3d,
+            rva: 0x37_c49d,
             sentinel: [
-                0xe8, 0x5e, 0x1f, 0xe4, 0x00, 0x48, 0x8b, 0x5c, 0x24, 0x78, 0x48, 0x8b, 0xb4, 0x24,
+                0xe8, 0xfe, 0x6b, 0xeb, 0x00, 0x48, 0x8b, 0x5c, 0x24, 0x78, 0x48, 0x8b, 0xb4, 0x24,
                 0x80, 0x00,
             ],
         },
@@ -203,9 +203,9 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
     (
         MutationSite {
             name: "set_popularities",
-            rva: 0x36_4277,
+            rva: 0x37_c7d7,
             sentinel: [
-                0xe8, 0x24, 0x1c, 0xe4, 0x00, 0x48, 0x83, 0xc3, 0x10, 0x48, 0x3b, 0xdf, 0x75, 0xeb,
+                0xe8, 0xc4, 0x68, 0xeb, 0x00, 0x48, 0x83, 0xc3, 0x10, 0x48, 0x3b, 0xdf, 0x75, 0xeb,
                 0x48, 0x8b,
             ],
         },

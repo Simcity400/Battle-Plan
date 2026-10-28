@@ -5,7 +5,7 @@ use crate::{
 };
 
 /// Front primary vtable.
-pub const VTABLE_RVA: usize = 0x0297_5b40;
+pub const VTABLE_RVA: usize = 0x029f_2270;
 /// Front reference type.
 pub const REFERENCE_TYPE: u32 = 66;
 /// Inherited full reference handle.

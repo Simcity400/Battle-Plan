@@ -62,6 +62,7 @@ mod tests {
         for (name, token, mask, operand) in [
             ("is_fighting_in_strategic_region", 0x2e4f, 0x10, "0x25"),
             ("is_deployed", 0x432d, 0x8, "yes"),
+            ("has_volunteers", 0x2e39, 0x4, "SYN"),
         ] {
             assert_eq!(
                 crate::trigger_keys::registered_trigger(name.as_bytes()),

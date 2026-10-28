@@ -1029,7 +1029,7 @@ mod tests {
         produce_for_test(a.address(), MILITARY, 0, None);
         produce_for_test(b.address(), NAVAL, 2, None);
         // The rocket line delivers from elsewhere; nothing waits for a credit.
-        observe_delivery(0x00f7_13ca, b.variant_pointer(), 5 * UNIT_SCALE);
+        observe_delivery(0x00ff_5a0a, b.variant_pointer(), 5 * UNIT_SCALE);
         produce_for_test(b.address(), NAVAL, 0, None);
         // A negative count is credited, with nothing delivered.
         produce_for_test(a.address(), MILITARY, -1, None);

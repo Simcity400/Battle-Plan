@@ -38,7 +38,7 @@ use crate::{
 };
 
 /// Combat-log manager primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_d8d8;
+pub const VTABLE_RVA: usize = 0x029d_a230;
 /// CPdxArray of group-log pointers, appended by writers and serialized in order.
 pub const GROUPS: usize = 0x08;
 /// Manager raw country link, serialized as a tag.
@@ -48,7 +48,7 @@ pub const SIZE: usize = 0x28;
 
 /// Per-country prune entry; RCX is the manager. It prunes old month entries,
 /// then swap-removes and destroys group logs that are empty or no longer resolve.
-pub const PRUNE_RVA: usize = 0x00cd_ab70;
+pub const PRUNE_RVA: usize = 0x00d3_a980;
 /// Prune-entry instruction sentinel.
 pub const PRUNE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec, 0x20, 0x33, 0xff, 0x48, 0x8b, 0xf1, 0x39,

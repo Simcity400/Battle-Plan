@@ -21,6 +21,7 @@ enum Helper {
     Front,
     Mission,
     Operation,
+    StockpileFuel,
 }
 
 #[derive(Clone, Copy)]
@@ -56,6 +57,7 @@ const OPERATION_STRATEGY: i32 = 0x51;
 const CONCENTRATION_FRONT_STRATEGY: i32 = 0x62;
 const CONCENTRATION_TARGET_STRATEGY: i32 = 0x64;
 const NAVAL_DOMINANCE_STRATEGY: i32 = 0x6B;
+const STOCKPILE_FUEL_STRATEGY: i32 = 0x70;
 
 fn targeted_field(key: Option<&[u8]>) -> Option<ValueReader> {
     Some(match key {
@@ -98,6 +100,7 @@ fn helper_field(helper: Helper, key: Option<&[u8]>) -> Option<ValueReader> {
             Helper::Operation,
             Some(b"priority" | b"state" | b"region" | b"operation" | b"operation_target"),
         ) => ValueReader::One,
+        (Helper::StockpileFuel, Some(b"stop_above" | b"start_below")) => ValueReader::One,
         _ => return None,
     })
 }
@@ -114,6 +117,7 @@ fn helper(kind: i32) -> Option<Helper> {
         MISSION_STRATEGY => Some(Helper::Mission),
         FRONT_CONTROL_STRATEGY => Some(Helper::Front),
         OPERATION_STRATEGY => Some(Helper::Operation),
+        STOCKPILE_FUEL_STRATEGY => Some(Helper::StockpileFuel),
         _ => None,
     }
 }

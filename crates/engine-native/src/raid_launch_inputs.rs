@@ -1801,8 +1801,8 @@ pub(crate) mod tests {
     const PRODUCTION: usize = 0x20_000;
     const ALLOCATIONS: usize = 0x21_000;
     const ARCHETYPE: usize = 0x22_000;
-    const RESERVATIONS: usize = 0x23_000;
-    const RESERVATION: usize = 0x23_100;
+    const RESERVATIONS: usize = 0x2_3000;
+    const RESERVATION: usize = 0x2_3100;
     const STRATEGIC: usize = 0x24_000;
     const SITES: usize = 0x24_800;
     const SITE: usize = 0x25_000;

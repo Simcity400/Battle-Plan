@@ -10,9 +10,9 @@ use crate::{
 };
 
 /// Primary division vtable.
-pub const VTABLE_RVA: usize = 0x0295_a2b0;
+pub const VTABLE_RVA: usize = 0x029d_6d68;
 /// Secondary division vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x0295_a490;
+pub const SECONDARY_VTABLE_RVA: usize = 0x029d_6f48;
 /// Secondary subobject displacement.
 pub const SECONDARY_BASE: usize = 0x10;
 /// Low-supply counter input, i64 fixed5.
@@ -82,13 +82,13 @@ pub const ENTRENCHMENT_CAP: usize = 0x460;
 /// Attrition-icon input, separate from total attrition.
 pub const COUNTER_ATTRITION: usize = 0x438;
 /// Icon threshold, i64, tested after applying the country modifier.
-pub const COUNTER_ATTRITION_THRESHOLD_RVA: usize = 0x0333_4fe0;
+pub const COUNTER_ATTRITION_THRESHOLD_RVA: usize = 0x033e_0008;
 /// Maximum exercise level define, i32.
-pub const EXERCISE_MAXIMUM_LEVEL_RVA: usize = 0x0333_2090;
+pub const EXERCISE_MAXIMUM_LEVEL_RVA: usize = 0x033e_3ff4;
 /// Minimum effective strength fraction define, i64.
-pub const EXERCISE_MINIMUM_STRENGTH_RVA: usize = 0x0333_2130;
+pub const EXERCISE_MINIMUM_STRENGTH_RVA: usize = 0x033e_40b0;
 /// Ordered i64 experience-threshold array.
-pub const EXPERIENCE_THRESHOLDS_RVA: usize = 0x0333_9500;
+pub const EXPERIENCE_THRESHOLDS_RVA: usize = 0x033e_6ec0;
 /// Requests-object pointer selecting the serialized upgrade group.
 pub const REQUESTS: usize = 0x478;
 /// Retained land model number, i32, selected from priority subunit and
@@ -109,11 +109,11 @@ pub const FUEL_CANDIDATE: usize = 0x620;
 pub const SEPARATE_COUNTER: usize = 0x630;
 
 /// Constructor followed by registration of the full handle.
-pub const CONSTRUCTOR_RVA: usize = 0x00c6_d470;
+pub const CONSTRUCTOR_RVA: usize = 0x00cc_a140;
 /// Synchronous hourly division update.
-pub const HOURLY_UPDATE_RVA: usize = 0x00c8_81d0;
+pub const HOURLY_UPDATE_RVA: usize = 0x00ce_4f50;
 /// Active-stat recalculation in staggered parallel work joined before returning.
-pub const UPDATE_ACTIVE_STATS_RVA: usize = 0x00c8_d600;
+pub const UPDATE_ACTIVE_STATS_RVA: usize = 0x00ce_a350;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

@@ -4,7 +4,7 @@
 use crate::{Memory, allocation, cpdx_array::Array, read};
 
 pub const STATUS: usize = 0x7c8;
-pub const VTABLE_RVA: usize = 0x0296_61b8;
+pub const VTABLE_RVA: usize = 0x029e_2aa8;
 pub const PROGRAMS: usize = 0x08;
 
 pub fn read_into(

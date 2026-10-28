@@ -11,7 +11,7 @@ pub const MASK: usize = 0x14;
 /// Overflow u8 extent, with a separate end sentinel after the slot extent.
 pub const OVERFLOW: usize = 0x18;
 /// Shared static empty-target storage, excluded from deallocation.
-pub const EMPTY_TARGET_STORAGE_RVA: usize = 0x030b_3750;
+pub const EMPTY_TARGET_STORAGE_RVA: usize = 0x0312_b8c0;
 
 use crate::{Memory, read};
 

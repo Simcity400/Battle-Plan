@@ -4,7 +4,7 @@
 //! an exhaustive writer or thread lifetime.
 
 /// CLandCombatant primary vtable.
-pub const VTABLE_RVA: usize = 0x029a_82c0;
+pub const VTABLE_RVA: usize = 0x02a2_3210;
 /// CLandCombatant u32 indicator flags.
 pub const FLAGS: usize = 0x08;
 /// CLandCombatant parent CLandCombat pointer.

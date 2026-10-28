@@ -32,17 +32,17 @@ pub const FACTORY_EFFICIENCIES: usize = 0xc0;
 /// define selected by classifier bits. Railway-gun lines use their define alone.
 pub const MAX_FACTORIES_VIRTUAL_SLOT: usize = 0x58;
 /// Loaded military maximum factories per line, signed i32.
-pub const MAX_MIL_FACTORIES_PER_LINE_RVA: usize = 0x0333_5fe0;
+pub const MAX_MIL_FACTORIES_PER_LINE_RVA: usize = 0x033e_06cc;
 /// Loaded convoy maximum naval factories per line, signed i32; classifier bit 0.
-pub const CONVOY_MAX_NAV_FACTORIES_PER_LINE_RVA: usize = 0x0333_5d9c;
+pub const CONVOY_MAX_NAV_FACTORIES_PER_LINE_RVA: usize = 0x033e_04c8;
 /// Loaded floating-harbour maximum naval factories per line, signed i32; classifier bit 9.
-pub const FLOATING_HARBOR_MAX_NAV_FACTORIES_PER_LINE_RVA: usize = 0x0333_5e54;
+pub const FLOATING_HARBOR_MAX_NAV_FACTORIES_PER_LINE_RVA: usize = 0x033e_0558;
 /// Loaded default maximum naval factories per line, signed i32.
-pub const DEFAULT_MAX_NAV_FACTORIES_PER_LINE_RVA: usize = 0x0333_5cd0;
+pub const DEFAULT_MAX_NAV_FACTORIES_PER_LINE_RVA: usize = 0x033e_0430;
 /// Loaded capital-ship maximum naval factories per line, signed i32; classifier bit 6.
-pub const CAPITAL_SHIP_MAX_NAV_FACTORIES_PER_LINE_RVA: usize = 0x0333_5f10;
+pub const CAPITAL_SHIP_MAX_NAV_FACTORIES_PER_LINE_RVA: usize = 0x033e_060c;
 /// Loaded railway-gun maximum factories per line, signed i32.
-pub const RAILWAY_GUN_MAX_MIL_FACTORIES_PER_LINE_RVA: usize = 0x0333_6130;
+pub const RAILWAY_GUN_MAX_MIL_FACTORIES_PER_LINE_RVA: usize = 0x033e_081c;
 /// The six defines above, read together once per walk, in this order.
 pub const MAX_FACTORY_DEFINE_RVAS: [usize; 6] = [
     MAX_MIL_FACTORIES_PER_LINE_RVA,

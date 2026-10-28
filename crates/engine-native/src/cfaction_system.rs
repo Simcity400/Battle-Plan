@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// CFactionSystem primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_65d8;
+pub const VTABLE_RVA: usize = 0x029e_2f70;
 
 /// CFactionSystem faction pointer-array data.
 pub const FACTIONS: usize = 0x20;

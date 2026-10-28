@@ -62,7 +62,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
     // The four-byte DL spill to its home slot and saving RBP relocate.
     MutationSite {
         name: "recalculate_equipment_stats",
-        rva: 0xc3_d090,
+        rva: 0xc9_3760,
         sentinel: [
             0x88, 0x54, 0x24, 0x10, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
             0x41, 0x57,
@@ -71,7 +71,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
     // The five-byte R9 spill to its home slot relocates.
     MutationSite {
         name: "refit",
-        rva: 0xc3_3ba0,
+        rva: 0xc8_a230,
         sentinel: [
             0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24,
             0x10, 0x55,
@@ -80,7 +80,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
     // The five-byte RBX spill to RDX's home slot relocates.
     MutationSite {
         name: "rebuild_experience_modifiers",
-        rva: 0xc3_ce50,
+        rva: 0xc9_3520,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54,
             0x41, 0x55,
@@ -97,7 +97,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
     },
     MutationSite {
         name: "destroy_air_base",
-        rva: 0xc4_8740,
+        rva: 0xca_4eb0,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
             0x41, 0x57,
@@ -105,7 +105,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
     },
     MutationSite {
         name: "rebuild_medal_modifiers",
-        rva: 0x144_c2c0,
+        rva: 0x14e_83c0,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
             0x41, 0x57,
@@ -113,7 +113,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
     },
     MutationSite {
         name: "rebuild_doctrine_tree",
-        rva: 0xd6_6390,
+        rva: 0xdc_c6e0,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
             0x41, 0x57,
@@ -122,7 +122,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
     // Saving RBP, RDI and R12 occupies five relocated bytes.
     MutationSite {
         name: "rebuild_region_weather_modifiers",
-        rva: 0xf2_20d0,
+        rva: 0xfa_4f50,
         sentinel: [
             0x40, 0x55, 0x57, 0x41, 0x54, 0x48, 0x83, 0xec, 0x40, 0x48, 0x8b, 0xf9, 0x48, 0x83,
             0xc1, 0x58,
@@ -140,7 +140,7 @@ pub const RECEIVER_ARGUMENT: [usize; 8] = [0, 0, 0, 1, 0, 0, 0, 0];
 mod tests {
     use super::*;
 
-    const EXPECTED_CARRIER_BASE_RVA: usize = 0xc4_b5a0;
+    const EXPECTED_CARRIER_BASE_RVA: usize = 0xca_87e0;
 
     /// Each sentinel opens with a relocatable stack store; the sites are
     /// distinct and the carrier site is the one the air manager names.

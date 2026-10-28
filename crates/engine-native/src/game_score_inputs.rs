@@ -1029,37 +1029,37 @@ pub fn read_multipliers(memory: &impl Memory, base: usize) -> Multipliers {
         total_raw: field(
             memory,
             base,
-            0x0333_7a68,
+            0x033e_1f00,
             "NDefines.NCountry.COUNTRY_SCORE_MULTIPLIER unreadable",
         ),
         army_raw: field(
             memory,
             base,
-            0x0333_7b10,
+            0x033e_1f98,
             "NDefines.NCountry.ARMY_SCORE_MULTIPLIER unreadable",
         ),
         navy_raw: field(
             memory,
             base,
-            0x0333_7bc0,
+            0x033e_2038,
             "NDefines.NCountry.NAVY_SCORE_MULTIPLIER unreadable",
         ),
         air_raw: field(
             memory,
             base,
-            0x0333_7c58,
+            0x033e_20c8,
             "NDefines.NCountry.AIR_SCORE_MULTIPLIER unreadable",
         ),
         industry_raw: field(
             memory,
             base,
-            0x0333_7d00,
+            0x033e_2158,
             "NDefines.NCountry.INDUSTRY_SCORE_MULTIPLIER unreadable",
         ),
         land_raw: field(
             memory,
             base,
-            0x0333_7dc8,
+            0x033e_21f8,
             "NDefines.NCountry.PROVINCE_SCORE_MULTIPLIER unreadable",
         ),
     }

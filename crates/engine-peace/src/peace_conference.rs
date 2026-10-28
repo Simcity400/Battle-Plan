@@ -27,7 +27,7 @@
 use crate::{Memory, cgame_state, cpdx_array::Array, read, walk::Outcome};
 
 /// Conference primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_0e58;
+pub const VTABLE_RVA: usize = 0x029c_d9f8;
 /// Conference full reference, two u32 words.
 pub const REFERENCE: usize = 0x08;
 /// Signed i32 turn, incremented live and rebuilt from saved history.

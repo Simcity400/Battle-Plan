@@ -3735,9 +3735,7 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
                 }]
                 .into(),
                 subsidy_total_raw: i64::sample(tick),
-                auto_accept_market_access: bool::sample(tick),
                 auto_send_market_access: bool::sample(tick + 1),
-                auto_accept_purchase: bool::sample(tick + 2),
                 ..Default::default()
             };
             TableRows::CountryMarket(

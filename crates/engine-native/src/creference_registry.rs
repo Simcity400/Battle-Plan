@@ -3,17 +3,17 @@
 //! requiring a quiescent boundary.
 
 /// Low-type reference-table array RVA.
-pub const LOW_ROOTS_RVA: usize = 0x0345_1dc0;
+pub const LOW_ROOTS_RVA: usize = 0x034f_fc00;
 /// Engine mid-type reference-table root RVA.
-pub const MID_ROOT_RVA: usize = 0x0345_1db8;
+pub const MID_ROOT_RVA: usize = 0x034f_fbf8;
 /// Engine high-type reference-table root RVA.
-pub const HIGH_ROOT_RVA: usize = 0x0345_1db0;
+pub const HIGH_ROOT_RVA: usize = 0x034f_fbf0;
 /// Engine low-type root count.
 pub const LOW_ROOT_COUNT: u32 = 100;
 /// Engine mid-type cutoff.
 pub const MID_TYPE_LIMIT: u32 = 0x1269;
 /// Engine static-empty bucket RVA.
-pub const STATIC_EMPTY_RVA: usize = 0x030b_ddb8;
+pub const STATIC_EMPTY_RVA: usize = 0x0313_5f98;
 /// Reference registry entries pointer.
 pub const ENTRIES: usize = 0x08;
 /// Reference registry u32 count.
@@ -363,11 +363,11 @@ fn probe_with(
 pub const DYNAMIC_TYPE_BASE: u32 = 0x1268;
 /// Minted-ID counter, u32, incremented on minting and serialized unsigned
 /// as `debug_current_ref_id`.
-pub const ID_COUNTER_RVA: usize = 0x0345_20e0;
+pub const ID_COUNTER_RVA: usize = 0x034f_ff20;
 /// Default/invalid packed handle: low u32 type and high u32 ID. New reference
 /// objects and fields initialize from it; absent front bindings compare both
 /// words against it. It is not a counter and never advances.
-pub const INVALID_REFERENCE_RVA: usize = 0x0333_d528;
+pub const INVALID_REFERENCE_RVA: usize = 0x033e_b2a0;
 
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]

@@ -29,7 +29,7 @@ pub const SUBSIDY_ARCHETYPE: usize = 8;
 pub const SUBSIDY_CONDITION: usize = 0x10;
 pub const SUBSIDY_KIND: usize = 0x28;
 pub const SUBSIDY_TRIGGER_NAME: usize = 0x60;
-pub const SUBSIDY_TRIGGER_VTABLE_RVA: usize = 0x2942c50;
+pub const SUBSIDY_TRIGGER_VTABLE_RVA: usize = 0x29c00b8;
 pub const PRICE_VARIANT: usize = 0x1c;
 pub const PRICE_LEVEL: usize = 0x24;
 pub const CONTRACT_VARIABLES: usize = 0x2f0;
@@ -48,9 +48,9 @@ pub const CONTRACT_HISTORY_COLLECTED: usize = 0x240;
 pub const DEFINITION_TOTAL_COST: usize = 0xd0;
 pub const DEFINITION_COST_VALID: usize = 0xc0;
 pub const VARIANT_MARKET_PRICE: usize = 0x3d0;
-pub const LOW_PRICE_FACTOR_RVA: usize = 0x3331ba8;
-pub const HIGH_PRICE_FACTOR_RVA: usize = 0x3331ce8;
-pub const MARKET_PRICE_FACTOR_RVA: usize = 0x33319c8;
+pub const LOW_PRICE_FACTOR_RVA: usize = 0x33e3350;
+pub const HIGH_PRICE_FACTOR_RVA: usize = 0x33e3460;
+pub const MARKET_PRICE_FACTOR_RVA: usize = 0x33e31c8;
 pub const LOW_PRICE_TOKEN: u32 = 0x4ba5;
 pub const NORMAL_PRICE_TOKEN: u32 = 0x77;
 pub const HIGH_PRICE_TOKEN: u32 = 0x4ba7;
@@ -94,9 +94,7 @@ pub struct Country {
     pub price_levels: Vec<PriceLevel>,
     pub subsidies: Vec<Subsidy>,
     pub subsidy_total_raw: i64,
-    pub auto_accept_market_access: bool,
     pub auto_send_market_access: bool,
-    pub auto_accept_purchase: bool,
 }
 
 /// Independent writer domains. A change to automation must not read inventory,
@@ -196,11 +194,9 @@ pub fn country(
         )?;
     }
     if demand.automation {
-        let options = read::<[u8; 3]>(memory, at(address, AUTOMATION)?)
-            .ok_or("market automation options unreadable")?;
-        output.auto_accept_market_access = options[0] != 0;
-        output.auto_send_market_access = options[1] != 0;
-        output.auto_accept_purchase = options[2] != 0;
+        output.auto_send_market_access = read::<u8>(memory, at(address, AUTOMATION)?)
+            .ok_or("market automation option unreadable")?
+            != 0;
     }
     output.country = country.id;
     Ok(())

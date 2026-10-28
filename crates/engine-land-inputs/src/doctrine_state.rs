@@ -4,18 +4,18 @@
 //! template strings for every country's selection.
 use crate::{Memory, cpdx_array::Array, memory::Raw, msvc_string, read};
 
-pub const STATUS_VTABLE: usize = 0x29653f8;
-pub const FOLDER_VTABLE: usize = 0x29653a8;
-pub const TRACK_VTABLE: usize = 0x2965358;
-pub const COST_VTABLE: usize = 0x29652b8;
-pub const GRANT_VTABLE: usize = 0x27d1180;
-pub const FILTER_VTABLE: usize = 0x27d1130;
-pub const LEADER_VTABLE: usize = 0x2965308;
-pub const EQUIPMENT_VTABLE: usize = 0x2965210;
-pub const FOLDER_TEMPLATE_VTABLE: usize = 0x2718f88;
-pub const GRAND_TEMPLATE_VTABLE: usize = 0x2719148;
-pub const SUB_TEMPLATE_VTABLE: usize = 0x27192f8;
-pub const TRACK_TEMPLATE_VTABLE: usize = 0x2719408;
+pub const STATUS_VTABLE: usize = 0x29e1ce8;
+pub const FOLDER_VTABLE: usize = 0x29e1c98;
+pub const TRACK_VTABLE: usize = 0x29e1c48;
+pub const COST_VTABLE: usize = 0x29e1ba8;
+pub const GRANT_VTABLE: usize = 0x284f268;
+pub const FILTER_VTABLE: usize = 0x284f218;
+pub const LEADER_VTABLE: usize = 0x29e1bf8;
+pub const EQUIPMENT_VTABLE: usize = 0x29e1b00;
+pub const FOLDER_TEMPLATE_VTABLE: usize = 0x2796f30;
+pub const GRAND_TEMPLATE_VTABLE: usize = 0x27970f0;
+pub const SUB_TEMPLATE_VTABLE: usize = 0x27972a0;
+pub const TRACK_TEMPLATE_VTABLE: usize = 0x27973b0;
 pub const TEMPLATE_TOKEN: usize = 8;
 pub const FILTER_TRACK: usize = 8;
 pub const FILTER_FOLDER: usize = 0x10;

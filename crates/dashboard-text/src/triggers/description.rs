@@ -727,6 +727,24 @@ impl<'a> Formatter<'_, '_, 'a> {
                     scopes,
                 )
             }
+            "has_volunteers" => {
+                // Same country getter and marked name as tag, without its unit-leader branch.
+                let country = self
+                    .evaluator
+                    .country_operand(item, scopes)
+                    .map_err(|why| format!("trigger has_volunteers: {why}"))?
+                    .ok_or("trigger has_volunteers: the operand resolves no country; the description is not reproduced")?;
+                let label = self.text.country_marked_name(country)?;
+                self.scoped(
+                    if inverted {
+                        b"TRIGGER_HAS_NO_VOLUNTEERS_IN_TARGET"
+                    } else {
+                        b"TRIGGER_HAS_VOLUNTEERS_IN_TARGET"
+                    },
+                    &[("COUNTRY", Argument::Text(&label))],
+                    scopes,
+                )
+            }
             "custom_trigger_tooltip" | "custom_override_tooltip" => {
                 // Render own text with empty descendants.
                 let fields = children(item);

@@ -1,7 +1,7 @@
 //! Embedded division acclimatization state; hourly consistency is unverified.
 
 /// Embedded acclimatization object vtable.
-pub const VTABLE_RVA: usize = 0x027d_e000;
+pub const VTABLE_RVA: usize = 0x0285_bb80;
 /// Category/weight vector data.
 pub const DATA: usize = 0x08;
 /// Vector capacity, u32.
@@ -20,7 +20,7 @@ pub const CATEGORY_FACTOR: usize = 0x30;
 /// `NDefines::NGraphics::ACCLIMATIZATION_CAMO_SHOW_AT`, a signed fixed5 word
 /// loaded from the content's defines and multiplied by the maximum for the
 /// camouflage threshold.
-pub const CAMO_SHOW_AT_RVA: usize = 0x0333_6c90;
+pub const CAMO_SHOW_AT_RVA: usize = 0x033e_1658;
 
 /// Select from a division's entries offered in native order: the first strictly
 /// greatest weight above zero. It starts from zero and replaces its winner only

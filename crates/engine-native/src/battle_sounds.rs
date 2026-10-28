@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// Global pointer to the battle-sound manager; null while the game holds none.
-pub const MANAGER_RVA: usize = 0x0333_0548;
+pub const MANAGER_RVA: usize = 0x033d_ea38;
 /// The manager's spatial tree of battles.
 pub const MANAGER_TREE: usize = 0x08;
 /// The tree's node array header, relative to the tree.

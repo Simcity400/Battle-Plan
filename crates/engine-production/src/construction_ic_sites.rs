@@ -107,20 +107,20 @@ pub struct Site {
 /// following RIP-relative load remains at its original location.
 pub const BUILDING_SPEED: Site = Site {
     name: "building speed",
-    rva: 0x00f6_e060,
+    rva: 0x00ff_24d0,
     sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x8b, 0x05, 0xbc, 0xf4, 0x3c,
+        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x8b, 0x05, 0xc4, 0x8d, 0x3f,
         0x02,
     ],
 };
 /// Return RVA of the [`BUILDING_SPEED`] call whose value building advancement spends.
-pub const BUILDING_SPEND_RETURN: usize = 0x00f6_a877;
+pub const BUILDING_SPEND_RETURN: usize = 0x00fe_ed57;
 
 /// Building completion query: RCX is the line and AL is the result.
 /// Amount and repair count must both be zero.
 pub const BUILDING_COMPLETE: Site = Site {
     name: "building completion",
-    rva: 0x00f6_e160,
+    rva: 0x00ff_25d0,
     sentinel: [
         0x48, 0x83, 0xec, 0x28, 0x83, 0x79, 0x48, 0x00, 0x75, 0x14, 0x48, 0x8b, 0x01, 0xff, 0x90,
         0xa8,
@@ -132,7 +132,7 @@ pub const BUILDING_COMPLETE: Site = Site {
 /// RBX and reserves stack space before the indirect call.
 pub const BUILDING_RESET: Site = Site {
     name: "building count reset",
-    rva: 0x00f6_a510,
+    rva: 0x00fe_e9e0,
     sentinel: [
         0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x01, 0x33, 0xd2, 0x48, 0x8b, 0xd9, 0xff,
         0x90,
@@ -163,9 +163,9 @@ pub fn count_reset(
 /// Cancellation or every adjacent route edge reaching the target level completes it.
 pub const RAILWAY_COMPLETE: Site = Site {
     name: "railway completion",
-    rva: 0x01a0_3a60,
+    rva: 0x01a9_55a0,
     sentinel: [
-        0x40, 0x55, 0x48, 0x83, 0xec, 0x50, 0x80, 0x3d, 0xe5, 0xe0, 0xbd, 0x01, 0x00, 0x40, 0xb5,
+        0x40, 0x55, 0x48, 0x83, 0xec, 0x50, 0x80, 0x3d, 0x64, 0xa0, 0xbf, 0x01, 0x00, 0x40, 0xb5,
         0x01,
     ],
 };
@@ -173,13 +173,13 @@ pub const RAILWAY_COMPLETE: Site = Site {
 /// The daily production pass checks completion after advancing the line and
 /// removes and deletes it on a true result. Other getter calls are not
 /// queue-completion events.
-pub const COMPLETE_RETURN: usize = 0x00e6_732e;
+pub const COMPLETE_RETURN: usize = 0x00ed_85ae;
 
 /// General-line removal: RCX is the status and RDX is the line.
 /// It removes the roster index and destroys the line.
 pub const REMOVE_GENERAL_LINE: Site = Site {
     name: "linked building completion removal",
-    rva: 0x00e6_efa0,
+    rva: 0x00ee_0340,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30,
         0x48,
@@ -188,7 +188,7 @@ pub const REMOVE_GENERAL_LINE: Site = Site {
 /// Primary advancement decrements its partner, tests for zero amount, and
 /// deletes it before the daily completion check. Command and hourly removal
 /// callers are not completion events.
-pub const LINKED_COMPLETE_RETURN: usize = 0x00f6_ad8c;
+pub const LINKED_COMPLETE_RETURN: usize = 0x00fe_f27c;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Completion {
@@ -299,7 +299,7 @@ pub fn linked_completion(
 /// The relocated prefix comprises four register pushes occupying five bytes.
 pub const RAILWAY_ADVANCE: Site = Site {
     name: "railway advance",
-    rva: 0x01a0_2660,
+    rva: 0x01a9_41a0,
     sentinel: [
         0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8b, 0xec, 0x48,
         0x83,
@@ -312,7 +312,7 @@ pub const RAILWAY_ADVANCE: Site = Site {
 /// stack.
 pub const RAILWAY_PROGRESS: Site = Site {
     name: "railway progress",
-    rva: 0x00e9_3090,
+    rva: 0x00f0_5cf0,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
         0x41,
@@ -321,12 +321,12 @@ pub const RAILWAY_PROGRESS: Site = Site {
 
 /// Instant-construction console flag (u8). Progress under it consumes the
 /// cost and is not factory output.
-pub const INSTANT_CONSTRUCTION: usize = 0x0332_f628;
+pub const INSTANT_CONSTRUCTION: usize = 0x033d_da98;
 /// Railway instant progress amount passed in R9, gated by the player's country.
 pub const RAILWAY_INSTANT_AMOUNT: i64 = 10_000_000_000;
 /// `creference_registry::invalid_reference` (u64): the empty reference, assigned
 /// at run time (read it live, never a sampled constant).
-pub const INVALID_REFERENCE: usize = 0x0333_d528;
+pub const INVALID_REFERENCE: usize = 0x033e_b2a0;
 
 /// The line's own CID (u32 type, u32 id): the construction tables' `id`.
 pub const LINE_HANDLE: usize = cproduction_line::REFERENCE_TYPE;

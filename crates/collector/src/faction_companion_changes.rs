@@ -224,7 +224,6 @@ impl Hooks {
                 0,
                 0,
                 0,
-                0,
                 minimum_upgrade as *const () as usize,
                 doctrine_folder as *const () as usize,
                 0,
@@ -232,10 +231,7 @@ impl Hooks {
                 0,
                 0,
                 0,
-                0,
-                0,
                 account_projection as *const () as usize,
-                0,
                 0,
                 0,
                 0,
@@ -249,12 +245,12 @@ impl Hooks {
                 0,
                 0,
                 0,
+                advisor_60 as *const () as usize,
+                advisor_61 as *const () as usize,
+                advisor_62 as *const () as usize,
+                advisor_63 as *const () as usize,
                 advisor_64 as *const () as usize,
                 advisor_65 as *const () as usize,
-                advisor_66 as *const () as usize,
-                advisor_67 as *const () as usize,
-                advisor_68 as *const () as usize,
-                advisor_69 as *const () as usize,
                 rank_phase as *const () as usize,
                 0,
                 0,
@@ -381,14 +377,14 @@ macro_rules! callback {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionCompanions);
             CALLS.increment($site);
             let watch = &WATCHES[MUTATIONS[$site].1 as usize];
-            if $site == 68 && b as u32 == 4 {
+            if $site == 64 && b as u32 == 4 {
                 let original: Function =
                     unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
                 return timing.original(|| unsafe { original(a, b, c, d) });
             }
-            let selected_slot = if $site == 69 {
+            let selected_slot = if $site == 65 {
                 a.checked_sub(engine_stability::cfaction_upgrade_status::SLOTS)
-            } else if $site == 68 {
+            } else if $site == 64 {
                 let memory = unsafe { engine_native::memory::LiveMemory::new() };
                 engine_native::read::<u64>(
                     &memory,
@@ -458,7 +454,7 @@ macro_rules! scalar_callback {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionCompanions);
             CALLS.increment($site);
             let flight = ManuallyDrop::new(mirror::Flight::new());
-            if $site == 49 {
+            if $site == 46 {
                 mirror::projection_sources(a, b as u32 as usize, c as i64);
             } else if $site == 14 {
                 mirror::observe(a, false, mirror::CONTRIBUTION, b as i64, Operation::Add);
@@ -511,7 +507,7 @@ unsafe extern "system-unwind" fn account_store(registers: &Registers, site: usiz
     let _timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionCompanions);
     CALLS.increment(site);
     use crate::faction_accounts::mirror::{self, Operation};
-    if site == 71 {
+    if site == 67 {
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Acquire);
         let canonical = base
@@ -524,41 +520,42 @@ unsafe extern "system-unwind" fn account_store(registers: &Registers, site: usiz
         mirror::rank_country(canonical);
         return;
     }
-    if site == 79 {
+    if site == 75 {
         mirror::rank_input(registers.rax as i64, registers.rdi as u32);
         return;
     }
-    if site == 54 {
+    if site == 50 {
         mirror::rank_commit(registers.rcx, registers.rsi as u32 as i32);
         return;
     }
-    if matches!(site, 72 | 74) {
-        mirror::projection_operand(site - 72, registers.rbx as i64);
+    if matches!(site, 68 | 70) {
+        mirror::projection_operand(site - 68, registers.rbx as i64);
         return;
     }
     let _flight = mirror::Flight::new();
-    if matches!(site, 50..=53) {
+    if matches!(site, 47..=49) {
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
-        let denominator = if site == 50 {
+        let denominator = if site == 47 {
             registers
                 .r14
                 .checked_add(engine_native::cfaction::INFLUENCE_TOTAL)
                 .and_then(|at| engine_native::read::<i64>(&memory, at))
         } else {
-            let holder = if site == 52 {
-                registers.rsi
+            // The range body's and the worker's captures hold the denominator pointer.
+            let (holder, offset) = if site == 48 {
+                (registers.r15, 0x10)
             } else {
-                registers.r14
+                (registers.r14, 0x38)
             };
             holder
-                .checked_add(8)
+                .checked_add(offset)
                 .and_then(|at| {
                     engine_native::read::<u64>(&memory, at)
                         .and_then(|value| usize::try_from(value).ok())
                 })
                 .and_then(|at| engine_native::read::<i64>(&memory, at))
         };
-        let receiver = if site == 52 {
+        let receiver = if site == 48 {
             registers.r14
         } else {
             registers.rbp
@@ -566,8 +563,8 @@ unsafe extern "system-unwind" fn account_store(registers: &Registers, site: usiz
         if let Some(denominator) = denominator {
             mirror::refresh(
                 receiver,
-                site != 50,
-                if site == 50 {
+                site != 47,
+                if site == 47 {
                     (registers.rax as i64).max(0)
                 } else {
                     registers.rax as i64
@@ -579,35 +576,27 @@ unsafe extern "system-unwind" fn account_store(registers: &Registers, site: usiz
         }
         return;
     }
-    if site >= 42 {
+    if site >= 41 {
         let (receiver, influence, field, value) = match site {
-            42 => (registers.rdi, false, mirror::GAIN_B, registers.rdx),
-            43 => (registers.rsi, false, mirror::GAIN_B, registers.rdx),
-            44 => (registers.rdi, false, mirror::GAIN_B, registers.rdx),
-            45 => (registers.rbx, false, mirror::PREVIOUS_SCORE, registers.rax),
-            46 => (registers.rdi, false, mirror::PREVIOUS_SCORE, registers.rax),
-            47 => (registers.rdi, false, mirror::PREVIOUS_SCORE, registers.rax),
-            48 => (registers.rbx, true, 3, registers.rdx),
-            50 => (registers.rbp, false, mirror::INFLUENCE_SHARE, registers.rcx),
-            51 => (
-                registers.rbp,
-                false,
-                mirror::PROJECTION_SHARE,
-                registers.rcx,
-            ),
-            52 => (
+            41 => (registers.rbp, false, mirror::GAIN_B, registers.rdx),
+            42 => (registers.rsi, false, mirror::GAIN_B, registers.rdx),
+            43 => (registers.rbp, false, mirror::PREVIOUS_SCORE, registers.rax),
+            44 => (registers.rdi, false, mirror::PREVIOUS_SCORE, registers.rax),
+            45 => (registers.rbx, true, 3, registers.rdx),
+            47 => (registers.rbp, false, mirror::INFLUENCE_SHARE, registers.rcx),
+            48 => (
                 registers.r14,
                 false,
                 mirror::PROJECTION_SHARE,
                 registers.rcx,
             ),
-            53 => (
+            49 => (
                 registers.rbp,
                 false,
                 mirror::PROJECTION_SHARE,
                 registers.rcx,
             ),
-            54 => (
+            50 => (
                 registers.rcx,
                 false,
                 mirror::PROJECTION_RANK,
@@ -634,11 +623,10 @@ unsafe extern "system-unwind" fn account_store(registers: &Registers, site: usiz
         13 => (registers.rsi, registers.rdx),
         14 => (registers.rbx, registers.r9),
         15 => (registers.rbx, registers.r8),
-        16 | 18 => (registers.r8, registers.rcx),
-        17 => (registers.r8, registers.rdx),
+        16 | 17 => (registers.r8, registers.rcx),
         _ => unreachable!(),
     };
-    if matches!(index, 16..=18) {
+    if matches!(index, 16..=17) {
         mirror::passive(receiver, (value as i64).wrapping_mul(100_000));
     } else if matches!(index, 4 | 5 | 9 | 10) {
         mirror::observe(
@@ -663,29 +651,29 @@ unsafe extern "system-unwind" fn account_store(registers: &Registers, site: usiz
     }
 }
 
-callback!(minimum_upgrade, 40);
-callback!(doctrine_folder, 41);
+callback!(minimum_upgrade, 39);
+callback!(doctrine_folder, 40);
 
-scalar_callback!(account_projection, 49);
+scalar_callback!(account_projection, 46);
 
 unsafe extern "system-unwind" fn pool_store(registers: &Registers, site: usize) {
-    let _timing = crate::hook_timing::enter(if site == 55 {
+    let _timing = crate::hook_timing::enter(if site == 51 {
         crate::hook_timing::Family::FactionResourceRebuild
     } else {
         crate::hook_timing::Family::FactionCompanions
     });
     CALLS.increment(site);
-    if site == 55 {
+    if site == 51 {
         crate::faction_pools::rebuild();
         return;
     }
     let (receiver, resource, index, value, add) = match site {
-        57 => (registers.rcx, false, 2, registers.rax as i64, false),
-        58 => (registers.rcx, false, 0, registers.r9 as i64, false),
-        59 => (registers.rdi, false, 1, registers.rbx as i64, false),
-        60 => (registers.rsi, false, 1, registers.rbx as i64, false),
-        61 => (registers.rbp, false, 0, registers.rcx as i64, false),
-        62 | 63 => (registers.rbp, false, 1, registers.rbx as i64, true),
+        53 => (registers.rcx, false, 2, registers.rax as i64, false),
+        54 => (registers.rcx, false, 0, registers.r9 as i64, false),
+        55 => (registers.rsi, false, 1, registers.rbx as i64, false),
+        56 => (registers.rsi, false, 1, registers.rbx as i64, false),
+        57 => (registers.rsi, false, 0, registers.rcx as i64, false),
+        58 | 59 => (registers.rbp, false, 1, registers.rbx as i64, true),
         _ => unreachable!(),
     };
     crate::faction_pools::observe(receiver, resource, index, value, add);
@@ -694,12 +682,12 @@ unsafe extern "system-unwind" fn pool_store(registers: &Registers, site: usize) 
 #[cfg(test)]
 pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+callback!(advisor_60, 60);
+callback!(advisor_61, 61);
+callback!(advisor_62, 62);
+callback!(advisor_63, 63);
 callback!(advisor_64, 64);
 callback!(advisor_65, 65);
-callback!(advisor_66, 66);
-callback!(advisor_67, 67);
-callback!(advisor_68, 68);
-callback!(advisor_69, 69);
 
 macro_rules! phase_callback {
     ($name:ident,$site:expr,$kind:expr) => {
@@ -725,12 +713,12 @@ macro_rules! phase_callback {
         }
     };
 }
-phase_callback!(influence_phase, 56, 0);
-phase_callback!(rank_phase, 70, 1);
+phase_callback!(influence_phase, 52, 0);
+phase_callback!(rank_phase, 66, 1);
 
-phase_callback!(projection_phase, 80, 2);
-phase_callback!(passive_phase, 81, 3);
-phase_callback!(influence_share_phase, 82, 4);
+phase_callback!(projection_phase, 76, 2);
+phase_callback!(passive_phase, 77, 3);
+phase_callback!(influence_share_phase, 78, 4);
 
 unsafe extern "system-unwind" fn extraction_complete(
     a: usize,
@@ -739,8 +727,8 @@ unsafe extern "system-unwind" fn extraction_complete(
     d: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionResourceRebuild);
-    CALLS.increment(55);
-    let original: Function = unsafe { std::mem::transmute(ORIGINAL[55].load(Ordering::Acquire)) };
+    CALLS.increment(51);
+    let original: Function = unsafe { std::mem::transmute(ORIGINAL[51].load(Ordering::Acquire)) };
     crate::faction_pools::rebuild_call(|| timing.original(|| unsafe { original(a, b, c, d) }))
 }
 macro_rules! projection_call {
@@ -759,10 +747,10 @@ macro_rules! projection_call {
         }
     };
 }
-projection_call!(projection_heavy_ship, 75, 3);
-projection_call!(projection_other_ship, 76, 4);
-projection_call!(projection_combat_air, 77, 5);
-projection_call!(projection_other_air, 78, 6);
+projection_call!(projection_heavy_ship, 71, 3);
+projection_call!(projection_other_ship, 72, 4);
+projection_call!(projection_combat_air, 73, 5);
+projection_call!(projection_other_air, 74, 6);
 unsafe extern "system-unwind" fn projection_factory(
     a: usize,
     b: usize,
@@ -770,8 +758,8 @@ unsafe extern "system-unwind" fn projection_factory(
     d: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionCompanions);
-    CALLS.increment(73);
-    let original: Function = unsafe { std::mem::transmute(ORIGINAL[73].load(Ordering::Acquire)) };
+    CALLS.increment(69);
+    let original: Function = unsafe { std::mem::transmute(ORIGINAL[69].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(a, b, c, d) });
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     crate::faction_accounts::mirror::projection_factory_total(engine_native::read::<i64>(

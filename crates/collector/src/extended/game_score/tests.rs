@@ -771,7 +771,7 @@ fn game_score_fleet_header_grows_first_witness_and_keeps_independent_air_pressur
     struct Globals<'a>(&'a [u8]);
     impl Memory for Globals<'_> {
         fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-            if (0x0333_7a68..=0x0333_7dc8).contains(&at) && out.len() == 8 {
+            if (0x033e_1f00..=0x033e_21f8).contains(&at) && out.len() == 8 {
                 out.copy_from_slice(&100_000_i64.to_le_bytes());
                 true
             } else {

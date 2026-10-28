@@ -28,7 +28,7 @@ pub const MASK: usize = 0x14;
 /// Maximum probe distance, u8, relative to [`TABLE`].
 pub const MAXIMUM_PROBE: usize = 0x18;
 /// The image's empty bucket array the constructor installs.
-pub const EMPTY_BUCKETS_RVA: usize = 0x0308_5240;
+pub const EMPTY_BUCKETS_RVA: usize = 0x030f_d240;
 /// Bucket stride.
 pub const STRIDE: usize = 0x30;
 /// Distance-plus-one byte: zero is empty, 0xFF the end bucket.

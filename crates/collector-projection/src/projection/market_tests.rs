@@ -28,7 +28,7 @@ fn state(table: TableId, stage: u8, pool: &SharedMarketPool) -> TableRows {
             .map(|country| CountryMarketRow {
                 country,
                 inventory: pool.clone(),
-                auto_accept_purchase: country == 5000 && stage == 1,
+                auto_send_market_access: country == 5000 && stage == 1,
                 ..Default::default()
             })
             .collect(),

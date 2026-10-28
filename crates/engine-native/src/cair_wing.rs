@@ -16,9 +16,9 @@ pub mod replacement;
 pub mod transport_operands;
 
 /// Primary wing vtable.
-pub const VTABLE_RVA: usize = 0x0297_ada8;
+pub const VTABLE_RVA: usize = 0x029f_75a8;
 /// Secondary wing vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x0297_ade0;
+pub const SECONDARY_VTABLE_RVA: usize = 0x029f_75e0;
 /// Secondary subobject displacement.
 pub const SECONDARY: usize = 0x10;
 /// Registry type value.

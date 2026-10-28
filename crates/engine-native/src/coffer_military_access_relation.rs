@@ -1,6 +1,6 @@
 //! COfferMilitaryAccessRelation; shared fields live in `crelation`.
 
 /// COfferMilitaryAccessRelation primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_04c8;
+pub const VTABLE_RVA: usize = 0x029d_cde8;
 /// COfferMilitaryAccessRelation native type word.
 pub const TYPE: u32 = 0x2fc8;

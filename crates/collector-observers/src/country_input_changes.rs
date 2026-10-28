@@ -1202,7 +1202,7 @@ pub fn forwarded_raid(site: usize, first: usize, second: usize) -> Marks<'static
 fn pool_forward(site: usize) -> Option<Forward> {
     match site {
         // Country character pool construction and destruction.
-        6 | 7 => Some(Forward::CountryCharacters),
+        5 | 6 => Some(Forward::CountryCharacters),
         _ => None,
     }
 }

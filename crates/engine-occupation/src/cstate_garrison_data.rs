@@ -3,7 +3,7 @@
 //! pointer to a separate manpower pool.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0298_48d8;
+pub const VTABLE_RVA: usize = 0x02a0_0bd8;
 /// Garrison allocation size.
 pub const SIZE: usize = 0x108;
 /// CStateGarrisonData child pointer vector.

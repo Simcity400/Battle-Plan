@@ -1,7 +1,7 @@
 //! CModifier wrapper embedded in CState and CResistance; its accumulator has a separate native layout.
 
 /// CModifier vtable.
-pub const VTABLE_RVA: usize = 0x0271_85f0;
+pub const VTABLE_RVA: usize = 0x0279_65d8;
 /// CModifier embedded accumulator.
 pub const ACCUMULATOR: usize = 0x10;
 /// CModifier display-name std::string.

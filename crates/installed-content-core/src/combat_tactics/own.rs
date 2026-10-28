@@ -9,24 +9,24 @@ impl Shaper<'_> {
         match address {
             // Body and variable-trigger readers use the key loop or embedded
             // helper selected by KEY_READERS.
-            0x1404360D0 | 0x1413A9FD0 | 0x140481570 | 0x1404819C0 | 0x140481E10 | 0x140482260
-            | 0x1404826B0 => Shape::Body(Node::Class(token)),
+            0x140454050 | 0x141445C30 | 0x14049F1E0 | 0x14049F630 | 0x14049FA80 | 0x14049FED0
+            | 0x1404A0320 => Shape::Body(Node::Class(token)),
             // Scalar first unless the value opens the class's key loop.
-            0x140436150 | 0x1404362A0 | 0x140436880 | 0x1413AA150 | 0x14044CB90 | 0x14044CC90 => {
+            0x1404540D0 | 0x140454220 | 0x140454800 | 0x141445DB0 | 0x14046AC80 | 0x14046AD80 => {
                 Shape::ObjectIfOpen(Node::Class(token))
             }
             // Integer arrays read resolved tokens without registering definitions.
-            0x140472F20 => Shape::RawList,
+            0x140490CF0 => Shape::RawList,
             // Read the numeric expression.
-            0x140527480 => Shape::Expression,
-            0x1404361A0 | 0x1404365C0 | 0x140436870 | 0x1404A3B10 => Shape::One,
-            0x140472EC0 => Shape::Current,
+            0x14056E1D0 => Shape::Expression,
+            0x140454120 | 0x140454540 | 0x1404547F0 | 0x1404C17A0 => Shape::One,
+            0x140490C90 => Shape::Current,
             // Opening blocks report errors and skip raw tokens; other values read once.
-            0x1404360E0 if field.opens() => Shape::SkipIfOpen,
-            0x1404360E0 => Shape::One,
+            0x140454060 if field.opens() => Shape::SkipIfOpen,
+            0x140454060 => Shape::One,
             // `<` and `>` select a comparison; every other operator selects a
             // body read, including `=` with an opening value.
-            0x140459B30
+            0x140477C30
                 if matches!(
                     field.operator,
                     crate::parser::Operator::Less | crate::parser::Operator::Greater
@@ -34,12 +34,12 @@ impl Shaper<'_> {
             {
                 Shape::One
             }
-            0x140459B30 => Shape::Body(Node::Class(token)),
+            0x140477C30 => Shape::Body(Node::Class(token)),
             // A trait leaf reads a scalar token or the class's block-key loop.
-            0x140459B50 if field.opens() => Shape::Body(Node::Class(token)),
-            0x140459B50 => Shape::One,
+            0x140477C50 if field.opens() => Shape::Body(Node::Class(token)),
+            0x140477C50 => Shape::One,
             // The weather reader never reaches its block form; a scalar resolves one weather.
-            0x140479EB0 if !field.opens() => Shape::One,
+            0x140497CB0 if !field.opens() => Shape::One,
             _ => Self::refuse_reader(address, field.key.c_str()),
         }
     }

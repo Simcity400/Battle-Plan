@@ -53,7 +53,7 @@ struct IteratorKind {
 // feeds the header and iterator.
 fn iterator_kind(class: u64) -> Option<IteratorKind> {
     let (roster, random) = match class {
-        0x14276C930 => (
+        0x1427EA220 => (
             Roster::Countries {
                 other: false,
                 enemy: false,
@@ -61,7 +61,7 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             false,
         ),
-        0x14276C820 => (
+        0x1427EA110 => (
             Roster::Countries {
                 other: false,
                 enemy: false,
@@ -69,7 +69,7 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             true,
         ),
-        0x14276CC60 => (
+        0x1427EA550 => (
             Roster::Countries {
                 other: true,
                 enemy: false,
@@ -77,7 +77,7 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             false,
         ),
-        0x14276CB50 => (
+        0x1427EA440 => (
             Roster::Countries {
                 other: true,
                 enemy: false,
@@ -85,7 +85,7 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             true,
         ),
-        0x14276E888 => (
+        0x1427EC178 => (
             Roster::Countries {
                 other: false,
                 enemy: true,
@@ -93,7 +93,7 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             false,
         ),
-        0x14276E558 => (
+        0x1427EBE48 => (
             Roster::Countries {
                 other: false,
                 enemy: true,
@@ -101,7 +101,7 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             true,
         ),
-        0x14276CA40 => (
+        0x1427EA330 => (
             Roster::Countries {
                 other: false,
                 enemy: false,
@@ -109,66 +109,66 @@ fn iterator_kind(class: u64) -> Option<IteratorKind> {
             },
             false,
         ),
-        0x14276D8E8 => (Roster::States, false),
-        0x14276D618 => (Roster::States, true),
-        0x1427C9428 => (Roster::Faction { allied: false }, false),
-        0x14277DA10 => (Roster::Faction { allied: true }, false),
-        0x14277DB20 => (Roster::Faction { allied: true }, true),
-        0x14276E778 => (Roster::Subjects, false),
-        0x14276E668 => (Roster::Subjects, true),
-        0x142740E78 => (Roster::Characters, false),
-        0x142740D88 => (Roster::Characters, true),
-        0x142741250 => (Roster::PartyLeaders, true),
-        0x1427BF9D0 => (Roster::Scientists { active: false }, false),
-        0x1427BF8E0 => (Roster::Scientists { active: false }, true),
-        0x1427BFBA0 => (Roster::Scientists { active: true }, true),
-        0x1427BFAB8 => (Roster::Scientists { active: true }, false),
-        0x14274E428 => (Roster::Neighbors, false),
-        0x14276D7F8 => (Roster::Neighbors, true),
-        0x14276ECE8 => (Roster::OriginalTags, false),
-        0x14276EBB8 => (Roster::OriginalTags, true),
-        0x14276DF78 | 0x14276DAC8 | 0x14276DE88 => (
+        0x1427EB1D8 => (Roster::States, false),
+        0x1427EAF08 => (Roster::States, true),
+        0x142846898 => (Roster::Faction { allied: false }, false),
+        0x1427FB320 => (Roster::Faction { allied: true }, false),
+        0x1427FB430 => (Roster::Faction { allied: true }, true),
+        0x1427EC068 => (Roster::Subjects, false),
+        0x1427EBF58 => (Roster::Subjects, true),
+        0x1427BEBA0 => (Roster::Characters, false),
+        0x1427BEAB0 => (Roster::Characters, true),
+        0x1427bef20 => (Roster::PartyLeaders, true),
+        0x14283D0A0 => (Roster::Scientists { active: false }, false),
+        0x14283CFB0 => (Roster::Scientists { active: false }, true),
+        0x14283D270 => (Roster::Scientists { active: true }, true),
+        0x14283D188 => (Roster::Scientists { active: true }, false),
+        0x1427CBD50 => (Roster::Neighbors, false),
+        0x1427EB0E8 => (Roster::Neighbors, true),
+        0x1427EC5D8 => (Roster::OriginalTags, false),
+        0x1427EC4A8 => (Roster::OriginalTags, true),
+        0x1427EB868 | 0x1427EB3B8 | 0x1427EB778 => (
             Roster::CountryStates {
                 owned: true,
-                controlled: class == 0x14276DE88,
+                controlled: class == 0x1427EB778,
                 core: false,
             },
-            class != 0x14276DF78,
+            class != 0x1427EB868,
         ),
-        0x14274E338 | 0x14276DCA8 => (
+        0x1427CBC60 | 0x1427EB598 => (
             Roster::CountryStates {
                 owned: false,
                 controlled: true,
                 core: false,
             },
-            class == 0x14276DCA8,
+            class == 0x1427EB598,
         ),
-        0x14276E068 | 0x14276E248 => (
+        0x1427EB958 | 0x1427EBB38 => (
             Roster::CountryStates {
                 owned: false,
                 controlled: false,
                 core: true,
             },
-            class == 0x14276E248,
+            class == 0x1427EBB38,
         ),
-        0x14276E448 | 0x14276E338 => (Roster::CountryNeighbors, class == 0x14276E338),
-        0x14276EAA8 | 0x14276E998 => (Roster::OccupiedCountries, class == 0x14276E998),
-        0x14276A150 | 0x142769E88 | 0x14276A068 | 0x142769F78 | 0x142769DA0 | 0x142769CB0
-        | 0x14276A410 | 0x14276A328 | 0x14276A238 => (
+        0x1427EBD38 | 0x1427EBC28 => (Roster::CountryNeighbors, class == 0x1427EBC28),
+        0x1427EC398 | 0x1427EC288 => (Roster::OccupiedCountries, class == 0x1427EC288),
+        0x1427E7A40 | 0x1427E7778 | 0x1427E7958 | 0x1427E7868 | 0x1427E7690 | 0x1427E75A0
+        | 0x1427E7D00 | 0x1427E7C18 | 0x1427E7B28 => (
             Roster::Leaders {
                 army: matches!(
                     class,
-                    0x14276A150 | 0x142769E88 | 0x142769DA0 | 0x142769CB0 | 0x14276A410
+                    0x1427E7A40 | 0x1427E7778 | 0x1427E7690 | 0x1427E75A0 | 0x1427E7D00
                 ),
-                navy: matches!(class, 0x14276A068 | 0x142769F78 | 0x142769DA0 | 0x142769CB0),
-                operative: matches!(class, 0x14276A328 | 0x14276A238),
-                global: class == 0x14276A410,
+                navy: matches!(class, 0x1427E7958 | 0x1427E7868 | 0x1427E7690 | 0x1427E75A0),
+                operative: matches!(class, 0x1427E7C18 | 0x1427E7B28),
+                global: class == 0x1427E7D00,
             },
-            matches!(class, 0x142769E88 | 0x142769F78 | 0x142769CB0 | 0x14276A238),
+            matches!(class, 0x1427E7778 | 0x1427E7868 | 0x1427E75A0 | 0x1427E7B28),
         ),
-        0x1427AD428 | 0x1427AD338 => (Roster::CountryDivisions, class == 0x1427AD338),
-        0x1427AD858 | 0x1427AD768 => (Roster::StateDivisions, class == 0x1427AD768),
-        0x142745850 | 0x142745760 => (Roster::IndustrialOrganisations, class == 0x142745760),
+        0x14282ACC0 | 0x14282ABD0 => (Roster::CountryDivisions, class == 0x14282ABD0),
+        0x14282B0A0 | 0x14282AFB0 => (Roster::StateDivisions, class == 0x14282AFB0),
+        0x1427c34b8 | 0x1427c33c8 => (Roster::IndustrialOrganisations, class == 0x1427c33c8),
         _ => return None,
     };
     Some(IteratorKind { roster, random })
@@ -475,13 +475,13 @@ impl Renderer<'_, '_, '_> {
         let class = self.effect_class(item)?;
         let result = if let Some(kind) = iterator_kind(class.vtable) {
             self.iterator(item, scopes, indent, kind)
-        } else if class.vtable == 0x1427CCF40 {
+        } else if class.vtable == 0x14284A2C0 {
             self.collection_elements(item, scopes, indent)
-        } else if class.vtable == 0x142776210 {
+        } else if class.vtable == 0x1427f3b00 {
             self.array_scope(item, scopes, indent)
-        } else if class.vtable == 0x1427410A8 {
+        } else if class.vtable == 0x1427BED78 {
             self.character_list(item, scopes, indent)
-        } else if class.vtable == 0x1427671C8 {
+        } else if class.vtable == 0x1427E4AB8 {
             self.set_politics(item, scopes)
         } else {
             return None;
@@ -497,7 +497,7 @@ impl Renderer<'_, '_, '_> {
 
     pub(super) fn iterator_multiple(&self, item: &Item) -> bool {
         self.effect_class(item).is_some_and(|class| {
-            iterator_kind(class.vtable).is_some() || class.vtable == 0x1427410A8
+            iterator_kind(class.vtable).is_some() || class.vtable == 0x1427BED78
         })
     }
 

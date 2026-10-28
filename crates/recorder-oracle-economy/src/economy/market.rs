@@ -161,13 +161,9 @@ pub fn compare(
             )?;
             equal(
                 report,
-                format!("{label}.automation"),
-                [
-                    actual.auto_accept_market_access,
-                    actual.auto_send_market_access,
-                    actual.auto_accept_purchase,
-                ],
-                expected.automation,
+                format!("{label}.auto_send_market_access"),
+                actual.auto_send_market_access,
+                expected.auto_send_market_access,
             );
             count += 1;
         }

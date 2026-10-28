@@ -5,7 +5,7 @@
 use crate::Memory;
 
 /// Targeted-decision primary vtable.
-pub const VTABLE_RVA: usize = 0x027e_b508;
+pub const VTABLE_RVA: usize = 0x0286_8688;
 /// Decision-definition pointer.
 pub const DEFINITION: usize = 0x10;
 /// Country-target reference, u32.

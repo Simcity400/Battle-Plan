@@ -4,10 +4,10 @@
 use crate::{Memory, allocation, cpdx_array::Array, read};
 
 pub const STATUS: usize = 0x570;
-pub const VTABLE_RVA: usize = 0x02a2_2af8;
+pub const VTABLE_RVA: usize = 0x02a9_b0a8;
 pub const OWNER: usize = 0x08;
 pub const RULES: usize = 0x58;
-pub const DEFINITION_VTABLE_RVA: usize = 0x0271_9f40;
+pub const DEFINITION_VTABLE_RVA: usize = 0x0279_7ee8;
 pub const DEFINITION_TOKEN: usize = 0x08;
 
 pub fn read_into(

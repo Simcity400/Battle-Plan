@@ -15,7 +15,7 @@ use crate::{
 pub use equipment_entry::Row;
 
 /// CEquipmentVariantPool primary vtable.
-pub const VTABLE_RVA: usize = 0x2749270;
+pub const VTABLE_RVA: usize = 0x27c6e88;
 /// Equipment-pool archetype-allocation array, initialized before the variant array (`ITEMS`).
 pub const ALLOCATIONS: usize = 0x08;
 /// CEquipmentVariantPool row array pointer.

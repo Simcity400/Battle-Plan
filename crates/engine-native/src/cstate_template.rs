@@ -1,7 +1,7 @@
 //! State template selected by the simulation state.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0294_34d0;
+pub const VTABLE_RVA: usize = 0x029c_08d8;
 /// Province-ID array.
 pub const PROVINCES: usize = 0x08;
 /// Province count, signed i32.
@@ -19,7 +19,7 @@ pub const RESOURCE_CAPACITY: usize = 0x100;
 #[cfg(any(test, feature = "test-support"))]
 pub const RESOURCE_COUNT: usize = 0x104;
 /// Constructor initializing resource fields.
-pub const CONSTRUCTOR_RVA: usize = 0x00ab_bee0;
+pub const CONSTRUCTOR_RVA: usize = 0x00b0_dea0;
 
 /// Retained continent-definition pointer initialized to the database null
 /// continent. Province traversal does not clear it first.

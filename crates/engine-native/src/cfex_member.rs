@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// CFEXMember vtable.
-pub const VTABLE_RVA: usize = 0x02a2_0f88;
+pub const VTABLE_RVA: usize = 0x02a9_97a8;
 /// Packed ship u64 handle; zero is valid only for convoy members.
 pub const SHIP_HANDLE: usize = 0x08;
 /// CFEXMember convoy handle u64.

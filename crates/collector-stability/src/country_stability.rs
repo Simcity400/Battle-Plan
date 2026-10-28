@@ -611,7 +611,7 @@ mod tests {
         memory.word(STATS + 0x10, RING as u64); // empty interception ring
         memory.word(STATE + cgame_state::WORLD_THREAT, WORLD as u64);
         memory.word(WORLD, (BASE + cworld_threat::VTABLE_RVA) as u64);
-        memory.word(BASE + native::STATIC_DATABASE_RVA, 0x28000);
+        memory.word(BASE + native::STATIC_DATABASE_RVA, 0x28060);
         let mut captured = Captured::with_capacities(&Capacities::default());
         // Bypass name resolution with an explicitly empty synthetic table.
         captured.keys = Some(native::Keys {

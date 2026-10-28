@@ -18,12 +18,12 @@ pub const ALLOCATED: usize = 0x10;
 
 /// Consumer-goods primary vtable. Allocation takes the minimum of
 /// available civilian factories and required consumer goods.
-pub const CONSUMER_GOODS_VTABLE_RVA: usize = 0x0297_05f0;
+pub const CONSUMER_GOODS_VTABLE_RVA: usize = 0x029e_ce60;
 /// National-projects factory-consumer primary vtable.
-pub const SPECIAL_PROJECTS_VTABLE_RVA: usize = 0x0297_0608;
+pub const SPECIAL_PROJECTS_VTABLE_RVA: usize = 0x029e_ce78;
 /// Licensed-production factory-consumer primary vtable.
-pub const LICENSED_PRODUCTION_VTABLE_RVA: usize = 0x0297_0620;
+pub const LICENSED_PRODUCTION_VTABLE_RVA: usize = 0x029e_ce90;
 /// Trade factory-consumer primary vtable.
-pub const TRADE_VTABLE_RVA: usize = 0x0297_0638;
+pub const TRADE_VTABLE_RVA: usize = 0x029e_cea8;
 /// Market-payment factory-consumer primary vtable.
-pub const CONTRACT_PAYMENTS_VTABLE_RVA: usize = 0x0297_0650;
+pub const CONTRACT_PAYMENTS_VTABLE_RVA: usize = 0x029e_cec0;

@@ -3,7 +3,7 @@
 use crate::{Memory, msvc_string, read};
 
 /// CDynamicModifier vtable.
-pub const VTABLE_RVA: usize = 0x027d_6218;
+pub const VTABLE_RVA: usize = 0x0285_3e58;
 /// CDynamicModifier definition id std::string.
 pub const ID: usize = 0x28;
 /// CDynamicModifier value-expression count i32.

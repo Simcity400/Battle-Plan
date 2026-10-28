@@ -2,9 +2,9 @@
 //! graph layout.
 
 /// Local-intelligence network primary vtable.
-pub const VTABLE_RVA: usize = 0x29a_0408;
+pub const VTABLE_RVA: usize = 0x2a1_c288;
 /// Local-intelligence network constructor initializes its graph.
-pub const CONSTRUCTOR_RVA: usize = 0x11b_c870;
+pub const CONSTRUCTOR_RVA: usize = 0x124_9d30;
 /// CLocalIntelNetwork's pointer to the unnamed 0x50-byte graph.
 pub const GRAPH: usize = 0x08;
 /// Array header of one quiet byte per subnetwork, indexed by subnetwork

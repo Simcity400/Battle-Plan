@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Reader identity for a named collection's fields.
-pub(crate) const COLLECTION_KEY_READER: u64 = 0x140A1E8E0;
+pub(crate) const COLLECTION_KEY_READER: u64 = 0x140A6A450;
 
 #[derive(Clone, Debug, Default)]
 pub struct Database {

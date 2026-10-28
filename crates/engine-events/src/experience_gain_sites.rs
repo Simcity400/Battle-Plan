@@ -25,7 +25,7 @@ pub struct Site {
 /// store outside the relocated prefix.
 pub const SITES: [Site; 6] = [
     Site {
-        rva: 0x12a65bf,
+        rva: 0x133634f,
         branch: 0,
         air_argument: false,
         sentinel: [
@@ -34,7 +34,7 @@ pub const SITES: [Site; 6] = [
         ],
     },
     Site {
-        rva: 0x12a684a,
+        rva: 0x13365da,
         branch: 1,
         air_argument: false,
         sentinel: [
@@ -43,7 +43,7 @@ pub const SITES: [Site; 6] = [
         ],
     },
     Site {
-        rva: 0x12a6446,
+        rva: 0x13361d6,
         branch: 2,
         air_argument: true,
         sentinel: [
@@ -52,7 +52,7 @@ pub const SITES: [Site; 6] = [
         ],
     },
     Site {
-        rva: 0x12a8160,
+        rva: 0x1337ef0,
         branch: 0,
         air_argument: false,
         sentinel: [
@@ -61,16 +61,16 @@ pub const SITES: [Site; 6] = [
         ],
     },
     Site {
-        rva: 0x12a825f,
+        rva: 0x1337fef,
         branch: 1,
         air_argument: false,
         sentinel: [
-            0x48, 0x8b, 0x53, 0x28, 0x48, 0x03, 0x17, 0x48, 0x89, 0x53, 0x28, 0x79, 0x06, 0x48,
+            0x48, 0x8b, 0x17, 0x48, 0x03, 0x53, 0x28, 0x48, 0x89, 0x53, 0x28, 0x79, 0x06, 0x48,
             0x89, 0x6b,
         ],
     },
     Site {
-        rva: 0x12a8352,
+        rva: 0x13380e2,
         branch: 2,
         air_argument: false,
         sentinel: [

@@ -7,7 +7,7 @@
 /// Packed native reference type and combined identifier words.
 pub const REFERENCE: usize = 0x08;
 /// Primary event-definition vtable.
-pub const VTABLE_RVA: usize = 0x0299_9be8;
+pub const VTABLE_RVA: usize = 0x02a1_5b78;
 /// Authored event identity, MSVC string; an empty name saves the numeric ID.
 pub const TOKEN: usize = 0x20;
 /// CEvent option pointer vector.
@@ -19,4 +19,4 @@ pub const OPERATIVE_CHROME: usize = 0x41d;
 /// CEvent news presentation flag, u8.
 pub const NEWS_CHROME: usize = 0x424;
 /// Engine-global debug-assert flag used by event dispatch.
-pub const DISPATCH_DEBUG_ASSERTS_FLAG_RVA: usize = 0x035e_1b52;
+pub const DISPATCH_DEBUG_ASSERTS_FLAG_RVA: usize = 0x0368_f611;

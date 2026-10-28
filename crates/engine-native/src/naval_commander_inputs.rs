@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Portrait-tooltip minimum fraction for displaying learning traits.
-pub const LEARNING_THRESHOLD_RVA: usize = 0x0333_3760;
+pub const LEARNING_THRESHOLD_RVA: usize = 0x033e_4ce0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CommanderPortraitModifier {
@@ -33,7 +33,7 @@ pub struct CommanderPortraitTooltip {
     pub text_len: usize,
 }
 
-pub const SKILL_DATABASE_RVA: usize = 0x0332_f0d0;
+pub const SKILL_DATABASE_RVA: usize = 0x033d_d518;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PortraitEntry {

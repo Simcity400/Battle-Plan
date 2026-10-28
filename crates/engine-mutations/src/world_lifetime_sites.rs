@@ -9,7 +9,7 @@ pub struct Site {
 /// owned-object destruction. A load reaching reset invalidates the world
 /// even if loading subsequently fails.
 pub const RESET: Site = Site {
-    rva: 0x001d_0e65,
+    rva: 0x001e_74c5,
     sentinel: [
         0x44, 0x89, 0xab, 0x68, 0x09, 0, 0, 0x48, 0x89, 0x9c, 0x24, 0xa8, 1, 0, 0, 0xc6,
     ],
@@ -19,7 +19,7 @@ pub const RESET: Site = Site {
 /// and singleton publication. No incoming branch or call return enters
 /// the replaced seven-byte instruction.
 pub const CONSTRUCT: Site = Site {
-    rva: 0x001b_f969,
+    rva: 0x001d_74c9,
     sentinel: [
         0x4c, 0x89, 0xb7, 0xe8, 0x09, 0, 0, 0x4c, 0x89, 0xb7, 0xf0, 0x09, 0, 0, 0x8b, 0x0d,
     ],
@@ -31,7 +31,7 @@ pub const CONSTRUCT: Site = Site {
 /// resources. One argument (RCX, the editor); RBX is saved to RDX's home slot
 /// on entry.
 pub const STATE_RELOAD: Site = Site {
-    rva: 0x01b5_ed50,
+    rva: 0x01be_d8d0,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20,
         0x57,
@@ -41,7 +41,7 @@ pub const STATE_RELOAD: Site = Site {
 /// Deleting destructor. Its entry precedes quadtree clearing, runtime-state
 /// reset and eventual deallocation.
 pub const DELETE: Site = Site {
-    rva: 0x001c_9500,
+    rva: 0x001d_fbd0,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 8, 0x57, 0x48, 0x83, 0xec, 0x20, 0x8b, 0xfa, 0x48, 0x8b, 0xd9, 0x48,
     ],

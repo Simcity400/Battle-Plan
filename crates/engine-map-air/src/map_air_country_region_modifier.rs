@@ -26,14 +26,14 @@ const NODE_VALUE: usize = 0x18;
 /// Per-region object's modifier accumulator.
 const REGION_ACCUMULATOR: usize = 0x50;
 /// Per-region object primary vtable.
-const REGION_OBJECT_VTABLE_RVA: usize = 0x027e_7120;
+const REGION_OBJECT_VTABLE_RVA: usize = 0x0286_44d0;
 /// Modifier key used for country/region sortie efficiency.
 pub const SORTIE_EFFICIENCY_KEY: u32 = 0x11;
 
 /// Regional Ground Crews writers and the supported entry fingerprints.
-pub const GROUND_CREWS_ENABLE_RVA: usize = 0x006e_9820;
-pub const GROUND_CREWS_DISABLE_RVA: usize = 0x006e_92b0;
-pub const GROUND_CREWS_CONSTRUCTOR_RVA: usize = 0x006c_b520;
+pub const GROUND_CREWS_ENABLE_RVA: usize = 0x0073_1380;
+pub const GROUND_CREWS_DISABLE_RVA: usize = 0x0073_0e10;
+pub const GROUND_CREWS_CONSTRUCTOR_RVA: usize = 0x0071_3000;
 pub const GROUND_CREWS_COMMAND_PREFIX_HASH: u64 = 0x68a8_be43_5f6a_b8f5;
 pub const GROUND_CREWS_CONSTRUCTOR_PREFIX_HASH: u64 = 0x12f8_397e_4ae0_8b63;
 const GROUND_CREWS_ENABLED: usize = 0x38;

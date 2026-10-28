@@ -78,15 +78,15 @@ impl Image {
         image.d(CANDIDATE + crelation::FIRST_COUNTRY, 1);
         image.d(CANDIDATE + crelation::SECOND_COUNTRY, 2);
         image.bytes(CANDIDATE + crelation::CANCEL, &[0, 0]);
-        image.q(STACK + 0x1d8, BASE + 0x00d2_02af);
-        image.q(STACK + 0x448, BASE + 0x00d1_fd2d);
+        image.q(STACK + 0x1d8, BASE + 0x00d8_1b8f);
+        image.q(STACK + 0x448, BASE + 0x00d8_160d);
         image.q(STACK + 0x438, SELECTED);
-        image.q(STACK + 0x4a8, BASE + 0x00d3_504e);
-        image.bytes(BASE + 0x00d2_02a9, &[0xff, 0x90, 0xa8, 0, 0, 0]);
-        image.bytes(BASE + 0x00d1_fd28, &[0xe8, 0x03, 0x05, 0, 0]);
-        image.bytes(BASE + 0x00d3_5049, &[0xe8, 0x32, 0xab, 0xfe, 0xff]);
-        image.bytes(BASE + 0x00d3_b205, &[0xe8, 0x76, 0x49, 0xfe, 0xff]);
-        image.bytes(BASE + 0x010e_0d03, &[0xe8, 0x78, 0xee, 0xc3, 0xff]);
+        image.q(STACK + 0x4a8, BASE + 0x00d9_89ae);
+        image.bytes(BASE + 0x00d8_1b89, &[0xff, 0x90, 0xa8, 0, 0, 0]);
+        image.bytes(BASE + 0x00d8_1608, &[0xe8, 0x03, 0x05, 0, 0]);
+        image.bytes(BASE + 0x00d9_89a9, &[0xe8, 0xb2, 0x8a, 0xfe, 0xff]);
+        image.bytes(BASE + 0x00d9_ec95, &[0xe8, 0xc6, 0x27, 0xfe, 0xff]);
+        image.bytes(BASE + 0x0116_86b3, &[0xe8, 0xa8, 0x8d, 0xc1, 0xff]);
         image.bytes(BASE + WAR.rva, &WAR.sentinel);
         image.bytes(BASE + ANNEX.rva, &ANNEX.sentinel);
         image.q(SCOPE, BASE + cevent_scope::VTABLE_RVA);
@@ -169,9 +169,9 @@ fn both_call_sentinels_require_every_byte_and_full_read() {
 #[test]
 fn three_authored_sources_use_actual_creator_actor_without_role_inference() {
     for (return_rva, expected) in [
-        (0x00d3_504e, Source::Declaration),
-        (0x00d3_b20a, Source::Join),
-        (0x010e_0d08, Source::CivilWarWarTransfer),
+        (0x00d9_89ae, Source::Declaration),
+        (0x00d9_ec9a, Source::Join),
+        (0x0116_86b8, Source::CivilWarWarTransfer),
     ] {
         let mut image = Image::new();
         image.q(STACK + 0x4a8, BASE + return_rva);
@@ -244,14 +244,14 @@ fn malformed_source_frame_or_instruction_never_guesses_a_cause() {
         war_before(&image, BASE, frame()).err(),
         Some("event feed war producer is unclassified")
     );
-    image.q(STACK + 0x4a8, BASE + 0x010e_0d08);
-    image.bytes(BASE + 0x010e_0d03, &[0x90]);
+    image.q(STACK + 0x4a8, BASE + 0x0116_86b8);
+    image.bytes(BASE + 0x0116_86b3, &[0x90]);
     assert_eq!(
         war_before(&image, BASE, frame()).err(),
         Some("event feed war source CALL unreadable or differs")
     );
     let mut image = Image::new();
-    image.bytes(BASE + 0x00d2_02a9, &[0xe8]);
+    image.bytes(BASE + 0x00d8_1b89, &[0xe8]);
     assert_eq!(
         war_before(&image, BASE, frame()).err(),
         Some("event feed war creator instruction differs")

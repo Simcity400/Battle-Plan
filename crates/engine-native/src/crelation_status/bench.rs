@@ -5,7 +5,7 @@ use crate::{
 use std::{cell::Cell, time::Instant};
 
 /// Covers the highest RVA the benched walkers read (the reference roots).
-pub const IMAGE: usize = 0x0346_0000;
+pub const IMAGE: usize = 0x0351_0000;
 pub const RUNS: usize = 20;
 
 pub struct Arena {

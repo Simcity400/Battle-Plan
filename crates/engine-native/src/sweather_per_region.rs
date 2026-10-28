@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// Region-weather vtable.
-pub const VTABLE_RVA: usize = 0x0297_77c0;
+pub const VTABLE_RVA: usize = 0x029f_3f88;
 /// Region-weather array stride (`cweather_manager::REGIONS`).
 pub const STRIDE: usize = 0x160;
 /// Region ID, i32, authenticated against its array slot.
@@ -24,7 +24,7 @@ pub const SNOW: usize = 0x118;
 /// Blizzard flag used to accumulate province snow.
 pub const BLIZZARD: usize = 0x120;
 /// Region-weather update invoked from a parallel region job.
-pub const UPDATE_RVA: usize = 0x00f2_0ef0;
+pub const UPDATE_RVA: usize = 0x00fa_3d70;
 
 /// The named native weather flags are independent bytes. They are retained
 /// separately, without deriving a weather-kind enum or quantized intensity.

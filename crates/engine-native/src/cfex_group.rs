@@ -2,7 +2,7 @@
 //! group and `SIDE` authenticates the owning side.
 
 /// CFEXGroup vtable.
-pub const VTABLE_RVA: usize = 0x02a5_9ac8;
+pub const VTABLE_RVA: usize = 0x02ad_0310;
 /// CFEXGroup CFEXMember pointer array.
 pub const MEMBERS: usize = 0x08;
 /// CFEXGroup opposing group pointer.

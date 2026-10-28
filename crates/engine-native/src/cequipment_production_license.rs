@@ -10,7 +10,7 @@
 use crate::{Memory, cequipment_variant, cpdx_array::Array, read};
 
 /// CEquipmentProductionLicense primary vtable.
-pub const VTABLE_RVA: usize = 0x029c_0c38;
+pub const VTABLE_RVA: usize = 0x02a3_ab18;
 /// CEquipmentProductionLicense lended CIC, i32.
 pub const LENDED_CIC: usize = 0x08;
 /// CEquipmentProductionLicense required CIC, i32.

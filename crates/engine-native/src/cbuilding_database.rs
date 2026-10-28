@@ -1,7 +1,7 @@
 //! CBuildingDatabase loaded definitions; these layout constants do not prove lifetime or reload stability.
 
 /// Building-database singleton pointer.
-pub const SINGLETON_RVA: usize = 0x0332_ee28;
+pub const SINGLETON_RVA: usize = 0x033d_d268;
 /// Template-pointer array appending each parsed definition.
 pub const TEMPLATES: usize = 0x40;
 /// Template-pointer stride.

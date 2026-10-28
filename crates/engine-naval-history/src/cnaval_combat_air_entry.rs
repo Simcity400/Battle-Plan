@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// Naval-combat air-entry primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_dc80;
+pub const VTABLE_RVA: usize = 0x029d_a5a0;
 pub const SIZE: usize = 0x88;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

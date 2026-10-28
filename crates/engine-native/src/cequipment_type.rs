@@ -3,12 +3,12 @@
 //! complete primary base.
 
 /// CEquipmentType primary vtable.
-pub const VTABLE_RVA: usize = 0x0293_7ea0;
+pub const VTABLE_RVA: usize = 0x029b_5e00;
 /// Null equipment-type vtable. The placeholder keeps the complete layout
 /// and self-links its archetype pointer; ordinary types initially point to it.
-pub const NULL_VTABLE_RVA: usize = 0x0293_7ff0;
+pub const NULL_VTABLE_RVA: usize = 0x029b_5f50;
 /// Equipment-type constructor initializes the primary vtable and self-links.
-pub const CONSTRUCTOR_RVA: usize = 0x00c9_22a0;
+pub const CONSTRUCTOR_RVA: usize = 0x00ce_efc0;
 /// CEquipmentType token u32; variant_definition_body authenticates it against `cequipment_variant::EQUIPMENT_TOKEN`.
 pub const TOKEN: usize = 0x08;
 /// Build-cost IC stat, signed fixed5; weights required equipment entries.
@@ -24,36 +24,36 @@ pub const SLOTS: usize = 0x70;
 /// CEquipmentType copied-slot array count i32.
 pub const SLOTS_COUNT: usize = 0x7c;
 /// CEquipmentType stable archetype id u32; occupation canonical_equipment_archetype preserves it.
-pub const ARCHETYPE_ID: usize = 0x418;
+pub const ARCHETYPE_ID: usize = 0x478;
 /// Equipment archetype pointer. Ordinary definitions initially use the
 /// null placeholder; null-placeholder construction self-links it.
-pub const ARCHETYPE: usize = 0x4d8;
+pub const ARCHETYPE: usize = 0x538;
 /// CEquipmentType parent pointer.
-pub const PARENT: usize = 0x4e0;
+pub const PARENT: usize = 0x540;
 /// Signed archetype index into the equipment database archetype array.
 /// Non-archetypes retain -1. Every logistics series indexes by this value.
-pub const STOCKPILE_INDEX: usize = 0x538;
+pub const STOCKPILE_INDEX: usize = 0x598;
 /// Is-archetype byte, set when the archetype link resolves to this type.
 /// Only such types enter the archetype list used by logistics.
-pub const IS_ARCHETYPE: usize = 0x555;
+pub const IS_ARCHETYPE: usize = 0x5b5;
 /// Registered country modifier key used for equipment design XP cost.
-pub const DESIGN_COST_MODIFIER: usize = 0x55c;
+pub const DESIGN_COST_MODIFIER: usize = 0x5bc;
 /// CEquipmentType primary category flags u64.
-pub const PRIMARY_CATEGORY_FLAGS: usize = 0x540;
+pub const PRIMARY_CATEGORY_FLAGS: usize = 0x5a0;
 /// Conversion family byte: while set, an unlicensed design of the type is a
 /// conversion target even without a parent design.
-pub const CONVERSION_FAMILY: usize = 0x556;
+pub const CONVERSION_FAMILY: usize = 0x5b6;
 /// Signed i32 count of the type's convert-from list; a nonempty list makes
 /// every variant of the type a conversion target.
-pub const CONVERT_FROM_COUNT: usize = 0x49c;
+pub const CONVERT_FROM_COUNT: usize = 0x4fc;
 /// CEquipmentType secondary category flags u64.
-pub const SECONDARY_CATEGORY_FLAGS: usize = 0x548;
+pub const SECONDARY_CATEGORY_FLAGS: usize = 0x5a8;
 /// Optional maximum military factories: i32 followed by a has-value byte. Read on the type first,
 /// then its archetype.
-pub const MAX_MIL_FACTORIES: usize = 0x5a0;
+pub const MAX_MIL_FACTORIES: usize = 0x600;
 /// Optional maximum naval factories, laid out as [`MAX_MIL_FACTORIES`].
 /// Read on the type first, then its archetype.
-pub const MAX_NAV_FACTORIES: usize = 0x5a8;
+pub const MAX_NAV_FACTORIES: usize = 0x608;
 /// CEquipmentType plane-family mask.
 pub const PLANE_MASK: u64 = 0x0000_001f_0037_fc00;
 /// CEquipmentType tank-family mask.

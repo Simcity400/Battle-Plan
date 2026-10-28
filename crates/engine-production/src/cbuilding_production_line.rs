@@ -6,23 +6,23 @@ use crate::{
 };
 
 /// Building-production-line primary vtable.
-pub const VTABLE_RVA: usize = 0x0297_b958;
+pub const VTABLE_RVA: usize = 0x029f_80c8;
 
 /// Railway-gun repair-line vtable. It has no construction table, so skip
 /// it while retaining the surrounding queue ordinals.
-pub const RAILWAY_GUN_REPAIR_VTABLE_RVA: usize = 0x0297_c100;
+pub const RAILWAY_GUN_REPAIR_VTABLE_RVA: usize = 0x029f_8798;
 
 /// Reference-object type value.
 pub const REFERENCE_TYPE_ID: u32 = 59;
 /// CBuilding pointer requiring authentication.
-pub const BUILDING: usize = 0x70;
+pub const BUILDING: usize = 0x78;
 /// Repair levels remaining, i32: total level minus healthy level; zero for new construction.
-pub const REPAIR_LEVELS_REMAINING: usize = 0x78;
+pub const REPAIR_LEVELS_REMAINING: usize = 0x80;
 /// Linked-line u64 reference, type in the low u32 and id in the high u32.
 /// Unlinked lines use the invalid-reference sentinel. A resolving pair shares
 /// progress: the non-primary side returns early while the primary writes
 /// produced progress to both and includes its partner's factories in speed.
-pub const LINKED_LINE: usize = 0x90;
+pub const LINKED_LINE: usize = 0x98;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

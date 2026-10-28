@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// CFaction primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_6208;
+pub const VTABLE_RVA: usize = 0x029e_2af8;
 
 /// CFaction packed reference (low u32 type, high u32 id).
 pub const REFERENCE: usize = 0x08;
@@ -36,7 +36,7 @@ pub const COLOR: usize = 0x9d0;
 /// Offset of the first of the four f32 components inside `CColor`.
 pub const COLOR_COMPONENTS: usize = 0x10;
 /// Colour primary vtable.
-pub const COLOR_VTABLE_RVA: usize = 0x0271_81e0;
+pub const COLOR_VTABLE_RVA: usize = 0x0279_6208;
 /// Colour-override byte: clear for the leader country's colour, set for
 /// template or explicit colour. Saved raw after colour and before ideology.
 pub const COLOR_OVERRIDDEN: usize = 0x9c0;

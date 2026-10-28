@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// CSubjectRelation primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_0a08;
+pub const VTABLE_RVA: usize = 0x029d_d328;
 /// Inherited relation type word.
 pub const TYPE_ID: usize = 0x08;
 /// Expected subject-relation type word.
@@ -29,7 +29,7 @@ pub const AUTONOMY_RATIO: usize = 0x60;
 
 /// Subject constructor initializing base relation with subject type before
 /// installing its primary vtable.
-pub const CONSTRUCTOR_RVA: usize = 0x00d1_7f30;
+pub const CONSTRUCTOR_RVA: usize = 0x00d7_9810;
 
 /// A complete byte string in the caller-owned arena. Empty names remain empty.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

@@ -398,7 +398,7 @@ fn location_terms_are_read_once_per_task_force() {
         .singles
         .borrow()
         .iter()
-        .filter(|&&read| read == (IMAGE + 0x0333_4880, 8))
+        .filter(|&&read| read == (IMAGE + 0x033d_fa90, 8))
         .count();
     assert!(
         defines < SHIPS_PER_COMBAT,

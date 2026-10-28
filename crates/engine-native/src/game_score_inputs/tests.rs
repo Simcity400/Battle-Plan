@@ -668,7 +668,7 @@ fn game_score_wing_uses_stored_mission_one_record_and_shared_plane_read() {
 
 #[test]
 fn game_score_multiplier_failures_do_not_hide_other_native_globals() {
-    const FIRST: usize = 0x0333_7a68;
+    const FIRST: usize = 0x033e_1f00;
     let offsets = [0, 0xa8, 0x158, 0x1f0, 0x298, 0x360];
     let mut bytes = vec![0; 0x368];
     for (index, offset) in offsets.into_iter().enumerate() {

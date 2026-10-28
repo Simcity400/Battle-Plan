@@ -4,9 +4,9 @@
 //! save hours range from 1 through 24.
 
 /// CGameDate primary vtable.
-pub const VTABLE_RVA: usize = 0x0271_83a8;
+pub const VTABLE_RVA: usize = 0x0279_63d0;
 /// CGameDate CPersistent vtable.
-pub const PERSISTENT_VTABLE_RVA: usize = 0x0271_83d8;
+pub const PERSISTENT_VTABLE_RVA: usize = 0x0279_6400;
 /// CGameDate CGregorianDate base.
 pub const GREGORIAN_BASE: usize = 0;
 /// Embedded date base containing signed i32 raw hour.

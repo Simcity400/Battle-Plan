@@ -1650,7 +1650,7 @@ awards: FuelAwardTotals | null, };
 export type DayLeftOut = "overlaps" | "notUpdated" | "ownershipNotRecorded";
 export type FuelRead = { country: string, countryInstance: number | null,
 /**
- * Capture continuity boundary; unlike native instance zero, resets differ.
+ * Capture continuity boundary, independent of the raw surrender target.
  */
 continuityStartHour: number | null,
 /**
@@ -4141,7 +4141,7 @@ export type MarketLendLeaseReply = { branchId: string, hour: number, offers: Arr
 export type MarketItem = { variant: string, name: string | null, amountRaw: string, };
 export type MarketLevel = { variant: string, name: string | null, level: number, };
 export type MarketGrant = { cicRaw: string, archetype: string | null, targets: Array<string>, trigger: string | null, };
-export type MarketOffer = { country: number, tag: string | null, inventory: Array<MarketItem>, prices: Array<MarketLevel>, subsidies: Array<MarketGrant>, subsidyTotalRaw: string, automation: [boolean, boolean, boolean], };
+export type MarketOffer = { country: number, tag: string | null, inventory: Array<MarketItem>, prices: Array<MarketLevel>, subsidies: Array<MarketGrant>, subsidyTotalRaw: string, autoSendMarketAccess: boolean, };
 export type MarketTerms = { id: string, seller: string | null, buyer: string | null, request: boolean, speed: number, equipment: Array<MarketItem>, prices: Array<MarketItem>, levels: Array<MarketLevel>, subsidies: Array<MarketGrant>, };
 export type LeaseTerms = { id: string, giver: string | null, receiver: string | null, revision: string, activeSince: number, lastDelivery: number, monthly: Array<MarketItem>, percentage: Array<MarketItem>, once: Array<MarketItem>, delivered: Array<MarketItem>, sunk: Array<MarketItem>, fuelDailyRaw: string, fuelPercentageRaw: string, fuelSentRaw: string, fuelSunkRaw: string, lastFuelDeliveredRaw: string, };
 export type MarketDelivery = { id: string, occurrence: string, agreement: string, hour: number, giver: string | null, receiver: string | null, kind: number, item: MarketItem, lostRaw: string, totalRaw: string, lostTotalRaw: string, };

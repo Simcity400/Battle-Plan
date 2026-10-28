@@ -3,13 +3,13 @@
 //! These layouts do not establish hourly coherence.
 
 /// CTechnology vtable.
-pub const VTABLE_RVA: usize = 0x0297_4ee0;
+pub const VTABLE_RVA: usize = 0x029f_1660;
 /// The technology's listener subobject, whose vtable [`LISTENER_VTABLE_RVA`] maps slot 2 to
 /// observer propagation on the owning technology (the object enclosing it).
 pub const LISTENER: usize = 0x10;
 /// The technology listener vtable at [`LISTENER`], the technology's second
 /// vtable.
-pub const LISTENER_VTABLE_RVA: usize = 0x0297_4f30;
+pub const LISTENER_VTABLE_RVA: usize = 0x029f_16b0;
 /// The listeners classifier propagation notifies after a classifier change (pointer array with its
 /// count): dependency-list rebuilding registers each technology's [`LISTENER`] with the
 /// technologies of its template's three dependency lists, so a listener need not be a dependent
@@ -45,13 +45,13 @@ pub const CLASSIFIER_COMPLETED: u32 = 4;
 pub const CLASSIFIER_ACTIVE: u32 = 5;
 
 /// CTechnology constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00ed_2dd0;
+pub const CONSTRUCTOR_RVA: usize = 0x00f4_f560;
 /// Technology base-cost debug byte.
-pub const BASE_COST_DEBUG_FLAG_RVA: usize = 0x0332_f661;
+pub const BASE_COST_DEBUG_FLAG_RVA: usize = 0x033d_dad1;
 /// Technology base-cost scale i64 fixed5.
-pub const BASE_COST_SCALE_RVA: usize = 0x0333_2ba0;
+pub const BASE_COST_SCALE_RVA: usize = 0x033e_41e0;
 /// Live ahead-of-time penalty factor, i64 fixed5.
-pub const BASE_YEAR_AHEAD_PENALTY_FACTOR_RVA: usize = 0x0333_2b00;
+pub const BASE_YEAR_AHEAD_PENALTY_FACTOR_RVA: usize = 0x033e_4138;
 
 /// Portable current state; classifier values and fixed-point operands are not narrowed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

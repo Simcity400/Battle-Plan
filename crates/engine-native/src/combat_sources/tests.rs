@@ -257,7 +257,7 @@ fn world(shape: &Shape) -> Built {
     let mut regional_data = Vec::new();
     w.u32(modifier_definition::TRADE_FEATURE_FLAGS_RVA, 1 << 4);
     let definitions = w.alloc(0x100);
-    w.u64(0x0333_0098, definitions as u64);
+    w.u64(0x033d_e590, definitions as u64);
     let static_modifier = w.object(0x100, crate::cstatic_modifier::VTABLE_RVA);
     w.accumulator(
         static_modifier + crate::cstatic_modifier::ACCUMULATOR,

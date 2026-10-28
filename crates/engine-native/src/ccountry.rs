@@ -33,7 +33,7 @@ pub use rosters::{
 };
 
 /// Country primary vtable.
-pub const VTABLE_RVA: usize = 0x027e_7360;
+pub const VTABLE_RVA: usize = 0x0286_4710;
 /// Country raw link id, u32, resolved through live country links.
 pub const ID: usize = 8;
 /// Display name in the client language. Capture uses [`AppearanceRow`]
@@ -218,7 +218,7 @@ pub const DELAYED_EVENTS_COUNT: usize = 0x129c;
 /// CCountry graphical-culture std::string.
 pub const GRAPHICAL_CULTURE: usize = 0x1028;
 /// Graphical-culture resolver joining name and pointer.
-pub const RESOLVE_GRAPHICAL_CULTURE_RVA: usize = 0x0071_2260;
+pub const RESOLVE_GRAPHICAL_CULTURE_RVA: usize = 0x0075_a370;
 /// Loaded two-dimensional graphical-culture string used by equipment icon
 /// fallback selection. Saves omit it.
 pub const GRAPHICAL_CULTURE_2D: usize = 0x1050;
@@ -251,7 +251,7 @@ pub const RADAR_GROUPS_COUNT: usize = RADARS_POOL + cradars_pool::GROUPS_COUNT;
 /// CCountry volunteer-host count u32.
 pub const VOLUNTEER_HOSTS_COUNT: usize = 0x1434;
 /// Name, adjective and definite-name rebuild using cosmetic-first selection.
-pub const REBUILD_LOCALIZED_NAME_RVA: usize = 0x0071_6580;
+pub const REBUILD_LOCALIZED_NAME_RVA: usize = 0x0075_e660;
 /// Persistent ability-record array.
 pub const ACTIVE_ABILITIES: usize = 0x15b8;
 /// Fog-network candidate count; hourly acquisition is unverified.
@@ -266,13 +266,13 @@ pub const OWNED_PROVINCES: usize = 0x410;
 pub const VOLUNTEER_TALLIES: usize = 0x1440;
 
 /// Signed stability addition and clamp.
-pub const ADD_STABILITY_RVA: usize = 0x006d_23f0;
+pub const ADD_STABILITY_RVA: usize = 0x0071_9ed0;
 /// Signed war-support addition and clamp.
-pub const ADD_WAR_SUPPORT_RVA: usize = 0x006d_3560;
+pub const ADD_WAR_SUPPORT_RVA: usize = 0x0071_b040;
 /// Daily manpower, politics and command-power update.
-pub const DAILY_UPDATE_RVA: usize = 0x006e_76a0;
+pub const DAILY_UPDATE_RVA: usize = 0x0072_f1b0;
 /// Weekly stability update completed before the full tick returns.
-pub const WEEKLY_UPDATE_RVA: usize = 0x0071_8ca0;
+pub const WEEKLY_UPDATE_RVA: usize = 0x0076_0dc0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

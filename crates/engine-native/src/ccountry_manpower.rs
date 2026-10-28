@@ -8,15 +8,15 @@ pub const COUNTRY: usize = 8;
 /// Signed i64 mobilization ratio.
 pub const MOBILIZATION: usize = 0x10;
 /// Daily mobilization and exile growth using the embedded object.
-pub const DAILY_UPDATE_RVA: usize = 0x00cf_bff0;
+pub const DAILY_UPDATE_RVA: usize = 0x00d5_d820;
 
 use crate::{Memory, ccountry, read};
 
 /// Exile pool and its stored admission cap, signed people.
 pub const EXILE_POOL: usize = 0x18;
 /// Diplomacy's signed host reference; positive means the country is in exile.
-pub const HOST: usize = 0x1a8;
-pub const LEGITIMACY: usize = 0x1b0;
+pub const HOST: usize = 0x1f0;
+pub const LEGITIMACY: usize = 0x1f8;
 
 /// Daily-sliced operands. A missing scalar is its own refusal. Exile-only
 /// resources are absent for a known non-exile, without touching their memory.

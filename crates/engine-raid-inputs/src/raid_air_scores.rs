@@ -42,7 +42,7 @@ const ENTRY: usize = ENEMY_MISSIONS + 2;
 /// Raw fixed5 normalization applied to regional aircraft spotting.
 const AIR_SPOTTING_SCALE: usize = 0x80;
 /// Loaded signed i32 combat delay, doubled for the phase period.
-pub const COMBAT_DELAY_RVA: usize = 0x0333_5bf0;
+pub const COMBAT_DELAY_RVA: usize = 0x033e_0bbc;
 /// Epoch subtracted from the game hour before signed remainder.
 const HOUR_EPOCH: i32 = 43_800_000;
 

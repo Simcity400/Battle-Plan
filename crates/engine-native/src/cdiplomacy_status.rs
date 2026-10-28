@@ -4,9 +4,9 @@
 use crate::{Memory, ccountry, cpdx_array::Array, cwar_goal, read, walk::Outcome};
 
 /// CDiplomacyStatus primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_1ce8;
+pub const VTABLE_RVA: usize = 0x029d_e588;
 /// CDiplomacyStatus constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00d3_2d80;
+pub const CONSTRUCTOR_RVA: usize = 0x00d9_5f90;
 /// CDiplomacyStatus CRelationStatus pointer matrix, indexed by resolved country ordinal.
 pub const RELATIONS: usize = 0x08;
 /// Relation-matrix signed-i32 capacity in its array header.
@@ -43,15 +43,15 @@ pub const SUBJECTS: usize = 0x170;
 /// Overlord country word, read as i32.
 pub const OVERLORD: usize = 0x188;
 /// Diplomacy status's owning country pointer, stored by its constructor.
-pub const COUNTRY: usize = 0x288;
+pub const COUNTRY: usize = 0x2d0;
 /// CDiplomacyStatus nullable CFaction pointer.
-pub const FACTION: usize = 0x290;
+pub const FACTION: usize = 0x2d8;
 /// CDiplomacyStatus capitulated byte, D60 accepts exactly 0 or 1; build_profile.rs:757.
-pub const CAPITULATED: usize = 0x2e0;
+pub const CAPITULATED: usize = 0x328;
 /// Raw capitulation hour, read as i32.
-pub const CAPITULATED_HOUR: usize = 0x2f0;
+pub const CAPITULATED_HOUR: usize = 0x338;
 /// CDiplomacyStatus CCurrentAutonomyStatus pointer.
-pub const CURRENT_AUTONOMY_STATUS: usize = 0x350;
+pub const CURRENT_AUTONOMY_STATUS: usize = 0x3b8;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CapitulationRow {
@@ -349,7 +349,7 @@ mod tests {
         impl Memory for Holes<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 let end = address + output.len();
-                ![(0x1b0, 12), (0x2b8, 4), (0x2d0, 4)]
+                ![(0x1f8, 12), (0x300, 4), (0x318, 4)]
                     .iter()
                     .any(|&(offset, len)| {
                         let start = FIRST_DIPLOMACY + offset;

@@ -3,7 +3,7 @@
 use crate::{Memory, read};
 
 /// CDecisionCooldown primary vtable.
-pub const VTABLE_RVA: usize = 0x027e_b450;
+pub const VTABLE_RVA: usize = 0x0286_85d0;
 /// CDecisionCooldown CDecision pointer.
 pub const DEFINITION: usize = 0x08;
 /// CDecisionCooldown i32 remaining days.

@@ -25,12 +25,12 @@ pub mod participation;
 /// Ordered goal handles for each stored endpoint.
 pub const GOALS: [usize; 2] = [0x168, 0x180];
 /// Installed default naming-prefix location.
-pub const NAME_PREFIX_RVA: usize = 0x0296_1350;
+pub const NAME_PREFIX_RVA: usize = 0x029d_dc30;
 /// Installed naming-prefix byte count before its terminating NUL.
 pub const NAME_PREFIX_LEN: usize = 8;
 
 /// CWarRelation primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_0288;
+pub const VTABLE_RVA: usize = 0x029d_cba8;
 /// CWarRelation native type word.
 pub const TYPE: u32 = 0x380a;
 /// CWarRelation first known casualties, signed i64 integer.

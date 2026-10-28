@@ -25,13 +25,13 @@ pub const FULFILLMENT: usize = COMPOSITION + 0x70;
 pub const COMPOSITION_TOKEN: usize = COMPOSITION + 0xd8;
 /// The native empty AI-composition selection, omitted by the serializer.
 pub const NO_AI_COMPOSITION_TOKEN: u32 = 0x4c17;
-pub const ENTRIES_VTABLE_RVA: usize = 0x0297_3300;
+pub const ENTRIES_VTABLE_RVA: usize = 0x029f_b508;
 pub const COMPOSITION_ENTRIES: usize = 8;
 pub const COMPOSITION_ENTRY_BYTES: usize = 16;
 pub const AUTOMATED_HOMEBASE: usize = 0x104;
-pub const MAX_FACTORIES_FOR_REPAIR: usize = 0x4b0;
-pub const MAX_REPAIR_DOCKYARDS: usize = 0x1b8;
-pub const USED_REPAIR_DOCKYARDS: usize = 0x1bc;
+pub const MAX_FACTORIES_FOR_REPAIR: usize = 0x4c8;
+pub const MAX_REPAIR_DOCKYARDS: usize = 0x1a0;
+pub const USED_REPAIR_DOCKYARDS: usize = 0x1a4;
 pub const BASE_REPAIR_DOCKYARDS: usize = 0x1c;
 pub const BASE_REPAIR_PRIORITY: usize = 0x20;
 pub const BASE_REPAIR_QUEUE: usize = 0x28;

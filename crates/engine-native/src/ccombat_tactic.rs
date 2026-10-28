@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// Tactic primary vtable.
-pub const VTABLE_RVA: usize = 0x027e_6528;
+pub const VTABLE_RVA: usize = 0x0286_3950;
 /// Token string.
 pub const TOKEN: usize = 0x10;
 /// Name string.
@@ -18,7 +18,7 @@ pub const COUNTER_ID: usize = 0x90;
 /// Modifier-metadata key, u32.
 pub const MODIFIER_KEY: usize = 0x174;
 /// Tactic-database singleton, lazily created by the game; recording never creates it.
-pub const DATABASE_RVA: usize = 0x0333_0c90;
+pub const DATABASE_RVA: usize = 0x033d_f180;
 /// Tactic-pointer array in id order, with a null entry at index zero.
 pub const DATABASE_ENTRIES: usize = 0x10;
 

@@ -12,7 +12,7 @@ use std::{
     sync::Mutex,
 };
 const PENDING_REQUESTS: usize = 0x60;
-const REQUEST_VTABLE_RVA: usize = 0x2a28ed0;
+const REQUEST_VTABLE_RVA: usize = 0x2aa1138;
 mod worker;
 
 static EPOCH: AtomicU64 = AtomicU64::new(1);
@@ -450,9 +450,8 @@ fn read_country(
             prices: levels(&native.price_levels).into(),
             subsidies: subsidies(&native.subsidies).into(),
             subsidy_total_raw: native.subsidy_total_raw,
-            auto_accept_market_access: native.auto_accept_market_access,
             auto_send_market_access: native.auto_send_market_access,
-            auto_accept_purchase: native.auto_accept_purchase,
+            ..Default::default()
         },
         scratch: native,
     })
@@ -1303,11 +1302,8 @@ pub fn acquire(
                                 held.row.subsidy_total_raw = held.scratch.subsidy_total_raw;
                             }
                             AUTOMATION => {
-                                held.row.auto_accept_market_access =
-                                    held.scratch.auto_accept_market_access;
                                 held.row.auto_send_market_access =
                                     held.scratch.auto_send_market_access;
-                                held.row.auto_accept_purchase = held.scratch.auto_accept_purchase;
                             }
                             _ => unreachable!(),
                         }

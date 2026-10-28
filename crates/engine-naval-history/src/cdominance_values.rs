@@ -4,7 +4,7 @@
 //! update publishes them into CNavalRegionDominance's sorted snapshot.
 
 /// CDominanceValues primary vtable.
-pub const VTABLE_RVA: usize = 0x0298_4bf0;
+pub const VTABLE_RVA: usize = 0x02a0_0ea0;
 /// Dominance country u32 key, required to equal the outer array key.
 pub const COUNTRY: usize = 0x08;
 /// CDominanceValues owning CStrategicRegion pointer.

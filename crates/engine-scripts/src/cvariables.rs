@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// CVariables vtable.
-pub const VTABLE_RVA: usize = 0x027d_55a0;
+pub const VTABLE_RVA: usize = 0x0285_32f8;
 /// CVariables primary vtable pointer.
 pub const VTABLE: usize = 0;
 /// Raw u32 scoped-variable seed; initialized to one and hashed as context changes.
@@ -20,7 +20,7 @@ pub const BUCKET_MASK: usize = 0x24;
 /// Maximum probe distance; logarithmic bucket sizing includes this many overflow slots.
 pub const PROBE_TAIL: usize = 0x28;
 /// Empty shared storage.
-pub const EMPTY_STORAGE_RVA: usize = 0x0308_51a0;
+pub const EMPTY_STORAGE_RVA: usize = 0x030f_d1a0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

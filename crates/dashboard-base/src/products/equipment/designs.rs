@@ -140,12 +140,19 @@ pub fn sheet(frame: &DecodedFrame, variant: u64, content: &Database) -> Result<S
         Ok(row.literal.as_slice())
     };
     let equipment_name = spelling(definition.equipment_token)?;
-    let kind = content.named(equipment_name).ok_or_else(|| {
+    let at = content.get(equipment_name).ok_or_else(|| {
         format!(
             "equipment {} is not in the recorded content",
             String::from_utf8_lossy(equipment_name)
         )
     })?;
+    if let Some((field, owner)) = content.unreproduced_stat_field(at) {
+        return Err(format!(
+            "design {variant} stats are not reproduced: equipment {} sets {field}, which the game 1.19.4 applies in a stat calculation the dashboard does not reproduce",
+            String::from_utf8_lossy(owner)
+        ));
+    }
+    let kind = &content.equipment[at];
     let mut components = StatComponents::base(&kind.stats);
     let mut sources = vec![Source {
         name: String::from_utf8_lossy(&kind.name).into_owned(),
@@ -640,5 +647,57 @@ mod tests {
                 .unwrap_err()
                 .contains("lost upgrade assignment")
         );
+    }
+
+    #[test]
+    fn design_sheet_refuses_a_chassis_with_an_unreproduced_stat_field() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        for (archetype, chassis, field) in [
+            (
+                "scaled_by_reliability = { max_strength = 0.5 }",
+                "",
+                "scaled_by_reliability",
+            ),
+            (
+                "",
+                "module_add_stats_multiplier = { soft_attack = -0.05 }",
+                "module_add_stats_multiplier",
+            ),
+        ] {
+            let text = format!(
+                "equipments = {{ synthetic_chassis = {{ is_archetype = yes soft_attack = 10 {archetype} }}
+                    synthetic_chassis_1 = {{ archetype = synthetic_chassis {chassis} }} }}"
+            );
+            let content = crate::test_fixtures::equipment_types(&[text.as_bytes()]).unwrap();
+            assert!(content.misreads.is_empty(), "{:?}", content.misreads);
+            let mut frame = DecodedFrame {
+                branch: 1,
+                hour: 0,
+                metrics: Metrics::default(),
+                tables: std::array::from_fn(|_| {
+                    TableView::Unavailable {
+                        reason: "fixture".into(),
+                    }
+                    .into()
+                }),
+            };
+            *frame.tables[TableId::LexicalTokens.index()] =
+                TableView::Complete(TableRows::LexicalTokens(vec![rows::LexicalTokenRow {
+                    token: 1,
+                    literal: b"synthetic_chassis_1".to_vec(),
+                }]));
+            *frame.tables[TableId::VariantDefinitions.index()] =
+                TableView::Complete(TableRows::VariantDefinitions(vec![
+                    rows::VariantDefinitionRow {
+                        id: 70,
+                        equipment_token: 1,
+                        design: Recorded::Value(rows::VariantDesignState::default()),
+                        ..Default::default()
+                    },
+                ]));
+            let why = sheet(&frame, 70, &content).unwrap_err();
+            assert!(why.contains(field), "{why}");
+            assert!(why.contains("not reproduced"), "{why}");
+        }
     }
 }

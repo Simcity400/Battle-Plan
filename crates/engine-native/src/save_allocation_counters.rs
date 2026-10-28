@@ -10,23 +10,23 @@
 use crate::{Memory, cgame_state, creference_registry, cship, read};
 
 /// Theater-group index global, saved with token 0x35d2 and restored through its setter.
-pub const THEATER_GROUP_INDEX_RVA: usize = 0x0308_7258;
+pub const THEATER_GROUP_INDEX_RVA: usize = 0x030f_f22c;
 /// Deployment-line index global, saved with token 0x34b3 and restored through its setter.
-pub const MILITARY_DEPLOYMENT_LINE_INDEX_RVA: usize = 0x030b_1358;
+pub const MILITARY_DEPLOYMENT_LINE_INDEX_RVA: usize = 0x0312_93b8;
 /// Deployment-conveyor index global, saved with token 0x34b4 and restored through its setter.
-pub const MILITARY_DEPLOYMENT_CONVEYOR_INDEX_RVA: usize = 0x030b_135c;
+pub const MILITARY_DEPLOYMENT_CONVEYOR_INDEX_RVA: usize = 0x0312_93bc;
 /// Order index global, saved with token 0x3036 and restored directly.
-pub const ORDER_INDEX_RVA: usize = 0x0308_7260;
+pub const ORDER_INDEX_RVA: usize = 0x030f_f230;
 /// Front index global, saved with token 0x35ad and restored directly.
-pub const FRONT_INDEX_RVA: usize = 0x0308_7264;
+pub const FRONT_INDEX_RVA: usize = 0x030f_f234;
 /// Theatre index global, saved with token 0x35ae and restored directly.
-pub const THEATRE_INDEX_RVA: usize = 0x0308_7268;
+pub const THEATRE_INDEX_RVA: usize = 0x030f_f238;
 /// Country-leader index global, saved with token 0x393b and restored directly.
-pub const COUNTRY_LEADER_INDEX_RVA: usize = 0x030b_12d0;
+pub const COUNTRY_LEADER_INDEX_RVA: usize = 0x0312_9330;
 /// Equipment-variant index global, saved with token 0x3643 and restored through its setter.
-pub const EQUIPMENT_VARIANT_INDEX_RVA: usize = 0x030b_1328;
+pub const EQUIPMENT_VARIANT_INDEX_RVA: usize = 0x0312_9388;
 /// RNG draw counter, saved with token 0x2cc3; wraps as signed i32.
-pub const MULTIPLAYER_RANDOM_COUNT_RVA: usize = 0x0345_2520;
+pub const MULTIPLAYER_RANDOM_COUNT_RVA: usize = 0x0350_0360;
 
 /// One passive sample of the counters the save header serializer emits.
 ///
@@ -140,7 +140,7 @@ mod tests {
     const STATE: usize = 0x1000_0000;
 
     fn fixture() -> (Vec<u8>, Vec<u8>) {
-        let mut globals = vec![0_u8; 0x0346_0000];
+        let mut globals = vec![0_u8; 0x0351_0000];
         let put = |bytes: &mut Vec<u8>, rva: usize, value: i32| {
             bytes[rva..rva + 4].copy_from_slice(&value.to_le_bytes());
         };

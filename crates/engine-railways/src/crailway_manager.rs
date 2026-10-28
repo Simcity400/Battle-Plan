@@ -13,7 +13,7 @@ pub mod fresh_inputs;
 pub mod selected_inputs;
 
 /// CRailwayManager primary vtable.
-pub const VTABLE_RVA: usize = 0x0297_2cd0;
+pub const VTABLE_RVA: usize = 0x029e_f310;
 
 /// CRailwayManager province-indexed CProvinceRailwayInfo pointer table.
 pub const PROVINCE_INFO_TABLE: usize = 0x08;
@@ -27,16 +27,16 @@ pub const COOLDOWN_PROVINCE_COUNT: usize = 0x2c;
 /// CRailwayManager table pointer stride.
 pub const PROVINCE_INFO_STRIDE: usize = 8;
 /// Manager constructor sizing and zero-filling the province table.
-pub const CONSTRUCTOR_RVA: usize = 0x00e9_2510;
+pub const CONSTRUCTOR_RVA: usize = 0x00f0_5170;
 /// Railway manager scalar deleting destructor (vtable slot 0); destruction
 /// stores the vtable and frees every info object.
-pub const DESTRUCTOR_RVA: usize = 0x00e9_27f0;
+pub const DESTRUCTOR_RVA: usize = 0x00f0_5450;
 /// Railway token loader can allocate and replace info slots.
-pub const LOAD_TOKEN_RVA: usize = 0x00e9_54b0;
+pub const LOAD_TOKEN_RVA: usize = 0x00f0_8110;
 /// Province-cooldown setter writes stored cooldown and notifies supply.
-pub const SET_PROVINCE_ON_COOLDOWN_RVA: usize = 0x00e9_4b40;
+pub const SET_PROVINCE_ON_COOLDOWN_RVA: usize = 0x00f0_77a0;
 /// Cooldown updater decrements values and removes expired IDs.
-pub const UPDATE_COOLDOWNS_RVA: usize = 0x00e9_42f0;
+pub const UPDATE_COOLDOWNS_RVA: usize = 0x00f0_6f50;
 
 /// Passive railway speed computation, before CArmy's outer movement-speed
 /// scale. Road infrastructure and the directed rail edge compete by signed
@@ -55,13 +55,13 @@ pub fn movement_speed(
     let to_id = eta_province(memory, base, provinces, to)?;
     let infrastructure = eta_infrastructure(memory, base, state, to)?;
     // Railway speed computation: all four defines are signed fixed5 qwords.
-    let road_base = eta_read::<i64>(memory, base, 0x0333_5a40)?;
-    let road_scale = eta_read::<i64>(memory, base, 0x0333_5ae0)?;
+    let road_base = eta_read::<i64>(memory, base, 0x033e_0928)?;
+    let road_scale = eta_read::<i64>(memory, base, 0x033e_09b8)?;
     let road = road_base.wrapping_add(infrastructure.wrapping_mul(road_scale) / 100_000);
     let percentage =
         railway_percentage_from_ids(memory, base, state, provinces, (from, from_id), to_id)?;
-    let rail_base = eta_read::<i64>(memory, base, 0x0333_5b88)?;
-    let rail_scale = eta_read::<i64>(memory, base, 0x0333_5c10)?;
+    let rail_base = eta_read::<i64>(memory, base, 0x033e_0a48)?;
+    let rail_scale = eta_read::<i64>(memory, base, 0x033e_0ae0)?;
     let rail = rail_base.wrapping_add(percentage.wrapping_mul(rail_scale) / 100_000);
     Ok(road.max(rail))
 }
@@ -146,7 +146,7 @@ fn railway_percentage_from_ids(
     }
     // Sign-extended denominator: this denominator define is an i32, unlike the
     // speed defines. Zero returns zero, not the fixed-point sentinel.
-    let denominator = i64::from(eta_read::<i32>(memory, base, 0x0333_49d8)?) * 100_000;
+    let denominator = i64::from(eta_read::<i32>(memory, base, 0x033d_fbe8)?) * 100_000;
     if denominator == 0 {
         Ok(0)
     } else {
@@ -337,7 +337,7 @@ fn eta_state_infrastructure(
     if maximum < 1 {
         maximum = eta_read::<i32>(memory, definition, 0x2b8)?;
         if maximum <= 0 {
-            maximum = eta_read::<i32>(memory, base, 0x0333_3dc8)?;
+            maximum = eta_read::<i32>(memory, base, 0x033e_5274)?;
         }
     }
     eta_ratio(i64::from(healthy) * 100_000, i64::from(maximum) * 100_000)

@@ -1,7 +1,7 @@
 //! CIdeologyGroup definition shared by country identity and politics.
 
 /// Ideology-group primary vtable.
-pub const VTABLE_RVA: usize = 0x0293_c680;
+pub const VTABLE_RVA: usize = 0x029b_a258;
 /// CIdeologyGroup native u32 identity.
 pub const ID: usize = 0x08;
 /// CIdeologyGroup token std::string.

@@ -13,10 +13,10 @@ use crate::{
 };
 
 /// CGameState singleton.
-pub const SINGLETON_RVA: usize = 0x0332_f260;
+pub const SINGLETON_RVA: usize = 0x033d_d6b0;
 
 /// Play-session start Unix seconds.
-pub const PLAY_SESSION_STARTED_AT_RVA: usize = 0x0332_f418;
+pub const PLAY_SESSION_STARTED_AT_RVA: usize = 0x033d_d888;
 /// CGameState current date (`CURRENT_DATE`), its raw i32 hour.
 pub const CURRENT_HOUR: usize = 0x468;
 /// CGameState persisted u64 play time.
@@ -297,9 +297,9 @@ pub const WORLD_THREAT: usize = 0x6b0;
 /// It does not establish world readiness.
 pub const PLAYER_INPUT_ELIGIBLE: usize = 0xa39;
 /// Game-state constructor/reset initializes input state.
-pub const RESET_RVA: usize = 0x001e_0610;
+pub const RESET_RVA: usize = 0x001f_6610;
 /// Load setup sets eligibility before remaining calls; it does not establish world readiness.
-pub const LOAD_SETUP_RVA: usize = 0x00dd_9b20;
+pub const LOAD_SETUP_RVA: usize = 0x00e4_74f0;
 
 /// CGameState global scripted flag-manager pointer.
 pub const GLOBAL_FLAGS: usize = 0x258;
@@ -385,10 +385,10 @@ pub const NAVAL_RESULTS_MAP_MASK: usize = 0x608;
 /// all commands drained and tick_busy zero, before this tick increments the
 /// date. Command drain uses server polymorphic dispatch; this fixed entry
 /// fires once per game hour.
-pub const HOURLY_UPDATE_RVA: usize = 0x001d_d370;
+pub const HOURLY_UPDATE_RVA: usize = 0x001f_34d0;
 /// Exact hourly-update entry bytes.
 pub const HOURLY_UPDATE_SENTINEL: [u8; 16] = [
-    0x48, 0x8b, 0xc4, 0x48, 0x89, 0x50, 0x10, 0x48, 0x89, 0x48, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41,
+    0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0xac,
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

@@ -369,14 +369,14 @@ impl Memory for EtaFixture {
             return true;
         }
         // Live native defines, independent from content's static movement map.
-        if address == 0x0333_49d8 && output.len() == 4 {
+        if address == 0x033d_fbe8 && output.len() == 4 {
             output.copy_from_slice(&5_i32.to_le_bytes());
             return true;
         }
         for (define, value) in [
-            (0x0333_5c10, 400_000_i64),
-            (0x0333_6258, 200_000),
-            (0x0333_1528, -50_000),
+            (0x033e_0ae0, 400_000_i64),
+            (0x033e_10c8, 200_000),
+            (0x033e_36d0, -50_000),
         ] {
             if address == define && output.len() == 8 {
                 output.copy_from_slice(&value.to_le_bytes());
@@ -699,7 +699,7 @@ fn fresh_supply_preserves_native_lazy_branches_and_transfer_skips() {
         for (address, count) in [
             (GUN + 0x400, capacity_reads),
             (GUN + 0x410, remaining_reads),
-            (0x0333_1528, penalty_reads),
+            (0x033e_36d0, penalty_reads),
         ] {
             assert_eq!(
                 image
@@ -729,7 +729,7 @@ fn fresh_supply_preserves_native_lazy_branches_and_transfer_skips() {
     assert_eq!(fresh.orders_group, Some(0));
     assert_eq!(row.fresh_failures, [None; 3]);
     assert!(!image.reads.borrow().iter().any(|(address, _)| {
-        [GUN + 0x338, GUN + 0x400, GUN + 0x410, 0x0333_1528].contains(address)
+        [GUN + 0x338, GUN + 0x400, GUN + 0x410, 0x033e_36d0].contains(address)
     }));
 }
 

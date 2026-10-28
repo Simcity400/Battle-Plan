@@ -10,7 +10,7 @@ pub(super) const SPEED_RANGE: usize = 0x208;
 /// Classification-selected retained carrier-size statistics.
 pub(super) const CARRIER_SIZE: usize = 0x340;
 /// Definition's ship dominance weight.
-const DOMINANCE_WEIGHT: usize = 0x3f0;
+const DOMINANCE_WEIGHT: usize = 0x450;
 /// The classification flag selects the alternate retained carrier-size statistic.
 pub(super) const CARRIER_SIZE_SELECTOR: u64 = 1 << 7;
 

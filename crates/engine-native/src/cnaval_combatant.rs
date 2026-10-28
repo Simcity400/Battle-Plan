@@ -3,7 +3,7 @@
 use crate::{Memory, cfex_member, cpdx_array::Array, cship, memory::Raw, read};
 
 /// CNavalCombatant vtable.
-pub const VTABLE_RVA: usize = 0x029e_3e98;
+pub const VTABLE_RVA: usize = 0x02a5_cc78;
 /// CNavalCombatant parent CNavalCombat pointer.
 pub const COMBAT: usize = 0x18;
 /// Task-force pointer array: data, capacity and count. Admission requires naval units;

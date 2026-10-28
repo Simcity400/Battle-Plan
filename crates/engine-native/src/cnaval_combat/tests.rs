@@ -194,7 +194,7 @@ fn unreadable_custom_sea_grid_does_not_withhold_live_combat_details() {
     );
     world.u32(REGION + crate::cstrategic_region::ID, 94);
     world.u64(REGION + 0x30, TEMPLATE as u64);
-    world.u64(TEMPLATE, (IMAGE + 0x029d_be50) as u64);
+    world.u64(TEMPLATE, (IMAGE + 0x02a5_4c08) as u64);
     world.u32(TEMPLATE + 0x140, 1);
     world.u32(TEMPLATE + 0x144, 1);
     let (capture, row, _, _, _) = walk_whole(&world, 0);

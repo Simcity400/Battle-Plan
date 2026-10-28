@@ -9,14 +9,14 @@ use engine_native::{
 };
 
 pub const STATUS: usize = 0x838;
-pub const VTABLE_RVA: usize = 0x029b_dd80;
+pub const VTABLE_RVA: usize = 0x02a3_8090;
 pub const MEMBER_UPGRADES: usize = 0x08;
 pub const RESEARCH_SHARING: usize = 0x28;
 pub const DOCTRINE_SHARING: usize = 0x78;
 pub const SLOTS: usize = 0x98;
 pub const OWNER: usize = 0xb0;
 /// Loaded null change-date scalar used by the slot serializer.
-pub const UNSET_CHANGE_HOUR_RVA: usize = 0x3086b38;
+pub const UNSET_CHANGE_HOUR_RVA: usize = 0x30feb68;
 pub const SLOT_STRIDE: usize = 0x1a8;
 pub const SLOT_ADVISOR: usize = 0;
 pub const SLOT_COUNTRY: usize = 0x08;

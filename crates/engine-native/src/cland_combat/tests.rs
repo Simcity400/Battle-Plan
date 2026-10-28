@@ -1729,7 +1729,7 @@ fn tactic_context_records_a_side_whose_country_set_emptied() {
     struct Defines<'a>(DetailMemory<'a>);
     impl Memory for Defines<'_> {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if [0x0333_5ee0, 0x0333_5f68, 0x0333_6000].contains(&(address.wrapping_sub(BASE)))
+            if [0x033e_0d88, 0x033e_0e00, 0x033e_0e88].contains(&(address.wrapping_sub(BASE)))
                 && destination.len() == 8
             {
                 destination.copy_from_slice(&50_000_i64.to_le_bytes());

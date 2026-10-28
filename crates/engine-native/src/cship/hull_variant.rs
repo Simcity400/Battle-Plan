@@ -21,15 +21,15 @@ const MODULE_PRIORITY_SUM: usize = 0x418;
 const ORGANISATION_MARKER: usize = 0x4b0;
 /// General definition ordinal. Construction stores the current database
 /// count, null construction stores -1, and copying preserves the field.
-const DEFINITION_INDEX: usize = 0x418;
+const DEFINITION_INDEX: usize = 0x478;
 /// The database begins with the null definition at slot zero. Loading and
 /// copying append at their supplied index.
 const DEFINITIONS: usize = 0x68;
 /// The database installs the null-definition vtable, clears ACTIVE and
 /// publishes its sole pointer. Null type construction supplies the null
 /// definition token and ordinal -1. This is not a null variant reference.
-pub(super) const NULL_DEFINITION_VTABLE_RVA: usize = 0x0293_7ff0;
-pub(super) const NULL_DEFINITION_SINGLETON_RVA: usize = 0x0333_9be8;
+pub(super) const NULL_DEFINITION_VTABLE_RVA: usize = 0x029b_5f50;
+pub(super) const NULL_DEFINITION_SINGLETON_RVA: usize = 0x033e_75a8;
 pub(super) const NULL_DEFINITION_TOKEN: u32 = 0x165;
 
 /// Only the actual native singleton may widen the ordinary CType guard.

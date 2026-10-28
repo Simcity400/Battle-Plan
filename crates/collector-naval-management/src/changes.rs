@@ -205,7 +205,7 @@ fn register(registers: &Registers, register: Register) -> usize {
         Register::Rbp => registers.rbp,
         Register::Rsi => registers.rsi,
         Register::Rdi => registers.rdi,
-        Register::R9 => registers.r9,
+        Register::R11 => registers.r11,
         Register::R12 => registers.r12,
         Register::R13 => registers.r13,
         Register::R14 => registers.r14,
@@ -458,10 +458,10 @@ mod tests {
 
     #[test]
     fn naval_management_integration_site_inventory_includes_independent_split() {
-        assert_eq!(SITES.len(), 47);
+        assert_eq!(SITES.len(), 48);
         assert_eq!(METHODS.len(), 19);
-        assert_eq!(SITES.len() + METHODS.len(), 66);
-        assert_eq!(AUTHENTICATION_REFUSALS.len(), 66);
+        assert_eq!(SITES.len() + METHODS.len(), 67);
+        assert_eq!(AUTHENTICATION_REFUSALS.len(), 67);
         assert!(
             SITES
                 .iter()

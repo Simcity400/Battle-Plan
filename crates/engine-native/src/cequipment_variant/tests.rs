@@ -373,7 +373,7 @@ fn source(bytes: &[u8]) -> crate::cequipment_variant::RegistryRow {
 }
 
 fn fixture() -> Vec<u8> {
-    let mut bytes = vec![0; 0xa00];
+    let mut bytes = vec![0; 0xb00];
     bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
     bytes[8..16]
         .copy_from_slice(&((u64::from(u32::MAX) << 32) | u64::from(REFERENCE_TYPE)).to_le_bytes());

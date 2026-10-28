@@ -19,10 +19,10 @@ const DEPLOYMENT_PENDING: usize = 0x19a;
 const HQ_TEMPLATE: usize = 0x190;
 const TEMPLATE_MANPOWER: usize = 0x190;
 // Deployment defines are signed dwords; the date pair uses qwords.
-const DEPLOY_DAYS_RVA: usize = 0x0333_7288;
-const DEPLOY_MIN_RVA: usize = 0x0333_730c;
-const REFERENCE_MANPOWER_RVA: usize = 0x0333_7548;
-const MANPOWER_EXPONENT_RVA: usize = 0x0333_75d8;
+const DEPLOY_DAYS_RVA: usize = 0x033e_1fb8;
+const DEPLOY_MIN_RVA: usize = 0x033e_2024;
+const REFERENCE_MANPOWER_RVA: usize = 0x033e_22a8;
+const MANPOWER_EXPONENT_RVA: usize = 0x033e_2338;
 
 fn at_counter(pointer: usize, offset: usize) -> Result<usize, &'static str> {
     pointer

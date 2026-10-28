@@ -131,6 +131,42 @@ fn supply_trucks_follow_boolean_redefinition_and_copy_rules() {
     assert!(!named(&database, "ordinary").supply_truck);
 }
 
+#[test]
+fn unreproduced_stat_fields_are_kept_silently_and_found_through_parents_and_archetypes() {
+    let database = read(&[(
+        "chassis.txt",
+        "equipments = { root = { is_archetype = yes scaled_by_reliability = { max_strength = 0.5 } }
+            leaf = { archetype = root module_multiply_stats_multiplier = { soft_attack = 0.1 }
+                MODULE_MULTIPLY_STATS_MULTIPLIER = { soft_attack = 0.1 } }
+            child = { parent = leaf }
+            plain = { soft_attack = 1 } }",
+    )]);
+    assert!(database.lost.is_none(), "{:?}", database.lost);
+    assert!(database.misreads.is_empty(), "{:?}", database.misreads);
+    assert_eq!(
+        named(&database, "leaf").unreproduced_stat_fields,
+        ["module_multiply_stats_multiplier"]
+    );
+    let field = |name: &str| {
+        database
+            .unreproduced_stat_field(database.get(name).unwrap())
+            .map(|(field, owner)| (field, String::from_utf8_lossy(owner).into_owned()))
+    };
+    assert_eq!(
+        field("root"),
+        Some(("scaled_by_reliability", "root".to_owned()))
+    );
+    assert_eq!(
+        field("leaf"),
+        Some(("module_multiply_stats_multiplier", "leaf".to_owned()))
+    );
+    assert_eq!(
+        field("child"),
+        Some(("module_multiply_stats_multiplier", "leaf".to_owned()))
+    );
+    assert_eq!(field("plain"), None);
+}
+
 fn stat(name: &str) -> usize {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("equipment stat checks require BATTLE_PLAN_GAME_DIR");

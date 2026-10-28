@@ -12,7 +12,7 @@ use crate::{
 /// Completion entry with a five-byte stack-spill patch span. It has no
 /// relative operand, call-return PC or interior branch target. The remaining
 /// bytes authenticate the entry without extending the patched span.
-pub const COMPLETION_RVA: usize = 0x0140_3780;
+pub const COMPLETION_RVA: usize = 0x0149_f2e0;
 pub const COMPLETION_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
 ];

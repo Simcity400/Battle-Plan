@@ -2986,7 +2986,7 @@ mod tests {
             // A scripted query on either side within dispatch must not
             // replace its actual on-action commander, even after it was seen.
             for side in dispatch.sides {
-                assert_eq!(dispatch.slot(side, base + 0xc0f330, base), Ok(None));
+                assert_eq!(dispatch.slot(side, base + 0xc64e60, base), Ok(None));
             }
         }
         let border = Border {
@@ -3002,7 +3002,7 @@ mod tests {
             queried.terminating[n] = 0;
             assert!(queried.slot(queried.sides[n], caller, base).is_err());
             assert_eq!(
-                border.slot(border.sides[n], base + 0xa026a0, base),
+                border.slot(border.sides[n], base + 0xa4d400, base),
                 Ok(None)
             );
         }

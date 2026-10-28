@@ -39,7 +39,7 @@ pub struct LicenseRow {
 }
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0297_0708;
+pub const VTABLE_RVA: usize = 0x029e_cf78;
 
 /// Production-line pointer-array data.
 pub const LINES: usize = 0x58;
@@ -51,7 +51,7 @@ pub const ORGANISATIONS: usize = 0x130;
 /// Cached allowed-policy roster, rebuilt from content by refresh and loading.
 pub const POLICIES: usize = 0x148;
 /// Policy primary vtable and definition-token layout.
-pub const POLICY_VTABLE_RVA: usize = 0x0293_c9a0;
+pub const POLICY_VTABLE_RVA: usize = 0x029b_a578;
 /// Lexer token used to resolve the localized policy name.
 pub const POLICY_TOKEN: usize = 8;
 /// Construction-line pointer-array data.
@@ -78,25 +78,25 @@ pub const STOCKPILE_POOL: usize = 0x200;
 /// Stockpile entry-array data.
 pub const STOCKPILE: usize = 0x220;
 /// CProductionStatus owning CCountry pointer; trade factory-header reader validates this backlink.
-pub const COUNTRY: usize = 0x290;
+pub const COUNTRY: usize = 0x2a8;
 /// Military factory group ([`factory_group`]), populated from military-production
 /// buildings and assigned to non-naval lines.
-pub const MILITARY_FACTORIES: usize = 0x2b0;
+pub const MILITARY_FACTORIES: usize = 0x2c8;
 /// Naval dockyard group populated from naval-production buildings for naval lines.
-pub const NAVAL_FACTORIES: usize = 0x310;
+pub const NAVAL_FACTORIES: usize = 0x328;
 /// Civilian factory group populated from general-production buildings for
 /// civilian consumers and construction.
-pub const CIVILIAN_FACTORIES: usize = 0x370;
+pub const CIVILIAN_FACTORIES: usize = 0x388;
 /// Embedded consumer-goods object ([`civ_factory_consumer`]).
-pub const CONSUMER_GOODS: usize = 0x430;
+pub const CONSUMER_GOODS: usize = 0x448;
 /// National projects consumer.
-pub const SPECIAL_PROJECTS: usize = 0x448;
+pub const SPECIAL_PROJECTS: usize = 0x460;
 /// Licensed production consumer.
-pub const LICENSED_PRODUCTION: usize = 0x460;
+pub const LICENSED_PRODUCTION: usize = 0x478;
 /// Trade consumer.
-pub const TRADE: usize = 0x478;
+pub const TRADE: usize = 0x490;
 /// Market contract payment consumer.
-pub const CONTRACT_PAYMENTS: usize = 0x490;
+pub const CONTRACT_PAYMENTS: usize = 0x4a8;
 /// Bytes from the military group to the end of the last consumer: one span
 /// covers every factory field the reader takes.
 pub const FACTORY_SPAN: usize = CONTRACT_PAYMENTS + civ_factory_consumer::SIZE - MILITARY_FACTORIES;

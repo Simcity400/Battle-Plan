@@ -2,7 +2,7 @@
 //! is installed.
 
 /// CNavalUnitTransfer vtable.
-pub const VTABLE_RVA: usize = 0x0296_d8a8;
+pub const VTABLE_RVA: usize = 0x029e_a280;
 /// CNavalUnitTransfer packed reference handle u64.
 pub const HANDLE: usize = 0x08;
 /// Signed combat-reference count. Nonzero selects combat action nine
@@ -17,7 +17,7 @@ pub const TARGET_PROVINCE: usize = 0x50;
 #[cfg(test)]
 pub const SOURCE_PROVINCE: usize = 0x54;
 /// CNavalUnitTransfer constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00e2_56e0;
+pub const CONSTRUCTOR_RVA: usize = 0x00e9_3e00;
 
 use crate::{
     Memory, ccountry, ccountry_intel, cdiplomacy_status, cgame_state, country_intel_row,
@@ -74,19 +74,19 @@ fn transfer_field(pointer: usize, offset: usize) -> Result<usize, &'static str> 
 }
 
 /// Base transport speed i64.
-pub const BASE_SPEED_RVA: usize = 0x0333_0ef8;
+pub const BASE_SPEED_RVA: usize = 0x033e_3150;
 /// Static modifier-set singleton.
-const MODIFIER_SET_RVA: usize = 0x0333_0098;
+const MODIFIER_SET_RVA: usize = 0x033d_e590;
 /// Transport-penalty static-modifier pointer, gated before composition.
 const TRANSPORT_MODIFIER: usize = 0xf8;
 /// Maximum regional operand total i64.
-const MAXIMUM_TOTAL_RVA: usize = 0x0333_6ed0;
+const MAXIMUM_TOTAL_RVA: usize = 0x033e_1d68;
 /// Minimum intel advantage subtracted before surplus reduction.
-const MINIMUM_INTEL_RVA: usize = 0x0333_6168;
+const MINIMUM_INTEL_RVA: usize = 0x033e_1000;
 /// Maximum intel advantage i64.
-const MAXIMUM_INTEL_RVA: usize = 0x0333_61e0;
+const MAXIMUM_INTEL_RVA: usize = 0x033e_1088;
 /// Intel-advantage reduction scale; its product rounds before range division.
-const INTEL_REDUCTION_RVA: usize = 0x0333_7368;
+const INTEL_REDUCTION_RVA: usize = 0x033e_2200;
 /// Naval transport speed token.
 const SPEED_TOKEN: u32 = crate::modifier_keys::NAVAL_SPEED_FACTOR;
 /// Country transport reduction token.

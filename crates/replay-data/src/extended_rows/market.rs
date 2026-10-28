@@ -118,9 +118,11 @@ pub struct CountryMarketRow {
     pub prices: SharedMarketPriceLevels,
     pub subsidies: SharedMarketSubsidies,
     pub subsidy_total_raw: i64,
-    pub auto_accept_market_access: bool,
+    /// Retired: the game 1.19.4 has no market-access auto-acceptance.
+    pub auto_accept_market_access: RetiredBool,
     pub auto_send_market_access: bool,
-    pub auto_accept_purchase: bool,
+    /// Retired: the game 1.19.4 has no purchase auto-acceptance.
+    pub auto_accept_purchase: RetiredBool,
 }
 typed_codec!(CountryMarketRow, 32, |row| row.country as u128,
  |key| Self { country: key as u32, ..Default::default() },
@@ -411,7 +413,7 @@ mod tests {
             ..Default::default()
         };
         let mut changed = RowCodec::try_clone(&country).unwrap();
-        changed.auto_accept_purchase = true;
+        changed.auto_send_market_access = true;
         assert_eq!(changed.inventory.items.as_ptr(), pool.items.as_ptr());
         assert_eq!(changed.prices.as_ptr(), levels.as_ptr());
         assert_eq!(changed.subsidies.as_ptr(), subsidies.as_ptr());
@@ -550,7 +552,7 @@ mod tests {
                 }]
                 .into(),
                 subsidy_total_raw: 17,
-                auto_accept_purchase: true,
+                auto_send_market_access: true,
                 ..Default::default()
             }]),
             TableRows::MarketContractTerms(vec![MarketContractTermsRow {

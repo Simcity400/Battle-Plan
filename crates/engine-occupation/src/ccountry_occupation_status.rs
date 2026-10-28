@@ -3,9 +3,9 @@
 //! or writer ownership.
 
 /// Occupation-status primary vtable.
-pub const VTABLE_RVA: usize = 0x0298_4978;
+pub const VTABLE_RVA: usize = 0x02a0_0c78;
 /// Persistent subobject vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x0298_49b0;
+pub const SECONDARY_VTABLE_RVA: usize = 0x02a0_0cb0;
 /// Persistent subobject displacement.
 pub const SECONDARY_BASE: usize = 0x18;
 /// Embedded occupation-data robin-hood table; enumerate only live buckets.
@@ -38,7 +38,7 @@ pub const ASSIGNED_MANPOWER: usize = 0x90;
 /// Default COccupationLaw pointer.
 pub const DEFAULT_LAW: usize = 0x118;
 /// Reset leaving the occupation table empty.
-pub const RESET_RVA: usize = 0x00ff_5ee0;
+pub const RESET_RVA: usize = 0x0107_be40;
 
 use crate::{
     Memory, ccountry,

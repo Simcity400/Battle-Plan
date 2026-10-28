@@ -18,7 +18,7 @@ const ONE: i64 = 100_000;
 const EXCEPTIONAL: i64 = 0xffff_ffff;
 /// `NDefines::NMilitary::SLOWEST_SPEED`, read live: a define reload or a mod's
 /// value is the reinforcement speed denominator.
-pub const SLOWEST_SPEED_RVA: usize = 0x0333_6d40;
+pub const SLOWEST_SPEED_RVA: usize = 0x033e_1ac8;
 /// The reinforcement share's native bounds, zero and two in fixed5.
 pub const SHARE_MAXIMUM: i64 = 2 * ONE;
 

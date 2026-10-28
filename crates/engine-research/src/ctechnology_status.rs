@@ -2,7 +2,7 @@
 //! Layout authentication alone does not establish hourly consistency.
 
 /// CTechnologyStatus vtable.
-pub const VTABLE_RVA: usize = 0x0297_4fa0;
+pub const VTABLE_RVA: usize = 0x029f_1720;
 /// CTechnologyStatus researched CTechnology* vector.
 pub const RESEARCHED_DATA: usize = 0x40;
 /// CTechnologyStatus all-technology pointer vector.
@@ -28,21 +28,21 @@ pub const LAND_DOCTRINE_LEVEL: usize = 0x140;
 pub const POINTER_STRIDE: usize = 8;
 
 /// CTechnologyStatus fresh initialization.
-pub const FRESH_INIT_RVA: usize = 0x00ee_3b70;
+pub const FRESH_INIT_RVA: usize = 0x00f6_05e0;
 /// Fresh-initialization entry bytes.
 pub const FRESH_INIT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56,
 ];
 /// CTechnologyStatus completion handler.
-pub const RESEARCH_COMPLETED_RVA: usize = 0x00ee_3e70;
+pub const RESEARCH_COMPLETED_RVA: usize = 0x00f6_08e0;
 /// Completion-handler entry bytes.
 pub const RESEARCH_COMPLETED_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55,
 ];
 /// CTechnologyStatus rebuild/transfer path A.
-pub const REBUILD_OR_TRANSFER_A_RVA: usize = 0x00ee_22f0;
+pub const REBUILD_OR_TRANSFER_A_RVA: usize = 0x00f5_ed70;
 /// CTechnologyStatus rebuild/transfer path B.
-pub const REBUILD_OR_TRANSFER_B_RVA: usize = 0x00ed_ffb0;
+pub const REBUILD_OR_TRANSFER_B_RVA: usize = 0x00f5_ca10;
 
 use crate::{
     Memory, ccountry, cpdx_array::Array, cresearch_slot, ctechnology, ctechnology_template, read,

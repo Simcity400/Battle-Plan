@@ -7,7 +7,7 @@
 //! includes the equipment pool, reason and date.
 
 /// Equipment-loss primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_d568;
+pub const VTABLE_RVA: usize = 0x029d_9ec0;
 /// Stored signed i32 reason; loaded values above three are dropped.
 pub const REASON: usize = 0x08;
 /// First write's raw game hour.

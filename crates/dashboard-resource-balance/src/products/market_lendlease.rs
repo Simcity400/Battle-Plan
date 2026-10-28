@@ -55,7 +55,7 @@ pub struct MarketOffer {
     pub prices: Vec<MarketLevel>,
     pub subsidies: Vec<MarketGrant>,
     pub subsidy_total_raw: String,
-    pub automation: [bool; 3],
+    pub auto_send_market_access: bool,
 }
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -379,11 +379,7 @@ fn present(
                     prices: levels(&row.prices),
                     subsidies: grants(&row.subsidies),
                     subsidy_total_raw: row.subsidy_total_raw.to_string(),
-                    automation: [
-                        row.auto_accept_market_access,
-                        row.auto_send_market_access,
-                        row.auto_accept_purchase,
-                    ],
+                    auto_send_market_access: row.auto_send_market_access,
                 })
                 .collect(),
         ),

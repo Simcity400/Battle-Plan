@@ -29,7 +29,7 @@
 
 pub use crate::advisor_mutations::MutationSite;
 
-const SET_COUNTRY_RVA: usize = 0xfa_6170;
+const SET_COUNTRY_RVA: usize = 0x102_a690;
 
 /// The writers, in callback order. Each takes at most three integer or
 /// pointer arguments; a detour forwards RCX..R9 and returns RAX unchanged.
@@ -42,12 +42,12 @@ pub const MUTATIONS: [MutationSite; 8] = [
             0x99, 0xa8,
         ],
     ),
-    site("create_army_role", 0xf9_d360, CREATE_ROLE),
-    site("create_navy_role", 0xf9_d780, CREATE_ROLE),
+    site("create_army_role", 0x102_1880, CREATE_ROLE),
+    site("create_navy_role", 0x102_1ca0, CREATE_ROLE),
     // The RBX save and 0x20-byte stack reservation relocate in six bytes.
     site(
         "clear_unit_role",
-        0xfa_60e0,
+        0x102_a600,
         [
             0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48, 0x8b, 0x89, 0xa8, 0x00,
             0x00, 0x00,
@@ -55,7 +55,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
     ),
     site(
         "add_country_leader_role",
-        0x34_92d0,
+        0x36_1850,
         [
             0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
             0x41, 0x57,
@@ -63,7 +63,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
     ),
     site(
         "erase_leader_roles",
-        0x3b_a2f0,
+        0x3d_27c0,
         [
             0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x41, 0x56, 0x41,
             0x57, 0x48,
@@ -71,7 +71,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
     ),
     site(
         "add_scientist_role",
-        0x34_c030,
+        0x36_45a0,
         [
             0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x81, 0xec,
             0x50, 0x01,
@@ -82,7 +82,7 @@ pub const MUTATIONS: [MutationSite; 8] = [
     // and padding.
     site(
         "set_operative_reference",
-        0xfa_6320,
+        0x102_a840,
         [
             0x48, 0x8b, 0x42, 0x08, 0x48, 0x89, 0x81, 0xc8, 0x00, 0x00, 0x00, 0xc3, 0xcc, 0xcc,
             0xcc, 0xcc,

@@ -3,7 +3,7 @@
 //! consistency nor a new observation boundary.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0298_3a78;
+pub const VTABLE_RVA: usize = 0x029f_fdb8;
 /// CRaidInstance u32 reference type.
 pub const REFERENCE_TYPE: usize = 0x08;
 /// Raid-instance reference type identifier.

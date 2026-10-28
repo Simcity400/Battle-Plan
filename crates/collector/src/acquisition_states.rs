@@ -477,7 +477,7 @@ pub(crate) mod tests {
                 DEFINITION + cbuilding_template::LOOKUP_ENABLED_CANDIDATE,
                 [0; 8],
             ),
-            (0x0333_31b0, PER_LEVEL.to_le_bytes()),
+            (0x033e_5080, PER_LEVEL.to_le_bytes()),
         ]
     }
 
@@ -491,7 +491,7 @@ pub(crate) mod tests {
             (DEFINITION + 0x2b8, [0; 16]),
             (DEFINITION + 0x2e0, [3; 16]),
             (DATABASE + 0x40, [0; 16]),
-            (0x0333_3dc8, [0; 16]),
+            (0x033e_5274, [0; 16]),
         ]
     }
 
@@ -716,7 +716,7 @@ pub(crate) mod tests {
                         .iter()
                         .any(|row| row.category.is_none())
                 );
-            } else if healthy.calls.borrow()[fault] == (0x0332_f070, 8) {
+            } else if healthy.calls.borrow()[fault] == (0x033d_d4b8, 8) {
                 // The continents database singleton is optional.
                 assert_eq!(report.census.result, Outcome::Rows { len: 2 });
                 assert_eq!(actual.visitor.outcomes(), [Outcome::Rows { len: 2 }]);

@@ -294,7 +294,7 @@ fn populated_native_startup_and_zero_country_replacement_survive_production_spoo
     );
     assert!(
         rows.iter()
-            .all(|r| r.inventory.items[0].amount_raw == 700_000 && r.auto_accept_market_access)
+            .all(|r| r.inventory.items[0].amount_raw == 700_000 && r.auto_send_market_access)
     );
     let contracts = frame.complete::<tables::MarketContractTerms>().unwrap();
     assert_eq!(contracts.len(), 1);
@@ -312,7 +312,7 @@ fn populated_native_startup_and_zero_country_replacement_survive_production_spoo
             .iter()
             .find(|r| r.country == 0)
             .unwrap()
-            .auto_accept_market_access
+            .auto_send_market_access
     );
     memory.clock(102);
     let replacement = memory.country(0, 0x5000, 0, 2);
@@ -327,7 +327,7 @@ fn populated_native_startup_and_zero_country_replacement_survive_production_spoo
         .find(|r| r.country == 0)
         .unwrap();
     assert_eq!(row.subsidy_total_raw, 12347);
-    assert!(row.auto_accept_market_access);
+    assert!(row.auto_send_market_access);
     boundary(103);
     assert!(!held::full_publication_required());
     record(&NoReads, 103, &mut encoder, &mut decoder);
@@ -940,11 +940,11 @@ fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writ
     let mut expected = baseline.to_vec();
     memory
         .forbidden
-        .push(0x4800 + market::COUNTRY_PRICE_LEVELS..0x4800 + market::AUTOMATION + 3);
+        .push(0x4800 + market::COUNTRY_PRICE_LEVELS..0x4800 + market::AUTOMATION + 1);
     for range in [
         0..8,
         market::COUNTRY_PRICE_LEVELS..market::COUNTRY_SUBSIDY_TOTAL,
-        market::AUTOMATION..market::AUTOMATION + 3,
+        market::AUTOMATION..market::AUTOMATION + 1,
     ] {
         memory.forbidden.push(
             holders[0].pointer + 0x1800 + range.start..holders[0].pointer + 0x1800 + range.end,
@@ -956,7 +956,7 @@ fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writ
         (holders[2], 0..8),
         (
             holders[2],
-            market::COUNTRY_SUBSIDY_TOTAL..market::AUTOMATION + 3,
+            market::COUNTRY_SUBSIDY_TOTAL..market::AUTOMATION + 1,
         ),
     ] {
         memory
@@ -1073,7 +1073,7 @@ fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writ
             } else if row.country == holders[0].id {
                 row.subsidy_total_raw = i64::from(hour);
             } else if row.country == holders[1].id {
-                row.auto_accept_market_access = hour % 2 != 0;
+                row.auto_send_market_access = hour % 2 != 0;
             } else if row.country == holders[2].id {
                 row.prices[0].level = hour % 3;
             }
@@ -1438,7 +1438,7 @@ fn offered_country_growth_survives_a_draining_predecessor_and_recovers_after_col
                 let rows = frame.complete::<tables::CountryMarket>().unwrap();
                 assert_eq!(rows.len(), countries.len() + 2);
                 assert!(rows.iter().all(|row| {
-                    row.inventory.items[0].amount_raw == 700_000 && row.auto_accept_market_access
+                    row.inventory.items[0].amount_raw == 700_000 && row.auto_send_market_access
                 }));
                 for country in &countries {
                     assert!(rows.iter().any(|row| row.country == country.id));

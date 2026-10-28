@@ -3765,5 +3765,28 @@ fn new_assignment_triggers_refuse_unrecorded_predicates_in_their_accepted_scopes
     });
 }
 
+#[test]
+fn volunteer_presence_trigger_refuses_its_unrecorded_predicate_in_country_scope() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let frame = frame(&[(100, 1, "AAA", 1, "", "")], &[]);
+    with_world(&frame, "", Err("none"), |world| {
+        for operand in ["AAA", "THIS"] {
+            let trigger = items(&format!("has_volunteers = {operand}"));
+            let why = world
+                .evaluate(&trigger, Scopes::of(Scope::Country(1)))
+                .decided()
+                .unwrap_err();
+            assert!(why.contains("has_volunteers"), "{why}");
+            assert!(why.contains("trigger "), "{why}");
+            assert_eq!(
+                world.evaluate(&trigger, Scopes::of(Scope::Character(7))),
+                Eval::False,
+                "has_volunteers must retain its executable scope mask"
+            );
+        }
+    });
+}
+
 #[path = "recorded_source_tests.rs"]
 mod recorded_source;

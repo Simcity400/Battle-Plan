@@ -1,7 +1,7 @@
 //! Project reward-history record.
 
 /// Project-history primary vtable.
-pub const VTABLE_RVA: usize = 0x0298_2e50;
+pub const VTABLE_RVA: usize = 0x029f_f210;
 /// Project-history record stride.
 pub const STRIDE: usize = 0x58;
 /// Reward u32 lexer token.

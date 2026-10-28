@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Fuel-state primary vtable.
-pub const VTABLE_RVA: usize = 0x0298_b3a8;
+pub const VTABLE_RVA: usize = 0x02a0_6ec8;
 
 /// Current fuel, i64 fixed15.
 pub const CURRENT: usize = 0x08;

@@ -18,10 +18,10 @@ use crate::{
 };
 
 /// CDLCManager singleton pointer.
-pub const SINGLETON_RVA: usize = 0x0344_a568;
+pub const SINGLETON_RVA: usize = 0x034f_83a8;
 /// Cached successful mount-path pointer array, refreshed after mounts
 /// in highest-priority-first order.
-pub const SEARCH_PATH_RVA: usize = 0x035e_3e70;
+pub const SEARCH_PATH_RVA: usize = 0x0369_17a8;
 /// CDLCManager mutable DLC filter strings.
 pub const DLC_FILTER_STRINGS: usize = 0x50;
 /// Requested mod strings, data and count.

@@ -23,7 +23,7 @@ impl Fixture {
     fn new(count: u32, active: bool) -> Self {
         let mut world = World::new(0, count, ccountry::PRODUCTION_STATUS + 8);
         let variant = world.alloc(0x420);
-        let equipment = world.alloc(0x560);
+        let equipment = world.alloc(0x5c0);
         let factories = world.alloc(24);
         let bonuses = world.alloc(9 * 16);
         world.u64(variant, cequipment_variant::VTABLE_RVA as u64);
@@ -62,7 +62,7 @@ impl Fixture {
             world.u64(country + ccountry::PRODUCTION_STATUS, status as u64);
             world.u64(status, cproduction_status::VTABLE_RVA as u64);
             world.u64(status + cproduction_status::COUNTRY, country as u64);
-            world.u64(status + 0x3a8, 50000);
+            world.u64(status + 0x3c0, 50000);
             if active {
                 let pointer = world.alloc(0x100);
                 let roster = world.alloc(8);
@@ -96,22 +96,22 @@ impl Fixture {
         for (category, key) in (700_u32..707).enumerate() {
             globals.insert(BONUS_KEYS_RVA + category * 0x28, key.to_le_bytes().to_vec());
         }
-        for (rva, value) in [0x0333_69c0, 0x0333_6a58, 0x0333_6ad8, 0x0333_6b90]
+        for (rva, value) in [0x033e_1020, 0x033e_109c, 0x033e_1130, 0x033e_11b4]
             .into_iter()
             .zip([-7_i32, 12, 34, 56])
         {
             globals.insert(rva, value.to_le_bytes().to_vec());
         }
-        globals.insert(0x0333_8068, (-450_i64).to_le_bytes().to_vec());
+        globals.insert(0x033e_23e8, (-450_i64).to_le_bytes().to_vec());
         globals.insert(
             crate::dlc_feature_state::MASK_RVA,
             0_u32.to_le_bytes().to_vec(),
         );
         for (vtable, predicate) in [
-            (cmilitary_production_line::VTABLE_RVA, 0x0011_d220_u64),
-            (cnaval_production_line::VTABLE_RVA, 0x0011_d220),
-            (crailway_gun_production_line::VTABLE_RVA, 0x0011_d220),
-            (cship_refit_production_line::VTABLE_RVA, 0x0018_07b0),
+            (cmilitary_production_line::VTABLE_RVA, 0x0011_d530_u64),
+            (cnaval_production_line::VTABLE_RVA, 0x0011_d530),
+            (crailway_gun_production_line::VTABLE_RVA, 0x0011_d530),
+            (cship_refit_production_line::VTABLE_RVA, 0x0018_8d90),
         ] {
             globals.insert(vtable + 0xd8, predicate.to_le_bytes().to_vec());
         }
@@ -570,7 +570,7 @@ fn slot_parts_match_the_whole_walk_at_scale_and_under_every_fault() {
             .position(|range| range[0] <= slot && slot < range[1])
             .unwrap()
     };
-    let power = status(&fixture, 1_500) + 0x3a8;
+    let power = status(&fixture, 1_500) + 0x3c0;
     let line = fixture.lines[3_499] + cproduction_line::ACTIVE_FACTORIES;
     for (fault, slot) in [(power, 1_500), (line, 3_500), (DEFINE_RVAS[0], 1)] {
         for once in [false, true] {

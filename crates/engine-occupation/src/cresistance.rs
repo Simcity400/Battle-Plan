@@ -12,7 +12,7 @@ pub mod hover;
 pub mod map_icons;
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0297_e370;
+pub const VTABLE_RVA: usize = 0x029f_a880;
 /// Owning state pointer from the second constructor argument.
 pub const STATE: usize = 0x08;
 /// Resistance level, signed i64 fixed5, advanced by speed and clamped to its bounds.
@@ -36,9 +36,9 @@ pub const FIXED_POINT_SCALE: i64 = 100_000;
 /// Maximum signed level/compliance.
 pub const MAX_LEVEL: i64 = 10_000_000;
 /// Constructor installing identity, owner and signed-qword fields.
-pub const CONSTRUCTOR_RVA: usize = 0x00f9_0f20;
+pub const CONSTRUCTOR_RVA: usize = 0x0101_54b0;
 /// Update integrating signed speeds into bounded levels.
-pub const UPDATE_RVA: usize = 0x00f9_8050;
+pub const UPDATE_RVA: usize = 0x0101_c570;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

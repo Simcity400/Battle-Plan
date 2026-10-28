@@ -72,6 +72,10 @@ pub const CHECKPOINT_FORMAT: u16 = 123;
 pub const CHUNKED_FORMAT: u16 = 124;
 /// Owner-approved separate land and naval raid memo keys.
 pub const RAID_DISPATCHERS_FORMAT: u16 = 125;
+/// CountryMarket retires market-access and purchase auto-acceptance (fields 4
+/// and 6) as tombstones: the game 1.19.4 has neither. Older recordings still decode
+/// the table and discard those values.
+pub const MARKET_AUTOMATION_FORMAT: u16 = 126;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -575,7 +579,7 @@ pub static RETIRED_TABLES: [TableId; 19] = [
 ];
 
 /// Every retired row field, beside the retired tables' lifetimes in [`HISTORY`].
-pub static RETIRED_FIELDS: [RetiredField; 62] = [
+pub static RETIRED_FIELDS: [RetiredField; 64] = [
     retired(TableId::Provinces, 8, "selected_areas"),
     retired(TableId::DivisionMovement, 18, "fresh"),
     retired(TableId::DivisionMovement, 20, "selected"),
@@ -680,6 +684,18 @@ pub static RETIRED_FIELDS: [RetiredField; 62] = [
     retired(TableId::InvasionPreparations, 10, "zero_war_retired"),
     retired(TableId::InvasionPreparations, 11, "zero_co_belligerent"),
     retired(TableId::InvasionPreparations, 12, "co_belligerents"),
+    RetiredField {
+        table: TableId::CountryMarket,
+        index: 4,
+        name: "auto_accept_market_access",
+        retired: MARKET_AUTOMATION_FORMAT,
+    },
+    RetiredField {
+        table: TableId::CountryMarket,
+        index: 6,
+        name: "auto_accept_purchase",
+        retired: MARKET_AUTOMATION_FORMAT,
+    },
 ];
 /// Provisional main+1: playback derives what the game computes from the hour
 /// and the content ([`crate::day_night`]). WeatherProvinces appends each
@@ -3293,6 +3309,18 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         introduced: 104,
         ..table(TableId::CountryMarket, 104, "pol/capture-market-lendlease")
     };
+    declare_change(
+        &mut history[TableId::CountryMarket.index()],
+        LastChange {
+            introduced: 104,
+            ..appended_at(
+                TableId::CountryMarket,
+                MARKET_AUTOMATION_FORMAT,
+                "port-1194/market-automation",
+                &[],
+            )
+        },
+    );
     history[TableId::MarketContractTerms.index()] = LastChange {
         introduced: 104,
         ..table(
@@ -4717,12 +4745,13 @@ mod tests {
                 CHECKPOINT_FORMAT,
                 CHUNKED_FORMAT,
                 RAID_DISPATCHERS_FORMAT,
+                MARKET_AUTOMATION_FORMAT,
             ],
             [
-                111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125
+                111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126
             ],
         );
-        assert_eq!(FORMAT_VERSION, RAID_DISPATCHERS_FORMAT);
+        assert_eq!(FORMAT_VERSION, MARKET_AUTOMATION_FORMAT);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);
@@ -4730,6 +4759,16 @@ mod tests {
             change
                 .table_gap(TableId::RaidPathDistances, CHUNKED_FORMAT)
                 .is_some()
+        );
+        let market = TableId::CountryMarket.last_change();
+        assert_eq!(market.introduced, 104);
+        assert_eq!(market.format, MARKET_AUTOMATION_FORMAT);
+        assert_eq!(market.kind, ChangeKind::AppendedOnly);
+        assert_eq!(TableId::CountryMarket.field_count(), 7);
+        assert!(
+            market
+                .table_gap(TableId::CountryMarket, RAID_DISPATCHERS_FORMAT)
+                .is_none()
         );
     }
 
