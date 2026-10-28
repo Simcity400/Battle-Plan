@@ -2381,8 +2381,10 @@ pub(crate) mod directory_tests;
 struct Cached {
     runs: Vec<Run>,
     events: Vec<(i32, Vec<u8>)>,
-    /// The summary levels as stored; only a summary read decodes them ([`Reader::buckets`]).
+    /// The summary levels as stored, from `summaries_at`; only a summary read decodes them
+    /// ([`Reader::buckets`]).
     summaries: Vec<u8>,
+    summaries_at: usize,
 }
 /// Each summary level's buckets by alignment.
 type Summaries = [Vec<(i64, ChartBucket)>; 4];
@@ -2422,15 +2424,16 @@ thread_local! {
     static EVENT_COUNTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static EVENT_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
-fn decode(raw: &[u8], dir: Directory, cancelled: &AtomicBool) -> io::Result<Cached> {
+fn decode(raw: Vec<u8>, dir: Directory, cancelled: &AtomicBool) -> io::Result<Cached> {
     #[cfg(test)]
     BLOB_DECODES.set(BLOB_DECODES.get() + 1);
     DECODED_EVENT_ROWS.with(|rows| rows.set(rows.get().saturating_add(dir.event_rows)));
-    let mut bytes = raw;
+    let mut bytes = &raw[..];
     let mut cached = Cached {
         runs: Vec::new(),
         events: Vec::new(),
         summaries: Vec::new(),
+        summaries_at: 0,
     };
     let (mut hour, mut value) = (0_i128, 0_i128);
     for _ in 0..dir.run_rows {
@@ -2459,13 +2462,21 @@ fn decode(raw: &[u8], dir: Directory, cancelled: &AtomicBool) -> io::Result<Cach
         cached.events.push((date, row.to_vec()));
         bytes = &bytes[length..];
     }
-    cached.summaries = bytes.to_vec();
+    let at = raw.len() - bytes.len();
+    // Where summary levels are most of the blob, keep it rather than copy them out.
+    if at < raw.len() {
+        if at <= raw.len() / 2 {
+            (cached.summaries, cached.summaries_at) = (raw, at);
+        } else {
+            cached.summaries = raw[at..].to_vec();
+        }
+    }
     Ok(cached)
 }
 impl Cached {
     fn decode_summaries(&self, cancelled: &AtomicBool) -> io::Result<Summaries> {
         let mut buckets = Summaries::default();
-        let mut bytes = &self.summaries[..];
+        let mut bytes = &self.summaries[self.summaries_at..];
         if !bytes.is_empty() {
             for rows in &mut buckets {
                 let count = take(&mut bytes)?;
@@ -2717,7 +2728,7 @@ impl<'a> Reader<'a> {
                     file.take(dir.blob.1).read_to_end(&mut compressed)?;
                     decompress(&compressed)?
                 };
-                decode(&raw, dir, self.cancelled)
+                decode(raw, dir, self.cancelled)
             })?;
             if self.cached.len() >= DECODED_BLOBS {
                 self.cached.clear();

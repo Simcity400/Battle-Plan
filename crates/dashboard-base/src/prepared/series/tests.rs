@@ -3809,7 +3809,17 @@ fn a_blob_reads_its_runs_without_its_summaries_and_a_summary_read_checks_them() 
         ..Directory::default()
     };
     let cancelled = AtomicBool::new(false);
-    let cached = decode(&raw, directory, &cancelled).unwrap();
+    let cached = decode(raw.clone(), directory, &cancelled).unwrap();
     assert_eq!(cached.runs, [Run::new(5, 7, 7, false)]);
     assert!(cached.decode_summaries(&cancelled).is_err());
+    // Four empty levels, longer than the run before them, read from within the blob.
+    raw.pop();
+    raw.extend([0; 8]);
+    let cached = decode(raw, directory, &cancelled).unwrap();
+    assert_eq!(cached.runs, [Run::new(5, 7, 7, false)]);
+    assert_eq!(cached.summaries_at, 4);
+    assert_eq!(
+        cached.decode_summaries(&cancelled).unwrap(),
+        Summaries::default()
+    );
 }
