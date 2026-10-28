@@ -136,7 +136,7 @@ test('unlinked maps hold the branch end and linked maps follow the shared axis',
   const track = { ...tracks[0], axisOffset: 1000 };
   const linked = createWidget('map', 'main');
   assert.equal(linked.time.mode, 'follow');
-  assert.equal(createWidget('territory', 'main').time.mode, 'campaign');
+  assert.equal(createWidget('territory', 'main').time.mode, 'follow');
   // A widget about the whole world (`countries.all`) starts on all countries; others on the dashboard's country.
   assert.deepEqual(createWidget('trade-flows', 'main').countries, { kind: 'all' });
   assert.deepEqual(createWidget('resource-balance', 'main').countries, { kind: 'selected' });
@@ -148,7 +148,7 @@ test('unlinked maps hold the branch end and linked maps follow the shared axis',
   assert.deepEqual(resolveWindow(linked, track, [track], 121), { firstHour: 1121, lastHour: 1121 });
   const history = createWidget('history', 'main');
   assert.deepEqual(resolveWindow(history, track, [track], 120), { firstHour: 1000, lastHour: 2000 });
-  template.widgets[0].time = { mode: 'follow' };
+  template.widgets[0].time = { mode: 'campaign' };
   assert.deepEqual(parseTemplate(JSON.parse(JSON.stringify(template)))?.widgets.map((widget) => widget.time), template.widgets.map((widget) => widget.time));
 });
 
@@ -168,7 +168,7 @@ test('a widget is at its default only when a reset would change nothing visible'
   assert.equal(widgetAtDefault({ ...widget, options: { view: 'race' } }, 'main'), true, 'a stored default value changes nothing');
   assert.equal(widgetAtDefault({ ...widget, trackIds: ['other'] }, 'main'), true, 'a widget following the sidebar ignores stale tracks');
   for (const changed of [{ ...widget, title: 'My army' }, { ...widget, contentScale: 90 }, { ...widget, options: { view: 'lines' } },
-    { ...widget, time: { mode: 'follow' } } as typeof widget, { ...widget, campaign: 'tracks', trackIds: ['other'] } as typeof widget,
+    { ...widget, time: { mode: 'campaign' } } as typeof widget, { ...widget, campaign: 'tracks', trackIds: ['other'] } as typeof widget,
     // Saved by a newer version: unsupported here, and a reset restores a supported one.
     { ...widget, configVersion: widget.configVersion + 1 }])
     assert.equal(widgetAtDefault(changed, 'main'), false, JSON.stringify(changed));

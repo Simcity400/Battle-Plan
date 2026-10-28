@@ -13,6 +13,17 @@ pub mod map {
             .expect("projection identity space exhausted")
     }
 
+    /// Folds keep their state only while the campaign table stays one allocation.
+    #[cfg(test)]
+    pub(crate) fn test_campaign() -> replay_frame::frame::SharedView {
+        replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::Campaign(vec![
+            replay_data::rows::CampaignRow {
+                id: b"synthetic".to_vec(),
+            },
+        ]))
+        .into()
+    }
+
     pub mod adjacency_icons;
     pub mod air_assignment;
     pub mod air_orders;

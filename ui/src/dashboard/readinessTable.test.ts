@@ -44,7 +44,7 @@ function bindings(track: BoundTrack): Record<string, unknown> {
 }
 function bind(value: unknown, facts = bindings(TRACKS[0])): unknown {
   if (typeof value === 'string' && value.startsWith('$')) {
-    if (/^\$(window|windowLast):\d+:(first|last)$|^\$experience(Tags|Reads):\d+$/.test(value)) return DEPENDENT;
+    if (/^\$(window|windowLast|experienceReads):\d+:(first|last)$|^\$(experienceTags|airDayEnd|airRegions):\d+$/.test(value)) return DEPENDENT;
     assert.ok(value in facts, `unknown binding ${value}`);
     return facts[value];
   }
@@ -100,6 +100,85 @@ const LOOSE: Record<string, { products: readonly string[]; why: string }> = {
   'occupation-trend': { products: ['series-summary'], why: "its summary's hours are the view its chart reports, held in component state" },
 };
 const loose = (kind: string, product: string) => LOOSE[kind]?.products.includes(product) ?? false;
+/** Params that carry the hour a widget shows at its default time (`shownHour`), as a request index then a
+ * path into its params; a window placeholder names the hour whose window it reads. */
+const SHOWN: Record<string, readonly string[]> = {
+  'national-focus': ['0.hour'],
+  'active-research': ['0.reads.0.hour'],
+  'political-power': ['0.to', '1.reads.0.hour'],
+  'political-power-spending': ['1.hour'],
+  'political-power-spending-breakdown': ['1.hour'],
+  'command-power': ['0.to', '1.reads.0.hour', '2.to', '3.reads.0.hour'],
+  'command-power-spending': ['1.hour'],
+  stability: ['0.to', '1.reads.0.hour', '2.to', '3.reads.0.hour'],
+  'idea-timeline': ['0.through'],
+  'national-spirits': ['0.through', '0.hour'],
+  'spirit-history': ['0.through'],
+  'ruling-party': ['0.to', '1.hours.0'],
+  'resource-balance': ['0.from', '0.to', '0.hours.0'],
+  'equipment-stockpile': ['0.from', '0.to'],
+  fuel: ['0.to', '1.reads.0.hour'],
+  factories: ['0.from', '0.to'],
+  territory: ['0.reads.0.hour'],
+  'territory-breakdown': ['0.reads.0.hour'],
+  'equipment-produced': ['0.hour'],
+  'production-spending': ['0.hour'],
+  'dockyard-spending': ['0.hour'],
+  'military-factory-spending': ['0.hour'],
+  'occupied-states': ['1.window'],
+  'occupation-trend': ['0.reads.0.hour', '1.to'],
+  'air-force-size': ['0.from', '0.to'],
+  'navy-size': ['0.from', '0.to'],
+  'air-superiority-timeline': ['1.lastHour', '2.firstHour'],
+  experience: ['1.to', '2.to', '3.to'],
+  'faction-strength': ['0.reads.0.hour'],
+  'trade-flows': ['0.from', '0.to', '0.hours.0'],
+  wars: ['1.reads.0.hour'],
+  'war-goals': ['0.hour'],
+  'world-tension': ['1.reads.0.hour'],
+  autonomy: ['1.reads.0.hour'],
+  'construction-log': ['1.window'],
+  'construction-spending': ['0.hours.0'],
+  'special-projects': ['1.hour'],
+  'nuclear-arsenal': ['0.from', '0.to'],
+  'naval-losses': ['1.window'],
+  'ships-sunk': ['1.hour'],
+  'espionage-log': ['1.window'],
+  'game-score': ['0.reads.0.hour'],
+  casualties: ['0.reads.0.hour'],
+  'casualties-between': ['1.window'],
+  'casualties-breakdown': ['1.window'],
+  generals: ['0.hour'],
+  'division-template': ['1.hour'],
+  'training-queue': ['1.hour'],
+  'most-decorated-divisions': ['0.hour'],
+  'army-losses-by-month': ['1.hour'],
+  aces: ['0.hour'],
+  'army-size': ['1.window'],
+  'supply-health': ['0.from', '0.to', '1.from', '1.to'],
+  'division-log': ['1.window'],
+  'land-battles': ['1.window'],
+  'naval-battles': ['1.window'],
+  'event-feed': ['0.lastHour'],
+  'market-ledger': ['0.lastHour'],
+  'event-choices': ['0.lastHour'],
+  decisions: ['0.lastHour'],
+};
+/** Params that carry the first and last hours of the day holding the shown hour, counted from the branch start. */
+const SHOWN_DAY: Record<string, readonly [string, string]> = {
+  decryption: ['0.firstHour', '0.lastHour'],
+  'agency-comparison': ['0.firstHour', '0.lastHour'],
+  'operatives-roster': ['1.firstHour', '1.lastHour'],
+  'who-spies-on-whom': ['0.firstHour', '0.lastHour'],
+};
+/** A table value: a request index, then keys or array indices into its params. */
+function valueAt(requests: Template[] | undefined, path: string): unknown {
+  const [index, ...keys] = path.split('.');
+  let value: unknown = requests?.[Number(index)]?.params;
+  for (const key of keys) value = (value as Record<string, unknown> | undefined)?.[key];
+  assert.notEqual(value, undefined, `no readiness param at ${path}`);
+  return value;
+}
 
 // ---- The UI source, as the requests each module builds ----
 type Node = { type: string; start: number; [key: string]: unknown };
@@ -542,7 +621,8 @@ test('every readiness entry lists requests unless named, and binds only recordin
     assert.equal(listed.length > 0, !NO_REQUESTS.has(widget.kind), `${widget.kind} ${listed.length ? 'lists requests but is named as having none' : 'lists no requests'}`);
     for (const template of listed) bind(template.params);
   }
-  for (const kind of [...NO_REQUESTS, ...DEVIATES, ...Object.keys(EXACT), ...Object.keys(UNSENT), ...Object.keys(REPLY_BOUND), ...Object.keys(LOOSE)]) {
+  for (const kind of [...NO_REQUESTS, ...DEVIATES, ...Object.keys(EXACT), ...Object.keys(UNSENT), ...Object.keys(REPLY_BOUND), ...Object.keys(LOOSE),
+    ...Object.keys(SHOWN), ...Object.keys(SHOWN_DAY)]) {
     assert.ok(table.widgets.some(widget => widget.kind === kind), `${kind} is named but has no readiness entry`);
   }
 });
@@ -560,6 +640,27 @@ test('builder-made default requests match the readiness table exactly', () => {
       });
       const listed = (entry.requests ?? []).map(template => ({ product: template.product, params: bind(template.params, bindings(track)) }));
       assert.deepEqual(listed, sent, `${kind}'s readiness requests differ from its first render on a ${track.branch.lastHour - track.branch.firstHour + 1}-hour branch`);
+    }
+  }
+});
+
+test('readiness requests read the hour and day each widget shows at its default time', () => {
+  for (const track of TRACKS) {
+    const facts = bindings(track);
+    const { firstHour: first, lastHour: last } = track.branch;
+    const shown = (kind: string) => built.shownHour(track, resolveWindow(createWidget(kind, track.id), track, [track], first));
+    const at = (kind: string, path: string) => {
+      const raw = valueAt(table.widgets.find(widget => widget.kind === kind)!.requests, path);
+      const window = typeof raw === 'string' ? /^\$window(?:Last)?:\d+:(first|last)$/.exec(raw) : null;
+      return window ? facts[`$${window[1]}`] : bind(raw, facts);
+    };
+    const branch = `on a ${last - first + 1}-hour branch`;
+    for (const [kind, paths] of Object.entries(SHOWN)) {
+      for (const path of paths) assert.equal(at(kind, path), shown(kind), `${kind}'s ${path} is not the hour it shows ${branch}`);
+    }
+    for (const [kind, [from, to]] of Object.entries(SHOWN_DAY)) {
+      const start = first + Math.floor((shown(kind) - first) / 24) * 24;
+      assert.deepEqual([at(kind, from), at(kind, to)], [start, Math.min(start + 23, last)], `${kind} does not read the day it shows ${branch}`);
     }
   }
 });

@@ -209,7 +209,8 @@ impl Presentation {
                     .zip(target.chunks_exact(4))
                 {
                     let next = [cell[3], target[1], cell[1], target[3]];
-                    mismatch |= next[0] != next[3] || next[2] != next[1];
+                    // An immediate install copies raw bytes, so planes shown unlike them stay dirty.
+                    mismatch |= next[0] != next[3] || next[2] != next[1] || next[..] != *target;
                     changed |= *cell != next;
                     cell.copy_from_slice(&next);
                 }

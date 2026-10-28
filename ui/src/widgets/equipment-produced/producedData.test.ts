@@ -162,7 +162,7 @@ test('production tooltips name the hovered hour and lines name their own drawn e
       widget.countries = { kind: 'tags', tags: ['GER', 'ITA'] };
       widget.options = { view };
       const track = { id: 'track-1', source: { id: 's', revision: 1, metadata: { countries: [] } },
-        branch: { id: '1', firstHour: 8, lastHour, gaps: [] } };
+        branch: { id: '1', firstHour: 8, lastHour, gaps: [] }, axisOffset: 0 };
       const runtime = { client: {}, tracks: [track], clock: { getHour: () => lastHour, getSnapshot: () => ({ hoursPerSecond: 24 }) } };
       return renderToStaticMarkup(createElement(Widget, { widget, runtime, active: true, onDiagnostics() {} }));
     };

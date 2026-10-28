@@ -373,7 +373,7 @@ test('full peace rows retain dated flag status and refused state names beyond fi
   assert.equal(rows.find(row => row.value === 'Modded action')?.countryFlag?.flagReason, 'native flag refusal@20');
   assert.deepEqual(rows.find(row => row.label === 'target@19')?.countryFlag,
     { name: 'target@19', flagReason: 'native flag refusal@19', flagPending: true });
-  assert.equal(rows.find(row => row.label === 'State 1')!.value, undefined);
+  assert.equal(rows.find(row => row.label === 'State 1')!.value, '3 VP');
 });
 
 

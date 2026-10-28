@@ -134,6 +134,8 @@ where
             });
             return;
         }
+        // The driver treats the reply as the frame's release.
+        drop(current);
         let timing = started.map(|started| PartTiming {
             ms: started.elapsed().as_secs_f64() * 1000.0,
             cpu_ms: cpu

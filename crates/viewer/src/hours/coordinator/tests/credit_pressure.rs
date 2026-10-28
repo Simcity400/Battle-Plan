@@ -129,9 +129,9 @@ fn exact_wait_sees_repeated_colour_credit_pressure_for_prepared_and_native_sourc
             f.source_reply();
             let current = super::super::super::tests::source_frame(&f.source.client(), 1, 101);
             assert!(matches!(&current, Current::Frame(frame) if frame.hour == 101));
-            let owner = engine_allocation::credit::MemoryBudget::new(1);
-            let held = owner.admit(1).unwrap();
+            let owner = engine_allocation::credit::MemoryBudget::new(8192);
             listen(&mut f.pump, &owner);
+            let held = owner.admit(owner.limit() - owner.used()).unwrap();
             let style_owner = owner.clone();
             let calls = Arc::new(AtomicU64::new(0));
             let attempts = calls.clone();
@@ -267,9 +267,9 @@ fn exact_wait_sees_each_part_retry_and_retired_pressure_for_prepared_and_native_
                 let ticket = f.pump.driver.decode.as_ref().unwrap().ticket;
                 assert!(matches!(f.pump.driver.turn(), Turn::Progress));
                 f.source_reply();
-                let owner = engine_allocation::credit::MemoryBudget::new(1);
-                let held = owner.admit(1).unwrap();
+                let owner = engine_allocation::credit::MemoryBudget::new(8192);
                 listen(&mut f.pump, &owner);
+                let held = owner.admit(owner.limit() - owner.used()).unwrap();
                 let events = f.pump.driver.core.events.clone();
                 let Some(PreparedTarget::Parts(_, jobs)) = f.pump.driver.targets.get_mut(&ticket)
                 else {

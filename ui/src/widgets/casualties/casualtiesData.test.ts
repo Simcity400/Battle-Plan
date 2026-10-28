@@ -207,8 +207,9 @@ test('requests keep every chosen tag and any user-selected top N; campaign and f
   assert.deepEqual(casualtyRequest('1', { kind: 'all' }, null, undefined, 144).params, { branchId: '1', tags: [], top: null });
   assert.equal(casualtyRequest('1', { kind: 'group', group: { type: 'top', count: 5000 }, membership: 'hour', aggregate: false }, null, undefined, 144).params.top?.count, 5000);
   const track = { id: 't', branch: { firstHour: 100, lastHour: 144 }, axisOffset: 0 } as BoundTrack;
-  assert.equal(resolveWindow(widget, track, [track], 125)?.lastHour, 144);
-  assert.equal(resolveWindow({ ...widget, time: { mode: 'follow' } }, track, [track], 125)?.lastHour, 125);
+  assert.deepEqual(widget.time, { mode: 'follow' });
+  assert.equal(resolveWindow(widget, track, [track], 125)?.lastHour, 125);
+  assert.equal(resolveWindow({ ...widget, time: { mode: 'campaign' } }, track, [track], 125)?.lastHour, 144);
 });
 test('top membership and recorded war groups keep opaque tags and local hour/end/ever rules', () => {
   const reply = fixture();

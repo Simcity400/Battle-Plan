@@ -44,7 +44,7 @@ test('supply health uses the shared frame, numeric uncapped country convention, 
   assert.equal(chosen.dropped, 0);
   const widget = createWidget('supply-health', 'main', 'supply');
   assert.deepEqual(widget.countries, { kind: 'selected' });
-  assert.deepEqual(widget.time, { mode: 'campaign' });
+  assert.deepEqual(widget.time, { mode: 'follow' });
 });
 
 test('supply shares and tooltip retain exact counts, gaps, zero denominators, and hovered identities', () => {

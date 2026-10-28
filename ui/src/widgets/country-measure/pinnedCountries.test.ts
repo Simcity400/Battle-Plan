@@ -89,9 +89,16 @@ test('registered politics and losses pins retain native holders through local pi
         return {data: reply && validate(reply), retry() {}};
       }; export const useProducts = (client, requests, active, validate) => ({data: requests.length
         ? requests.map(request => useProduct(client, request, active, validate).data) : undefined, retry() {}});
-      export const loadProduct = (_client, request) => Promise.resolve({...losses, landCoverage:losses.coverage, preparedReads:request.params.reads,
-        preparedHeadHour:request.params.headHour, preparedDetailHour:request.params.detailHour,
-        preparedFrom:request.params.from, preparedTo:request.params.to, preparedWidth:request.params.width});`,
+      export const loadProduct = (client, request, _signal, validate, _source, _restart, publish) => {
+        if (!publish) return Promise.resolve({...losses, landCoverage:losses.coverage, preparedReads:request.params.reads,
+          preparedHeadHour:request.params.headHour, preparedDetailHour:request.params.detailHour,
+          preparedFrom:request.params.from, preparedTo:request.params.to, preparedWidth:request.params.width});
+        const {data} = useProduct(client, request, true, validate); if (data !== undefined) publish(data); return new Promise(() => {});
+      };`,
+    // View reads answer in the same render through the transport above.
+    '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
+      if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });
+      return {data, retry() {}}; };`,
     '/dashboard/useCountryGroups.ts': `const data = ${JSON.stringify(groups)}; export const useCountryGroups = (_runtime, _track, active) => ({data: active ? data : undefined, retry() {}});`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__pinnedCountries.clock; export const usePlaybackSpeed = () => 24;',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({revision: 0,

@@ -270,7 +270,9 @@ test('an actual row opens inside, history holds its picked day, Follow uses play
     assert.equal(host.__stockHost!.returnFocus, '.stockpile-table-rows tr');
     // The breakdown lists the type's models in stock, in whole units.
     assert.deepEqual(host.__stockParts!.map(part => [part.label, part.raw, part.text]), [['Recorded rifles', 1200000n, '12']]);
-    assert.equal(host.__stockHour, 200);
+    // A new widget follows playback, so the row opens following it.
+    assert.deepEqual(host.__stockDrill, { breakdown: 'stockpile', follow: true, hour: null });
+    assert.equal(host.__stockHour, 150);
     host.__stockCharts!.at(-1)!.onPick!(110); view.render();
     assert.deepEqual(host.__stockDrill, { breakdown: 'stockpile', follow: false, hour: 110 });
     assert.equal(host.__stockHour, 110);

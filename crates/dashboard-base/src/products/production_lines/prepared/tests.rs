@@ -1901,9 +1901,10 @@ fn unchanged_censuses_and_independent_read_dates_stitch_exactly_across_spill_and
     let later = frames.split_off(39);
     let replay = replay_segments(frames, later);
     assert_reference_publication_modes(&replay, |scan| {
+        // Organisation details share the lines' slot, so their timed reads are census reads.
         assert_eq!(
             scan.reads,
-            vec![FIRST, FIRST + 24, FIRST + 48, FIRST + 72, FIRST + 79]
+            [0, 11, 22, 24, 33, 44, 48, 55, 66, 72, 77, 79].map(|offset| FIRST + offset)
         );
         assert!(
             scan.designs[&70]

@@ -1773,6 +1773,15 @@ fn change_country(frame: &mut DecodedFrame, value: i64) {
     country.command_power_raw = value;
 }
 
+fn set_hour(frame: &mut DecodedFrame, hour: Hour) {
+    frame.hour = hour;
+    let TableView::Complete(TableRows::Clock(rows)) = &mut *frame.tables[TableId::Clock.index()]
+    else {
+        panic!()
+    };
+    rows[0].hour = hour;
+}
+
 fn wire(frame: &Frame) -> Frame {
     let mut bytes = Vec::new();
     frame.encode(&mut bytes).unwrap();
@@ -3679,8 +3688,13 @@ fn changed_key_facts_and_field_stamps_keep_no_source_rows() {
     drop(first);
     drop(second);
     drop(third);
-    for table in fourth.tables {
-        assert!(table.try_unwrap().is_ok());
+    let unselected = not_selected();
+    for (table, view) in TableId::ALL.into_iter().zip(fourth.tables) {
+        if matches!(table, TableId::Campaign | TableId::Countries) {
+            assert!(view.try_unwrap().is_ok(), "{table:?}");
+        } else {
+            assert!(SharedView::ptr_eq(&view, &unselected), "{table:?}");
+        }
     }
     drop(original);
     drop(old);
@@ -3787,7 +3801,7 @@ fn relevant_edits_can_bridge_skipped_unrelated_deltas_but_not_skipped_membership
     let first = decoder.apply(&update).unwrap();
     let identity = first.tables[TableId::Countries.index()].identity();
     for hour in 1..=2 {
-        input.hour = hour;
+        set_hour(&mut input, hour);
         if let TableView::Complete(TableRows::Countries(rows)) =
             &mut *input.tables[TableId::Countries.index()]
         {
@@ -3796,7 +3810,7 @@ fn relevant_edits_can_bridge_skipped_unrelated_deltas_but_not_skipped_membership
         let update = encoder.encode(input.clone(), false).unwrap();
         decoder.advance(&update).unwrap();
     }
-    input.hour = 3;
+    set_hour(&mut input, 3);
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *input.tables[TableId::Countries.index()]
     {
@@ -3809,7 +3823,7 @@ fn relevant_edits_can_bridge_skipped_unrelated_deltas_but_not_skipped_membership
     let changes = view.changes_for(&identity, fields).unwrap();
     assert_eq!(changes.changed().len(), 1);
     assert!(changes.row(7).unwrap().fields & fields != 0);
-    input.hour = 4;
+    set_hour(&mut input, 4);
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *input.tables[TableId::Countries.index()]
     {
@@ -3822,7 +3836,7 @@ fn relevant_edits_can_bridge_skipped_unrelated_deltas_but_not_skipped_membership
             .changes_for(&identity, fields)
             .is_none()
     );
-    input.hour = 5;
+    set_hour(&mut input, 5);
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *input.tables[TableId::Countries.index()]
     {
@@ -3830,7 +3844,7 @@ fn relevant_edits_can_bridge_skipped_unrelated_deltas_but_not_skipped_membership
     }
     let update = encoder.encode(input.clone(), false).unwrap();
     decoder.advance(&update).unwrap();
-    input.hour = 6;
+    set_hour(&mut input, 6);
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *input.tables[TableId::Countries.index()]
     {
@@ -3887,7 +3901,7 @@ fn hour_input_distinguishes_edits_quiet_and_discontinuities_without_owning_rows(
     assert_eq!(changes.changed()[0].fields, 1 << 3);
     assert!(changes.deleted().is_empty());
     identity = current.tables[TableId::Countries.index()].identity();
-    input.hour = 2;
+    set_hour(&mut input, 2);
     let update = encoder.encode(input.clone(), false).unwrap();
     let current = decoder.advance(&update).unwrap();
     assert!(matches!(
@@ -3896,7 +3910,7 @@ fn hour_input_distinguishes_edits_quiet_and_discontinuities_without_owning_rows(
             .since(TableId::Countries, Some(&identity), u64::MAX),
         TableChanges::Unchanged
     ));
-    input.hour = 3;
+    set_hour(&mut input, 3);
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *input.tables[TableId::Countries.index()]
     {

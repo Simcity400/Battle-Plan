@@ -583,7 +583,11 @@ impl Store {
             let mut bytes = Vec::new();
             read_file(&path)?.read_to_end(&mut bytes)?;
             let key = serde_json::from_slice(&bytes)?;
-            if !stamp.current()? || fs::metadata(&path)?.created()? != created {
+            let after = fs::metadata(&path)?;
+            if after.len() != stamp.size
+                || after.modified()? != stamp.modified
+                || after.created()? != created
+            {
                 return Err(invalid("prepared source changed while it was read"));
             }
             *source = Some(SavedSource {

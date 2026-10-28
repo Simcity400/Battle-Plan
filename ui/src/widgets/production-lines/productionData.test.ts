@@ -513,7 +513,7 @@ test('long modifier chart hovers fit while retaining every spoken source and the
 
 test("a first view's breakdowns, pins and line choices wait, saying why, until the history is exact", () => {
   const first: ProductionLinesReply = { ...REPLY, approximate: [{ firstHour: 0, lastHour: 100 }] };
-  assert.match(firstViewLineReason(first) ?? '', /earlier production history is prepared/);
+  assert.equal(firstViewLineReason(first), 'Available once the production history is fully prepared.');
   assert.equal(firstViewLineReason(REPLY), null);
   const opened: string[] = [];
   const waiting = breakdownItems(first, part => opened.push(part));

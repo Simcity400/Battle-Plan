@@ -363,6 +363,8 @@ fn table_requests_name_their_first_view_class() {
             Some(FirstView::Prefix),
             Some(FirstView::Prefix),
             Some(FirstView::Sampled),
+            Some(FirstView::Sampled),
+            Some(FirstView::Sampled),
         ]
     );
     let named = |class: &str| {
@@ -425,11 +427,84 @@ fn experience_templates_send_native_holder_keys_from_the_groups_reply() {
             panic!("groups are ready")
         };
         if template.product == "series-state" {
-            assert_eq!(params["reads"][0]["tag"], key);
+            assert_eq!(params["reads"], json!([{"tag": key, "hour": 10}]));
         } else {
             assert_eq!(params["tags"], json!([key]));
         }
     }
+    // Each experience channel reads its reached state at the opening hour, as the widget does.
+    let measures = |product: &str| -> Vec<Value> {
+        widget
+            .requests
+            .iter()
+            .filter(|template| template.product == product)
+            .map(|template| template.params["family"]["measure"].clone())
+            .collect()
+    };
+    let channels = json!(["army-banked", "navy-banked", "air-banked"]);
+    assert_eq!(Value::Array(measures("series-state")), channels);
+    assert_eq!(Value::Array(measures("series-summary")), channels);
+    let at_end = json!({"reads": "$experienceReads:0:last"});
+    assert_eq!(
+        instantiate(&at_end, &bindings, &replies).unwrap(),
+        Instantiated::Ready(json!({"reads": [{"tag": key, "hour": 30}]}))
+    );
+    assert!(instantiate(&json!({"reads": "$experienceReads:0"}), &bindings, &replies).is_err());
+}
+
+#[test]
+fn the_air_timeline_reads_the_day_its_first_reply_names() {
+    let widget = widgets(WIDGETS)
+        .unwrap()
+        .into_iter()
+        .find(|widget| widget.kind == "air-superiority-timeline")
+        .unwrap();
+    let bindings = Bindings {
+        branch: "1".into(),
+        tag: "opaque tag".into(),
+        first: 30,
+        last: 100,
+        width: 20,
+    };
+    let views: Vec<_> = widget
+        .requests
+        .iter()
+        .map(|template| template.params["view"].clone())
+        .collect();
+    assert_eq!(
+        views,
+        [json!("choices"), json!("timeline"), json!("moment")]
+    );
+    let day = &widget.requests[2];
+    assert_eq!(waits_for(day), vec![1, 1]);
+    let mut replies = BTreeMap::new();
+    assert_eq!(
+        instantiate(&day.params, &bindings, &replies).unwrap(),
+        Instantiated::Waiting
+    );
+    replies.insert(
+        1,
+        json!({"dayHours": 24, "rows": [{"region": 9}, {"region": 4}]}),
+    );
+    assert_eq!(
+        instantiate(&day.params, &bindings, &replies).unwrap(),
+        Instantiated::Ready(json!({"branchId": "1", "view": "moment", "firstHour": 30,
+            "lastHour": 47, "mode": "sides", "regions": [9, 4]}))
+    );
+    let short = Bindings {
+        last: 40,
+        ..bindings.clone()
+    };
+    assert_eq!(
+        instantiate(&day.params, &short, &replies).unwrap(),
+        Instantiated::Ready(json!({"branchId": "1", "view": "moment", "firstHour": 30,
+            "lastHour": 40, "mode": "sides", "regions": [9, 4]}))
+    );
+    replies.insert(1, json!({"rows": []}));
+    assert_eq!(
+        instantiate(&day.params, &bindings, &replies).unwrap(),
+        Instantiated::Absent
+    );
 }
 
 #[test]

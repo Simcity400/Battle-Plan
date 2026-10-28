@@ -145,7 +145,7 @@ pub(crate) fn hold_block<'a>(source: &'a Source, block: &BlockIndex) -> impl Dro
 
 #[cfg(test)]
 fn hold(source: &Source, key: Key) -> Reading<'_> {
-    let slot = slot(source, key).expect("this thread may decode");
+    let (slot, _lease) = leased_slot(source, key).expect("this thread may decode");
     lock(&slot.state).reading = true;
     Reading { source, key, slot }
 }
@@ -592,15 +592,6 @@ fn joined(held: &[TableId], added: &[TableId]) -> Vec<TableId> {
     tables
 }
 
-/// The entry of `key`, marked used now. A request that may not decode
-/// ([`super::progressive::without_block_decodes`]) and finds none is refused
-/// without one being made: it could only wait for a read or read itself.
-fn slot(source: &Source, key: Key) -> io::Result<Arc<Slot>> {
-    let cache = source.state::<FrameCache>();
-    let mut cache = lock(&cache);
-    Ok(Arc::clone(&used(&mut cache, key)?.slot))
-}
-
 /// `key`'s entry, made when there is none, marked used now.
 fn used(cache: &mut FrameCache, key: Key) -> io::Result<&mut Entry> {
     cache.clock += 1;
@@ -618,7 +609,10 @@ fn used(cache: &mut FrameCache, key: Key) -> io::Result<&mut Entry> {
     Ok(entry)
 }
 
-/// [`slot`], leased under the same lock, so no other request's release can evict it first.
+/// The entry of `key`, marked used now and leased under the same lock, so no
+/// other request's release can evict it first. A request that may not decode
+/// ([`super::progressive::without_block_decodes`]) and finds none is refused
+/// without one being made: it could only wait for a read or read itself.
 fn leased_slot(source: &Source, key: Key) -> io::Result<(Arc<Slot>, Lease<'_>)> {
     let cache = source.state::<FrameCache>();
     let mut cache = lock(&cache);
@@ -1109,7 +1103,7 @@ fn seek_with(
     let key = Key::Hour { branch, hour };
     // Without block decodes a request takes what is held or is refused; it prepares nothing.
     let prepares = !super::progressive::block_decodes_disabled();
-    // Keeps the hour's held frame for the join while this request prepares.
+    // Keeps the hour's entry and held frame while this request prepares, waits and reads.
     let mut _lease = None;
     let (slot, reading, held) = loop {
         if prepares {
@@ -1123,7 +1117,9 @@ fn seek_with(
                 reader.prepare(&lacks)?;
             }
         }
-        let slot = slot(source, key)?;
+        // Leased as found: another request's release would remove an entry not yet being read.
+        let (slot, lease) = leased_slot(source, key)?;
+        _lease = Some(lease);
         let covered = |value: &Value| match value {
             Value::Hour(held) if missing(&held.tables, &wanted).is_empty() => masked(held, &wanted),
             _ => None,

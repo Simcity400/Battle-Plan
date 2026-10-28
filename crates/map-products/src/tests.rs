@@ -172,7 +172,7 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
     stack.write(
         &stack.base(),
         "common/buildings/synthetic.txt",
-        "buildings = { }",
+        "buildings = { synthetic_works = { military_production = 1 } }",
     );
     stack.write(
         &stack.base(),
@@ -2188,7 +2188,15 @@ fn territory_labels_and_shared_rail_graph_release_the_borrowed_host() {
     frame.hour += 1;
     {
         let hour = ProductHour::new(&content, &frame, 0.0);
-        assert!(Arc::ptr_eq(&territory.facts, &hour.territory().unwrap()));
+        // Territory is observed each hour; unchanged rows keep the folded planes.
+        let next = hour.territory().unwrap();
+        let mut observed = (*territory.facts).clone();
+        observed.countries.observed_hour = frame.hour;
+        assert_eq!(*next, observed);
+        let (before, after) = (&territory.facts.paint, &next.paint);
+        assert!(Arc::ptr_eq(&before.country_of.0, &after.country_of.0));
+        assert!(Arc::ptr_eq(&before.owner_of.0, &after.owner_of.0));
+        assert!(Arc::ptr_eq(&before.state_of.0, &after.state_of.0));
         assert!(Arc::ptr_eq(
             &labels.candidates,
             &hour.labels(2).unwrap().candidates
@@ -2732,18 +2740,18 @@ fn snow_boundary_deltas_keep_refresh_only_changes_and_recover_after_refusal() {
                 3 => next.display = Recorded::Value(None),
                 _ => next.display = Recorded::NotRecorded,
             }
-            view = advance_table(
-                table,
-                &TableUpdate::Delta {
+            let update = if matches!(next.display, Recorded::NotRecorded) {
+                // No delta unrecords a field: only a historical recording's whole rows hold one.
+                assert!(next.delta(Some(&row)).is_err());
+                TableUpdate::Snapshot(TableRows::WeatherProvinces(vec![next.clone()]))
+            } else {
+                TableUpdate::Delta {
                     baseline: 59 + step,
                     changed: vec![next.delta(Some(&row)).unwrap().unwrap()],
                     deleted: vec![],
-                },
-                Some((59 + step, view)),
-                60 + step,
-                true,
-            )
-            .unwrap();
+                }
+            };
+            view = advance_table(table, &update, Some((59 + step, view)), 60 + step, true).unwrap();
             row = next;
         }
         frame.hour = 60 + step;
@@ -2883,22 +2891,46 @@ impl Default for CertifiedFrames {
 }
 impl CertifiedFrames {
     fn advance(&mut self, frame: &mut DecodedFrame) {
+        use replay_frame::frame::{SharedView, TableUpdate};
         // Certify complete operands without normalizing deliberate synthetic gaps.
         let mut surrogate = frame.clone();
         let mut complete = Vec::new();
+        let mut stamped = Vec::new();
         for (index, view) in frame.tables.iter().enumerate() {
             if let TableView::Complete(rows) = &**view
                 && (rows.table().key_bits() != 0 || rows.len() == 1)
             {
                 complete.push(index);
-            } else {
-                surrogate.tables[index] = TableView::Unavailable {
-                    reason: "synthetic uncertified operand".into(),
+                if packet_hours(rows).iter().all(|hour| hour.stamp().is_none()) {
+                    continue;
                 }
-                .into();
+                stamped.push(index);
             }
+            surrogate.tables[index] = TableView::Unavailable {
+                reason: "synthetic uncertified operand".into(),
+            }
+            .into();
         }
-        let encoded = self.encoder.encode(surrogate, false).unwrap();
+        let mut encoded = self.encoder.encode(surrogate, false).unwrap();
+        // Current writers cannot store a historical packet stamp; hand those rows over as its recording did.
+        for index in stamped {
+            encoded.tables[index] = match self.decoder.current() {
+                Some(current)
+                    if !encoded.keyframe
+                        && SharedView::ptr_eq(&current.tables[index], &frame.tables[index]) =>
+                {
+                    TableUpdate::Unchanged {
+                        baseline: current.hour,
+                    }
+                }
+                _ => {
+                    let TableView::Complete(rows) = &*frame.tables[index] else {
+                        unreachable!("stamped rows are complete")
+                    };
+                    TableUpdate::Snapshot(rows.clone())
+                }
+            };
+        }
         let decoded = self.decoder.apply(&encoded).unwrap();
         for index in complete {
             frame.tables[index] = decoded.tables[index].clone();

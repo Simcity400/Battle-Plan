@@ -61,7 +61,7 @@ test('Event feed validates the resolved track cutoff, suspends old viewport read
   try {
     const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/event-feed/EventFeedWidget.tsx');
     const widget = createWidget('event-feed', 'short');
-    assert.deepEqual(widget.time, { mode: 'campaign' });
+    assert.deepEqual(widget.time, { mode: 'follow' });
     assert.ok(definition.timeModes.includes('pin'), 'the shared Time settings must offer Pin');
     const render = (hour: number) => {
       clock.seek(hour); delete host.__eventBounds!.log;
@@ -75,7 +75,6 @@ test('Event feed validates the resolved track cutoff, suspends old viewport read
       assert.equal(host.__eventBounds!.feed!.hour, null);
       assert.equal(host.__eventBounds!.labels!.active, false, 'retained visible rows must stop requesting country looks');
     };
-    widget.time = { mode: 'follow' };
     assert.equal(resolveWindow(widget, tracks[0], tracks, 400)?.lastHour, 400);
     invalid(400); invalid(99);
     host.__eventBounds!.ready = false; invalid(400); host.__eventBounds!.ready = true;

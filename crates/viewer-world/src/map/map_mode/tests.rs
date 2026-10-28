@@ -3230,6 +3230,33 @@ fn selected_state_folds_match_independent_network_and_occupation_outputs_after_d
     let map = Arc::new(map());
     content.bind_membership_map(&map);
     let mut input = frame();
+    input.tables[TableId::Campaign.index()] = crate::map::test_campaign();
+    // GER (raw 100) controls state 1, SOV (200) state 2 and ITA (300) state 3.
+    let TableView::Complete(TableRows::States(states)) =
+        &mut *input.tables[TableId::States.index()]
+    else {
+        unreachable!()
+    };
+    for (state, controller) in states.iter_mut().zip([100, 200, 300]) {
+        state.controller = controller;
+    }
+    let network = |owner, target, state_id, strength, quiet| IntelNetworkRow {
+        owner_country: owner,
+        target_country: target,
+        state_id,
+        local_strength_raw: strength,
+        local_quiet: quiet,
+        ..Default::default()
+    };
+    input.tables[TableId::IntelNetworks.index()] =
+        TableView::Complete(TableRows::IntelNetworks(vec![
+            // GER's networks in SOV's state 2 and, quiet, in ITA's state 3.
+            network(100, 200, 2, 7_250_000, 0),
+            network(100, 300, 3, 3_000_000, 1),
+            // SOV's network in GER, which only SOV's view shows.
+            network(200, 100, 1, 10_000_000, 0),
+        ]))
+        .into();
     input.tables[TableId::StateResistance.index()] =
         TableView::Complete(TableRows::StateResistance(
             (1..=3)

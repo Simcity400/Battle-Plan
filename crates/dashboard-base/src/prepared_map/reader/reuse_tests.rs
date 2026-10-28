@@ -1012,7 +1012,7 @@ fn intermediate_campaign_failure_after_backward_resume_invalidates_the_decoder_c
 
 #[test]
 fn retained_seek_visitors_refuse_credit_without_losing_the_committed_prepared_cursor() {
-    let selected = &[TableId::Countries];
+    let selected = &[TableId::Campaign, TableId::Countries];
     let frames = (0..=3)
         .map(|hour| {
             let mut frame = scale_frame(1, hour, 40);

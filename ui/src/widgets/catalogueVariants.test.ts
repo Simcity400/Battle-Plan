@@ -21,6 +21,7 @@ test('every widget view a setting switches to is also its own catalogue card', (
     territory: ['Territory over time', 'Territory share', 'Occupied territory', 'Occupied territory over time'],
     'equipment-losses': ['Equipment losses: Recorded losses'],
     'equipment-produced': ['Equipment produced over time', 'Equipment produced: Equipment types', 'Equipment output (IC)'],
+    'production-spending': ['Naval production spending'],
     'dockyard-spending': ['Dockyard spending by month'],
     'military-factory-spending': ['Air factory spending by month', 'Land factory spending', 'Land factory spending by month'],
     'occupation-trend': ['Occupation trend race', 'Occupation trend of one country'],

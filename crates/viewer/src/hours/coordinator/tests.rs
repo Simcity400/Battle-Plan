@@ -1543,7 +1543,8 @@ fn a_paused_pressure_notice_repaints_on_release_and_completed_delivery() {
     }
     // Settle egui's initial repaint requests; no timer or playing clock remains.
     for _ in 0..3 {
-        context.run_ui(Default::default(), |_| {});
+        let mut output = context.run_ui(Default::default(), |_| {});
+        output.textures_delta.clear();
     }
     wakes.store(0, Ordering::Relaxed);
     f.driver.product_space.as_ref().unwrap().acknowledge();
@@ -1565,7 +1566,8 @@ fn a_paused_pressure_notice_repaints_on_release_and_completed_delivery() {
     f.admit_parts();
     f.finish_parts();
     for _ in 0..3 {
-        context.run_ui(Default::default(), |_| {});
+        let mut output = context.run_ui(Default::default(), |_| {});
+        output.textures_delta.clear();
     }
     wakes.store(0, Ordering::Relaxed);
     f.driver.turn();

@@ -44,7 +44,7 @@ test('new Army size widgets share the top 10, race, date-off and owner defaults'
   const widget = createWidget('army-size', 'main', 'army');
   const options = resolveOptions(OPTIONS, widget.options);
   assert.deepEqual(widget.countries, { kind: 'group', group: { type: 'top', count: 10 }, membership: 'hour', aggregate: false });
-  assert.equal(widget.time.mode, 'campaign');
+  assert.equal(widget.time.mode, 'follow');
   assert.equal(sectionFields(OPTIONS, 'options', { ...options, view: 'mix' }).some(field => field.key === 'measure'), false);
   assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
   assert.deepEqual([options.view, options.measure, options.countFor, options.byType, options.dateOverlay], ['race', '', 'owner', false, false]);

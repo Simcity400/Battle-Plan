@@ -153,8 +153,13 @@ mod tests {
                 .try_unwrap()
                 .is_err()
         );
-        for table in next.tables {
-            assert!(table.try_unwrap().is_ok());
+        let unselected = replay_frame::frame::not_selected();
+        for (table, view) in TableId::ALL.into_iter().zip(next.tables) {
+            if table == TableId::Countries {
+                assert!(view.try_unwrap().is_ok());
+            } else {
+                assert!(replay_frame::frame::SharedView::ptr_eq(&view, &unselected));
+            }
         }
     }
 }

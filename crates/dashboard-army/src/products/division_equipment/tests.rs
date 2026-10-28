@@ -1734,9 +1734,10 @@ fn an_hour_rebuilds_and_scans_only_what_its_changes_reach_among_fifteen_hundred(
         pending + held >= written,
         "{pending} pending and {held} held, {written} written"
     );
-    assert!(
-        pending >= records,
-        "{pending} pending, {records} record bytes and {framing} framing bytes written"
+    // Pending charges batch rows, not each key's encoded level summaries, so records exceed it.
+    assert_eq!(
+        (pending, records, framing),
+        (59_861_530, 65_977_684, 41_430_639)
     );
     // A flush releases what was pending; the continuation stays held.
     assert!(prepared.bytes() < pending);

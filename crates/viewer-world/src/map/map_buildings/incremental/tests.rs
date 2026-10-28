@@ -5,7 +5,7 @@ use replay_data::rows::{
     ProvinceRow, ProvinceSupplyRow, RaidScope, RaidTargetStatusRow, StateRow, TABLE_COUNT,
     TableRows,
 };
-use replay_frame::frame::{Metrics, TableView};
+use replay_frame::frame::{Metrics, SharedView, TableView};
 use viewer_foundation::map::perspective::{Choice, Country};
 
 // Both factory types redirect to one declared bucket, in declaration order.
@@ -153,6 +153,7 @@ impl Held {
 struct Hour {
     branch: u64,
     hour: i32,
+    campaign: SharedView,
     tokens: Vec<(u32, &'static str)>,
     state_rows: Vec<BuildingRow>,
     state_held: Held,
@@ -198,6 +199,7 @@ impl Hour {
         Self {
             branch: 1,
             hour: 100,
+            campaign: crate::map::test_campaign(),
             tokens: vec![
                 (ARMS, "arms_factory"),
                 (COMPLEX, "industrial_complex"),
@@ -352,10 +354,12 @@ impl Hour {
                 },
             ])),
         );
+        let mut tables: [SharedView; TABLE_COUNT] = views.map(Into::into);
+        tables[TableId::Campaign.index()] = self.campaign.clone();
         DecodedFrame {
             branch: self.branch,
             hour: self.hour,
-            tables: views.map(Into::into),
+            tables,
             metrics: Metrics::default(),
         }
     }
@@ -405,6 +409,24 @@ fn step(
             assert_eq!(patched.tallies, full.tallies, "hour {}", hour.hour);
             assert_eq!(patched.totals, full.totals, "hour {}", hour.hour);
             assert_eq!(patched.damage_refused, full.damage_refused);
+            // A base of this content and branch carries its harbours: only repainted ones are emitted.
+            let carried = base
+                .filter(|base| base.assets == assets.id && base.observation.branch == hour.branch);
+            let repainted: Vec<u32> = (assets.ordinary_slot_count()..assets.slot_count())
+                .filter(|&id| {
+                    carried.is_none_or(|base| !base.slots[id].same_bits(&full.prepared.slots[id]))
+                })
+                .map(|id| id as u32)
+                .collect();
+            let emitted: Vec<u32> = patched
+                .floating_output
+                .as_ref()
+                .unwrap()
+                .changes
+                .iter()
+                .map(|(id, _)| *id)
+                .collect();
+            assert_eq!(emitted, repainted, "hour {}", hour.hour);
             let next = patched.base(assets, &vision, assets.city_bits(&city).unwrap());
             let links = hour.links.iter().copied().collect();
             let reread = GateInputs::reread(&frame, &links, vision.ours()).unwrap();
@@ -646,9 +668,10 @@ fn a_patched_hour_shares_every_chunk_it_did_not_change() {
         )
         .unwrap();
     assert_eq!(built.path, BuildPath::Patched { slots: 1 });
+    assert!(built.floating_output.as_ref().unwrap().changes.is_empty());
     assert!(base.slots[0].entity.is_some() && built.prepared.slots[0].entity.is_none());
     let chunks = (WIDE as usize + 7).div_ceil(CHUNK_SIZE);
-    assert_eq!(built.prepared.slots.shared_chunks(&base.slots), chunks - 2);
+    assert_eq!(built.prepared.slots.shared_chunks(&base.slots), chunks - 1);
     assert_eq!(
         built.tallies.shared_chunks(&base.tallies),
         (WIDE as usize + 6).div_ceil(CHUNK_SIZE) - 1
@@ -778,10 +801,15 @@ fn the_exact_comparator_tells_signed_zeros_apart() {
     };
     let same = other.clone();
     assert!(other.bit_eq(&same));
+    let (mut zero, mut negative) = (same.clone(), same.clone());
+    zero.popup_speed = 0.0;
+    negative.popup_speed = -0.0;
+    assert!(negative == zero, "derived equality takes -0.0 for 0.0");
+    assert!(!negative.bit_eq(&zero));
     let instance = &mut other.slots.get_mut(0).entity.as_mut().unwrap().instance;
     assert_eq!(instance.position[1].to_bits(), 0.0_f32.to_bits());
     instance.position[1] = -0.0;
-    assert!(other == same, "derived equality takes -0.0 for 0.0");
+    assert!(other != same, "slot equality compares instance bits");
     assert!(!other.bit_eq(&same));
 }
 
@@ -847,6 +875,8 @@ fn a_building_base_keeps_closed_operands_without_source_pins() {
     assert_eq!(base.vision.fog, vision.fog());
     assert_eq!(base.vision.provinces.as_deref().map(|v| v.flat()), vision.province_fog());
     drop(vision);
+    // The fixture holds the campaign view across hours.
+    drop(hour);
     for view in frame.tables {
         assert!(
             view.try_unwrap().is_ok(),

@@ -652,7 +652,7 @@ fn endpoint_decoder_advance_applies_owned_steps_and_the_native_decoder_continues
         decoder.current().map(canonical),
         Some(canonical(&frames[25]))
     );
-    // A failed application leaves no state.
+    // A step from another baseline is refused before it consumes the state.
     let mut later = Vec::new();
     EndpointWriter::diff(SELECTED, &frames[26], &frames[27], &mut later).unwrap();
     assert_eq!(
@@ -662,7 +662,14 @@ fn endpoint_decoder_advance_applies_owned_steps_and_the_native_decoder_continues
             .to_string(),
         "endpoint baseline differs"
     );
-    assert!(decoder.current().is_none());
+    assert_eq!(
+        decoder.current().map(canonical),
+        Some(canonical(&frames[25]))
+    );
+    assert_eq!(
+        canonical(decoder.advance(&raws[26]).unwrap()),
+        canonical(&frames[26])
+    );
 }
 
 fn strided(raws: &[Frame], frames: &[DecodedFrame], stride: usize) -> Vec<(usize, Vec<u8>)> {

@@ -9,17 +9,18 @@ pub fn frame(hour: i32) -> DecodedFrame {
         hour,
         tables: std::array::from_fn(|index| {
             let table = TableId::ALL[index];
-            if table == TableId::GameScoreMultipliers {
-                return TableView::Unavailable {
-                    reason: "synthetic game-score defines were not read".into(),
-                }
-                .into();
-            }
             let mut rows = if table.key_bits() == 0 {
                 TableRows::one_default(table)
             } else {
                 TableRows::empty(table)
             };
+            // A singleton whose default row is no valid read was not read by these frames.
+            if rows.validate_keys().is_err() {
+                return TableView::Unavailable {
+                    reason: "synthetic economy frames did not read this table".into(),
+                }
+                .into();
+            }
             if let TableRows::Clock(rows) = &mut rows {
                 rows[0].hour = hour;
             }

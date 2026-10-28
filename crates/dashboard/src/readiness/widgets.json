@@ -8,7 +8,7 @@
     {
       "kind": "national-focus",
       "requests": [
-        {"product": "focus-hour", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "tag": "$tag", "hour": "$last"}}
+        {"product": "focus-hour", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "tag": "$tag", "hour": "$first"}}
       ],
       "note": "Its order and presentation pages follow the hour's reply; they read the recorded order at that hour while completion dates are still being prepared."
     },
@@ -27,8 +27,8 @@
     {
       "kind": "political-power",
       "requests": [
-        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-measure", "measure": "politicalPower"}, "tags": "$tags", "from": "$first", "to": "$last", "width": "$width", "withMarks": true}},
-        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-measure", "measure": "politicalPower"}, "reads": [{"tag": "$tag", "hour": "$last"}]}}
+        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-measure", "measure": "politicalPower"}, "tags": "$tags", "from": "$first", "to": "$first", "width": "$width", "withMarks": true}},
+        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-measure", "measure": "politicalPower"}, "reads": [{"tag": "$tag", "hour": "$first"}]}}
       ]
     },
     {
@@ -43,6 +43,7 @@
       "kind": "political-power-spending-breakdown",
       "requests": [
         {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}},
+        {"product": "politics-ledger", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "view": "spending", "hour": "$first", "totals": true}},
         {"product": "politics-ledger", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "view": "spending", "hour": "$last", "totals": true}}
       ],
       "note": "Spending tables match countries by native identity, read from the country groups reply."
@@ -50,10 +51,10 @@
     {
       "kind": "command-power",
       "requests": [
-        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-measure", "measure": "commandPower"}, "tags": "$tags", "from": "$first", "to": "$last", "width": "$width", "withMarks": true}},
-        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-measure", "measure": "commandPower"}, "reads": [{"tag": "$tag", "hour": "$last"}]}},
-        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-stability", "measure": "maxCommandPower"}, "tags": "$tags", "from": "$first", "to": "$last", "width": "$width", "withMarks": false}},
-        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-stability", "measure": "maxCommandPower"}, "reads": [{"tag": "$tag", "hour": "$last"}]}}
+        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-measure", "measure": "commandPower"}, "tags": "$tags", "from": "$first", "to": "$first", "width": "$width", "withMarks": true}},
+        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-measure", "measure": "commandPower"}, "reads": [{"tag": "$tag", "hour": "$first"}]}},
+        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-stability", "measure": "maxCommandPower"}, "tags": "$tags", "from": "$first", "to": "$first", "width": "$width", "withMarks": false}},
+        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-stability", "measure": "maxCommandPower"}, "reads": [{"tag": "$tag", "hour": "$first"}]}}
       ],
       "note": "The maximum line is on by default."
     },
@@ -68,10 +69,10 @@
     {
       "kind": "stability",
       "requests": [
-        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-stability", "measure": "stability"}, "tags": "$tags", "from": "$first", "to": "$last", "width": "$width", "withMarks": false}},
-        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-stability", "measure": "stability"}, "reads": [{"tag": "$tag", "hour": "$last"}]}},
-        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-stability", "measure": "warSupport"}, "tags": "$tags", "from": "$first", "to": "$last", "width": "$width", "withMarks": false}},
-        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-stability", "measure": "warSupport"}, "reads": [{"tag": "$tag", "hour": "$last"}]}}
+        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-stability", "measure": "stability"}, "tags": "$tags", "from": "$first", "to": "$first", "width": "$width", "withMarks": false}},
+        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-stability", "measure": "stability"}, "reads": [{"tag": "$tag", "hour": "$first"}]}},
+        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-stability", "measure": "warSupport"}, "tags": "$tags", "from": "$first", "to": "$first", "width": "$width", "withMarks": false}},
+        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-stability", "measure": "warSupport"}, "reads": [{"tag": "$tag", "hour": "$first"}]}}
       ],
       "auxiliary": [
         {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}}
@@ -98,27 +99,27 @@
     {
       "kind": "ruling-party",
       "requests": [
-        {"product": "party-history", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag", "mode": "summary", "from": "$first", "to": "$last", "width": "$width", "fields": ["ruling", "election", "leader"], "values": true}},
-        {"product": "party-history", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag", "mode": "state", "hours": ["$last"]}}
+        {"product": "party-history", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag", "mode": "summary", "from": "$first", "to": "$first", "width": "$width", "fields": ["ruling", "election", "leader"], "values": true}},
+        {"product": "party-history", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag", "mode": "state", "hours": ["$first"]}}
       ]
     },
     {
       "kind": "resource-balance",
       "requests": [
-        {"product": "resource-balance", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag", "from": "$last", "to": "$last", "hours": ["$last"]}}
+        {"product": "resource-balance", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag", "from": "$first", "to": "$first", "hours": ["$first"]}}
       ]
     },
     {
       "kind": "equipment-stockpile",
       "requests": [
-        {"product": "equipment-stockpile", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "tag": "$tag", "from": "$last", "to": "$last", "width": 1, "included": []}}
+        {"product": "equipment-stockpile", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "tag": "$tag", "from": "$first", "to": "$first", "width": 1, "included": []}}
       ]
     },
     {
       "kind": "fuel",
       "requests": [
-        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-fuel"}, "tags": "$tags", "measures": ["fuel", "capacity", "stripGain", "stripBurn"], "from": "$first", "to": "$last", "width": "$width"}},
-        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-fuel"}, "reads": [{"tag": "$tag", "hour": "$last"}]}}
+        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-fuel"}, "tags": "$tags", "measures": ["fuel", "capacity", "stripGain", "stripBurn"], "from": "$first", "to": "$first", "width": "$width"}},
+        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "country-fuel"}, "reads": [{"tag": "$tag", "hour": "$first"}]}}
       ]
     },
     {
@@ -130,19 +131,20 @@
     {
       "kind": "factories",
       "requests": [
-        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "tags": [], "family": {"kind": "country-factories", "top": {"count": 10, "mode": "free", "groups": []}, "mode": "free", "groups": []}, "from": "$last", "to": "$last", "width": 1, "requireParts": false}}
+        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "tags": [], "family": {"kind": "country-factories", "top": {"count": 10, "mode": "free", "groups": []}, "mode": "free", "groups": []}, "from": "$first", "to": "$first", "width": 1, "requireParts": false}}
       ],
       "note": "The default race reads the playhead hour; lines over time read the chart's viewport."
     },
     {
       "kind": "territory",
       "requests": [
-        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "territory", "measure": "states", "rule": "controlled", "top": 10, "aggregate": false}, "tags": [], "unobserved": [], "reads": [{"hour": "$last"}]}}
+        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "territory", "measure": "states", "rule": "controlled", "top": 10, "aggregate": false}, "tags": [], "unobserved": [], "reads": [{"hour": "$first"}]}}
       ]
     },
     {
       "kind": "territory-breakdown",
       "requests": [
+        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "territory", "measure": "states", "rule": "controlled", "breakdown": true}, "tags": [], "reads": [{"hour": "$first"}]}},
         {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "territory", "measure": "states", "rule": "controlled", "breakdown": true}, "tags": [], "reads": [{"hour": "$last"}]}}
       ]
     },
@@ -156,52 +158,52 @@
     {
       "kind": "equipment-produced",
       "requests": [
-        {"product": "production-select", "route": "prepared", "firstView": "d", "params": {"hour": "$last", "selection": {"branchId": "$branch", "tags": [], "top": 10, "measure": "day", "count": "units", "grouping": "type", "included": [], "refits": false}, "offset": "0", "limit": 10, "ranked": true}}
+        {"product": "production-select", "route": "prepared", "firstView": "d", "params": {"hour": "$first", "selection": {"branchId": "$branch", "tags": [], "top": 10, "measure": "day", "count": "units", "grouping": "type", "included": [], "refits": false}, "offset": "0", "limit": 10, "ranked": true}}
       ],
       "note": "The widget's default measure is the day. It asks for its most delivered type's designs once it has chosen that type; the probe asks for every type and does not issue the type choice's request."
     },
     {
       "kind": "production-spending",
       "requests": [
-        {"product": "production-spending", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "refits": false, "from": null, "hour": "$last", "end": "$last"}}
+        {"product": "production-spending", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "refits": false, "from": null, "hour": "$first", "end": "$last"}}
       ]
     },
     {
       "kind": "dockyard-spending",
       "requests": [
-        {"product": "dockyard-spending", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "view": "circle", "from": null, "hour": "$last", "end": "$last"}}
+        {"product": "dockyard-spending", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "view": "circle", "from": null, "hour": "$first", "end": "$last"}}
       ]
     },
     {
       "kind": "military-factory-spending",
       "requests": [
-        {"product": "military-factory-spending", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "view": "circle", "equipment": "air", "from": null, "hour": "$last", "end": "$last"}}
+        {"product": "military-factory-spending", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "view": "circle", "equipment": "air", "from": null, "hour": "$first", "end": "$last"}}
       ]
     },
     {
       "kind": "occupied-states",
       "requests": [
         {"product": "occupied-states-manifest", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}},
-        {"product": "occupied-states", "route": "prepared", "firstView": "c", "params": {"branchId": "$branch", "window": "$window:0:last"}}
+        {"product": "occupied-states", "route": "prepared", "firstView": "c", "params": {"branchId": "$branch", "window": "$window:0:first"}}
       ]
     },
     {
       "kind": "occupation-trend",
       "requests": [
-        {"product": "series-state", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "family": {"kind": "occupation-trend", "measure": "resistance", "rankMeasure": "resistance", "top": null, "collaboration": false, "both": false}, "tags": [], "reads": [{"hour": "$last"}]}},
-        {"product": "series-summary", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "family": {"kind": "occupation-trend", "measure": "resistance", "rankMeasure": "resistance", "top": null, "collaboration": false, "both": false}, "tags": [], "from": "$first", "to": "$last", "width": "$width"}}
+        {"product": "series-state", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "family": {"kind": "occupation-trend", "measure": "resistance", "rankMeasure": "resistance", "top": null, "collaboration": false, "both": false}, "tags": [], "reads": [{"hour": "$first"}]}},
+        {"product": "series-summary", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "family": {"kind": "occupation-trend", "measure": "resistance", "rankMeasure": "resistance", "top": null, "collaboration": false, "both": false}, "tags": [], "from": "$first", "to": "$first", "width": "$width"}}
       ]
     },
     {
       "kind": "air-force-size",
       "requests": [
-        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "tags": [], "family": {"kind": "air-force-size", "top": 10, "measure": "planes", "ownership": "roster"}, "from": "$last", "to": "$last", "width": 1, "requireParts": false}}
+        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "tags": [], "family": {"kind": "air-force-size", "top": 10, "measure": "planes", "ownership": "roster"}, "from": "$first", "to": "$first", "width": 1, "requireParts": false}}
       ]
     },
     {
       "kind": "navy-size",
       "requests": [
-        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "tags": [], "family": {"kind": "navy-size", "top": 10, "ownership": "roster", "grouping": "class", "measure": "ships"}, "from": "$last", "to": "$last", "width": 1, "requireParts": false}}
+        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "tags": [], "family": {"kind": "navy-size", "top": 10, "ownership": "roster", "grouping": "class", "measure": "ships"}, "from": "$first", "to": "$first", "width": 1, "requireParts": false}}
       ]
     },
     {
@@ -216,7 +218,8 @@
       "kind": "air-superiority-timeline",
       "requests": [
         {"product": "air-superiority", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "view": "choices"}},
-        {"product": "air-superiority", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "view": "timeline", "firstHour": "$first", "lastHour": "$last", "mode": "sides", "top": 10}}
+        {"product": "air-superiority", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "view": "timeline", "firstHour": "$first", "lastHour": "$first", "mode": "sides", "top": 10}},
+        {"product": "air-superiority", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "view": "moment", "firstHour": "$first", "lastHour": "$airDayEnd:1", "mode": "sides", "regions": "$airRegions:1"}}
       ],
       "note": "Sampled cells and the most-active row set are approximate until prepared."
     },
@@ -242,10 +245,12 @@
       "kind": "experience",
       "requests": [
         {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}},
-        {"product": "series-summary", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "army-banked"}, "tags": "$experienceTags:0", "from": "$first", "to": "$last", "width": "$width", "withMarks": false}},
-        {"product": "series-summary", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "navy-banked"}, "tags": "$experienceTags:0", "from": "$first", "to": "$last", "width": "$width", "withMarks": false}},
-        {"product": "series-summary", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "air-banked"}, "tags": "$experienceTags:0", "from": "$first", "to": "$last", "width": "$width", "withMarks": false}},
-        {"product": "series-state", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "army-banked"}, "reads": "$experienceReads:0"}}
+        {"product": "series-summary", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "army-banked"}, "tags": "$experienceTags:0", "from": "$first", "to": "$first", "width": "$width", "withMarks": false}},
+        {"product": "series-summary", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "navy-banked"}, "tags": "$experienceTags:0", "from": "$first", "to": "$first", "width": "$width", "withMarks": false}},
+        {"product": "series-summary", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "air-banked"}, "tags": "$experienceTags:0", "from": "$first", "to": "$first", "width": "$width", "withMarks": false}},
+        {"product": "series-state", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "army-banked"}, "reads": "$experienceReads:0:first"}},
+        {"product": "series-state", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "navy-banked"}, "reads": "$experienceReads:0:first"}},
+        {"product": "series-state", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "family": {"kind": "country-experience", "measure": "air-banked"}, "reads": "$experienceReads:0:first"}}
       ],
       "note": "Experience summaries draw the prepared prefix with the rest pending; reached values read their supplying blocks after country groups select native holders."
     },
@@ -258,7 +263,7 @@
     {
       "kind": "faction-strength",
       "requests": [
-        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "faction-totals", "selection": {"branchId": "$branch", "source": {"kind": "factories", "mode": "free", "groups": []}, "membership": "hour", "top": 9007199254740991}}, "reads": [{"hour": "$last"}]}}
+        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "faction-totals", "selection": {"branchId": "$branch", "source": {"kind": "factories", "mode": "free", "groups": []}, "membership": "hour", "top": 9007199254740991}}, "reads": [{"hour": "$first"}]}}
       ],
       "auxiliary": [
         {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}}
@@ -273,7 +278,7 @@
     {
       "kind": "trade-flows",
       "requests": [
-        {"product": "trade-flows", "route": "prepared", "params": {"branchId": "$branch", "tags": null, "basis": "$first", "measure": "current", "between": false, "from": "$last", "to": "$last", "width": 1, "hours": ["$last", "$last"]}}
+        {"product": "trade-flows", "route": "prepared", "params": {"branchId": "$branch", "tags": null, "basis": "$first", "measure": "current", "between": false, "from": "$first", "to": "$first", "width": 1, "hours": ["$first", "$last"]}}
       ]
     },
     {
@@ -292,7 +297,7 @@
       "kind": "wars",
       "requests": [
         {"product": "wars", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "viewpointTag": "$tag"}},
-        {"product": "wars", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "viewpointTag": "$tag", "reads": [{"hour": "$last"}]}}
+        {"product": "wars", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "viewpointTag": "$tag", "reads": [{"hour": "$first"}]}}
       ]
     },
     {
@@ -305,55 +310,55 @@
       "kind": "world-tension",
       "requests": [
         {"product": "series-summary", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "share": true, "family": {"kind": "world-tension"}, "from": "$first", "to": "$last", "width": 1, "within": {}}},
-        {"product": "series-state", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "share": true, "family": {"kind": "world-tension"}, "reads": [{"hour": "$last"}]}}
+        {"product": "series-state", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "share": true, "family": {"kind": "world-tension"}, "reads": [{"hour": "$first"}]}}
       ]
     },
     {
       "kind": "autonomy",
       "requests": [
         {"product": "series-summary", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "overlords": [], "subjects": [], "family": {"kind": "autonomy"}, "from": "$first", "to": "$afterLast", "width": 1, "within": {}}},
-        {"product": "series-state", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "overlords": [], "subjects": [], "family": {"kind": "autonomy"}, "reads": [{"hour": "$last"}]}}
+        {"product": "series-state", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "overlords": [], "subjects": [], "family": {"kind": "autonomy"}, "reads": [{"hour": "$first"}]}}
       ]
     },
     {
       "kind": "construction-log",
       "requests": [
         {"product": "construction-log-manifest", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}},
-        {"product": "construction-log", "route": "prepared", "firstView": "c", "params": {"branchId": "$branch", "window": "$window:0:last"}}
+        {"product": "construction-log", "route": "prepared", "firstView": "c", "params": {"branchId": "$branch", "window": "$window:0:first"}}
       ]
     },
     {
       "kind": "construction-spending",
       "requests": [
-        {"product": "construction-spending", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "hours": ["$last"]}}
+        {"product": "construction-spending", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "hours": ["$first", "$last"]}}
       ]
     },
     {
       "kind": "special-projects",
       "requests": [
         {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}},
-        {"product": "special-projects", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "tag": "$tag", "selectionTags": "$tags", "hour": "$last"}}
+        {"product": "special-projects", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "tag": "$tag", "selectionTags": "$tags", "hour": "$first"}}
       ],
       "note": "Its countries resolve through the country groups reply before the per-country requests."
     },
     {
       "kind": "nuclear-arsenal",
       "requests": [
-        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "tags": [], "family": {"kind": "country-nukes", "top": 10, "originHour": null}, "from": "$last", "to": "$last", "width": 1, "requireParts": false}}
+        {"product": "series-summary", "route": "prepared", "params": {"branchId": "$branch", "tags": [], "family": {"kind": "country-nukes", "top": 10, "originHour": null}, "from": "$first", "to": "$first", "width": 1, "requireParts": false}}
       ]
     },
     {
       "kind": "naval-losses",
       "requests": [
         {"product": "naval-losses", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": [], "top": 10, "kind": "both", "attribution": "lost", "period": "running"}},
-        {"product": "naval-losses", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": [], "top": 10, "kind": "both", "attribution": "lost", "period": "running", "window": "$window:0:last"}}
+        {"product": "naval-losses", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": [], "top": 10, "kind": "both", "attribution": "lost", "period": "running", "window": "$window:0:first"}}
       ]
     },
     {
       "kind": "ships-sunk",
       "requests": [
         {"product": "ships-sunk-manifest", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}},
-        {"product": "ships-sunk", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "hour": "$windowLast:0:last"}}
+        {"product": "ships-sunk", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "hour": "$windowLast:0:first"}}
       ]
     },
     {
@@ -371,20 +376,20 @@
     {
       "kind": "decryption",
       "requests": [
-        {"product": "decryption", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "firstHour": "$lastDayStart", "lastHour": "$lastDayEnd"}}
+        {"product": "decryption", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "firstHour": "$first", "lastHour": "$firstDayEnd"}}
       ]
     },
     {
       "kind": "espionage-log",
       "requests": [
         {"product": "espionage-log", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "window": null}},
-        {"product": "espionage-log", "route": "prepared", "firstView": "c", "params": {"branchId": "$branch", "window": "$window:0:last"}}
+        {"product": "espionage-log", "route": "prepared", "firstView": "c", "params": {"branchId": "$branch", "window": "$window:0:first"}}
       ]
     },
     {
       "kind": "agency-comparison",
       "requests": [
-        {"product": "agency-comparison", "route": "prepared", "firstView": "a", "params": {"selection": {"branchId": "$branch", "tags": [], "includeUncreated": false, "top": null}, "firstHour": "$lastDayStart", "lastHour": "$lastDayEnd"}}
+        {"product": "agency-comparison", "route": "prepared", "firstView": "a", "params": {"selection": {"branchId": "$branch", "tags": [], "includeUncreated": false, "top": null}, "firstHour": "$first", "lastHour": "$firstDayEnd"}}
       ]
     },
     {
@@ -398,7 +403,7 @@
     {
       "kind": "who-spies-on-whom",
       "requests": [
-        {"product": "operative-placements", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "firstHour": "$lastDayStart", "lastHour": "$lastDayEnd"}}
+        {"product": "operative-placements", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "firstHour": "$first", "lastHour": "$firstDayEnd"}}
       ],
       "auxiliary": [
         {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}}
@@ -416,33 +421,34 @@
     {
       "kind": "game-score",
       "requests": [
-        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "game-score"}, "reads": [{"hour": "$last"}]}}
+        {"product": "series-state", "route": "prepared", "params": {"branchId": "$branch", "family": {"kind": "game-score"}, "reads": [{"hour": "$first"}]}}
       ]
     },
     {
       "kind": "casualties",
       "requests": [
-        {"product": "series-state", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": [], "family": {"kind": "war-casualties", "top": {"count": 10}}, "reads": [{"tag": "", "hour": "$last"}]}}
+        {"product": "series-state", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": [], "family": {"kind": "war-casualties", "top": {"count": 10}}, "reads": [{"tag": "", "hour": "$first"}]}}
       ]
     },
     {
       "kind": "casualties-between",
       "requests": [
         {"product": "casualty-pairs", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": [], "between": false, "window": null}},
-        {"product": "casualty-pairs", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": [], "between": false, "window": "$window:0:last"}}
+        {"product": "casualty-pairs", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": [], "between": false, "window": "$window:0:first"}}
       ]
     },
     {
       "kind": "casualties-breakdown",
       "requests": [
         {"product": "casualty-breakdown", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "window": null}},
+        {"product": "casualty-breakdown", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "window": "$window:0:first"}},
         {"product": "casualty-breakdown", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "window": "$window:0:last"}}
       ]
     },
     {
       "kind": "generals",
       "requests": [
-        {"product": "unit-leaders", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "selection": {"kind": "all"}, "view": "leaderboard", "leaders": "all", "hour": "$last"}}
+        {"product": "unit-leaders", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "selection": {"kind": "all"}, "view": "leaderboard", "leaders": "all", "hour": "$first"}}
       ]
     },
     {
@@ -452,28 +458,28 @@
     {
       "kind": "aces",
       "requests": [
-        {"product": "air-aces", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "view": "roster", "hour": "$last"}}
+        {"product": "air-aces", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "view": "roster", "hour": "$first"}}
       ]
     },
     {
       "kind": "army-size",
       "requests": [
         {"product": "army-size", "route": "prepared", "params": {"branchId": "$branch", "tags": [], "top": null, "measure": "divisions", "countFor": "owner", "byType": false, "window": null}},
-        {"product": "army-size", "route": "prepared", "params": {"branchId": "$branch", "tags": [], "top": 10, "measure": "divisions", "countFor": "owner", "byType": false, "window": "$window:0:last"}}
+        {"product": "army-size", "route": "prepared", "params": {"branchId": "$branch", "tags": [], "top": 10, "measure": "divisions", "countFor": "owner", "byType": false, "window": "$window:0:first"}}
       ]
     },
     {
       "kind": "supply-health",
       "requests": [
-        {"product": "supply-health", "route": "prepared", "params": {"branchId": "$branch", "tags": "$tags", "from": "$last", "to": "$last", "width": 1}},
-        {"product": "supply-health", "route": "prepared", "params": {"branchId": "$branch", "tags": "$tags", "from": "$last", "to": "$last"}}
+        {"product": "supply-health", "route": "prepared", "params": {"branchId": "$branch", "tags": "$tags", "from": "$first", "to": "$first", "width": 1}},
+        {"product": "supply-health", "route": "prepared", "params": {"branchId": "$branch", "tags": "$tags", "from": "$first", "to": "$first"}}
       ]
     },
     {
       "kind": "division-log",
       "requests": [
         {"product": "division-log-manifest", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}},
-        {"product": "division-log", "route": "prepared", "firstView": "c", "params": {"branchId": "$branch", "window": "$window:0:last"}}
+        {"product": "division-log", "route": "prepared", "firstView": "c", "params": {"branchId": "$branch", "window": "$window:0:first"}}
       ]
     },
     {
@@ -495,7 +501,7 @@
     {
       "kind": "most-decorated-divisions",
       "requests": [
-        {"product": "division-careers", "route": "product", "firstView": "a", "params": {"branchId": "$branch", "hour": "$last", "tags": null}}
+        {"product": "division-careers", "route": "product", "firstView": "a", "params": {"branchId": "$branch", "hour": "$first", "tags": null}}
       ]
     },
     {
@@ -506,7 +512,7 @@
       "kind": "army-losses-by-month",
       "requests": [
         {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}},
-        {"product": "army-losses", "route": "product", "firstView": "a", "params": {"branchId": "$branch", "hour": "$last", "tag": "$tag"}}
+        {"product": "army-losses", "route": "product", "firstView": "a", "params": {"branchId": "$branch", "hour": "$first", "tag": "$tag"}}
       ],
       "note": "The country binds through its recorded identity history at the hour shown, then one reached-hour reply answers from that hour's frame. Older months come from earlier reads through each block's cached provenance index."
     },
@@ -525,20 +531,20 @@
       "kind": "land-battles",
       "requests": [
         {"product": "land-battles-manifest", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}},
-        {"product": "land-battles", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "window": "$window:0:last"}}
+        {"product": "land-battles", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "window": "$window:0:first"}}
       ]
     },
     {
       "kind": "naval-battles",
       "requests": [
         {"product": "naval-battles-manifest", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}},
-        {"product": "naval-battles", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "window": "$window:0:last"}}
+        {"product": "naval-battles", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "window": "$window:0:first"}}
       ]
     },
     {
       "kind": "event-feed",
       "requests": [
-        {"product": "event-feed", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": null, "lastHour": "$last", "categories": ["warsPeace", "diplomacy", "politics", "milestones"], "cursor": null, "pageSize": 256}}
+        {"product": "event-feed", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": null, "lastHour": "$first", "categories": ["warsPeace", "diplomacy", "politics", "milestones"], "observations": false, "cursor": null, "pageSize": 256}}
       ]
     },
     {
@@ -572,7 +578,7 @@
     {
       "kind": "naval-supremacy",
       "requests": [
-        {"product": "naval-supremacy", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "firstHour": "$first", "lastHour": "$last", "daily": true}}
+        {"product": "naval-supremacy", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "firstHour": "$first", "lastHour": "$firstBlockEnd", "daily": true}}
       ],
       "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
     },
@@ -638,7 +644,7 @@
     {
       "kind": "market-ledger",
       "requests": [
-        {"product": "market-ledger", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": "$tags", "kinds": [10, 11, 12, 20, 21, 34], "lastHour": "$last", "pageSize": 256}}
+        {"product": "market-ledger", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": "$tags", "kinds": [10, 11, 12, 20, 21, 34], "lastHour": "$first", "pageSize": 256}}
       ]
     },
     {
@@ -668,13 +674,13 @@
     {
       "kind": "event-choices",
       "requests": [
-        {"product": "event-choices", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": null, "lastHour": "$last", "cursor": null, "pageSize": 256, "kinds": ["scriptEventFired", "newsEventFired"]}}
+        {"product": "event-choices", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": null, "lastHour": "$first", "cursor": null, "pageSize": 256, "kinds": ["scriptEventFired", "newsEventFired"]}}
       ]
     },
     {
       "kind": "decisions",
       "requests": [
-        {"product": "decisions", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": null, "lastHour": "$last", "cursor": null, "pageSize": 256, "kinds": []}}
+        {"product": "decisions", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": null, "lastHour": "$first", "cursor": null, "pageSize": 256, "kinds": []}}
       ]
     },
     {

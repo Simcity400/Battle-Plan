@@ -776,6 +776,7 @@ fn territory_changed_rows_match_frozen_regions_and_keep_untouched_planes() {
     use replay_frame::frame::{FrameDecoder, FrameEncoder};
     let map = Arc::new(map());
     let mut source = occupied();
+    source.tables[TableId::Campaign.index()] = crate::map::test_campaign();
     let mut encoder = FrameEncoder::new();
     let mut decoder =
         FrameDecoder::new().with_change_facts(map_display_data::credit::display_products().clone());
@@ -920,6 +921,7 @@ fn territory_relation_delta_boundaries_and_link_aliases_match_independent_oracle
     let map = Arc::new(map);
     let mut source = occupied();
     source.hour = 10;
+    source.tables[TableId::Campaign.index()] = crate::map::test_campaign();
     source.tables[TableId::Subjects.index()] =
         TableView::Complete(TableRows::Subjects(vec![SubjectRow {
             subject: 100,
@@ -940,6 +942,7 @@ fn territory_relation_delta_boundaries_and_link_aliases_match_independent_oracle
     let mut decoder =
         FrameDecoder::new().with_change_facts(map_display_data::credit::display_products().clone());
     let mut fold = TerritoryFold::default();
+    let mut previous: Option<Arc<Regions>> = None;
     for step in 0..9 {
         source.hour = 10 + step;
         match step {
@@ -1008,7 +1011,20 @@ fn territory_relation_delta_boundaries_and_link_aliases_match_independent_oracle
             fold.read_shared(&map, frame),
             super::oracle::regions(&map, frame),
         ) {
-            (Ok(actual), Ok(expected)) => assert_eq!(*actual.paint, expected, "step {step}"),
+            (Ok(actual), Ok(expected)) => {
+                assert_eq!(*actual.paint, expected, "step {step}");
+                // No hour moves a province, so each delta keeps the last folded planes.
+                if let Some(previous) = &previous {
+                    for (old, new) in [
+                        (&previous.country_of, &actual.paint.country_of),
+                        (&previous.owner_of, &actual.paint.owner_of),
+                        (&previous.state_of, &actual.paint.state_of),
+                    ] {
+                        assert!(Arc::ptr_eq(&old.0, &new.0), "step {step}");
+                    }
+                }
+                previous = Some(Arc::clone(&actual.paint));
+            }
             (Err(actual), Err(expected)) => assert_eq!(
                 (actual.kind(), actual.to_string()),
                 (expected.kind(), expected.to_string()),
@@ -1039,11 +1055,13 @@ fn batched_territory_indexes_keep_repeated_links_counts_and_sorted_planes_exact(
             id, state: 1, owner: 100, controller: 100, ..Default::default()
         });
     }
+    source.tables[TableId::Campaign.index()] = crate::map::test_campaign();
     let map = Arc::new(map);
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new()
         .with_change_facts(map_display_data::credit::display_products().clone());
     let mut fold = TerritoryFold::default();
+    let mut previous: Option<Arc<Regions>> = None;
     for step in 0..4 {
         if step != 0 {
             source.hour += 1;
@@ -1060,5 +1078,18 @@ fn batched_territory_indexes_keep_repeated_links_counts_and_sorted_planes_exact(
         let actual = fold.read_shared(&map, frame).unwrap();
         assert_eq!(*actual.paint, super::oracle::regions(&map, frame).unwrap());
         assert_eq!(actual.provinces.0.len(), core::<tables::Provinces>(frame).unwrap().len());
+        // A delta keeps every plane whose values none of the edited rows changed.
+        if let Some(previous) = &previous {
+            assert_eq!(
+                [
+                    Arc::ptr_eq(&previous.country_of.0, &actual.paint.country_of.0),
+                    Arc::ptr_eq(&previous.owner_of.0, &actual.paint.owner_of.0),
+                    Arc::ptr_eq(&previous.state_of.0, &actual.paint.state_of.0),
+                ],
+                [step == 3, step == 1, true],
+                "step {step}"
+            );
+        }
+        previous = Some(Arc::clone(&actual.paint));
     }
 }

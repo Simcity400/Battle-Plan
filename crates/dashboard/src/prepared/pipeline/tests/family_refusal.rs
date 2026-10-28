@@ -244,9 +244,22 @@ fn air_ledger_refusal_stops_only_its_branch_family_and_its_queries_answer_the_or
                     } else {
                         bytes
                     };
+                    // Endpoint facts are namespaced by the export key, which binds the recording.
+                    let name = match name
+                        .strip_prefix("preparation-facts-v2/")
+                        .and_then(|rest| rest.split_once('/'))
+                    {
+                        Some((_, rest)) if rest.contains("/map-export-endpoints/") => {
+                            format!("preparation-facts-v2/export-key/{rest}")
+                        }
+                        _ => name,
+                    };
                     ((name, range), bytes)
                 })
-                .collect::<BTreeMap<_, _>>()
+                .fold(BTreeMap::new(), |mut pages, (key, bytes)| {
+                    assert!(pages.insert(key, bytes).is_none());
+                    pages
+                })
         };
         assert_payloads_equal(
             &families(&source),

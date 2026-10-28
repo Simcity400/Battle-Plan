@@ -278,20 +278,58 @@ fn dependency(text: &str) -> Option<(usize, bool, bool)> {
     Some((index.parse().ok()?, at_last, last_hour))
 }
 
-fn experience_dependency(text: &str) -> Option<(usize, bool)> {
+/// `$experienceTags:N` and `$experienceReads:N:first|last` read request N's country groups:
+/// the holder keys, or their reads at that hour.
+fn experience_dependency(text: &str) -> Option<(usize, Option<bool>)> {
+    let (kind, rest) = text.split_once(':')?;
+    match kind {
+        "$experienceTags" => Some((rest.parse().ok()?, None)),
+        "$experienceReads" => {
+            let (index, at) = rest.split_once(':')?;
+            let at_last = match at {
+                "first" => false,
+                "last" => true,
+                _ => return None,
+            };
+            Some((index.parse().ok()?, Some(at_last)))
+        }
+        _ => None,
+    }
+}
+
+/// `$airDayEnd:N` and `$airRegions:N` read request N's air timeline: the end of its
+/// `dayHours` day (counted from hour 0) holding the first hour, and its rows' regions.
+fn air_dependency(text: &str) -> Option<(usize, bool)> {
     let (kind, index) = text.split_once(':')?;
-    Some((
-        index.parse().ok()?,
-        match kind {
-            "$experienceTags" => false,
-            "$experienceReads" => true,
-            _ => return None,
-        },
+    let regions = match kind {
+        "$airDayEnd" => false,
+        "$airRegions" => true,
+        _ => return None,
+    };
+    Some((index.parse().ok()?, regions))
+}
+
+/// What the air timeline widget's day request takes from the timeline reply; None for a
+/// reply without it, as the widget then sends no day request.
+fn air_day(reply: &Value, bindings: &Bindings, regions: bool) -> Option<Value> {
+    if regions {
+        return reply
+            .get("rows")?
+            .as_array()?
+            .iter()
+            .map(|row| row.get("region").cloned())
+            .collect::<Option<Vec<_>>>()
+            .map(Value::Array);
+    }
+    let day = reply.get("dayHours")?.as_i64().filter(|day| *day > 0)?;
+    let first = i64::from(bindings.first);
+    Some(Value::from(
+        (first.div_euclid(day) * day + day - 1).min(i64::from(bindings.last)),
     ))
 }
 
 /// The same native-holder keys the experience widget derives from country groups.
-fn experience_keys(reply: &Value, bindings: &Bindings, reads: bool) -> Value {
+fn experience_keys(reply: &Value, bindings: &Bindings, reads: Option<bool>) -> Value {
     let histories = reply["countryIdentities"]
         .as_array()
         .map(Vec::as_slice)
@@ -323,14 +361,20 @@ fn experience_keys(reply: &Value, bindings: &Bindings, reads: bool) -> Value {
             &Value::Null,
         ));
     }
-    if reads {
-        Value::Array(
-            keys.into_iter()
-                .map(|key| serde_json::json!({"tag": key, "hour": bindings.last}))
-                .collect(),
-        )
-    } else {
-        Value::Array(keys)
+    match reads {
+        Some(at_last) => {
+            let hour = if at_last {
+                bindings.last
+            } else {
+                bindings.first
+            };
+            Value::Array(
+                keys.into_iter()
+                    .map(|key| serde_json::json!({"tag": key, "hour": hour}))
+                    .collect(),
+            )
+        }
+        None => Value::Array(keys),
     }
 }
 
@@ -343,6 +387,7 @@ fn dependencies(value: &Value) -> Vec<usize> {
         Value::String(text) => dependency(text)
             .map(|(index, ..)| index)
             .or_else(|| experience_dependency(text).map(|(index, _)| index))
+            .or_else(|| air_dependency(text).map(|(index, _)| index))
             .into_iter()
             .collect(),
         Value::Array(items) => items.iter().flat_map(dependencies).collect(),
@@ -399,6 +444,14 @@ pub fn instantiate(
                         return Ok(Instantiated::Waiting);
                     };
                     experience_keys(reply, bindings, reads)
+                } else if let Some((index, regions)) = air_dependency(text) {
+                    let Some(reply) = replies.get(&index) else {
+                        return Ok(Instantiated::Waiting);
+                    };
+                    match air_day(reply, bindings, regions) {
+                        Some(value) => value,
+                        None => return Ok(Instantiated::Absent),
+                    }
                 } else if let Some((index, at_last, last_hour)) = dependency(text) {
                     let Some(reply) = replies.get(&index) else {
                         return Ok(Instantiated::Waiting);

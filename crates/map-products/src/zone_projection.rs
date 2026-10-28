@@ -74,7 +74,7 @@ fn admitted_zone(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_data::rows::{StateFlagRow, StateRow, TableRows};
+    use replay_data::rows::{ClockRow, StateFlagRow, StateRow, TableRows};
     use replay_frame::frame::{FrameDecoder, FrameEncoder, Metrics, TableView};
     fn inputs() -> (DecodedFrame, Arc<MapData>, Regions) {
         let mut source = DecodedFrame {
@@ -82,9 +82,27 @@ mod tests {
             hour: 1,
             metrics: Metrics::default(),
             tables: std::array::from_fn(|i| {
-                TableView::Complete(TableRows::empty(TableId::ALL[i])).into()
+                let table = TableId::ALL[i];
+                let rows = match table.key_bits() {
+                    0 => TableRows::one_default(table),
+                    _ => TableRows::empty(table),
+                };
+                // A singleton whose default row is no valid read was not read by this fixture.
+                if rows.validate_keys().is_err() {
+                    return TableView::Unavailable {
+                        reason: "synthetic zone frames did not read this table".into(),
+                    }
+                    .into();
+                }
+                TableView::Complete(rows).into()
             }),
         };
+        source.tables[TableId::Clock.index()] =
+            TableView::Complete(TableRows::Clock(vec![ClockRow {
+                hour: source.hour,
+                ..Default::default()
+            }]))
+            .into();
         source.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
             (1..=1501)
                 .map(|id| StateRow {
@@ -134,6 +152,15 @@ mod tests {
         };
         (source, map, regions)
     }
+    fn next_hour(source: &mut DecodedFrame) {
+        source.hour += 1;
+        let TableView::Complete(TableRows::Clock(clock)) =
+            &mut *source.tables[TableId::Clock.index()]
+        else {
+            unreachable!("fixture clock")
+        };
+        clock[0].hour = source.hour;
+    }
     #[test]
     fn quiet_zones_and_unrelated_state_edits_share_the_admitted_planes() {
         let (mut source, map, regions) = inputs();
@@ -145,7 +172,7 @@ mod tests {
             .read(decoder.advance(&update).unwrap(), &map, &regions)
             .unwrap();
         assert!(first.splits(1, 2));
-        source.hour += 1;
+        next_hour(&mut source);
         if let TableView::Complete(TableRows::States(rows)) =
             &mut *source.tables[TableId::States.index()]
         {
@@ -156,7 +183,7 @@ mod tests {
             .read(decoder.advance(&update).unwrap(), &map, &regions)
             .unwrap();
         assert!(first.ptr_eq(&quiet));
-        source.hour += 1;
+        next_hour(&mut source);
         if let TableView::Complete(TableRows::States(rows)) =
             &mut *source.tables[TableId::States.index()]
         {
@@ -171,7 +198,7 @@ mod tests {
             "zero field mask must still observe key deletion"
         );
         assert!(!removed.splits(1, 2));
-        source.hour += 1;
+        next_hour(&mut source);
         if let TableView::Complete(TableRows::StateFlags(rows)) =
             &mut *source.tables[TableId::StateFlags.index()]
         {

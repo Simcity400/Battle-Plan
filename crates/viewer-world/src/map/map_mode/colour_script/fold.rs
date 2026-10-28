@@ -473,6 +473,7 @@ mod tests {
         let mut fold = Fold::default();
         fold.bind(&bank);
         let mut input = frame();
+        input.tables[TableId::Campaign.index()] = crate::map::test_campaign();
         input.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
             (1..=1501)
                 .map(|id| CountryRow {
@@ -617,6 +618,7 @@ mod tests {
         let mut fold = Fold::default();
         fold.bind(&bank);
         let mut input = frame();
+        input.tables[TableId::Campaign.index()] = crate::map::test_campaign();
         let names = installed_content_core::trigger_keys::TriggerNames::default();
         let dlcs = BTreeSet::new();
         let aliases = Arc::default();
@@ -645,8 +647,9 @@ mod tests {
             else {
                 unreachable!()
             };
+            // A recorder writes no per-row NotRecorded; an uncached grouping refuses the state.
             states[0].single_controller = if (1..=3).contains(&step) {
-                replay_data::rows::Recorded::NotRecorded
+                replay_data::rows::Recorded::Value(None)
             } else {
                 Some(u32::from(step == 6)).into()
             };

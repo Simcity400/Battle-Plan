@@ -1261,8 +1261,18 @@ impl Prepared {
                         .is_some_and(|identity| row.country == identity.0)
             })
             .collect();
+        // A later read of one capture's day revises it; only separate captures are ambiguous.
+        let mut latest = BTreeMap::<(u32, &str), &LedgerDaily>::new();
+        for row in observations {
+            let held = latest
+                .entry((row.country, row.epoch.as_str()))
+                .or_insert(row);
+            if row.read_hour > held.read_hour {
+                *held = row;
+            }
+        }
         let supplied = |command: bool| {
-            let mut rows = observations.iter().filter(|row| {
+            let mut rows = latest.values().filter(|row| {
                 if command {
                     row.cp_read_hour
                 } else {
