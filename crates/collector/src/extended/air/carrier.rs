@@ -115,7 +115,14 @@ impl Bases {
         source: &[engine_native::cair_base::Row],
         resolved: &mut [engine_native::cair_base::ResolvedLink],
     ) {
-        let recorded = crate::raw::Recorded::build(&job.log);
+        let log = crate::raw::Recorded::build(&job.log);
+        // The census took the callback's roster when it had one.
+        let recorded = crate::extended::roster_replay::RosterReplay::new(
+            &log,
+            &job.roster,
+            image,
+            job.game_state,
+        );
         let countries = engine_native::ccountry::Reader::new(&recorded, image, job.game_state);
         for base in source.iter().filter(|base| base.state.is_some()) {
             if self.len >= self.rows.len() {

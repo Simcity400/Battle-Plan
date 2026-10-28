@@ -62,6 +62,7 @@ pub(crate) struct RegistrationStore {
     /// Set on the game thread; the next pass drops every segment.
     forgotten: bool,
     pub(super) state_inputs: super::state_fuel_inputs::Store,
+    pub(super) census: super::census_store::CensusStore,
 }
 
 /// A held segment a pass may carry.
@@ -154,14 +155,20 @@ impl RegistrationStore {
         self.counts
     }
 
+    pub(crate) fn census_counts(&self) -> super::census_store::Counts {
+        self.census.counts()
+    }
+
     pub(crate) fn begin(&mut self) {
         if std::mem::take(&mut self.forgotten) {
             self.held.clear();
             self.state_inputs.clear();
+            self.census.clear();
         }
         self.pass += 1;
         self.counts = Counts::default();
         self.visited = 0;
+        self.census.begin(self.pass);
     }
 
     /// The pass reaches a state base.
@@ -277,12 +284,14 @@ impl RegistrationStore {
             self.held.clear();
             self.state_inputs.clear();
         }
+        self.census.finish(complete);
         self.refresh_allocated_bytes();
     }
 
     /// Worker-only accounting after an independent state-input cache grows.
     pub(super) fn refresh_allocated_bytes(&mut self) {
         self.bytes = self.state_inputs.bytes()
+            + self.census.bytes()
             + self.held.capacity() * size_of::<(u64, Held)>()
             + self
                 .held

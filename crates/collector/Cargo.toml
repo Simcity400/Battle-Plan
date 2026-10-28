@@ -101,9 +101,11 @@ navy_ledger_changes = []
 air_base_changes = []
 # A state air base's AirBaseRegistrations subtree is carried from its latest fresh read while no
 # hooked writer of its containers, pools or wings (engine_mutations::air_base_mutations) touched its handle;
-# its container countries' links are resolved every hour.
-# The capacity setter and base destructor are the raid and ship model families' patches.
-air_base_carry_changes = ["raid_changes", "ship_model_changes", "collector-observers/air_base_carry_changes"]
+# its container countries' links are resolved every hour. Its AirBases row and the manager's state
+# base slots are carried the same way under capacity refresh, the state base creators and destruction.
+# The capacity setter and base destructor are the raid and ship model families' patches; entering the
+# map editor is the building family's.
+air_base_carry_changes = ["raid_changes", "ship_model_changes", "building_changes", "collector-observers/air_base_carry_changes"]
 # Carry a division's DivisionStatus.attack_stats (its stat block's attack operands) until
 # The active-stat writer rewrites the stat block (the army and stat block are read every hour).
 army_stat_changes = ["collector-division-parts/army_stat_changes"]

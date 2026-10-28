@@ -1906,11 +1906,10 @@ fn run_with_memory(
             &mut request.payload,
         )),
         Job::AirBases(request) => {
-            // The census mirror takes the country authentication spans the
-            // hour's snapshot already holds: the same bytes, without rereading
-            // the game. Every other span, and every country observation,
-            // stays native.
-            let cached = request.countries.bytes_view(memory);
+            // The census takes the hour's authenticated roster instead of its
+            // spans, and the snapshot serves any country bytes a walk reads.
+            // Every other span stays native.
+            let cached = request.countries.view(memory);
             Report::AirBases(air::copy_air_bases_refresh_growing(
                 &cached,
                 request.context,
@@ -3808,9 +3807,15 @@ mod tests {
         };
         let (native, native_reads) = run(0);
         let (loaned, loaned_reads) = run(1 << 12);
-        // The same spans and bytes reach the decoder.
-        assert_eq!(loaned.log.spans, native.log.spans);
-        assert_eq!(loaned.log.bytes[..], native.log.bytes[..]);
+        // A ready snapshot's roster stands in for every census span, and the
+        // decoder replays the same rows through it.
+        let header = kit::GAME_STATE + engine_native::cgame_state::COUNTRIES;
+        assert!(native.roster.roster(kit::BASE, kit::GAME_STATE).is_none());
+        assert!(native.log.spans.iter().any(|span| span.addr == header));
+        assert!(loaned.roster.roster(kit::BASE, kit::GAME_STATE).is_some());
+        assert!(!loaned.log.spans.iter().any(|span| span.addr == header));
+        assert!(loaned.log.spans.len() < native.log.spans.len());
+        kit::assert_matches_direct(&kit::decode(&loaned), &kit::decode(&native));
         assert!(
             loaned_reads.copy_calls < native_reads.copy_calls,
             "{loaned_reads:?} {native_reads:?}"

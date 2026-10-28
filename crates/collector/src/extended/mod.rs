@@ -820,6 +820,7 @@ pub use collector_production::production;
 pub use collector_production_daily::production_modifiers;
 pub use collector_projects::projects;
 pub mod province_unit_order;
+pub(crate) mod roster_replay;
 pub use collector_map_tables::saved_event_targets;
 pub(crate) use collector_projects::raid_intel_carry;
 pub use collector_projects::raid_target_statuses;

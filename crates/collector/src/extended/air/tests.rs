@@ -103,6 +103,7 @@ impl AirBasesJob {
         let mut job = Self {
             log: RawLog::new(1 << 17, 8 << 20),
             census: Vec::with_capacity(1024),
+            roster: engine_native::ccountry::RosterSnapshot::try_with_capacity(1024).unwrap(),
             seen_links: Vec::with_capacity(1024),
             seen_link_index: vec![usize::MAX; 1024],
             ..Self::default()
@@ -505,6 +506,7 @@ fn air_bases_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and
     job.update_capacity_charge();
     let expected = |job: &AirBasesJob| {
         vector_bytes(&job.census)
+            + job.roster.allocated_bytes() as u64
             + vector_bytes(&job.seen_links)
             + vector_bytes(&job.seen_link_index)
             + job.carrier.bytes()
@@ -1963,6 +1965,7 @@ fn air_bases_staging_overflow_falls_back_to_typed_walk() {
         registration_demand: None,
         aces_active: false,
         census: Vec::new(),
+        roster: Default::default(),
         seen_links: Vec::new(),
         seen_link_index: Vec::new(),
         required_census: 0,

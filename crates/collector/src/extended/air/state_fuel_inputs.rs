@@ -1,12 +1,15 @@
 //! State base scalar observations and metadata-only pool projections.
 //! Membership follows the existing registration segment; fuel words never
 //! come from its deliberately zeroed carried spans. Every hourly acquisition
-//! reads both current fuel words on the existing AirBases worker.
+//! reads both current fuel words of every container on the existing AirBases
+//! worker, in one guarded gather.
 use super::{AirBasesJob, bases::HeldSegment};
 use crate::raw::RawLog;
 use engine_native::{
     Memory, cair_base, cair_wing_pool, ccountry, ccountry_air_container as container,
-    cpdx_array::Array, read,
+    cpdx_array::Array,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -60,6 +63,9 @@ pub(crate) struct Store {
     visited: HashSet<u64>,
     index: Vec<SnapshotSpan>,
     index_scratch: Vec<SnapshotSpan>,
+    /// Each output row's container and its gathered fuel words.
+    fuel_pointers: Vec<usize>,
+    fuel_words: Vec<u8>,
 }
 impl Store {
     pub(crate) fn clear(&mut self) {
@@ -71,6 +77,8 @@ impl Store {
             + self.visited.capacity() * std::mem::size_of::<u64>()
             + self.index.capacity() * std::mem::size_of::<SnapshotSpan>()
             + self.index_scratch.capacity() * std::mem::size_of::<SnapshotSpan>()
+            + self.fuel_pointers.capacity() * std::mem::size_of::<usize>()
+            + self.fuel_words.capacity()
             + self
                 .bases
                 .values()
@@ -131,6 +139,7 @@ impl Store {
         self.visited.clear();
         engine_allocation::reserve_set(&mut self.visited, segments.len())
             .map_err(|_| "state air-base metadata storage unavailable")?;
+        self.fuel_pointers.clear();
         for segment in segments {
             self.visited.insert(segment.handle);
             let changed = self
@@ -168,8 +177,14 @@ impl Store {
             };
             engine_allocation::reserve(&mut output.rows, containers.len())
                 .map_err(|_| "state air-base input row storage unavailable")?;
+            engine_allocation::reserve(&mut self.fuel_pointers, containers.len())
+                .map_err(|_| "state air-base input row storage unavailable")?;
             for row in containers {
-                let fuel = update_fuel(live, row.pointer);
+                self.fuel_pointers.push(row.pointer);
+                let fuel = ContainerFuel {
+                    demand: Err(UNREADABLE),
+                    allocated: Err(UNREADABLE),
+                };
                 let start = output.pools.len();
                 let pools = match &row.pools {
                     Ok(pools) => {
@@ -190,7 +205,92 @@ impl Store {
             }
         }
         self.bases.retain(|handle, _| self.visited.contains(handle));
+        let words = self.fuel_pointers.len() * FUEL_LAYOUT_BYTES;
+        let missing = words.saturating_sub(self.fuel_words.len());
+        if engine_allocation::reserve(&mut self.fuel_words, missing).is_ok() {
+            self.fuel_words.resize(words, 0);
+            gather_fuel(
+                live,
+                &self.fuel_pointers,
+                &mut self.fuel_words,
+                &mut output.rows,
+            );
+        } else {
+            for (row, &pointer) in output.rows.iter_mut().zip(&self.fuel_pointers) {
+                row.fuel = update_fuel(live, pointer);
+            }
+        }
         Ok(())
+    }
+}
+
+const UNREADABLE: &str = "state air-base fuel scalar unreadable";
+/// Both fuel words of one container, demand first.
+const FUEL_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: container::FUEL_DEMAND_RAW,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: container::FUEL_ALLOCATED_RAW,
+        destination_offset: 8,
+        len: 8,
+    },
+];
+const FUEL_LAYOUT_BYTES: usize = 16;
+const FUEL_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&FUEL_FIELDS, FUEL_LAYOUT_BYTES).expect("valid record layout");
+
+/// Each row's fuel from its container in `pointers`, in one guarded gather
+/// resumed after a failed word, so a failure withholds no other value.
+fn gather_fuel(
+    memory: &impl Memory,
+    pointers: &[usize],
+    words: &mut [u8],
+    rows: &mut [CarrierRegistration],
+) {
+    let word = |words: &[u8], row: usize, field: usize| {
+        let at = row * FUEL_LAYOUT_BYTES + field * 8;
+        i64::from_le_bytes(words[at..at + 8].try_into().unwrap())
+    };
+    let mut first = 0;
+    while first < pointers.len() {
+        let completed = memory.copy_records(
+            RecordSources::Pointers(&pointers[first..]),
+            &FUEL_LAYOUT,
+            &mut words[first * FUEL_LAYOUT_BYTES..],
+        );
+        let failed = first + completed / FUEL_FIELDS.len();
+        for row in first..failed.min(pointers.len()) {
+            rows[row].fuel = ContainerFuel {
+                demand: Ok(word(words, row, 0)),
+                allocated: Ok(word(words, row, 1)),
+            };
+        }
+        if failed >= pointers.len() {
+            break;
+        }
+        rows[failed].fuel = if completed % FUEL_FIELDS.len() == 0 {
+            // Demand failure must not suppress the independent allocation read.
+            ContainerFuel {
+                demand: Err(UNREADABLE),
+                allocated: scalar(memory, pointers[failed], container::FUEL_ALLOCATED_RAW),
+            }
+        } else {
+            ContainerFuel {
+                demand: Ok(word(words, failed, 0)),
+                allocated: Err(UNREADABLE),
+            }
+        };
+        first = failed + 1;
+    }
+    for row in rows.iter().take(pointers.len()) {
+        for value in [row.fuel.demand, row.fuel.allocated] {
+            if let Err(reason) = value {
+                refused(reason);
+            }
+        }
     }
 }
 
@@ -603,6 +703,21 @@ impl<M: Memory> Memory for Counted<'_, M> {
         );
         completed
     }
+
+    fn copy_records(
+        &self,
+        sources: RecordSources<'_>,
+        layout: &RecordLayout<'_>,
+        destination: &mut [u8],
+    ) -> usize {
+        let completed = self.memory.copy_records(sources, layout, destination);
+        self.bytes.set(
+            self.bytes
+                .get()
+                .saturating_add(layout.completed_bytes(completed) as u64),
+        );
+        completed
+    }
 }
 
 #[cfg(test)]
@@ -614,10 +729,12 @@ mod tests {
         allocation: Cell<Option<i64>>,
         reads: Cell<usize>,
     }
+    // Each container's words sit at their offsets from a 0x1000-aligned
+    // container; any other container's fault.
     impl Memory for ScalarMemory {
         fn copy(&self, at: usize, bytes: &mut [u8]) -> bool {
             self.reads.set(self.reads.get() + 1);
-            let value = match at {
+            let value = match at % 0x1000 {
                 container::FUEL_DEMAND_RAW => self.demand.get(),
                 container::FUEL_ALLOCATED_RAW => self.allocation.get(),
                 _ => None,
@@ -711,6 +828,38 @@ mod tests {
         }
     }
 
+    /// Every container's fuel is one guarded gather; a faulting word resumes
+    /// the gather after it, and fails only itself.
+    #[test]
+    fn every_containers_fuel_is_one_gather_resumed_only_after_a_failed_word() {
+        use engine_native::read_counts::{CountedMemory, ReadCounts};
+        let memory = CountedMemory::new(ScalarMemory {
+            demand: Cell::new(Some(-21)),
+            allocation: Cell::new(Some(7)),
+            reads: Cell::new(0),
+        });
+        let mut rows = vec![CarrierRegistration::default(); 3];
+        let mut words = vec![0; 3 * FUEL_LAYOUT_BYTES];
+        ReadCounts::take_current();
+        gather_fuel(&memory, &[0x1000, 0x3000], &mut words[..32], &mut rows[..2]);
+        assert_eq!(ReadCounts::take_current().record_calls, 1);
+        for row in &rows[..2] {
+            assert_eq!((row.fuel.demand, row.fuel.allocated), (Ok(-21), Ok(7)));
+        }
+        gather_fuel(&memory, &[0x1000, 0x2001, 0x3000], &mut words, &mut rows);
+        assert_eq!(ReadCounts::take_current().record_calls, 2);
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.fuel.demand, row.fuel.allocated))
+                .collect::<Vec<_>>(),
+            [
+                (Ok(-21), Ok(7)),
+                (Err(UNREADABLE), Err(UNREADABLE)),
+                (Ok(-21), Ok(7)),
+            ]
+        );
+    }
+
     #[test]
     fn both_scalar_words_are_read_fresh_every_hour_without_writer_certificates() {
         let memory = ScalarMemory {
@@ -792,13 +941,13 @@ mod tests {
                 segment: segment.id,
                 containers: Ok(vec![
                     Container {
-                        pointer: 0,
+                        pointer: 0x1000,
                         country: 1,
                         slot: 1,
                         pools: Ok(pools),
                     },
                     Container {
-                        pointer: 1,
+                        pointer: 0x2001,
                         country: 2,
                         slot: 2,
                         pools: Err("state air-base metadata field unreadable"),

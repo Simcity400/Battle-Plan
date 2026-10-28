@@ -1,4 +1,5 @@
 use super::*;
+use crate::extended::roster_replay::RosterReplay;
 use engine_allocation::{reserve, reserve_exact, resize_default};
 
 #[cfg(test)]
@@ -1838,66 +1839,6 @@ impl Captured {
         );
         self.theatre_names.reset();
         self.raw_mode = false;
-    }
-}
-
-/// A recorded log replayed with the authenticated country roster its copy
-/// resolved countries through; every read still goes to the log.
-struct RosterReplay<'a, M> {
-    inner: &'a M,
-    roster: Option<(
-        usize,
-        usize,
-        engine_native::ccountry::AuthenticatedRoster<'a>,
-    )>,
-    reserved: Option<(
-        usize,
-        usize,
-        engine_native::ccountry::ReservedCountryObservation,
-    )>,
-}
-
-impl<M: Memory> Memory for RosterReplay<'_, M> {
-    fn authenticated_reserved_country(
-        &self,
-        base: usize,
-        game_state: usize,
-    ) -> Option<Result<engine_native::ccountry::Country, &'static str>> {
-        self.authenticated_reserved_country_observation(base, game_state)
-            .map(engine_native::ccountry::ReservedCountryObservation::result)
-    }
-
-    fn authenticated_reserved_country_observation(
-        &self,
-        base: usize,
-        game_state: usize,
-    ) -> Option<engine_native::ccountry::ReservedCountryObservation> {
-        self.reserved
-            .filter(|(module, state, _)| (*module, *state) == (base, game_state))
-            .map(|(_, _, root)| root)
-    }
-
-    #[inline(always)]
-    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        self.inner.copy(address, destination)
-    }
-
-    fn immutable_view(
-        &self,
-        address: usize,
-        len: usize,
-    ) -> Option<engine_native::memory::SliceMemory<'_>> {
-        self.inner.immutable_view(address, len)
-    }
-
-    fn authenticated_countries(
-        &self,
-        base: usize,
-        game_state: usize,
-    ) -> Option<engine_native::ccountry::AuthenticatedRoster<'_>> {
-        self.roster
-            .filter(|(module, state, _)| (*module, *state) == (base, game_state))
-            .map(|(_, _, roster)| roster)
     }
 }
 

@@ -9,14 +9,14 @@ pub(crate) const C0: usize = 0x20000;
 const C1: usize = 0x21000;
 pub(crate) const MANAGER: usize = 0x30000;
 pub(crate) const SVEC: usize = 0x31000;
-const HVEC: usize = 0x32000;
+pub(crate) const HVEC: usize = 0x32000;
 pub(crate) const B0: usize = 0x40000;
 pub(crate) const B1: usize = 0x41000;
-const H0: usize = 0x42000;
+pub(crate) const H0: usize = 0x42000;
 pub(crate) const S0: usize = 0x50000;
-const S1: usize = 0x50100;
-const P0: usize = 0x51000;
-const P1: usize = 0x51100;
+pub(crate) const S1: usize = 0x50100;
+pub(crate) const P0: usize = 0x51000;
+pub(crate) const P1: usize = 0x51100;
 const CVEC0: usize = 0x60000;
 pub(crate) const CONT1: usize = 0x61000;
 const POOLVEC0: usize = 0x61400;
@@ -470,6 +470,25 @@ pub(super) fn collect_split(
         base: BASE,
         game_state: GAME_STATE,
     };
+    let mut first = AirBasesJob::fixture();
+    let report = super::copy_air_bases_refresh(memory, ctx, &mut first);
+    assert!(report.raw_ok);
+    let split = decode_with(&first, air_rows, ace_names, fog_rows, fog_wings);
+    (split, report, first)
+}
+
+/// What the decode worker replays from `job`'s acquisition.
+pub(crate) fn decode(job: &AirBasesJob) -> Split {
+    decode_with(job, Capacities::fixture().rows, 65_536, 2048, 4096)
+}
+
+fn decode_with(
+    job: &AirBasesJob,
+    air_rows: [usize; super::SIZED],
+    ace_names: usize,
+    fog_rows: usize,
+    fog_wings: usize,
+) -> Split {
     let capacities = Capacities {
         rows: air_rows,
         ace_names,
@@ -485,27 +504,20 @@ pub(super) fn collect_split(
             area_provinces: 8,
             wings: fog_wings,
         });
-    let mut first = AirBasesJob::fixture();
-    let report = super::copy_air_bases_refresh(memory, ctx, &mut first);
-    assert!(report.raw_ok);
     fog.registrations_raw_mode = true;
     let mut ticks = [0u64; 3];
-    air.decode_air_bases_payload(BASE, &first, &mut ticks);
-    fog.decode_registrations_payload(BASE, &first, &mut ticks);
-    (
-        Split {
-            bases_outcome: air.bases.outcome,
-            bases: air.bases.rows.clone(),
-            aces_outcome: air.aces.outcome,
-            aces: air.aces.rows.clone(),
-            ace_names: air.names.first.clone(),
-            ace_bytes_len: air.names.len,
-            ace_required: air.names.required,
-            regs: fog.registrations_snapshot(),
-        },
-        report,
-        first,
-    )
+    air.decode_air_bases_payload(BASE, job, &mut ticks);
+    fog.decode_registrations_payload(BASE, job, &mut ticks);
+    Split {
+        bases_outcome: air.bases.outcome,
+        bases: air.bases.rows.clone(),
+        aces_outcome: air.aces.outcome,
+        aces: air.aces.rows.clone(),
+        ace_names: air.names.first.clone(),
+        ace_bytes_len: air.names.len,
+        ace_required: air.names.required,
+        regs: fog.registrations_snapshot(),
+    }
 }
 
 pub(crate) fn direct(memory: &impl Memory) -> Split {

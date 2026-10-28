@@ -1852,6 +1852,7 @@ mod bases;
 pub(super) mod carrier;
 pub(crate) use carrier::capture_status as carrier_capture_status;
 mod carrier_memory;
+mod census_store;
 mod state_fuel_inputs;
 use super::fog;
 #[cfg(test)]
@@ -1869,6 +1870,8 @@ use bases::{
 pub(super) use state_fuel_inputs::Packet as StateFuelPacket;
 pub(crate) use state_fuel_inputs::status as state_fuel_capture_status;
 
+#[cfg(test)]
+mod census_store_tests;
 #[cfg(test)]
 mod registration_bench;
 #[cfg(test)]

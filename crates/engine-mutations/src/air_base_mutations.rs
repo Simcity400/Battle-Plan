@@ -50,6 +50,32 @@
 //! - Every site runs on the simulation thread. The hourly strategic-air stage
 //!   joins its worker task group and asserts the main thread before relocation,
 //!   purge and registration.
+//!
+//! AirBases reads, for each state base, the manager's three state-indexed
+//! base slots (`cstrategic_air_manager::STATE_AIR_BASES`, `STATE_ROCKET_BASES`,
+//! `STATE_GUN_BASES`), the base's identity (`cair_base::HANDLE`) and its host,
+//! state, province, capacity and kind (`cair_base::HOST_REFERENCE`, `STATE`,
+//! `PROVINCE`, `CAPACITY`, `KIND`), and the state's and province's identities
+//! and the province's state link (`cstate::ID`, `cprovince::ID`,
+//! `cprovince::STATE`). Stateless bases are read every hour.
+//!
+//! - Only the three state-base creators store a nonnull slot. Each returns the
+//!   base of one kind in a state's slot, or creates one for an empty slot,
+//!   registers its handle and stores it. They are reached from initial
+//!   population, the building level observer and the province-controller
+//!   listener, and name no base: each notifies the slots
+//!   ([`Receiver::Manager`]). The building level observer nulls a rocket or
+//!   gun slot right after destroying its base, whose forwarded destruction
+//!   also notifies the slots.
+//! - The state-base constructor writes host (the shared null reference),
+//!   state, province, kind and capacity. Afterwards only capacity refresh
+//!   writes capacity, from the constructors, building level changes, carrier
+//!   creation, refit and ship equipment recalculation. Only load completion
+//!   rewrites a state base's province; its host, state and kind have no other
+//!   writer.
+//! - State and province identities and the province's state link change only
+//!   with load, game reset and the developer map editor; entering the editor
+//!   is forwarded here by the building family.
 
 pub use crate::advisor_mutations::MutationSite;
 
@@ -60,14 +86,18 @@ pub enum Receiver {
     Base,
     /// RCX is an air-wing pool; its base's handle is `cair_wing_pool::AIR_BASE_REFERENCE`.
     Pool,
+    /// RCX is the strategic-air manager; the site writes its state base slots.
+    Manager,
 }
 
 impl Receiver {
-    /// The offset of the base handle in RCX's object.
-    pub const fn handle(self) -> usize {
+    /// The offset of the base handle in RCX's object; `None` when RCX names
+    /// no base.
+    pub const fn handle(self) -> Option<usize> {
         match self {
-            Self::Base => crate::cair_base::HANDLE,
-            Self::Pool => crate::cair_wing_pool::AIR_BASE_REFERENCE,
+            Self::Base => Some(crate::cair_base::HANDLE),
+            Self::Pool => Some(crate::cair_wing_pool::AIR_BASE_REFERENCE),
+            Self::Manager => None,
         }
     }
 }
@@ -76,10 +106,14 @@ const CREATE_COUNTRY_CONTAINER_RVA: usize = 0xca_8c30;
 const REGISTER_POOL_RVA: usize = 0xca_91e0;
 const ERASE_POOL_RVA: usize = 0xcc_0690;
 const DESTROY_POOL_RVA: usize = 0xfd_eee0;
+/// Each state-base creator saves RBX in five relocated bytes.
+const CREATE_STATE_BASE_SENTINEL: [u8; 16] = [
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48,
+];
 
 /// Every site with its receiver; each takes at most four integer or pointer
 /// arguments and returns RAX unchanged from its original.
-pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
+pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     // Country-container creation (base, tag).
     (
         MutationSite {
@@ -200,5 +234,45 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
             ],
         },
         Receiver::Pool,
+    ),
+    // Ordinary state base of a state, created for an empty slot (manager, state).
+    (
+        MutationSite {
+            name: "ensure_state_air_base",
+            rva: 0xca_8350,
+            sentinel: CREATE_STATE_BASE_SENTINEL,
+        },
+        Receiver::Manager,
+    ),
+    // Rocket site of a state, created for an empty slot (manager, state).
+    (
+        MutationSite {
+            name: "ensure_rocket_air_base",
+            rva: 0xca_9120,
+            sentinel: CREATE_STATE_BASE_SENTINEL,
+        },
+        Receiver::Manager,
+    ),
+    // Gun site of a state, created for an empty slot (manager, state).
+    (
+        MutationSite {
+            name: "ensure_gun_air_base",
+            rva: 0xca_8e20,
+            sentinel: CREATE_STATE_BASE_SENTINEL,
+        },
+        Receiver::Manager,
+    ),
+    // Capacity refresh (base): saving RBX and RSI and the stack reservation
+    // relocate in seven bytes.
+    (
+        MutationSite {
+            name: "refresh_capacity",
+            rva: 0xcc_21c0,
+            sentinel: [
+                0x40, 0x53, 0x56, 0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0xf1, 0x48, 0x8b, 0x49, 0x68,
+                0x48, 0x85,
+            ],
+        },
+        Receiver::Base,
     ),
 ];

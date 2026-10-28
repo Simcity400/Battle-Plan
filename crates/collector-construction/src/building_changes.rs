@@ -188,12 +188,14 @@ struct Forwarded(
 /// state's infrastructure level. A named status marks its province or state through its own flags
 /// and location id (`engine_native::cbuilding_status::FLAGS` and `ID`, written only by the status
 /// constructor); a status that cannot be named or read marks every province and state; entering
-/// nudge mode poisons the three families. The marks cover the original in flight.
+/// nudge mode poisons the three families and the air base carry
+/// ([`collector_observers::air_base_carry_changes`]). The marks cover the original in flight.
 fn forward(receiver: Receiver, first: usize) -> Forwarded {
     if receiver == Receiver::Structure {
         crate::territory_changes::poison();
         crate::rail_changes::poison();
         crate::raid_changes::poison();
+        collector_observers::air_base_carry_changes::poison();
         return Forwarded(None, None, None);
     }
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -368,6 +370,10 @@ impl Hooks {
             // forward their writes.
             crate::rail_changes::forwarder(false);
             crate::raid_changes::forwarder(false);
+            collector_observers::air_base_carry_changes::forwarder(
+                collector_observers::air_base_carry_changes::Forwarder::Building,
+                false,
+            );
         }
         // One census and suspension for the whole family, shared with the
         // other families in a runtime round (`hook::shared`): a thread at any
@@ -390,6 +396,12 @@ impl Hooks {
         );
         crate::rail_changes::forwarder(enabled && !self.hooks.is_empty());
         crate::raid_changes::forwarder(enabled && !self.hooks.is_empty());
+        // Air bases carry state and province identities only while this
+        // forwards entering nudge mode.
+        collector_observers::air_base_carry_changes::forwarder(
+            collector_observers::air_base_carry_changes::Forwarder::Building,
+            enabled && self.hooks.len() == SITES,
+        );
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {

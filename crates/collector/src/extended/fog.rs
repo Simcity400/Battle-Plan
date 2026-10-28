@@ -774,7 +774,14 @@ impl Captured {
         mut reuse: Option<&mut (dyn cair_base::RegistrationReuse + '_)>,
     ) {
         use crate::raw::Recorded;
-        let recorded = Recorded::build(&job.log);
+        let log = Recorded::build(&job.log);
+        // The census took the callback's roster when it had one.
+        let recorded = crate::extended::roster_replay::RosterReplay::new(
+            &log,
+            &job.roster,
+            base,
+            job.game_state,
+        );
         let carrier_log = job.carrier.log.borrow();
         let optional = Recorded::build(&carrier_log);
         let started = qpc();

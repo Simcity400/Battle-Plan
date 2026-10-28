@@ -288,7 +288,7 @@ impl Family {
             ],
             Self::ShipModels => &[ShipModels],
             Self::ProvinceUnits => &[ProvinceUnitOrder],
-            Self::AirBaseCarry => &[AirBaseRegistrations],
+            Self::AirBaseCarry => &[AirBases, AirBaseRegistrations],
             Self::Experience => &[CountryExperienceGains],
             Self::Fuel => &[CountryFuel],
             Self::OperationOutcomes => &[OperationCompletions],
@@ -387,7 +387,7 @@ impl Family {
                 | (UnitLeaders, NavalTrees)
                 | (OrdersGroups, Templates)
                 | (AdvisorPools, CountryInputs)
-                | (AirBaseCarry, Raid | ShipModels)
+                | (AirBaseCarry, Raid | ShipModels | Buildings)
                 | (
                     NuclearStrikes,
                     EquipmentDestruction | Buildings | CountryInputs
