@@ -5,7 +5,7 @@ mod scripted_map_demand;
 use crate::{
     directories::{default_capture_directory, resolve_user_directory},
     replay_io,
-    windows::{self, Event, Process},
+    windows::{self, Event, Process, ProcessMemory},
 };
 use engine_executable::{build::PINNED_BUILD, build::hash_executable};
 use installed_content_core::{content::GatherOptions, content::GatheredContent, content::gather};
@@ -1838,6 +1838,12 @@ pub(crate) fn capture(
     if let Some(note) = &content.order_note {
         println!("Content order is unverified: {note}");
     }
+    if !wait_for_loaded_campaign(&process, pid, control)? {
+        return Ok(CaptureOutcome {
+            detach_requested: true,
+            ..CaptureOutcome::default()
+        });
+    }
     let identity = content
         .identity(
             game_version,
@@ -3338,6 +3344,48 @@ const COLLECTOR_PROGRESS: &str = "progress";
 /// where the game's working set was being paged out), so the limit leaves
 /// room for several times that.
 const READY_STALL: Duration = Duration::from_secs(180);
+const LOAD_POLL: Duration = Duration::from_millis(100);
+
+/// Waits until the game has a loaded campaign. The collector sizes its once-only content
+/// roster at attach, and the game finishes initializing its content before any campaign can
+/// load, so attaching earlier can leave the roster too small to verify. `false` on a detach
+/// request.
+fn wait_for_loaded_campaign(
+    process: &Process,
+    pid: u32,
+    control: &Control,
+) -> Result<bool, String> {
+    let name = process
+        .path
+        .file_name()
+        .ok_or("game executable has no name")?
+        .to_owned();
+    let base = windows::modules(pid)?
+        .into_iter()
+        .find(|module| module.path.file_name() == Some(name.as_os_str()))
+        .ok_or("game module not found")?
+        .base;
+    let memory = ProcessMemory(&process.handle);
+    let mut announced = false;
+    loop {
+        if process.handle.signaled()? {
+            return Err("game exited before a campaign was loaded".into());
+        }
+        if control.stopping() {
+            return Ok(false);
+        }
+        if engine_allocation::advisory(|| engine_native::cgame_state::read_clock(&memory, base))
+            .is_some()
+        {
+            return Ok(true);
+        }
+        if !announced {
+            println!("Waiting for a campaign to load before attaching.");
+            announced = true;
+        }
+        std::thread::sleep(LOAD_POLL);
+    }
+}
 const DONE_STALL: Duration = Duration::from_secs(180);
 /// No attach or detach waits longer in total, progressing or not.
 const COLLECTOR_WAIT_CAP: Duration = Duration::from_secs(15 * 60);
