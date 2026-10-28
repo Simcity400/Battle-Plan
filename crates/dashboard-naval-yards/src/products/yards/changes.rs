@@ -95,6 +95,8 @@ struct Ship {
     refusals: Vec<(String, u64)>,
     /// The task force handles it reads: its own, a rejoin target and its children.
     tasks: Vec<u64>,
+    /// The variant handles it reads VariantDefinitions at, ascending.
+    variants: Vec<u64>,
 }
 
 impl State {
@@ -149,8 +151,10 @@ impl State {
     fn ship_item(&mut self, frame: &DecodedFrame, ship: u64) -> Ship {
         self.begin_part();
         self.ship_refusals = Some(Vec::new());
+        self.collect_variants();
         let mut values = Values::default();
         self.project_ship(frame, &mut values, ship);
+        let variants = self.collected_variants();
         let collected = self.ship_refusals.take().unwrap_or_default();
         let mut entries = BTreeMap::new();
         for (name, value) in values.iter() {
@@ -188,6 +192,7 @@ impl State {
             entries: entries.into_iter().collect(),
             refusals: refusals.into_iter().collect(),
             tasks,
+            variants,
         }
     }
 }
@@ -397,6 +402,8 @@ pub(crate) struct Engine {
     holders: HashMap<u64, BTreeMap<String, String>>,
     /// The ships reading each task force handle.
     tasks: HashMap<u64, HashSet<u64>>,
+    /// The ships reading each variant handle's definition.
+    variants: HashMap<u64, HashSet<u64>>,
     /// Each owner's refusal totals by reason.
     totals: HashMap<(String, String), u64>,
     repairs: Repairs,
@@ -571,11 +578,12 @@ impl Engine {
             ships: HashMap::new(),
             holders: HashMap::new(),
             tasks: HashMap::new(),
+            variants: HashMap::new(),
             totals: HashMap::new(),
             repairs,
             refit: Refits::default(),
         });
-        engine.update(frame, true)?;
+        engine.update(frame, true, &[])?;
         Some(engine)
     }
 
@@ -585,13 +593,23 @@ impl Engine {
             return None;
         }
         for &table in NAMING {
-            if reads(table, self.refits)
+            if table != TableId::VariantDefinitions
+                && reads(table, self.refits)
                 && !same_naming(table, &self.views[at(table)], &frame.tables[table.index()])
             {
                 return None;
             }
         }
-        self.update(frame, false)
+        // A definition names only the ships and lines reading it: those are projected again.
+        let variants: Vec<u64> = changed::<tables::VariantDefinitions>(
+            Some(&self.views[at(TableId::VariantDefinitions)]),
+            &frame.tables[TableId::VariantDefinitions.index()],
+            PartialEq::eq,
+        )?
+        .into_iter()
+        .map(|key| key as u64)
+        .collect();
+        self.update(frame, false, &variants)
     }
 
     pub(crate) fn totals(&self) -> &HashMap<(String, String), u64> {
@@ -611,7 +629,7 @@ impl Engine {
         &self.owners
     }
 
-    fn update(&mut self, frame: &DecodedFrame, initial: bool) -> Option<Changes> {
+    fn update(&mut self, frame: &DecodedFrame, initial: bool, variants: &[u64]) -> Option<Changes> {
         let mut keys = vec![Vec::new(); TABLES.len()];
         for (index, &table) in TABLES.iter().enumerate() {
             if NAMING.contains(&table) || !reads(table, self.refits) {
@@ -623,6 +641,9 @@ impl Engine {
                 &frame.tables[table.index()],
             )?;
         }
+        if !variants.is_empty() {
+            self.scratch.redesign(frame, variants);
+        }
         let mut changes = Changes::default();
         let mut holding = Holding::default();
         let mut dirty = BTreeSet::new();
@@ -630,11 +651,11 @@ impl Engine {
             dirty.extend(self.owners.iter().cloned());
         }
         if self.refits {
-            self.refit_lines(frame, &keys, initial, &mut changes, &mut holding, &mut dirty)?;
+            self.refit_lines(frame, &keys, initial, variants, &mut changes, &mut holding, &mut dirty)?;
         } else {
             self.repair_ports(frame, &keys, initial, &mut changes, &mut holding, &mut dirty)?;
         }
-        self.ship_changes(frame, &keys, holding, &mut changes, &mut dirty);
+        self.ship_changes(frame, &keys, variants, holding, &mut changes, &mut dirty);
         if self.refits {
             self.refit_totals(frame, &dirty, &mut changes)?;
         } else {
@@ -830,11 +851,13 @@ impl Engine {
         Some(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn refit_lines(
         &mut self,
         frame: &DecodedFrame,
         keys: &[Vec<u128>],
         initial: bool,
+        variants: &[u64],
         changes: &mut Changes,
         holding: &mut Holding,
         dirty: &mut BTreeSet<String>,
@@ -862,6 +885,16 @@ impl Engine {
             touched.extend(refit.by_task.get(&(key as u64)).into_iter().flatten());
         }
         let mut lines = BTreeSet::new();
+        // A line names its production target's design.
+        if !variants.is_empty() {
+            for (owner, line) in refit.lines.keys() {
+                if at_key(production, u128::from(*line))
+                    .is_some_and(|row| variants.binary_search(&row.variant).is_ok())
+                {
+                    lines.insert((owner.clone(), *line));
+                }
+            }
+        }
         for &key in keys[at(TableId::NavalRefitProgress)]
             .iter()
             .chain(&keys[at(TableId::ProductionLines)])
@@ -1047,6 +1080,7 @@ impl Engine {
         &mut self,
         frame: &DecodedFrame,
         keys: &[Vec<u128>],
+        variants: &[u64],
         holding: Holding,
         changes: &mut Changes,
         dirty: &mut BTreeSet<String>,
@@ -1056,6 +1090,7 @@ impl Engine {
             ships,
             holders,
             tasks,
+            variants: readers,
             totals,
             views,
             ..
@@ -1079,6 +1114,9 @@ impl Engine {
                 touched.extend(tasks.get(&((key >> shift) as u64)).into_iter().flatten());
             }
         }
+        for variant in variants {
+            touched.extend(readers.get(variant).into_iter().flatten());
+        }
         touched.extend(
             holding
                 .added
@@ -1092,9 +1130,14 @@ impl Engine {
             for &task in &now.tasks {
                 tasks.entry(task).or_default().insert(ship);
             }
+            for &variant in &now.variants {
+                readers.entry(variant).or_default().insert(ship);
+            }
             let old = ships.insert(ship, now);
             if let Some(old) = &old {
-                unindex(tasks, ship, &old.tasks, &ships[&ship].tasks);
+                let now = &ships[&ship];
+                unindex(tasks, ship, &old.tasks, &now.tasks);
+                unindex(readers, ship, &old.variants, &now.variants);
             }
             replaced.insert(ship, old);
         }
@@ -1158,6 +1201,7 @@ impl Engine {
         for ship in unheld {
             if let Some(old) = ships.remove(&ship) {
                 unindex(tasks, ship, &old.tasks, &[]);
+                unindex(readers, ship, &old.variants, &[]);
             }
         }
         // Owners whose queued ships appeared or went count them again.
@@ -1191,15 +1235,17 @@ impl Engine {
             for (why, _) in &ship.refusals {
                 bytes.heap(why);
             }
-            bytes.heap(&ship.tasks);
+            bytes.heap(&ship.tasks).heap(&ship.variants);
         }
         bytes.table::<u64, BTreeMap<String, String>>(self.holders.capacity());
         for held in self.holders.values() {
             bytes.heap(held);
         }
-        bytes.table::<u64, HashSet<u64>>(self.tasks.capacity());
-        for ships in self.tasks.values() {
-            bytes.table::<u64, ()>(ships.capacity());
+        for index in [&self.tasks, &self.variants] {
+            bytes.table::<u64, HashSet<u64>>(index.capacity());
+            for ships in index.values() {
+                bytes.table::<u64, ()>(ships.capacity());
+            }
         }
         bytes.table::<(String, String), u64>(self.totals.capacity());
         for (owner, why) in self.totals.keys() {

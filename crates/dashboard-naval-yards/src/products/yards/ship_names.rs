@@ -10,15 +10,23 @@ pub(super) fn groups(cat: &Catalogue) -> io::Result<Arc<Groups>> {
         .get_or_init(|| division_names::read(&cat.content.layers))
 }
 
+/// The variant whose definition names a ship's group, if any.
+pub(super) fn variant(
+    naming: &rows::ShipNamingOperands,
+    model: Option<&rows::ShipModelRow>,
+) -> Option<u64> {
+    naming
+        .equipment
+        .or_else(|| model.map(|model| model.variant))
+        .filter(|handle| *handle != 0)
+}
+
 pub(super) fn group(
     frame: &DecodedFrame,
     naming: &rows::ShipNamingOperands,
     model: Option<&rows::ShipModelRow>,
 ) -> Result<Option<Vec<u8>>, String> {
-    let variant = naming
-        .equipment
-        .or_else(|| model.map(|model| model.variant))
-        .filter(|handle| *handle != 0)
+    let variant = variant(naming, model)
         .ok_or("Ship naming group unavailable: no recorded naming or selected pool variant")?;
     let definition = find(
         frame.complete::<tables::VariantDefinitions>().ok(),

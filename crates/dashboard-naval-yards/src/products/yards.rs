@@ -109,6 +109,9 @@ pub struct State {
     ship_views: Vec<replay_frame::frame::ViewIdentity>,
     #[serde(skip)]
     ship_refusals: Option<Vec<(usize, usize)>>,
+    /// The variant handles a projection read VariantDefinitions at, while collected.
+    #[serde(skip)]
+    variants_read: Option<Vec<u64>>,
     /// The last whole observation's projection, which the next hour's changes are found against.
     #[serde(skip)]
     engine: Option<Box<changes::Engine>>,
@@ -254,33 +257,16 @@ impl State {
     }
 
     pub fn design(&mut self, frame: &DecodedFrame, handle: u64) -> Result<Operand, String> {
+        if let Some(read) = &mut self.variants_read {
+            read.push(handle);
+        }
         if self.designs.is_none() {
             // Bind country tags once per changed naming census, not once per ship.
             let read = || -> Result<HashMap<u64, Operand>, String> {
-                let variants = frame
-                    .complete::<tables::VariantDefinitions>()
-                    .map_err(|why| why.to_string())?;
-                let countries = frame
-                    .complete::<tables::Countries>()
-                    .map_err(|why| why.to_string())?;
-                let links = frame
-                    .complete::<tables::CountryLinks>()
-                    .map_err(|why| why.to_string())?;
-                let lexical = frame
-                    .complete::<tables::LexicalTokens>()
-                    .unwrap_or_default();
-                let tags = Tags::new(
-                    countries,
-                    links,
-                    frame.complete::<tables::CountryAppearance>().ok(),
-                );
+                let (variants, tags, lexical) = design_naming(frame)?;
                 Ok(variants
                     .iter()
-                    .map(|definition| {
-                        // Dates are separate channels, never an interned token per hour.
-                        let raw = variant_names::raw_variant(definition, 0, &tags, lexical);
-                        (definition.id, Operand::Design(raw))
-                    })
+                    .map(|definition| (definition.id, design_operand(definition, &tags, lexical)))
                     .collect())
             };
             self.designs = Some(read());
@@ -293,6 +279,38 @@ impl State {
             .get(&handle)
             .cloned()
             .ok_or_else(|| format!("Design {handle}: VariantDefinitions has no matching design"))
+    }
+    /// Name `changed` designs again from `frame`, whose other naming tables are those the held names read.
+    pub(crate) fn redesign(&mut self, frame: &DecodedFrame, changed: &[u64]) {
+        // Names not yet read, or a refusal, are read whole from the frame when next needed.
+        let Some(Ok(mut designs)) = self.designs.take() else {
+            return;
+        };
+        let Ok((variants, tags, lexical)) = design_naming(frame) else {
+            return;
+        };
+        for &handle in changed {
+            match find(Some(variants), handle, |row| row.id) {
+                Some(definition) => {
+                    designs.insert(handle, design_operand(definition, &tags, lexical));
+                }
+                None => {
+                    designs.remove(&handle);
+                }
+            }
+        }
+        self.designs = Some(Ok(designs));
+    }
+    /// Collect the variant handles projections read VariantDefinitions at from now on.
+    pub(crate) fn collect_variants(&mut self) {
+        self.variants_read = Some(Vec::new());
+    }
+    /// The variant handles read since [`Self::collect_variants`], ascending, each once.
+    pub(crate) fn collected_variants(&mut self) -> Vec<u64> {
+        let mut read = self.variants_read.take().unwrap_or_default();
+        read.sort_unstable();
+        read.dedup();
+        read
     }
     pub fn design_value(
         &mut self,
@@ -509,6 +527,11 @@ impl State {
                 return;
             }
             if let Ok(Some(naming)) = row.naming.require("Ships.naming") {
+                if let (Some(read), Some(variant)) =
+                    (&mut self.variants_read, ship_names::variant(naming, model))
+                {
+                    read.push(variant);
+                }
                 let group = ship_names::group(frame, naming, model);
                 self.label(
                     values,
@@ -529,6 +552,39 @@ impl State {
             1,
         );
     }
+}
+
+/// The design names' tables: definitions, country tags and lexical tokens.
+fn design_naming(
+    frame: &DecodedFrame,
+) -> Result<(&[rows::VariantDefinitionRow], Tags<'_>, &[rows::LexicalTokenRow]), String> {
+    let variants = frame
+        .complete::<tables::VariantDefinitions>()
+        .map_err(|why| why.to_string())?;
+    let countries = frame
+        .complete::<tables::Countries>()
+        .map_err(|why| why.to_string())?;
+    let links = frame
+        .complete::<tables::CountryLinks>()
+        .map_err(|why| why.to_string())?;
+    let lexical = frame
+        .complete::<tables::LexicalTokens>()
+        .unwrap_or_default();
+    let tags = Tags::new(
+        countries,
+        links,
+        frame.complete::<tables::CountryAppearance>().ok(),
+    );
+    Ok((variants, tags, lexical))
+}
+
+fn design_operand(
+    definition: &rows::VariantDefinitionRow,
+    tags: &Tags<'_>,
+    lexical: &[rows::LexicalTokenRow],
+) -> Operand {
+    // Dates are separate channels, never an interned token per hour.
+    Operand::Design(variant_names::raw_variant(definition, 0, tags, lexical))
 }
 
 pub fn find<T, K: Ord>(rows: Option<&[T]>, key: K, by: impl Fn(&T) -> K) -> Option<&T> {

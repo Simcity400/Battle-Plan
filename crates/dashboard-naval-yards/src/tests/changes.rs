@@ -220,7 +220,13 @@ fn world(countries: u32, hour: i32) -> DecodedFrame {
                 organisation: i64::from(h),
                 class_id: 5,
                 name: Recorded::Value((k != 2).then(|| b"Ship".to_vec())),
-                naming: Recorded::Value(None),
+                naming: Recorded::Value((k == 2 && i % 2 == 0).then(|| ShipNamingOperands {
+                    kind: 1,
+                    order: 1,
+                    ordered: 1,
+                    equipment: Some(3),
+                    ..Default::default()
+                })),
                 ..Default::default()
             });
             if k != 2 {
@@ -450,6 +456,52 @@ fn prepare<O: Observer>(
     fixture
 }
 
+/// `world(countries, 20)` at each of `hours` with only its designs moving: a referenced
+/// design renamed, removed for two hours and given another naming group, one added, and
+/// one nothing reads renamed every hour.
+fn design_hours(countries: u32, hours: std::ops::RangeInclusive<i32>) -> Vec<DecodedFrame> {
+    let base = world(countries, 20);
+    hours
+        .map(|h| {
+            let mut frame = base.clone();
+            frame.hour = h;
+            frame.metrics = Default::default();
+            let ids = [1, 2, 3, 4, 9]
+                .into_iter()
+                .filter(|&id| !(id == 2 && (15..=16).contains(&h)) && !(id == 4 && h < 12));
+            put(
+                &mut frame,
+                TableRows::VariantDefinitions(
+                    ids.map(|id| VariantDefinitionRow {
+                        id,
+                        equipment_token: 5,
+                        creator_link: raw(0),
+                        display_name: match id {
+                            2 if h >= 20 => b"Design 2 II".to_vec(),
+                            9 => format!("Spare {h}").into_bytes(),
+                            _ => format!("Design {id}").into_bytes(),
+                        },
+                        design: if id == 3 {
+                            VariantDesignState {
+                                division_names_group: Some(
+                                    if h >= 24 { b"GROUP_B" } else { b"GROUP_A" }.to_vec(),
+                                ),
+                                ..Default::default()
+                            }
+                            .into()
+                        } else {
+                            Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .collect(),
+                ),
+            );
+            frame
+        })
+        .collect()
+}
+
 fn replies(
     source: &dashboard_base::Source,
     fixture: &Fixture,
@@ -530,5 +582,33 @@ fn changed_yard_hours_publish_and_reply_exactly_as_whole_hours_across_blocks_and
 fn fifteen_hundred_country_navies_publish_exactly_as_whole_hours() {
     let tags: Vec<String> = [0, 1, 749, 1499].into_iter().map(tag).collect();
     check(1500, 14..=21, &[3], &tags);
+}
 
+#[test]
+fn design_hours_project_only_the_ships_and_lines_reading_a_changed_design() {
+    let tags: Vec<String> = [0, 1, 2, 3, 4, 6, 9, 11].into_iter().map(tag).collect();
+    let frames = design_hours(12, 7..=30);
+    let source = source(frames.clone());
+    fn family<O: Observer, R: Observer>(
+        source: &dashboard_base::Source,
+        frames: &[DecodedFrame],
+        tags: &[String],
+    ) {
+        let cuts = [10];
+        let reference = every_hour::<R>(source, frames, &cuts);
+        let projects = prepass::noted("naval-yards.project");
+        let changed = prepare::<O>(source, frames, &cuts, false);
+        // Only the first hour is projected whole: every later one changes designs alone.
+        assert_eq!(prepass::noted("naval-yards.project") - projects, 1, "{}", O::NAME);
+        let restored = prepare::<O>(source, frames, &cuts, true);
+        for fixture in [&changed, &restored] {
+            assert_payloads_equal(&fixture.payloads(), &reference.payloads(), O::NAME);
+        }
+        let whole = replies(source, &reference, tags, (7, 30));
+        for fixture in [&changed, &restored] {
+            assert_eq!(replies(source, fixture, tags, (7, 30)), whole);
+        }
+    }
+    family::<RepairsObserver, yards::reference::Repairs>(&source, &frames, &tags);
+    family::<RefitsObserver, yards::reference::Refits>(&source, &frames, &tags);
 }
