@@ -11,15 +11,14 @@ export interface SettingsPatch {
   autoSave?: boolean;
   startWithWindows?: boolean;
   startWithReplay?: boolean;
-  gameScore?: boolean;
-  operationOutcomes?: boolean;
-  politics?: boolean;
   captureMode?: CaptureMode;
 }
 
 export const recorderStatus = () => invoke<Snapshot>('recorder_status');
-/** Tells the recorder the panel has drawn; it answers whether to open on the Stop prompt, and whether that prompt is all it shows. */
-export const panelOpened = (panel: string) => invoke<{ askStop: boolean; compact: boolean }>('panel_opened', { panel });
+/** Why the Stop prompt was asked for: Quit waits on it, or Discard was chosen and only its confirmation is left. */
+export interface Ask { quitting: boolean; discarding: boolean }
+/** Tells the recorder the panel has drawn; it answers whether to open on the Stop prompt, whether that prompt is all it shows, and why. */
+export const panelOpened = (panel: string) => invoke<{ askStop: boolean; compact: boolean } & Ask>('panel_opened', { panel });
 export const panelFit = (height: number) => invoke<void>('panel_fit', { height });
 export const closePanel = () => invoke<void>('close_panel');
 export const startRecording = () => invoke<void>('start_recording');
@@ -44,7 +43,8 @@ export const revealRecording = (path: string) => invoke<void>('reveal_recording'
 
 export const onStatus = (handler: (snapshot: Snapshot) => void): Promise<UnlistenFn> =>
   listen<Snapshot>('recorder-status', event => handler(event.payload));
-export const onAskStop = (handler: () => void): Promise<UnlistenFn> => listen('recorder-ask-stop', () => handler());
+/** Quit or Discard asks with the panel open. */
+export const onAskStop = (handler: (ask: Ask) => void): Promise<UnlistenFn> => listen<Ask>('recorder-ask-stop', event => handler(event.payload));
 /** The recorder may consume a one-shot setting without a panel save. */
 export const onSettings = (handler: () => void): Promise<UnlistenFn> => listen('recorder-settings', () => handler());
 /** A recording was saved or discarded, or began or stopped waiting. */

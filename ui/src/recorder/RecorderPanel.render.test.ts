@@ -12,8 +12,8 @@ const OTHER = '00000000-0000-4000-8000-000000000001';
 const PATH = `C:\\Recordings\\Germany 1936–1943.battleplan`;
 const STARTED = Date.UTC(2026, 9, 12, 12, 0);
 const MB = 2 ** 20;
-const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, startWithWindows: false, startWithReplay: true, gameScore: true,
-  operationOutcomes: true, politics: true, captureMode: 'full', campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
+const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, startWithWindows: false, startWithReplay: true, captureMode: 'full',
+  campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
 const recording: Snapshot = { phase: 'recording', campaign: CAMPAIGN, recording: PATH, name: 'Germany 1936–1943', continued: true, hour: 59_000_000,
   firstHour: null, savedBytes: 214 * MB, spoolBytes: 1229 * MB, progress: null, startedAt: STARTED, stopping: false, problem: null, automatic: true,
   session: null, flag: null, captureMode: 'full' };
@@ -43,7 +43,7 @@ test('the panel draws each state, and the Stop prompt replaces everything under 
     const recordingPanel = render({});
     assert.match(text(recordingPanel), /Germany 1936–1943 Recording/);
     // The spool and the saved part it continues, apart.
-    assert.match(text(recordingPanel), /spool 1\.2 GB · saved 214 MB/);
+    assert.match(text(recordingPanel), /1\.2 GB this session · 214 MB saved/);
     assert.doesNotMatch(recordingPanel, /recorder-flag/, 'no flag is drawn when none resolved');
     assert.match(recordingPanel, /class="recorder-head" data-tauri-drag-region="deep"/, 'the head drags the panel');
     const flagged = render({ snapshot: { ...recording, flag } });
@@ -59,10 +59,17 @@ test('the panel draws each state, and the Stop prompt replaces everything under 
 
     const asking = render({ asking: true });
     assert.match(text(asking), /Keep this session's 2 h 14 min\? Discard Save/);
+    // Quit's prompt says the recorder quits once it is answered.
+    assert.match(text(render({ asking: true, quitting: true })), /Keep 2 h 14 min before quitting\? Discard Save/);
     assert.match(asking, /aria-pressed="true"/, 'Stop stays pressed while asking');
-    assert.match(asking, /data-tooltip="Deletes this session only\. Earlier recording in this file is kept\."/);
     assert.doesNotMatch(text(asking), /This campaign/, 'the prompt is the panel’s only row under the head');
-    assert.match(render({ asking: true, snapshot: { ...recording, continued: false } }), /data-tooltip="Deletes this recording\."/);
+    // Discard asks first; its confirmation focuses Cancel and says what is kept.
+    assert.doesNotMatch(asking, /is-danger/);
+    const confirming = render({ asking: true, discarding: true });
+    assert.match(text(confirming), /Discard this session's 2 h 14 min\? Cancel Discard/);
+    assert.match(confirming, /class="button small quiet" autofocus="">Cancel<\/button><button type="button" class="button small is-danger" data-tooltip="The earlier recording in this file is kept\.">Discard/);
+    assert.match(render({ asking: true, discarding: true, snapshot: { ...recording, continued: false } }), /data-tooltip="This can&#x27;t be undone\."/);
+    assert.match(text(render({ asking: true, discarding: true, quitting: true })), /Discard 2 h 14 min and quit\? Cancel Discard/);
     // A stop being carried out, or saving, closes the prompt.
     assert.doesNotMatch(text(render({ asking: true, snapshot: { ...recording, stopping: true } })), /Keep this session/);
 
@@ -78,6 +85,14 @@ test('the panel draws each state, and the Stop prompt replaces everything under 
     const waiting = render({ snapshot: { ...recording, phase: 'waiting', campaign: null, recording: null } });
     assert.match(text(waiting), /Waiting for the game Records when you load a campaign/);
     assert.doesNotMatch(text(waiting), /This campaign/);
+    // The main footer: Battle Plan, the recordings and the settings, nothing doubled.
+    assert.match(text(waiting), /Open Battle Plan Recordings $/);
+    assert.match(render({ snapshot: { ...recording, phase: 'waiting', campaign: null, recording: null } }), /aria-label="Settings"/);
+    assert.doesNotMatch(render({}), /recordings folder/i, 'the folder opens from the Recordings view');
+    // A command's error can be dismissed; a recorder problem cannot.
+    const failed = render({ error: 'Recorder settings could not be saved' });
+    assert.match(failed, /Recorder settings could not be saved<\/span><button type="button" class="icon-button recorder-dismiss" aria-label="Dismiss"/);
+    assert.doesNotMatch(render({ snapshot: { ...recording, problem: { text: 'x', detail: '' } } }), /Dismiss/);
 
     const unsaved = render({ snapshot: { ...recording, phase: 'unsaved' } });
     assert.match(text(unsaved), /Germany 1936–1943 Not saved yet .* Recordings/);
@@ -87,10 +102,14 @@ test('the panel draws each state, and the Stop prompt replaces everything under 
       assert.match(text(render({ snapshot: { ...recording, phase } })), /Open Battle Plan/, phase);
 
     const panelSettings = text(render({ view: 'settings' }));
-    assert.match(panelSettings, /Settings Auto record Records each campaign when it loads\. Auto save Saves when you load another campaign or close the game\./);
-    assert.match(panelSettings, /Save to C:\\Recordings Paradox user folder Automatic/);
+    assert.match(panelSettings, /Settings Recording Auto record Records each campaign when it loads\. Auto save Saves when you load another campaign or close the game\./);
+    // Every group is named; What to record stands with the other recording settings.
+    assert.match(panelSettings, /close the game\. What to record Full Compression Low High High makes smaller files/);
+    assert.match(panelSettings, /Folders Save to C:\\Recordings Paradox user folder Automatic/);
     assert.doesNotMatch(panelSettings, /File size|Fast|Small/);
-    assert.match(panelSettings, /Start With Windows With Battle Plan What to record Full/);
+    assert.match(panelSettings, /Start automatically With Windows With Battle Plan Open Battle Plan $/);
+    assert.match(render({ view: 'settings' }), /role="group" aria-label="Compression"><button type="button" aria-pressed="true">Low/);
+    assert.match(render({ view: 'settings', settings: { ...settings, compression: 'high' } }), /aria-pressed="false">Low<\/button><button type="button" aria-pressed="true">High/);
     assert.match(text(render({ view: 'settings', settings: { ...settings, captureMode: 'map' } })), /What to record Map/,
       'the summary names the mode');
     assert.match(render({ view: 'settings' }), /role="switch" checked=""[^>]*\/>[\s\S]*role="switch" checked=""/, 'both are on by default');
@@ -103,13 +122,11 @@ test('the panel draws each state, and the Stop prompt replaces everything under 
     assert.match(record, /role="radiogroup" aria-label="Capture mode"/);
     assert.match(record, /<label class="recorder-mode is-selected"><input type="radio" name="recorder-capture-mode" checked="" value="full"/);
     assert.doesNotMatch(record, /type="radio"[^>]*disabled/, 'the modes can be chosen between sessions');
-    assert.match(text(record), /continues in a new recording file\. Game score Operation outcomes Politics/);
-    assert.doesNotMatch(record, /Full only/);
+    // The modes are the only choice: no switches follow them.
+    assert.match(text(record), /continues in a new recording file\. Open Battle Plan $/);
+    assert.doesNotMatch(record, /role="switch"/);
     const map = render({ view: 'record', snapshot: idle, settings: { ...settings, captureMode: 'map' } });
     assert.match(map, /<label class="recorder-mode is-selected"><input type="radio" name="recorder-capture-mode" checked="" value="map"/);
-    assert.match(text(map), /Game score Operation outcomes Full only Politics Full only/);
-    const switches = (map.match(/<input[^>]*role="switch"[^>]*>/g) ?? []).map(input => [/checked=""/.test(input), /disabled=""/.test(input)]);
-    assert.deepEqual(switches, [[true, false], [false, true], [false, true]], 'Map shows operation outcomes and politics off and disabled');
     // While recording the mode is shown fixed, and the note says why.
     const fixed = render({ view: 'record' });
     assert.match(fixed, /class="recorder-modes is-fixed"/);
@@ -133,15 +150,22 @@ test('the recordings view lists what is not saved yet and what is saved, each wi
       snapshot: recording, settings, view: 'recordings', asking: false, error: null, now: STARTED, actions, ...props } as never));
 
     const view = render({ recordings: listed });
-    assert.match(text(view), /Recordings Not saved yet Spool on disk: 3\.4 GB/);
+    assert.match(text(view), /Recordings Not saved yet 3\.4 GB on disk/);
     // Recording now, then waiting with Save and Discard; a new recording has no file name yet.
-    assert.match(text(view), /Germany 1936–1943 Recording · 12 Jun 1941 · spool 1\.2 GB New recording Waiting · 1936 – Jun 1941 · spool 2\.2 GB Discard Save/);
-    assert.match(view, /data-tooltip="Deletes this recording\."/);
+    assert.match(text(view), /Germany 1936–1943 Recording · 12 Jun 1941 · 1\.2 GB New recording Waiting · 1936 – Jun 1941 · 2\.2 GB Discard Save/);
+    assert.doesNotMatch(view, /is-danger/, 'Discard asks before it deletes');
     assert.equal((view.match(/>Save</g) ?? []).length, 1, 'only a waiting recording has Save');
+    // Its confirmation replaces the details with what Discard deletes, Cancel focused.
+    const asked = render({ recordings: listed, confirmingWaiting: `${listed.unsaved[1].session}/${listed.unsaved[1].campaign}` });
+    assert.match(text(asked), /New recording Discard this recording\? This can't be undone\. Cancel Discard Saved/);
+    assert.match(asked, /class="button small quiet recorder-item-action" autofocus="">Cancel<\/button><button type="button" class="button small is-danger recorder-item-action">Discard/);
+    assert.match(text(asked), /Germany 1936–1943 Recording · 12 Jun 1941 · 1\.2 GB New recording/, 'only the asked recording changes');
     // Saved: its name opens it, its folder shows it.
     assert.match(text(view), /Saved Germany 1936–1943 1936 – Jun 1941 · 412 MB/);
     assert.match(view, /data-tooltip="Open in Battle Plan · Germany 1936–1943\.battleplan"/);
     assert.match(view, /aria-label="Show in folder"/);
+    assert.match(view, /class="recorder-item is-openable"/, 'a saved row opens from anywhere on it');
+    assert.match(view, /aria-label="Open recordings folder"/);
     assert.match(view, /class="recorder-item-flag"><canvas/);
     assert.match(view, /class="recorder-item-flag is-empty"/, 'no flag resolved: a quiet placeholder');
     assert.match(view, /class="recorder-list themed-scrollbar"/, 'long lists scroll inside the view');
@@ -156,12 +180,12 @@ test('the recordings view lists what is not saved yet and what is saved, each wi
     // The main panel's footer counts what waits.
     const main = render({ view: 'main', recordings: listed });
     assert.match(main, /aria-label="Recordings, 1 waiting to be saved"/);
-    assert.match(main, /class="recorder-badge" aria-hidden="true">1</);
+    assert.match(main, />Recordings<span class="recorder-badge" aria-hidden="true">1</);
     assert.doesNotMatch(render({ view: 'main', recordings: { unsaved: [listed.unsaved[0]], saved: [] } }), /recorder-badge/);
   } finally { await vite.close(); }
 });
 
-test('the Stop prompt beside the tray icon is one line with Save focused, and nothing else', async () => {
+test('the Stop prompt beside the tray icon asks one question with Save focused, and nothing else', async () => {
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
   try {
@@ -169,10 +193,18 @@ test('the Stop prompt beside the tray icon is one line with Save focused, and no
     const render = (props: Partial<PanelViewProps>) => renderToStaticMarkup(createElement(PanelView as never, {
       snapshot: recording, settings, view: 'main', asking: true, error: null, now: STARTED + (2 * 60 + 14) * 60_000, actions, compact: true, ...props } as never));
     const prompt = render({});
-    assert.equal(text(prompt).trim(), 'Stop recording Germany 1936–1943 after 2 h 14 min? Discard Save');
+    assert.equal(text(prompt).trim(), 'Stop recording? Keep this session\'s 2 h 14 min of Germany 1936–1943? Cancel Discard Save');
+    assert.match(prompt, /role="alertdialog"/);
     assert.match(prompt, /<button type="button" class="button small primary" autofocus="">Save<\/button>/);
-    assert.match(prompt, /data-tooltip="Deletes this session only\. Earlier recording in this file is kept\."/);
+    // Quit asked: the title says the recorder quits.
+    assert.match(text(render({ quitting: true })), /^ ?Quit Battle Plan Recorder\? Keep this session's 2 h 14 min/);
     assert.doesNotMatch(text(prompt), /Open Battle Plan|This campaign/);
+    // Discard from the tray, or on this prompt: its confirmation alone, Cancel focused.
+    const discarding = render({ discarding: true });
+    assert.equal(text(discarding).trim(),
+      'Discard this session? Deletes this session\'s 2 h 14 min of Germany 1936–1943. The earlier recording in this file is kept. Cancel Discard');
+    assert.match(discarding, /<button type="button" class="button small quiet" autofocus="">Cancel<\/button><button type="button" class="button small is-danger">Discard<\/button>/);
+    assert.match(text(render({ discarding: true, quitting: true })), /^ ?Discard and quit\?/);
     // Once answered, it shows nothing while it closes.
     assert.equal(text(render({ snapshot: { ...recording, stopping: true } })).trim(), '');
   } finally { await vite.close(); }

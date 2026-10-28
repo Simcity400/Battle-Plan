@@ -97,12 +97,6 @@ pub struct RecorderSettings {
     pub start_with_windows: bool,
     #[serde(default = "enabled")]
     pub start_with_replay: bool,
-    #[serde(default = "enabled")]
-    pub game_score: bool,
-    #[serde(default = "enabled")]
-    pub operation_outcomes: bool,
-    #[serde(default = "enabled")]
-    pub politics: bool,
     /// A campaign recorded in another mode continues in a new file.
     #[serde(default = "full", with = "capture_mode")]
     pub capture_mode: CaptureMode,
@@ -151,9 +145,6 @@ impl Default for RecorderSettings {
             user_folder: None,
             start_with_windows: false,
             start_with_replay: true,
-            game_score: true,
-            operation_outcomes: true,
-            politics: true,
             capture_mode: CaptureMode::Full,
             campaigns: BTreeMap::new(),
             chosen_names: Vec::new(),
@@ -318,7 +309,6 @@ mod tests {
         let settings = RecorderSettings::load_from(&path).unwrap();
         assert!(settings.record_every_campaign && settings.auto_save);
         assert!(settings.start_with_replay && !settings.start_with_windows);
-        assert!(settings.game_score && settings.operation_outcomes && settings.politics);
         assert_eq!(settings.capture_mode, CaptureMode::Full);
         assert!(settings.save_folder.is_none() && settings.user_folder.is_none());
         assert!(settings.campaigns.is_empty() && settings.chosen_names.is_empty());

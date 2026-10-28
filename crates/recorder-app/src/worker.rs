@@ -371,7 +371,7 @@ impl Recorder {
 
     /// Unchanged snapshots must still follow taskbar theme changes.
     fn update(&self, app: &AppHandle, change: impl FnOnce(&mut Inner)) {
-        let (published, menu, menu_changed, light) = {
+        let (published, menu, menu_changed, light, tooltip) = {
             let mut inner = self.lock();
             let before = inner.snapshot.clone();
             change(&mut inner);
@@ -387,7 +387,13 @@ impl Recorder {
             );
             let menu_changed = inner.menu.replace(menu) != Some(menu);
             let published = (inner.snapshot != before).then(|| inner.snapshot.clone());
-            (published, menu, menu_changed, inner.snapshot.light())
+            (
+                published,
+                menu,
+                menu_changed,
+                inner.snapshot.light(),
+                tray::tooltip(&inner.snapshot),
+            )
         };
         if let Some(snapshot) = &published
             && let Err(error) = app.emit(STATUS_EVENT, snapshot)
@@ -395,7 +401,7 @@ impl Recorder {
             eprintln!("Recorder status could not reach the panel: {error}");
         }
         if published.is_some() || menu_changed {
-            tray::show(app, light, menu.0, menu.1);
+            tray::show(app, light, &tooltip, menu.0, menu.1);
         } else {
             tray::follow_theme(app, light);
         }
@@ -483,14 +489,23 @@ impl Recorder {
         self.wake.notify_all();
     }
 
-    /// Right-click Stop recording: the Stop prompt opens beside the tray icon.
-    pub fn ask_stop(&self, app: &AppHandle) {
-        let recording = {
-            let inner = self.lock();
-            inner.capturing && inner.snapshot.phase == Phase::Recording && !inner.snapshot.stopping
-        };
-        if recording {
-            panel::open(app, None, panel::Opening::StopPrompt);
+    /// Recording, with no stop being carried out.
+    fn recording(&self) -> bool {
+        let inner = self.lock();
+        inner.capturing && inner.snapshot.phase == Phase::Recording && !inner.snapshot.stopping
+    }
+
+    /// Right-click Stop recording › Save.
+    pub fn save(&self, app: &AppHandle) {
+        if self.recording() {
+            self.stop(app, false);
+        }
+    }
+
+    /// Right-click Stop recording › Discard…: its confirmation opens beside the tray icon.
+    pub fn ask_discard(&self, app: &AppHandle) {
+        if self.recording() {
+            panel::open(app, None, panel::Opening::DiscardPrompt);
         }
     }
 
@@ -503,7 +518,7 @@ impl Recorder {
         } else if inner.snapshot.phase == Phase::Recording && !inner.snapshot.stopping {
             inner.quit_after_stop = true;
             drop(inner);
-            panel::open(app, None, panel::Opening::StopPrompt);
+            panel::open(app, None, panel::Opening::QuitPrompt);
         } else {
             // Nothing recorded yet, or already saving: finish, then exit.
             inner.quit_when_idle = true;
@@ -913,9 +928,6 @@ impl Recorder {
             output: &root,
             target: &target,
             user: &user,
-            game_score: settings.game_score,
-            operation_outcomes: settings.operation_outcomes,
-            politics_capture: settings.politics,
             capture_mode: settings.capture_mode,
             admit: &admit,
             loaded: &current,

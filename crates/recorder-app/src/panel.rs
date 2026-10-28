@@ -1,5 +1,6 @@
 //! The panel window, placed beside the tray icon or where it was dragged, destroyed on focus loss.
 use crate::{tray::TRAY_ID, worker::Recorder};
+use serde::Serialize;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -27,8 +28,32 @@ const REPLAY_IDENTIFIER: &str = "local.hoi4.replay";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opening {
     Panel,
-    /// The Stop prompt alone, beside the tray icon; an open panel shows its own instead.
-    StopPrompt,
+    /// Quit's Save or Discard prompt alone, beside the tray icon; an open panel shows its own instead.
+    QuitPrompt,
+    /// The Discard confirmation alone, beside the tray icon; an open panel shows its own instead.
+    DiscardPrompt,
+}
+
+/// Why the Stop prompt was asked for: Quit waits on its answer, or Discard was chosen and only
+/// its confirmation is left.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Ask {
+    pub quitting: bool,
+    pub discarding: bool,
+}
+
+impl Ask {
+    fn of(opening: Opening) -> Self {
+        Self {
+            quitting: opening == Opening::QuitPrompt,
+            discarding: opening == Opening::DiscardPrompt,
+        }
+    }
+
+    fn join(&mut self, other: Self) {
+        self.quitting |= other.quitting;
+        self.discarding |= other.discarding;
+    }
 }
 
 #[derive(Default)]
@@ -36,6 +61,7 @@ struct State {
     anchor: Option<Rect>,
     closed_at: Option<Instant>,
     ask_stop: bool,
+    ask: Ask,
     /// The window shows only the Stop prompt.
     compact: bool,
     /// Where the user dragged the panel, kept while the recorder runs.
@@ -116,11 +142,16 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
 /// callbacks run on the event loop, where building a webview window would wait
 /// on that same loop, so the window is created on its own thread.
 pub fn open(app: &AppHandle, anchor: Option<Rect>, opening: Opening) {
-    let ask_stop = opening == Opening::StopPrompt;
+    let ask_stop = opening != Opening::Panel;
+    let ask = Ask::of(opening);
     if let Some(window) = app.get_webview_window(LABEL) {
         if ask_stop {
-            state(app).ask_stop = true;
-            let _ = window.emit(ASK_STOP_EVENT, ());
+            {
+                let mut state = state(app);
+                state.ask_stop = true;
+                state.ask.join(ask);
+            }
+            let _ = window.emit(ASK_STOP_EVENT, ask);
         }
         let _ = window.set_focus();
         return;
@@ -134,11 +165,13 @@ pub fn open(app: &AppHandle, anchor: Option<Rect>, opening: Opening) {
         if state.opening {
             // The window being created will ask for the Stop prompt when it draws.
             state.ask_stop |= ask_stop;
+            state.ask.join(ask);
             return;
         }
         *state = State {
             anchor,
             ask_stop,
+            ask,
             compact: ask_stop,
             moved: state.moved,
             opening: true,
@@ -226,6 +259,7 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
                 state.focused = false;
                 state.shown = false;
                 state.ask_stop = false;
+                state.ask = Ask::default();
                 if let Some(panel) = state.recordings_panel.take() {
                     handle.state::<crate::recordings::Library>().close(&panel);
                 }
@@ -237,8 +271,8 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Whether the panel opens on the Stop prompt, and whether that is all it shows.
-pub fn take_opening(app: &AppHandle, panel: &str) -> (bool, bool) {
+/// Whether the panel opens on the Stop prompt, whether that is all it shows, and why it was asked.
+pub fn take_opening(app: &AppHandle, panel: &str) -> (bool, bool, Ask) {
     let mut state = state(app);
     if state.closed_at.is_none() && state.recordings_panel.as_deref() != Some(panel) {
         let library = app.state::<crate::recordings::Library>();
@@ -247,7 +281,11 @@ pub fn take_opening(app: &AppHandle, panel: &str) -> (bool, bool) {
         }
         library.register_panel(panel);
     }
-    (std::mem::take(&mut state.ask_stop), state.compact)
+    (
+        std::mem::take(&mut state.ask_stop),
+        state.compact,
+        std::mem::take(&mut state.ask),
+    )
 }
 
 /// Size the panel to its content, place it and show it.

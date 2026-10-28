@@ -65,6 +65,8 @@ pub struct PanelOpened {
     ask_stop: bool,
     /// The window is the Stop prompt alone, beside the tray icon.
     compact: bool,
+    #[serde(flatten)]
+    ask: panel::Ask,
 }
 
 /// The panel has drawn: it learns whether to open on the Stop prompt.
@@ -75,8 +77,12 @@ pub fn panel_opened(
     panel: String,
 ) -> PanelOpened {
     recorder.panel_opened(&app);
-    let (ask_stop, compact) = panel::take_opening(&app, &panel);
-    PanelOpened { ask_stop, compact }
+    let (ask_stop, compact, ask) = panel::take_opening(&app, &panel);
+    PanelOpened {
+        ask_stop,
+        compact,
+        ask,
+    }
 }
 
 /// The panel's content height changed: resize, place and (first time) show it.
@@ -123,9 +129,6 @@ pub struct SettingsPatch {
     auto_save: Option<bool>,
     start_with_windows: Option<bool>,
     start_with_replay: Option<bool>,
-    game_score: Option<bool>,
-    operation_outcomes: Option<bool>,
-    politics: Option<bool>,
     capture_mode: Option<String>,
     compression: Option<replay::compression::Compression>,
 }
@@ -173,9 +176,6 @@ pub async fn update_recorder_settings(
             set(&mut settings.auto_save, patch.auto_save);
             set(&mut settings.start_with_windows, patch.start_with_windows);
             set(&mut settings.start_with_replay, patch.start_with_replay);
-            set(&mut settings.game_score, patch.game_score);
-            set(&mut settings.operation_outcomes, patch.operation_outcomes);
-            set(&mut settings.politics, patch.politics);
             if let Some(compression) = patch.compression {
                 settings.choose_compression(compression);
             }

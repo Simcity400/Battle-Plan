@@ -52,9 +52,6 @@ export interface RecorderSettings {
   userFolder?: string;
   startWithWindows: boolean;
   startWithReplay: boolean;
-  gameScore: boolean;
-  operationOutcomes: boolean;
-  politics: boolean;
   captureMode: CaptureMode;
   campaigns: Record<string, CampaignChoice>;
   /** The folder recordings are saved to, the default when none is chosen. */
@@ -123,14 +120,14 @@ export function sizeText(bytes: number | null): string | null {
   return bytes == null ? null : formatMegabytes(bytes);
 }
 
-/** Spool on disk, never mistaken for a saved file's size. */
+/** This session's spool on disk, never mistaken for a saved file's size. */
 export function spoolText(bytes: number | null): string | null {
-  return bytes == null ? null : `spool ${formatMegabytes(bytes)}`;
+  return bytes == null ? null : `${formatMegabytes(bytes)} this session`;
 }
 
 /** The saved part of a recording still being recorded. */
 export function savedText(bytes: number | null): string | null {
-  return bytes == null ? null : `saved ${formatMegabytes(bytes)}`;
+  return bytes == null ? null : `${formatMegabytes(bytes)} saved`;
 }
 
 /** Spool on disk across everything not saved yet; "at least" when a size is unknown. */
@@ -138,7 +135,7 @@ export function spoolTotalText(unsaved: readonly UnsavedRecording[]): string | n
   const known = unsaved.filter(recording => recording.spoolBytes != null);
   if (!known.length) return null;
   const total = formatMegabytes(known.reduce((sum, recording) => sum + recording.spoolBytes!, 0));
-  return `Spool on disk: ${known.length < unsaved.length ? 'at least ' : ''}${total}`;
+  return `${known.length < unsaved.length ? 'at least ' : ''}${total} on disk`;
 }
 
 /** A saved recording's span: its first year to its last month. */
@@ -182,7 +179,7 @@ export function head(snapshot: Snapshot): Head {
   const omitted = omittedText(snapshot.omitted);
   switch (snapshot.phase) {
     case 'waiting':
-      return { ...plain, glyph: true, flag: null, title: 'Waiting for the game', detail: snapshot.automatic ? 'Records when you load a campaign' : null };
+      return { ...plain, glyph: true, flag: null, title: 'Waiting for the game', detail: snapshot.automatic ? 'Records when you load a campaign' : 'Auto record is off' };
     case 'notRecording':
       return named
         ? { ...plain, dot: 'grey', detail: omitted ?? joined(['Not recording', dateText(snapshot.hour)]), action: 'record', campaign: snapshot.campaign != null }
@@ -218,13 +215,29 @@ export function untilNextMinute(startedAt: number | null, now: number): number {
 }
 
 /** What Discard deletes: only this session when the file held an earlier recording. */
-export function discardTooltip(continued: boolean): string {
-  return continued ? 'Deletes this session only. Earlier recording in this file is kept.' : 'Deletes this recording.';
+export function discardConsequence(continued: boolean): string {
+  return continued ? 'The earlier recording in this file is kept.' : "This can't be undone.";
 }
 
-/** The compact Stop prompt's question. */
-export function stopQuestion(name: string, startedAt: number | null, now: number): string {
-  return `Stop recording ${name} after ${sessionLength(startedAt, now)}?`;
+/** What Discard's confirmation beside the tray icon deletes, naming the recording once it has a name. */
+export function discardDetail(name: string | null, startedAt: number | null, now: number, continued: boolean): string {
+  return `Deletes this session's ${sessionLength(startedAt, now)}${name ? ` of ${name}` : ''}. ${discardConsequence(continued)}`;
+}
+
+/** Discard's confirmation on a recording waiting to be saved. */
+export function waitingDiscardQuestion(continued: boolean): string {
+  return `${continued ? 'Discard these hours?' : 'Discard this recording?'} ${discardConsequence(continued)}`;
+}
+
+/** The prompt beside the tray icon: Discard's confirmation, or the Save or Discard question; Quit's says it quits. */
+export function promptTitle(quitting: boolean, discarding: boolean): string {
+  if (discarding) return quitting ? 'Discard and quit?' : 'Discard this session?';
+  return quitting ? 'Quit Battle Plan Recorder?' : 'Stop recording?';
+}
+
+/** The compact Stop prompt's question, naming the recording once it has a name. */
+export function stopQuestion(name: string | null, startedAt: number | null, now: number): string {
+  return `Keep this session's ${sessionLength(startedAt, now)}${name ? ` of ${name}` : ''}?`;
 }
 
 /** The Stop prompt shows only while recording, until Save or Discard is carried out. */
@@ -259,8 +272,7 @@ export function nextLoad(settings: RecorderSettings, campaign: string): NextLoad
 }
 
 export function whatToRecord(settings: RecorderSettings): string {
-  if (settings.captureMode === 'map') return settings.gameScore ? 'Map' : 'Map, custom';
-  return settings.gameScore && settings.operationOutcomes && settings.politics ? 'Full' : 'Full, custom';
+  return settings.captureMode === 'map' ? 'Map' : 'Full';
 }
 
 /** An attached session, even at the game's menu, keeps the mode it attached with: its recording file holds one mode. */

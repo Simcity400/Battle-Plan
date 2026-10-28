@@ -1,21 +1,34 @@
-//! The tray icon, a ring whose dot is the only status, and its right-click menu.
-use crate::{panel, snapshot::Light, worker::Recorder};
+//! The tray icon, a ring whose dot is the status at a glance, its tooltip and its right-click menu.
+use crate::{
+    panel,
+    snapshot::{Light, Phase, Snapshot},
+    worker::Recorder,
+};
 use std::sync::{
-    Arc,
-    atomic::{AtomicU8, Ordering},
+    Arc, Mutex, PoisonError,
+    atomic::{AtomicBool, AtomicU8, Ordering},
 };
 use tauri::{
     AppHandle, Manager, Wry,
     image::Image,
-    menu::{Menu, MenuItem},
+    menu::{ContextMenu, IsMenuItem, Menu, MenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GetSubMenu, HMENU, MENUINFO, MIM_STYLE, MNS_NOCHECK, SetMenuInfo,
 };
 
 pub const TRAY_ID: &str = "recorder";
 const OPEN: &str = "open";
 const START: &str = "start";
-const STOP: &str = "stop";
+const SAVE: &str = "save";
+const DISCARD: &str = "discard";
 const QUIT: &str = "quit";
+const NAME: &str = "Battle Plan Recorder";
+/// Start or Stop stands second, after Open.
+const RECORD_AT: usize = 1;
+/// UTF-16 units a notification area tooltip holds before its terminator.
+const TOOLTIP_UNITS: usize = 127;
 /// Windows scales this to the notification area's size.
 const ICON_SIZE: u32 = 32;
 
@@ -26,10 +39,94 @@ fn theme(light_taskbar: bool) -> u8 {
     1 + u8::from(light_taskbar)
 }
 
-/// The menu's Start and Stop items, each enabled only when it applies.
+/// Start, or Stop with its Save and Discard, never both; separate ids, so a click does what its
+/// item said if the menu changes.
 pub struct TrayMenu {
+    menu: Menu<Wry>,
     start: MenuItem<Wry>,
-    stop: MenuItem<Wry>,
+    stop: Submenu<Wry>,
+    /// The latest (can start, can stop) to show.
+    wanted: Mutex<(bool, bool)>,
+    /// Stop is in the menu; changed only on the main thread.
+    stop_shown: AtomicBool,
+}
+
+impl TrayMenu {
+    /// On the main thread, one change at a time, so the menu ends on the latest state.
+    fn follow(&self) -> tauri::Result<()> {
+        let (can_start, can_stop) = *self.wanted.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.stop_shown.load(Ordering::Relaxed) != can_stop {
+            let (shown, hidden): (&dyn IsMenuItem<Wry>, &dyn IsMenuItem<Wry>) = if can_stop {
+                (&self.stop, &self.start)
+            } else {
+                (&self.start, &self.stop)
+            };
+            self.menu.remove(hidden)?;
+            self.menu.insert(shown, RECORD_AT)?;
+            if can_stop {
+                // The handle the menu shows the submenu by, not the submenu's own popup handle.
+                without_check_column(unsafe {
+                    GetSubMenu(self.menu.hpopupmenu()? as HMENU, RECORD_AT as i32)
+                });
+            }
+            self.stop_shown.store(can_stop, Ordering::Relaxed);
+        }
+        self.start.set_enabled(can_start)
+    }
+}
+
+/// No item is ever checked, so Windows need not keep a column for check marks.
+fn without_check_column(menu: HMENU) {
+    let style = MENUINFO {
+        cbSize: size_of::<MENUINFO>() as u32,
+        fMask: MIM_STYLE,
+        dwStyle: MNS_NOCHECK,
+        ..MENUINFO::default()
+    };
+    if unsafe { SetMenuInfo(menu, &style) } == 0 {
+        eprintln!(
+            "Tray menu kept its check mark column: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+/// The app, then the status the panel's head shows and the recording's name, then any problem.
+pub fn tooltip(snapshot: &Snapshot) -> String {
+    let status = match snapshot.phase {
+        Phase::Waiting => "Waiting for the game",
+        Phase::NotRecording => "Not recording",
+        Phase::Recording => "Recording",
+        Phase::Saving => "Saving recording",
+        Phase::Saved => "Saved",
+        Phase::Discarded => "Session discarded",
+        Phase::Unsaved => "Not saved yet",
+    };
+    let mut text = format!("{NAME}\n{status}");
+    // Waiting names no campaign, as in the panel.
+    if let Some(name) = snapshot
+        .name
+        .as_ref()
+        .filter(|_| snapshot.phase != Phase::Waiting)
+    {
+        text = format!("{text} · {name}");
+    }
+    if let Some(problem) = &snapshot.problem {
+        text = format!("{text}\n{}", problem.text);
+    }
+    if text.encode_utf16().count() <= TOOLTIP_UNITS {
+        return text;
+    }
+    let mut units = 0;
+    let mut cut: String = text
+        .chars()
+        .take_while(|character| {
+            units += character.len_utf16();
+            units < TOOLTIP_UNITS
+        })
+        .collect();
+    cut.push('…');
+    cut
 }
 
 /// Mid-tone shades that stand out from both a light and a dark taskbar.
@@ -116,20 +213,31 @@ pub fn follow_theme(app: &AppHandle, light: Light) {
 
 pub fn create(app: &AppHandle, recorder: Arc<Recorder>) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, OPEN, "Open", true, None::<&str>)?;
-    let start = MenuItem::with_id(app, START, "Start recording", true, None::<&str>)?;
-    let stop = MenuItem::with_id(app, STOP, "Stop recording", false, None::<&str>)?;
+    // Enabled once the recorder has looked for a game.
+    let start = MenuItem::with_id(app, START, "Start recording", false, None::<&str>)?;
+    let save = MenuItem::with_id(app, SAVE, "Save", true, None::<&str>)?;
+    let discard = MenuItem::with_id(app, DISCARD, "Discard…", true, None::<&str>)?;
+    let stop = Submenu::with_items(app, "Stop recording", true, &[&save, &discard])?;
     let quit = MenuItem::with_id(app, QUIT, "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &start, &stop, &quit])?;
-    app.manage(TrayMenu { start, stop });
+    let menu = Menu::with_items(app, &[&open, &start, &quit])?;
+    without_check_column(menu.hpopupmenu()? as HMENU);
+    app.manage(TrayMenu {
+        menu: menu.clone(),
+        start,
+        stop,
+        wanted: Mutex::new((false, false)),
+        stop_shown: AtomicBool::new(false),
+    });
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon(Light::Ready))
-        .tooltip("Battle Plan Recorder")
+        .tooltip(tooltip(&Snapshot::default()))
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             OPEN => panel::open(app, None, panel::Opening::Panel),
             START => recorder.record(),
-            STOP => recorder.ask_stop(app),
+            SAVE => recorder.save(app),
+            DISCARD => recorder.ask_discard(app),
             QUIT => recorder.quit(app),
             _ => {}
         })
@@ -148,19 +256,26 @@ pub fn create(app: &AppHandle, recorder: Arc<Recorder>) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Show the snapshot's light and which of Start and Stop apply.
-pub fn show(app: &AppHandle, light: Light, can_start: bool, can_stop: bool) {
+/// Show the snapshot's light and tooltip, and whether Start or Stop applies.
+pub fn show(app: &AppHandle, light: Light, tooltip: &str, can_start: bool, can_stop: bool) {
     if let Some(tray) = app.tray_by_id(TRAY_ID)
-        && let Err(error) = tray.set_icon(Some(icon(light)))
+        && let Err(error) = tray
+            .set_icon(Some(icon(light)))
+            .and_then(|()| tray.set_tooltip(Some(tooltip)))
     {
         eprintln!("Tray icon could not change: {error}");
     }
-    if let Some(menu) = app.try_state::<TrayMenu>()
-        && let Err(error) = menu
-            .start
-            .set_enabled(can_start)
-            .and_then(|()| menu.stop.set_enabled(can_stop))
-    {
+    let Some(menu) = app.try_state::<TrayMenu>() else {
+        return;
+    };
+    *menu.wanted.lock().unwrap_or_else(PoisonError::into_inner) = (can_start, can_stop);
+    let handle = app.clone();
+    let queued = app.run_on_main_thread(move || {
+        if let Err(error) = handle.state::<TrayMenu>().follow() {
+            eprintln!("Tray menu could not change: {error}");
+        }
+    });
+    if let Err(error) = queued {
         eprintln!("Tray menu could not change: {error}");
     }
 }
@@ -172,6 +287,44 @@ mod tests {
     fn pixel(pixels: &[u8], size: u32, x: u32, y: u32) -> [u8; 4] {
         let at = ((y * size + x) * 4) as usize;
         pixels[at..at + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn the_tooltip_names_the_status_the_recording_and_any_problem() {
+        assert_eq!(
+            tooltip(&Snapshot::default()),
+            "Battle Plan Recorder\nWaiting for the game"
+        );
+        let mut snapshot = Snapshot {
+            phase: Phase::Recording,
+            name: Some("Germany 1936–1943".into()),
+            ..Snapshot::default()
+        };
+        assert_eq!(
+            tooltip(&snapshot),
+            "Battle Plan Recorder\nRecording · Germany 1936–1943"
+        );
+        snapshot.problem = Some(crate::snapshot::Problem {
+            text: "2 hours couldn't be recorded".into(),
+            detail: String::new(),
+        });
+        assert_eq!(
+            tooltip(&snapshot),
+            "Battle Plan Recorder\nRecording · Germany 1936–1943\n2 hours couldn't be recorded"
+        );
+    }
+
+    #[test]
+    fn a_long_tooltip_ends_in_an_ellipsis_within_the_notification_areas_limit() {
+        let snapshot = Snapshot {
+            phase: Phase::Saved,
+            name: Some("Nederland 🇳🇱 ".repeat(20)),
+            ..Snapshot::default()
+        };
+        let text = tooltip(&snapshot);
+        assert!(text.encode_utf16().count() <= TOOLTIP_UNITS);
+        assert!(text.starts_with("Battle Plan Recorder\nSaved · Nederland 🇳🇱"));
+        assert!(text.ends_with('…'));
     }
 
     #[test]

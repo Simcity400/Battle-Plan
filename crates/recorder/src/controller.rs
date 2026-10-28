@@ -25,9 +25,6 @@ pub struct Recording<'a> {
     /// the capture root, or a campaign's own folder after New file.
     pub target: &'a Path,
     pub user: &'a Path,
-    pub game_score: bool,
-    pub operation_outcomes: bool,
-    pub politics_capture: bool,
     /// Which tables the session records ([`replay_data::scope`]).
     pub capture_mode: CaptureMode,
     /// Whether a load may be recorded in the session, and if not why, asked
@@ -65,9 +62,10 @@ pub fn record(
         output: recording.output,
         target: recording.target,
         user: recording.user,
-        game_score: recording.game_score,
-        operation_outcomes: recording.operation_outcomes,
-        politics_capture: recording.politics_capture,
+        // The capture mode alone decides what the app records.
+        game_score: true,
+        operation_outcomes: true,
+        politics_capture: true,
         capture_mode: recording.capture_mode,
         compression: None,
         nothing_recorded_is_ok: true,

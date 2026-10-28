@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../dashboard/calendar.ts';
-import { captureModeFixed, discardTooltip, head, nextLoad, recordingName, recordsAutomatically, savedText, sessionLength, settingsQueue, spanText,
-  spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, whatToRecord } from './status.ts';
+import { captureModeFixed, discardConsequence, discardDetail, head, nextLoad, promptTitle, recordingName, recordsAutomatically, savedText, sessionLength,
+  settingsQueue, spanText, spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { RecorderSettings, Snapshot, UnsavedRecording } from './status.ts';
 
 const CAMPAIGN = '00000000-0000-4000-8000-000000000000';
@@ -22,7 +22,7 @@ test('every panel state reads as the approved design', () => {
     detail: 'Records when you load a campaign', action: null, campaign: false });
   // The spool and the saved part it continues are told apart, never added up.
   assert.deepEqual(head(recording()), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'red', label: 'Recording',
-    detail: '12 Jun 1943', sizes: 'spool 1.2 GB · saved 214 MB', action: 'stop', campaign: true });
+    detail: '12 Jun 1943', sizes: '1.2 GB this session · 214 MB saved', action: 'stop', campaign: true });
   assert.deepEqual(head(recording({ phase: 'notRecording', hour: hour(1938, 2, 3), spoolBytes: null })), { glyph: false, flag: null,
     title: 'Germany 1936–1943', dot: 'grey', label: null, detail: 'Not recording · 3 Feb 1938', action: 'record', campaign: true });
   assert.deepEqual(head(recording({ phase: 'saving', progress: 0.35 })), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'spin',
@@ -33,7 +33,7 @@ test('every panel state reads as the approved design', () => {
     detail: 'Session discarded', action: 'record', campaign: false });
   // Auto save off and the session over: it waits, under the name its file will get.
   assert.deepEqual(head(recording({ phase: 'unsaved', recording: null, continued: false, savedBytes: null })), { glyph: false, flag: null,
-    title: 'Germany 1936–1943', dot: 'grey', label: 'Not saved yet', detail: '12 Jun 1943', sizes: 'spool 1.2 GB', action: 'recordings', campaign: false });
+    title: 'Germany 1936–1943', dot: 'grey', label: 'Not saved yet', detail: '12 Jun 1943', sizes: '1.2 GB this session', action: 'recordings', campaign: false });
 });
 
 test('a recording is named by its file, or the name its file will get, or a placeholder until known, never by its campaign id', () => {
@@ -41,20 +41,26 @@ test('a recording is named by its file, or the name its file will get, or a plac
   assert.equal(recordingName(null), 'New recording');
   // A new campaign records into a file that does not exist yet.
   assert.equal(head(recording({ recording: null, continued: false, savedBytes: null })).title, 'Germany 1936–1943');
-  assert.equal(head(recording({ recording: null, continued: false, savedBytes: null })).sizes, 'spool 1.2 GB');
-  assert.equal(stopQuestion('Germany 1936–1943', 0, (2 * 60 + 14) * 60_000), 'Stop recording Germany 1936–1943 after 2 h 14 min?');
+  assert.equal(head(recording({ recording: null, continued: false, savedBytes: null })).sizes, '1.2 GB this session');
+  assert.equal(stopQuestion('Germany 1936–1943', 0, (2 * 60 + 14) * 60_000), 'Keep this session\'s 2 h 14 min of Germany 1936–1943?');
+  // Before the name is known, the question names no placeholder.
+  assert.equal(stopQuestion(null, 0, 5 * 60_000), 'Keep this session\'s 5 min?');
+  assert.equal(promptTitle(false, false), 'Stop recording?');
+  assert.equal(promptTitle(true, false), 'Quit Battle Plan Recorder?');
+  assert.equal(promptTitle(false, true), 'Discard this session?');
+  assert.equal(promptTitle(true, true), 'Discard and quit?');
 });
 
-test('sizes say whether they are spool or saved, and the spool total never counts the unknown as nothing', () => {
-  assert.equal(spoolText(380 * MB), 'spool 380 MB');
-  assert.equal(spoolText(1229 * MB), 'spool 1.2 GB');
-  assert.equal(savedText(214 * MB), 'saved 214 MB');
+test('sizes say whether they are this session\'s or saved, and the spool total never counts the unknown as nothing', () => {
+  assert.equal(spoolText(380 * MB), '380 MB this session');
+  assert.equal(spoolText(1229 * MB), '1.2 GB this session');
+  assert.equal(savedText(214 * MB), '214 MB saved');
   assert.equal(spoolText(null), null);
   assert.equal(savedText(null), null);
   const unsaved = (spoolBytes: number | null): UnsavedRecording => ({ session: 's', campaign: CAMPAIGN, recording: null, name: null, firstHour: null,
     lastHour: null, spoolBytes, status: 'waiting', flag: null });
-  assert.equal(spoolTotalText([unsaved(1229 * MB), unsaved(2253 * MB)]), 'Spool on disk: 3.4 GB');
-  assert.equal(spoolTotalText([unsaved(1229 * MB), unsaved(null)]), 'Spool on disk: at least 1.2 GB');
+  assert.equal(spoolTotalText([unsaved(1229 * MB), unsaved(2253 * MB)]), '3.4 GB on disk');
+  assert.equal(spoolTotalText([unsaved(1229 * MB), unsaved(null)]), 'at least 1.2 GB on disk');
   assert.equal(spoolTotalText([unsaved(null)]), null);
   assert.equal(spoolTotalText([]), null);
 });
@@ -97,8 +103,8 @@ test('unknown parts are left out rather than guessed', () => {
   // A game whose campaign is unknown.
   assert.deepEqual(head(snapshot({ phase: 'notRecording' })), { glyph: true, flag: null, title: 'Not recording', dot: null, label: null,
     detail: null, action: 'record', campaign: false });
-  // With automatic recording off, Waiting does not promise a recording.
-  assert.equal(head(snapshot({ automatic: false })).detail, null);
+  // With automatic recording off, Waiting does not promise a recording; it says why.
+  assert.equal(head(snapshot({ automatic: false })).detail, 'Auto record is off');
   // A stop in progress takes the Stop button away.
   assert.equal(head(recording({ stopping: true })).action, null);
   assert.equal(spanText(null, hour(1943, 6, 12)), '12 Jun 1943');
@@ -116,8 +122,14 @@ test('the Stop prompt asks about this session and says what Discard deletes', ()
   assert.equal(sessionLength(started, now + untilNextMinute(started, now)), '2 h 15 min');
   assert.equal(untilNextMinute(started, started + 3 * 3_600_000), 60_000);
   assert.equal(untilNextMinute(null, started), 60_000);
-  assert.equal(discardTooltip(true), 'Deletes this session only. Earlier recording in this file is kept.');
-  assert.equal(discardTooltip(false), 'Deletes this recording.');
+  // Discard always asks, and says what it deletes.
+  assert.equal(discardConsequence(true), 'The earlier recording in this file is kept.');
+  assert.equal(discardConsequence(false), "This can't be undone.");
+  assert.equal(discardDetail('Germany 1936–1943', started, now, true),
+    "Deletes this session's 2 h 14 min of Germany 1936–1943. The earlier recording in this file is kept.");
+  assert.equal(discardDetail(null, started, now, false), "Deletes this session's 2 h 14 min. This can't be undone.");
+  assert.equal(waitingDiscardQuestion(true), 'Discard these hours? The earlier recording in this file is kept.');
+  assert.equal(waitingDiscardQuestion(false), "Discard this recording? This can't be undone.");
   assert.equal(stopPromptVisible(true, recording()), true);
   assert.equal(stopPromptVisible(false, recording()), false);
   // Saving, a stop in progress, or the recording ending closes the prompt.
@@ -127,18 +139,15 @@ test('the Stop prompt asks about this session and says what Discard deletes', ()
 });
 
 test('campaign choices follow the global default until set', () => {
-  const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, startWithWindows: false, startWithReplay: true, gameScore: true,
-    operationOutcomes: true, politics: true, captureMode: 'full', campaigns: { [CAMPAIGN]: { record: false, next: 'newFile' } }, effectiveSaveFolder: 'C:\\r' };
+  const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, startWithWindows: false, startWithReplay: true, captureMode: 'full',
+    campaigns: { [CAMPAIGN]: { record: false, next: 'newFile' } }, effectiveSaveFolder: 'C:\\r' };
   assert.equal(recordsAutomatically(settings, CAMPAIGN), false);
   assert.equal(nextLoad(settings, CAMPAIGN), 'newFile');
   assert.equal(recordsAutomatically(settings, 'other'), true);
   assert.equal(recordsAutomatically({ ...settings, recordEveryCampaign: false }, 'other'), false);
   assert.equal(nextLoad(settings, 'other'), 'continue');
   assert.equal(whatToRecord(settings), 'Full');
-  assert.equal(whatToRecord({ ...settings, politics: false }), 'Full, custom');
-  // Map leaves operation outcomes and politics out whatever their switches say.
-  assert.equal(whatToRecord({ ...settings, captureMode: 'map', politics: false }), 'Map');
-  assert.equal(whatToRecord({ ...settings, captureMode: 'map', gameScore: false }), 'Map, custom');
+  assert.equal(whatToRecord({ ...settings, captureMode: 'map' }), 'Map');
 });
 
 test('the capture mode is fixed while a session is attached, even at the game menu', () => {
