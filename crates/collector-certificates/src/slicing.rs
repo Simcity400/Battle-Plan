@@ -30,9 +30,10 @@
 //! ([`SliceSelection::reset_daily`]).
 //!
 //! A family whose every recorded field has hooked native writers (the raid
-//! state inputs, the raid observer) also reads, each hour, every owner a
-//! writer marked since the previous hour ([`SliceSelection::mark`]). Its
-//! take's epoch must be the one the store's previous hour was read under
+//! observer's) reads no rotating slice ([`SliceSelection::reset_hooked`]):
+//! each hour reads every owner a writer marked since the previous hour
+//! ([`SliceSelection::mark`]), new and unpublished owners, and nothing else.
+//! Its take's epoch must be the one the store's previous hour was read under
 //! ([`SliceSelection::certify`]); otherwise an owner outside this hour's read
 //! may have changed unseen, and every owner is read.
 
@@ -101,17 +102,17 @@ pub const FAMILIES: [SliceFamily; 16] = [
             TableId::TechnologyDefinitions,
         ],
     },
-    // RaidAirSites, read daily with a constant fingerprint and every country
-    // a hooked site list writer marked (crate::raid_changes), so it equals
-    // the game's at every hour.
+    // RaidAirSites, read with no slice: new countries, unpublished reads and
+    // every country a hooked site list writer marked (crate::raid_changes).
     SliceFamily {
         name: "raid_launch",
         owner: OwnerKind::CanonicalSlot,
         tables: &[TableId::RaidAirSites],
     },
-    // The raid state inputs and the building-resource overrides also read,
-    // each hour, every owner a hooked writer marked (crate::raid_changes),
-    // so they equal the game's at every hour (owner decision 2026-10-11).
+    // The raid state inputs and the building-resource overrides read every
+    // owner a hooked writer marked (crate::raid_changes) and new or
+    // unpublished owners; only origin states keep a daily slice, for the
+    // unhooked supply-route flag (owner decision 2026-10-11).
     SliceFamily {
         name: "raid_state",
         owner: OwnerKind::State,
@@ -218,8 +219,8 @@ pub const FAMILIES: [SliceFamily; 16] = [
     },
     // Trade routes, by the country holding each route, read in the RaidState job with the
     // resources map tables: hooked route writers mark the countries to read within the hour
-    // (crate::raid_changes), a changed set of referenced routes reads its owner at once, and
-    // the slice refreshes the rest.
+    // (crate::raid_changes) and a changed set of referenced routes reads its owner at once;
+    // there is no slice.
     SliceFamily {
         name: "trade_routes",
         owner: OwnerKind::Country,
@@ -379,6 +380,31 @@ impl SliceSelection {
         self.reset(hour, force_full);
         self.daily = true;
         self.boundary = hour.rem_euclid(replay_data::cadence::STAGGER_PERIOD) == 0;
+    }
+
+    /// Start an hour's read of a family whose every recorded field has
+    /// hooked writers: no rotating slice and no daily boundary, only the
+    /// owners selected or marked, and every owner on a full hour.
+    pub fn reset_hooked(&mut self, hour: i32, force_full: bool) {
+        self.reset(hour, force_full);
+        self.daily = true;
+    }
+
+    /// Whether this hour reads any owner: a full hour, a selected or marked
+    /// owner, or a scanned owner its slice covers.
+    pub fn reads_any(&self) -> bool {
+        self.force_full
+            || !self.early.is_empty()
+            || self.seen.iter().any(|&owner| self.contains(owner))
+    }
+
+    /// Owners the scan saw that this hour does not read: their held rows
+    /// carry.
+    pub fn carried(&self) -> usize {
+        self.seen
+            .iter()
+            .filter(|&&owner| !self.contains(owner))
+            .count()
     }
 
     /// [`Self::scan_drifting`] reading `drifts` only when it decides
@@ -728,6 +754,23 @@ impl SliceFingerprints {
                 .values
                 .get(&owner)
                 .is_some_and(|print| !print.stale && print.value.is_some())
+    }
+
+    /// The print `owner` holds, when current.
+    pub fn held(&self, owner: u32) -> Option<u64> {
+        self.holds(owner)
+            .then(|| self.values.get(&owner).and_then(|print| print.value))
+            .flatten()
+    }
+
+    /// After a read of `owner`, hold `value` as its print without making
+    /// it a change.
+    pub fn hold(&mut self, owner: u32, value: u64) {
+        if let Some(print) = self.values.get_mut(&owner)
+            && !print.stale
+        {
+            print.value = Some(value);
+        }
     }
 
     /// End an hour's scan: whole-slice invalidations have reached every owner.

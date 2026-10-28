@@ -15,7 +15,9 @@
 use crate::{
     Memory, allocation, ccountry, ccountry_resources, cgame_state,
     cpdx_array::Array,
-    cresource_exchange, cstate, cstrategic_resource, modifier_accumulator, read,
+    cresource_exchange, cstate, cstrategic_resource,
+    memory::{RecordField, RecordLayout, RecordSources},
+    modifier_accumulator, read,
     walk::{Buffer, Outcome},
 };
 use engine_native::modifier_definition;
@@ -1244,6 +1246,11 @@ pub fn walk_regional(
 /// Every state's temporary resources: each resource's temporary key in the state's base
 /// modifiers, for a state whose temporary-resource list is not empty or whose flag is set;
 /// a zero amount has no row. `descriptors` is this hour's complete resource census.
+///
+/// The state pointers are copied 64 at a time and their two gate fields gathered in one
+/// batch; each resource's key is read once, at the first gated state that needs it. A
+/// batch that faults or whose fields would overflow is read state by state, so every
+/// fault keeps its message and its place.
 pub fn walk_temporary(
     memory: &impl Memory,
     base: usize,
@@ -1251,6 +1258,28 @@ pub fn walk_temporary(
     descriptors: &[cstrategic_resource::Row],
     mut output: Buffer<'_, TemporaryRow>,
 ) -> Outcome {
+    const BATCH: usize = 64;
+    const GATE_FIELDS: [RecordField; 2] = [
+        RecordField {
+            source_offset: STATE_TEMPORARY_LIST_COUNT,
+            destination_offset: 0,
+            len: 4,
+        },
+        RecordField {
+            source_offset: STATE_TEMPORARY_FLAG,
+            destination_offset: 4,
+            len: 1,
+        },
+    ];
+    const GATE_LAYOUT: RecordLayout<'static> =
+        RecordLayout::new(&GATE_FIELDS, 8).expect("valid record layout");
+    const WORD_FIELDS: [RecordField; 1] = [RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    }];
+    const WORD_LAYOUT: RecordLayout<'static> =
+        RecordLayout::new(&WORD_FIELDS, 8).expect("valid record layout");
     let mut len = 0;
     let mut unread = 0;
     let result = (|| -> Result<(), &'static str> {
@@ -1260,31 +1289,31 @@ pub fn walk_temporary(
             8,
             "state table unreadable",
         )?;
-        for index in 0..states.count {
-            let state = element(memory, states, index, 8, "state unreadable")?;
-            if state == 0 {
-                continue;
-            }
-            let count = read::<i32>(memory, at(state, STATE_TEMPORARY_LIST_COUNT)?)
-                .ok_or("state temporary list unreadable")?;
-            let flag = read::<u8>(memory, at(state, STATE_TEMPORARY_FLAG)?)
-                .ok_or("state temporary flag unreadable")?;
+        let mut keys = Vec::new();
+        allocation::reserve(&mut keys, descriptors.len())
+            .map_err(|_| "resource temporary key allocation failed")?;
+        let mut gated = |state: usize, count: i32, flag: u8| -> Result<(), &'static str> {
             if count == 0 && flag == 0 {
-                continue;
+                return Ok(());
             }
             let id = read::<u32>(memory, at(state, cstate::ID)?).ok_or("state id unreadable")?;
             let accumulator = at(state, cstate::BASE_MODIFIERS)?;
-            // Few states are gated, so each reads every resource's key itself.
-            for descriptor in descriptors {
-                let key = read::<u32>(
-                    memory,
-                    at(descriptor.address, cstrategic_resource::TEMPORARY_KEY)?,
-                )
-                .ok_or("resource temporary key unreadable")?;
+            for (index, descriptor) in descriptors.iter().enumerate() {
+                let key = match keys.get(index) {
+                    Some(&key) => key,
+                    None => {
+                        let key = read::<u32>(
+                            memory,
+                            at(descriptor.address, cstrategic_resource::TEMPORARY_KEY)?,
+                        )
+                        .ok_or("resource temporary key unreadable")?;
+                        keys.push(key);
+                        key
+                    }
+                };
                 if key == 0 {
                     continue;
                 }
-                let token = descriptor.token;
                 let amount =
                     modifier_accumulator::lookup_effective_at(memory, base, accumulator, key)?
                         .effective;
@@ -1295,12 +1324,83 @@ pub fn walk_temporary(
                         &mut unread,
                         TemporaryRow {
                             state: id,
-                            resource: token,
+                            resource: descriptor.token,
                             amount,
                         },
                     )?;
                 }
             }
+            Ok(())
+        };
+        let mut first = 0;
+        while first < states.count {
+            let batch = ((states.count - first) as usize).min(BATCH);
+            let mut words = [0_u8; BATCH * 8];
+            // Both copies stop at their first fault; no faulted source is read again.
+            let copied = states.element(first, 8).map_or(0, |start| {
+                memory.copy_records(
+                    RecordSources::Strided {
+                        base: start,
+                        stride: 8,
+                        count: batch,
+                    },
+                    &WORD_LAYOUT,
+                    &mut words[..batch * 8],
+                )
+            });
+            let state_at =
+                |index: usize| u64::from_le_bytes(words[index * 8..][..8].try_into().unwrap());
+            let mut pointers = [0_usize; BATCH];
+            let mut live = 0;
+            for index in 0..copied {
+                let state = state_at(index) as usize;
+                if state == 0 {
+                    continue;
+                }
+                if at(state, STATE_TEMPORARY_LIST_COUNT).is_err()
+                    || at(state, STATE_TEMPORARY_FLAG).is_err()
+                {
+                    break;
+                }
+                pointers[live] = state;
+                live += 1;
+            }
+            let mut gates = [0_u8; BATCH * 8];
+            let fields = memory.copy_records(
+                RecordSources::Pointers(&pointers[..live]),
+                &GATE_LAYOUT,
+                &mut gates[..live * 8],
+            );
+            let mut row = 0;
+            for index in 0..batch {
+                if index >= copied {
+                    return Err("state unreadable");
+                }
+                let state = state_at(index) as usize;
+                if state == 0 {
+                    continue;
+                }
+                let (count, flag) = if row < live {
+                    if fields < row * 2 + 1 {
+                        return Err("state temporary list unreadable");
+                    }
+                    if fields < row * 2 + 2 {
+                        return Err("state temporary flag unreadable");
+                    }
+                    let gate = &gates[row * 8..][..8];
+                    (i32::from_le_bytes(gate[..4].try_into().unwrap()), gate[4])
+                } else {
+                    // Past an overflowing pointer: read as the serial walk does, never gathered.
+                    let count = read::<i32>(memory, at(state, STATE_TEMPORARY_LIST_COUNT)?)
+                        .ok_or("state temporary list unreadable")?;
+                    let flag = read::<u8>(memory, at(state, STATE_TEMPORARY_FLAG)?)
+                        .ok_or("state temporary flag unreadable")?;
+                    (count, flag)
+                };
+                row += 1;
+                gated(state, count, flag)?;
+            }
+            first += batch as u32;
         }
         Ok(())
     })();
@@ -1410,6 +1510,9 @@ pub fn read_route(
     Ok(row)
 }
 
+/// Each path element's id, 64 elements per scattered pointer copy and record batch. Every
+/// source is read once: a batch stops at its first fault, null or overflowing element, and
+/// the ids before it are kept, as a serial walk keeps them.
 fn route_path(
     memory: &impl Memory,
     elements: Array,
@@ -1417,14 +1520,72 @@ fn route_path(
     unreadable: &'static str,
     path: &mut Vec<u32>,
 ) -> Result<(), &'static str> {
-    for index in 0..elements.count {
-        let item = element(memory, elements, index, 8, "route path element unreadable")?;
-        if item == 0 {
-            return Err("null route path element");
+    const BATCH: usize = 64;
+    let id_fields = [RecordField {
+        source_offset: id_offset,
+        destination_offset: 0,
+        len: 4,
+    }];
+    let id_layout = RecordLayout::new(&id_fields, 4).ok_or("route path layout invalid")?;
+    let mut first = 0;
+    while first < elements.count {
+        let batch = ((elements.count - first) as usize).min(BATCH);
+        let mut addresses = [0_usize; BATCH];
+        let mut words = [[0_u8; 8]; BATCH];
+        // An element outside the array ends the batch before it.
+        let mut spans = batch;
+        for (index, address) in addresses[..batch].iter_mut().enumerate() {
+            match elements.element(first + index as u32, 8) {
+                Some(slot) => *address = slot,
+                None => {
+                    spans = index;
+                    break;
+                }
+            }
         }
-        let id = read::<u32>(memory, at(item, id_offset)?).ok_or(unreadable)?;
-        allocation::reserve(path, 1).map_err(|_| "route path allocation failed")?;
-        path.push(id);
+        let mut destinations: [&mut [u8]; BATCH] = std::array::from_fn(|_| <&mut [u8]>::default());
+        for (destination, word) in destinations.iter_mut().zip(words[..spans].iter_mut()) {
+            *destination = word.as_mut_slice();
+        }
+        let copied = memory
+            .copy_scattered(addresses, &mut destinations)
+            .min(spans);
+        let mut items = [0_usize; BATCH];
+        let mut stop = None;
+        let mut live = 0;
+        for (index, word) in words[..copied].iter().enumerate() {
+            let item = u64::from_le_bytes(*word) as usize;
+            if item == 0 {
+                stop = Some(Err("null route path element"));
+                break;
+            }
+            if item.checked_add(id_offset).is_none() {
+                stop = Some(at(item, id_offset).map(|_| ()));
+                break;
+            }
+            items[index] = item;
+            live += 1;
+        }
+        let stop = stop.unwrap_or(if live < batch {
+            Err("route path element unreadable")
+        } else {
+            Ok(())
+        });
+        let mut ids = [0_u8; BATCH * 4];
+        let read = memory.copy_records(
+            RecordSources::Pointers(&items[..live]),
+            &id_layout,
+            &mut ids[..live * 4],
+        );
+        for id in ids[..read.min(live) * 4].chunks_exact(4) {
+            allocation::reserve(path, 1).map_err(|_| "route path allocation failed")?;
+            path.push(u32::from_le_bytes(id.try_into().expect("four bytes")));
+        }
+        if read < live {
+            return Err(unreadable);
+        }
+        stop?;
+        first += batch as u32;
     }
     Ok(())
 }

@@ -40,7 +40,8 @@
 //!
 //! A take that returns the epoch of the family's previous read certifies
 //! that every state or country no take visited since then is unchanged; the
-//! consumer then reads its daily slice and the marked owners, and anything
+//! consumer then reads the marked owners (and, for states, the daily slice of
+//! origin states, whose supply-route flag no hook observes), and anything
 //! unobserved (disabled, poisoned, an id beyond the bitmap, an unnamed
 //! writer, an epoch change, a running writer) makes it read every owner.
 //! Entering nudge mode or an uninstalled building family poisons the state
@@ -79,7 +80,7 @@ std::thread_local! {
 /// any hook is enabled.
 static BASE: AtomicUsize = AtomicUsize::new(0);
 /// Per [`Family`] and [`Counts`] field, cumulative.
-static READS: [[AtomicU64; 5]; 4] = [const { [const { AtomicU64::new(0) }; 5] }; 4];
+static READS: [[AtomicU64; 6]; 4] = [const { [const { AtomicU64::new(0) }; 6] }; 4];
 /// Ids of the latest complete census per [`Family`] (state slots, country
 /// link ids), for off-thread sizing.
 static IDS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
@@ -543,8 +544,10 @@ pub fn collect() {
 pub struct Counts {
     /// Owners marked by writer notifications or the changed route census.
     pub marked: u64,
-    /// Owners read: the slice, the marked, the new and the re-read.
+    /// Owners read: the marked, the new, the re-read and any slice.
     pub read: u64,
+    /// Census owners not read: their held rows carry.
+    pub carried: u64,
     /// Owners read only because a take marked them.
     pub early: u64,
     /// Every owner read: the take did not certify the previous read's epoch.
@@ -558,6 +561,7 @@ pub fn record(family: Family, counts: &Counts, ids: Option<usize>) {
         1,
         counts.marked,
         counts.read,
+        counts.carried,
         counts.early,
         u64::from(counts.full),
     ]) {
@@ -583,8 +587,9 @@ pub fn status() -> impl serde::Serialize {
             "hours": reads[0],
             "marked": reads[1],
             "read_owners": reads[2],
-            "early_owners": reads[3],
-            "full_reads": reads[4],
+            "carried_owners": reads[3],
+            "early_owners": reads[4],
+            "full_reads": reads[5],
             "poisoned": WATCHES.sets()[family as usize].poisoned(),
             "set": WATCHES.sets()[family as usize].status(),
         })
@@ -603,7 +608,7 @@ pub fn status() -> impl serde::Serialize {
         "certified_daily_passes": WATCHES.daily_passes[0].load(Ordering::Relaxed),
         "per_call_daily_passes": WATCHES.daily_passes[1].load(Ordering::Relaxed),
         "untimed_certified_capacities": WATCHES.untimed_capacities.load(Ordering::Relaxed),
-        "scope": "cumulative since attach; each hour the RaidState job reads its daily slice of states and countries, and the RaidLaunch job its daily slice of RaidAirSites countries, and every owner a hooked writer marked since the previous hour (early_owners; the capacity setter marks only a store that changes the value, unchanged_capacities counts the others; a daily capacity pass whose every store keeps its value and that withdraws no base is read once before it runs and its stores skip the setter's own read (certified_daily_passes), while any other pass leaves each store to the setter (per_call_daily_passes)); untimed_certified_capacities counts the certified stores omitted from hook_timing on normally returned daily passes, not a measurement of zero cost, so the raid state rows, CountryBuildingResources, RaidAirSites and TradeRoutes equal the game's at every hour (changed route membership, storage or market endpoint demand marks its census owner too; supply port-to-port updates and origin inline clears mark their route owners), except StateResourceInputs.supply_route, which follows the hourly supply rebuild and is read with its state; an hour whose take does not return the previous read's epoch (disabled, poisoned, an unnamed writer, an id beyond the bitmap, an invalidating hour) reads every owner (full_reads)"
+        "scope": "cumulative since attach; each hour the RaidState job reads the daily slice of states holding a resource origin, whose supply-route flag no hook observes, and the RaidState and RaidLaunch jobs read every owner a hooked writer marked since the previous hour (early_owners; the capacity setter marks only a store that changes the value, unchanged_capacities counts the others; a daily capacity pass whose every store keeps its value and that withdraws no base is read once before it runs and its stores skip the setter's own read (certified_daily_passes), while any other pass leaves each store to the setter (per_call_daily_passes)) and every new or unpublished owner, and carry every other census owner's rows with no read (carried_owners); untimed_certified_capacities counts the certified stores omitted from hook_timing on normally returned daily passes, not a measurement of zero cost, so the raid state rows, CountryBuildingResources, RaidAirSites and TradeRoutes equal the game's at every hour (changed route membership, storage or market endpoint demand marks its census owner too; supply port-to-port updates and origin inline clears mark their route owners), except StateResourceInputs.supply_route, which follows the hourly supply rebuild and is read with its origin state's daily slice; an hour whose take does not return the previous read's epoch (disabled, poisoned, an unnamed writer, an id beyond the bitmap, an invalidating hour) reads every owner (full_reads)"
     })
 }
 

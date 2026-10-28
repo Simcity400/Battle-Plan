@@ -318,7 +318,7 @@ pub struct Capacity {
     pub provinces: usize,
     /// Override entries of one country.
     pub entries: usize,
-    /// Country slots and links.
+    /// Country slots.
     pub countries: usize,
     /// Distinct dynamic modifier definitions whose names a walk keeps.
     pub definitions: usize,
@@ -471,8 +471,6 @@ pub struct Buffers {
     addresses: Vec<usize>,
     bytes: Vec<u8>,
     routes: Vec<u8>,
-    links: Vec<u32>,
-    country_pointers: Vec<u64>,
     system_pointers: Vec<u64>,
     nations: Vec<Nation>,
     controllers: Vec<u32>,
@@ -534,8 +532,6 @@ impl Buffers {
             addresses: crate::allocation::filled(words, 0)?,
             bytes: crate::allocation::filled(bytes, 0)?,
             routes: crate::allocation::filled(routes, 0)?,
-            links: crate::allocation::filled(capacity.countries, 0)?,
-            country_pointers: crate::allocation::filled(capacity.countries, 0)?,
             system_pointers: crate::allocation::filled(capacity.countries, 0)?,
             nations: crate::allocation::filled(capacity.countries, Nation::default())?,
             controllers: crate::allocation::filled(capacity.countries, 0)?,
@@ -567,8 +563,6 @@ impl Buffers {
             addresses: Vec::new(),
             bytes: Vec::new(),
             routes: Vec::new(),
-            links: Vec::new(),
-            country_pointers: Vec::new(),
             system_pointers: Vec::new(),
             nations: Vec::new(),
             controllers: Vec::new(),
@@ -600,8 +594,6 @@ impl Buffers {
             + bytes(&self.addresses)
             + bytes(&self.bytes)
             + bytes(&self.routes)
-            + bytes(&self.links)
-            + bytes(&self.country_pointers)
             + bytes(&self.system_pointers)
             + bytes(&self.nations)
             + bytes(&self.controllers)
@@ -643,6 +635,9 @@ struct Totals {
 pub struct Selection<'a> {
     pub states: &'a dyn Fn(u32) -> bool,
     pub countries: &'a dyn Fn(u32) -> bool,
+    /// `countries` accepts some country: every state's controller is read.
+    /// Otherwise only the selected states are.
+    pub any_country: bool,
 }
 
 fn every(_: u32) -> bool {
@@ -654,6 +649,7 @@ impl Selection<'static> {
     pub const ALL: Self = Self {
         states: &every,
         countries: &every,
+        any_country: true,
     };
 }
 
@@ -661,8 +657,8 @@ mod census;
 pub use census::{CoreRow, demand, state_census, state_cores, state_cores_growing};
 
 /// One walk for all four tables: they share the state census and fail as
-/// one. Every state record is read, for the controllers; only the selected
-/// states and countries read their rows.
+/// one. Every state record is read for its controller only while a country
+/// is selected; only the selected states and countries read their rows.
 pub fn walk(
     memory: &impl Memory,
     base: usize,
@@ -823,13 +819,9 @@ const STATE_HEAD_LAYOUT: RecordLayout<'static> = RecordLayout::new(
 )
 .expect("valid record layout");
 
-const COUNTRY_FIELDS: [RecordField; 3] = [
-    field(0, 0, 8),
-    field(ccountry::ID, 8, 4),
-    field(ccountry::RESOURCES, 16, 8),
-];
+const COUNTRY_FIELDS: [RecordField; 1] = [field(ccountry::RESOURCES, 0, 8)];
 const COUNTRY_LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&COUNTRY_FIELDS, 24).expect("valid record layout");
+    RecordLayout::new(&COUNTRY_FIELDS, 8).expect("valid record layout");
 
 const RESOURCES_FIELDS: [RecordField; 4] = [
     field(0, 0, 8),
@@ -1126,24 +1118,14 @@ impl Name {
     }
 }
 
-/// `ccountry::Reader`'s link and object checks over owned link and pointer arrays.
-struct Census<'a> {
-    links: &'a [u32],
-    pointers: &'a [u64],
-}
-
-impl Census<'_> {
-    fn canonical(&self, raw: u32) -> Result<u32, &'static str> {
-        if raw == 0 {
-            return Err("country id is zero");
-        }
-        let outside = "country link unreadable or outside country table";
-        let slot = *self.links.get(raw as usize).ok_or(outside)?;
-        if slot == 0 || slot as usize >= self.pointers.len() {
-            return Err(outside);
-        }
-        Ok(slot)
-    }
+/// The canonical slot `raw` links to, through the shared authenticated census.
+fn canonical<M: Memory>(
+    countries: &ccountry::Reader<'_, M>,
+    raw: u32,
+) -> Result<u32, &'static str> {
+    countries
+        .link(raw)?
+        .ok_or("country link unreadable or outside country table")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1176,8 +1158,6 @@ fn walk_inner(
         addresses,
         bytes,
         routes,
-        links,
-        country_pointers,
         system_pointers,
         nations,
         controllers,
@@ -1257,7 +1237,7 @@ fn walk_inner(
     }
     let vtable = address(base, cstate::VTABLE_RVA)? as u64;
     let mut count = 0;
-    let mut readable = 0;
+    let mut present = false;
     if !read_slice(memory, root.data, &mut bytes[..slots * 8]) {
         return Err("state pointers unreadable");
     } else {
@@ -1272,11 +1252,17 @@ fn walk_inner(
         while next < slots && len < BATCH {
             let pointer = usize::try_from(words[next]).map_err(|_| "state pointer overflow")?;
             if pointer != 0 {
-                addresses[len] = pointer;
-                ids[len] = next as u32;
-                len += 1;
+                present = true;
+                if select.any_country || (select.states)(next as u32) {
+                    addresses[len] = pointer;
+                    ids[len] = next as u32;
+                    len += 1;
+                }
             }
             next += 1;
+        }
+        if len == 0 {
+            continue;
         }
         // The pointers now live in `words`; the records reuse `bytes`.
         let record = &mut bytes[..];
@@ -1306,76 +1292,52 @@ fn walk_inner(
                 ..Scratch::default()
             };
             count += 1;
-            readable += 1;
         }
     }
-    if readable == 0 {
+    if !present {
         return Err("state table has no readable states");
     }
     let states = &mut states[..count];
 
-    // Controllers, resolved once per walk over owned link and pointer arrays.
-    let country_array = address(game_state, cgame_state::COUNTRIES)
-        .ok()
-        .and_then(|at| Array::read(memory, at, 8))
-        .ok_or("country array unreadable or invalid")?;
-    let link_array = address(game_state, cgame_state::COUNTRY_LINKS)
-        .ok()
-        .and_then(|at| Array::read(memory, at, 4))
-        .ok_or("country links unreadable or invalid")?;
-    if country_array.count < 2 {
-        return Err("country table has no country slots");
-    }
-    if link_array.count == 0 {
-        return Err("country links have no sentinel slot");
-    }
+    // Controllers, resolved once per walk through the shared authenticated census.
+    let countries = ccountry::Reader::new(memory, base, game_state)?;
+    let country_array = countries.arrays()[0];
     let country_slots = country_array.count as usize;
-    let link_count = link_array.count as usize;
-    need(&mut required.countries, country_slots.max(link_count));
-    grow(links, country_slots.max(link_count), growing)?;
-    grow(country_pointers, country_slots, growing)?;
+    need(&mut required.countries, country_slots);
     grow(system_pointers, country_slots, growing)?;
     grow(nations, country_slots, growing)?;
     grow(controllers, country_slots, growing)?;
-    grow(bytes, (country_slots * 8).max(link_count * 4), growing)?;
+    grow(bytes, country_slots * 8, growing)?;
     if growing {
         crate::allocation::reserve(read_countries, country_slots)
             .map_err(|_| "state controller allocation failed")?;
     }
-    if country_slots.max(link_count) > links.len() || country_slots * 8 > bytes.len() {
+    if country_slots > nations.len()
+        || country_slots > controllers.len()
+        || country_slots > system_pointers.len()
+        || country_slots * 8 > bytes.len()
+    {
         totals.unread_states = count as u32;
         totals.unread_countries = 1;
         return Ok(());
     }
-    if !read_slice(memory, link_array.data, &mut bytes[..link_count * 4]) {
-        return Err("country links unreadable");
-    }
-    for (index, link) in links[..link_count].iter_mut().enumerate() {
-        *link = u32_at(bytes, index * 4);
-    }
-    if !read_slice(memory, country_array.data, &mut bytes[..country_slots * 8]) {
-        return Err("country pointers unreadable");
-    }
-    for (index, pointer) in country_pointers[..country_slots].iter_mut().enumerate() {
-        *pointer = u64_at(bytes, index * 8);
-    }
-    let census = Census {
-        links: &links[..link_count],
-        pointers: &country_pointers[..country_slots],
-    };
     let nations = &mut nations[..country_slots];
     for nation in nations.iter_mut() {
         *nation = Nation::default();
     }
     let mut distinct = 0;
     let mut control = |controller: u32| -> Result<u32, &'static str> {
-        let slot = census.canonical(controller)?;
+        let slot = canonical(&countries, controller)?;
         let nation = &mut nations[slot as usize];
         if nation.pointer == 0 {
-            nation.pointer = usize::try_from(census.pointers[slot as usize])
-                .ok()
-                .filter(|&pointer| pointer != 0)
+            let country = countries
+                .read_at(slot)?
                 .ok_or("country link resolves to null country")?;
+            if country.canonical_slot != slot {
+                return Err("country link does not resolve to its canonical object");
+            }
+            nation.pointer = country.pointer;
+            nation.id = country.id;
             controllers[distinct] = slot;
             distinct += 1;
         }
@@ -1388,8 +1350,7 @@ fn walk_inner(
     }
     let controllers = &mut controllers[..distinct];
     controllers.sort_unstable();
-    // Each controller's object: vtable, id and resources pointer.
-    let country_vtable = address(base, ccountry::VTABLE_RVA)? as u64;
+    // Each controller's resources pointer.
     for chunk in controllers.chunks(BATCH) {
         for (index, &slot) in chunk.iter().enumerate() {
             addresses[index] = nations[slot as usize].pointer;
@@ -1402,19 +1363,7 @@ fn walk_inner(
             "country fields unreadable",
         )?;
         for (index, &slot) in chunk.iter().enumerate() {
-            let at = index * 24;
-            if u64_at(bytes, at) != country_vtable {
-                return Err("country vtable mismatch");
-            }
-            let id = u32_at(bytes, at + 8);
-            // `Reader::read_at` and `resolve`: the object's id, its slot and
-            // its canonical slot all lead to this slot and this object.
-            if census.canonical(id)? != slot || census.canonical(slot)? != slot {
-                return Err("country link does not resolve to its canonical object");
-            }
-            let nation = &mut nations[slot as usize];
-            nation.id = id;
-            nation.resources = usize::try_from(u64_at(bytes, at + 16))
+            nations[slot as usize].resources = usize::try_from(u64_at(bytes, index * 8))
                 .ok()
                 .filter(|&pointer| pointer != 0)
                 .ok_or("country resources pointer unreadable or null")?;
@@ -1510,7 +1459,7 @@ fn walk_inner(
             if u64_at(bytes, at) != resources_vtable {
                 return Err("country resources vtable mismatch");
             }
-            if census.canonical(u32_at(bytes, at + 8))? != slot {
+            if canonical(&countries, u32_at(bytes, at + 8))? != slot {
                 return Err("country resources owner disagrees with country");
             }
             let origins = Array::from_header(header16(bytes, at + 16), 8)
@@ -1891,7 +1840,7 @@ fn walk_inner(
             if !(state.origin && state.level.is_some()) {
                 continue;
             }
-            buckets[probes] = first_bucket(state, &census)?;
+            buckets[probes] = first_bucket(state, &countries)?;
             probed[row] = probes;
             probes += 1;
         }
@@ -1970,7 +1919,7 @@ fn walk_inner(
                     state.fields[STATE_HASH..STATE_HASH + 17]
                         .try_into()
                         .unwrap(),
-                    |raw| census.canonical(raw),
+                    |raw| canonical(&countries, raw),
                 )
             };
             let mut infrastructure_modifier = 0;
@@ -2091,7 +2040,10 @@ fn non_null(bytes: &[u8], addresses: &mut [usize]) -> Result<(), &'static str> {
 
 /// The first country-modifier probe for the state's controller: the bucket
 /// address, with the header's bounds checks.
-fn first_bucket(state: &Scratch, census: &Census<'_>) -> Result<usize, &'static str> {
+fn first_bucket<M: Memory>(
+    state: &Scratch,
+    countries: &ccountry::Reader<'_, M>,
+) -> Result<usize, &'static str> {
     let header = &state.fields[STATE_HASH..STATE_HASH + 17];
     let data = u64_at(header, 0) as usize;
     let mask = u32_at(header, 12);
@@ -2100,7 +2052,7 @@ fn first_bucket(state: &Scratch, census: &Census<'_>) -> Result<usize, &'static 
         .ok_or("state movement hash mask invalid")?;
     // The first probe, `hash & mask`, is below the bucket count and so
     // inside the allocation; only a null table has no bucket.
-    let index = census.canonical(state.controller)? & mask;
+    let index = canonical(countries, state.controller)? & mask;
     if data == 0 {
         return Err("state movement hash probe outside allocation");
     }

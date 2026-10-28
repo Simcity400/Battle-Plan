@@ -958,6 +958,189 @@ fn only_a_gated_state_is_read_for_temporary_resources() {
     assert_eq!(read(&f), (Outcome::Rows { len: 0 }, 0));
 }
 
+/// The state-by-state temporary walk the batched one replaced.
+fn serial_temporary(
+    memory: &impl Memory,
+    base: usize,
+    descriptors: &[cstrategic_resource::Row],
+    rows: &mut Vec<TemporaryRow>,
+) -> Result<(), &'static str> {
+    let states = array(
+        memory,
+        at(GAME_STATE, cgame_state::STATES)?,
+        8,
+        "state table unreadable",
+    )?;
+    for index in 0..states.count {
+        let state = element(memory, states, index, 8, "state unreadable")?;
+        if state == 0 {
+            continue;
+        }
+        let count = read::<i32>(memory, at(state, STATE_TEMPORARY_LIST_COUNT)?)
+            .ok_or("state temporary list unreadable")?;
+        let flag = read::<u8>(memory, at(state, STATE_TEMPORARY_FLAG)?)
+            .ok_or("state temporary flag unreadable")?;
+        if count == 0 && flag == 0 {
+            continue;
+        }
+        let id = read::<u32>(memory, at(state, cstate::ID)?).ok_or("state id unreadable")?;
+        let accumulator = at(state, cstate::BASE_MODIFIERS)?;
+        for descriptor in descriptors {
+            let key = read::<u32>(
+                memory,
+                at(descriptor.address, cstrategic_resource::TEMPORARY_KEY)?,
+            )
+            .ok_or("resource temporary key unreadable")?;
+            if key == 0 {
+                continue;
+            }
+            let amount = modifier_accumulator::lookup_effective_at(memory, base, accumulator, key)?
+                .effective;
+            if amount != 0 {
+                rows.push(TemporaryRow {
+                    state: id,
+                    resource: descriptor.token,
+                    amount,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+const TEMPORARY_SLOTS: usize = 0x80000;
+
+fn temporary_state(slot: usize) -> usize {
+    0x10_0000 + slot * 0x1000
+}
+
+/// 130 states across three pointer batches, some null and some gated by list or flag.
+fn temporary_states() -> (Fixture, [cstrategic_resource::Row; 1]) {
+    let mut f = world();
+    let descriptors = f.descriptors();
+    f.u32(0xd000 + cstrategic_resource::TEMPORARY_KEY, 0x55);
+    let (slots, count, state) = (TEMPORARY_SLOTS, 130, temporary_state);
+    f.array(GAME_STATE + cgame_state::STATES, slots, count);
+    for slot in 0..count as usize {
+        if slot % 7 == 3 {
+            f.u64(slots + slot * 8, 0);
+            continue;
+        }
+        f.u64(slots + slot * 8, state(slot) as u64);
+        f.u32(
+            state(slot) + STATE_TEMPORARY_LIST_COUNT,
+            u32::from(slot % 5 == 1),
+        );
+        f.put(
+            state(slot) + STATE_TEMPORARY_FLAG,
+            &[u8::from(slot % 11 == 2)],
+        );
+        f.u32(state(slot) + cstate::ID, slot as u32);
+        f.array(state(slot) + cstate::BASE_MODIFIERS, 0, 0);
+    }
+    (f, descriptors)
+}
+
+/// Pointer words in batches of 64 and both gate fields gathered: the same rows and, for a
+/// fault anywhere, the same refusal as the state-by-state walk.
+#[test]
+fn the_batched_temporary_walk_keeps_every_serial_row_and_refusal() {
+    let (f, descriptors) = temporary_states();
+    let (slots, state) = (TEMPORARY_SLOTS, temporary_state);
+    for denied in [
+        None,
+        Some(slots + 64 * 8 + 3),
+        Some(state(6) + STATE_TEMPORARY_LIST_COUNT),
+        Some(state(13) + STATE_TEMPORARY_FLAG),
+        Some(state(1) + cstate::ID),
+        Some(state(71) + cstate::BASE_MODIFIERS),
+        Some(0xd000 + cstrategic_resource::TEMPORARY_KEY),
+    ] {
+        let memory = || PathMemory {
+            source: &f,
+            denied,
+            guards: Default::default(),
+            faults: Default::default(),
+        };
+        let mut expected = Vec::new();
+        let reference = match serial_temporary(&memory(), 0, &descriptors, &mut expected) {
+            Ok(()) => Outcome::Rows {
+                len: expected.len(),
+            },
+            Err(reason) => Outcome::Unavailable { reason },
+        };
+        let mut rows = Vec::new();
+        let outcome = walk_temporary(
+            &memory(),
+            0,
+            GAME_STATE,
+            &descriptors,
+            Buffer::Growing(&mut rows),
+        );
+        assert_eq!(outcome, reference, "fault {denied:?}");
+        if let Outcome::Rows { len } = outcome {
+            assert_eq!(rows[..len], expected[..], "fault {denied:?}");
+        }
+    }
+}
+
+/// Faults the first read touching `denied`, as a guard page does once, then reads it.
+struct GuardOnce<'a> {
+    source: &'a Fixture,
+    denied: usize,
+    spent: std::cell::Cell<bool>,
+}
+impl Memory for GuardOnce<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        if !self.spent.get() && self.denied >= address && self.denied - address < output.len() {
+            self.spent.set(true);
+            return false;
+        }
+        self.source.copy(address, output)
+    }
+}
+
+/// A fault that clears after its first read refuses where the state-by-state walk refuses:
+/// the batched walk never reads a faulted source again.
+#[test]
+fn the_batched_temporary_walk_never_retries_a_one_shot_fault() {
+    let (f, descriptors) = temporary_states();
+    let (slots, state) = (TEMPORARY_SLOTS, temporary_state);
+    for denied in [
+        slots + 3,
+        slots + 64 * 8 + 3,
+        state(6) + STATE_TEMPORARY_LIST_COUNT,
+        state(13) + STATE_TEMPORARY_FLAG,
+        state(1) + cstate::ID,
+    ] {
+        let memory = || GuardOnce {
+            source: &f,
+            denied,
+            spent: Default::default(),
+        };
+        let mut expected = Vec::new();
+        let reference = match serial_temporary(&memory(), 0, &descriptors, &mut expected) {
+            Ok(()) => Outcome::Rows {
+                len: expected.len(),
+            },
+            Err(reason) => Outcome::Unavailable { reason },
+        };
+        assert!(
+            matches!(reference, Outcome::Unavailable { .. }),
+            "fault {denied:#x}"
+        );
+        let mut rows = Vec::new();
+        let outcome = walk_temporary(
+            &memory(),
+            0,
+            GAME_STATE,
+            &descriptors,
+            Buffer::Growing(&mut rows),
+        );
+        assert_eq!(outcome, reference, "fault {denied:#x}");
+    }
+}
+
 #[test]
 fn the_temporary_walk_holds_every_resource_the_database_has() {
     let mut f = world();

@@ -2,13 +2,13 @@
 //! ([`engine_resources::resource_map`]): ResourceOrigins, ResourceRights, CountryOilFactors,
 //! StateTemporaryResources and ConvoyClients are read every hour, as the game refreshes
 //! origins and convoy efficiency in its hourly trade task. TradeRoutes is the sliced
-//! `trade_routes` family (owner: the country holding each route): each hour reads its owner
-//! slice, an owner new to the census or whose set of referenced routes changed, and every
+//! `trade_routes` family (owner: the country holding each route) with no slice: each hour
+//! reads an owner new to the census or whose set of referenced routes changed, and every
 //! owner one of whose routes a hooked route writer touched since the previous hour
 //! ([`crate::raid_changes`]: the state-to-state and supply port-to-port updates,
 //! origin refresh's inline kind clear, route construction, country resources
-//! construction and the save loader). An hour whose take of the marks does not
-//! certify the previous hour's read reads every
+//! construction and the save loader); every other owner's routes carry. An hour whose
+//! take of the marks does not certify the previous hour's read reads every
 //! owner. A changed census marks its owner too: membership and route-storage
 //! changes legitimately change its rows. Read in the RaidState job, after the raid
 //! state inputs.
@@ -114,7 +114,7 @@ impl Captured {
     pub fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.pending_owned = false;
         self.outcomes = TABLES.map(|table| crate::failed_capture(table, hour, force_full, reason));
-        self.selection.reset(hour, force_full);
+        self.selection.reset_hooked(hour, force_full);
     }
     pub fn allocated_bytes(&self) -> usize {
         use std::mem::size_of;
@@ -134,7 +134,7 @@ impl Captured {
     pub fn grow(&mut self, _capacity: &mut Capacities) {}
 
     pub fn reset_selection(&mut self, hour: i32, force_full: bool) {
-        self.selection.reset(hour, force_full);
+        self.selection.reset_hooked(hour, force_full);
     }
 
     /// The countries whose TradeRoutes rows this frame's read replaced.
@@ -188,7 +188,7 @@ impl Captured {
     ) -> [u64; N] {
         self.reset();
         let full = force_full || stores.is_none();
-        self.selection.reset(hour, full);
+        self.selection.reset_hooked(hour, full);
         let mut ticks = [0; N];
         let begin = qpc();
         {
@@ -293,8 +293,13 @@ impl Captured {
         mut stores: Option<Stores<'_>>,
     ) -> Outcome {
         let census = self.census();
+        // The link ids the country table can hold, sizing the route mark set.
+        let mut ids = None;
         if let Some(stores) = stores.as_mut() {
             let reader = ccountry::Reader::new(memory, base, game_state).ok();
+            ids = reader
+                .as_ref()
+                .map(|reader| reader.arrays()[1].count as usize);
             self.select(stores, census.is_ok(), &|raw| {
                 reader
                     .as_ref()
@@ -327,7 +332,7 @@ impl Captured {
         });
         let outcome = outcome.unwrap_or_else(|reason| Outcome::Unavailable { reason });
         if stores.is_some() {
-            self.record_counts(reader_ids(memory, base, game_state));
+            self.record_counts(ids);
         }
         outcome
     }
@@ -423,6 +428,7 @@ impl Captured {
             &Counts {
                 marked: u64::from(self.selection.marked_count),
                 read: self.selection.read_owners().count() as u64,
+                carried: self.selection.carried() as u64,
                 early: u64::from(self.selection.marked_early()),
                 full: self.selection.force_full,
             },
@@ -520,13 +526,6 @@ impl Captured {
             }),
         ]
     }
-}
-
-/// Raw country link ids the country table can hold, sizing the route mark set.
-fn reader_ids(memory: &impl Memory, base: usize, game_state: usize) -> Option<usize> {
-    ccountry::Reader::new(memory, base, game_state)
-        .ok()
-        .map(|reader| reader.arrays()[1].count as usize)
 }
 
 /// Sort a complete read's rows by their table key; two rows with one key refuse it.

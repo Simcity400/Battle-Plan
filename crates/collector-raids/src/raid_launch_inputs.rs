@@ -1,15 +1,17 @@
 //! The stored inputs of a raid offer's launch gate, which the game computes
 //! per viewing country on demand (`engine_native::raid_launch_inputs`).
-//! RaidAirSites is the sliced `raid_launch` family (owner: canonical slot):
-//! each hour reads that hour's country slice, a country new to the census
-//! and the owners of a read that was not published, and every country a
-//! site list writer marked since the previous hour ([`crate::raid_changes`],
-//! [`SliceSelection::mark`]), so it equals the game's at every hour. A take
+//! RaidAirSites is the sliced `raid_launch` family (owner: canonical slot)
+//! with no slice: each hour reads a country new to the census, the owners
+//! of a read that was not published and every country a site list writer
+//! marked since the previous hour ([`crate::raid_changes`],
+//! [`SliceSelection::mark`]); every other country's sites carry. A take
 //! that does not certify the previous hour's read reads every country
 //! ([`SliceSelection::certify`]).
 //! RaidCountryInputs, AceRangeInputs, StockpileArchetypes (the essential
 //! stock, capped) and CountryCommandPower, which the stability dashboard
-//! also reads, are read for every country each hour in the same walk.
+//! also reads, are read for every country each hour in the same walk: the
+//! game moves stockpiles, command power and aces every hour and no hook
+//! observes their writers.
 use crate::{
     clock::qpc,
     raid_changes::{Changes, Counts, Family},
@@ -128,7 +130,7 @@ impl Captured {
         self.archetypes.fail(outcomes[1]);
         self.sites.fail(outcomes[2]);
         self.aces.fail(outcomes[3]);
-        self.selection.reset(hour, force_full);
+        self.selection.reset_hooked(hour, force_full);
     }
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
@@ -181,7 +183,7 @@ impl Captured {
     }
     /// Start a frame's selection at its hour; the capture resets it again.
     pub fn reset_selection(&mut self, hour: i32, force_full: bool) {
-        self.selection.reset(hour, force_full);
+        self.selection.reset_hooked(hour, force_full);
     }
 
     /// The canonical slots whose sliced rows this frame's read replaced.
@@ -205,8 +207,8 @@ impl Captured {
     /// Scan the country census into the store with a constant print (a new
     /// country, or the owner of an unpublished read, joins this hour's read)
     /// and add every country a site list writer marked, then read the sliced
-    /// tables for this hour's slice and those countries, and the country
-    /// inputs, aces and command power for every country.
+    /// table for those countries, and the country inputs, aces and command
+    /// power for every country.
     pub fn capture_sliced(
         &mut self,
         memory: &impl Memory,
@@ -218,7 +220,8 @@ impl Captured {
     ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         self.reset();
-        self.selection.reset(hour, force_full || owners.is_none());
+        self.selection
+            .reset_hooked(hour, force_full || owners.is_none());
         if !should_walk(TABLES[0], hour, force_full) {
             let skipped = Outcome::Unavailable {
                 reason: SKIPPED_REASON,
@@ -337,6 +340,7 @@ impl Captured {
             &Counts {
                 marked: u64::from(self.selection.marked_count),
                 read: self.selection.read_owners().count() as u64,
+                carried: self.selection.carried() as u64,
                 early: u64::from(self.selection.marked_early()),
                 full: self.selection.force_full,
             },
@@ -501,11 +505,11 @@ mod tests {
         );
     }
 
-    /// A daily slice with a constant print: an unchanged country waits for
-    /// its slice, a country new to the census is read at once, and the
-    /// owners of a read that was not published are read at the next hour.
+    /// No slice: an unchanged, unmarked country is never read again, a
+    /// country new to the census is read at once, and the owners of a read
+    /// that was not published are read at the next hour.
     #[test]
-    fn launch_owners_are_read_daily_and_new_or_unpublished_ones_at_once() {
+    fn launch_owners_are_read_only_when_new_marked_or_unpublished() {
         let mut store = SliceFingerprints::new();
         let mut selection = SliceSelection::new(true);
         let scan = |selection: &mut SliceSelection, store: &mut SliceFingerprints, last: u32| {
@@ -515,23 +519,26 @@ mod tests {
             store.finish_scan();
             selection.finish_census(store);
         };
-        selection.reset(0, true);
+        selection.reset_hooked(0, true);
         scan(&mut selection, &mut store, 48);
-        selection.reset(5, false);
-        scan(&mut selection, &mut store, 48);
-        assert_eq!(selection.early_count, 0);
-        assert!(selection.contains(5) && !selection.contains(6));
-        // A new country joins the hour's read.
-        selection.reset(6, false);
+        for hour in 1..=24 {
+            selection.reset_hooked(hour, false);
+            scan(&mut selection, &mut store, 48);
+            assert!(!selection.reads_any(), "hour {hour}");
+            assert_eq!(selection.carried(), 48);
+        }
+        // A new country joins the hour's read, and a marked one.
+        selection.reset_hooked(30, false);
         scan(&mut selection, &mut store, 49);
-        assert!(selection.contains(49) && !selection.contains(5));
-        // Hour 6's read was not published: its slice is read again.
+        selection.mark(5);
+        assert!(selection.contains(49) && selection.contains(5) && !selection.contains(6));
+        // Hour 30's read was not published: its owners are read again.
         selection.invalidate(&mut store);
-        selection.reset(7, false);
+        selection.reset_hooked(31, false);
         scan(&mut selection, &mut store, 49);
-        assert!(selection.contains(6) && selection.contains(49) && selection.contains(7));
-        selection.reset(8, false);
+        assert!(selection.contains(49) && selection.contains(5) && !selection.contains(7));
+        selection.reset_hooked(32, false);
         scan(&mut selection, &mut store, 49);
-        assert_eq!(selection.early_count, 0);
+        assert!(!selection.reads_any());
     }
 }

@@ -813,6 +813,7 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
     let only_two = Selection {
         states: &|state| state == 2,
         countries: &|_| false,
+        any_country: false,
     };
     let read = walk(&m, 0, GS, &mut buffers, only_two);
     assert_eq!(
@@ -830,6 +831,7 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
     let country = Selection {
         states: &|_| false,
         countries: &|country| country == 1,
+        any_country: true,
     };
     let read = walk(&m, 0, GS, &mut buffers, country);
     assert_eq!(read.outcomes.map(|outcome| outcome.len()), [0, 0, 0, 2]);
@@ -840,6 +842,7 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
     let one = Selection {
         states: &|state| state == 1,
         countries: &|_| false,
+        any_country: false,
     };
     let read = walk(&m, 0, GS, &mut buffers, one);
     assert_eq!(read.outcomes.map(|outcome| outcome.len()), [1, 1, 1, 2]);
@@ -848,12 +851,31 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
         (1, 1)
     );
     assert_eq!(buffers.read_countries, [1]);
+    // The same rows as a walk that reads every state's controller.
+    let alone = (
+        buffers.inputs[0],
+        buffers.resources[0],
+        buffers.modifiers[0],
+        buffers.overrides[..2].to_vec(),
+    );
+    walk(&m, 0, GS, &mut buffers, Selection::ALL);
+    assert_eq!(
+        (
+            *buffers.inputs[..2]
+                .iter()
+                .find(|row| row.state == 1)
+                .unwrap(),
+            buffers.resources[0],
+            buffers.modifiers[0],
+            buffers.overrides[..2].to_vec(),
+        ),
+        alone
+    );
     // State 2 has no controller: no country is read with it.
     let read = walk(&m, 0, GS, &mut buffers, only_two);
     assert_eq!(read.outcomes.map(|outcome| outcome.len()), [1, 0, 0, 0]);
     assert!(buffers.read_countries.is_empty());
-    // Every state is read for its identity and controller alone: state 1's
-    // unreadable resource pool fails only a walk that selects it.
+    // State 1's unreadable resource pool fails only a walk that selects it.
     let mut m = fixture();
     m.0.remove(&(STATE_A + cstate::RESOURCE_POOL));
     let read = walk(&m, 0, GS, &mut buffers, only_two);
@@ -862,6 +884,18 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
         walk(&m, 0, GS, &mut buffers, one).outcomes[0],
         Outcome::Unavailable {
             reason: "state resource fields unreadable"
+        }
+    );
+    // Without a selected country no other state is read: state 2's foreign
+    // record fails only a walk that reads every state's controller.
+    let mut m = fixture();
+    m.u64(STATE_B, 7);
+    let read = walk(&m, 0, GS, &mut buffers, one);
+    assert_eq!(read.outcomes.map(|outcome| outcome.len()), [1, 1, 1, 2]);
+    assert_eq!(
+        walk(&m, 0, GS, &mut buffers, country).outcomes[3],
+        Outcome::Unavailable {
+            reason: "state vtable mismatch"
         }
     );
 }
@@ -1323,6 +1357,7 @@ fn raid_state_hour_bench() {
             let select = Selection {
                 states: chosen,
                 countries: chosen,
+                any_country: true,
             };
             let mut run = |image: usize, buffers: &mut Buffers| {
                 let (arena, game_state) = &images[image];

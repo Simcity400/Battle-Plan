@@ -164,13 +164,13 @@ pub const fn cadence(table: TableId) -> Cadence {
         // amount any raid type requires; the requirement check's value then
         // changes only while a country is short.
         //
-        // RaidAirSites: a daily read per owner, one owner slice per hour; an
-        // owner new to the census, or whose read was not published, is read
-        // at the next hour. Each hour also reads every owner a hooked site
-        // list writer marked (raid_changes: append, air-base access refresh,
-        // withdrawal, transfer, clear, construction, destruction,
-        // initialization and load, and a pool-capacity setter when it changes
-        // a capacity), so it equals the game's at every hour.
+        // RaidAirSites, with no owner slice: an owner new to the census, or
+        // whose read was not published, is read at the next hour, and each
+        // hour reads every owner a hooked site list writer marked
+        // (raid_changes: append, air-base access refresh, withdrawal,
+        // transfer, clear, construction, destruction, initialization and
+        // load, and a pool-capacity setter when it changes a capacity), so it
+        // equals the game's at every hour; every other owner's rows carry.
         TableId::RaidAirSites => Sliced,
         // DivisionRetreatBans falls to the hourly arm: the selected-route
         // search reads the commander's keys live as the combat-disengagement
@@ -183,19 +183,21 @@ pub const fn cadence(table: TableId) -> Cadence {
         // The raid state inputs and the building-resource overrides (owner
         // decision 2026-10-11: raid inputs equal the game's at every hour,
         // whose offer cache re-checks every offer at least hourly).
-        // Each hour reads the owner slice and every state or country a hooked
-        // writer marked since the previous hour (the collector's raid_changes:
-        // resource modifier gate refresh, building dynamic modifier addition
-        // and removal, resource addition, timed-resource expiry, core insertion
-        // and removal, resource-origin construction and destruction, building
+        // Each hour reads every state or country a hooked writer marked since
+        // the previous hour (the collector's raid_changes: resource modifier
+        // gate refresh, building dynamic modifier addition and removal,
+        // resource addition, timed-resource expiry, core insertion and
+        // removal, resource-origin construction and destruction, building
         // resource modifier addition, override clearing and the forwarded
-        // building writers); an hour whose marks are not certified reads
-        // every owner. Only StateResourceInputs.supply_route, which the supply
-        // update rewrites every hour, waits for its state's next read.
-        // Trade routes, by the country holding them: each hour reads the owner slice, an owner
-        // whose set of referenced routes changed, and every owner one of whose routes a hooked
-        // route writer touched (the collector's raid_changes: route update, which is the only
-        // caller of both path builders, route construction, the save loader and a country's
+        // building writers) and every new or unpublished owner; an hour whose
+        // marks are not certified reads every owner. Only
+        // StateResourceInputs.supply_route, which the supply update rewrites
+        // every hour, keeps a daily slice: a state holding a resource origin
+        // is read at its slice, and the flag is zero without one.
+        // Trade routes, by the country holding them, with no owner slice: each hour reads an
+        // owner whose set of referenced routes changed and every owner one of whose routes a
+        // hooked route writer touched (the collector's raid_changes: route update, which is the
+        // only caller of both path builders, route construction, the save loader and a country's
         // delivery-route construction); an hour whose marks are not certified reads every
         // owner.
         TableId::TradeRoutes => Sliced,

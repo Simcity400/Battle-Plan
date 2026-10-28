@@ -87,7 +87,7 @@ fn select(
     hour: i32,
     census: &[(RouteKey, usize)],
 ) -> (bool, Vec<u32>) {
-    captured.selection.reset(hour, false);
+    captured.selection.reset_hooked(hour, false);
     captured.census = census
         .iter()
         .map(|&(key, address)| (key, address, false))
@@ -110,15 +110,8 @@ fn select(
     )
 }
 
-fn slice(hour: i32) -> Vec<u32> {
-    OWNERS
-        .into_iter()
-        .filter(|&owner| replay_data::cadence::slice_active(owner, hour, false))
-        .collect()
-}
-
 /// Client removal is observed by the hourly census, without a route-object
-/// writer: the changed census reads its owner outside its slice.
+/// writer: the changed census reads its owner.
 #[test]
 fn removing_a_supply_client_marks_the_changed_census() {
     let watches = Watches::enabled(64, 64);
@@ -129,15 +122,14 @@ fn removing_a_supply_client_marks_the_changed_census() {
         (key(5, native::SUPPLY_ROUTE_CLASS, 10), 0x200),
     ];
     select(&mut captured, &mut store, &watches, 0, &census);
-    let hour = (1..24).find(|&hour| !slice(hour).contains(&5)).unwrap();
-    let (full, owners) = select(&mut captured, &mut store, &watches, hour, &census[..1]);
+    let (full, owners) = select(&mut captured, &mut store, &watches, 5, &census[..1]);
     assert!(!full);
-    assert!(owners.contains(&5));
+    assert_eq!(owners, [5]);
     assert!(!watches.poisoned(crate::raid_changes::Family::Routes));
 }
 
 /// Supply repathing keeps the client and route addresses. Its writer must
-/// select the owner outside the slice even though the census is unchanged.
+/// select the owner even though the census is unchanged.
 #[test]
 fn supply_repath_with_unchanged_membership_reads_the_owner_immediately() {
     let watches = Watches::enabled(64, 64);
@@ -145,7 +137,7 @@ fn supply_repath_with_unchanged_membership_reads_the_owner_immediately() {
     let mut store = SliceFingerprints::new();
     let census = [(key(5, native::SUPPLY_ROUTE_CLASS, 9), 0x100)];
     select(&mut captured, &mut store, &watches, 0, &census);
-    let hour = (1..24).find(|&hour| !slice(hour).contains(&5)).unwrap();
+    let hour = 5;
     assert!(
         !select(&mut captured, &mut store, &watches, hour, &census)
             .1
@@ -158,17 +150,16 @@ fn supply_repath_with_unchanged_membership_reads_the_owner_immediately() {
         .unwrap();
     assert_eq!(*receiver, engine_mutations::raid_mutations::Receiver::Route);
     drop(watches.notify(index, Target::Route(Some(5))));
-    // Repeating this hour isolates writer admission from the rotating slice.
     let (full, owners) = select(&mut captured, &mut store, &watches, hour, &census);
     assert!(!full);
-    assert!(owners.contains(&5));
+    assert_eq!(owners, [5]);
     assert!(!watches.poisoned(crate::raid_changes::Family::Routes));
 }
 
-/// A route owner a hooked route writer marked is read within the hour, outside its daily
-/// slice, and so is one whose referenced routes changed; an unmarked, unchanged owner
-/// outside the slice is not. An hour whose take does not return the previous hour's epoch
-/// reads every owner.
+/// A route owner a hooked route writer marked is read within the hour, and so is one whose
+/// referenced routes changed; an unmarked, unchanged owner is never read, so a quiet day
+/// reads no route. An hour whose take does not return the previous hour's epoch reads every
+/// owner.
 #[test]
 fn touched_route_owners_are_read_within_the_hour_and_an_uncertified_hour_reads_all() {
     let watches = Watches::enabled(64, 64);
@@ -184,32 +175,26 @@ fn touched_route_owners_are_read_within_the_hour_and_an_uncertified_hour_reads_a
         select(&mut captured, &mut store, &watches, 0, &census),
         (true, OWNERS.to_vec())
     );
-    // A quiet hour reads its slice alone.
-    let hour = (1..24)
-        .find(|&hour| slice(hour).len() < OWNERS.len() && !slice(hour).contains(&5))
-        .unwrap();
-    assert_eq!(
-        select(&mut captured, &mut store, &watches, hour, &census),
-        (false, slice(hour))
-    );
-    // A route of country 5 was repathed: it is read beside the slice.
+    // A quiet day reads nothing.
+    let hour = 1;
+    for at in hour..hour + 24 {
+        assert_eq!(
+            select(&mut captured, &mut store, &watches, at, &census),
+            (false, vec![])
+        );
+        assert_eq!(captured.selection.carried(), 3);
+    }
+    let hour = hour + 24;
+    // A route of country 5 was repathed: it alone is read.
     drop(watches.notify(FIRST_ROUTE_SITE, Target::Route(Some(5))));
-    let mut expected = slice(hour + 1);
-    expected.push(5);
-    expected.sort_unstable();
-    expected.dedup();
     let next = select(&mut captured, &mut store, &watches, hour + 1, &census);
-    assert_eq!(next, (false, expected));
+    assert_eq!(next, (false, vec![5]));
     // Country 7's route now lives elsewhere: its changed print reads it.
     let mut moved = census.clone();
     moved[2].1 = 0x400;
-    let mut expected = slice(hour + 2);
-    expected.push(7);
-    expected.sort_unstable();
-    expected.dedup();
     assert_eq!(
         select(&mut captured, &mut store, &watches, hour + 2, &moved),
-        (false, expected)
+        (false, vec![7])
     );
     // A route writer whose country does not read moves the epoch: every owner.
     drop(watches.notify(FIRST_ROUTE_SITE, Target::Route(None)));
@@ -306,9 +291,8 @@ fn market_endpoint_demand_changes_select_the_owner() {
     let mut store = SliceFingerprints::new();
     let census = vec![(key(5, 1, 7), 0x100)];
     select(&mut captured, &mut store, &watches, 0, &census);
-    let hour = (1..24).find(|&hour| !slice(hour).contains(&5)).unwrap();
     captured.census[0].2 = true;
-    captured.selection.reset(hour, false);
+    captured.selection.reset_hooked(5, false);
     captured.select(
         &mut Stores {
             routes: &mut store,
