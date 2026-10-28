@@ -162,8 +162,10 @@ fn a_retained_shrink_survives_denial_of_either_candidate_map_and_quiet_drains() 
 
 #[test]
 fn a_capacity_observation_without_a_complete_root_evicts_even_when_old_entries_can_promote() {
-    let mut batch = changing_source_shapes(1);
-    let event = batch.events[0];
+    let mut batch = changing_source_shapes(2);
+    let (event, unreadable) = (batch.events[0], batch.events[1]);
+    // Copied spans never change once cached, so the unreadable root is a later copy.
+    batch.log.spans[unreadable.start].ok = false;
     let mut retained = Retained::default();
     let mut shared = Shared::default();
     let mut warm = Cache::with_retained(&mut retained);
@@ -179,8 +181,7 @@ fn a_capacity_observation_without_a_complete_root_evicts_even_when_old_entries_c
     let mut cache = Cache::with_retained(&mut retained);
     cache.decode(&batch, &event, 0, 751, &mut shared).unwrap();
     assert_eq!(cache.entries.len(), 1);
-    batch.log.spans[event.start].ok = false;
-    assert!(cache.decode(&batch, &event, 0, 751, &mut shared).is_err());
+    assert!(cache.decode(&batch, &unreadable, 0, 751, &mut shared).is_err());
     assert_eq!(cache.retained.as_ref().unwrap().state_count(), 0);
     cache.finish(&batch);
     drop(cache);

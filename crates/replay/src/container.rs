@@ -1641,7 +1641,7 @@ fn temporary_path(destination: &Path) -> PathBuf {
 
 #[cfg(windows)]
 pub(crate) fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
-    crate::publication::replace_file(source, destination)
+    Ok(crate::publication::replace_file(source, destination)?)
 }
 
 #[cfg(not(windows))]

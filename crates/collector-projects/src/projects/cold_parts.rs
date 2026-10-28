@@ -390,7 +390,7 @@ mod tests {
         let world = space(67, 5);
         let mut rows = Vec::new();
         let mut history = Vec::new();
-        nproject_cproject::walk_with_history_selected(
+        let (outcome, _) = nproject_cproject::walk_with_history_selected(
             &world.memory(),
             kit::BASE,
             world.game_state,
@@ -398,6 +398,7 @@ mod tests {
             engine_native::walk::Buffer::Growing(&mut history),
             &mut |_| true,
         );
+        rows.truncate(outcome.len());
         for at in [
             rows[2].source_pointer,
             rows[rows.len() / 2].source_pointer + nproject_cproject::HISTORY,
@@ -435,7 +436,7 @@ mod tests {
         let world = space(67, 5);
         let mut rows = Vec::new();
         let mut history = Vec::new();
-        nproject_cproject::walk_with_history_selected(
+        let (outcome, _) = nproject_cproject::walk_with_history_selected(
             &world.memory(),
             kit::BASE,
             world.game_state,
@@ -443,6 +444,7 @@ mod tests {
             engine_native::walk::Buffer::Growing(&mut history),
             &mut |_| true,
         );
+        rows.truncate(outcome.len());
         let history_pointer = rows
             .iter()
             .find_map(|row| {
@@ -509,7 +511,7 @@ mod tests {
         }
         let mut world = space(67, 5);
         let mut projects = Vec::new();
-        nproject_cproject::walk_with_history_selected(
+        let (outcome, _) = nproject_cproject::walk_with_history_selected(
             &world.memory(),
             kit::BASE,
             world.game_state,
@@ -517,6 +519,8 @@ mod tests {
             engine_native::walk::Buffer::Growing(&mut Vec::new()),
             &mut |_| true,
         );
+        // A growing buffer is padded with default rows past the walked length.
+        projects.truncate(outcome.len());
         let mut ordered: Vec<_> = {
             let memory = world.memory();
             let countries = ccountry::Reader::new(&memory, kit::BASE, world.game_state).unwrap();

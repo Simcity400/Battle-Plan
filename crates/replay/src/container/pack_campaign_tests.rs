@@ -1097,5 +1097,12 @@ fn retained_raw_size_splits_match_sequential_bytes_without_restoring_frames_twic
     .unwrap();
     assert!(result.index.len() > 3);
     assert_eq!(result.bytes(), expected.bytes());
-    assert_eq!(observed, scanned(&[&segments[0].1.records]));
+    // A split's keyframe records every table afresh; hours and gaps match a full scan.
+    let gaps = |hours: Vec<Seen>| -> Vec<_> {
+        hours
+            .into_iter()
+            .map(|(branch, hour, _, incomplete, gaps)| (branch, hour, incomplete, gaps))
+            .collect()
+    };
+    assert_eq!(gaps(observed), gaps(scanned(&[&segments[0].1.records])));
 }

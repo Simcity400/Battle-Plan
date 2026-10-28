@@ -234,7 +234,14 @@ fn history_loan(
         };
     }
     HistoryRequest::retry_returns(session, campaign, stopped)?;
-    *loan = Some(HistoryRequest::publish(session, action, campaign)?);
+    match HistoryRequest::publish(session, action, campaign) {
+        Ok(request) => *loan = Some(request),
+        Err(error) => {
+            // A request visible despite its failed flush is returned by the retake.
+            *loan = HistoryRequest::lent(session, campaign);
+            return Err(error);
+        }
+    }
     loan.as_ref().unwrap().wait(stopped)
 }
 
@@ -2235,13 +2242,13 @@ pub(crate) fn capture(
     }
     let discarding = control.discarding();
     let spooled = replay_io::spooled_campaigns(&directory)?;
-    let mut set_aside_unsaved = false;
-    for campaign in &spooled {
-        if Some(campaign) != current.as_ref() {
-            set_aside_unsaved |=
-                !replay_io::unsaved_segments(&directory.join(campaign))?.is_empty();
-        }
-    }
+    let set_aside_unsaved = discarding
+        && others_unsaved(
+            &directory,
+            &spooled,
+            current.as_deref(),
+            &mut outcome.issues,
+        );
     // Another campaign the session admitted may still save the hours it continues.
     let others_admitted = admit.is_some()
         && admission
@@ -2738,6 +2745,31 @@ fn classify_terminal(
         });
     }
     outcome
+}
+
+/// Whether a spooled campaign besides `current` may hold unsaved hours; an unreadable one may.
+fn others_unsaved(
+    directory: &Path,
+    spooled: &[String],
+    current: Option<&str>,
+    issues: &mut Vec<String>,
+) -> bool {
+    let mut unsaved = false;
+    for campaign in spooled
+        .iter()
+        .filter(|campaign| Some(campaign.as_str()) != current)
+    {
+        match replay_io::unsaved_segments(&directory.join(campaign)) {
+            Ok(segments) => unsaved |= !segments.is_empty(),
+            Err(error) => {
+                unsaved = true;
+                issues.push(format!(
+                    "campaign {campaign}'s unsaved hours could not be read, so it is kept: {error}"
+                ));
+            }
+        }
+    }
+    unsaved
 }
 
 fn terminal_outcome(
@@ -6080,13 +6112,15 @@ mod tests {
     fn a_healthy_long_holds_comparison_keeps_the_watch_alive_without_record_callbacks() {
         let root = crate::test_support::allocation_test_directory("long-holds-progress");
         let mut records = crate::test_support::allocation_records();
-        records.push(replay::spool::Record::Control(
-            replay::spool::ControlRecord::Partial {
+        // Nothing may follow the Detach that ends the fixture's segment.
+        records.insert(
+            records.len() - 1,
+            replay::spool::Record::Control(replay::spool::ControlRecord::Partial {
                 session: 7,
                 failed_hour: None,
                 reason: "synthetic comparison bytes ".repeat(40_000),
-            },
-        ));
+            }),
+        );
         let replay = Replay::from_records(
             crate::test_support::ALLOCATION_CAMPAIGN.to_vec(),
             &[records],
@@ -7016,6 +7050,32 @@ mod tests {
     }
 
     #[test]
+    fn a_campaign_whose_unsaved_hours_cannot_be_read_is_kept_and_reported() {
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_spool,
+        };
+        let directory = allocation_test_directory("others-unsaved-unreadable");
+        let campaign = write_campaign_spool(&directory, &allocation_records());
+        let name = campaign.file_name().unwrap().to_str().unwrap().to_owned();
+        let spooled = vec![name.clone()];
+        let mut issues = Vec::new();
+        assert!(others_unsaved(&directory, &spooled, None, &mut issues));
+        assert!(issues.is_empty());
+        fs::write(directory.join(WITNESS_FILE_NAME), b"torn").unwrap();
+        assert!(!others_unsaved(
+            &directory,
+            &spooled,
+            Some(name.as_str()),
+            &mut issues
+        ));
+        assert!(issues.is_empty());
+        assert!(others_unsaved(&directory, &spooled, None, &mut issues));
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains(&name));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn discarded_partial_sessions_keep_terminal_fields_and_all_failure_evidence() {
         use crate::test_support::{
             allocation_records, allocation_test_directory, allocation_witness, write_campaign_spool,
@@ -7204,10 +7264,13 @@ mod tests {
             let session = root.join("session");
             let output = root.join("output");
             fs::create_dir_all(&session).unwrap();
-            if !empty {
+            // A session without spools refuses finalization; only its unload wait is checked.
+            let finalized = if empty {
+                replay_io::Finalized::default()
+            } else {
                 write_campaign_spool(&session, &allocation_records());
-            }
-            let finalized = replay_io::finalize_session_outcome(&session, &output).unwrap();
+                replay_io::finalize_session_outcome(&session, &output).unwrap()
+            };
             assert!(finalized.errors.is_empty());
             assert_eq!(finalized.replays.is_empty(), empty);
             let started = Instant::now();

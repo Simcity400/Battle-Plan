@@ -1,3 +1,4 @@
+use replay::publication::ReplaceError;
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -11,8 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, MOVEFILE_REPLACE_EXISTING,
-    MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
 };
 
 const WAIT: Duration = Duration::from_secs(180);
@@ -38,28 +38,26 @@ fn read_shared(path: &Path) -> io::Result<String> {
 }
 
 fn publish(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    publish_with(path, bytes, replay::publication::replace_file).map_err(io::Error::from)
+}
+
+fn publish_with(
+    path: &Path,
+    bytes: &[u8],
+    replace: impl FnOnce(&Path, &Path) -> Result<(), ReplaceError>,
+) -> Result<(), ReplaceError> {
     let temporary = path.with_extension(format!(
         "{}.tmp",
         path.extension().unwrap_or_default().to_string_lossy()
     ));
-    let mut file = File::create(&temporary)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    let from = super::windows::wide(temporary.as_os_str());
-    let to = super::windows::wide(path.as_os_str());
-    if unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    File::create(&temporary)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        })
+        .map_err(ReplaceError::Unrenamed)?;
+    // A classic replace is refused while a delete-sharing reader holds the old file.
+    replace(&temporary, path)
 }
 
 #[derive(Clone)]
@@ -72,6 +70,15 @@ pub(super) struct HistoryRequest {
 
 impl HistoryRequest {
     pub(super) fn publish(session: &Path, action: &str, subject: &str) -> Result<Self, String> {
+        Self::publish_using(session, action, subject, replay::publication::replace_file)
+    }
+
+    fn publish_using(
+        session: &Path,
+        action: &str,
+        subject: &str,
+        replace: impl FnOnce(&Path, &Path) -> Result<(), ReplaceError>,
+    ) -> Result<Self, String> {
         let directory = session.join("history-requests");
         fs::create_dir_all(&directory).map_err(|e| super::failure_text(&directory, e))?;
         let request = Self {
@@ -86,21 +93,31 @@ impl HistoryRequest {
         };
         let mut pending = super::locked(loans());
         let key = (request.directory.clone(), request.campaign.clone());
-        if matches!(action, "lend" | "release") && pending.contains_key(&key) {
+        let loan = matches!(action, "lend" | "release");
+        if loan && pending.contains_key(&key) {
             return Err(format!(
                 "campaign {subject} still has an unresolved history return"
             ));
         }
         let path = request.path("request");
-        publish(
+        let published = publish_with(
             &path,
             format!("{} {action} {subject}", request.token).as_bytes(),
-        )
-        .map_err(|e| super::failure_text(&path, e))?;
-        if matches!(action, "lend" | "release") {
+            replace,
+        );
+        // Renamed before its flush failed, it may still be lent: return it too.
+        if loan && !matches!(published, Err(ReplaceError::Unrenamed(_))) {
             pending.insert(key, request.clone());
         }
+        published.map_err(|e| super::failure_text(&path, e))?;
         Ok(request)
+    }
+
+    /// The loan of `campaign` still to be returned.
+    pub(super) fn lent(session: &Path, campaign: &str) -> Option<Self> {
+        super::locked(loans())
+            .get(&(session.join("history-requests"), campaign.to_owned()))
+            .cloned()
     }
 
     pub(super) fn retry_returns(
@@ -108,10 +125,7 @@ impl HistoryRequest {
         campaign: &str,
         stopped: &AtomicBool,
     ) -> Result<(), String> {
-        let previous = super::locked(loans())
-            .get(&(session.join("history-requests"), campaign.to_owned()))
-            .cloned();
-        if let Some(previous) = previous {
+        if let Some(previous) = Self::lent(session, campaign) {
             previous.retake(stopped)?;
         }
         Ok(())
@@ -483,6 +497,59 @@ mod tests {
         )
         .unwrap();
         next.retake(&stopped).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_unrenamed_request_is_never_lent_even_when_its_staged_file_is_gone() {
+        let root = crate::test_support::allocation_test_directory("history-unrenamed-loan");
+        let refused = || -> Result<(), ReplaceError> {
+            Err(ReplaceError::Unrenamed(io::Error::other("rename refused")))
+        };
+        assert!(
+            HistoryRequest::publish_using(&root, "release", "campaign", |_, _| refused()).is_err()
+        );
+        assert!(
+            HistoryRequest::publish_using(&root, "release", "campaign", |from, _| {
+                fs::remove_file(from).unwrap();
+                refused()
+            })
+            .is_err()
+        );
+        assert!(HistoryRequest::lent(&root, "campaign").is_none());
+        assert!(
+            fs::read_dir(root.join("history-requests"))
+                .unwrap()
+                .all(|entry| {
+                    entry.unwrap().path().extension() != Some(std::ffi::OsStr::new("request"))
+                })
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_loan_renamed_before_its_flush_failed_is_still_returned() {
+        let root = crate::test_support::allocation_test_directory("history-unflushed-loan");
+        let stopped = AtomicBool::new(true);
+        assert!(
+            HistoryRequest::publish_using(&root, "release", "campaign", |from, to| {
+                replay::publication::replace_file(from, to)?;
+                Err(ReplaceError::Unflushed(io::Error::other("flush failed")))
+            })
+            .is_err()
+        );
+        let request = HistoryRequest::lent(&root, "campaign").unwrap();
+        assert!(request.path("request").exists());
+        assert!(HistoryRequest::publish(&root, "lend", "campaign").is_err());
+        assert!(HistoryRequest::retry_returns(&root, "campaign", &stopped).is_err());
+        assert!(request.path("return").exists());
+        publish(
+            &request.path("returned"),
+            format!("{} ok", request.token).as_bytes(),
+        )
+        .unwrap();
+        HistoryRequest::retry_returns(&root, "campaign", &stopped).unwrap();
+        assert!(HistoryRequest::lent(&root, "campaign").is_none());
         fs::remove_dir_all(root).unwrap();
     }
 }

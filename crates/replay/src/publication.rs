@@ -120,9 +120,36 @@ pub(crate) fn posix_replace_with(
     }
 }
 
+/// A failed replacement, by whether `destination` already names the new file.
+#[derive(Debug)]
+pub enum ReplaceError {
+    /// Nothing was renamed: `destination` still names its old file, if any.
+    Unrenamed(io::Error),
+    /// `destination` names the new file, but making it durable failed.
+    Unflushed(io::Error),
+}
+
+impl From<ReplaceError> for io::Error {
+    fn from(error: ReplaceError) -> Self {
+        match error {
+            ReplaceError::Unrenamed(error) | ReplaceError::Unflushed(error) => error,
+        }
+    }
+}
+
+impl std::fmt::Display for ReplaceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unrenamed(error) | Self::Unflushed(error) => {
+                std::fmt::Display::fmt(error, formatter)
+            }
+        }
+    }
+}
+
 /// Durably replace `destination` with the closed, synced sibling `source`, even
 /// while delete-sharing readers hold the destination open.
-pub fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
+pub fn replace_file(source: &Path, destination: &Path) -> Result<(), ReplaceError> {
     replace_file_with(source, destination, posix_replace, || Ok(()))
 }
 
@@ -131,24 +158,27 @@ pub(crate) fn replace_file_with(
     destination: &Path,
     rename: impl FnOnce(&File, &[u16]) -> io::Result<bool>,
     after_rename: impl FnOnce() -> io::Result<()>,
-) -> io::Result<()> {
-    let destination = std::path::absolute(destination)?;
+) -> Result<(), ReplaceError> {
+    let unrenamed = ReplaceError::Unrenamed;
+    let destination = std::path::absolute(destination).map_err(unrenamed)?;
     // Acquire both flush-capable handles before changing the destination.
-    let directory = publication_directory(&destination)?;
+    let directory = publication_directory(&destination).map_err(unrenamed)?;
     let file = OpenOptions::new()
         .access_mode(DELETE | GENERIC_WRITE)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .open(source)?;
-    if !rename(&file, &wide(&destination))? {
+        .open(source)
+        .map_err(unrenamed)?;
+    if !rename(&file, &wide(&destination)).map_err(unrenamed)? {
         drop(file);
         drop(directory);
-        return classic_replace(source, &destination);
+        return classic_replace(source, &destination).map_err(unrenamed);
     }
-    after_rename()?;
+    let unflushed = ReplaceError::Unflushed;
+    after_rename().map_err(unflushed)?;
     // FileRenameInfoEx has no write-through flag. Success acknowledges both
     // the renamed file and its common parent namespace, after the temp sync.
-    file.sync_all()?;
-    directory.sync_all()
+    file.sync_all().map_err(unflushed)?;
+    directory.sync_all().map_err(unflushed)
 }
 
 /// Complete a visible recording's durability barrier without rewriting it.

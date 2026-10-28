@@ -264,11 +264,15 @@ impl Drop for HistoryWorker {
     }
 }
 
-fn publish(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let temporary = path.with_extension(format!(
+fn temporary_path(path: &Path) -> PathBuf {
+    path.with_extension(format!(
         "{}.tmp",
         path.extension().unwrap_or_default().to_string_lossy()
-    ));
+    ))
+}
+
+fn publish(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temporary = temporary_path(path);
     let mut file = File::create(&temporary)?;
     file.write_all(bytes)?;
     file.sync_all()?;
@@ -1039,7 +1043,7 @@ mod tests {
                 .open(&recording)
                 .is_err()
         );
-        fs::create_dir(root.join("history-requests/detached.tmp")).unwrap();
+        fs::create_dir(temporary_path(&root.join("history-requests/detached"))).unwrap();
         let error = worker.finish().unwrap_err();
         assert!(error.to_string().contains("detached"));
         assert!(!root.join("history-requests/detached").exists());

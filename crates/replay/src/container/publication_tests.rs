@@ -1,5 +1,5 @@
 use super::*;
-use crate::publication::{posix_replace, posix_replace_with, replace_file_with};
+use crate::publication::{ReplaceError, posix_replace, posix_replace_with, replace_file_with};
 use std::{
     fs,
     os::windows::fs::OpenOptionsExt,
@@ -137,12 +137,12 @@ impl AtomicPublisher for RenamePublisher<'_> {
 
     fn replace(&mut self, writer: Self::Writer) -> io::Result<()> {
         drop(writer);
-        replace_file_with(
+        Ok(replace_file_with(
             &self.inner.temporary,
             &self.inner.destination,
             &mut self.rename,
             &mut self.after_rename,
-        )
+        )?)
     }
 }
 
@@ -235,6 +235,30 @@ fn errors_before_rename_keep_old_file_and_errors_after_rename_report_new_file() 
     assert_eq!(error.to_string(), "injected after rename");
     verify_revision(fs::read(&path).unwrap(), &new);
     assert!(!temporary_path(&path).exists());
+}
+
+#[test]
+fn replacement_errors_tell_a_refused_rename_from_a_failed_flush() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("published.bin");
+    let staged = scratch.0.join("published.bin.tmp");
+    fs::write(&path, b"old").unwrap();
+    fs::write(&staged, b"new").unwrap();
+    let refused = replace_file_with(
+        &staged,
+        &path,
+        |_, _| Err(io::Error::from_raw_os_error(5)),
+        || panic!("a refused rename has nothing to flush"),
+    );
+    assert!(matches!(refused, Err(ReplaceError::Unrenamed(_))));
+    assert_eq!(fs::read(&path).unwrap(), b"old");
+    assert!(staged.exists());
+    let unflushed = replace_file_with(&staged, &path, posix_replace, || {
+        Err(io::Error::other("flush failed"))
+    });
+    assert!(matches!(unflushed, Err(ReplaceError::Unflushed(_))));
+    assert_eq!(fs::read(&path).unwrap(), b"new");
+    assert!(!staged.exists());
 }
 
 const CRASH_DESTINATION: &str = "battle-plan_PUBLICATION_CRASH_DESTINATION";

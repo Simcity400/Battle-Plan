@@ -997,6 +997,109 @@ fn campaign_failure(
     })
 }
 
+/// Where a projected failure witness ends `campaign_dir`'s committed spool; refused when it
+/// names no end for it.
+fn committed_watermark(
+    campaign_dir: &Path,
+    projected: &CampaignFailure,
+) -> Result<Option<(u32, u64)>> {
+    let witness = &projected.witness;
+    let folder = campaign_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::as_bytes);
+    let committed_campaign = witness
+        .committed_campaign_id
+        .as_ref()
+        .is_some_and(|campaign| folder == Some(campaign.as_slice()));
+    let pending_campaign = witness
+        .pending_campaign_id
+        .as_ref()
+        .is_some_and(|campaign| folder == Some(campaign.as_slice()));
+    if !projected.empty_prefix
+        && (witness.committed_campaign_id.is_none()
+            || (pending_campaign && witness.pending_segment.is_none()))
+    {
+        return Err(failure(
+            campaign_dir,
+            "failure witness has no committed spool watermark",
+        ));
+    }
+    let committed = witness
+        .committed_segment
+        .filter(|_| committed_campaign)
+        .map(|segment| (segment, witness.committed_bytes));
+    let pending = witness
+        .pending_segment
+        .filter(|_| pending_campaign)
+        .map(|segment| (segment, witness.pending_bytes));
+    Ok(match (committed, pending) {
+        (Some(committed), Some(pending)) => Some(committed.min(pending)),
+        (committed, pending) => committed.or(pending),
+    })
+}
+
+/// How much of a campaign's spool its session's capture failure leaves publishable; the bytes
+/// past it are kept only as evidence of the failure.
+#[derive(Clone, Copy)]
+enum SpoolEnd {
+    Whole,
+    /// Up to this byte of this segment.
+    At(u32, u64),
+    /// None of it.
+    Empty,
+}
+
+impl SpoolEnd {
+    fn of(campaign_dir: &Path) -> Result<Self> {
+        let session_dir = campaign_dir.parent().unwrap_or(campaign_dir);
+        let Some(witness) = session_witness(session_dir)? else {
+            return Ok(Self::Whole);
+        };
+        let folder = campaign_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| failure(campaign_dir, "campaign folder has no name"))?;
+        let projected = campaign_failure(session_dir, folder.as_bytes(), &witness)?;
+        Ok(match committed_watermark(campaign_dir, &projected)? {
+            _ if projected.empty_prefix => Self::Empty,
+            Some((segment, bytes)) => Self::At(segment, bytes),
+            None => Self::Whole,
+        })
+    }
+
+    /// The bytes of segment `number` at `path`, `length` long with its first `saved` bytes
+    /// saved, that no save took and the failure leaves publishable; `None` when none wait.
+    fn unsaved(
+        self,
+        path: &Path,
+        number: u32,
+        length: u64,
+        saved: Option<u64>,
+    ) -> Result<Option<std::ops::Range<u64>>> {
+        if saved == Some(length) {
+            return Ok(None);
+        }
+        let end = match self {
+            Self::At(segment, bytes) if number == segment => {
+                if bytes > length {
+                    return Err(failure(
+                        path,
+                        "failure witness watermark exceeds the spool length",
+                    ));
+                }
+                bytes
+            }
+            Self::At(segment, _) if number > segment => 0,
+            Self::Empty => 0,
+            Self::Whole | Self::At(..) => length,
+        };
+        let start = saved.filter(|saved| *saved <= length).unwrap_or(0);
+        // A segment saved up to its watermark holds only failure evidence past it.
+        Ok((start < end || end == length).then_some(start..end))
+    }
+}
+
 fn failure_session(session_dir: &Path, witness: &TerminalWitness) -> Result<SessionStart> {
     let config_path = session_dir.join("bin/collector.json");
     if config_path.is_file() {
@@ -3118,6 +3221,7 @@ struct StagedStamp {
     journal: FileStamp,
     admissions: Option<FileStamp>,
     marker: Option<FileStamp>,
+    witness: Option<FileStamp>,
     segments: Vec<(u32, FileStamp)>,
 }
 
@@ -3128,6 +3232,7 @@ fn staged_stamp(campaign_dir: &Path, staged: &Path) -> Option<StagedStamp> {
         journal: roster_stamp(&campaign_dir.join(SAVED_FILE)).ok()?,
         admissions: roster_stamp(&session.join(ADMISSIONS_FILE)).ok(),
         marker: roster_stamp(&session.join("bin").join(ADMISSION_MARKER)).ok(),
+        witness: roster_stamp(&session.join(WITNESS_FILE_NAME)).ok(),
         segments: segment_paths(campaign_dir)
             .ok()?
             .into_iter()
@@ -3168,11 +3273,14 @@ fn staged_whole(campaign_dir: &Path, staged: &Path) -> bool {
 
 fn verify_staged(campaign_dir: &Path, staged: &Path, stamp: &StagedStamp) -> Option<bool> {
     let saved = read_saved(campaign_dir)?;
+    let end = SpoolEnd::of(campaign_dir).ok()?;
     if !replay::recorder_settings::same_path(&saved.replay, staged)
-        || stamp
-            .segments
-            .iter()
-            .any(|(number, (_, length, _))| saved.segments.get(number) != Some(length))
+        || stamp.segments.iter().any(|(number, (path, length, _))| {
+            !matches!(
+                end.unsaved(path, *number, *length, saved.segments.get(number).copied()),
+                Ok(None)
+            )
+        })
     {
         return Some(false);
     }
@@ -3272,7 +3380,9 @@ fn save_recording_file(
     match bytes {
         Bytes::New => publish(replay, destination),
         // Added to where it waits, then moved: a crash never leaves it older than the saved recording.
-        Bytes::Staged(staged) => replay::publication::replace_file(staged, destination),
+        Bytes::Staged(staged) => {
+            replay::publication::replace_file(staged, destination).map_err(std::io::Error::from)
+        }
         // Matching bytes can survive a rename whose durability flush failed.
         Bytes::Unchanged => replay::publication::sync_file(destination),
     }
@@ -3388,53 +3498,11 @@ fn finalize_campaign_with_publisher(
     let (mut saved, mut omitted) = saved_record
         .map(|saved| (saved.segments, Vec::new()))
         .unwrap_or_default();
-    let committed_campaign = witness.is_some_and(|witness| {
-        witness
-            .committed_campaign_id
-            .as_ref()
-            .is_some_and(|campaign| {
-                campaign_dir
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(str::as_bytes)
-                    == Some(campaign.as_slice())
-            })
-    });
-    let pending_campaign = witness.is_some_and(|witness| {
-        witness
-            .pending_campaign_id
-            .as_ref()
-            .is_some_and(|campaign| {
-                campaign_dir
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(str::as_bytes)
-                    == Some(campaign.as_slice())
-            })
-    });
-    if !empty_prefix
-        && (witness.is_some_and(|witness| witness.committed_campaign_id.is_none())
-            || (pending_campaign && witness.unwrap().pending_segment.is_none()))
-    {
-        return Err(failure(
-            campaign_dir,
-            "failure witness has no committed spool watermark",
-        ));
-    }
-    let watermark = witness.and_then(|witness| {
-        let committed = witness
-            .committed_segment
-            .filter(|_| committed_campaign)
-            .map(|segment| (segment, witness.committed_bytes));
-        let pending = witness
-            .pending_segment
-            .filter(|_| pending_campaign)
-            .map(|segment| (segment, witness.pending_bytes));
-        match (committed, pending) {
-            (Some(committed), Some(pending)) => Some(committed.min(pending)),
-            (committed, pending) => committed.or(pending),
-        }
-    });
+    let watermark = projected
+        .as_ref()
+        .map(|projected| committed_watermark(campaign_dir, projected))
+        .transpose()?
+        .flatten();
     let mut watermark_found =
         watermark.is_none_or(|(segment, bytes)| saved.get(&segment) == Some(&bytes));
     if !watermark_found
@@ -3472,7 +3540,9 @@ fn finalize_campaign_with_publisher(
         .iter()
         .filter(|(number, path)| {
             saved.get(number).is_none_or(|bytes| {
-                fs::metadata(path).map_or(true, |metadata| metadata.len() != *bytes)
+                // Saved and verified up to its watermark: what follows is only failure evidence.
+                watermark != Some((*number, *bytes))
+                    && fs::metadata(path).map_or(true, |metadata| metadata.len() != *bytes)
             })
         })
         .collect();
@@ -3644,7 +3714,8 @@ fn finalize_campaign_with_publisher(
                 recovered.valid_bytes
             );
         }
-        lengths.insert(*number, length);
+        // Only the bytes read are saved: cleanup keeps any tail past a failure watermark.
+        lengths.insert(*number, prefix_length as u64);
         segments.push((*number, recovered));
     }
     drop(drain_phase);
@@ -5425,20 +5496,29 @@ fn is_unsaved_recording(recording: &Path) -> bool {
         ))
 }
 
-/// By the saved record alone: for showing and discarding, never for publishing.
+/// By the saved record and failure watermark: for showing and discarding, never for publishing.
 pub fn unsaved_segments(campaign_dir: &Path) -> Result<Vec<(u32, PathBuf, u64)>> {
+    Ok(unsaved_spans(campaign_dir)?
+        .into_iter()
+        .map(|(number, path, bytes, _)| (number, path, bytes))
+        .collect())
+}
+
+/// Each segment with bytes waiting to be saved: its number, path, length and those bytes.
+fn unsaved_spans(campaign_dir: &Path) -> Result<Vec<(u32, PathBuf, u64, std::ops::Range<u64>)>> {
     // Hours staged into an unsaved recording still wait.
     let saved = read_saved(campaign_dir)
         .filter(|saved| !is_unsaved_recording(&saved.replay))
         .map(|saved| saved.segments)
         .unwrap_or_default();
+    let end = SpoolEnd::of(campaign_dir)?;
     let mut unsaved = Vec::new();
     for (number, path) in segment_paths(campaign_dir)? {
         let bytes = fs::metadata(&path)
             .map_err(|error| failure(&path, error))?
             .len();
-        if saved.get(&number) != Some(&bytes) {
-            unsaved.push((number, path, bytes));
+        if let Some(span) = end.unsaved(&path, number, bytes, saved.get(&number).copied())? {
+            unsaved.push((number, path, bytes, span));
         }
     }
     Ok(unsaved)
@@ -5491,12 +5571,12 @@ pub fn unsaved(session_dir: &Path, campaign: &str) -> Result<Option<Unsaved>> {
             }
         }
     }
-    for (_, path, bytes) in unsaved_segments(&campaign_dir)? {
+    for (_, path, bytes, span) in unsaved_spans(&campaign_dir)? {
         summary.bytes += bytes;
         let file = fs::File::open(&path).map_err(|error| failure(&path, error))?;
         let recovery = recover_reader(
             std::io::BufReader::new(Budgeted::new(file)),
-            usize::try_from(bytes).map_err(|error| failure(&path, error))?,
+            usize::try_from(span.end).map_err(|error| failure(&path, error))?,
             Recovered::keep,
             |_| Ok(()),
         )
@@ -5510,6 +5590,12 @@ pub fn unsaved(session_dir: &Path, campaign: &str) -> Result<Option<Unsaved>> {
             let Recovered::Frame(frame) = record else {
                 continue;
             };
+            let placement = frame.placement;
+            let end = placement.offset + replay::spool::RECORD_HEADER_BYTES + placement.length;
+            // The recording already holds the frames of the segment's saved prefix.
+            if end as u64 <= span.start {
+                continue;
+            }
             if admitted.as_ref().is_some_and(|admitted| {
                 !branches
                     .loads
@@ -8882,6 +8968,60 @@ mod tests {
         assert!(matches!(replay.seek(9, 4).unwrap(), SeekResult::Frame(_)));
         assert!(matches!(replay.seek(9, 5).unwrap(), SeekResult::Gap { .. }));
         assert_eq!(fs::read(path).unwrap(), spool);
+    }
+
+    #[test]
+    fn a_failed_capture_saved_to_its_watermark_waits_for_nothing_and_keeps_its_evidence() {
+        use crate::test_support::allocation_records;
+        let (session, output, mut witness) = allocation_session("saved-failure-evidence");
+        let mut records = allocation_records();
+        records.pop();
+        let mut spool = Vec::new();
+        for record in &records {
+            spool.extend(replay::spool::encode_record(record).unwrap());
+        }
+        witness.committed_bytes = spool.len() as u64;
+        witness.failed_hour = Some(5);
+        let mut late = records
+            .iter()
+            .rev()
+            .find_map(|record| match record {
+                Record::Frame(frame) => Some(frame.clone()),
+                _ => None,
+            })
+            .unwrap();
+        late.hour = 5;
+        let TableUpdate::Snapshot(TableRows::Clock(rows)) =
+            &mut late.tables[TableId::Clock.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].hour = 5;
+        spool.extend(replay::spool::encode_record(&Record::Frame(late)).unwrap());
+        spool.extend_from_slice(b"torn write after the uncommitted frame");
+        let id = witness.campaign_id.unwrap();
+        let name = std::str::from_utf8(&id).unwrap();
+        let campaign = session.join(name);
+        let path = campaign.join("spool.0000.h4s");
+        fs::write(&path, &spool).unwrap();
+        fs::write(session.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        // The CRC-valid frame past the watermark is failure evidence, never an hour waiting.
+        let waiting = unsaved(&session, name).unwrap().unwrap();
+        assert_eq!(
+            (waiting.hours, waiting.first_hour, waiting.last_hour),
+            (3, Some(2), Some(4))
+        );
+        let paths = finalize_session(&session, &output).unwrap();
+        let bytes = fs::read(&paths[0]).unwrap();
+        assert_eq!(
+            read_saved(&campaign).unwrap().segments[&0],
+            witness.committed_bytes
+        );
+        assert!(unsaved_segments(&campaign).unwrap().is_empty());
+        assert_eq!(unsaved(&session, name).unwrap(), None);
+        assert_eq!(finalize_session(&session, &output).unwrap(), paths);
+        assert_eq!(fs::read(&paths[0]).unwrap(), bytes);
+        assert_eq!(fs::read(&path).unwrap(), spool);
     }
 
     #[test]

@@ -121,14 +121,11 @@ pub fn encoded(captured: &Captured) -> Vec<u8> {
     bytes
 }
 
+/// The row's runtime value as conversion records it, also after a latched terminal failure.
 pub fn variables(captured: &Captured) -> Option<std::sync::Arc<rows::ProjectVariableStore>> {
-    let TableView::Complete(rows::TableRows::Projects(rows)) =
-        captured.tables().into_iter().nth(1).unwrap()
+    let rows::Recorded::Value(runtime) = captured.project_runtime.value(&captured.projects.rows[0])
     else {
-        panic!("complete project rows");
-    };
-    let rows::Recorded::Value(runtime) = &rows[0].runtime else {
         panic!("runtime");
     };
-    runtime.variables.clone()
+    runtime.variables
 }

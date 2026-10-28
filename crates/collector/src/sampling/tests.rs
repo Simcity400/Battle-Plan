@@ -1455,6 +1455,17 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
     bytes += shared.country_intel.allocated_bytes();
     bytes += unsafe { (&*shared.raid_air_scores.get()).as_ref().unwrap() }.allocated_bytes();
     bytes += unsafe { &*shared.fixed_layout_buffer.get() }.capacity();
+    // The frame-priority pipeline and the free queue are each one Arc allocation.
+    let arc = |data: std::alloc::Layout| {
+        std::alloc::Layout::new::<[usize; 2]>()
+            .extend(data)
+            .unwrap()
+            .0
+            .pad_to_align()
+            .size()
+    };
+    bytes += arc(std::alloc::Layout::new::<crate::frame_priority::Pipeline>());
+    bytes += arc(std::alloc::Layout::new::<ArrayQueue<usize>>());
     for slot in &shared.frames {
         let frame = slot.load(Ordering::Acquire);
         assert!(!frame.is_null());
