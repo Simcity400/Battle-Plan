@@ -75,20 +75,41 @@ pub fn selected_province(
     game_state: usize,
     seed: &DivisionSeed,
 ) -> Result<usize, &'static str> {
+    selected_province_in(memory, &mut None, game_state, seed)
+}
+
+/// [`selected_province`] keeping the province roster header read once in `roster`.
+pub fn selected_province_in(
+    memory: &impl Memory,
+    roster: &mut Option<Array>,
+    game_state: usize,
+    seed: &DivisionSeed,
+) -> Result<usize, &'static str> {
     let route = seed
         .ordinary_route
         .ok_or("attrition ordinary route unavailable")?;
     let array = Array::from_header(route, 4).ok_or("attrition ordinary route invalid")?;
     let first = if array.count > 0 {
-        let id = read::<u32>(memory, array.data).ok_or("attrition first route id unreadable")?;
-        let provinces = Array::read(
-            memory,
-            game_state
-                .checked_add(cgame_state::PROVINCES)
-                .ok_or("attrition province roster overflow")?,
-            8,
-        )
-        .ok_or("attrition province roster invalid")?;
+        let id = match seed.route_head {
+            Some(head) => head,
+            None => read::<u32>(memory, array.data),
+        }
+        .ok_or("attrition first route id unreadable")?;
+        let provinces = match *roster {
+            Some(provinces) => provinces,
+            None => {
+                let provinces = Array::read(
+                    memory,
+                    game_state
+                        .checked_add(cgame_state::PROVINCES)
+                        .ok_or("attrition province roster overflow")?,
+                    8,
+                )
+                .ok_or("attrition province roster invalid")?;
+                *roster = Some(provinces);
+                provinces
+            }
+        };
         let province = read::<u64>(
             memory,
             provinces
@@ -231,5 +252,61 @@ mod tests {
         );
         seed.ordinary_route = Some(header(ids, 0));
         assert_eq!(selected_province(&memory, state, &seed), Ok(0x1800));
+    }
+
+    #[test]
+    fn a_gathered_route_head_and_one_roster_header_serve_every_mover() {
+        struct Reads<'a>(SliceMemory<'a>, std::cell::RefCell<Vec<usize>>);
+        impl Memory for Reads<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                self.1.borrow_mut().push(address);
+                self.0.copy(address, destination)
+            }
+        }
+        let mut bytes = vec![0u8; 0x2000];
+        let (state, roster, province) = (0x100, 0x800, 0x1000);
+        let at = state + cgame_state::PROVINCES;
+        bytes[at..at + 8].copy_from_slice(&(roster as u64).to_le_bytes());
+        bytes[at + 8..at + 12].copy_from_slice(&8u32.to_le_bytes());
+        bytes[at + 12..at + 16].copy_from_slice(&8u32.to_le_bytes());
+        bytes[roster + 7 * 8..roster + 8 * 8].copy_from_slice(&(province as u64).to_le_bytes());
+        bytes[province + cprovince::ID..province + cprovince::ID + 4]
+            .copy_from_slice(&7u32.to_le_bytes());
+        let memory = Reads(
+            SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            Default::default(),
+        );
+        // The route's data lies outside memory: only the gathered head names it.
+        let mut route = [0u8; 16];
+        route[..8].copy_from_slice(&0x9000u64.to_le_bytes());
+        route[8..12].copy_from_slice(&2u32.to_le_bytes());
+        route[12..].copy_from_slice(&2u32.to_le_bytes());
+        let mut seed = DivisionSeed {
+            ordinary_route: Some(route),
+            route_head: Some(Some(7)),
+            location: Some(0x1800),
+            ..Default::default()
+        };
+        let mut held = None;
+        for _ in 0..3 {
+            assert_eq!(
+                selected_province_in(&memory, &mut held, state, &seed),
+                Ok(province)
+            );
+        }
+        let reads = memory.1.borrow();
+        assert_eq!(reads.iter().filter(|&&address| address == at).count(), 1);
+        assert!(!reads.contains(&0x9000));
+        drop(reads);
+        // A head the census failed to gather is refused, never read again.
+        seed.route_head = Some(None);
+        assert_eq!(
+            selected_province_in(&memory, &mut held, state, &seed),
+            Err("attrition first route id unreadable")
+        );
+        assert!(!memory.1.borrow().contains(&0x9000));
     }
 }

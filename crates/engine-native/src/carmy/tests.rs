@@ -3031,6 +3031,7 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
         &memory,
         0,
         &groups,
+        &[],
         &mut batched,
         &crate::modifier_definition::DefinitionMemo::default(),
         &mut |_| None,
@@ -3050,6 +3051,173 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
             carmy_leader::RETREAT_BANNED_DEFENDING | carmy_leader::RETREAT_BANNED_ATTACKING,
             carmy_leader::RETREAT_BANNED_ATTACKING
         ))
+    );
+    // A leader the census already selected skips its group's own fields.
+    struct Counted<'a>(&'a PresentationMemory, std::cell::RefCell<Vec<usize>>);
+    impl crate::Memory for Counted<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.1.borrow_mut().push(address);
+            crate::Memory::copy(self.0, address, destination)
+        }
+    }
+    let known = groups.map(|group| (group == G1).then_some(Ok(LEADER)));
+    let counted = Counted(&memory, Default::default());
+    let mut shared = [Ok(None); 7];
+    carmy_leader::retreat_bans_many(
+        &counted,
+        0,
+        &groups,
+        &known,
+        &mut shared,
+        &crate::modifier_definition::DefinitionMemo::default(),
+        &mut |_| None,
+    );
+    assert_eq!(shared, batched);
+    let reads = counted.1.borrow();
+    assert!(!reads.contains(&G1));
+    assert!(!reads.contains(&(G1 + corders_group::LEADER)));
+    assert!(reads.contains(&LEADER));
+}
+
+/// An upper-half handle fault leaves every census consumer the outcome of its own reads.
+#[test]
+fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults() {
+    use crate::{carmy_leader, corders_group_member as membership, cunit_leader};
+    const LEADER: usize = 0x20000;
+    let mut memory = presentation_fixture();
+    memory.bytes.resize(0x40000, 0);
+    let b = &mut memory.bytes;
+    p64(b, G1 + corders_group::LEADER, LEADER as u64);
+    p64(b, LEADER, carmy_leader::VTABLE_RVA as u64);
+    p64(
+        b,
+        LEADER + cunit_leader::TYPE,
+        handle(7, cunit_leader::REFERENCE_TYPE),
+    );
+    for (block, data) in [
+        (carmy_leader::MOVEMENT_MODIFIER, 0x21000),
+        (carmy_leader::SEPARATE_HQ_MOVEMENT_MODIFIER, 0x21100),
+    ] {
+        array(
+            b,
+            LEADER + block + carmy_leader::MODIFIER_ACCUMULATOR,
+            data,
+            1,
+        );
+        p32(b, data, carmy_leader::CANNOT_RETREAT_WHILE_DEFENDING);
+        p64(b, data + 8, 1);
+    }
+    memory.globals.insert(
+        crate::modifier_definition::TABLE_RVA,
+        0x22000_u64.to_le_bytes().to_vec(),
+    );
+    /// Fails every copy that covers the faulted byte.
+    struct Fault<'a>(&'a PresentationMemory, usize);
+    impl crate::Memory for Fault<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            !(address <= self.1 && address.saturating_add(output.len()) > self.1)
+                && crate::Memory::copy(self.0, address, output)
+        }
+    }
+    let seed = carmy::DivisionSeed {
+        pointer: A1,
+        orders_group: Some(G1),
+        class: Some(1),
+        ..Default::default()
+    };
+    let select = |memory: &Fault<'_>| {
+        let mut seeds = [seed];
+        carmy_leader::capture_selections(memory, 0, &mut seeds, &mut |_| None).unwrap();
+        seeds[0]
+    };
+    let bans = |memory: &Fault<'_>, known: Option<Result<usize, &'static str>>| {
+        let mut output = [Ok(None)];
+        carmy_leader::retreat_bans_many(
+            memory,
+            0,
+            &[G1],
+            &[known],
+            &mut output,
+            &crate::modifier_definition::DefinitionMemo::default(),
+            &mut |_| None,
+        );
+        output[0]
+    };
+    // Membership as status admits it, beside the census's selection.
+    let member = |memory: &Fault<'_>, seed: &carmy::DivisionSeed| {
+        let mut packet = membership::MembershipPacket::new(1, 4, 4, 4);
+        if super::status_parts::census_authenticated(seed) {
+            packet.admit_group(G1).unwrap();
+        }
+        let query = packet
+            .push_query(membership::MembershipQuery {
+                member: A1 + cunit::SCHEDULED_MEMBER,
+                own_group: G1,
+            })
+            .unwrap();
+        packet.acquire(memory, 0);
+        packet.outcome(query)
+    };
+    let leader_upper = LEADER + cunit_leader::TYPE + 4;
+    let group_upper = G1 + corders_group::HANDLE + 4;
+    for fault in [usize::MAX, leader_upper, group_upper] {
+        let memory = Fault(&memory, fault);
+        let selected = select(&memory);
+        let census = selected.selected.unwrap();
+        // The leader authenticates as each consumer's own selection does.
+        assert_eq!(census.leader, Some(Ok(LEADER)), "{fault:#x}");
+        assert_eq!(
+            census.block,
+            carmy_leader::movement_block_memoized(
+                &memory,
+                0,
+                &seed,
+                &mut carmy_leader::LeaderMemo::vacant()
+            ),
+            "{fault:#x}"
+        );
+        assert!(matches!(census.block, Ok(Some(_))), "{fault:#x}");
+        assert_eq!(
+            super::counter_dig_in_selection_memoized(
+                &memory,
+                0,
+                &selected,
+                &mut super::DigInMemo::vacant()
+            ),
+            super::counter_dig_in_selection_memoized(
+                &memory,
+                0,
+                &seed,
+                &mut super::DigInMemo::vacant()
+            ),
+            "{fault:#x}"
+        );
+        let banned = bans(&memory, census.leader);
+        assert_eq!(banned, bans(&memory, None), "{fault:#x}");
+        assert_eq!(
+            banned,
+            carmy_leader::retreat_bans(&memory, 0, G1),
+            "{fault:#x}"
+        );
+        assert!(matches!(banned, Ok(Some(_))), "{fault:#x}");
+        // Only the handle's consumers see the handle's own outcome.
+        assert_eq!(
+            census.handle,
+            crate::read::<u64>(&memory, LEADER + cunit_leader::TYPE),
+            "{fault:#x}"
+        );
+        assert_eq!(census.handle.is_none(), fault == leader_upper);
+        // Membership refuses exactly the groups its own identity read refuses.
+        assert_eq!(census.group_identity, fault != group_upper);
+        assert_eq!(
+            member(&memory, &selected),
+            member(&memory, &seed),
+            "{fault:#x}"
+        );
+    }
+    assert_eq!(
+        member(&Fault(&memory, group_upper), &seed),
+        Err("orders membership pointer unreadable")
     );
 }
 

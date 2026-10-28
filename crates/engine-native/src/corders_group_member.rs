@@ -353,6 +353,22 @@ impl MembershipPacket {
         base: usize,
         at: usize,
     ) -> Result<usize, &'static str> {
+        self.group_with(at, || group_identity(memory, base, at))
+    }
+
+    /// A group the census already authenticated this hour: its queries read no identity.
+    pub fn admit_group(&mut self, at: usize) -> Result<(), &'static str> {
+        if at != 0 {
+            self.group_with(at, || Ok(()))?;
+        }
+        Ok(())
+    }
+
+    fn group_with(
+        &mut self,
+        at: usize,
+        identity: impl FnOnce() -> Result<(), &'static str>,
+    ) -> Result<usize, &'static str> {
         if let Some(mut slot) = hash(at, self.group_index.len()) {
             while self.group_index[slot] != NONE {
                 let existing = self.group_index[slot];
@@ -382,7 +398,7 @@ impl MembershipPacket {
             parent: None,
             roots: Default::default(),
         };
-        input.result = group_identity(memory, base, at);
+        input.result = identity();
         let slot = self.groups.len();
         self.groups.push(input);
         insert_index(&mut self.group_index, at, slot);

@@ -746,10 +746,14 @@ impl SpeedTerms {
             let location = match seed.location {
                 None => Err("division location unreadable"),
                 Some(0) => Err("division has no location"),
-                Some(location) => location
-                    .checked_add(cprovince::ID)
-                    .and_then(|address| engine_native::read::<u32>(memory, address))
-                    .ok_or("division location id unreadable"),
+                // The census gathered the mover's location id once for every consumer.
+                Some(location) => match seed.location_id {
+                    Some(id) => id,
+                    None => location
+                        .checked_add(cprovince::ID)
+                        .and_then(|address| engine_native::read::<u32>(memory, address)),
+                }
+                .ok_or("division location id unreadable"),
             };
             reserve(&mut self.movers, 1)?;
             self.movers.push(Mover {

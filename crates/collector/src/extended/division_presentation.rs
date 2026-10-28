@@ -5093,6 +5093,53 @@ mod tests {
         assert_eq!(report.ticks[7..], speed_terms.ticks[7..]);
     }
 
+    /// The census's source packet stands in for each pass's own reads of the
+    /// same fields, reading no more and publishing every row unchanged.
+    #[test]
+    fn census_source_packet_publishes_what_each_pass_reads_for_itself() {
+        let populated = Populated::new();
+        let inputs = populated.census.unit_inputs().unwrap();
+        assert!(inputs.seeds().iter().all(|seed| seed.selected.is_some()));
+        let own: Vec<_> = inputs
+            .seeds()
+            .iter()
+            .map(|seed| DivisionSeed {
+                route_head: None,
+                location_id: None,
+                selected: None,
+                ..*seed
+            })
+            .collect();
+        let context = populated.context();
+        let capture = |rows: &[DivisionSeed]| {
+            let memory = populated.world.live();
+            let sources = || Sources {
+                rows,
+                outcome: inputs.outcome(),
+            };
+            let mut captured = populated.capture();
+            let reads = crate::read_accounting::Capture::new();
+            captured.capture_owned(&memory, context, sources());
+            captured.capture_attack(&memory, context, sources(), None);
+            let counts = reads.finish();
+            captured.decode_inputs();
+            let calls = [
+                TableId::DivisionStatus,
+                TableId::DivisionRetreatBans,
+                TableId::MovementStateTerms,
+            ]
+            .map(|table| counts[table.index()].copy_calls);
+            (captured, calls)
+        };
+        let (shared, shared_calls) = capture(inputs.seeds());
+        let (separate, separate_calls) = capture(&own);
+        assert_eq!(shared.outcomes(), separate.outcomes());
+        assert_eq!(shared.tables(), separate.tables());
+        for (shared, separate) in shared_calls.into_iter().zip(separate_calls) {
+            assert!(shared <= separate, "{shared} > {separate}");
+        }
+    }
+
     /// Map leaves out the status side, the speed terms and the movement
     /// pass's land and dig-in walks: it reads nothing for them and refuses
     /// them, while its DivisionMovement and the reads behind it equal Full's.

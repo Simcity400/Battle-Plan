@@ -955,6 +955,256 @@ pub fn movement_block_prepared(
     movement_selected(leader, alternate).map(|root| root.map(|root| (root, alternate)))
 }
 
+/// One division's commander selection, made once an hour for every presentation consumer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selected {
+    /// The group's authenticated leader, zero for none; `None` without a group.
+    pub leader: Option<Result<usize, &'static str>>,
+    /// The authenticated leader's full handle; `None` where it was unreadable.
+    pub handle: Option<u64>,
+    /// The group's vtable and full handle word read as membership reads them, and matched.
+    pub group_identity: bool,
+    /// [`movement_block_prepared`]'s answer.
+    pub block: Result<Option<(usize, bool)>, &'static str>,
+    /// The group's training byte; `None` without a group.
+    pub training: Option<Result<u8, &'static str>>,
+}
+
+/// One hour's [`capture_selections`] work.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionCounts {
+    pub groups: u64,
+    pub leaders: u64,
+    /// Leaders whose identity `held` carried without a read.
+    pub carried: u64,
+    /// Guarded record batches, fallbacks included.
+    pub calls: u64,
+}
+
+const SELECTION_BATCH: usize = 64;
+const SELECTION_GROUP_SPANS: [(usize, usize); 4] = [
+    (0, 8),
+    (crate::corders_group::HANDLE, 8),
+    (crate::corders_group::LEADER, 8),
+    (crate::corders_group::TRAINING, 1),
+];
+const SELECTION_GROUP_FIELDS: [crate::memory::RecordField; 4] =
+    crate::memory::packed_fields(SELECTION_GROUP_SPANS);
+const SELECTION_GROUP_STRIDE: usize = crate::memory::packed_stride(SELECTION_GROUP_SPANS);
+const SELECTION_GROUP_LAYOUT: crate::memory::RecordLayout<'static> =
+    crate::memory::RecordLayout::new(&SELECTION_GROUP_FIELDS, SELECTION_GROUP_STRIDE)
+        .expect("valid selection group layout");
+const SELECTION_LEADER_FIELDS: [crate::memory::RecordField; 2] =
+    crate::memory::packed_fields([(0, 8), (crate::cunit_leader::TYPE, 8)]);
+const SELECTION_LEADER_LAYOUT: crate::memory::RecordLayout<'static> =
+    crate::memory::RecordLayout::new(&SELECTION_LEADER_FIELDS, 16)
+        .expect("valid selection leader layout");
+
+#[derive(Clone, Copy)]
+struct GroupSelection {
+    group: usize,
+    leader: Result<usize, &'static str>,
+    handle: Option<u64>,
+    identity: bool,
+    training: Result<u8, &'static str>,
+}
+
+/// Authenticates as [`movement_leader`] does; the full handle is read apart and may be absent.
+fn leader_handle(
+    memory: &impl crate::Memory,
+    base: usize,
+    leader: usize,
+) -> Result<Option<u64>, &'static str> {
+    let batch = crate::memory::FieldBatch::gather(
+        memory,
+        movement_fields(leader, [(0, 8), (crate::cunit_leader::TYPE, 4)]),
+    );
+    movement_leader_identity(memory, base, leader, &batch)?;
+    Ok(movement_field::<u64>(memory, leader, crate::cunit_leader::TYPE).ok())
+}
+
+/// Every seed's [`Selected`]: each distinct group and leader is read once, a leader `held`
+/// answers not at all. An allocation failure leaves every seed unselected.
+pub fn capture_selections(
+    memory: &impl crate::Memory,
+    base: usize,
+    seeds: &mut [crate::carmy::DivisionSeed],
+    held: &mut dyn FnMut(usize) -> Option<u64>,
+) -> Result<SelectionCounts, &'static str> {
+    const ALLOCATION: &str = "division selection allocation failed";
+    let mut counts = SelectionCounts::default();
+    let mut groups: Vec<GroupSelection> = Vec::new();
+    crate::allocation::advisory(|| crate::allocation::reserve(&mut groups, seeds.len()))
+        .map_err(|_| ALLOCATION)?;
+    groups.extend(
+        seeds
+            .iter()
+            .filter_map(|seed| seed.orders_group.filter(|&group| group != 0))
+            .map(|group| GroupSelection {
+                group,
+                leader: Ok(0),
+                handle: None,
+                identity: false,
+                training: Ok(0),
+            }),
+    );
+    groups.sort_unstable_by_key(|entry| entry.group);
+    groups.dedup_by_key(|entry| entry.group);
+    let group_vtables = [crate::corders_group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA]
+        .map(|rva| base.checked_add(rva).map(|vtable| vtable as u64));
+    let mut pointers = [0_usize; SELECTION_BATCH];
+    let mut complete = [false; SELECTION_BATCH];
+    let mut group_bytes = [0_u8; SELECTION_BATCH * SELECTION_GROUP_STRIDE];
+    for chunk in groups.chunks_mut(SELECTION_BATCH) {
+        for (pointer, entry) in pointers.iter_mut().zip(chunk.iter()) {
+            *pointer = entry.group;
+        }
+        crate::memory::gather_records(
+            memory,
+            &pointers[..chunk.len()],
+            &SELECTION_GROUP_LAYOUT,
+            &mut group_bytes[..chunk.len() * SELECTION_GROUP_STRIDE],
+            &mut complete[..chunk.len()],
+        );
+        counts.calls += 1;
+        for (row, entry) in chunk.iter_mut().enumerate() {
+            counts.groups += 1;
+            if !complete[row] {
+                counts.calls += 2;
+                entry.leader = movement_group_leader(memory, base, entry.group);
+                entry.training = entry
+                    .group
+                    .checked_add(crate::corders_group::TRAINING)
+                    .and_then(|at| crate::read::<u8>(memory, at))
+                    .ok_or("division presentation field unreadable");
+                continue;
+            }
+            let record = &group_bytes[row * SELECTION_GROUP_STRIDE..][..SELECTION_GROUP_STRIDE];
+            let vtable = u64::from_le_bytes(record[..8].try_into().unwrap());
+            let kind = u32::from_le_bytes(record[8..12].try_into().unwrap());
+            entry.identity = group_vtables.contains(&Some(vtable))
+                && kind == crate::corders_group::REFERENCE_TYPE;
+            entry.leader = if entry.identity {
+                Ok(u64::from_le_bytes(record[16..24].try_into().unwrap()) as usize)
+            } else {
+                Err("movement leader group identity mismatch")
+            };
+            entry.training = Ok(record[24]);
+        }
+    }
+    // Each distinct leader's authentication and, apart from it, its handle, ascending.
+    let mut leaders: Vec<(usize, Result<Option<u64>, &'static str>)> = Vec::new();
+    crate::allocation::advisory(|| crate::allocation::reserve(&mut leaders, groups.len()))
+        .map_err(|_| ALLOCATION)?;
+    leaders.extend(
+        groups
+            .iter()
+            .filter_map(|entry| entry.leader.ok().filter(|&leader| leader != 0))
+            .map(|leader| (leader, Err("movement leader field unreadable"))),
+    );
+    leaders.sort_unstable_by_key(|entry| entry.0);
+    leaders.dedup_by_key(|entry| entry.0);
+    let identity = movement_at(base, VTABLE_RVA)? as u64;
+    let mut pending = [0_usize; SELECTION_BATCH];
+    let mut rows = [0_usize; SELECTION_BATCH];
+    let mut leader_bytes = [0_u8; SELECTION_BATCH * 16];
+    let mut next = 0;
+    while next < leaders.len() {
+        let mut count = 0;
+        while next < leaders.len() && count < SELECTION_BATCH {
+            let leader = leaders[next].0;
+            counts.leaders += 1;
+            match held(leader) {
+                Some(handle) => {
+                    counts.carried += 1;
+                    leaders[next].1 = Ok(Some(handle));
+                }
+                None => {
+                    pending[count] = leader;
+                    rows[count] = next;
+                    count += 1;
+                }
+            }
+            next += 1;
+        }
+        if count == 0 {
+            continue;
+        }
+        crate::memory::gather_records(
+            memory,
+            &pending[..count],
+            &SELECTION_LEADER_LAYOUT,
+            &mut leader_bytes[..count * 16],
+            &mut complete[..count],
+        );
+        counts.calls += 1;
+        for row in 0..count {
+            let leader = pending[row];
+            leaders[rows[row]].1 = if complete[row] {
+                let record = &leader_bytes[row * 16..row * 16 + 16];
+                let vtable = u64::from_le_bytes(record[..8].try_into().unwrap());
+                let handle = u64::from_le_bytes(record[8..].try_into().unwrap());
+                if vtable != identity || handle as u32 != crate::cunit_leader::REFERENCE_TYPE {
+                    Err("movement army leader identity mismatch")
+                } else {
+                    Ok(Some(handle))
+                }
+            } else {
+                let result = leader_handle(memory, base, leader);
+                counts.calls += 1 + u64::from(result.is_ok());
+                result
+            };
+        }
+    }
+    for entry in &mut groups {
+        if let Ok(leader) = entry.leader
+            && leader != 0
+        {
+            let at = leaders
+                .binary_search_by_key(&leader, |entry| entry.0)
+                .expect("every led group's leader was gathered");
+            match leaders[at].1 {
+                Ok(handle) => entry.handle = handle,
+                Err(reason) => entry.leader = Err(reason),
+            }
+        }
+    }
+    let mut memo = crate::allocation::advisory(|| LeaderMemo::try_with_capacity(groups.len()))
+        .map_err(|_| ALLOCATION)?;
+    // The memo's reads grow its storage; a refused growth reads as a fault, so is discarded.
+    crate::allocation::advisory(|| {
+        for seed in seeds.iter_mut() {
+            let group = seed
+                .orders_group
+                .filter(|&group| group != 0)
+                .and_then(|group| {
+                    groups
+                        .binary_search_by_key(&group, |entry| entry.group)
+                        .ok()
+                })
+                .map(|at| groups[at]);
+            let prepared = MovementPreparation {
+                leader: group.map(|group| group.leader),
+                ..MovementPreparation::default()
+            };
+            seed.selected = Some(Selected {
+                leader: group.map(|group| group.leader),
+                handle: group.and_then(|group| group.handle),
+                group_identity: group.is_some_and(|group| group.identity),
+                block: movement_block_prepared(memory, base, seed, &mut memo, Some(prepared)),
+                training: group.map(|group| group.training),
+            });
+        }
+    });
+    if memo.roots.metadata.refused() {
+        for seed in seeds.iter_mut() {
+            seed.selected = None;
+        }
+        return Err(ALLOCATION);
+    }
+    Ok(counts)
+}
+
 /// Positive defending-retreat modifier values ban disengagement from the
 /// defending side. The fixed layout contract authenticates the requested keys.
 pub const CANNOT_RETREAT_WHILE_DEFENDING: u32 =
@@ -1176,11 +1426,13 @@ fn bans_from_entries(
 /// [`retreat_bans`] gives it; later objects continue from the next read, and
 /// no failed read is repeated. A commander whose bans `held` returns (an
 /// earlier read no observed writer of either block has touched since) is not
-/// read again.
+/// read again. `known[i]`, where present, is `groups[i]`'s leader the census
+/// already read, and that group is not read again.
 pub fn retreat_bans_many(
     memory: &impl crate::Memory,
     base: usize,
     groups: &[usize],
+    known: &[Option<Result<usize, &'static str>>],
     output: &mut [Result<Option<RetreatBans>, &'static str>],
     memo: &crate::modifier_definition::DefinitionMemo,
     held: &mut dyn FnMut(usize) -> Option<RetreatBans>,
@@ -1198,29 +1450,63 @@ pub fn retreat_bans_many(
     let mut start = 0;
     while start < groups.len() {
         let chunk = &groups[start..(start + BANS_BATCH).min(groups.len())];
-        let completed = memory.copy_records(
-            RecordSources::Pointers(chunk),
-            &BANS_GROUP_LAYOUT,
-            &mut group_bytes[..chunk.len() * 20],
-        );
-        let read = (completed / BANS_GROUP_FIELDS.len()).min(chunk.len());
+        let mut chosen = [Ok(0_usize); BANS_BATCH];
+        let mut unknown = [0_usize; BANS_BATCH];
+        let mut unknown_at = [0_usize; BANS_BATCH];
+        let mut unknowns = 0;
+        for (index, &group) in chunk.iter().enumerate() {
+            match known.get(start + index).copied().flatten() {
+                Some(leader) => chosen[index] = leader,
+                None => {
+                    unknown[unknowns] = group;
+                    unknown_at[unknowns] = index;
+                    unknowns += 1;
+                }
+            }
+        }
+        let mut first = 0;
+        while first < unknowns {
+            let count = unknowns - first;
+            let completed = memory.copy_records(
+                RecordSources::Pointers(&unknown[first..unknowns]),
+                &BANS_GROUP_LAYOUT,
+                &mut group_bytes[..count * 20],
+            );
+            let read = (completed / BANS_GROUP_FIELDS.len()).min(count);
+            for (offset, record) in group_bytes[..read * 20].chunks_exact(20).enumerate() {
+                let vtable = u64::from_le_bytes(record[..8].try_into().unwrap());
+                chosen[unknown_at[first + offset]] = if !group_vtables.contains(&Some(vtable))
+                    || u32::from_le_bytes(record[8..12].try_into().unwrap())
+                        != crate::corders_group::REFERENCE_TYPE
+                {
+                    Err("movement leader group identity mismatch")
+                } else {
+                    Ok(u64::from_le_bytes(record[12..20].try_into().unwrap()) as usize)
+                };
+            }
+            if read < count {
+                // A group whose fields stopped short; the next read starts after it.
+                chosen[unknown_at[first + read]] = Err("movement leader field unreadable");
+                first += read + 1;
+            } else {
+                first = unknowns;
+            }
+        }
         let mut leaders = [None::<BansLeader>; BANS_BATCH];
         let mut pending = 0;
-        for (index, record) in group_bytes[..read * 20].chunks_exact(20).enumerate() {
+        for (index, &leader) in chosen[..chunk.len()].iter().enumerate() {
             let slot = start + index;
-            let vtable = u64::from_le_bytes(record[..8].try_into().unwrap());
-            if !group_vtables.contains(&Some(vtable))
-                || u32::from_le_bytes(record[8..12].try_into().unwrap())
-                    != crate::corders_group::REFERENCE_TYPE
-            {
-                output[slot] = Err("movement leader group identity mismatch");
-                continue;
-            }
-            let leader = u64::from_le_bytes(record[12..20].try_into().unwrap()) as usize;
-            if leader == 0 {
-                output[slot] = Ok(None);
-                continue;
-            }
+            let leader = match leader {
+                Err(reason) => {
+                    output[slot] = Err(reason);
+                    continue;
+                }
+                Ok(0) => {
+                    output[slot] = Ok(None);
+                    continue;
+                }
+                Ok(leader) => leader,
+            };
             if let Some(bans) = held(leader) {
                 output[slot] = Ok(Some(bans));
                 continue;
@@ -1235,11 +1521,7 @@ pub fn retreat_bans_many(
             });
             pending += 1;
         }
-        if read < chunk.len() {
-            // A group whose fields stopped short; the next read starts after it.
-            output[start + read] = Err("movement leader field unreadable");
-        }
-        start += (read + 1).min(chunk.len());
+        start += chunk.len();
         // Leader fields for this batch's commanders, continuing past a short read.
         let mut first = 0;
         while first < pending {

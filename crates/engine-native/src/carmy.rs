@@ -457,6 +457,12 @@ pub struct DivisionSeed {
     pub fuel: Option<i64>,
     /// [`AIR_SUPPLY`], which selects the noncore-supply term's air define.
     pub air_supply: Option<i64>,
+    /// A mover's first route id; inner `None` failed, outer `None` was not gathered.
+    pub route_head: Option<Option<u32>>,
+    /// A mover's location province id, gathered and absent as [`Self::route_head`].
+    pub location_id: Option<Option<u32>>,
+    /// The commander selection the census made for every consumer; `None` was not made.
+    pub selected: Option<crate::carmy_leader::Selected>,
 }
 
 impl DivisionSeed {
@@ -698,6 +704,77 @@ pub fn capture_division_seeds(memory: &impl Memory, seeds: &mut [DivisionSeed]) 
     total
 }
 
+/// One four-byte field at `offset` of each object, `None` where it was unreadable.
+fn gather_u32s(
+    memory: &impl Memory,
+    pointers: &[usize],
+    offset: usize,
+    output: &mut [Option<u32>],
+) -> u64 {
+    const BATCH: usize = 64;
+    let fields = [crate::memory::RecordField {
+        source_offset: offset,
+        destination_offset: 0,
+        len: 4,
+    }];
+    let layout = crate::memory::RecordLayout::new(&fields, 4).expect("valid four-byte layout");
+    let mut bytes = [0_u8; BATCH * 4];
+    let mut complete = [false; BATCH];
+    let mut total = 0;
+    for (pointers, output) in pointers.chunks(BATCH).zip(output.chunks_mut(BATCH)) {
+        crate::memory::gather_records(
+            memory,
+            pointers,
+            &layout,
+            &mut bytes[..pointers.len() * 4],
+            &mut complete[..pointers.len()],
+        );
+        for (row, value) in output.iter_mut().enumerate() {
+            *value = complete[row]
+                .then(|| u32::from_le_bytes(bytes[row * 4..row * 4 + 4].try_into().unwrap()));
+            total += u64::from(complete[row]) * 4;
+        }
+    }
+    total
+}
+
+/// Each mover's first ordinary route id and location id, gathered once for every consumer.
+pub fn capture_division_movers(memory: &impl Memory, seeds: &mut [DivisionSeed]) -> u64 {
+    const BATCH: usize = 64;
+    let mut movers = [0_usize; BATCH];
+    let mut routes = [0_usize; BATCH];
+    let mut locations = [0_usize; BATCH];
+    let mut heads = [None::<u32>; BATCH];
+    let mut ids = [None::<u32>; BATCH];
+    let mut total = 0;
+    let mut next = 0;
+    while next < seeds.len() {
+        let mut count = 0;
+        while next < seeds.len() && count < BATCH {
+            let seed = &seeds[next];
+            if let Some(route) = seed
+                .ordinary_route
+                .and_then(|header| Array::from_header(header, 4))
+                .filter(|route| route.count != 0)
+            {
+                movers[count] = next;
+                routes[count] = route.data;
+                locations[count] = seed.location.unwrap_or(0);
+                count += 1;
+            }
+            next += 1;
+        }
+        total += gather_u32s(memory, &routes[..count], 0, &mut heads[..count]);
+        total += gather_u32s(memory, &locations[..count], cprovince::ID, &mut ids[..count]);
+        for row in 0..count {
+            let seed = &mut seeds[movers[row]];
+            seed.route_head = Some(heads[row]);
+            seed.location_id = Some(ids[row]);
+        }
+    }
+    total
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MovementRow {
     pub division: u64,
@@ -764,6 +841,7 @@ struct PresentationInput {
 pub(crate) struct PresentationInputs {
     entries: std::collections::HashMap<(usize, usize), PresentationInput>,
     worker_growth: bool,
+    refused: bool,
 }
 
 impl PresentationInputs {
@@ -773,6 +851,7 @@ impl PresentationInputs {
         Ok(Self {
             entries,
             worker_growth: capacity != 0,
+            refused: false,
         })
     }
     /// Keeps nothing: every operand is read. Allocates nothing.
@@ -780,6 +859,7 @@ impl PresentationInputs {
         Self {
             entries: std::collections::HashMap::new(),
             worker_growth: false,
+            refused: false,
         }
     }
     pub(crate) fn allocated_bytes(&self) -> usize {
@@ -787,6 +867,11 @@ impl PresentationInputs {
     }
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
+        self.refused = false;
+    }
+    /// A read since the last clear failed only because the storage could not grow.
+    pub(crate) fn refused(&self) -> bool {
+        self.refused
     }
     pub(crate) fn read<T: crate::memory::Raw>(
         &mut self,
@@ -807,7 +892,10 @@ impl PresentationInputs {
             return None;
         }
         let value = unsafe { entry.bytes.as_ptr().cast::<T>().read_unaligned() };
-        crate::allocation::reserve_map(&mut self.entries, 1).ok()?;
+        if crate::allocation::reserve_map(&mut self.entries, 1).is_err() {
+            self.refused = true;
+            return None;
+        }
         self.entries.insert((address, len), entry);
         Some(value)
     }
@@ -1580,6 +1668,8 @@ pub struct StatusPacket {
     /// Commander retreat bans by orders group, for divisions in a combat.
     /// Orders groups of divisions in combat, in first-seen order, and their bans.
     commander_groups: Vec<usize>,
+    /// Each commander group's leader as the census selected it, beside `commander_groups`.
+    commander_leaders: Vec<Option<Result<usize, &'static str>>>,
     commander_bans: Vec<Result<Option<crate::carmy_leader::RetreatBans>, &'static str>>,
     commander_index: Vec<usize>,
     /// Each division the latest [`Self::retreat_bans`] read, by id, with the index of
@@ -1683,6 +1773,7 @@ impl StatusPacket {
             groups: Vec::new(),
             group_index: Vec::new(),
             commander_groups: Vec::new(),
+            commander_leaders: Vec::new(),
             commander_bans: Vec::new(),
             commander_index: Vec::new(),
             commander_divisions: Vec::new(),
@@ -1750,6 +1841,7 @@ impl StatusPacket {
             groups: crate::allocation::vec(capacities.units)?,
             group_index: crate::allocation::filled(index_capacity, 0)?,
             commander_groups: crate::allocation::vec(capacities.units)?,
+            commander_leaders: crate::allocation::vec(capacities.units)?,
             commander_bans: crate::allocation::vec(capacities.units)?,
             commander_index: crate::allocation::filled(index_capacity, 0)?,
             commander_divisions: crate::allocation::vec(capacities.units)?,
@@ -1808,6 +1900,7 @@ impl StatusPacket {
         self.groups.clear();
         self.group_index.fill(0);
         self.commander_groups.clear();
+        self.commander_leaders.clear();
         self.commander_bans.clear();
         self.commander_index.fill(0);
         self.commander_divisions.clear();
@@ -1953,6 +2046,7 @@ impl StatusPacket {
             + self.countries.capacity() * size_of::<StatusCountryInputs>()
             + self.groups.capacity() * size_of::<StatusGroupInputs>()
             + self.commander_groups.capacity() * size_of::<usize>()
+            + self.commander_leaders.capacity() * size_of::<Option<Result<usize, &'static str>>>()
             + self.commander_bans.capacity()
                 * size_of::<Result<Option<crate::carmy_leader::RetreatBans>, &'static str>>()
             + self.commander_divisions.capacity() * size_of::<(u64, usize)>()
@@ -2146,6 +2240,16 @@ impl StatusPacket {
     }
 
     fn training(&mut self, memory: &impl Memory, pointer: usize) -> Result<u8, &'static str> {
+        self.training_known(memory, pointer, None)
+    }
+
+    /// [`Self::training`], taking the byte the census already read for the group.
+    fn training_known(
+        &mut self,
+        memory: &impl Memory,
+        pointer: usize,
+        known: Option<Result<u8, &'static str>>,
+    ) -> Result<u8, &'static str> {
         if pointer == 0 {
             return Ok(0);
         }
@@ -2153,7 +2257,8 @@ impl StatusPacket {
         if self.group_index[slot] != 0 {
             return self.groups[self.group_index[slot] - 1].training;
         }
-        let training = presentation_field(memory, pointer, corders_group::TRAINING);
+        let training =
+            known.unwrap_or_else(|| presentation_field(memory, pointer, corders_group::TRAINING));
         self.groups.push(StatusGroupInputs {
             pointer,
             training,
@@ -2186,6 +2291,7 @@ impl StatusPacket {
             }
             let bans = crate::carmy_leader::retreat_bans(memory, base, group);
             self.commander_groups.push(group);
+            self.commander_leaders.push(None);
             self.commander_bans.push(bans);
             self.commander_index[slot] = self.commander_groups.len();
             bans?
@@ -2196,8 +2302,12 @@ impl StatusPacket {
         if bans.ordinary == bans.alternate {
             return Ok(bans.ordinary);
         }
-        let accumulator = crate::carmy_leader::movement_accumulator_seeded(memory, base, seed)?
-            .ok_or("retreat ban leader vanished")?;
+        // The census selected this division's block once for every consumer.
+        let accumulator = match seed.selected {
+            Some(selected) => selected.block.map(|block| block.map(|(accumulator, _)| accumulator)),
+            None => crate::carmy_leader::movement_accumulator_seeded(memory, base, seed),
+        }?
+        .ok_or("retreat ban leader vanished")?;
         bans.select(accumulator)
     }
 
@@ -2230,6 +2340,8 @@ impl StatusPacket {
                 break;
             }
             self.commander_groups.push(group);
+            self.commander_leaders
+                .push(seed.selected.and_then(|selected| selected.leader));
             self.commander_bans.push(Ok(None));
             self.commander_index[slot] = self.commander_groups.len();
         }
@@ -2237,6 +2349,7 @@ impl StatusPacket {
             memory,
             base,
             &self.commander_groups[first..],
+            &self.commander_leaders[first..],
             &mut self.commander_bans[first..],
             self.commander_memo
                 .get_mut()
@@ -2326,6 +2439,7 @@ impl StatusPacket {
                 });
             }
             self.commander_groups.clear();
+            self.commander_leaders.clear();
             self.commander_bans.clear();
             self.commander_index.fill(0);
             self.commander_divisions.clear();
@@ -2932,6 +3046,9 @@ impl StatusPacket {
                         .pointer
                         .checked_add(cunit::SCHEDULED_MEMBER)
                         .ok_or("division membership address overflow")?;
+                    if status_parts::census_authenticated(seed) {
+                        let _ = self.membership.admit_group(group);
+                    }
                     self.units[unit].membership = self.membership.push_query(MembershipQuery {
                         member,
                         own_group: group,
@@ -3082,7 +3199,11 @@ impl StatusPacket {
                     if !defer_children {
                         self.capture_camouflage(memory, base, seed, unit, entries.first(unit % 64));
                     }
-                    self.units[unit].training = self.training(memory, self.units[unit].group)?;
+                    self.units[unit].training = self.training_known(
+                        memory,
+                        self.units[unit].group,
+                        seed.selected.and_then(|selected| selected.training),
+                    )?;
                     if self.units[unit].training != 0 {
                         self.units[unit].exercise = Some(self.capture_exercise(
                             memory,
@@ -3611,9 +3732,14 @@ pub fn counter_dig_in_selection_memoized(
     seed: &DivisionSeed,
     memo: &mut DigInMemo,
 ) -> Result<(i64, u8), &'static str> {
-    let Some((root, separate)) =
-        crate::carmy_leader::movement_block_memoized(memory, base, seed, &mut memo.leaders)?
-    else {
+    // The census selected the block once for every consumer.
+    let block = match seed.selected {
+        Some(selected) => selected.block,
+        None => {
+            crate::carmy_leader::movement_block_memoized(memory, base, seed, &mut memo.leaders)
+        }
+    };
+    let Some((root, separate)) = block? else {
         return Ok((100_000, COMMANDER_BLOCK_NONE));
     };
     let block = if separate {

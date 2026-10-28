@@ -112,6 +112,7 @@ pub struct Preparation {
     countries: Map<u32, Result<ccountry::Country, &'static str>>,
     commanders: Map<usize, u64>,
     provinces: Map<usize, Option<(u32, usize)>>,
+    roster: Option<engine_native::cpdx_array::Array>,
     reads: NativeReads,
     local_province_refusal: bool,
 }
@@ -122,6 +123,7 @@ impl Default for Preparation {
             countries: Map::default(),
             commanders: Map::default(),
             provinces: Map::default(),
+            roster: None,
             reads: NativeReads::default(),
             local_province_refusal: false,
         }
@@ -151,6 +153,7 @@ impl Preparation {
         self.countries.clear();
         self.commanders.clear();
         self.provinces.clear();
+        self.roster = None;
         engine_allocation::advisory(|| {
             if self.memo.capacity() < divisions {
                 self.memo = carmy_leader::LeaderMemo::try_with_capacity(divisions)?;
@@ -184,30 +187,48 @@ impl Preparation {
                 (owner, country)
             })
         });
-        let movement = country.filter(|(_, country)| country.is_ok()).map(|_| {
+        let led = country.is_some_and(|(_, country)| country.is_ok());
+        // The census selected the commander once for every consumer.
+        let movement = (led && seed.selected.is_none()).then(|| {
             carmy_leader::MovementPreparation::capture(memory, base, seed, &mut self.memo)
         });
-        let commander = movement
-            .and_then(|movement| movement.leader())
-            .map(|receiver| {
-                let handle = match self.commanders.entry(receiver) {
-                    std::collections::hash_map::Entry::Occupied(held) => Ok(*held.get()),
-                    std::collections::hash_map::Entry::Vacant(slot) => {
-                        let handle = read::<u64>(
-                            memory,
-                            receiver + engine_native::cunit_leader::TYPE,
-                        )
+        let commander = match seed.selected {
+            Some(selected) => selected
+                .leader
+                .and_then(Result::ok)
+                .filter(|&leader| led && leader != 0)
+                .map(|leader| {
+                    let handle = selected
+                        .handle
                         .ok_or("division source commander identity unreadable");
-                        if let Ok(handle) = handle {
-                            slot.insert(handle);
+                    (leader, handle)
+                }),
+            None => movement
+                .and_then(|movement| movement.leader())
+                .map(|receiver| {
+                    let handle = match self.commanders.entry(receiver) {
+                        std::collections::hash_map::Entry::Occupied(held) => Ok(*held.get()),
+                        std::collections::hash_map::Entry::Vacant(slot) => {
+                            let handle = read::<u64>(
+                                memory,
+                                receiver + engine_native::cunit_leader::TYPE,
+                            )
+                            .ok_or("division source commander identity unreadable");
+                            if let Ok(handle) = handle {
+                                slot.insert(handle);
+                            }
+                            handle
                         }
-                        handle
-                    }
-                };
-                (receiver, handle)
-            });
-        let province =
-            engine_native::division_panel_operands::selected_province(memory, state, seed);
+                    };
+                    (receiver, handle)
+                }),
+        };
+        let province = engine_native::division_panel_operands::selected_province_in(
+            memory,
+            &mut self.roster,
+            state,
+            seed,
+        );
         self.local_province_refusal |= province.is_err();
         if let Err(reason) = province {
             let reason = source_owner(seed).err().unwrap_or(reason);
@@ -243,19 +264,24 @@ impl Preparation {
             context,
             membership: None,
         };
-        let block = movement.and_then(|movement| {
-            match carmy_leader::movement_block_prepared(
-                memory,
-                base,
-                seed,
-                &mut self.memo,
-                Some(movement),
-            ) {
-                Ok(block) => block,
-                Err(_) => {
-                    self.reads.complete = false;
-                    None
-                }
+        let block = match seed.selected {
+            Some(selected) if led => Some(selected.block),
+            Some(_) => None,
+            None => movement.map(|movement| {
+                carmy_leader::movement_block_prepared(
+                    memory,
+                    base,
+                    seed,
+                    &mut self.memo,
+                    Some(movement),
+                )
+            }),
+        }
+        .and_then(|block| match block {
+            Ok(block) => block,
+            Err(_) => {
+                self.reads.complete = false;
+                None
             }
         });
         // Failed shared selections can make an earlier range's admitted memo
@@ -679,6 +705,7 @@ impl Store {
         } else {
             Some(ccountry::Reader::new(memory, base, state)?)
         };
+        let mut roster = None;
         for (index, seed) in seeds.iter().enumerate() {
             let prepared = prepared(index);
             let reads = reads(index).map(|preparation| &preparation.reads);
@@ -714,14 +741,17 @@ impl Store {
                     reads,
                 )?;
                 let selection = (|| {
-                    let Some((accumulator, hq)) = carmy_leader::movement_block_prepared(
-                        memory,
-                        base,
-                        seed,
-                        &mut self.memo,
-                        prepared.and_then(|p| p.movement),
-                    )?
-                    else {
+                    let block = match seed.selected {
+                        Some(selected) => selected.block,
+                        None => carmy_leader::movement_block_prepared(
+                            memory,
+                            base,
+                            seed,
+                            &mut self.memo,
+                            prepared.and_then(|p| p.movement),
+                        ),
+                    };
+                    let Some((accumulator, hq)) = block? else {
                         return Ok([country.id as u64, 0, 0]);
                     };
                     let offset = if hq {
@@ -732,23 +762,26 @@ impl Store {
                     let receiver = accumulator
                         .checked_sub(offset)
                         .ok_or("division source commander overflow")?;
-                    let handle = match self.leaders.get(&receiver) {
-                        Some(&(turn, handle)) if turn == self.turn => handle,
-                        _ => {
-                            let handle = prepared
-                                .and_then(|p| p.commander)
-                                .filter(|(selected, _)| *selected == receiver)
-                                .map(|(_, handle)| handle)
-                                .unwrap_or_else(|| {
-                                    read::<u64>(
-                                        memory,
-                                        receiver + engine_native::cunit_leader::TYPE,
-                                    )
-                                    .ok_or("division source commander identity unreadable")
-                                })?;
-                            self.leaders.insert(receiver, (self.turn, handle));
-                            handle
-                        }
+                    let handle = match seed.selected.and_then(|selected| selected.handle) {
+                        Some(handle) => handle,
+                        None => match self.leaders.get(&receiver) {
+                            Some(&(turn, handle)) if turn == self.turn => handle,
+                            _ => {
+                                let handle = prepared
+                                    .and_then(|p| p.commander)
+                                    .filter(|(selected, _)| *selected == receiver)
+                                    .map(|(_, handle)| handle)
+                                    .unwrap_or_else(|| {
+                                        read::<u64>(
+                                            memory,
+                                            receiver + engine_native::cunit_leader::TYPE,
+                                        )
+                                        .ok_or("division source commander identity unreadable")
+                                    })?;
+                                self.leaders.insert(receiver, (self.turn, handle));
+                                handle
+                            }
+                        },
                     };
                     if handle as u32 != engine_native::cunit_leader::REFERENCE_TYPE {
                         return Err("division source commander identity mismatch");
@@ -773,8 +806,11 @@ impl Store {
             let context_result = (|| {
                 let province = match prepared {
                     Some(prepared) => prepared.province,
-                    None => engine_native::division_panel_operands::selected_province(
-                        memory, state, seed,
+                    None => engine_native::division_panel_operands::selected_province_in(
+                        memory,
+                        &mut roster,
+                        state,
+                        seed,
                     ),
                 }?;
                 let current = (

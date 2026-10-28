@@ -525,6 +525,94 @@ fn memoized_selection_matches_seeded_and_reads_group_inputs_once_a_pass() {
     assert!(unkept.count(GROUP + group::LEADER) == seeds.len());
 }
 
+/// The census selects every division from one read of its group and leader:
+/// the same block and first failure as each division's own selection. A held
+/// leader identity is not read again; an unheld one is read afresh.
+#[test]
+fn census_selection_reads_each_group_and_leader_once_for_every_division() {
+    let member = |army: usize| army + crate::corders_group_member::HOST_OFFSET;
+    let mut fixture = Fixture::new();
+    fixture.root(GROUP, group::PRIMARY_ORDER_DATA, ARMY);
+    fixture.bytes[member(ARMY) + PRIMARY_ROOT_DIRTY] = 1;
+    fixture.bytes[GROUP + group::TRAINING] = 1;
+    let division = |pointer, group, class| carmy::DivisionSeed {
+        pointer,
+        orders_group: group,
+        class: Some(class),
+        ..Default::default()
+    };
+    let template = [
+        division(ARMY, Some(GROUP), 0),
+        division(HQ, Some(GROUP), 0),
+        division(ARMY, Some(GROUP), 1),
+        division(ARMY, Some(0), 0),
+        division(ARMY, None, 0),
+    ];
+    let handle = crate::cunit_leader::REFERENCE_TYPE as u64;
+    for fault in [
+        None,
+        Some(GROUP),
+        Some(GROUP + group::LEADER),
+        Some(LEADER),
+        Some(crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA),
+        Some(GROUP + group::HQ_PROVIDER),
+        Some(MEMBERS),
+    ] {
+        let seeded = Observed::new(Fixture {
+            bytes: fixture.bytes.clone(),
+            flags: fixture.flags,
+        });
+        seeded.fault.set(fault);
+        let expected = template.map(|seed| movement_accumulator_seeded(&seeded, 0, &seed));
+        let census = Observed::new(Fixture {
+            bytes: fixture.bytes.clone(),
+            flags: fixture.flags,
+        });
+        census.fault.set(fault);
+        for hour in 0..3 {
+            census.reads.borrow_mut().clear();
+            let mut seeds = template;
+            // The second hour's leader certificate holds; the third's does not.
+            let counts = capture_selections(&census, 0, &mut seeds, &mut |leader| {
+                (hour == 1 && fault.is_none() && leader == LEADER).then_some(handle)
+            })
+            .unwrap();
+            let actual = seeds.map(|seed| {
+                seed.selected
+                    .unwrap()
+                    .block
+                    .map(|block| block.map(|(root, _)| root))
+            });
+            assert_eq!(actual, expected, "{fault:?} hour {hour}");
+            assert_eq!(seeds[3].selected.unwrap().leader, None);
+            assert_eq!(seeds[4].selected.unwrap().training, None);
+            assert_eq!(counts.groups, 1);
+            if fault.is_some() {
+                continue;
+            }
+            let selected = seeds[0].selected.unwrap();
+            assert_eq!(selected.leader, Some(Ok(LEADER)));
+            assert_eq!(selected.handle, Some(handle));
+            assert_eq!(selected.training, Some(Ok(1)));
+            assert_eq!((counts.leaders, counts.carried), (1, u64::from(hour == 1)));
+            // One read of each group field for the five divisions.
+            for address in [
+                GROUP + group::LEADER,
+                GROUP + group::TRAINING,
+                GROUP + group::HQ_PROVIDER,
+                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+            ] {
+                assert_eq!(census.count(address), 1, "hour {hour} {address:#x}");
+            }
+            assert_eq!(census.count(LEADER), usize::from(hour != 1));
+            assert_eq!(
+                census.count(LEADER + crate::cunit_leader::TYPE),
+                usize::from(hour != 1)
+            );
+        }
+    }
+}
+
 #[test]
 fn different_primary_roots_select_alternate_and_clean_staleness_is_not_repaired() {
     let mut f = Fixture::new();

@@ -416,10 +416,9 @@ fn input_stage_can_be_leased_before_core_without_repeating_the_census() {
     let lease = Arc::clone(staged.unit_inputs().unwrap());
     assert_eq!(lease.outcome(), Outcome::Rows { len: 3 });
     let boundary = memory.reads.borrow().len();
+    // The input stage selects commanders from the group; the core authenticates the rest.
     assert!(!memory.reads.borrow().iter().any(|&(address, _)| {
-        address == kit::GAME_STATE + cgame_state::PROVINCES
-            || address == 0x40000
-            || address == 0x41000
+        address == kit::GAME_STATE + cgame_state::PROVINCES || address == 0x40000
     }));
     let input_bytes = staged.payload_bytes();
     assert_eq!(
@@ -1066,4 +1065,207 @@ fn part_starts_split_entries_evenly_at_country_boundaries() {
     assert_eq!(parts_for(entries), 4);
     assert_eq!(census.part_starts(&mut starts), 3);
     assert_eq!(starts, [16, 31, 46]);
+}
+
+/// The input stage gathers each mover's route head and location id, and reads a
+/// group two divisions share once for both; a stationary division gathers neither.
+#[test]
+fn input_stage_gathers_the_mover_packet_and_each_group_once() {
+    use engine_native::{corders_group, cunit};
+    let mut bytes = kit::fixture();
+    let route = kit::A1 + cunit::ORDINARY_ROUTE_DATA;
+    bytes[route..route + 8].copy_from_slice(&0x43000_u64.to_le_bytes());
+    for offset in [8, 12] {
+        bytes[route + offset..route + offset + 4].copy_from_slice(&2_u32.to_le_bytes());
+    }
+    bytes[0x43000..0x43008].copy_from_slice(&(1_u64 | (1_u64 << 32)).to_le_bytes());
+    bytes[0x41000 + corders_group::TRAINING] = 1;
+    let memory = Observed {
+        bytes: &bytes,
+        reads: RefCell::new(Vec::new()),
+        fault: None,
+        fault_at: None,
+    };
+    let mut census = Census::new();
+    census.capture_inputs(&memory, kit::BASE, kit::GAME_STATE);
+    let seeds = census.unit_inputs().unwrap().seeds();
+    assert_eq!(seeds.len(), 3);
+    assert_eq!(seeds[0].route_head, Some(Some(1)));
+    assert_eq!(seeds[0].location_id, Some(Some(1)));
+    assert_eq!((seeds[1].route_head, seeds[2].location_id), (None, None));
+    for index in [0, 2] {
+        let selected = seeds[index].selected.unwrap();
+        assert_eq!(selected.leader, Some(Ok(0)));
+        assert_eq!(selected.training, Some(Ok(1)));
+        assert_eq!(selected.block, Ok(None));
+    }
+    assert_eq!(seeds[1].selected.unwrap().leader, None);
+    assert!(seeds[0].selected.unwrap().group_identity);
+    let reads = memory.reads.borrow();
+    for address in [
+        0x41000,
+        0x41000 + corders_group::LEADER,
+        0x41000 + corders_group::TRAINING,
+        0x43000,
+        kit::P1 + cprovince::ID,
+    ] {
+        assert_eq!(
+            reads.iter().filter(|&&(at, _)| at == address).count(),
+            1,
+            "{address:#x}"
+        );
+    }
+}
+
+/// Selection and carry storage that cannot grow never ends the recording or changes a result.
+#[test]
+fn refused_selection_storage_never_ends_the_recording() {
+    use engine_native::{
+        corders_group as group, corders_group_member as member, cunit, cunit_leader,
+        modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+    };
+    // The terminal hook is process-wide.
+    const CHILD: &str = "BATTLE_PLAN_DIVISION_SELECTION_ALLOCATION_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "division_census::tests::refused_selection_storage_never_ends_the_recording",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    const LEADER: usize = 0x1000;
+    // Parents and separate HQs make the selection resolve primary roots, growing its memo.
+    const GROUPS: [(usize, usize, usize); 2] = [(0x2000, 0x3000, 0x4000), (0x5000, 0x6000, 0x7000)];
+    const ARMIES: [(usize, usize); 4] = [
+        (0x8000, 0x2000),
+        (0x9000, 0x5000),
+        (0xa000, 0x2000),
+        (0xb000, 0),
+    ];
+    struct Commanded(Vec<u8>);
+    impl Memory for Commanded {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == TRADE_FEATURE_FLAGS_RVA && output.len() == 4 {
+                output.copy_from_slice(&(1_u32 << 17).to_le_bytes());
+                return true;
+            }
+            kit::memory(&self.0).copy(address, output)
+        }
+    }
+    struct Certified;
+    impl crate::unit_leader_changes::Changes for Certified {
+        fn quiet(&self) -> Option<(u64, u64)> {
+            Some((1, 1))
+        }
+        fn sequence(&self, _: usize) -> Option<(u64, u64)> {
+            Some((1, 1))
+        }
+    }
+    let mut bytes = vec![0_u8; 0x10000];
+    let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    let handle = (7 << 32) | u64::from(cunit_leader::REFERENCE_TYPE);
+    put(LEADER, carmy_leader::VTABLE_RVA as u64);
+    put(LEADER + cunit_leader::TYPE, handle);
+    for (own, parent, host) in GROUPS {
+        for at in [own, parent] {
+            put(at, group::VTABLE_RVA as u64);
+            put(at + group::HANDLE, u64::from(group::REFERENCE_TYPE));
+        }
+        put(own + group::LEADER, LEADER as u64);
+        put(own + group::PARENT, parent as u64);
+        put(
+            own + group::HQ_PROVIDER,
+            (host + member::HOST_OFFSET) as u64,
+        );
+        put(host, carmy::VTABLE_RVA as u64);
+        put(
+            host + carmy::SECONDARY_BASE,
+            carmy::SECONDARY_VTABLE_RVA as u64,
+        );
+        put(host + cunit::HANDLE, 1);
+        put(host + member::HOST_OFFSET + member::GROUP, own as u64);
+    }
+    for (army, own) in ARMIES {
+        put(army + member::HOST_OFFSET + member::GROUP, own as u64);
+    }
+    let memory = Commanded(bytes);
+    let template: Vec<_> = ARMIES
+        .iter()
+        .map(|&(pointer, own)| carmy::DivisionSeed {
+            pointer,
+            orders_group: Some(own),
+            class: Some(0),
+            ..Default::default()
+        })
+        .collect();
+    let hour = |leaders: &mut HeldLeaders, ordinal: usize| {
+        let mut seeds = template.clone();
+        let denied = crate::test_support::NullGuard::new(ordinal);
+        select(&memory, kit::BASE, &mut seeds, leaders, &Certified);
+        drop(denied);
+        let attempts = crate::test_support::ATTEMPTS.load(Ordering::Relaxed);
+        let denials = crate::test_support::DENIALS.load(Ordering::Relaxed);
+        (seeds, attempts, denials)
+    };
+    crate::allocation::reset();
+    crate::allocation::install_hooks();
+    let mut warm = HeldLeaders::default();
+    let (first, cold_attempts, _) = hour(&mut warm, usize::MAX);
+    let (carried, warm_attempts, _) = hour(&mut warm, usize::MAX);
+    assert_eq!(carried, first);
+    assert_eq!(warm.held.len(), 1);
+    assert_eq!(first[0].selected.unwrap().handle, Some(handle));
+    assert_eq!(
+        first[0].selected.unwrap().block,
+        Ok(Some((
+            LEADER + carmy_leader::MOVEMENT_MODIFIER + carmy_leader::MODIFIER_ACCUMULATOR,
+            false
+        )))
+    );
+    // Each consumer of an unselected seed reads for itself what the selection read for it.
+    for (seed, selected) in template.iter().zip(&first) {
+        assert_eq!(
+            selected.selected.map(|selected| selected.block),
+            Some(carmy_leader::movement_block_memoized(
+                &memory,
+                kit::BASE,
+                seed,
+                &mut carmy_leader::LeaderMemo::vacant()
+            ))
+        );
+    }
+    // Every allocation in turn is refused, and every one after it.
+    for (cold, attempts) in [(true, cold_attempts), (false, warm_attempts)] {
+        assert!(attempts > 0);
+        for ordinal in 1..=attempts {
+            let mut leaders = HeldLeaders::default();
+            if !cold {
+                hour(&mut leaders, usize::MAX);
+            }
+            let (seeds, _, denials) = hour(&mut leaders, ordinal);
+            assert!(denials > 0, "cold {cold} ordinal {ordinal}");
+            assert!(
+                !crate::allocation::failed(),
+                "cold {cold} ordinal {ordinal}"
+            );
+            assert!(
+                seeds == first || seeds == template,
+                "cold {cold} ordinal {ordinal}"
+            );
+            for (leader, carry) in &leaders.held {
+                assert_eq!(warm.held.get(leader), Some(carry));
+            }
+            let (next, _, _) = hour(&mut leaders, usize::MAX);
+            assert_eq!(next, first, "cold {cold} ordinal {ordinal}");
+        }
+    }
+    assert!(!engine_allocation::capture_stopped());
+    engine_allocation::set_hooks(None, None);
+    engine_allocation::set_stop_hook(None);
 }

@@ -158,13 +158,17 @@ impl OrganisationMemo {
         state: usize,
         route: Array,
         index: u32,
+        head: Option<Option<u32>>,
     ) -> Result<(u32, u8), &'static str> {
-        let id = read::<u32>(
-            memory,
-            route
-                .element(index, 4)
-                .ok_or("movement route index invalid")?,
-        )
+        let id = match head.filter(|_| index == 0) {
+            Some(id) => id,
+            None => read::<u32>(
+                memory,
+                route
+                    .element(index, 4)
+                    .ok_or("movement route index invalid")?,
+            ),
+        }
         .ok_or("movement route id unreadable")?;
         let provinces = match self.provinces {
             Some(provinces) => provinces,
@@ -221,8 +225,14 @@ impl StatusPacket {
                     self.organisation_memo
                         .province(memory, base, location, None),
                     (0..route.count).map(|index| {
-                        self.organisation_memo
-                            .route(memory, base, state, route, index)
+                        self.organisation_memo.route(
+                            memory,
+                            base,
+                            state,
+                            route,
+                            index,
+                            seed.route_head,
+                        )
                     }),
                 );
                 // Keep a proven pair available while counting independent route faults.

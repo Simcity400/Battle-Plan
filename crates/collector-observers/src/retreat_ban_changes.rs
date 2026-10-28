@@ -8,8 +8,8 @@
 //! patches and forwards each call here ([`forwarded`]), which notifies this family's watch registry
 //! for the leader; it never changes game behaviour.
 //!
-//! Each hour the Presentation job reads every division's group and its
-//! commander, and reads a commander's blocks only when no held read carries
+//! Each hour the Presentation job takes every division's commander from the
+//! division census's selection, and reads a commander's blocks only when no held read carries
 //! its certificate (no forwarded writer touched it since; same epoch). The
 //! held bans live in a [`Store`] the capture takes and returns; a capture
 //! that does not complete forgets it.
@@ -256,7 +256,7 @@ pub fn status() -> impl serde::Serialize {
         "refused_commanders": reads[2],
         "failed_captures": reads[3],
         "watches": WATCHES.status(),
-        "scope": "cumulative since attach; each hour DivisionRetreatBans reads every division's group and commander, and carries a commander's bans while its certificate holds (no forwarded naval-tree commander writer touched it since the held read, same epoch); every other commander's two blocks are read"
+        "scope": "cumulative since attach; each hour DivisionRetreatBans takes every division's commander from the division census's selection, and carries a commander's bans while its certificate holds (no forwarded naval-tree commander writer touched it since the held read, same epoch); every other commander's two blocks are read"
     })
 }
 

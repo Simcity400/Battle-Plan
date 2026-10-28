@@ -83,6 +83,12 @@ impl StatusPart {
                         .pointer
                         .checked_add(cunit::SCHEDULED_MEMBER)
                         .ok_or("division membership address overflow")?;
+                    if census_authenticated(seed) {
+                        let _ = self
+                            .packet
+                            .membership
+                            .admit_group(self.packet.units[index].group);
+                    }
                     self.packet.units[index].membership =
                         self.packet.membership.push_query(MembershipQuery {
                             member,
@@ -126,6 +132,12 @@ impl StatusPart {
         })();
         self.outcome = result.unwrap_or_else(|reason| Outcome::Unavailable { reason });
     }
+}
+
+/// The census read the division's group identity exactly as membership reads it.
+pub(super) fn census_authenticated(seed: &DivisionSeed) -> bool {
+    seed.selected
+        .is_some_and(|selected| selected.group_identity)
 }
 
 impl StatusPacket {

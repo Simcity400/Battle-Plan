@@ -3109,6 +3109,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "early_steps_scope": "cumulative callback handler wall excluding acquisition_wait_ns, including request building, submission and release; wait_for_advance is nested presentation.advance wall inside wait_for and overlaps its enclosing handler; queue_ns includes request building and submission, submission_ns counts admission only, release_ns counts held-burst release; these nested totals must not be added",
                 "input_consumers_scope": "callback wall after collecting DivisionInputs through restoring the ordered census and installing UnitInputs, before Divisions submission, excluding part join spans; input_restore_ns is its nested fan-in lock/restore wall; input_publish_hold_ns sums publisher holds from successful lock acquisition to release, including early returns/unwind and excluding successor wake",
                 "source_admission": crate::extended::division_presentation::source_admission_data(),
+                "shared_sources": crate::division_census::shared_source_data(),
                 "phase_ns": crate::status::map(
                     crate::extended::division_presentation::PHASE_NAMES
                         .into_iter()
