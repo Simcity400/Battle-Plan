@@ -1081,14 +1081,31 @@ fn independent_v5_and_public_payloads_keep_same_hour_organisation_versions_delay
 }
 
 fn assert_reference_publication_modes(replay: &Replay, verify: impl Fn(&ScannedLines)) {
+    assert_reference_publication_tags(replay, &[], verify);
+}
+
+/// GER's scan and payloads, and each of `others`' scans, equal the independent reference in
+/// every publication mode; `verify` checks GER's.
+fn assert_reference_publication_tags(
+    replay: &Replay,
+    others: &[&str],
+    verify: impl Fn(&ScannedLines),
+) {
     let flag = AtomicBool::new(false);
-    let expected =
-        super::super::reference::scan(replay, &branch_blocks(replay, 1), "GER", None, None, &flag)
-            .unwrap();
+    let reference = |tag: &str| {
+        super::super::reference::scan(replay, &branch_blocks(replay, 1), tag, None, None, &flag)
+            .unwrap()
+    };
+    let expected = reference("GER");
     verify(&expected);
     let baseline = saved_bytes(&expected);
+    let other_baselines: Vec<_> = others
+        .iter()
+        .map(|tag| saved_bytes(&reference(tag)))
+        .collect();
     for (spill, checkpoint) in [(false, false), (true, false), (false, true), (true, true)] {
-        let mut prepared = Prepared::new(replay, 1, ["GER".into()], None);
+        let tags = std::iter::once("GER").chain(others.iter().copied());
+        let mut prepared = Prepared::new(replay, 1, tags.map(str::to_owned), None);
         let mut pages = fixtures::FixturePages::default();
         for (position, block) in replay.index.iter().enumerate() {
             prepared
@@ -1132,6 +1149,22 @@ fn assert_reference_publication_modes(replay: &Replay, verify: impl Fn(&ScannedL
             baseline,
             "spill={spill}, checkpoint={checkpoint}"
         );
+        for (tag, baseline) in others.iter().zip(&other_baselines) {
+            let actual = assemble(
+                &prepared.directory,
+                &tag_key(tag),
+                None,
+                recorded_language(replay),
+                &flag,
+                |section, range| pages.read_at(section, range),
+            )
+            .unwrap();
+            assert_eq!(
+                saved_bytes(&actual),
+                *baseline,
+                "{tag}: spill={spill}, checkpoint={checkpoint}"
+            );
+        }
         let source = fixture_source(replay, pages);
         for origin in [
             None,
@@ -3309,4 +3342,276 @@ fn variant_events_naming_nothing_and_state_edits_between_censuses_stay_quiet_and
         pictured_quiet_hours(&undisturbed) - pictured_quiet_hours(&edited),
         2
     );
+}
+
+/// Censuses a day apart. The hours between read nothing, so the countries follow them deferred:
+/// design hours every five, output, organisations and modifiers each missing for a while, and a
+/// lost lines read at 61 ending every carried line. GER holds no lines through the second day.
+fn deferred_hours_replay(split: usize) -> Replay {
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
+    let held = authored(
+        FIRST,
+        &[(5, 70, 8, 0), (6, 71, 3, 0)],
+        &[(5, 70, 1, true, false)],
+    );
+    let empty = authored(FIRST, &[], &[]);
+    let mut frames: Vec<_> = (0..97)
+        .map(|offset| {
+            let mut frame = if (24..48).contains(&offset) {
+                empty.clone()
+            } else {
+                held.clone()
+            };
+            frame.hour = FIRST + offset;
+            if offset % 24 != 0 {
+                frame.metrics.table_ns.fill(0);
+            }
+            if offset % 24 != 0 && offset % 5 == 0 {
+                frame.metrics.table_ns[TableId::VariantStats.index()] = 1;
+            }
+            frame.tables[TableId::VariantStats.index()] = frame.tables
+                [TableId::VariantStats.index()]
+            .clone()
+            .with_sampled_at(Some(FIRST + offset / 5 * 5));
+            let missing = match offset {
+                30 | 31 => Some(TableId::ProductionLineOutput),
+                40..=42 => Some(TableId::IndustrialOrganisations),
+                52 | 53 => Some(TableId::CountryProductionModifiers),
+                61 => Some(TableId::ProductionLines),
+                _ => None,
+            };
+            if let Some(table) = missing {
+                *frame.tables[table.index()] = TableView::Unavailable {
+                    reason: "synthetic availability change".into(),
+                };
+            }
+            if let TableView::Complete(TableRows::ProductionLineOutput(rows)) =
+                &mut *frame.tables[TableId::ProductionLineOutput.index()]
+            {
+                rows.iter_mut()
+                    .for_each(|row| row.units = i64::from(offset));
+            }
+            frame
+        })
+        .collect();
+    let later = frames.split_off(split);
+    replay_segments(frames, later)
+}
+
+#[test]
+fn deferred_hours_follow_availability_designs_and_breaks_exactly_across_spill_and_resume() {
+    let covered = |spans: &[crate::products::country_groups::HourSpan], offset: i32| {
+        spans
+            .iter()
+            .any(|span| span.first_hour <= FIRST + offset && FIRST + offset <= span.last_hour)
+    };
+    // One resume inside a run of carried hours, one just after the lost lines read.
+    for split in [37, 62] {
+        let replay = deferred_hours_replay(split);
+        assert_reference_publication_tags(&replay, &["ITA", "SPA"], |scan| {
+            // Known to hold no lines is coverage, not a gap.
+            assert!(covered(&scan.line_hours, 30));
+            assert!(covered(&scan.output_hours, 29) && !covered(&scan.output_hours, 32));
+            assert!(!covered(&scan.organisation_hours, 43));
+            assert!(!covered(&scan.line_hours, 61) && !covered(&scan.line_hours, 70));
+            assert!(covered(&scan.line_hours, 72));
+            let designed = |offset| {
+                scan.designs[&70]
+                    .iter()
+                    .any(|read| read.first_hour == FIRST + offset)
+            };
+            assert!(designed(5) && designed(50) && designed(75));
+            assert!(!designed(25) && !designed(65));
+        });
+    }
+}
+
+#[test]
+fn countries_follow_deferred_hours_once_per_run_and_design_hours_visit_only_their_carriers() {
+    use replay_data::rows::{ProductionLineOutputRow, TableRows};
+    use replay_frame::frame::TableView;
+    let replay = recording();
+    let flag = AtomicBool::new(false);
+    let mut prepared = Prepared::new(&replay, 1, [], None);
+    let mut pages = fixtures::FixturePages::default();
+    let mut frame = scaled_production(1501, 1);
+    // Three countries hold lines; every other one is known to hold none.
+    let TableView::Complete(TableRows::ProductionLines(rows)) =
+        &mut *frame.tables[TableId::ProductionLines.index()]
+    else {
+        unreachable!()
+    };
+    rows.truncate(3);
+    // Output read at each census keeps design hours from being read evidence.
+    *frame.tables[TableId::ProductionLineOutput.index()] =
+        TableView::Complete(TableRows::ProductionLineOutput(vec![
+            ProductionLineOutputRow {
+                line: 1,
+                country: 100_000,
+                variant: 70,
+                units: 1,
+                exact: true,
+                ..Default::default()
+            },
+        ]));
+    let output = frame.tables[TableId::ProductionLineOutput.index()].clone();
+    prepared
+        .observe_into(&mut pages, &replay, &frame, None, &flag)
+        .unwrap();
+    let followers = prepared.native.len()
+        + prepared
+            .aliases
+            .values()
+            .filter(|alias| alias.projection().is_some())
+            .count()
+        + 1;
+    let count = |key| crate::prepared::prepass::noted(key);
+    let (folds, carries, designs) = (
+        count("production-lines.country_fold"),
+        count("production-lines.country_carry"),
+        count("production-lines.country_design"),
+    );
+    let days = 4;
+    for offset in 1..=days * 24 {
+        let hour = offset % 24;
+        frame.hour = FIRST + offset;
+        frame.metrics.table_ns.fill(0);
+        if hour == 0 {
+            frame.metrics.table_ns[TableId::Stockpiles.index()] = 1;
+        }
+        // Output goes missing for two hours a day: three runs of equal availability.
+        if (11..13).contains(&hour) {
+            *frame.tables[TableId::ProductionLineOutput.index()] = TableView::Unavailable {
+                reason: "synthetic availability change".into(),
+            };
+        } else {
+            frame.tables[TableId::ProductionLineOutput.index()] = output.clone();
+        }
+        if hour != 0 && hour % 5 == 0 {
+            frame.tables[TableId::VariantStats.index()] = frame.tables
+                [TableId::VariantStats.index()]
+            .clone()
+            .with_sampled_at(Some(FIRST + offset));
+        }
+        prepared
+            .observe_into(&mut pages, &replay, &frame, None, &flag)
+            .unwrap();
+        if hour == 23 {
+            // Between censuses no country folds an hour, and only the three carrying lines
+            // record the day's four design hours.
+            assert_eq!(
+                count("production-lines.country_fold"),
+                folds + offset as usize / 24 * followers
+            );
+            assert_eq!(
+                count("production-lines.country_design"),
+                designs + (offset as usize / 24 + 1) * 4 * 3
+            );
+        }
+    }
+    assert_eq!(
+        count("production-lines.country_fold") - folds,
+        days as usize * followers
+    );
+    assert_eq!(
+        count("production-lines.country_carry") - carries,
+        days as usize * 3 * followers
+    );
+    assert_eq!(
+        count("production-lines.country_design") - designs,
+        days as usize * 4 * 3
+    );
+}
+
+#[test]
+fn a_design_without_an_organisation_reads_no_private_page() {
+    use replay_data::rows::ProductionLineRow;
+    struct Counted(fixtures::FixturePages, usize);
+    impl Pages for Counted {
+        fn write_at(&mut self, section: &str, range: u64, bytes: &[u8]) -> io::Result<()> {
+            self.0.write_at(section, range, bytes)
+        }
+        fn write(&mut self, section: &str, bytes: &[u8]) -> io::Result<u64> {
+            self.0.write(section, bytes)
+        }
+        fn read_at(&mut self, section: &str, range: u64) -> io::Result<Option<Vec<u8>>> {
+            self.1 += 1;
+            self.0.read_at(section, range)
+        }
+    }
+    let input = |hour, lines_read, design_revision| HourInput {
+        rows_complete: true,
+        linked: BTreeSet::from([(7, 9001)]),
+        identities_changed: false,
+        author_names_due: false,
+        hour,
+        last_hour: hour,
+        countries: None,
+        holders: BTreeMap::new(),
+        lines_complete: true,
+        lines_read,
+        output_read: false,
+        output_complete: false,
+        organisations_complete: false,
+        organisations_named: false,
+        modifiers_complete: false,
+        modifiers_read: false,
+        modifier_refusal: None,
+        lines: BTreeMap::from([(
+            7,
+            vec![ProductionLineRow {
+                handle: 1,
+                country: 9001,
+                variant: 70,
+                kind: engine_native::cequipment_production_line::KIND_MILITARY,
+                active_factories: 2,
+                ..Default::default()
+            }],
+        )]),
+        unlinked_lines: Vec::new(),
+        output: BTreeMap::new(),
+        unlinked_output: Vec::new(),
+        modifier_countries: BTreeMap::new(),
+        modifier_lines: BTreeMap::new(),
+        organisations: BTreeMap::new(),
+        author_names: BTreeMap::new(),
+        organisation_names: BTreeMap::new(),
+        designs: BTreeMap::from([(
+            70,
+            DesignRead {
+                first_hour: FIRST,
+                author: Some(0),
+                ..Default::default()
+            },
+        )]),
+        design_revision,
+        design_read_hour: Some(hour),
+        organisation_read_hour: None,
+        icons: BTreeMap::new(),
+        localisation: None,
+        language: Arc::from("english"),
+    };
+    let mut stored = Counted(fixtures::FixturePages::default(), 0);
+    let mut facts = private::Store::new(&mut stored, 1);
+    let mut state = CountryState::default();
+    // A held record makes the private pages a tree that a lookup walks.
+    private::put(
+        &mut facts,
+        &mut state.history,
+        "design-71",
+        &DesignRead::default(),
+    )
+    .unwrap();
+    let country = Some(Country::Found(7, 9001));
+    state
+        .observe_input(&mut facts, &input(FIRST, true, 0), country)
+        .unwrap();
+    let reads = facts.pages.1;
+    state
+        .observe_input(&mut facts, &input(FIRST + 1, false, 1), country)
+        .unwrap();
+    assert_eq!(facts.pages.1, reads);
+    assert_eq!(state.result.designs[&70].len(), 2);
+    assert!(!state.result.organisations.contains_key(&0));
 }

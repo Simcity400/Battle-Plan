@@ -203,6 +203,140 @@ impl CountryState {
             );
         }
     }
+
+    /// Follows the country into `hours`: what it carried ends where it or its lines broke off.
+    fn enter(&mut self, hours: &Hours, identity: Option<(u32, u32)>, lines_read: bool) {
+        self.pending_bytes += 6 * std::mem::size_of::<crate::products::country_groups::HourSpan>()
+            + std::mem::size_of::<i32>();
+        let continues = identity.is_some_and(|identity| {
+            self.last.is_some_and(|(seen, at)| {
+                seen == identity && at.checked_add(1) == Some(hours.first)
+            })
+        });
+        if self.carry.as_ref().is_some_and(|span| {
+            !continues
+                || lines_read
+                || !hours.lines_complete
+                || span.modifiers != hours.modifiers_complete
+                || span.output != (self.output_open && hours.output_complete)
+        }) {
+            self.materialize();
+        }
+        self.last = identity.map(|identity| (identity, hours.last));
+        if self.carried && (!continues || !hours.lines_complete) {
+            self.broken = std::mem::take(&mut self.open);
+            self.broken_identity = self.last_read_identity;
+            self.carried = false;
+            self.output_open = false;
+            self.organisations_open = false;
+        }
+    }
+
+    /// Carries the open lines through `hours`, which read none.
+    fn carry_through(&mut self, hours: &Hours) {
+        if !self.carried {
+            return;
+        }
+        let _phase = replay_frame::cpu::scope_phase("production-lines:carry");
+        mark_span(&mut self.result.line_hours, hours.first, hours.last);
+        self.output_open &= hours.output_complete;
+        self.organisations_open &= hours.organisations_complete;
+        if self.organisations_open {
+            mark_span(&mut self.result.organisation_hours, hours.first, hours.last);
+        }
+        match &mut self.carry {
+            Some(span) => span.last = hours.last,
+            None => {
+                self.carry = Some(Carry {
+                    first: hours.first,
+                    last: hours.last,
+                    modifiers: hours.modifiers_complete,
+                    output: self.output_open,
+                })
+            }
+        }
+        if self.output_open {
+            mark_span(&mut self.result.output_hours, hours.first, hours.last);
+        }
+    }
+
+    fn record_designs(
+        &mut self,
+        facts: &mut dyn private::Facts,
+        input: &HourInput,
+    ) -> io::Result<()> {
+        for &variant in &self.active_variants {
+            self.pending_bytes +=
+                record_design(&mut self.result, facts, self.history, input, variant)?;
+        }
+        Ok(())
+    }
+
+    /// Follows deferred runs as inputs: identities as last followed, designs recorded as they came.
+    fn follow(&mut self, runs: &[Hours]) {
+        let identity = self.last.map(|(identity, _)| identity);
+        for hours in runs {
+            crate::prepared::prepass::note("production-lines.country_carry");
+            self.enter(hours, identity, false);
+            self.last_design_revision = Some(hours.design_revision);
+            if identity.is_some() && hours.lines_complete {
+                self.carry_through(hours);
+            }
+        }
+    }
+
+    /// Whether a design change records this country's variants.
+    fn designs_carried(&self) -> bool {
+        self.carried && !self.active_variants.is_empty()
+    }
+}
+
+/// Hours one input covers, with what was complete through them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Hours {
+    first: i32,
+    last: i32,
+    lines_complete: bool,
+    output_complete: bool,
+    organisations_complete: bool,
+    modifiers_complete: bool,
+    /// The design revision at `last`.
+    design_revision: u64,
+}
+
+impl Hours {
+    fn of(input: &HourInput) -> Self {
+        Self {
+            first: input.hour,
+            last: input.last_hour,
+            lines_complete: input.lines_complete,
+            output_complete: input.output_complete,
+            organisations_complete: input.organisations_complete,
+            modifiers_complete: input.modifiers_complete,
+            design_revision: input.design_revision,
+        }
+    }
+
+    /// Joins `next` when it follows on with the same availability.
+    fn join(&mut self, next: &Self) -> bool {
+        let joins = self.last.checked_add(1) == Some(next.first)
+            && (
+                self.lines_complete,
+                self.output_complete,
+                self.organisations_complete,
+                self.modifiers_complete,
+            ) == (
+                next.lines_complete,
+                next.output_complete,
+                next.organisations_complete,
+                next.modifiers_complete,
+            );
+        if joins {
+            self.last = next.last;
+            self.design_revision = next.design_revision;
+        }
+        joins
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -326,6 +460,12 @@ struct ActiveCountry {
     native: NativeCountry,
 }
 
+/// A country the fold holds: a native lifetime, or a tag's own projection.
+enum Held {
+    Native(NativeCountry),
+    Tag(String),
+}
+
 pub struct Prepared {
     world: World,
     absent: PagedCountry,
@@ -346,6 +486,14 @@ pub struct Prepared {
     alias_last: BTreeMap<String, usize>,
     processed: Option<BlockIndex>,
     block_failed: bool,
+    /// Hours that read nothing and change no identity, which the countries have yet to follow.
+    deferred: Vec<Hours>,
+    /// Whether a deferred hour ended every country's carried lines.
+    deferred_breaks: bool,
+    /// The last hour and design revision the countries followed or deferred.
+    followed: Option<(i32, u64)>,
+    /// The countries a design change records, while they carry the same lines.
+    designing: Option<Vec<Held>>,
 }
 
 impl Prepared {
@@ -424,6 +572,10 @@ impl Prepared {
             alias_last: BTreeMap::new(),
             processed: None,
             block_failed: false,
+            deferred: Vec::new(),
+            deferred_breaks: false,
+            followed: None,
+            designing: None,
             world: World::default(),
             absent: PagedCountry::default(),
             native: BTreeMap::new(),
@@ -771,11 +923,11 @@ impl Prepared {
                 .sum::<usize>()
     }
 
+    /// Drains the quiet hours, and the countries follow every hour deferred.
     fn drain_quiet<W: Pages + ?Sized>(&mut self, writer: &mut W) -> io::Result<()> {
-        let Some((first, last)) = self.quiet.take() else {
-            return Ok(());
-        };
-        if let Some(mut input) = self.last_input.take() {
+        if let Some((first, last)) = self.quiet.take()
+            && let Some(mut input) = self.last_input.take()
+        {
             input.hour = first;
             input.last_hour = last;
             input.lines_read = false;
@@ -788,6 +940,7 @@ impl Prepared {
             self.evidence_bytes = 0;
             if !evidence.is_empty() {
                 let mut facts = private::Store::new(writer, self.directory.branch);
+                self.follow_deferred(&mut facts, input.countries.as_ref())?;
                 for (key, country) in &mut self.native {
                     let selected = if input.linked.contains(&(key.slot, key.id)) {
                         Country::Found(key.slot, key.id)
@@ -817,6 +970,7 @@ impl Prepared {
                     Country::Absent,
                     &evidence,
                 )?;
+                self.followed = Some((last, input.design_revision));
             }
             input.hour = last;
             input.last_hour = last;
@@ -825,6 +979,98 @@ impl Prepared {
             input.modifiers_read = false;
             self.last_input = Some(input);
         }
+        let input = self.last_input.take();
+        let followed = self.follow_deferred(
+            &mut private::Store::new(writer, self.directory.branch),
+            input.as_ref().and_then(|input| input.countries.as_ref()),
+        );
+        self.last_input = input;
+        followed
+    }
+
+    /// Defers an input that reads nothing and changes no identity; its design change records now.
+    fn defer(&mut self, facts: &mut dyn private::Facts, input: &HourInput) -> io::Result<bool> {
+        let Some((through, revision)) = self.followed else {
+            return Ok(false);
+        };
+        if input.lines_read
+            || input.output_read
+            || input.identities_changed
+            || (input.rows_complete && self.active.is_empty() && !input.holders.is_empty())
+        {
+            return Ok(false);
+        }
+        // Such an hour ends every carried country's lines; none carries any again before a read.
+        self.deferred_breaks |= !input.lines_complete || through.checked_add(1) != Some(input.hour);
+        if input.design_revision != revision && !self.deferred_breaks {
+            let designing = self.designing.get_or_insert_with(|| {
+                let natives = self
+                    .native
+                    .iter()
+                    .filter(|(_, country)| country.state.designs_carried())
+                    .map(|(key, _)| Held::Native(key.clone()));
+                let tags = self
+                    .aliases
+                    .iter()
+                    .filter(|(_, alias)| {
+                        alias
+                            .projection()
+                            .is_some_and(|country| country.state.designs_carried())
+                    })
+                    .map(|(tag, _)| Held::Tag(tag.clone()));
+                natives.chain(tags).collect()
+            });
+            for held in designing.iter() {
+                let country = match held {
+                    Held::Native(key) => self.native.get_mut(key),
+                    Held::Tag(tag) => self
+                        .aliases
+                        .get_mut(tag)
+                        .and_then(TagCountry::projection_mut),
+                };
+                if let Some(country) = country {
+                    crate::prepared::prepass::note("production-lines.country_design");
+                    country.state.record_designs(facts, input)?;
+                }
+            }
+        }
+        let hours = Hours::of(input);
+        if !self
+            .deferred
+            .last_mut()
+            .is_some_and(|last| last.join(&hours))
+        {
+            self.deferred.try_reserve(1).map_err(io::Error::other)?;
+            self.deferred.push(hours);
+        }
+        self.followed = Some((input.last_hour, input.design_revision));
+        Ok(true)
+    }
+
+    /// The countries follow the hours deferred since they last did.
+    fn follow_deferred<W: Pages + ?Sized>(
+        &mut self,
+        facts: &mut private::Store<'_, W>,
+        countries: Option<&BTreeMap<String, Country>>,
+    ) -> io::Result<()> {
+        self.designing = None;
+        self.deferred_breaks = false;
+        if self.deferred.is_empty() {
+            return Ok(());
+        }
+        let runs = std::mem::take(&mut self.deferred);
+        for hours in &runs {
+            self.follow_tags(facts, countries, false, hours.first, hours.last)?;
+            self.put_dormant(facts, countries, hours.last)?;
+        }
+        for country in self.native.values_mut().chain(
+            self.aliases
+                .values_mut()
+                .filter_map(TagCountry::projection_mut),
+        ) {
+            country.state.follow(&runs);
+        }
+        self.absent.state.follow(&runs);
         Ok(())
     }
 
@@ -901,6 +1147,16 @@ impl Prepared {
     ) -> io::Result<()> {
         self.initialize_tags(writer)?;
         let mut facts = private::Store::new(writer, self.directory.branch);
+        if self.defer(&mut facts, input)? {
+            return Ok(());
+        }
+        if input.identities_changed && !self.deferred.is_empty() {
+            return Err(crate::invalid(
+                "Production countries changed before following their deferred hours",
+            ));
+        }
+        self.follow_deferred(&mut facts, input.countries.as_ref())?;
+        self.followed = Some((input.last_hour, input.design_revision));
         let mut born = BTreeSet::new();
         if input.rows_complete && (input.identities_changed || self.active.is_empty()) {
             let mut active = BTreeMap::new();
@@ -973,48 +1229,13 @@ impl Prepared {
             }
             self.active = active;
         }
-        if let Some(countries) = &input.countries {
-            for (tag, country) in countries {
-                if input.identities_changed {
-                    private::put(
-                        &mut facts,
-                        &mut self.directory.index,
-                        &format!("tagname-{tag}"),
-                        tag,
-                    )?;
-                }
-                self.aliases
-                    .entry(tag.clone())
-                    .or_insert(TagCountry::Absent);
-                if let Country::Found(slot, id) = country
-                    && let Some(native) = self
-                        .active
-                        .get(&(*slot, *id))
-                        .map(|country| &country.native)
-                {
-                    let previous = self
-                        .alias_last
-                        .get(tag)
-                        .copied()
-                        .and_then(|index| self.directory.aliases.get_mut(index));
-                    if let Some(previous) = previous.filter(|previous| {
-                        previous.country == *native
-                            && previous.last_hour.checked_add(1) == Some(input.hour)
-                    }) {
-                        previous.last_hour = input.last_hour;
-                    } else {
-                        self.alias_last
-                            .insert(tag.clone(), self.directory.aliases.len());
-                        self.directory.aliases.push(Alias {
-                            tag: tag.clone(),
-                            first_hour: input.hour,
-                            last_hour: input.last_hour,
-                            country: native.clone(),
-                        });
-                    }
-                }
-            }
-        }
+        self.follow_tags(
+            &mut facts,
+            input.countries.as_ref(),
+            input.identities_changed,
+            input.hour,
+            input.last_hour,
+        )?;
         for (tag, alias) in &mut self.aliases {
             let selected = input
                 .countries
@@ -1120,11 +1341,76 @@ impl Prepared {
                 &country.head,
             )?;
         }
+        self.put_dormant(&mut facts, input.countries.as_ref(), input.last_hour)?;
+        Ok(())
+    }
+
+    /// Each held tag's identity alias through `first..=last`, and a place for every tag.
+    fn follow_tags(
+        &mut self,
+        facts: &mut dyn private::Facts,
+        countries: Option<&BTreeMap<String, Country>>,
+        identities_changed: bool,
+        first: i32,
+        last: i32,
+    ) -> io::Result<()> {
+        let Some(countries) = countries else {
+            return Ok(());
+        };
+        for (tag, country) in countries {
+            if identities_changed {
+                private::put(
+                    facts,
+                    &mut self.directory.index,
+                    &format!("tagname-{tag}"),
+                    tag,
+                )?;
+            }
+            self.aliases
+                .entry(tag.clone())
+                .or_insert(TagCountry::Absent);
+            if let Country::Found(slot, id) = country
+                && let Some(native) = self
+                    .active
+                    .get(&(*slot, *id))
+                    .map(|country| &country.native)
+            {
+                let previous = self
+                    .alias_last
+                    .get(tag)
+                    .copied()
+                    .and_then(|index| self.directory.aliases.get_mut(index));
+                if let Some(previous) = previous.filter(|previous| {
+                    previous.country == *native && previous.last_hour.checked_add(1) == Some(first)
+                }) {
+                    previous.last_hour = last;
+                } else {
+                    self.alias_last
+                        .insert(tag.clone(), self.directory.aliases.len());
+                    self.directory.aliases.push(Alias {
+                        tag: tag.clone(),
+                        first_hour: first,
+                        last_hour: last,
+                        country: native.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Puts away the tags no country holds through `last_hour`.
+    fn put_dormant<W: Pages + ?Sized>(
+        &mut self,
+        facts: &mut private::Store<'_, W>,
+        countries: Option<&BTreeMap<String, Country>>,
+        last_hour: i32,
+    ) -> io::Result<()> {
         let dormant: Vec<_> = self
             .aliases
             .keys()
             .filter(|tag| {
-                input.countries.as_ref().is_some_and(|countries| {
+                countries.is_some_and(|countries| {
                     matches!(countries.get(*tag), None | Some(Country::Absent))
                 })
             })
@@ -1133,8 +1419,8 @@ impl Prepared {
         for tag in dormant {
             let mut alias = self.aliases.remove(&tag).unwrap();
             if let Some(country) = alias.projection_mut() {
-                country.sleep = Some(self.absent.dormant(input.last_hour));
-                country.flush(&mut facts, &AtomicBool::new(false))?;
+                country.sleep = Some(self.absent.dormant(last_hour));
+                country.flush(facts, &AtomicBool::new(false))?;
             }
             let head = match &alias {
                 TagCountry::Absent => self.absent.head,
@@ -1143,7 +1429,7 @@ impl Prepared {
                     .get(key)
                     .map(|country| country.head)
                     .or(private::get(
-                        &mut facts,
+                        facts,
                         self.directory.index,
                         &format!("history-{}", native_key(key)),
                     )?)
@@ -1151,13 +1437,13 @@ impl Prepared {
                 TagCountry::Projected(country) => country.head,
             };
             private::put(
-                &mut facts,
+                facts,
                 &mut self.directory.index,
                 &format!("history-{}", tag_key(&tag)),
                 &head,
             )?;
             private::put(
-                &mut facts,
+                facts,
                 &mut self.directory.index,
                 &tag_key(&tag),
                 &alias.snapshot(&AtomicBool::new(false))?,
@@ -1724,15 +2010,45 @@ impl CountryState {
         country: Option<Country>,
     ) -> io::Result<()> {
         crate::prepared::prepass::note("production-lines.country_fold");
+        let hours = Hours::of(input);
+        let identity = country.and_then(Country::found);
+        self.enter(&hours, identity, input.lines_read);
+        if let Some(read) = input.output_due(country) {
+            if !read {
+                self.result.unread_output_reads += 1;
+                let first = self
+                    .last_output_due
+                    .and_then(|due| due.checked_add(1))
+                    .unwrap_or(input.hour);
+                mark_span(
+                    &mut self.result.unread_output,
+                    first.min(input.hour),
+                    input.hour,
+                );
+            }
+            self.last_output_due = Some(input.hour);
+        }
+        let designs_changed = self.last_design_revision != Some(input.design_revision);
+        self.last_design_revision = Some(input.design_revision);
+        let (Some(identity), true) = (identity, input.lines_complete) else {
+            return Ok(());
+        };
+        if self.carried && designs_changed {
+            self.record_designs(facts, input)?;
+        }
+        if !input.lines_read {
+            self.carry_through(&hours);
+            return Ok(());
+        }
         let Self {
             mut result,
             mut pending_bytes,
-            mut last,
+            last,
             mut open,
             mut carried,
             mut broken,
             mut last_read_identity,
-            mut broken_identity,
+            broken_identity,
             mut first_read,
             mut output_open,
             mut organisations_open,
@@ -1741,93 +2057,14 @@ impl CountryState {
             mut latest,
             history,
             mut active_variants,
-            mut carry,
-            mut last_output_due,
+            carry,
+            last_output_due,
             mut last_modifier_country,
-            mut last_design_revision,
+            last_design_revision,
         } = std::mem::take(self);
         let observed = (|| -> io::Result<()> {
             let hour = input.hour;
-            pending_bytes += 6 * std::mem::size_of::<crate::products::country_groups::HourSpan>()
-                + std::mem::size_of::<i32>();
-            let through = input.last_hour;
-            let identity = country.and_then(Country::found);
-            let continues = identity.is_some_and(|identity| {
-                last.is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour))
-            });
-            if carry.as_ref().is_some_and(|span| {
-                !continues
-                    || input.lines_read
-                    || !input.lines_complete
-                    || span.modifiers != input.modifiers_complete
-                    || span.output != (output_open && input.output_complete)
-            }) {
-                let span = carry.take().unwrap();
-                carry_lines(
-                    &mut result,
-                    &open,
-                    (span.first, span.last),
-                    span.modifiers,
-                    span.output,
-                );
-            }
-            last = identity.map(|identity| (identity, through));
-            if let Some(read) = input.output_due(country) {
-                if !read {
-                    result.unread_output_reads += 1;
-                    let first = last_output_due
-                        .and_then(|due| due.checked_add(1))
-                        .unwrap_or(hour);
-                    mark_span(&mut result.unread_output, first.min(hour), hour);
-                }
-                last_output_due = Some(hour);
-            }
-            if carried && (!continues || !input.lines_complete) {
-                broken = std::mem::take(&mut open);
-                broken_identity = last_read_identity;
-                carried = false;
-                output_open = false;
-                organisations_open = false;
-            }
-            let designs_changed = last_design_revision != Some(input.design_revision);
-            last_design_revision = Some(input.design_revision);
-            let (Some(identity), true) = (identity, input.lines_complete) else {
-                return Ok(());
-            };
             let slot = identity.0;
-            if carried && designs_changed {
-                let demanded = active_variants.iter().copied();
-                for variant in demanded {
-                    pending_bytes += record_design(&mut result, facts, history, input, variant)?;
-                }
-            }
-            if !input.lines_read {
-                if carried {
-                    let _phase = replay_frame::cpu::scope_phase("production-lines:carry");
-                    mark_span(&mut result.line_hours, hour, through);
-                    output_open &= input.output_complete;
-                    organisations_open &= input.organisations_complete;
-                    if organisations_open {
-                        mark_span(&mut result.organisation_hours, hour, through);
-                    }
-                    let modifiers_carried = input.modifiers_complete;
-                    match &mut carry {
-                        Some(span) => span.last = through,
-                        None => {
-                            carry = Some(Carry {
-                                first: hour,
-                                last: through,
-                                modifiers: modifiers_carried,
-                                output: output_open,
-                            })
-                        }
-                    }
-                    if output_open {
-                        mark_span(&mut result.output_hours, hour, through);
-                    }
-                }
-                return Ok(());
-            }
             let rows = input
                 .lines
                 .get(&slot)
@@ -2472,6 +2709,10 @@ impl Prepared {
         Ok(Self {
             processed: Some(processed),
             block_failed: false,
+            deferred: Vec::new(),
+            deferred_breaks: false,
+            followed: None,
+            designing: None,
             world: World::restore(continuation.world)?,
             absent,
             native,
@@ -2691,7 +2932,9 @@ fn load_organisation(
     history: private::Root,
     id: u64,
 ) -> io::Result<usize> {
-    if !result.organisations.contains_key(&id)
+    // Organisation 0 is never held, so looking it up only walks the private pages to a miss.
+    if id != 0
+        && !result.organisations.contains_key(&id)
         && let Some(last) = private::get(facts, history, &format!("organisation-{id}"))?
     {
         let bytes = pages::record_bytes(&last);
