@@ -392,6 +392,7 @@ pub use engine_mutations::faction_companion_mutations;
 pub use engine_mutations::faction_goal_mutations;
 pub use engine_mutations::naval_tree_mutations;
 pub use engine_mutations::opinion_mutations;
+pub use engine_mutations::orders_group_mutations;
 pub use engine_mutations::party_leader_mutations;
 pub use engine_mutations::political_party_mutations;
 pub use engine_mutations::political_status_mutations;

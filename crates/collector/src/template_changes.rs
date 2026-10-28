@@ -420,6 +420,7 @@ impl Hooks {
                 collector_observers::occupation_changes::Forwarder::Templates,
                 false,
             );
+            crate::orders_group_changes::forwarder(false);
         }
         // One census and suspension for the whole family, shared with the
         // other families in a runtime round (`hook::shared`): a thread at any
@@ -437,6 +438,7 @@ impl Hooks {
             collector_observers::occupation_changes::Forwarder::Templates,
             enabled && !self.hooks.is_empty(),
         );
+        crate::orders_group_changes::forwarder(enabled && !self.hooks.is_empty());
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
@@ -449,6 +451,7 @@ impl Drop for Hooks {
             collector_observers::occupation_changes::Forwarder::Templates,
             false,
         );
+        crate::orders_group_changes::forwarder(false);
         // SAFETY: like each Hook's relay, the watch tables are dropped only
         // once the hooks were never enabled, or were removed and drained
         // after the last capture.
@@ -637,7 +640,24 @@ callback!(allocate_hq_deployment_order, 42);
 callback!(set_hq_target, 43);
 callback!(begin_hq_deployment, 44);
 callback!(cancel_hq_deployment, 45);
-callback!(destroy_hq_group, 46);
+// Group destructor (group): also frees the group the orders-group family certifies.
+unsafe extern "system-unwind" fn destroy_hq_group(
+    first: usize,
+    second: usize,
+    third: usize,
+    fourth: usize,
+) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::TemplateChanges);
+    let notification = ManuallyDrop::new((
+        native_notification(&WATCHES, 46, first, second),
+        crate::orders_group_changes::forwarded(first),
+    ));
+    let original: NativeFunction =
+        unsafe { std::mem::transmute(ORIGINAL[46].load(Ordering::Acquire)) };
+    let result = timing.original(|| unsafe { original(first, second, third, fourth) });
+    drop(ManuallyDrop::into_inner(notification));
+    result
+}
 unsafe extern "system-unwind" fn requisition_hq_from_army(
     first: usize,
     second: usize,

@@ -127,6 +127,7 @@ pub(crate) struct Census {
     /// through it, for splitting the next hour's walk into parts.
     slot_ends: Vec<(u32, u32)>,
     leaders: HeldLeaders,
+    groups: HeldGroups,
 }
 
 /// Leader identities this census read, by leader, under the unit leader writers' certificate.
@@ -137,65 +138,143 @@ struct HeldLeaders {
     fresh: Vec<(usize, (u64, u64))>,
 }
 
+/// Group fields this census read, by group, under the orders-group writers' certificate.
+#[derive(Debug, Default)]
+struct HeldGroups {
+    held: std::collections::HashMap<usize, ((u64, u64), carmy_leader::GroupFields)>,
+    next: std::collections::HashMap<usize, ((u64, u64), carmy_leader::GroupFields)>,
+    /// Groups read this hour and the certificate taken before the read, ascending.
+    fresh: Vec<(usize, (u64, u64))>,
+}
+
+/// One hour's carry: each held read whose certificate still holds, and each fresh read
+/// under the certificate taken before it.
+struct Carry<'a, L, G> {
+    leaders: &'a mut HeldLeaders,
+    groups: &'a mut HeldGroups,
+    leader_changes: &'a L,
+    group_changes: &'a G,
+}
+
+/// The held value of `key` when its certificate is `certificate`, kept for the next hour;
+/// otherwise `None`, and `key` is read under `certificate`.
+fn carried<V: Copy>(
+    held: &std::collections::HashMap<usize, ((u64, u64), V)>,
+    next: &mut std::collections::HashMap<usize, ((u64, u64), V)>,
+    fresh: &mut Vec<(usize, (u64, u64))>,
+    key: usize,
+    certificate: (u64, u64),
+) -> Option<V> {
+    match held.get(&key) {
+        Some(&(previous, value)) if previous == certificate => {
+            if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut *next, 1))
+                .is_ok()
+            {
+                next.insert(key, (certificate, value));
+            }
+            Some(value)
+        }
+        _ => {
+            if engine_allocation::advisory(|| engine_allocation::reserve(&mut *fresh, 1)).is_ok()
+            {
+                fresh.push((key, certificate));
+            }
+            None
+        }
+    }
+}
+
+impl<L, G> carmy_leader::SelectionCarry for Carry<'_, L, G>
+where
+    L: crate::unit_leader_changes::Changes,
+    G: crate::orders_group_changes::Changes,
+{
+    fn leader(&mut self, leader: usize) -> Option<u64> {
+        let certificate = self.leader_changes.sequence(leader)?;
+        let HeldLeaders { held, next, fresh } = &mut *self.leaders;
+        carried(held, next, fresh, leader, certificate)
+    }
+    fn group(&mut self, group: usize) -> Option<carmy_leader::GroupFields> {
+        let certificate = self.group_changes.sequence(group)?;
+        let HeldGroups { held, next, fresh } = &mut *self.groups;
+        carried(held, next, fresh, group, certificate)
+    }
+    fn group_read(&mut self, group: usize, fields: carmy_leader::GroupFields) {
+        let HeldGroups { next, fresh, .. } = &mut *self.groups;
+        if let Ok(at) = fresh.binary_search_by_key(&group, |entry| entry.0)
+            && engine_allocation::advisory(|| engine_allocation::reserve_map(&mut *next, 1)).is_ok()
+        {
+            next.insert(group, (fresh[at].1, fields));
+        }
+    }
+}
+
 /// Since attach, in [`shared_source_data`] order.
-static SHARED_SOURCES: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static SHARED_SOURCES: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
 
 pub(crate) fn shared_source_data() -> impl serde::Serialize {
-    let [captures, divisions, movers, groups, leaders, carried, calls, failed] =
-        SHARED_SOURCES.each_ref().map(|count| count.load(Ordering::Relaxed));
+    let [
+        captures,
+        divisions,
+        movers,
+        groups,
+        carried_groups,
+        leaders,
+        carried,
+        calls,
+        failed,
+    ] = SHARED_SOURCES
+        .each_ref()
+        .map(|count| count.load(Ordering::Relaxed));
     crate::status::status!({
         "captures": captures,
         "divisions": divisions,
         "movers": movers,
         "groups": groups,
+        "carried_groups": carried_groups,
         "leaders": leaders,
         "carried_leaders": carried,
         "calls": calls,
         "failed_captures": failed,
-        "scope": "cumulative division census source packet (one capture per census part each hour): the movers' route head and location id and each distinct group's leader, training byte and commander block are read once there for status, panel sources, retreat bans, organisation and speed terms, which read none of them again; divisions counts every division of each capture, so calls / divisions is the selector record batches per division per hour; a leader whose unit leader certificate holds is carried without a read",
+        "scope": "cumulative division census source packet (one capture per census part each hour): the movers' route head and location id and each distinct group's leader, training byte and commander block are read once there for status, panel sources, retreat bans, organisation and speed terms, which read none of them again; divisions counts every division of each capture, so calls / divisions is the selector record batches per division per hour; a group whose orders-group certificate holds is carried without a read (its identity, leader word, training byte and HQ provider word), as is a leader whose unit leader certificate holds",
     })
 }
 
-/// Every seed's commander selection; a leader's identity carries while its certificate holds.
+/// Every seed's commander selection; a group's fields and a leader's identity carry while
+/// their certificates hold.
 fn select(
     memory: &impl Memory,
     base: usize,
     seeds: &mut [carmy::DivisionSeed],
     leaders: &mut HeldLeaders,
-    changes: &impl crate::unit_leader_changes::Changes,
+    groups: &mut HeldGroups,
+    leader_changes: &impl crate::unit_leader_changes::Changes,
+    group_changes: &impl crate::orders_group_changes::Changes,
 ) {
-    let HeldLeaders { held, next, fresh } = leaders;
-    next.clear();
-    fresh.clear();
-    let result = carmy_leader::capture_selections(memory, base, seeds, &mut |leader| {
-        let certificate = changes.sequence(leader)?;
-        match held.get(&leader) {
-            Some(&(previous, handle)) if previous == certificate => {
-                if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut *next, 1))
-                    .is_ok()
-                {
-                    next.insert(leader, (certificate, handle));
-                }
-                Some(handle)
-            }
-            _ => {
-                if engine_allocation::advisory(|| engine_allocation::reserve(&mut *fresh, 1))
-                    .is_ok()
-                {
-                    fresh.push((leader, certificate));
-                }
-                None
-            }
-        }
-    });
+    leaders.next.clear();
+    leaders.fresh.clear();
+    groups.next.clear();
+    groups.fresh.clear();
+    let result = carmy_leader::capture_selections(
+        memory,
+        base,
+        seeds,
+        &mut Carry {
+            leaders: &mut *leaders,
+            groups: &mut *groups,
+            leader_changes,
+            group_changes,
+        },
+    );
     let movers = seeds
         .iter()
         .filter(|seed| seed.route_head.is_some())
         .count() as u64;
     let Ok(counts) = result else {
-        SHARED_SOURCES[7].fetch_add(1, Ordering::Relaxed);
+        SHARED_SOURCES[8].fetch_add(1, Ordering::Relaxed);
         return;
     };
+    let HeldLeaders { held, next, fresh } = leaders;
     fresh.sort_unstable_by_key(|entry| entry.0);
     for selected in seeds.iter().filter_map(|seed| seed.selected) {
         if let (Some(Ok(leader)), Some(handle)) = (selected.leader, selected.handle)
@@ -206,11 +285,17 @@ fn select(
         }
     }
     std::mem::swap(held, next);
+    std::mem::swap(&mut groups.held, &mut groups.next);
+    crate::orders_group_changes::record(&crate::orders_group_changes::Counts {
+        carried: counts.carried_groups,
+        read: counts.groups - counts.carried_groups,
+    });
     for (total, value) in SHARED_SOURCES.iter().zip([
         1,
         seeds.len() as u64,
         movers,
         counts.groups,
+        counts.carried_groups,
         counts.leaders,
         counts.carried,
         counts.calls,
@@ -243,6 +328,7 @@ impl Default for Census {
             growing: false,
             slot_ends: Vec::new(),
             leaders: HeldLeaders::default(),
+            groups: HeldGroups::default(),
         }
     }
 }
@@ -846,7 +932,9 @@ impl Census {
             base,
             &mut inputs.seeds,
             &mut self.leaders,
+            &mut self.groups,
             &crate::unit_leader_changes::Observer,
+            &crate::orders_group_changes::Observer,
         );
         inputs.outcome = self.census_result;
         self.core_roots = Some(CoreRoots {

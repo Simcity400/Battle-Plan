@@ -151,6 +151,15 @@ pub(crate) fn patches() -> Vec<Patch> {
     for site in engine_mutations::census_mutations::MUTATIONS {
         add("census_changes", site.name, site.rva, PATCH, &site.sentinel);
     }
+    for (site, _) in engine_mutations::orders_group_mutations::MUTATIONS {
+        add(
+            "orders_group_changes",
+            site.name,
+            site.rva,
+            PATCH,
+            &site.sentinel,
+        );
+    }
     use engine_events::map_event_sites as map;
     for (name, rva, sentinel) in [
         (

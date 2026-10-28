@@ -99,6 +99,7 @@ impl ObserverBoundaryRequest {
         crate::unit_leader_changes::boundary(!self.continuous || self.recovery);
         collector_naval_management::changes::boundary(!self.continuous || self.recovery);
         crate::census_changes::boundary(!self.continuous || self.recovery);
+        crate::orders_group_changes::boundary(!self.continuous || self.recovery);
         crate::unit_leader_trait_changes::boundary(!self.continuous || self.recovery);
         crate::world_input_changes::boundary(!self.continuous || self.recovery);
         crate::retreat_ban_changes::boundary(!self.continuous || self.recovery);
@@ -177,6 +178,7 @@ impl ObserverBoundaryRequest {
             crate::unit_leader_changes::boundary(true);
             collector_naval_management::changes::boundary(true);
             crate::census_changes::boundary(true);
+            crate::orders_group_changes::boundary(true);
             crate::unit_leader_trait_changes::boundary(true);
             crate::world_input_changes::boundary(true);
             crate::retreat_ban_changes::boundary(true);

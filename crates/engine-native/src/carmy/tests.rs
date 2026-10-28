@@ -3127,7 +3127,7 @@ fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults
     };
     let select = |memory: &Fault<'_>| {
         let mut seeds = [seed];
-        carmy_leader::capture_selections(memory, 0, &mut seeds, &mut |_| None).unwrap();
+        carmy_leader::capture_selections(memory, 0, &mut seeds, &mut carmy_leader::Fresh).unwrap();
         seeds[0]
     };
     let bans = |memory: &Fault<'_>, known: Option<Result<usize, &'static str>>| {

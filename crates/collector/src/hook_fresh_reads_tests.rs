@@ -327,6 +327,17 @@ fresh_fallback!(
     }
 );
 fresh_fallback!(
+    orders_group_install_failure_keeps_fresh_selections,
+    crate::orders_group_changes::Hooks,
+    |value| {
+        TableRows::DivisionRetreatBans(vec![DivisionRetreatBanRow {
+            division: 7,
+            owner: 1,
+            bans: value as u8,
+        }])
+    }
+);
+fresh_fallback!(
     air_record_install_failure_keeps_fresh_records,
     crate::air_record_changes::Hooks,
     |value| {

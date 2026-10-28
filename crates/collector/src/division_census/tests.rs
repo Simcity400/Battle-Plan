@@ -1167,6 +1167,11 @@ fn refused_selection_storage_never_ends_the_recording() {
             Some((1, 1))
         }
     }
+    impl crate::orders_group_changes::Changes for Certified {
+        fn sequence(&self, _: usize) -> Option<(u64, u64)> {
+            Some((1, 1))
+        }
+    }
     let mut bytes = vec![0_u8; 0x10000];
     let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     let handle = (7 << 32) | u64::from(cunit_leader::REFERENCE_TYPE);
@@ -1204,10 +1209,18 @@ fn refused_selection_storage_never_ends_the_recording() {
             ..Default::default()
         })
         .collect();
-    let hour = |leaders: &mut HeldLeaders, ordinal: usize| {
+    let hour = |(leaders, groups): &mut (HeldLeaders, HeldGroups), ordinal: usize| {
         let mut seeds = template.clone();
         let denied = crate::test_support::NullGuard::new(ordinal);
-        select(&memory, kit::BASE, &mut seeds, leaders, &Certified);
+        select(
+            &memory,
+            kit::BASE,
+            &mut seeds,
+            leaders,
+            groups,
+            &Certified,
+            &Certified,
+        );
         drop(denied);
         let attempts = crate::test_support::ATTEMPTS.load(Ordering::Relaxed);
         let denials = crate::test_support::DENIALS.load(Ordering::Relaxed);
@@ -1215,11 +1228,11 @@ fn refused_selection_storage_never_ends_the_recording() {
     };
     crate::allocation::reset();
     crate::allocation::install_hooks();
-    let mut warm = HeldLeaders::default();
+    let mut warm = <(HeldLeaders, HeldGroups)>::default();
     let (first, cold_attempts, _) = hour(&mut warm, usize::MAX);
     let (carried, warm_attempts, _) = hour(&mut warm, usize::MAX);
     assert_eq!(carried, first);
-    assert_eq!(warm.held.len(), 1);
+    assert_eq!((warm.0.held.len(), warm.1.held.len()), (1, 2));
     assert_eq!(first[0].selected.unwrap().handle, Some(handle));
     assert_eq!(
         first[0].selected.unwrap().block,
@@ -1244,11 +1257,11 @@ fn refused_selection_storage_never_ends_the_recording() {
     for (cold, attempts) in [(true, cold_attempts), (false, warm_attempts)] {
         assert!(attempts > 0);
         for ordinal in 1..=attempts {
-            let mut leaders = HeldLeaders::default();
+            let mut held = <(HeldLeaders, HeldGroups)>::default();
             if !cold {
-                hour(&mut leaders, usize::MAX);
+                hour(&mut held, usize::MAX);
             }
-            let (seeds, _, denials) = hour(&mut leaders, ordinal);
+            let (seeds, _, denials) = hour(&mut held, ordinal);
             assert!(denials > 0, "cold {cold} ordinal {ordinal}");
             assert!(
                 !crate::allocation::failed(),
@@ -1258,14 +1271,140 @@ fn refused_selection_storage_never_ends_the_recording() {
                 seeds == first || seeds == template,
                 "cold {cold} ordinal {ordinal}"
             );
-            for (leader, carry) in &leaders.held {
-                assert_eq!(warm.held.get(leader), Some(carry));
+            for (leader, carry) in &held.0.held {
+                assert_eq!(warm.0.held.get(leader), Some(carry));
             }
-            let (next, _, _) = hour(&mut leaders, usize::MAX);
+            for (group, carry) in &held.1.held {
+                assert_eq!(warm.1.held.get(group), Some(carry));
+            }
+            let (next, _, _) = hour(&mut held, usize::MAX);
             assert_eq!(next, first, "cold {cold} ordinal {ordinal}");
         }
     }
     assert!(!engine_allocation::capture_stopped());
     engine_allocation::set_hooks(None, None);
     engine_allocation::set_stop_hook(None);
+}
+
+/// A quiet hour reads none of a held group's fields, even ones memory changed under it;
+/// each hooked writer and the forwarded destructor make exactly the group they name be
+/// read again; a new group, an invalidating hour and an unobserved domain read every group.
+#[test]
+fn held_groups_are_read_again_only_after_a_writer_names_them() {
+    use engine_mutations::orders_group_mutations::{DAILY_UPDATE, MUTATIONS};
+    use engine_native::{corders_group as group, cunit_leader};
+    const LEADER: usize = 0x1000;
+    const GROUPS: [usize; 3] = [0x2000, 0x3000, 0x4000];
+    const NEW: usize = 0x5000;
+    struct Live {
+        bytes: RefCell<Vec<u8>>,
+        reads: RefCell<Vec<usize>>,
+    }
+    impl Memory for Live {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push(address);
+            kit::memory(&self.bytes.borrow()).copy(address, output)
+        }
+    }
+    struct Unwatched;
+    impl crate::unit_leader_changes::Changes for Unwatched {
+        fn quiet(&self) -> Option<(u64, u64)> {
+            None
+        }
+        fn sequence(&self, _: usize) -> Option<(u64, u64)> {
+            None
+        }
+    }
+    let mut bytes = vec![0_u8; 0x10000];
+    let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    put(LEADER, carmy_leader::VTABLE_RVA as u64);
+    put(
+        LEADER + cunit_leader::TYPE,
+        (7 << 32) | u64::from(cunit_leader::REFERENCE_TYPE),
+    );
+    for at in GROUPS.into_iter().chain([NEW]) {
+        put(at, group::VTABLE_RVA as u64);
+        put(at + group::HANDLE, u64::from(group::REFERENCE_TYPE));
+        put(at + group::LEADER, LEADER as u64);
+    }
+    let memory = Live {
+        bytes: RefCell::new(bytes),
+        reads: RefCell::new(Vec::new()),
+    };
+    let watches = crate::orders_group_changes::Watches::new();
+    watches.enable(16);
+    let mut leaders = HeldLeaders::default();
+    let mut held = HeldGroups::default();
+    // The groups whose fields an hour read, and each division's training byte.
+    let mut hour = |groups: &[usize]| {
+        memory.reads.borrow_mut().clear();
+        let mut seeds: Vec<_> = groups
+            .iter()
+            .enumerate()
+            .map(|(index, &group)| carmy::DivisionSeed {
+                pointer: 0x8000 + index * 0x100,
+                orders_group: Some(group),
+                class: Some(1),
+                ..Default::default()
+            })
+            .collect();
+        select(
+            &memory,
+            kit::BASE,
+            &mut seeds,
+            &mut leaders,
+            &mut held,
+            &Unwatched,
+            &watches,
+        );
+        let reads = memory.reads.borrow();
+        let read: Vec<_> = GROUPS
+            .into_iter()
+            .chain([NEW])
+            .filter(|&at| {
+                reads
+                    .iter()
+                    .any(|&read| (at..at + group::SIZE).contains(&read))
+            })
+            .collect();
+        let training: Vec<_> = seeds
+            .iter()
+            .map(|seed| seed.selected.unwrap().training)
+            .collect();
+        for seed in &seeds {
+            let selected = seed.selected.unwrap();
+            assert_eq!(selected.leader, Some(Ok(LEADER)));
+            assert!(selected.group_identity);
+        }
+        (read, training)
+    };
+    assert_eq!(hour(&GROUPS).0, GROUPS);
+    // A store no hooked writer made stays unseen while the group is held.
+    memory.bytes.borrow_mut()[GROUPS[0] + group::TRAINING] = 1;
+    assert_eq!(hour(&GROUPS), (vec![], vec![Some(Ok(0)); 3]));
+    for site in (0..MUTATIONS.len()).filter(|&site| site != DAILY_UPDATE) {
+        drop(watches.notify(GROUPS[0], site));
+        let (read, training) = hour(&GROUPS);
+        assert_eq!(read, [GROUPS[0]], "{}", MUTATIONS[site].0.name);
+        assert_eq!(training[0], Some(Ok(1)));
+        assert!(hour(&GROUPS).0.is_empty(), "{}", MUTATIONS[site].0.name);
+    }
+    // The daily update reads a group again only while it trains to its maximum.
+    drop(watches.daily(GROUPS[1], false));
+    assert!(hour(&GROUPS).0.is_empty());
+    drop(watches.daily(GROUPS[1], true));
+    assert_eq!(hour(&GROUPS).0, [GROUPS[1]]);
+    // A group freed at a held address is read again, as is a group new to the census.
+    drop(watches.destroy(GROUPS[2]));
+    assert_eq!(hour(&GROUPS).0, [GROUPS[2]]);
+    assert_eq!(hour(&[GROUPS[0], NEW]).0, [NEW]);
+    // A group the hour no longer reaches is forgotten.
+    assert_eq!(hour(&GROUPS).0, [GROUPS[1], GROUPS[2]]);
+    // An invalidating hour certifies nothing held before it.
+    watches.boundary(true);
+    assert_eq!(hour(&GROUPS).0, GROUPS);
+    // An unobserved domain reads every group every hour.
+    watches.disable();
+    assert_eq!(hour(&GROUPS).0, GROUPS);
+    assert_eq!(hour(&GROUPS).0, GROUPS);
 }

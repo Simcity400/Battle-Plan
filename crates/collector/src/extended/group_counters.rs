@@ -70,6 +70,7 @@ impl Capacities {
         self.rows = self.rows.max(count);
         crate::template_changes::prepare_hq_groups(count);
         crate::retreat_ban_changes::prepare(count);
+        crate::orders_group_changes::prepare(count);
         Ok(())
     }
 }

@@ -28,6 +28,7 @@ pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
         | Family::NavalTrees
         | Family::UnitLeaders
         | Family::Census
+        | Family::OrdersGroups
         | Family::AirRecords
         | Family::LocalSubunits
         | Family::ShipModels
@@ -125,11 +126,11 @@ fn constructor_sites(family: Family) -> Vec<usize> {
         advisor_mutations, advisor_pool_mutations, air_base_mutations,
         air_wing_equipment_mutations, army_stat_mutations, building_mutations, census_mutations,
         character_role_mutations, character_roster_mutations, country_input_mutations,
-        local_subunit_mutations, naval_tree_mutations, opinion_mutations, party_leader_mutations,
-        political_party_mutations, political_status_mutations, province_unit_mutations,
-        raid_mutations, railway_mutations, regional_mission_mutations, script_flag_mutations,
-        script_variable_mutations, ship_model_mutations, template_mutations, territory_mutations,
-        unit_leader_mutations, world_input_mutations, world_lifetime_sites,
+        local_subunit_mutations, naval_tree_mutations, opinion_mutations, orders_group_mutations,
+        party_leader_mutations, political_party_mutations, political_status_mutations,
+        province_unit_mutations, raid_mutations, railway_mutations, regional_mission_mutations,
+        script_flag_mutations, script_variable_mutations, ship_model_mutations, template_mutations,
+        territory_mutations, unit_leader_mutations, world_input_mutations, world_lifetime_sites,
     };
     use engine_native::cgame_state;
     use engine_naval_history::naval_result_sources;
@@ -205,6 +206,8 @@ fn constructor_sites(family: Family) -> Vec<usize> {
         }
         Family::UnitLeaders => sites!(unit_leader_mutations::MUTATIONS, s => s.rva),
         Family::Census => sites!(census_mutations::MUTATIONS, s => s.rva),
+        // Group destruction arrives through Templates.
+        Family::OrdersGroups => sites!(orders_group_mutations::MUTATIONS, (s, _) => s.rva),
         Family::WorldInputs => sites!(world_input_mutations::MUTATIONS, (s, _) => s.rva),
         Family::AirRecords => sites!(air_record_mutations::MUTATIONS, s => s.rva),
         Family::LocalSubunits => sites!(local_subunit_mutations::MUTATIONS, (s, _) => s.rva),

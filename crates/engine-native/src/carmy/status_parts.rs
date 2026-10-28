@@ -134,7 +134,7 @@ impl StatusPart {
     }
 }
 
-/// The census read the division's group identity exactly as membership reads it.
+/// The census read the division's group identity exactly as membership reads it, or holds it.
 pub(super) fn census_authenticated(seed: &DivisionSeed) -> bool {
     seed.selected
         .is_some_and(|selected| selected.group_identity)

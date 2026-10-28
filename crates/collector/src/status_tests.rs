@@ -70,6 +70,7 @@ pub(crate) fn allocation_failure_exercise() -> std::io::Result<()> {
             "raid_intel": crate::extended::raid_intel_carry::status(),
             "unit_leaders": crate::unit_leader_changes::status(),
             "census": crate::census_changes::status(),
+            "orders_groups": crate::orders_group_changes::status(),
             "unit_leader_traits": crate::unit_leader_trait_changes::status(),
             "world_inputs": crate::world_input_changes::status(),
             "retreat_bans": crate::retreat_ban_changes::status(),

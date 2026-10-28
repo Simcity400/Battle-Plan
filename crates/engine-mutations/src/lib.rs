@@ -39,6 +39,7 @@ pub mod faction_goal_mutations;
 pub mod local_subunit_mutations;
 pub mod naval_tree_mutations;
 pub mod opinion_mutations;
+pub mod orders_group_mutations;
 pub mod party_leader_mutations;
 pub mod political_party_mutations;
 pub mod political_status_mutations;

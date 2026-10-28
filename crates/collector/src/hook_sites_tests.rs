@@ -497,3 +497,40 @@ fn every_template_detour_is_registered_and_occupation_reset_has_one_owner() {
     assert_eq!(reset[0].family, "template_changes");
     assert_eq!(reset[0].name, "reset_occupation_status");
 }
+
+#[test]
+fn every_orders_group_detour_is_registered_and_group_destruction_has_one_owner() {
+    let patches = patches();
+    let registered = patches
+        .iter()
+        .filter(|patch| patch.family == "orders_group_changes")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        registered.len(),
+        engine_mutations::orders_group_mutations::MUTATIONS.len()
+    );
+    for (site, _) in engine_mutations::orders_group_mutations::MUTATIONS {
+        assert_eq!(
+            registered
+                .iter()
+                .filter(|patch| patch.name == site.name
+                    && patch.rva == site.rva
+                    && patch.len == PATCH)
+                .count(),
+            1,
+            "{}",
+            site.name
+        );
+    }
+    let destroy = &template_mutations::MUTATIONS
+        .iter()
+        .find(|(site, _)| site.name == "destroy_hq_group")
+        .unwrap()
+        .0;
+    let owners = patches
+        .iter()
+        .filter(|patch| patch.rva == destroy.rva)
+        .collect::<Vec<_>>();
+    assert_eq!(owners.len(), 1, "{owners:?}");
+    assert_eq!(owners[0].family, "template_changes");
+}

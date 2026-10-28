@@ -1,4 +1,4 @@
-//! Between-tick native writer observers that several capture families share: country inputs and the families forwarding to them, rosters, characters, advisor pools, opinions, output and event ledgers, nuclear strikes, wars, naval trees and leaders, retreat bans, raids, air base carry, rail, territory, the event feed with its history and war provenance, political status, world inputs, wings, air losses and building bombing. One patch owner per native site forwards to the others. The host installs the hooks, drains the stores at the hourly boundary and composes the capture families that read them.
+//! Between-tick native writer observers that several capture families share: country inputs and the families forwarding to them, rosters, characters, advisor pools, opinions, output and event ledgers, nuclear strikes, wars, naval trees and leaders, orders groups, retreat bans, raids, air base carry, rail, territory, the event feed with its history and war provenance, political status, world inputs, wings, air losses and building bombing. One patch owner per native site forwards to the others. The host installs the hooks, drains the stores at the hourly boundary and composes the capture families that read them.
 
 use collector_certificates::{dirty_set, watch_registry};
 use collector_hooks::hook;
@@ -28,6 +28,7 @@ pub mod fleet_region_changes;
 pub mod naval_tree_changes;
 pub mod nuclear_strikes;
 pub mod opinion_changes;
+pub mod orders_group_changes;
 pub mod occupation_changes;
 pub mod output_log;
 pub mod political_status_changes;

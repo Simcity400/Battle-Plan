@@ -847,6 +847,9 @@ fn run(
     let mut template_hooks = FamilyHooks::construct(base, || unsafe {
         crate::template_changes::Hooks::new(&memory, base)
     })?;
+    let mut orders_group_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::orders_group_changes::Hooks::new(&memory, base)
+    })?;
     let mut ship_model_hooks = FamilyHooks::construct(base, || unsafe {
         crate::ship_model_changes::Hooks::new(&memory, base)
     })?;
@@ -1244,6 +1247,7 @@ fn run(
     ranges.extend(local_subunit_hooks.executable_ranges());
     ranges.extend(design_hooks.executable_ranges());
     ranges.extend(template_hooks.executable_ranges());
+    ranges.extend(orders_group_hooks.executable_ranges());
     ranges.extend(faction_goal_hooks.executable_ranges());
     ranges.extend(faction_companion_hooks.executable_ranges());
     ranges.extend(ship_model_hooks.executable_ranges());
@@ -1510,6 +1514,9 @@ fn run(
                     }),
                     ("variant_changes", &mut || design_hooks.set_enabled(true)),
                     ("template_changes", &mut || template_hooks.set_enabled(true)),
+                    ("orders_group_changes", &mut || {
+                        orders_group_hooks.set_enabled(true)
+                    }),
                     ("faction_goals", &mut || {
                         faction_goal_hooks.set_enabled(true)
                     }),
@@ -1717,7 +1724,7 @@ fn run(
                 }
                 std::mem::forget((
                     $workers, hook, portrait_hooks, advisor_hooks, relation_hooks,
-                    history_hooks, flag_hooks, network_auxiliary_hooks, intel_source_hooks, propaganda_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, participation_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, design_hooks, template_hooks, faction_goal_hooks, faction_companion_hooks, ship_model_hooks, province_unit_hooks, air_base_carry_hooks, unit_leader_hooks, naval_management_hooks, census_hooks,
+                    history_hooks, flag_hooks, network_auxiliary_hooks, intel_source_hooks, propaganda_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, participation_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, design_hooks, template_hooks, orders_group_hooks, faction_goal_hooks, faction_companion_hooks, ship_model_hooks, province_unit_hooks, air_base_carry_hooks, unit_leader_hooks, naval_management_hooks, census_hooks,
                     air_loss_hooks, bombing_hooks, nuclear_hooks, market_hooks, map_event_hooks, line_hooks, land_hooks, prune_hooks,
                     construction_hooks, experience_hooks, event_feed_hooks, world_hooks,
                     fuel_hooks, operation_hooks, politics_hooks, logistics_hooks,
@@ -1820,6 +1827,7 @@ fn run(
             RestoreFamily::LocalSubunits => local_subunit_hooks.set_enabled(false),
             RestoreFamily::Designs => design_hooks.set_enabled(false),
             RestoreFamily::Templates => template_hooks.set_enabled(false),
+            RestoreFamily::OrdersGroups => orders_group_hooks.set_enabled(false),
             RestoreFamily::FactionGoals => faction_goal_hooks.set_enabled(false),
             RestoreFamily::FactionCompanions => faction_companion_hooks.set_enabled(false),
             RestoreFamily::ShipModels => ship_model_hooks.set_enabled(false),
@@ -2113,6 +2121,7 @@ fn run(
             local_subunit_hooks,
             design_hooks,
             template_hooks,
+            orders_group_hooks,
             faction_goal_hooks,
             faction_companion_hooks,
             ship_model_hooks,
@@ -2394,6 +2403,10 @@ impl RestoreFamily {
                 crate::census_changes::active() != 0,
                 "role census callbacks did not quiesce; collector retained",
             ),
+            Self::OrdersGroups => (
+                crate::orders_group_changes::active() != 0,
+                "orders group callbacks did not quiesce; collector retained",
+            ),
             Self::WorldInputs => (
                 crate::world_input_changes::active() != 0,
                 "province name, region access and world tension callbacks did not quiesce; collector retained",
@@ -2531,6 +2544,7 @@ impl RestoreFamily {
                 | Self::NavalTrees
                 | Self::UnitLeaders
                 | Self::Census
+                | Self::OrdersGroups
                 | Self::WorldInputs
                 | Self::AirRecords
                 | Self::WarParticipation
@@ -2583,6 +2597,7 @@ pub(crate) fn hook_patch_families() -> impl Iterator<Item = &'static str> {
         RestoreFamily::NavalTrees => "naval_tree_changes",
         RestoreFamily::UnitLeaders => "unit_leader_changes",
         RestoreFamily::Census => "census_changes",
+        RestoreFamily::OrdersGroups => "orders_group_changes",
         RestoreFamily::WorldInputs => "world_input_changes",
         RestoreFamily::AirRecords => "air_record_changes",
         RestoreFamily::LocalSubunits => "local_subunit_changes",
@@ -2986,6 +3001,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "unit_leader_changes": crate::unit_leader_changes::status(),
         "naval_management_changes": collector_naval_management::changes::status(),
         "census_changes": crate::census_changes::status(),
+        "orders_group_changes": crate::orders_group_changes::status(),
         "unit_leader_trait_changes": crate::unit_leader_trait_changes::status(),
         "world_input_changes": crate::world_input_changes::status(),
         "retreat_ban_changes": crate::retreat_ban_changes::status(),
@@ -5532,6 +5548,8 @@ fn sizing_pass(
     crate::naval_tree_changes::collect();
     crate::unit_leader_changes::presize();
     crate::unit_leader_changes::collect();
+    crate::orders_group_changes::presize();
+    crate::orders_group_changes::collect();
     collector_naval_management::changes::collect();
     crate::opinion_changes::collect();
     crate::retreat_ban_changes::presize();

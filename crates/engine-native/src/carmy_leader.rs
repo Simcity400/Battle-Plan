@@ -605,8 +605,18 @@ fn movement_hq_root(
     base: usize,
     own: usize,
 ) -> Result<Option<usize>, &'static str> {
-    use crate::{carmy, corders_group as group, corders_group_member, cunit};
-    let hq = movement_field::<u64>(memory, own, group::HQ_PROVIDER)? as usize;
+    let hq = movement_field::<u64>(memory, own, crate::corders_group::HQ_PROVIDER)? as usize;
+    movement_hq_provider_root(memory, base, own, hq)
+}
+
+/// [`movement_hq_root`] from the group's HQ provider word `hq`, already read.
+fn movement_hq_provider_root(
+    memory: &impl crate::Memory,
+    base: usize,
+    own: usize,
+    hq: usize,
+) -> Result<Option<usize>, &'static str> {
+    use crate::{carmy, corders_group_member, cunit};
     if hq == 0 {
         return Ok(None);
     }
@@ -811,6 +821,8 @@ pub struct MovementPreparation {
     leader: Option<Result<usize, &'static str>>,
     flags: Option<Result<u32, &'static str>>,
     hq: Option<Result<Option<usize>, &'static str>>,
+    /// The group's HQ provider word, when the census already has it.
+    hq_provider: Option<usize>,
     own_root: Option<Result<usize, &'static str>>,
 }
 impl MovementPreparation {
@@ -937,9 +949,12 @@ pub fn movement_block_prepared(
         });
         if flags? & (1 << 17) != 0
             && let Some(hq) = memo.hq.get_or(own, || {
-                prepared
-                    .and_then(|p| p.hq)
-                    .unwrap_or_else(|| movement_hq_root(memory, base, own))
+                prepared.and_then(|p| p.hq).unwrap_or_else(|| {
+                    match prepared.and_then(|p| p.hq_provider) {
+                        Some(provider) => movement_hq_provider_root(memory, base, own, provider),
+                        None => movement_hq_root(memory, base, own),
+                    }
+                })
             })?
         {
             let member = movement_at(seed.pointer, crate::corders_group_member::HOST_OFFSET)?;
@@ -962,7 +977,8 @@ pub struct Selected {
     pub leader: Option<Result<usize, &'static str>>,
     /// The authenticated leader's full handle; `None` where it was unreadable.
     pub handle: Option<u64>,
-    /// The group's vtable and full handle word read as membership reads them, and matched.
+    /// The group's vtable and full handle word read as membership reads them, or held under
+    /// the group's certificate, and matched.
     pub group_identity: bool,
     /// [`movement_block_prepared`]'s answer.
     pub block: Result<Option<(usize, bool)>, &'static str>,
@@ -974,21 +990,56 @@ pub struct Selected {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SelectionCounts {
     pub groups: u64,
+    /// Groups whose fields the carry held without a read.
+    pub carried_groups: u64,
     pub leaders: u64,
-    /// Leaders whose identity `held` carried without a read.
+    /// Leaders whose identity the carry held without a read.
     pub carried: u64,
     /// Guarded record batches, fallbacks included.
     pub calls: u64,
 }
 
+/// An authenticated orders group's selection fields, as one complete record read them.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct GroupFields {
+    /// The leader word, zero for none.
+    pub leader: usize,
+    pub training: u8,
+    /// The HQ provider's membership word, zero for none.
+    pub hq_provider: usize,
+}
+
+/// What the caller holds of earlier hours' selections, each under its writers' certificate.
+pub trait SelectionCarry {
+    /// `leader`'s full handle, when held; `None` reads the leader.
+    fn leader(&mut self, leader: usize) -> Option<u64>;
+    /// `group`'s fields, when held; `None` reads the group.
+    fn group(&mut self, group: usize) -> Option<GroupFields>;
+    /// The fields of an authenticated group [`Self::group`] did not hold, as read.
+    fn group_read(&mut self, group: usize, fields: GroupFields);
+}
+
+/// Holds nothing: every group and leader is read.
+pub struct Fresh;
+impl SelectionCarry for Fresh {
+    fn leader(&mut self, _: usize) -> Option<u64> {
+        None
+    }
+    fn group(&mut self, _: usize) -> Option<GroupFields> {
+        None
+    }
+    fn group_read(&mut self, _: usize, _: GroupFields) {}
+}
+
 const SELECTION_BATCH: usize = 64;
-const SELECTION_GROUP_SPANS: [(usize, usize); 4] = [
+const SELECTION_GROUP_SPANS: [(usize, usize); 5] = [
     (0, 8),
     (crate::corders_group::HANDLE, 8),
+    (crate::corders_group::HQ_PROVIDER, 8),
     (crate::corders_group::LEADER, 8),
     (crate::corders_group::TRAINING, 1),
 ];
-const SELECTION_GROUP_FIELDS: [crate::memory::RecordField; 4] =
+const SELECTION_GROUP_FIELDS: [crate::memory::RecordField; 5] =
     crate::memory::packed_fields(SELECTION_GROUP_SPANS);
 const SELECTION_GROUP_STRIDE: usize = crate::memory::packed_stride(SELECTION_GROUP_SPANS);
 const SELECTION_GROUP_LAYOUT: crate::memory::RecordLayout<'static> =
@@ -1007,6 +1058,7 @@ struct GroupSelection {
     handle: Option<u64>,
     identity: bool,
     training: Result<u8, &'static str>,
+    hq_provider: Option<usize>,
 }
 
 /// Authenticates as [`movement_leader`] does; the full handle is read apart and may be absent.
@@ -1023,13 +1075,13 @@ fn leader_handle(
     Ok(movement_field::<u64>(memory, leader, crate::cunit_leader::TYPE).ok())
 }
 
-/// Every seed's [`Selected`]: each distinct group and leader is read once, a leader `held`
-/// answers not at all. An allocation failure leaves every seed unselected.
+/// Every seed's [`Selected`]: each distinct group and leader is read once, and one the carry
+/// holds not at all. An allocation failure leaves every seed unselected.
 pub fn capture_selections(
     memory: &impl crate::Memory,
     base: usize,
     seeds: &mut [crate::carmy::DivisionSeed],
-    held: &mut dyn FnMut(usize) -> Option<u64>,
+    carry: &mut dyn SelectionCarry,
 ) -> Result<SelectionCounts, &'static str> {
     const ALLOCATION: &str = "division selection allocation failed";
     let mut counts = SelectionCounts::default();
@@ -1046,6 +1098,7 @@ pub fn capture_selections(
                 handle: None,
                 identity: false,
                 training: Ok(0),
+                hq_provider: None,
             }),
     );
     groups.sort_unstable_by_key(|entry| entry.group);
@@ -1053,23 +1106,42 @@ pub fn capture_selections(
     let group_vtables = [crate::corders_group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA]
         .map(|rva| base.checked_add(rva).map(|vtable| vtable as u64));
     let mut pointers = [0_usize; SELECTION_BATCH];
+    let mut rows = [0_usize; SELECTION_BATCH];
     let mut complete = [false; SELECTION_BATCH];
     let mut group_bytes = [0_u8; SELECTION_BATCH * SELECTION_GROUP_STRIDE];
     for chunk in groups.chunks_mut(SELECTION_BATCH) {
-        for (pointer, entry) in pointers.iter_mut().zip(chunk.iter()) {
-            *pointer = entry.group;
+        let mut count = 0;
+        for (row, entry) in chunk.iter_mut().enumerate() {
+            counts.groups += 1;
+            match carry.group(entry.group) {
+                Some(fields) => {
+                    counts.carried_groups += 1;
+                    entry.identity = true;
+                    entry.leader = Ok(fields.leader);
+                    entry.training = Ok(fields.training);
+                    entry.hq_provider = Some(fields.hq_provider);
+                }
+                None => {
+                    pointers[count] = entry.group;
+                    rows[count] = row;
+                    count += 1;
+                }
+            }
+        }
+        if count == 0 {
+            continue;
         }
         crate::memory::gather_records(
             memory,
-            &pointers[..chunk.len()],
+            &pointers[..count],
             &SELECTION_GROUP_LAYOUT,
-            &mut group_bytes[..chunk.len() * SELECTION_GROUP_STRIDE],
-            &mut complete[..chunk.len()],
+            &mut group_bytes[..count * SELECTION_GROUP_STRIDE],
+            &mut complete[..count],
         );
         counts.calls += 1;
-        for (row, entry) in chunk.iter_mut().enumerate() {
-            counts.groups += 1;
-            if !complete[row] {
+        for read in 0..count {
+            let entry = &mut chunk[rows[read]];
+            if !complete[read] {
                 counts.calls += 2;
                 entry.leader = movement_group_leader(memory, base, entry.group);
                 entry.training = entry
@@ -1079,17 +1151,24 @@ pub fn capture_selections(
                     .ok_or("division presentation field unreadable");
                 continue;
             }
-            let record = &group_bytes[row * SELECTION_GROUP_STRIDE..][..SELECTION_GROUP_STRIDE];
-            let vtable = u64::from_le_bytes(record[..8].try_into().unwrap());
+            let record = &group_bytes[read * SELECTION_GROUP_STRIDE..][..SELECTION_GROUP_STRIDE];
+            let word = |at: usize| u64::from_le_bytes(record[at..at + 8].try_into().unwrap());
             let kind = u32::from_le_bytes(record[8..12].try_into().unwrap());
-            entry.identity = group_vtables.contains(&Some(vtable))
+            entry.identity = group_vtables.contains(&Some(word(0)))
                 && kind == crate::corders_group::REFERENCE_TYPE;
-            entry.leader = if entry.identity {
-                Ok(u64::from_le_bytes(record[16..24].try_into().unwrap()) as usize)
-            } else {
-                Err("movement leader group identity mismatch")
+            entry.training = Ok(record[32]);
+            if !entry.identity {
+                entry.leader = Err("movement leader group identity mismatch");
+                continue;
+            }
+            let fields = GroupFields {
+                leader: word(24) as usize,
+                training: record[32],
+                hq_provider: word(16) as usize,
             };
-            entry.training = Ok(record[24]);
+            entry.leader = Ok(fields.leader);
+            entry.hq_provider = Some(fields.hq_provider);
+            carry.group_read(entry.group, fields);
         }
     }
     // Each distinct leader's authentication and, apart from it, its handle, ascending.
@@ -1106,7 +1185,6 @@ pub fn capture_selections(
     leaders.dedup_by_key(|entry| entry.0);
     let identity = movement_at(base, VTABLE_RVA)? as u64;
     let mut pending = [0_usize; SELECTION_BATCH];
-    let mut rows = [0_usize; SELECTION_BATCH];
     let mut leader_bytes = [0_u8; SELECTION_BATCH * 16];
     let mut next = 0;
     while next < leaders.len() {
@@ -1114,7 +1192,7 @@ pub fn capture_selections(
         while next < leaders.len() && count < SELECTION_BATCH {
             let leader = leaders[next].0;
             counts.leaders += 1;
-            match held(leader) {
+            match carry.leader(leader) {
                 Some(handle) => {
                     counts.carried += 1;
                     leaders[next].1 = Ok(Some(handle));
@@ -1185,6 +1263,7 @@ pub fn capture_selections(
                 .map(|at| groups[at]);
             let prepared = MovementPreparation {
                 leader: group.map(|group| group.leader),
+                hq_provider: group.and_then(|group| group.hq_provider),
                 ..MovementPreparation::default()
             };
             seed.selected = Some(Selected {

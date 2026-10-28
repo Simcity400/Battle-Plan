@@ -573,10 +573,18 @@ fn census_selection_reads_each_group_and_leader_once_for_every_division() {
             census.reads.borrow_mut().clear();
             let mut seeds = template;
             // The second hour's leader certificate holds; the third's does not.
-            let counts = capture_selections(&census, 0, &mut seeds, &mut |leader| {
-                (hour == 1 && fault.is_none() && leader == LEADER).then_some(handle)
-            })
-            .unwrap();
+            struct Leader(Option<u64>);
+            impl SelectionCarry for Leader {
+                fn leader(&mut self, leader: usize) -> Option<u64> {
+                    self.0.filter(|_| leader == LEADER)
+                }
+                fn group(&mut self, _: usize) -> Option<GroupFields> {
+                    None
+                }
+                fn group_read(&mut self, _: usize, _: GroupFields) {}
+            }
+            let mut carry = Leader((hour == 1 && fault.is_none()).then_some(handle));
+            let counts = capture_selections(&census, 0, &mut seeds, &mut carry).unwrap();
             let actual = seeds.map(|seed| {
                 seed.selected
                     .unwrap()
@@ -611,6 +619,83 @@ fn census_selection_reads_each_group_and_leader_once_for_every_division() {
             );
         }
     }
+}
+
+/// A group the carry holds reads none of its fields and selects as its fresh read did; a
+/// complete authenticated read is offered to the carry, a mismatched one is not.
+#[test]
+fn held_groups_read_none_of_their_fields_and_select_as_their_fresh_read() {
+    #[derive(Default)]
+    struct Groups {
+        held: Option<GroupFields>,
+        read: Vec<(usize, GroupFields)>,
+    }
+    impl SelectionCarry for Groups {
+        fn leader(&mut self, _: usize) -> Option<u64> {
+            None
+        }
+        fn group(&mut self, group: usize) -> Option<GroupFields> {
+            self.held.filter(|_| group == GROUP)
+        }
+        fn group_read(&mut self, group: usize, fields: GroupFields) {
+            self.read.push((group, fields));
+        }
+    }
+    let member = |army: usize| army + crate::corders_group_member::HOST_OFFSET;
+    let mut fixture = Fixture::new();
+    fixture.root(GROUP, group::PRIMARY_ORDER_DATA, ARMY);
+    fixture.bytes[member(ARMY) + PRIMARY_ROOT_DIRTY] = 1;
+    fixture.bytes[member(HQ) + PRIMARY_ROOT_DIRTY] = 1;
+    fixture.bytes[GROUP + group::TRAINING] = 1;
+    let template = [ARMY, HQ].map(|pointer| carmy::DivisionSeed {
+        pointer,
+        orders_group: Some(GROUP),
+        class: Some(0),
+        ..Default::default()
+    });
+    let census = Observed::new(fixture);
+    let mut fresh = template;
+    let mut carry = Groups::default();
+    let counts = capture_selections(&census, 0, &mut fresh, &mut carry).unwrap();
+    let fields = GroupFields {
+        leader: LEADER,
+        training: 1,
+        hq_provider: member(HQ),
+    };
+    assert_eq!(carry.read, [(GROUP, fields)]);
+    assert_eq!((counts.groups, counts.carried_groups), (1, 0));
+    assert!(fresh[0].selected.unwrap().group_identity);
+    assert!(matches!(fresh[0].selected.unwrap().block, Ok(Some(_))));
+    let offsets = [
+        0,
+        group::HANDLE,
+        group::HQ_PROVIDER,
+        group::LEADER,
+        group::TRAINING,
+    ];
+    let before = offsets.map(|offset| census.count(GROUP + offset));
+    census.reads.borrow_mut().clear();
+    let mut held = template;
+    let mut carry = Groups {
+        held: Some(fields),
+        ..Groups::default()
+    };
+    let counts = capture_selections(&census, 0, &mut held, &mut carry).unwrap();
+    assert_eq!(held, fresh);
+    assert!(carry.read.is_empty());
+    assert_eq!((counts.groups, counts.carried_groups), (1, 1));
+    // Only the record's read of each field is gone; primary roots still authenticate groups.
+    for (offset, before) in offsets.into_iter().zip(before) {
+        assert_eq!(census.count(GROUP + offset), before - 1, "{offset:#x}");
+    }
+    assert_eq!(census.count(GROUP + group::HQ_PROVIDER), 0);
+    // A complete record of another kind of object is never offered to the carry.
+    census.fixture.borrow_mut().word(GROUP, 0);
+    let mut mismatched = template;
+    let mut carry = Groups::default();
+    capture_selections(&census, 0, &mut mismatched, &mut carry).unwrap();
+    assert!(carry.read.is_empty());
+    assert!(mismatched[0].selected.unwrap().leader.unwrap().is_err());
 }
 
 #[test]

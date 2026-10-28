@@ -113,6 +113,8 @@ pub enum Family {
     UnitLeaderChanges,
     /// Eight role census writers.
     CensusChanges,
+    /// Six orders-group leader, HQ provider and training writers.
+    OrdersGroupChanges,
     /// Province name effects, navy access setter and reset, world tension
     /// total, and dynamic modifier addition, renewal, removal and daily update.
     WorldInputChanges,
@@ -176,7 +178,7 @@ pub enum Family {
     /// Bilateral war contribution writers, first-credit capture and delivery histories.
     WarParticipation,
 }
-pub const FAMILY_COUNT: usize = 63;
+pub const FAMILY_COUNT: usize = 64;
 
 /// How collector code surrounds the native original.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,6 +242,7 @@ impl Family {
         Self::NavalManagementChanges,
         Self::UnitLeaderChanges,
         Self::CensusChanges,
+        Self::OrdersGroupChanges,
         Self::WorldInputChanges,
         Self::DoctrineChanges,
         Self::AirRecordChanges,
@@ -308,6 +311,7 @@ impl Family {
             Self::NavalManagementChanges => "naval_management_changes",
             Self::UnitLeaderChanges => "unit_leader_changes",
             Self::CensusChanges => "census_changes",
+            Self::OrdersGroupChanges => "orders_group_changes",
             Self::WorldInputChanges => "world_input_changes",
             Self::DoctrineChanges => "doctrine_changes",
             Self::AirRecordChanges => "air_record_changes",
@@ -372,6 +376,7 @@ impl Family {
             | Self::NavalTreeChanges
             | Self::UnitLeaderChanges
             | Self::CensusChanges
+            | Self::OrdersGroupChanges
             | Self::WorldInputChanges
             | Self::AirRecordChanges
             | Self::LocalSubunitChanges
