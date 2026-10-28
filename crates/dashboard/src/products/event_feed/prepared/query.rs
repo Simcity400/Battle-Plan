@@ -855,7 +855,7 @@ pub(crate) fn query(
         }
     }
     let mut builder = Builder::new(first, live);
-    let texts = ScopedTexts::new(source, branch, cancelled);
+    let texts = ScopedTexts::rising(source, branch, cancelled);
     diagnostics(&mut builder, &metadata, live)?;
     let mut project_refusals = catalogue::Refusals::default();
     for row in rows.values() {

@@ -765,6 +765,8 @@ pub(crate) struct ScopedTexts<'a> {
     frames: std::cell::RefCell<BTreeMap<(i32, bool), Result<Arc<replay_frame::frame::DecodedFrame>, String>>>,
     /// A failed read (not a gap) fails the query, so a refused decode reruns it where decodes are allowed.
     failure: std::cell::RefCell<Option<io::Error>>,
+    /// Scripted frames sought in rising hours share their block's decodes ([`Self::rising`]).
+    walk: Option<std::cell::RefCell<dashboard_base::prepared::query::frames::Walk<'a>>>,
 }
 
 impl<'a> ScopedTexts<'a> {
@@ -775,6 +777,17 @@ impl<'a> ScopedTexts<'a> {
             cancelled,
             frames: Default::default(),
             failure: Default::default(),
+            walk: None,
+        }
+    }
+
+    /// Texts asked for in rising naming hours, mostly: their scripted frames are read through one walk.
+    pub(crate) fn rising(source: &'a Source, branch: u64, cancelled: &'a AtomicBool) -> Self {
+        Self {
+            walk: Some(std::cell::RefCell::new(
+                dashboard_base::prepared::query::frames::Walk::new(source, branch),
+            )),
+            ..Self::new(source, branch, cancelled)
         }
     }
 
@@ -795,12 +808,22 @@ impl<'a> ScopedTexts<'a> {
         } else {
             &installed_content_country_names::country_names::TABLES
         };
-        Ok(
-            match dashboard_base::prepared::query::frames::seek(source, branch, hour, tables, cancelled)? {
-                replay::container::SeekResult::Frame(frame) => Ok(Arc::new(*frame)),
-                replay::container::SeekResult::Gap { reason, .. } => Err(reason),
-            },
-        )
+        dashboard_base::prepared::query::frames::seek(source, branch, hour, tables, cancelled).map(framed)
+    }
+
+    /// A scripted frame through the walk; a block it cannot read whole may still answer the hour's own seek.
+    fn walked(
+        &self,
+        walk: &std::cell::RefCell<dashboard_base::prepared::query::frames::Walk<'a>>,
+        hour: i32,
+    ) -> io::Result<Result<Arc<replay_frame::frame::DecodedFrame>, String>> {
+        let found = walk.borrow_mut().seek(hour, crate::scripted_text::TABLES, self.cancelled);
+        match found {
+            Err(error) if error.kind() != io::ErrorKind::Interrupted => {
+                Self::seek(self.source, self.branch, self.cancelled, hour, true)
+            }
+            found => found.map(framed),
+        }
     }
 
     fn hold(&self, key: (i32, bool), read: io::Result<Result<Arc<replay_frame::frame::DecodedFrame>, String>>)
@@ -822,7 +845,11 @@ impl<'a> ScopedTexts<'a> {
         if let Some(held) = self.frames.borrow().get(&(hour, scripted)) {
             return held.clone();
         }
-        self.hold((hour, scripted), Self::seek(self.source, self.branch, self.cancelled, hour, scripted))
+        let read = match &self.walk {
+            Some(walk) if scripted => self.walked(walk, hour),
+            _ => Self::seek(self.source, self.branch, self.cancelled, hour, scripted),
+        };
+        self.hold((hour, scripted), read)
     }
 
     /// Reads the naming frames of these hours in one ordered pass that shares block decodes;
@@ -895,6 +922,15 @@ impl<'a> ScopedTexts<'a> {
                 Some(format!("decision title {key}: {reason}")),
             ),
         })
+    }
+}
+
+fn framed(
+    found: replay::container::SeekResult,
+) -> Result<Arc<replay_frame::frame::DecodedFrame>, String> {
+    match found {
+        replay::container::SeekResult::Frame(frame) => Ok(Arc::new(*frame)),
+        replay::container::SeekResult::Gap { reason, .. } => Err(reason),
     }
 }
 
