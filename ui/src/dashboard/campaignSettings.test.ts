@@ -178,3 +178,14 @@ test('every faction keeps its colour through save and reload, however many a cam
   assert.equal(Object.keys(loaded.shared).length, 1500);
   assert.equal(loaded.sets[0].entries.length, 1500);
 });
+
+test('every saved colour set keeps through save and reload, however many there are', () => {
+  let settings = setFactionStyle(parseCampaignSettings(undefined), 'aa', '12', { colour: '#222222' });
+  for (let id = 0; id < 300; id++) settings = saveColourSet(settings, `set-${id}`, `Set ${id}`, 'aa', FACTIONS, new Map());
+  const storage = memory();
+  assert.equal(saveCampaignSettings(settings, storage), null);
+  const loaded = loadCampaignSettings(storage);
+  assert.equal(loaded.sets.length, 300);
+  assert.equal(loaded.sets[0].id, 'set-0');
+  assert.deepEqual(loaded.sets[299].entries, [{ faction: 'Axis', colour: '#222222' }]);
+});

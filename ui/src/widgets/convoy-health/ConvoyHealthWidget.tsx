@@ -20,7 +20,7 @@ import Legend from '../../charts/Legend';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { useChartTokens } from '../../charts/useChartTokens';
-import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
+import { MAX_NAME_HOURS, nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
@@ -38,6 +38,7 @@ import '../air-superiority-timeline/airSuperiorityTimeline.css';
 import './convoyHealth.css';
 
 const NO_WARNINGS: readonly string[] = [];
+const NO_DATES: ReturnType<typeof labelDates> = { wanted: [], maxHours: MAX_NAME_HOURS };
 const VALIDATORS = { regions: validateConvoys('regions'), trade: validateConvoys('trade') };
 
 /** Are convoys getting through: one country's delivery efficiency by sea region day by
@@ -62,8 +63,8 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   const { data, error, retry } = useProduct<ConvoyHealthReply>(runtime.client, request, active, VALIDATORS[view], track?.source);
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
   // Names only at the dates the rows look them up.
-  const wanted = useMemo(() => data ? labelDates(data) : [], [data]);
-  const names = useCountryNamesAt(runtime.client, track, wanted, active);
+  const dated = useMemo(() => data ? labelDates(data) : NO_DATES, [data]);
+  const names = useCountryNamesAt(runtime.client, track, dated.wanted, active, dated.maxHours);
   // A name not (yet) read stays unavailable: country codes show only on hover.
   const countryName = useCallback((country: string | null, at: number) => country === null ? 'Country name unavailable'
     : names.get(nameKey(at, country)) ?? 'Country name unavailable', [names]);

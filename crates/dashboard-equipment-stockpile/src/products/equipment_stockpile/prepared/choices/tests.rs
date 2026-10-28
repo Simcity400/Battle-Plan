@@ -1360,3 +1360,104 @@ fn dense_share_pairs_balance_and_need_at_the_same_hours() {
     assert!(gap.has_break);
     assert_eq!((gap.min_value, gap.max_value), (50.0, 100.0));
 }
+
+#[test]
+fn dense_group_summaries_break_only_where_a_value_is_missing() {
+    let mut observed: [[Option<i128>; 2]; 8] = [[Some(20), Some(80)]; 8];
+    // Type a is unknown at hour 5, inside the second of two four-hour buckets.
+    observed[5][0] = None;
+    let scenario = Scenario::new(&[[Some(20), Some(80)]; 8], &observed, ["a", "b"], &[]);
+    let flag = AtomicBool::new(false);
+    let request = request(&[]);
+    let mut query = scenario.query(&request, &flag);
+    let within = [HourSpan {
+        first_hour: 0,
+        last_hour: 7,
+    }];
+    for (key, expected) in [("a", [false, true]), ("b", [false, false])] {
+        let summary = query
+            .summary(&series::field_key("type", key), 0, (0.0, 7.0, 2), &within)
+            .unwrap();
+        assert_eq!(
+            summary
+                .values
+                .buckets
+                .iter()
+                .map(|bucket| bucket.map(|bucket| bucket.has_break))
+                .collect::<Vec<_>>(),
+            expected.map(Some),
+            "type {key}"
+        );
+    }
+}
+
+#[test]
+fn dense_corrected_and_subset_summaries_join_a_fully_recorded_line() {
+    // Variant 1 was classed as type b at hours 2 and 3, so type a is corrected there.
+    let mut observed = [[Some(20), Some(80)]; 8];
+    observed[2] = [Some(0), Some(100)];
+    observed[3] = [Some(0), Some(100)];
+    let scenario = Scenario::new(
+        &[[Some(20), Some(80)]; 8],
+        &observed,
+        ["a", "b"],
+        &[(1, 2, 3, classification("b"))],
+    );
+    let flag = AtomicBool::new(false);
+    let within = [HourSpan {
+        first_hour: 0,
+        last_hour: 7,
+    }];
+    for (included, group, value) in [
+        (&[][..], series::field_key("type", "a"), 20.0),
+        (&["a", "b"][..], series::field_key("domain", "land"), 100.0),
+    ] {
+        let request = request(included);
+        let mut query = scenario.query(&request, &flag);
+        let buckets: Vec<_> = query
+            .summary(&group, 0, (0.0, 7.0, 2), &within)
+            .unwrap()
+            .values
+            .buckets
+            .into_iter()
+            .map(Option::unwrap)
+            .collect();
+        assert_eq!(buckets.len(), 2, "{group}");
+        for bucket in &buckets {
+            assert!(!bucket.has_break, "{group}");
+            assert_eq!((bucket.min_value, bucket.max_value), (value, value), "{group}");
+        }
+        assert!(!buckets[1].first_break, "{group}");
+    }
+}
+
+#[test]
+fn a_run_clipped_to_a_window_breaks_only_where_it_truly_starts() {
+    // One value throughout, with a supplying break at hour 4.
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut runs = Accumulator::default();
+    for hour in 0..8 {
+        runs.observe(1, hour, Some(5), hour == 4);
+        runs.through(hour);
+        if hour % 2 == 1 {
+            let mut writer = fixture.writer();
+            runs.flush(&mut writer, "clipped", 0, &flag).unwrap();
+            writer.commit().unwrap();
+            runs = serde_json::from_slice(&serde_json::to_vec(&runs).unwrap()).unwrap();
+        }
+    }
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "clipped".into(), &flag).unwrap();
+    // A plain read keeps the clipped run's own break at the window's start.
+    assert!(reader.runs(1, 5, 6).unwrap()[0].break_before);
+    let mut breaks = |from, to| {
+        clipped_runs(&mut reader, 1, from, to)
+            .unwrap()
+            .iter()
+            .map(|run| (run.first_hour, run.last_hour, run.break_before))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(breaks(5, 6), [(5, 6, false)]);
+    assert_eq!(breaks(4, 7), [(4, 7, true)]);
+    assert_eq!(breaks(2, 7), [(2, 3, false), (4, 7, true)]);
+}

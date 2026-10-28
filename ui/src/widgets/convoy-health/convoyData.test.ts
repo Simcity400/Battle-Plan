@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cellRuns, heatNavigation, periodAt } from '../../charts/heat/layout.ts';
+import { MAX_NAME_HOURS, wantedHours } from '../../dashboard/countryFacts.ts';
 import { convoyPending, convoyRows, dayPeriods, heatRows, labelDates, periodPending, shownPeriods, validateConvoys } from './convoyData.ts';
 
 const base = { branchId: '1', lastHour: 95, tag: 'IMP', scale: 100000, warnings: [], known: [[[0, 95, '1']], [[0, 95, '1']], [[0, 95, '1']]], holders: { '1': [{ hour: 0, tag: 'IMP' }], '2': [{ hour: 0, tag: 'EXP' }] },
@@ -60,10 +61,20 @@ test('labels ask names at the dates they show', () => {
   const reply = validateConvoys('trade')({ ...base, view: 'trade', regions: [], resources: [],
     deals: [{ id: '1', exporter: [[0, 40, '2'], [50, 95, '2']], resource: [[0, 95, '0']], efficiency: [[0, 95, '50000']], factors: [[], []], convoys: [[], []] }],
     leases: [{ handle: '9', giver: [[24, 60, '2']], bad: [], convoys: [[], []] }] });
-  assert.deepEqual(labelDates(reply), [{ hour: 95, tag: 'EXP' }, { hour: 60, tag: 'EXP' }]);
+  assert.deepEqual(labelDates(reply), { wanted: [{ hour: 95, tag: 'EXP' }, { hour: 60, tag: 'EXP' }], maxHours: MAX_NAME_HOURS });
   const asked: [string | null, number][] = [];
   convoyRows(reply, { country: (tag, hour) => { asked.push([tag, hour]); return tag ?? '?'; } });
   assert.deepEqual(asked, [['EXP', 95], ['EXP', 60]]);
+});
+
+test('every deal asks its name at its own date, however many dates there are', () => {
+  const count = MAX_NAME_HOURS + 36;
+  const reply = validateConvoys('trade')({ ...base, lastHour: count - 1, coverage: { firstHour: 0, lastHour: count - 1, complete: true }, view: 'trade', regions: [], resources: [], leases: [],
+    deals: Array.from({ length: count }, (_, index) => ({ id: String(index + 1), exporter: [[0, index, '2']], resource: [], efficiency: [], factors: [[], []], convoys: [[], []] })) });
+  const { wanted, maxHours } = labelDates(reply);
+  assert.equal(wanted.length, count);
+  assert.equal(maxHours, count);
+  assert.deepEqual(wantedHours(wanted, maxHours), Array.from({ length: count }, (_, hour) => hour));
 });
 
 test('the first day under way shows its reached read, not no activity', () => {

@@ -368,6 +368,50 @@ fn repair_split_assigned_prefix_preserves_repeats_criticals_and_ignores_waiting_
 }
 
 #[test]
+fn repair_need_compares_strength_with_a_maximum_of_at_least_100() {
+    for stored in [50, 0, -5] {
+        let (mut frame, base, links) = split_fixture(1);
+        let ships = |strength| {
+            TableRows::Ships(vec![ShipRow {
+                id: 1,
+                task_force: 8,
+                strength,
+                ..Default::default()
+            }])
+        };
+        put(
+            &mut frame,
+            TableRows::ShipModels(vec![ShipModelRow {
+                ship: 1,
+                counter: Some(ShipCounterInputs {
+                    maximum_strength: stored,
+                    ..Default::default()
+                }),
+                has_criticals: None.into(),
+                ..Default::default()
+            }]),
+        );
+        put(&mut frame, ships(99));
+        assert_eq!(
+            Sources::new(&frame, &links, Err("unused"))
+                .selected(&base)
+                .unwrap(),
+            [SelectedRepair {
+                ordinal: 2,
+                ship: 1
+            }]
+        );
+        put(&mut frame, ships(100));
+        assert!(
+            Sources::new(&frame, &links, Err("unused"))
+                .selected(&base)
+                .unwrap_err()
+                .contains("critical-damage")
+        );
+    }
+}
+
+#[test]
 fn repair_split_nonpositive_assignment_needs_no_queue_or_eligibility_operands() {
     for assigned in [0, -1] {
         let mut frame = test_frame(1);

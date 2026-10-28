@@ -62,7 +62,7 @@ struct SavedWalk {
     reply: WarsReply,
     wars: Vec<SavedWar>,
     previous: Option<i32>,
-    previous_view: Option<String>,
+    previous_view: Option<(u32, u32)>,
     open: Vec<OpenWar>,
     seen_caps: Vec<(String, i32)>,
     dated_caps: BTreeMap<String, Vec<i32>>,
@@ -106,7 +106,7 @@ fn save(walk: &Walk) -> SavedWalk {
             })
             .collect(),
         previous: walk.previous,
-        previous_view: walk.previous_view.clone(),
+        previous_view: walk.previous_view,
         open: walk.open.clone(),
         seen_caps,
         dated_caps: walk

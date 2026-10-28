@@ -1139,7 +1139,8 @@ pub(crate) fn at_hour(
 struct Walk {
     reply: WarsReply,
     previous: Option<i32>,
-    previous_view: Option<String>,
+    /// The viewpoint's native identity, so a rename keeps its wars.
+    previous_view: Option<(u32, u32)>,
     open: Vec<OpenWar>,
     seen_caps: HashSet<(String, i32)>,
     dated_caps: HashMap<String, Vec<i32>>,
@@ -1244,7 +1245,8 @@ impl Walk {
                 self.country_labels.include(inputs, observed);
             }
             append_viewpoint(&mut self.reply, inputs, hour);
-            if self.previous_view.as_ref() != inputs.tags.get(&inputs.view) {
+            let view = inputs.identities.get(&inputs.view).copied();
+            if self.previous_view != view {
                 for OpenWar { id, .. } in &self.open {
                     let war = &mut self.reply.wars[*id];
                     for &index in war.open_participants.values() {
@@ -1254,7 +1256,7 @@ impl Walk {
                 self.previous = None;
                 self.open.clear();
             }
-            self.previous_view = inputs.tags.get(&inputs.view).cloned();
+            self.previous_view = view;
             if same
                 && self.previous.is_some()
                 && self.open.iter().map(|war| war.groups).sum::<usize>() == observed.len()
@@ -1486,7 +1488,7 @@ impl Walk {
                 warnings: Vec::new(),
             },
             previous: self.previous,
-            previous_view: self.previous_view.clone(),
+            previous_view: self.previous_view,
             open: self.open.clone(),
             seen_caps: HashSet::new(),
             dated_caps: HashMap::new(),

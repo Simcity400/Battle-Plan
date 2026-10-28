@@ -42,7 +42,6 @@ export function factionIdentity(recordedName: string | null, founder: string | n
 const KEY = 'hoi4-replay.campaign-settings.v1';
 // Use the same byte budget for reads and writes so saved campaigns cannot vanish on reload.
 export const MAX_CAMPAIGN_SETTINGS_STORAGE = 2_000_000;
-export const MAX_SETS = 64;
 const MAX_TEXT = 160;
 const MAX_IDENTITY = 400;
 const EMPTY: CampaignSettings = { version: 1, campaigns: {}, shared: {}, sets: [] };
@@ -83,7 +82,7 @@ export function parseCampaignSettings(input: unknown): CampaignSettings {
     if (hex && key.length <= MAX_IDENTITY && !['__proto__', 'constructor', 'prototype'].includes(key)) shared[key] = { colour: hex };
   }
   const sets: FactionColourSet[] = [];
-  for (const value of Array.isArray(input.sets) ? input.sets.slice(0, MAX_SETS) : []) {
+  for (const value of Array.isArray(input.sets) ? input.sets : []) {
     if (!object(value) || !safeKey(String(value.id), /^[a-zA-Z0-9_-]{1,64}$/) || !text(value.name) || !Array.isArray(value.entries)) continue;
     const entries = value.entries.flatMap(entry => {
       if (!object(entry) || !text(entry.faction)) return [];
@@ -151,7 +150,7 @@ export function saveColourSet(settings: CampaignSettings, id: string, name: stri
     return shown && hex ? [{ faction: faction.name ?? shown, colour: hex, ...(chosen[faction.id]?.name ? { name: chosen[faction.id].name } : {}) }] : [];
   });
   const set = { id, name: name.trim().slice(0, MAX_TEXT), entries };
-  return { ...settings, sets: [...settings.sets.filter(item => item.id !== id), set].slice(-MAX_SETS) };
+  return { ...settings, sets: [...settings.sets.filter(item => item.id !== id), set] };
 }
 
 /** Applies a saved set to a campaign: each recorded faction whose name matches an

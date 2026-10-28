@@ -198,7 +198,8 @@ impl<'a> Sources<'a> {
                 .counter
                 .as_ref()
                 .ok_or("txt_capacity: queued ship HP maximum unavailable")?;
-            if ship.strength >= counter.maximum_strength {
+            // The game's maximum: the model's stored maximum, at least 100 (0.001 HP).
+            if ship.strength >= counter.maximum_strength.max(100) {
                 match model
                     .has_criticals
                     .require("ShipModels.has_criticals")

@@ -2,6 +2,8 @@ import type { ConvoyHealthReply, EconomyRun } from '../../generated/dashboard';
 import type { HeatPeriod, HeatRow } from '../../charts/heat/layout';
 import { object } from '../../dashboard/validation.ts';
 import { fixedText, isEconomyRuns, isHolderMap, runAt, tagAt, validateEconomyReply } from '../../dashboard/economyHistory.ts';
+import { MAX_NAME_HOURS } from '../../dashboard/countryFacts.ts';
+import type { NameAt } from '../../dashboard/countryFacts';
 
 export const CONVOY_HEALTH = 'convoy-health';
 export type ConvoyView = 'regions' | 'trade';
@@ -124,15 +126,16 @@ const convoysText = (convoys: readonly (readonly EconomyRun[])[], hour: number) 
 };
 
 /** Each country label a row shows, with the dated read it names it at: the
- * hour the widget asks names for, so no other date is ever looked up. */
-export function labelDates(reply: ConvoyHealthReply): { hour: number; tag: string }[] {
-  const dates: { hour: number; tag: string }[] = [];
+ * hour the widget asks names for, so no other date is ever looked up. Every
+ * date is kept, however many rows there are. */
+export function labelDates(reply: ConvoyHealthReply): { wanted: NameAt[]; maxHours: number } {
+  const wanted: NameAt[] = [];
   for (const runs of [...reply.deals.map(deal => deal.exporter), ...reply.leases.map(lease => lease.giver)]) {
     const latest = runs.at(-1);
     const tag = latest ? tagAt(reply.holders[latest[2]], latest[1]) : null;
-    if (latest && tag) dates.push({ hour: latest[1], tag });
+    if (latest && tag) wanted.push({ hour: latest[1], tag });
   }
-  return dates;
+  return { wanted, maxHours: Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size) };
 }
 
 /** Whether table `index` (regional, deals, clients) was read complete at `hour`. */

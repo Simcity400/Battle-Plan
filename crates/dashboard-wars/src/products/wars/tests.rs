@@ -149,6 +149,52 @@ fn selected_native_viewpoint_uses_dated_tags_and_refuses_their_replacement() {
 }
 
 #[test]
+fn a_renamed_viewpoint_keeps_its_wars() {
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
+    let frames = (100..=102)
+        .map(|hour| {
+            let mut frame = recorded(hour);
+            if hour > 100 {
+                let TableView::Complete(TableRows::Countries(countries)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+                else {
+                    panic!()
+                };
+                // The recorded viewpoint's native country, now under another tag.
+                countries[0].tag = b"renamed".to_vec();
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(
+        b"analytics-test".to_vec(),
+        &[dashboard_base::test_fixtures::records(1, frames)],
+    )
+    .unwrap();
+    let reply = scan(&replay, 1, None, None, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        reply
+            .wars
+            .iter()
+            .map(|war| (war.first_hour, war.last_hour))
+            .collect::<Vec<_>>(),
+        [(100, 102)]
+    );
+    let runs = |tag: &str| {
+        reply.wars[0]
+            .participants
+            .iter()
+            .filter(|run| run.tag == tag)
+            .map(|run| (run.first_hour, run.last_hour, run.joined_by, run.left_by))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(runs("ONE"), [(100, 100, true, false)]);
+    assert_eq!(runs("renamed"), [(101, 102, false, true)]);
+    assert_eq!(runs("TWO"), [(100, 102, true, true)]);
+}
+
+#[test]
 fn obsolete_war_content_versions_are_replaced_without_evicting_other_views() {
     let replay = Arc::new(
         Replay::from_records(

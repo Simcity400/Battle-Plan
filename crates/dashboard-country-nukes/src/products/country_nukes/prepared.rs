@@ -3,6 +3,7 @@ use super::*;
 use dashboard_base::prepared::query::progressive;
 use dashboard_base::prepared::series::{self, Accumulator, Reader, Run};
 use dashboard_base::products::country_history;
+use dashboard_base::ranking::{joined_spans, within_spans};
 use serde_json::{Value, json};
 const READS: u64 = u64::MAX;
 
@@ -450,51 +451,6 @@ impl Prepared {
         )?;
         series::write_catalogue(writer, "nukes", branch, &self.keys, &self.scan.scanned)
     }
-}
-
-/// One key's spans inside `first..=last`, in hour order, overlapping or touching spans joined.
-fn joined_spans(mut spans: Vec<HourSpan>, first: i32, last: i32) -> Vec<HourSpan> {
-    spans.sort_unstable_by_key(|span| (span.first_hour, span.last_hour));
-    let mut joined: Vec<HourSpan> = Vec::new();
-    for span in spans {
-        let (first_hour, last_hour) = (span.first_hour.max(first), span.last_hour.min(last));
-        if first_hour > last_hour {
-            continue;
-        }
-        match joined.last_mut() {
-            Some(held) if i64::from(first_hour) <= i64::from(held.last_hour) + 1 => {
-                held.last_hour = held.last_hour.max(last_hour);
-            }
-            _ => joined.push(HourSpan {
-                first_hour,
-                last_hour,
-            }),
-        }
-    }
-    joined
-}
-
-/// The hours of `spans` inside `within`.
-fn within_spans(
-    spans: &[HourSpan],
-    within: &[HourSpan],
-    cancelled: &AtomicBool,
-) -> io::Result<Vec<HourSpan>> {
-    let mut clipped = Vec::new();
-    dashboard_base::ranking::for_each_piece(
-        spans,
-        within,
-        |span| (span.first_hour, span.last_hour),
-        cancelled,
-        |_, first_hour, last_hour| {
-            clipped.push(HourSpan {
-                first_hour,
-                last_hour,
-            });
-            Ok(())
-        },
-    )?;
-    Ok(clipped)
 }
 
 pub fn query(

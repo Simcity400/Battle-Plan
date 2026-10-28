@@ -57,6 +57,162 @@ fn frame(hour: i32, count: u32) -> DecodedFrame {
     frame
 }
 
+/// Two countries share one alias: X (slot 0) holds `AAA` through hour 4 and
+/// `RNM` from 5, when Y (slot 1) takes `AAA` from `BBB`. X's factories change
+/// at 2 and 7, Y's at 3 and 8; X always has more.
+fn alias_frame(hour: i32) -> DecodedFrame {
+    let mut frame = scale_frame(1, hour, 2);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *frame.tables[TableId::Countries.index()]
+    {
+        let (x, y): (&[u8], &[u8]) = if hour < 5 {
+            (b"AAA", b"BBB")
+        } else {
+            (b"RNM", b"AAA")
+        };
+        rows[0].tag = x.to_vec();
+        rows[1].tag = y.to_vec();
+    }
+    let military = |country: u32| match country {
+        100_000 if hour >= 7 => 15,
+        100_000 if hour >= 2 => 12,
+        100_000 => 10,
+        _ if hour >= 8 => 8,
+        _ if hour >= 3 => 6,
+        _ => 4,
+    };
+    *frame.tables[TableId::CountryFactories.index()] =
+        TableView::Complete(TableRows::CountryFactories(
+            [100_000, 100_001]
+                .into_iter()
+                .map(|country| CountryFactoriesRow {
+                    country,
+                    military_total_raw: military(country) * 100_000,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    frame
+}
+
+/// A factory event page and its clusters count a tag's changes only while it
+/// is a member, held by a selected country or ranked in the Top N, inside its
+/// `within`; from a partial prefix they name its coverage and the hours pending.
+#[test]
+fn factory_events_count_only_member_hours_and_name_their_prepared_prefix() {
+    use crate::products::country_history::HistoryScan;
+    use crate::test_fixtures::{file_source, replay};
+    let frames: Vec<_> = (0..=11).map(alias_frame).collect();
+    let (source, root) = file_source(replay(frames.clone()));
+    let (store, key) = crate::prepared::files(&source, None).unwrap();
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    // Prepared through 9 of the recorded 0 to 11.
+    let mut prepared = Prepared::default();
+    let mut identities = HistoryScan::new(false, &[]);
+    for frame in &frames[..10] {
+        prepared
+            .observe(
+                frame,
+                source.replay_ref(),
+                &crate::prepared::frame_changes::FrameChangeTracker::new()
+                    .observe(frame, source.replay_ref().format),
+            )
+            .unwrap();
+        identities.observe(frame);
+    }
+    let mut writer = store.replace(key.clone()).unwrap();
+    prepared.flush(&mut writer, 1, &flag).unwrap();
+    writer
+        .write_at(
+            "country-identities-1",
+            0,
+            serde_json::to_vec(&identities).unwrap().as_slice(),
+        )
+        .unwrap();
+    crate::prepared::coverage::publish_coverage(&mut writer, 1, 0, 9, false).unwrap();
+    writer.commit().unwrap();
+    let ask = |product: &str, extra: Value| {
+        let mut params = json!({"branchId":"1","family":{"kind":"country-factories"},
+            "pageSize":100});
+        for (field, value) in extra.as_object().unwrap() {
+            params[field] = value.clone();
+        }
+        query(&source, product, &params, &context, &flag).unwrap()
+    };
+    let rows = |page: &Value| -> Vec<(String, i64)> {
+        page["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["tag"].as_str().unwrap().to_owned(),
+                    row["hour"].as_i64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let changes = |pairs: &[(&str, i64)]| -> Vec<(String, i64)> {
+        pairs
+            .iter()
+            .map(|&(tag, hour)| (tag.to_owned(), hour))
+            .collect()
+    };
+    let pending = json!([{"firstHour":10,"lastHour":11}]);
+    let top = json!({"kind":"country-factories","top":{"count":1,"mode":"built","groups":[]}});
+    for selection in [json!({"tags":["RNM"]}), json!({"family":top})] {
+        // X's changes under both its tags, never Y's under `AAA` from 5.
+        let mut page = selection.clone();
+        page["to"] = json!(11);
+        let reply = ask("events-page", page.clone());
+        assert_eq!(
+            rows(&reply),
+            changes(&[("AAA", 0), ("AAA", 2), ("RNM", 5), ("RNM", 7)]),
+            "{selection}"
+        );
+        assert_eq!(reply["total"], "4", "{selection}");
+        assert_eq!(reply["coverage"]["lastHour"], 9, "{selection}");
+        assert_eq!(reply["coverage"]["complete"], false, "{selection}");
+        assert_eq!(reply["pending"], pending, "{selection}");
+        page["within"] = json!({"AAA":[{"firstHour":0,"lastHour":0}]});
+        assert_eq!(
+            rows(&ask("events-page", page)),
+            changes(&[("AAA", 0), ("RNM", 5), ("RNM", 7)]),
+            "{selection}"
+        );
+        let mut clusters = selection.clone();
+        for (field, value) in [
+            ("tag", json!("AAA")),
+            ("from", json!(0)),
+            ("to", json!(11)),
+            ("width", json!(18)),
+        ] {
+            clusters[field] = value;
+        }
+        let reply = ask("events-clusters", clusters);
+        assert_eq!(
+            reply["summary"]["clusters"],
+            json!([{"firstHour":0,"lastHour":2,"firstOrdinal":"0","count":"2"}]),
+            "{selection}"
+        );
+        assert_eq!(reply["coverage"]["lastHour"], 9, "{selection}");
+        assert_eq!(reply["pending"], pending, "{selection}");
+    }
+    // Without a selection, a tag's clusters count every holder's changes.
+    let all = ask("events-clusters", json!({"tag":"AAA","from":0,"to":11,"width":18}));
+    assert_eq!(all["summary"]["clusters"][0]["count"], "4");
+    // X's last change is at 7: navigation never stops at Y's change under `AAA` at 8.
+    let next = ask(
+        "series-next-change",
+        json!({"tags":["RNM"],"from":7,"firstHour":0,"lastHour":9,"key":"ArrowRight"}),
+    );
+    assert_eq!(next["hour"], json!(7.0));
+    store.clear().unwrap();
+    drop(source);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn progressive_factory_sampler_matches_observer_on_every_key() {
     let frames = [frame(0, 24), frame(1, 24)];

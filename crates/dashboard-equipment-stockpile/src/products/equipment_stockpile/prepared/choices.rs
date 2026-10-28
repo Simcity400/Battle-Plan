@@ -1245,6 +1245,18 @@ fn exact_max(
         .ok_or_else(|| dashboard_core::invalid("Missing stockpile maximum"))
 }
 
+/// `reader`'s runs of `key` over `from..=to`. A run clipped to start at `from`
+/// keeps no break of its own start: it breaks there only where it truly starts.
+fn clipped_runs(reader: &mut Reader<'_>, key: u64, from: i32, to: i32) -> io::Result<Vec<series::Run>> {
+    let mut runs = reader.runs(key, from, to)?;
+    if let Some(first) = runs.first_mut().filter(|run| run.first_hour == from && run.break_before) {
+        first.break_before = reader
+            .value_at(key, from)?
+            .is_some_and(|run| run.first_hour == from && run.break_before);
+    }
+    Ok(runs)
+}
+
 /// Runs read from one series window, searched for an hour as a linear scan
 /// finds it: by bisection when they are ordered and disjoint.
 struct Runs {
@@ -1509,6 +1521,18 @@ impl<'a> Query<'a> {
         self.covered.insert((slot, from, to), Arc::clone(&runs));
         Ok(runs)
     }
+    /// Whether the stock (`slot` 0) or balance (1) record breaks at `hour`; a
+    /// run clipped to start there keeps the break of its true start.
+    fn coverage_breaks_at(&mut self, slot: usize, hour: i32) -> io::Result<bool> {
+        let field = ["stock-hours", "balance-hours"][slot];
+        Ok(match self.actor(field) {
+            Some(actor) => self
+                .coverage
+                .value_at(actor, hour)?
+                .is_some_and(|run| run.first_hour == hour && run.break_before),
+            None => false,
+        })
+    }
     pub(super) fn relevant(&self, field: usize, id: u64, groups: &[String], dense: bool) -> bool {
         if groups.is_empty() {
             return true;
@@ -1615,6 +1639,10 @@ impl<'a> Query<'a> {
             }
         }
         let coverage = [self.covered(0, from, to)?, self.covered(1, from, to)?];
+        let starts = [
+            self.coverage_breaks_at(0, from)?,
+            self.coverage_breaks_at(1, from)?,
+        ];
         for runs in &coverage {
             for run in &runs.runs {
                 dates.insert(run.first_hour);
@@ -1659,9 +1687,13 @@ impl<'a> Query<'a> {
             for (slot, value) in values.into_iter().enumerate() {
                 if let Some(value) = value {
                     let previous = result[slot].last();
-                    let broken = previous
-                        .is_none_or(|run| run.last_hour.checked_add(1) != Some(hour))
-                        || coverage[usize::from(slot != 0)].starts_broken(hour);
+                    let broken = match previous {
+                        Some(run) => {
+                            run.last_hour.checked_add(1) != Some(hour)
+                                || coverage[usize::from(slot != 0)].starts_broken(hour)
+                        }
+                        None => hour != from || starts[usize::from(slot != 0)],
+                    };
                     if let Some(previous) = result[slot]
                         .last_mut()
                         .filter(|run| !broken && run.value == value)
@@ -1730,6 +1762,9 @@ impl<'a> Query<'a> {
             }
             operands.insert(change.id, values);
         }
+        let starts = self.aggregates[0]
+            .value_at(actor, from)?
+            .is_some_and(|run| run.first_hour == from && run.break_before);
         let dates: Vec<_> = dates.into_iter().collect();
         let mut result: [Vec<series::Run>; 4] = Default::default();
         for (index, &hour) in dates.iter().enumerate() {
@@ -1750,8 +1785,11 @@ impl<'a> Query<'a> {
                 value += if new { amount } else { -amount };
             }
             let last = dates.get(index + 1).map_or(to, |next| next - 1);
-            let broken =
-                result[0].last().is_none() || supplied.first_hour == hour && supplied.break_before;
+            let broken = if result[0].is_empty() {
+                starts
+            } else {
+                supplied.first_hour == hour && supplied.break_before
+            };
             if let Some(previous) = result[0]
                 .last_mut()
                 .filter(|run| !broken && run.value == value)
@@ -1764,7 +1802,7 @@ impl<'a> Query<'a> {
         // Variant classification cannot change the logistics record's grouping.
         for (slot, rows) in result.iter_mut().enumerate().skip(1) {
             if let Some(actor) = self.aggregate_key(group, slot) {
-                *rows = self.aggregates[slot].runs(actor, from, to)?;
+                *rows = clipped_runs(&mut self.aggregates[slot], actor, from, to)?;
             }
         }
         Ok(Some(result))
@@ -1990,9 +2028,9 @@ impl<'a> Query<'a> {
         };
         if let Some(actor) = actor {
             if slot != 0 && (grouping != "domain" || key == "unresolved") {
-                return self.coverage.runs(actor, from, last);
+                return clipped_runs(&mut self.coverage, actor, from, last);
             }
-            return self.aggregates[slot].runs(actor, from, last);
+            return clipped_runs(&mut self.aggregates[slot], actor, from, last);
         }
         Ok(Vec::new())
     }
@@ -2010,7 +2048,7 @@ impl<'a> Query<'a> {
             let mut runs = if changed {
                 self.corrected(group, first, last)?[slot].clone()
             } else if let Some(actor) = self.aggregate_key(group, slot) {
-                self.aggregates[slot].runs(actor, first, last)?
+                clipped_runs(&mut self.aggregates[slot], actor, first, last)?
             } else {
                 Vec::new()
             };
@@ -2072,6 +2110,14 @@ impl<'a> Query<'a> {
         within: &[HourSpan],
     ) -> io::Result<StockpileOperandSummary> {
         use dashboard_base::prepared_chart::{ChartBucket, ChartRun, merge};
+        // Merging into no bucket would mark a gap that is not there.
+        let join = |bucket: Option<ChartBucket>, next: ChartBucket| {
+            if bucket.is_some() {
+                merge(bucket, Some(next))
+            } else {
+                Some(next)
+            }
+        };
         let from = view.0.floor() as i32;
         let to = view.1.floor() as i32;
         let cover_key = self.actor(if slot == 0 {
@@ -2109,8 +2155,12 @@ impl<'a> Query<'a> {
                     })
                     .collect();
                 for (first, last, corrected) in pieces(&clipped, &changed) {
-                    if corrected || self.filtered(group)? {
-                        let runs = if self.filtered(group)? {
+                    let filtered = self.filtered(group)?;
+                    if corrected || filtered {
+                        // A user subset breaks at its window's start; only a break in the record counts there.
+                        let starts =
+                            !filtered || self.coverage_breaks_at(usize::from(slot != 0), first)?;
+                        let runs = if filtered {
                             Arc::new(self.subset(
                                 group,
                                 &[HourSpan {
@@ -2123,9 +2173,9 @@ impl<'a> Query<'a> {
                         };
                         for run in &runs[slot] {
                             let value = run.value as f64;
-                            *bucket = merge(
+                            *bucket = join(
                                 *bucket,
-                                Some(ChartBucket {
+                                ChartBucket {
                                     absolute_total: run.value.unsigned_abs().saturating_mul(
                                         (i64::from(run.last_hour) - i64::from(run.first_hour) + 1)
                                             as u128,
@@ -2139,9 +2189,10 @@ impl<'a> Query<'a> {
                                     min_value: value,
                                     max_hour: run.first_hour,
                                     max_value: value,
-                                    first_break: run.break_before,
+                                    first_break: run.break_before
+                                        && (run.first_hour != first || starts),
                                     has_break: false,
-                                }),
+                                },
                             );
                         }
                     } else {
@@ -2151,9 +2202,9 @@ impl<'a> Query<'a> {
                             Vec::new()
                         };
                         for run in prior.drain(..) {
-                            *bucket = merge(
+                            *bucket = join(
                                 *bucket,
-                                Some(ChartBucket {
+                                ChartBucket {
                                     absolute_total: 0,
                                     first_hour: run.first_hour,
                                     last_hour: run.last_hour,
@@ -2166,7 +2217,7 @@ impl<'a> Query<'a> {
                                     max_value: 0.0,
                                     first_break: run.break_before,
                                     has_break: false,
-                                }),
+                                },
                             );
                         }
                         if let Some(actor) = self.aggregate_key(group, slot) {
@@ -2177,10 +2228,14 @@ impl<'a> Query<'a> {
                                 0,
                             )?;
                             for next in summary.buckets.into_iter().flatten() {
-                                *bucket = merge(*bucket, Some(next));
+                                *bucket = join(*bucket, next);
                             }
                         }
                     }
+                }
+                if let Some(value) = bucket {
+                    value.has_break |= value.first_hour > covered.first_hour
+                        || value.last_hour < covered.last_hour;
                 }
             }
         }
