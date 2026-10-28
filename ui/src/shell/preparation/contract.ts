@@ -1,5 +1,5 @@
 export type PreparationPhase = 'idle' | 'queued' | 'preparing' | 'paused' | 'ready' | 'cancelled' | 'failed';
-export type PreparationPauseReason = 'requested' | 'newerRecording' | 'diskSpace' | 'game';
+export type PreparationPauseReason = 'requested' | 'newerRecording' | 'diskSpace';
 export type PreparationAction = 'status' | 'start' | 'cancel' | 'clear';
 export interface PreparationRequest { sourceId: string; revision: string; requestId: string }
 export interface PreparationSection { id: string; label: string; state: PreparationPhase; done: string; total: string | null; error: string | null }
@@ -13,7 +13,7 @@ export interface PreparationReply extends PreparationRequest { backgroundEnabled
   families?: Record<string, Record<string, PreparedCoverage>>; bytes: string; error: string | null; pauseReason?: PreparationPauseReason | null }
 const coverageMap = (value: unknown) => !!value && typeof value === 'object' && Object.values(value).every(isPreparedCoverage);
 const phases = new Set(['idle', 'queued', 'preparing', 'paused', 'ready', 'cancelled', 'failed']);
-const pauseReasons = new Set(['requested', 'newerRecording', 'diskSpace', 'game']);
+const pauseReasons = new Set(['requested', 'newerRecording', 'diskSpace']);
 const count = (value: unknown): value is string => typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value);
 export function validatePreparationReply(reply: PreparationReply, request: PreparationRequest): PreparationReply {
   if (!reply || reply.sourceId !== request.sourceId || reply.revision !== request.revision || reply.requestId !== request.requestId)
@@ -29,7 +29,7 @@ export function validatePreparationReply(reply: PreparationReply, request: Prepa
 }
 export const pauseExplanation = (reason: PreparationPauseReason | null | undefined) => `Paused ${({
   requested: 'while preparation you asked for runs', newerRecording: 'while a newer recording prepares first',
-  diskSpace: 'because less than a tenth of the disk holding prepared data is free', game: 'while the game is running',
+  diskSpace: 'because less than a tenth of the disk holding prepared data is free',
 } as Record<string, string>)[reason ?? ''] ?? 'for now'}. It resumes automatically.`;
 export const preparationActive = (reply: PreparationReply | null) => reply?.state === 'queued' || reply?.state === 'preparing';
 export const preparationLabel = (state: PreparationPhase) => ({ idle: 'Not prepared', queued: 'Waiting to prepare', preparing: 'Preparing', paused: 'Paused', ready: 'Ready', cancelled: 'Cancelled', failed: 'Preparation failed' })[state];

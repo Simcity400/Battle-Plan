@@ -4950,7 +4950,7 @@ fn unprepared_blocks_reads_metadata_without_decoding_recorded_blocks() {
 }
 
 #[test]
-fn game_presence_discards_block_and_library_resume_rejects_changed_accepted_bytes() {
+fn a_pause_discards_block_and_library_resume_rejects_changed_accepted_bytes() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let replay = recording();
@@ -4970,7 +4970,7 @@ fn game_presence_discards_block_and_library_resume_rejects_changed_accepted_byte
     // The families prepared on their own commit beside the walk, so one can
     // still be folding the first block when the walk reaches the second. Such
     // a family's accepted prefix is empty and its resume rightly reads the
-    // first block again. The game arrives only once every family has
+    // first block again. The pause arrives only once every family has
     // committed the first block, so the walk's second block is the whole tail.
     let families = independent::names();
     let committed = Arc::new((
@@ -5007,7 +5007,7 @@ fn game_presence_discards_block_and_library_resume_rejects_changed_accepted_byte
                             "every family commits the first block beside the walk"
                         );
                         drop(accepted);
-                        service.set_preparation_suspended(true);
+                        super::super::pause(&source, super::super::PauseReason::NewerRecording);
                     }
                     Ok(())
                 }
@@ -5035,8 +5035,9 @@ fn game_presence_discards_block_and_library_resume_rejects_changed_accepted_byte
         .replay_ref()
         .read_block(&source.replay_ref().index[1])
         .expect("synthetic tail must retain its native anchor dependencies");
-    service.set_preparation_suspended(false);
-    service.prepare_library(&[]).unwrap();
+    service
+        .prepare_library(std::slice::from_ref(&fixture.path))
+        .unwrap();
     let finished = Arc::clone(&progress.lock().unwrap().finished);
     let (done, _) = finished
         .1

@@ -90,7 +90,7 @@ test('a paused panel checks back slowly and follows the automatic resume', async
   context.mock.timers.enable({ apis: ['setTimeout'] });
   const f = fixture();
   let state: PreparationReply['state'] = 'paused';
-  f.client.preparationStatus = async query => { f.calls.push('status'); return { ...reply(query, state), pauseReason: state === 'paused' ? 'game' : null }; };
+  f.client.preparationStatus = async query => { f.calls.push('status'); return { ...reply(query, state), pauseReason: state === 'paused' ? 'newerRecording' : null }; };
   try {
     await f.controller.start(source.path, source);
     assert.equal(f.controller.getSnapshot().reply?.state, 'paused');
@@ -98,7 +98,7 @@ test('a paused panel checks back slowly and follows the automatic resume', async
     assert.deepEqual(f.calls, ['status'], 'no fast polling while paused');
     context.mock.timers.tick(1); await settle();
     assert.deepEqual(f.calls, ['status', 'status']);
-    // The game exits and the library scan resumes the job.
+    // The newer recording is prepared and the library scan resumes the job.
     state = 'preparing';
     context.mock.timers.tick(PAUSED_POLL_MS); await settle();
     assert.equal(f.controller.getSnapshot().reply?.state, 'preparing');
@@ -119,7 +119,7 @@ test('background preference is explicit in preferences and progress replies', ()
 
 test('paused preparation retains family coverage and validates both fields', () => {
   const request = { sourceId: 's', revision: 'r', requestId: 'q' };
-  const paused = { ...reply(request, 'paused'), pauseReason: 'game' as const,
+  const paused = { ...reply(request, 'paused'), pauseReason: 'diskSpace' as const,
     families: { wars: { '1': { firstHour: 10, lastHour: 11, complete: false } } } };
   assert.equal(validatePreparationReply(paused, request), paused);
   assert.throws(() => validatePreparationReply({ ...paused, pauseReason: 'unknown' } as any, request), /Invalid/);

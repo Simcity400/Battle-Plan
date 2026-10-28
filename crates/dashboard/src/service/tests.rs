@@ -1004,13 +1004,9 @@ impl Drop for PreparationHold {
 }
 
 #[test]
-fn library_preparation_waits_for_game_exit_and_prepares_unopened_published_sessions() {
+fn library_preparation_prepares_unopened_published_sessions_and_their_growth() {
     let fixture = LibraryFixture::new(&["unopened"]);
     let service = Service::new(Arc::new(|_| true)).unwrap();
-    service.set_preparation_suspended(true);
-    service.prepare_library(&fixture.paths).unwrap();
-    assert!(service.inner.sources.lock().unwrap().entries.is_empty());
-    service.set_preparation_suspended(false);
     service.prepare_library(&fixture.paths).unwrap();
     let source = service.open_map(&fixture.paths[0], None).unwrap();
     wait_library_source(&source);
@@ -1025,19 +1021,6 @@ fn library_preparation_waits_for_game_exit_and_prepares_unopened_published_sessi
         "ready library sources are released"
     );
     fixture.append(&fixture.paths[0]);
-    service.set_preparation_suspended(true);
-    service.prepare_library(&fixture.paths).unwrap();
-    assert_eq!(
-        service
-            .inner
-            .sources
-            .lock()
-            .unwrap()
-            .completed
-            .get(&fixture.paths[0]),
-        Some(&source.key().revision)
-    );
-    service.set_preparation_suspended(false);
     service.prepare_library(&fixture.paths).unwrap();
     let grown = service.open_map(&fixture.paths[0], None).unwrap();
     assert_ne!(grown.key().revision, source.key().revision);
@@ -1093,13 +1076,14 @@ fn library_preparation_admits_newest_first_and_retries_a_full_runner() {
 }
 
 #[test]
-fn library_preparation_suspends_queued_automatic_work_and_resumes_outside_library() {
+fn library_preparation_pauses_queued_work_and_resumes_outside_library() {
     let fixture = LibraryFixture::new(&["paused"]);
     let service = Service::new(Arc::new(|_| true)).unwrap();
     let hold = PreparationHold::new(&service);
     service.prepare_library(&fixture.paths).unwrap();
     let source = service.open_map(&fixture.paths[0], None).unwrap();
-    service.set_preparation_suspended(true);
+    TEST_ROOM.with(|room| room.set(Some(false)));
+    service.prepare_library(&fixture.paths).unwrap();
     assert!(
         source
             .state::<crate::prepared::Progress>()
@@ -1112,7 +1096,7 @@ fn library_preparation_suspends_queued_automatic_work_and_resumes_outside_librar
     crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
     assert_eq!(
         crate::prepared::status(&source, "paused", "status").pause_reason,
-        Some(crate::prepared::PauseReason::Game)
+        Some(crate::prepared::PauseReason::DiskSpace)
     );
     assert_eq!(
         crate::prepared::unprepared_blocks(&source, None).unwrap(),
@@ -1126,8 +1110,8 @@ fn library_preparation_suspends_queued_automatic_work_and_resumes_outside_librar
             .unwrap()
             .running
     );
-    service.set_preparation_suspended(false);
-    // Even after the configured library changes, interrupted opened paths resume.
+    TEST_ROOM.with(|room| room.set(None));
+    // Even after the configured library changes, paused retained paths resume.
     service.prepare_library(&[]).unwrap();
     wait_library_source(&source);
     assert_eq!(
@@ -1137,65 +1121,19 @@ fn library_preparation_suspends_queued_automatic_work_and_resumes_outside_librar
     service.shutdown();
 }
 
+/// Nothing outside the service holds preparation back: a new service admits
+/// library work, then an open's preparation, each straight away, and both finish.
 #[test]
-fn game_presence_pauses_automatic_work_without_stopping_manual_prepare() {
-    let service = Service::new(Arc::new(|_| true)).unwrap();
-    let automatic = source();
-    let manual = source();
-    for (key, source, automatic) in [("automatic", &automatic, true), ("manual", &manual, false)] {
-        let progress = source.state::<crate::prepared::Progress>();
-        let mut progress = progress.lock().unwrap();
-        progress.running = true;
-        progress.automatic = automatic;
-        service
-            .inner
-            .sources
-            .lock()
-            .unwrap()
-            .entries
-            .insert((PathBuf::from(key), key.into()), Arc::downgrade(source));
-    }
-    service.set_preparation_suspended(true);
-    assert!(
-        automatic
-            .state::<crate::prepared::Progress>()
-            .lock()
-            .unwrap()
-            .cancelled
-            .load(Ordering::Acquire)
-    );
-    assert_eq!(
-        paused(&automatic),
-        Some(crate::prepared::PauseReason::Game),
-        "a game start pauses automatic work, naming the game"
-    );
-    assert_eq!(paused(&manual), None);
-    assert!(
-        !manual
-            .state::<crate::prepared::Progress>()
-            .lock()
-            .unwrap()
-            .cancelled
-            .load(Ordering::Acquire)
-    );
-    let unopened = source();
-    service
-        .inner
-        .start_preparation(
-            Arc::clone(&unopened),
-            jobs::Admission::Opened,
-            jobs::Checked::unread(true),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    assert_eq!(
-        unopened
-            .state::<crate::prepared::Progress>()
-            .lock()
-            .unwrap()
-            .state,
-        crate::prepared::State::Idle
-    );
+fn preparation_and_library_admission_proceed_without_a_gate() {
+    let fixture = LibraryFixture::new(&["library", "opened"]);
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    service.prepare_library(&fixture.paths[..1]).unwrap();
+    let library = library_source(&service, &fixture.paths[0])
+        .expect("the published recording is admitted at once");
+    wait_library_source(&library);
+    let opened = open_lease(&service, &receive, &fixture.paths[1], "ungated-open");
+    wait_library_source(&opened);
     service.shutdown();
 }
 
@@ -1241,8 +1179,7 @@ fn library_preparation_preserves_disabled_clear_and_cancel_until_manual_start() 
     service.prepare_library(&fixture.paths).unwrap();
     assert!(service.inner.sources.lock().unwrap().entries.is_empty());
     let source = service.open_map(&fixture.paths[0], None).unwrap();
-    // Both the game guard and the saved automatic preference permit manual work.
-    service.set_preparation_suspended(true);
+    // The saved automatic preference permits manual work.
     library_action(
         &service,
         Arc::clone(&source),
@@ -1260,7 +1197,6 @@ fn library_preparation_preserves_disabled_clear_and_cancel_until_manual_start() 
         &receive,
     );
     service.set_background_preparation(true);
-    service.set_preparation_suspended(false);
     for _ in 0..2 {
         service.prepare_library(&fixture.paths).unwrap();
     }
@@ -1333,15 +1269,15 @@ fn library_preparation_failed_opens_stop_at_one_attempt_for_repeated_inputs() {
         2,
         "only a changed recording permits another open attempt"
     );
-    service.set_preparation_suspended(true);
-    service.set_preparation_suspended(false);
+    service.set_background_preparation(false);
+    service.set_background_preparation(true);
     for _ in 0..5 {
         service.prepare_library(&paths).unwrap();
     }
     assert_eq!(
         service.inner.sources.lock().unwrap().open_attempts(),
         2,
-        "queue/game changes must not reopen the same failed input"
+        "queue/preference changes must not reopen the same failed input"
     );
     service.shutdown();
 }
@@ -1849,7 +1785,7 @@ fn production_source(
     let (sent, receive) = mpsc::channel();
     let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
     // Tests publish only the preparation they explicitly request.
-    service.set_preparation_suspended(true);
+    service.set_background_preparation(false);
     service.dispatch(DataCommand::Open {
         id: "open".into(),
         path: path.to_string_lossy().into_owned(),
@@ -2341,24 +2277,7 @@ fn library_work_pauses_below_the_free_space_floor_and_resumes_above_it() {
         crate::prepared::status(&source, "floor", "status").pause_reason,
         None
     );
-    // A game start pauses it too, naming the game, and the job is kept to
-    // resume after the game exits.
-    service.set_preparation_suspended(true);
-    assert!(job(&source).2);
-    assert_eq!(paused(&source), Some(crate::prepared::PauseReason::Game));
     drop(hold);
-    crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
-    let reply = crate::prepared::status(&source, "floor", "status");
-    assert_eq!(reply.state, crate::prepared::State::Paused);
-    assert_eq!(reply.pause_reason, Some(crate::prepared::PauseReason::Game));
-    assert!(library_source(&service, path).is_some());
-    service.set_preparation_suspended(false);
-    admit_library(&service, &fixture.paths);
-    assert_ne!(
-        admission_of(&source),
-        resumed,
-        "it resumes after the game exits"
-    );
     service.shutdown();
 }
 
@@ -2439,13 +2358,13 @@ fn library_work_pauses_for_another_opened_recording_and_waits_for_it() {
 #[test]
 fn a_cancel_overrides_a_pause() {
     let paused_source = source();
-    crate::prepared::pause(&paused_source, crate::prepared::PauseReason::Game);
+    crate::prepared::pause(&paused_source, crate::prepared::PauseReason::NewerRecording);
     assert_eq!(state(&paused_source), crate::prepared::State::Paused);
     crate::prepared::cancel(&paused_source);
     assert_eq!(state(&paused_source), crate::prepared::State::Cancelled);
     let cancelled = source();
     crate::prepared::cancel(&cancelled);
-    crate::prepared::pause(&cancelled, crate::prepared::PauseReason::Game);
+    crate::prepared::pause(&cancelled, crate::prepared::PauseReason::NewerRecording);
     assert_eq!(
         state(&cancelled),
         crate::prepared::State::Cancelled,
@@ -2597,44 +2516,7 @@ fn a_stale_scan_never_pauses_preparation_the_user_asked_for() {
 }
 
 #[test]
-fn a_recording_opened_while_the_game_runs_is_prepared_after_it_exits() {
-    let fixture = LibraryFixture::new(&["outside-library"]);
-    let path = &fixture.paths[0];
-    let (sent, receive) = mpsc::channel();
-    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
-    service.set_preparation_suspended(true);
-    let opened = open_lease(&service, &receive, path, "game-open");
-    assert_eq!(
-        job(&opened),
-        (false, false, false),
-        "nothing runs beside the game"
-    );
-    assert!(
-        library_source(&service, path).is_some(),
-        "the open is kept for after the game"
-    );
-    // Its panel sees a pause for the game, so it keeps checking.
-    let reply = crate::prepared::status(&opened, "deferred", "status");
-    assert_eq!(reply.state, crate::prepared::State::Paused);
-    assert_eq!(reply.pause_reason, Some(crate::prepared::PauseReason::Game));
-    service.set_preparation_suspended(false);
-    let hold = PreparationHold::new(&service);
-    // The recording lies outside the scanned library.
-    service.prepare_library(&[]).unwrap();
-    assert_eq!(
-        job(&opened),
-        (true, false, false),
-        "it resumes as the user's after the game exits"
-    );
-    let reply = crate::prepared::status(&opened, "deferred", "status");
-    assert_eq!(reply.state, crate::prepared::State::Queued);
-    assert_eq!(reply.pause_reason, None);
-    drop(hold);
-    service.shutdown();
-}
-
-#[test]
-fn opening_a_recording_the_game_is_pausing_makes_it_the_users() {
+fn opening_a_recording_whose_library_work_is_pausing_makes_it_the_users() {
     let fixture = LibraryFixture::new(&["stopping"]);
     let path = &fixture.paths[0];
     let (sent, receive) = mpsc::channel();
@@ -2643,8 +2525,8 @@ fn opening_a_recording_the_game_is_pausing_makes_it_the_users() {
     service.prepare_library(&fixture.paths).unwrap();
     let source = library_source(&service, path).unwrap();
     assert_eq!(job(&source), (true, true, false));
-    // The game starts: the library job is asked to stop but is still queued...
-    service.set_preparation_suspended(true);
+    // The library job is asked to stop but is still queued...
+    crate::prepared::pause(&source, crate::prepared::PauseReason::NewerRecording);
     assert_eq!(job(&source), (true, true, true));
     // ...when the user opens its recording.
     let opened = open_lease(&service, &receive, path, "stopping-open");
@@ -2656,8 +2538,10 @@ fn opening_a_recording_the_game_is_pausing_makes_it_the_users() {
     );
     drop(hold);
     crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
-    assert_eq!(paused(&source), Some(crate::prepared::PauseReason::Game));
-    service.set_preparation_suspended(false);
+    assert_eq!(
+        paused(&source),
+        Some(crate::prepared::PauseReason::NewerRecording)
+    );
     let hold = PreparationHold::new(&service);
     // Below the floor, which bounds only library work, it still resumes.
     TEST_ROOM.with(|room| room.set(Some(false)));
@@ -2669,24 +2553,6 @@ fn opening_a_recording_the_game_is_pausing_makes_it_the_users() {
         "it resumes as the user's, not as library work"
     );
     drop(hold);
-    service.shutdown();
-}
-
-#[test]
-fn a_prepared_recording_opened_while_the_game_runs_is_not_shown_paused() {
-    let fixture = LibraryFixture::new(&["prepared"]);
-    let path = &fixture.paths[0];
-    let earlier = Service::new(Arc::new(|_| true)).unwrap();
-    let source = earlier.open_map(path, None).unwrap();
-    crate::prepared::pipeline::run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
-    drop(source);
-    earlier.shutdown();
-    let (sent, receive) = mpsc::channel();
-    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
-    service.set_preparation_suspended(true);
-    let opened = open_lease(&service, &receive, path, "prepared-open");
-    assert_ne!(state(&opened), crate::prepared::State::Paused);
-    assert_eq!(paused(&opened), None);
     service.shutdown();
 }
 
@@ -2743,13 +2609,11 @@ fn a_finished_claim_does_not_carry_into_a_later_revision() {
     assert!(Arc::ptr_eq(&opened, &source));
     wait_library_source(&source);
     assert!(!claimed(&source), "a finished job is no longer claimed");
-    // The view closes and a game starts before the next scan retires the source.
+    // The view closes before the next scan retires the source.
     service.dispatch(DataCommand::Release { source_id: lease });
     drop(opened);
-    service.set_preparation_suspended(true);
     // Another session appends to the recording.
     fixture.append(path);
-    service.set_preparation_suspended(false);
     let hold = PreparationHold::new(&service);
     TEST_ROOM.with(|room| room.set(Some(false)));
     service.prepare_library(&fixture.paths).unwrap();
@@ -2817,27 +2681,30 @@ fn a_recording_whose_store_cannot_be_checked_is_prepared_as_library_work() {
 }
 
 #[test]
-fn a_deferred_recording_completed_by_another_writer_ends_ready() {
-    let fixture = LibraryFixture::new(&["deferred"]);
+fn paused_library_work_completed_by_another_writer_ends_ready() {
+    let fixture = LibraryFixture::new(&["paused"]);
     let path = &fixture.paths[0];
-    let (sent, receive) = mpsc::channel();
-    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
-    service.set_preparation_suspended(true);
-    let opened = open_lease(&service, &receive, path, "deferred-open");
-    assert_eq!(paused(&opened), Some(crate::prepared::PauseReason::Game));
-    // Another writer completes the store while the game runs.
-    let other = Service::new(Arc::new(|_| true)).unwrap();
-    let writer = other.open_map(path, None).unwrap();
-    crate::prepared::pipeline::run(&writer, None, &AtomicBool::new(false), |_| {}).unwrap();
-    drop(writer);
-    other.shutdown();
-    service.set_preparation_suspended(false);
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let source = library_source(&service, path).unwrap();
+    TEST_ROOM.with(|room| room.set(Some(false)));
+    service.prepare_library(&fixture.paths).unwrap();
+    drop(hold);
+    crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        paused(&source),
+        Some(crate::prepared::PauseReason::DiskSpace)
+    );
+    // Another writer completes the store while the job is paused.
+    prepare_elsewhere(path);
+    TEST_ROOM.with(|room| room.set(None));
     service.prepare_library(&[]).unwrap();
-    let reply = crate::prepared::status(&opened, "deferred", "status");
+    let reply = crate::prepared::status(&source, "paused", "status");
     assert_eq!(reply.state, crate::prepared::State::Ready);
     assert_eq!(reply.pause_reason, None);
     assert_eq!(reply.error, None);
-    assert!(!job(&opened).0, "nothing prepares it again");
+    assert!(!job(&source).0, "nothing prepares it again");
     service.shutdown();
 }
 
@@ -2939,9 +2806,16 @@ fn a_prepare_that_could_not_be_queued_leaves_no_claim() {
     let path = &fixture.paths[0];
     let (sent, receive) = mpsc::channel();
     let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
-    service.set_preparation_suspended(true);
-    // Opened while the game runs: deferred and claimed.
-    let (lease, opened) = open_view(&service, &receive, path, "deferred-view");
+    let hold = PreparationHold::new(&service);
+    service.prepare_library(&fixture.paths).unwrap();
+    let library = library_source(&service, path).unwrap();
+    // Opened while a pause stops its library job: it ends paused and claimed.
+    crate::prepared::pause(&library, crate::prepared::PauseReason::NewerRecording);
+    drop(library);
+    let (lease, opened) = open_view(&service, &receive, path, "paused-view");
+    drop(hold);
+    crate::prepared::wait_finished(&opened, &AtomicBool::new(false)).unwrap();
+    assert_eq!(state(&opened), crate::prepared::State::Paused);
     assert!(claimed(&opened));
     // An explicit Prepare meets a full queue.
     let hold = PreparationHold::filled(&service);
@@ -2957,12 +2831,11 @@ fn a_prepare_that_could_not_be_queued_leaves_no_claim() {
     assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
     assert_eq!(state(&opened), crate::prepared::State::Failed);
     assert!(!claimed(&opened), "a failed submission ends the claim");
-    // The view closes, a session appends and the game exits.
+    // The view closes and a session appends.
     service.dispatch(DataCommand::Release { source_id: lease });
     drop(opened);
     fixture.append(path);
     drop(hold);
-    service.set_preparation_suspended(false);
     admit_library(&service, &fixture.paths);
     let grown = library_source(&service, path).unwrap();
     assert_eq!(

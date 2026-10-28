@@ -109,8 +109,6 @@ impl DashboardService {
                     true
                 }))
                 .map_err(|error| error.to_string())?;
-                runtime
-                    .set_preparation_suspended(crate::game_process::game_running().unwrap_or(true));
                 *saved = Some(runtime);
             }
             Arc::clone(saved.as_ref().expect("runtime initialized"))
@@ -131,17 +129,6 @@ impl DashboardService {
             *configured = Some(key);
         }
         Ok(runtime)
-    }
-
-    pub(crate) fn suspend_preparation(&self, suspended: bool) {
-        if let Some(runtime) = self
-            .runtime
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-        {
-            runtime.set_preparation_suspended(suspended);
-        }
     }
 
     fn cancel(&self, _host: &NativeHost, id: String) -> Result<(), String> {

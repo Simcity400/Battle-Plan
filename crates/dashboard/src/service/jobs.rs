@@ -142,7 +142,7 @@ pub(super) enum Admission {
     /// lowers its threads.
     Library,
     /// Opening the recording. Like the library scan it is automatic: the
-    /// background preference and the game guard apply.
+    /// background preference applies.
     Opened,
     /// An explicit Prepare.
     Manual,
@@ -292,7 +292,6 @@ impl Inner {
             .unwrap_or_else(|e| e.into_inner())
             .suppressed
             .contains(source.path());
-        let suspended = self.preparation_suspended.load(Ordering::Acquire);
         let enabled = self.background_preparation.load(Ordering::Acquire);
         let progress = source.state::<crate::prepared::Progress>();
         let mut progress = progress.lock().unwrap_or_else(|error| error.into_inner());
@@ -310,22 +309,7 @@ impl Inner {
             progress.claimed = true;
             progress.background.store(false, Ordering::Release);
         }
-        if automatic && suspended && !progress.cleared && !suppressed {
-            // Kept for after the game, opened files outside the library too.
-            self.sources
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .library
-                .insert(source.path().to_owned(), Arc::clone(&source));
-            self.preparation.notify_change();
-            if user && enabled {
-                progress.claimed = true;
-                progress.background.store(false, Ordering::Release);
-            }
-        }
-        if automatic
-            && (suspended || !enabled || progress.cleared || progress.running || suppressed)
-        {
+        if automatic && (!enabled || progress.cleared || progress.running || suppressed) {
             return Ok(());
         }
         if admission == Admission::Library && (interactive || !room) {
@@ -503,8 +487,8 @@ impl Inner {
     }
 
     /// Measure the volume's room for library work. Never under the admission
-    /// lock: a slow or network volume must not stall opens, preparation
-    /// actions or game pauses.
+    /// lock: a slow or network volume must not stall opens or preparation
+    /// actions.
     fn measure_room(&self) -> bool {
         #[cfg(test)]
         {
@@ -565,9 +549,9 @@ impl Inner {
     }
 
     /// Publish a store the scan restored (another writer may have completed
-    /// it, or it completed while deferred) as Ready with its sections,
-    /// clearing any pause or error, under the admission lock. Whether it was
-    /// published: a job that started meanwhile reports its own outcome.
+    /// it) as Ready with its sections, clearing any pause or error, under the
+    /// admission lock. Whether it was published: a job that started meanwhile
+    /// reports its own outcome.
     fn publish_prepared(
         &self,
         source: &Source,
@@ -728,49 +712,9 @@ impl Inner {
         }
     }
 
-    /// Show an open the game defers as paused for the game, so its panel keeps
-    /// checking and follows the start once the game exits. A store that is
-    /// already up to date needs nothing, and a running job reports its own
-    /// pause when it stops. A store that cannot be checked is not known to be
-    /// prepared, so it waits too; its preparation reports any real failure.
-    fn show_deferred(
-        &self,
-        source: &Arc<Source>,
-        restored: std::io::Result<Option<crate::prepared::pipeline::Accepted>>,
-        epoch: u64,
-    ) {
-        use crate::prepared::{PauseReason, Progress, State};
-        if !self.preparation_suspended.load(Ordering::Acquire)
-            || !self.background_preparation.load(Ordering::Acquire)
-            || !self
-                .sources
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .library
-                .get(source.path())
-                .is_some_and(|held| Arc::ptr_eq(held, source))
-        {
-            return;
-        }
-        // A complete store, read before the admission lock, is shown Ready.
-        if let Ok(Some(accepted)) = restored
-            && self.publish_prepared(source, accepted, epoch)
-        {
-            return;
-        }
-        let progress = source.state::<Progress>();
-        let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
-        if !progress.running && matches!(progress.state, State::Idle | State::Cancelled) {
-            progress.state = State::Paused;
-            progress.paused = Some(PauseReason::Game);
-            progress.error = None;
-        }
-    }
-
     /// Whether opening `source` admits its preparation now.
     fn opening_admits(&self, source: &Source) -> bool {
         self.background_preparation.load(Ordering::Acquire)
-            && !self.preparation_suspended.load(Ordering::Acquire)
             && !self
                 .sources
                 .lock()
@@ -784,52 +728,13 @@ impl Inner {
                 .cleared
     }
 
-    pub(super) fn set_preparation_suspended(&self, suspended: bool) {
-        if self.preparation_suspended.swap(suspended, Ordering::AcqRel) == suspended {
-            return;
-        }
-        self.preparation.notify_change();
-        if !suspended {
-            // The library monitor retries the unaccepted tail, including sources
-            // opened outside the library which were interrupted by game presence.
-            return;
-        }
-        let _admission = self
-            .preparation_actions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let sources: Vec<_> = self
-            .sources
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entries
-            .values()
-            .filter_map(Weak::upgrade)
-            .collect();
-        for source in sources {
-            let progress = source.state::<crate::prepared::Progress>();
-            let progress = progress.lock().unwrap_or_else(|e| e.into_inner());
-            if progress.running && progress.automatic {
-                drop(progress);
-                crate::prepared::pause(&source, crate::prepared::PauseReason::Game);
-                self.sources
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .library
-                    .insert(source.path().to_owned(), source);
-            }
-        }
-    }
-
     /// Admit one library recording for the scan, which measured the volume's
     /// `room` before taking any lock.
     pub(super) fn prepare_recording(&self, path: &Path, room: bool) -> std::io::Result<()> {
-        if self.preparation_suspended.load(Ordering::Acquire)
-            || !self.background_preparation.load(Ordering::Acquire)
-        {
+        if !self.background_preparation.load(Ordering::Acquire) {
             return Ok(());
         }
-        self.check_open(&self.preparation_suspended)
+        self.check_open(&self.closed)
             .map_err(std::io::Error::other)?;
         let path = path.canonicalize()?;
         let revision = self.recording_revision(&path)?;
@@ -840,7 +745,6 @@ impl Inner {
                 std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
             )
             && !self.closed.load(Ordering::Acquire)
-            && !self.preparation_suspended.load(Ordering::Acquire)
         {
             // An unchanged failed input cannot make progress on a later worker
             // completion. Only a new revision, binding or manual Start retries it.
@@ -877,10 +781,10 @@ impl Inner {
                 return Ok(());
             }
         }
-        // Opening may read an initial catalogue. Game polling stays independent
-        // and interrupts opening before it can admit any preparation work.
+        // Opening may read an initial catalogue; only closing the service
+        // interrupts it.
         let source = self
-            .open(&path, Some(&revision), &self.preparation_suspended)
+            .open(&path, Some(&revision), &self.closed)
             .map_err(|error| {
                 if matches!(
                     error.as_str(),
@@ -893,8 +797,8 @@ impl Inner {
             })?;
         let progress = source.state::<Progress>();
         // Check the store before taking the admission lock, so restoring many
-        // recordings on a first scan never delays opens, preparation actions
-        // or game pauses. Only a restore that succeeds shows the recording
+        // recordings on a first scan never delays opens or preparation
+        // actions. Only a restore that succeeds shows the recording
         // prepared; a store that cannot be checked or restored is not known to
         // be prepared, and its preparation succeeds or reports the real
         // failure through the ordinary terminal failure.
@@ -916,9 +820,7 @@ impl Inner {
             .preparation_actions
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if self.preparation_suspended.load(Ordering::Acquire)
-            || !self.background_preparation.load(Ordering::Acquire)
-        {
+        if !self.background_preparation.load(Ordering::Acquire) {
             return Ok(());
         }
         {
@@ -981,7 +883,7 @@ impl Inner {
                 room,
                 identity,
             },
-            &self.preparation_suspended,
+            &self.closed,
         ) {
             if error.kind() == std::io::ErrorKind::WouldBlock {
                 let mut state = progress.lock().unwrap_or_else(|e| e.into_inner());
@@ -1797,23 +1699,6 @@ impl Inner {
                     checked,
                     &job.request.cancelled,
                 );
-            } else {
-                // Not now (a running game, the preference, Clear or Cancel):
-                // starting it keeps a recording the game defers for after the
-                // game exits, and admits nothing otherwise.
-                let Checked {
-                    epoch,
-                    restored,
-                    room,
-                    ..
-                } = checked;
-                let _ = self.start_preparation(
-                    Arc::clone(source),
-                    Admission::Opened,
-                    Checked::unread(room),
-                    &job.request.cancelled,
-                );
-                self.show_deferred(source, restored, epoch);
             }
             drop(admission);
             self.confirm_checked(source, confirmation);

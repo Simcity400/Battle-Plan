@@ -1,5 +1,5 @@
-//! Prepare published library revisions while the game is absent.
-use crate::{dashboard_service::DashboardService, game_process, replay_library};
+//! Prepare published library revisions.
+use crate::{dashboard_service::DashboardService, replay_library};
 use std::{
     io,
     path::PathBuf,
@@ -25,6 +25,38 @@ struct LibraryAdmission {
     requests: usize,
 }
 impl LibraryAdmission {
+    /// Scan the library `folder` and admit what changed, unless the app is
+    /// closing.
+    fn scan(
+        &mut self,
+        runtime: &dashboard::Service,
+        folder: Result<PathBuf, String>,
+        stopped: &AtomicBool,
+    ) {
+        let paths = folder
+            .and_then(|folder| {
+                replay_library::scan_with(&folder, || {
+                    if stopped.load(Ordering::Acquire) {
+                        Err("Background library scan interrupted".into())
+                    } else {
+                        Ok(())
+                    }
+                })
+            })
+            .map(|library| {
+                library
+                    .files
+                    .into_iter()
+                    .map(|file| file.path.into())
+                    .collect::<Vec<_>>()
+            });
+        // Retained sources can lie outside the current library folder. The
+        // service includes those paths.
+        if !stopped.load(Ordering::Acquire) {
+            let _ = self.prepare_changed(runtime, &paths.unwrap_or_default());
+        }
+    }
+
     fn prepare_changed(
         &mut self,
         runtime: &dashboard::Service,
@@ -57,95 +89,37 @@ impl LibraryAdmission {
     }
 }
 
+#[derive(Default)]
 pub struct PreparationMonitor {
     stopped: Arc<AtomicBool>,
-    game_present: Arc<AtomicBool>,
-}
-impl Default for PreparationMonitor {
-    fn default() -> Self {
-        Self {
-            stopped: Arc::new(AtomicBool::new(false)),
-            // No automatic admission until the first successful process snapshot.
-            game_present: Arc::new(AtomicBool::new(true)),
-        }
-    }
 }
 impl PreparationMonitor {
     pub fn start(&self, app: &AppHandle) -> io::Result<()> {
         let stopped = Arc::clone(&self.stopped);
-        let game_present = Arc::clone(&self.game_present);
-        let guard_app = app.clone();
-        let guard = thread::Builder::new()
-            .name("preparation game guard".into())
-            .spawn(move || {
-                while !stopped.load(Ordering::Acquire) {
-                    let running = game_process::game_running().unwrap_or(true);
-                    if game_present.swap(running, Ordering::AcqRel) != running {
-                        guard_app
-                            .state::<DashboardService>()
-                            .suspend_preparation(running);
-                    }
-                    thread::sleep(Duration::from_millis(250));
-                }
-            })?;
-        let stopped = Arc::clone(&self.stopped);
-        let game_present = Arc::clone(&self.game_present);
-        let library_app = app.clone();
-        let library = dashboard::prepared::runner::worker_thread("preparation library monitor")
-            .spawn(move || {
+        let app = app.clone();
+        dashboard::prepared::runner::worker_thread("preparation library monitor").spawn(
+            move || {
                 let mut admission = LibraryAdmission::default();
                 while !stopped.load(Ordering::Acquire) {
-                    if !game_present.load(Ordering::Acquire) {
-                        let service = library_app.state::<DashboardService>();
-                        if let Ok(runtime) = service.runtime(&library_app)
-                            && runtime.preparation_preferences().background_enabled
-                        {
-                            let paths = replay_library::configured_folder()
-                                .and_then(|folder| {
-                                    replay_library::scan_with(&folder, || {
-                                        if stopped.load(Ordering::Acquire)
-                                            || game_present.load(Ordering::Acquire)
-                                        {
-                                            Err("Background library scan interrupted".into())
-                                        } else {
-                                            Ok(())
-                                        }
-                                    })
-                                })
-                                .map(|library| {
-                                    library
-                                        .files
-                                        .into_iter()
-                                        .map(|file| file.path.into())
-                                        .collect::<Vec<_>>()
-                                });
-                            // Interrupted opened sources can lie outside the current
-                            // library folder. The service includes those retained paths.
-                            if !stopped.load(Ordering::Acquire)
-                                && !game_present.load(Ordering::Acquire)
-                            {
-                                let _ =
-                                    admission.prepare_changed(&runtime, &paths.unwrap_or_default());
-                            }
-                        }
+                    let service = app.state::<DashboardService>();
+                    if let Ok(runtime) = service.runtime(&app)
+                        && runtime.preparation_preferences().background_enabled
+                    {
+                        admission.scan(&runtime, replay_library::configured_folder(), &stopped);
                     }
                     thread::sleep(Duration::from_secs(1));
                 }
-            });
-        if let Err(error) = library {
-            self.stopped.store(true, Ordering::Release);
-            let _ = guard.join();
-            return Err(error);
-        }
-        // Shutdown signals both monitors; a filesystem operation need not delay
-        // closing the app. They check stop before admitting more work.
+            },
+        )?;
+        // Shutdown signals the monitor; a filesystem operation need not delay
+        // closing the app. It checks stop before admitting more work.
         Ok(())
     }
 
-    pub fn shutdown(&self, app: &AppHandle) {
+    /// Stop admitting library work; closing the dashboard service stops the
+    /// work already running.
+    pub fn shutdown(&self) {
         self.stopped.store(true, Ordering::Release);
-        self.game_present.store(true, Ordering::Release);
-        app.state::<DashboardService>().suspend_preparation(true);
     }
 }
 impl Drop for PreparationMonitor {
@@ -192,8 +166,8 @@ mod tests {
             admission.requests, 2,
             "requests are bounded by changed inputs"
         );
-        // Likewise, a preference/game change can wake admission exactly once.
-        runtime.set_preparation_suspended(true);
+        // Likewise, a preference change can wake admission exactly once.
+        runtime.set_background_preparation(false);
         assert!(admission.prepare_changed(&runtime, &paths).unwrap());
         for _ in 0..5 {
             assert!(!admission.prepare_changed(&runtime, &paths).unwrap());
@@ -240,6 +214,36 @@ mod tests {
         assert!(admission.prepare_changed(&runtime, &scan()).unwrap());
         assert!(!admission.prepare_changed(&runtime, &scan()).unwrap());
         assert_eq!(admission.requests, 2);
+        runtime.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Only closing the app holds a library scan back: with nothing else to
+    /// wait for, it requests admission of what was published.
+    #[test]
+    fn a_library_scan_requests_admission_unless_the_app_is_closing() {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "preparation-ungated-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("session.battleplan"), b"synthetic recording").unwrap();
+        let runtime = dashboard::Service::new(Arc::new(|_| true)).unwrap();
+        let mut admission = LibraryAdmission::default();
+        admission.scan(&runtime, Ok(root.clone()), &AtomicBool::new(true));
+        assert_eq!(admission.requests, 0, "a closing app admits nothing");
+        admission.scan(&runtime, Ok(root.clone()), &AtomicBool::new(false));
+        assert_eq!(admission.requests, 1);
+        assert_eq!(
+            admission
+                .observed
+                .as_ref()
+                .map(|(_, _, recordings)| recordings.len()),
+            Some(1),
+            "the published recording is requested"
+        );
         runtime.shutdown();
         std::fs::remove_dir_all(root).unwrap();
     }

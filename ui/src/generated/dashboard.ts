@@ -392,7 +392,7 @@ id: string, path: string, revision: string, metadata: ReplayMetadata,
  */
 presentationGeneration: number, };
 export type PreparationState = "idle" | "queued" | "preparing" | "paused" | "ready" | "cancelled" | "failed";
-export type PreparationPauseReason = "requested" | "newerRecording" | "diskSpace" | "game";
+export type PreparationPauseReason = "requested" | "newerRecording" | "diskSpace";
 export type PreparationAction = "status" | "start" | "cancel" | "clear";
 export type PreparationSection = { id: string, label: string, state: PreparationState, done: string, total: string | null, error: string | null, };
 export type PreparationReply = { sourceId: string, revision: string, requestId: string, backgroundEnabled: boolean, state: PreparationState, sections: Array<PreparationSection>,

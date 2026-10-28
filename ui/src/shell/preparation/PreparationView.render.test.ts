@@ -19,8 +19,8 @@ test('preparation renders backend section names, exact progress, cancellation an
     assert.match(html, /Clear removes prepared data immediately/); assert.match(html, /aria-setsize="5000"/);
     assert.doesNotMatch(render({ ...reply, state: 'cancelled' }), /Cancel preparation/);
     assert.match(render({ ...reply, state: 'cancelled' }), /Resume preparation/);
-    const paused = render({ ...reply, state: 'paused', pauseReason: 'game' });
-    assert.match(paused, /role="status">Paused</); assert.match(paused, /Paused while the game is running\. It resumes automatically\./);
+    const paused = render({ ...reply, state: 'paused', pauseReason: 'diskSpace' });
+    assert.match(paused, /role="status">Paused</); assert.match(paused, /Paused because less than a tenth of the disk holding prepared data is free\. It resumes automatically\./);
     assert.match(render({ ...reply, state: 'paused', pauseReason: 'requested' }), /while preparation you asked for runs/);
     assert.match(paused, /Resume preparation/); assert.match(paused, /Cancel preparation/);
     assert.match(render({ ...reply, state: 'failed', error: 'Unsupported mod section: 3' }), /role="alert"[^>]*>Unsupported mod section: 3/);

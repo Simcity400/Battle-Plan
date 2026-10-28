@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod dashboard_service;
-mod game_process;
 mod native;
 mod popout;
 mod preparation;
@@ -250,7 +249,7 @@ fn main() {
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
-            app.state::<preparation::PreparationMonitor>().shutdown(app);
+            app.state::<preparation::PreparationMonitor>().shutdown();
             app.state::<DashboardService>().shutdown();
             app.state::<popout::PopOuts>().close(app);
             app.state::<NativeHost>().shutdown();

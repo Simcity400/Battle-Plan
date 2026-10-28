@@ -732,7 +732,7 @@ test('paused preparation waits without failing and the read finishes once it res
   const published: unknown[] = [];
   const client = {
     preparedQuery: async () => ++reads === 1 ? first : exact,
-    preparationStatus: async (request: object) => ({ ...request, state: time < 2000 ? 'paused' : 'ready', pauseReason: time < 2000 ? 'game' : null,
+    preparationStatus: async (request: object) => ({ ...request, state: time < 2000 ? 'paused' : 'ready', pauseReason: time < 2000 ? 'newerRecording' : null,
       coverage: { '1': time < 2000 ? first.coverage : exact.coverage }, sections: [], backgroundEnabled: true, bytes: '0', error: null }),
   } as unknown as DashboardClient;
   assert.equal(await preparedSeriesQuery(client, source, 'series-summary', { branchId: '1' }, new AbortController().signal,

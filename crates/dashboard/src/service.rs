@@ -181,7 +181,6 @@ struct Inner {
     preparation: crate::prepared::runner::Runner,
     preparation_actions: Mutex<()>,
     background_preparation: AtomicBool,
-    preparation_suspended: AtomicBool,
     /// The volume's room as the library scan last measured it.
     room: Mutex<jobs::Room>,
     /// Volume measurements, and those taken under the admission lock.
@@ -247,7 +246,6 @@ impl Service {
             preparation: crate::prepared::runner::Runner::new()?,
             preparation_actions: Mutex::new(()),
             background_preparation: AtomicBool::new(true),
-            preparation_suspended: AtomicBool::new(false),
             room: Mutex::new(jobs::Room::default()),
             #[cfg(test)]
             test_measures: std::sync::atomic::AtomicU64::new(0),
@@ -420,12 +418,6 @@ impl Service {
         self.inner.set_background_preparation(enabled);
     }
 
-    /// Suspend automatic admission while the host observes a game process.
-    /// Manual Prepare remains available. Cancellation uses the existing block boundary.
-    pub fn set_preparation_suspended(&self, suspended: bool) {
-        self.inner.set_preparation_suspended(suspended);
-    }
-
     /// Changes only for worker completion or a changed preparation condition.
     /// Hosts use it to end no-progress admission polling until something changes.
     pub fn preparation_revision(&self) -> u64 {
@@ -447,9 +439,9 @@ impl Service {
     /// admitted only once every newer one is prepared, and newer work pauses
     /// older library work. Library work waits while preparation the user asked
     /// for is queued or running, and pauses below the free-space floor
-    /// ([`BACKGROUND_FREE_SHARE`]). Opened recordings the game interrupted
-    /// resume first, whatever their age. Busy workers leave the path eligible
-    /// for the next library scan. Newest-first is enforced after every library
+    /// ([`BACKGROUND_FREE_SHARE`]). Retained recordings the user holds resume
+    /// first, whatever their age. Busy workers leave the path eligible for the
+    /// next library scan. Newest-first is enforced after every library
     /// admission and at the end of every pass, however the pass ends.
     pub fn prepare_library(&self, paths: &[PathBuf]) -> io::Result<()> {
         let result = self.library_pass(paths);
@@ -518,7 +510,6 @@ impl Service {
         }
         let stopped = || {
             self.inner.closed.load(Ordering::Acquire)
-                || self.inner.preparation_suspended.load(Ordering::Acquire)
                 || !self.inner.background_preparation.load(Ordering::Acquire)
         };
         // Each library admission enforces newest-first itself.

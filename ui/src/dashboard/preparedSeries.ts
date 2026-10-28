@@ -131,7 +131,7 @@ export async function preparedSeriesQuery(client: DashboardClient, source: Dashb
       const request = { sourceId: source.id, revision: source.revision, requestId: newId() };
       const status = validatePreparationReply(await client.preparationStatus(request, signal), request);
       if (signal.aborted) break;
-      // A pause resumes on its own (another recording first, disk space, the game running): wait it out.
+      // A pause resumes on its own (another recording first, disk space): wait it out.
       const terminal = ['failed', 'cancelled', 'idle'].includes(status.state);
       if (!started && client.prepareSource && restart && (terminal || status.state === 'paused')) {
         deferred = progressKey(status) !== progress ? status : undefined;

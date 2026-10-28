@@ -67,8 +67,6 @@ pub enum PauseReason {
     NewerRecording,
     // The volume holding prepared data is below the free-space floor.
     DiskSpace,
-    // the game is running.
-    Game,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
