@@ -189,7 +189,11 @@ fn measured_country_sizes_and_live_block_span_set_the_budget() {
         );
         drop(ahead);
         behind.at(5);
-        assert_eq!(cache.lock().entries.len(), 1);
+        assert_eq!(
+            cache.lock().entries.len(),
+            0,
+            "the blocks both readers passed wait for no one"
+        );
         assert_consistent(&cache);
         cache.enable(false);
         assert!(cache.lock().entries.is_empty());
@@ -382,29 +386,21 @@ fn columns_retire_once_every_reader_of_their_table_has_passed() {
         assert_consistent(&cache);
         assert_eq!(
             kept(&cache),
-            [
-                (0, 1),
-                (0, 2),
-                (0, 3),
-                (0, 4),
-                (1, 0),
-                (1, 1),
-                (1, 2),
-                (1, 3),
-                (1, 4)
-            ],
-            "table 0's passed blocks retire past one block's set: two tables' largest"
+            [(0, 3), (0, 4), (1, 0), (1, 1), (1, 2), (1, 3), (1, 4)],
+            "table 0's passed blocks go: no reader of it is behind them"
         );
-        assert_eq!(cache.lock().obsolete_bytes, 2 * largest);
+        assert_eq!(cache.lock().obsolete_bytes, 0);
         drop(narrow);
         assert_consistent(&cache);
         assert_eq!(
             kept(&cache),
-            [(0, 3), (0, 4), (1, 0), (1, 1), (1, 2), (1, 3), (1, 4)]
+            [(1, 0), (1, 1), (1, 2), (1, 3), (1, 4)],
+            "no reader of table 0 is left"
         );
         drop(other);
         assert_consistent(&cache);
-        assert_eq!(kept(&cache), [(0, 4), (1, 4)], "no reader: one block's set");
+        assert_eq!(kept(&cache), [(1, 3), (1, 4)], "no reader: one block's set");
+        assert_eq!(cache.lock().obsolete_bytes, 2 * largest);
     }
 }
 
@@ -421,12 +417,12 @@ fn a_reader_moving_back_needs_its_columns_again_and_reads_evicted_ones_afresh() 
     assert_consistent(&cache);
     assert_eq!(
         kept(&cache),
-        [(0, 2), (0, 3)],
-        "one table's largest is kept"
+        [(0, 3)],
+        "the blocks it passed wait for no one"
     );
     narrow.at(1);
     assert_consistent(&cache);
-    assert!(!cache.lock().entries[&at(2, 0)].obsolete);
+    assert!(!cache.lock().entries.contains_key(&at(2, 0)));
     let mut decoded = Vec::new();
     for block in 1..4 {
         cache
@@ -436,7 +432,7 @@ fn a_reader_moving_back_needs_its_columns_again_and_reads_evicted_ones_afresh() 
             })
             .unwrap();
     }
-    assert_eq!(decoded, [1], "only the evicted block is decoded again");
+    assert_eq!(decoded, [1, 2], "the blocks it passed are decoded again");
     assert_consistent(&cache);
 }
 
@@ -454,8 +450,8 @@ fn advancing_readers_reclassify_only_the_blocks_they_pass() {
         put(&cache, block, 1, 1);
         walk.at(block + 1);
     }
-    // Each advance reclassifies two columns, then evicts the previous obsolete pair.
-    assert_eq!(cache.lock().inspections - start, 4 * blocks - 2);
+    // Each advance reclassifies the two columns it passes, then evicts them.
+    assert_eq!(cache.lock().inspections - start, 4 * blocks);
     let before = cache.lock().inspections;
     for _ in 0..10 {
         walk.at(blocks);
@@ -576,29 +572,34 @@ fn ready_hits_keep_each_column_in_its_order_as_read_hits_do() {
         for consumer in [&narrow, &other, &keep] {
             consumer.reading(9);
         }
-        put(&cache, 0, 0, 1_500);
+        // Readers of tables 0 and 2 still to reach the columns that retire.
+        let _behind = [
+            reader(&cache, 0, &[0], None, "behind"),
+            reader(&cache, 0, &[2], None, "behind"),
+        ];
         put(&cache, 1, 0, 1_500);
+        put(&cache, 2, 0, 1_500);
         put(&cache, 5, 1, 1);
         put(&cache, 6, 1, 1);
         put(&cache, 5, 2, 1_500);
         // Both of table 0's columns retire, within an allowance of two large columns and a small one.
-        narrow.at(2);
+        narrow.at(3);
         assert_consistent(&cache);
-        assert_eq!(kept(&cache), [(0, 0), (0, 1), (1, 5), (1, 6), (2, 5)]);
+        assert_eq!(kept(&cache), [(0, 1), (0, 2), (1, 5), (1, 6), (2, 5)]);
         // The older retired column and the older needed one are used again.
-        hit(&cache, at(0, 0));
+        hit(&cache, at(1, 0));
         hit(&cache, at(5, 1));
         let before = snapshot(&cache);
         assert!(
             cache.ready(at(3, 0), 1, false).is_none(),
             "an absent column"
         );
-        assert!(cache.ready(at(1, 0), 2, false).is_none(), "a short column");
+        assert!(cache.ready(at(2, 0), 2, false).is_none(), "a short column");
         assert_eq!(snapshot(&cache), before, "a miss changes nothing");
         // Retiring a third column forces eviction from the obsolete order.
         keep.at(6);
         assert_consistent(&cache);
-        assert_eq!(kept(&cache), [(0, 0), (1, 5), (1, 6), (2, 5)]);
+        assert_eq!(kept(&cache), [(0, 1), (1, 5), (1, 6), (2, 5)]);
         snapshot(&cache)
     };
     let by_ready = run(&|cache, key| assert!(cache.ready(key, 1, false).is_some()));
@@ -621,7 +622,7 @@ fn ready_hits_keep_each_column_in_its_order_as_read_hits_do() {
     );
     assert_eq!(
         columns(&by_ready.obsolete),
-        [(2, 5), (0, 0)],
+        [(2, 5), (0, 1)],
         "the retired column hit outlives the older one"
     );
 }
@@ -905,29 +906,30 @@ fn a_block_reader_needs_its_block_alone_wherever_it_moves_and_whoever_else_reads
         fill(&replay, block, countries, 1_500);
         walk.at(block + 1);
         assert_needs(&replay, &[&paged(0), &walked(block + 1)]);
-        let mut held = vec![(countries, 0)];
-        if block > 0 {
-            held.push((countries, block));
-        }
-        assert_eq!(kept(cache), columns(&held), "past block {block}");
+        // The block the walk passed waits for no one.
+        assert_eq!(
+            kept(cache),
+            columns(&[(countries, 0)]),
+            "past block {block}"
+        );
     }
     // Forward, then back: the block it left is no longer its need.
     pages.at(5);
     assert_needs(&replay, &[&paged(5), &walked(blocks)]);
-    assert_eq!(kept(cache), columns(&[(countries, 23)]));
+    assert_eq!(kept(cache), columns(&[]));
     fill(&replay, 5, countries, 1_500);
     pages.at(2);
     assert_needs(&replay, &[&paged(2), &walked(blocks)]);
-    assert_eq!(kept(cache), columns(&[(countries, 5)]));
+    assert_eq!(kept(cache), columns(&[]));
     fill(&replay, 2, countries, 1_500);
     // Another reader of block 2 keeps it needed as the first moves on.
     let other = replay.section_block_reader(2, Some(&[countries][..]), "other");
     pages.at(3);
     assert_needs(&replay, &[&paged(3), &paged(2), &walked(blocks)]);
-    assert_eq!(kept(cache), columns(&[(countries, 2), (countries, 5)]));
+    assert_eq!(kept(cache), columns(&[(countries, 2)]));
     drop(other);
     assert_needs(&replay, &[&paged(3), &walked(blocks)]);
-    assert_eq!(kept(cache), columns(&[(countries, 2)]));
+    assert_eq!(kept(cache), columns(&[]));
     // An earlier reader keeps columns through its scheduled endpoint.
     let early = replay.section_reader(1, &[countries], "early");
     early.reading(blocks);
@@ -935,10 +937,10 @@ fn a_block_reader_needs_its_block_alone_wherever_it_moves_and_whoever_else_reads
     fill(&replay, 3, countries, 1_500);
     drop(pages);
     assert_needs(&replay, &[&walked(1), &walked(blocks)]);
-    assert_eq!(kept(cache), columns(&[(countries, 2), (countries, 3)]));
+    assert_eq!(kept(cache), columns(&[(countries, 3)]));
     early.at(4);
     assert_needs(&replay, &[&walked(4), &walked(blocks)]);
-    assert_eq!(kept(cache), columns(&[(countries, 3)]));
+    assert_eq!(kept(cache), columns(&[]));
     // The later reader cannot retain the earlier block on the block reader's behalf.
     let late = replay.section_reader(10, &[countries], "late");
     late.reading(blocks);
@@ -947,13 +949,10 @@ fn a_block_reader_needs_its_block_alone_wherever_it_moves_and_whoever_else_reads
     fill(&replay, 8, countries, 1_500);
     fill(&replay, 12, countries, 1_500);
     assert_needs(&replay, &[&paged(8), &walked(10), &walked(blocks)]);
-    assert_eq!(
-        kept(cache),
-        columns(&[(countries, 3), (countries, 8), (countries, 12)])
-    );
+    assert_eq!(kept(cache), columns(&[(countries, 8), (countries, 12)]));
     drop(alone);
     assert_needs(&replay, &[&walked(10), &walked(blocks)]);
-    assert_eq!(kept(cache), columns(&[(countries, 8), (countries, 12)]));
+    assert_eq!(kept(cache), columns(&[(countries, 12)]));
     // An undeclared block reader needs every table at its block.
     let read = replay.section_block_reader(12, None, "read");
     fill(&replay, 12, clock, 1);
@@ -961,10 +960,8 @@ fn a_block_reader_needs_its_block_alone_wherever_it_moves_and_whoever_else_reads
     assert_needs(&replay, &[&every, &walked(10), &walked(blocks)]);
     drop(read);
     assert_needs(&replay, &[&walked(10), &walked(blocks)]);
-    assert_eq!(
-        kept(cache),
-        columns(&[(countries, 8), (countries, 12), (clock, 12)])
-    );
+    // No reader moving through the blocks reads Clock.
+    assert_eq!(kept(cache), columns(&[(countries, 12)]));
     drop((late, walk));
     assert_needs(&replay, &[]);
 }
@@ -994,7 +991,7 @@ fn a_declaration_moves_need_between_tables_over_the_columns_retained() {
     assert!(reads(&[], campaign));
     assert!(reads(&[clock, divisions], status) && !reads(&[clock, divisions], countries));
     let declared = |next, tables: &[TableId]| Reads::window(&replay, next, 9, tables);
-    let family = replay.section_reader(0, &[countries], "family");
+    let family = replay.section_reader(0, &[countries, clock], "family");
     // A far reach keeps the span budget out of the way.
     family.reading(9);
     for (table, block, size) in [
@@ -1007,17 +1004,22 @@ fn a_declaration_moves_need_between_tables_over_the_columns_retained() {
     ] {
         fill(&replay, block, table, size);
     }
-    assert_needs(&replay, &[&declared(0, &[countries])]);
-    // Clock in place of Countries: of what retires, one block's set stays.
+    assert_needs(&replay, &[&declared(0, &[countries, clock])]);
+    // No reader reads DivisionStatus: its column waits for no one.
+    assert_eq!(
+        kept(cache),
+        columns(&[
+            (countries, 1),
+            (countries, 2),
+            (clock, 1),
+            (clock, 2),
+            (campaign, 1),
+        ])
+    );
+    // Clock alone: Countries retires, and with no reader of it left, goes.
     family.declare(&replay, &[clock]);
     assert_needs(&replay, &[&declared(0, &[clock])]);
-    let after = columns(&[
-        (countries, 2),
-        (clock, 1),
-        (clock, 2),
-        (status, 2),
-        (campaign, 1),
-    ]);
+    let after = columns(&[(clock, 1), (clock, 2), (campaign, 1)]);
     assert_eq!(kept(cache), after);
     // The same declaration again changes nothing and inspects nothing.
     let (before, inspected) = (snapshot(cache), cache.lock().inspections);
@@ -1026,19 +1028,20 @@ fn a_declaration_moves_need_between_tables_over_the_columns_retained() {
     assert_eq!(cache.lock().inspections, inspected);
     // Divisions brings the sources its private aliases read.
     family.declare(&replay, &[clock, divisions]);
+    fill(&replay, 2, status, 1);
     assert_needs(&replay, &[&declared(0, &[clock, divisions])]);
     let source = Key::new(&replay, &replay.index[2], status);
     assert!(!cache.lock().entries[&source].obsolete);
-    // Forward, then back: the declared tables' columns are needed again.
+    // Forward, then back: what it passed is gone, what it reaches is needed again.
     family.at(2);
     assert_needs(&replay, &[&declared(2, &[clock, divisions])]);
     family.at(1);
     assert_needs(&replay, &[&declared(1, &[clock, divisions])]);
-    assert_eq!(kept(cache), after);
-    // Declaring nothing still reads Campaign.
+    assert_eq!(kept(cache), columns(&[(clock, 2), (status, 2)]));
+    // Declaring nothing still reads Campaign; no reader is left for the rest.
     family.declare(&replay, &[]);
     assert_needs(&replay, &[&declared(1, &[])]);
-    assert_eq!(kept(cache), after);
+    assert_eq!(kept(cache), columns(&[]));
     // An extension under way as a declaration retires its column.
     family.declare(&replay, &[clock]);
     assert_needs(&replay, &[&declared(1, &[clock])]);
@@ -1055,10 +1058,9 @@ fn a_declaration_moves_need_between_tables_over_the_columns_retained() {
         .unwrap();
     assert_eq!(extended.len(), 2);
     assert_needs(&replay, &[&declared(1, &[countries])]);
-    let state = cache.lock();
-    assert!(!state.entries[&key].reading && state.entries[&key].obsolete);
-    drop(state);
-    assert_eq!(kept(cache), after);
+    // Its column, read by no one now, goes once its read is done.
+    assert!(!cache.lock().entries.contains_key(&key));
+    assert_eq!(kept(cache), columns(&[]));
 }
 
 #[test]
@@ -1256,10 +1258,7 @@ fn a_reader_moved_back_keeps_only_the_blocks_it_still_has_scheduled() {
     assert_needs(&replay, &[&window(0, 0), &window(0, 47)]);
     ordinary.at(47);
     assert_needs(&replay, &[&window(0, 0), &window(47, 47)]);
-    assert_eq!(
-        kept(cache),
-        columns(&[(table, 0), (table, 46), (table, 47)])
-    );
+    assert_eq!(kept(cache), columns(&[(table, 0), (table, 47)]));
     ordinary.at(0);
     assert_needs(&replay, &[&window(0, 0), &window(0, 0)]);
     assert_eq!(kept(cache), columns(&[(table, 0)]));
@@ -1274,12 +1273,12 @@ fn a_reader_moved_back_keeps_only_the_blocks_it_still_has_scheduled() {
     single.at(9);
     single.at(3);
     assert_needs(&replay, &[&window(3, 3), &window(10, 10)]);
-    assert_eq!(kept(cache), columns(&[(table, 4)]));
+    assert_eq!(kept(cache), columns(&[]));
     ordinary.reading(14);
     ordinary.at(12);
     ordinary.at(11);
     assert_needs(&replay, &[&window(3, 3), &window(11, 14)]);
-    assert_eq!(kept(cache), columns(&[(table, 4)]));
+    assert_eq!(kept(cache), columns(&[]));
 }
 
 #[test]

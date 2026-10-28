@@ -700,7 +700,10 @@ impl Extract for Capture {
     ) -> io::Result<()> {
         self.events.push(Captured::Quiet {
             hours: hours.hours()[span.clone()].to_vec(),
-            metrics: hours.metrics()[span.clone()].to_vec(),
+            metrics: hours.metrics()[span.clone()]
+                .iter()
+                .map(|metrics| replay_frame::frame::Metrics::clone(metrics))
+                .collect(),
             sampled: span
                 .clone()
                 .flat_map(|position| TableId::ALL.map(|table| hours.sampled_at(position, table)))

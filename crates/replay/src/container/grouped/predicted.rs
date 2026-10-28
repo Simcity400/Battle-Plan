@@ -960,7 +960,7 @@ pub(super) fn take_residual_direct(
         &mut super::Check::disabled(),
     )?;
     budget.spend(output.len())?;
-    Ok(output.finish())
+    output.finish()
 }
 
 /// Read a residual entry's deleted keys and rows into `output`, predicting

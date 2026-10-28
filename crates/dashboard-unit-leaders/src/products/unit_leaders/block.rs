@@ -1352,7 +1352,7 @@ impl Extract for BlockExtract {
                 stale.merge(&since);
                 self.hours.push(Hour::Built {
                     hour,
-                    metrics: hours.metrics()[position].clone(),
+                    metrics: Metrics::clone(&hours.metrics()[position]),
                     sampled: selection
                         .tables
                         .iter()

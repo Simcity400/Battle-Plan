@@ -17,6 +17,7 @@ use crate::{
     frame::{SharedView, TableUpdate, decode_update},
     rows::{DeltaRow, compatibility::HISTORY, full_mask},
 };
+use std::sync::Arc;
 
 /// The fields of one table a [`Replay::read_block_changes`] reader watches:
 /// bit `i` for the table's current schema field `i` ([`TableId::field_name`]).
@@ -104,7 +105,8 @@ pub enum BlockChange<'a> {
 #[derive(Debug, Default)]
 pub struct QuietHours {
     hours: Vec<Hour>,
-    metrics: Vec<Metrics>,
+    /// Each hour's metrics, one allocation per hour for every watch's span.
+    metrics: Vec<Arc<Metrics>>,
     /// The reconstructed tables, in TableId order.
     tables: Vec<TableId>,
     /// Each hour's sample hour of each of `tables`.
@@ -131,7 +133,7 @@ impl QuietHours {
     }
 
     /// Each hour's metrics, as `read_block_alone`'s frame holds them.
-    pub fn metrics(&self) -> &[Metrics] {
+    pub fn metrics(&self) -> &[Arc<Metrics>] {
         &self.metrics
     }
 
@@ -183,7 +185,7 @@ impl QuietHours {
     pub(super) fn push(
         &mut self,
         hour: Hour,
-        metrics: Metrics,
+        metrics: Arc<Metrics>,
         tables: impl Iterator<Item = (Option<Hour>, bool)>,
     ) -> io::Result<()> {
         engine_allocation::reserve(&mut self.hours, 1)?;

@@ -100,7 +100,7 @@ fn direct_delta_every_registered_field_matches_update_and_reencoded_bytes() {
                 output.row(0, 1 << field, values).unwrap();
                 output.deleted(Vec::new()).unwrap();
                 assert_eq!(output.len(), plain.len());
-                let actual = output.finish();
+                let actual = output.finish().unwrap();
                 assert_eq!(actual, expected, "{table:?}, field {field}, round {round}");
                 let TableUpdate::Delta { changed, .. } = &actual else {
                     unreachable!()
@@ -1425,7 +1425,11 @@ fn direct_row_spans_refuse_what_reading_every_span_refuses() {
             .row_spans(0, mask, bytes, spans)
             .map_err(|error| (error.kind(), error.to_string()));
         assert_eq!(read_all, read_spans, "{table:?}, {case}");
-        assert_eq!(all.finish(), parts.finish(), "{table:?}, {case}");
+        assert_eq!(
+            all.finish().unwrap(),
+            parts.finish().unwrap(),
+            "{table:?}, {case}"
+        );
         assert_eq!(all_shadow, span_shadow, "{table:?}, {case}");
     };
     // Every cut of `values`, and one trailing byte past it.

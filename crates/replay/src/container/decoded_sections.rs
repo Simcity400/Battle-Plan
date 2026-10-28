@@ -1,4 +1,5 @@
-//! Retain live reader windows and up to one measured block of obsolete columns.
+//! Retain live reader windows and, of the columns no reader needs, up to one
+//! measured block of those a reader moving through the blocks has yet to reach.
 use super::{BlockIndex, Replay};
 use crate::{
     frame::{TABLE_COUNT, TableUpdate, recorded::Updates},
@@ -248,6 +249,36 @@ impl State {
     fn obsolete_allowance(&self) -> usize {
         if self.enabled { self.allowance } else { 0 }
     }
+    /// The columns no reader needs whose table's every reader moving through
+    /// the blocks has passed their block; none while no such reader is
+    /// registered, as then no one says which blocks are still to come.
+    fn passed(&self) -> Vec<Key> {
+        if self.obsolete.is_empty() {
+            return Vec::new();
+        }
+        let mut least = [usize::MAX; TABLE_COUNT];
+        let mut moving = false;
+        for reader in self
+            .consumers
+            .values()
+            .filter(|reader| reader.last.is_none())
+        {
+            moving = true;
+            for (table, least) in least.iter_mut().enumerate() {
+                if reader.reads(table) {
+                    *least = (*least).min(reader.next);
+                }
+            }
+        }
+        if !moving {
+            return Vec::new();
+        }
+        self.obsolete
+            .iter()
+            .map(|&(_, key)| key)
+            .filter(|key| least[key.table] > key.block)
+            .collect()
+    }
     fn needed(&self, table: usize, block: usize) -> bool {
         self.consumers.values().any(|reader| {
             let (from, to) = reader.range();
@@ -468,6 +499,15 @@ impl Cache {
         census
     }
     fn prune(state: &mut State) {
+        // A column no reader needs, whose table's readers moving through the
+        // blocks have all passed its block, waits for no one.
+        for key in state.passed() {
+            #[cfg(test)]
+            {
+                state.inspections += 1;
+            }
+            state.evict(key);
+        }
         // Columns no reader needs keep one block's set of columns at most, least recently used first.
         let allowance = state.obsolete_allowance();
         while state.obsolete_bytes > allowance {

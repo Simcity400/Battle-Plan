@@ -362,7 +362,7 @@ impl Extract for Siblings {
                 io::Error::other("Naval management quiet span has no preceding frame")
             })?;
             frame.hour = hour;
-            frame.metrics = hours.metrics()[position].clone();
+            frame.metrics = (*hours.metrics()[position]).clone();
             for &table in TABLES {
                 frame.tables[table.index()] = frame.tables[table.index()]
                     .clone()

@@ -96,6 +96,11 @@ impl<'a> Delta<'a> {
         self.changed.is_empty()
     }
 
+    /// Room for the `rows` rows a delta's control column counts.
+    fn reserve(&mut self, rows: usize) -> io::Result<()> {
+        allocation::reserve_exact(&mut self.changed, rows)
+    }
+
     #[cfg(test)]
     pub(super) fn row(&mut self, key: u128, mask: u64, values: Vec<u8>) -> io::Result<()> {
         self.admit(key, mask)?;
@@ -215,13 +220,21 @@ impl<'a> Delta<'a> {
         Ok(())
     }
 
-    pub(super) fn finish(self) -> TableUpdate {
-        TableUpdate::Delta {
+    /// A column holds every hour's update for its block: none keeps room to grow.
+    pub(super) fn finish(self) -> io::Result<TableUpdate> {
+        Ok(TableUpdate::Delta {
             baseline: self.baseline,
-            changed: self.changed,
-            deleted: self.deleted,
-        }
+            changed: exact(self.changed)?,
+            deleted: exact(self.deleted)?,
+        })
     }
+}
+
+fn exact<T>(values: Vec<T>) -> io::Result<Vec<T>> {
+    if values.capacity() == values.len() {
+        return Ok(values);
+    }
+    Ok(allocation::boxed_slice(values)?.into_vec())
 }
 
 /// The unpredicted delta body, with the same column/count/budget accounting
@@ -256,6 +269,7 @@ pub(super) fn take_delta(
         Some(coding) => Some(coding.read(table, changed as usize, &mut input.0)?),
         None => None,
     };
+    output.reserve(changed as usize)?;
     let mut row = 0_u128;
     let mut values = Vec::new();
     let mut spans = Vec::new();
@@ -351,5 +365,5 @@ pub(super) fn take_delta(
     }
     output.deleted(deleted)?;
     budget.spend(output.len() - 5)?;
-    Ok(output.finish())
+    output.finish()
 }

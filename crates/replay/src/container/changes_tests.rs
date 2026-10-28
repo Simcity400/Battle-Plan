@@ -358,7 +358,7 @@ fn checked(replay: &Replay, index: &BlockIndex, fields: &[TableFields]) -> Vec<H
                         for (position, &hour) in quiet.hours().iter().enumerate() {
                             let expected = &alone[at];
                             assert_eq!(hour, expected.hour);
-                            assert_eq!(quiet.metrics()[position], expected.metrics);
+                            assert_eq!(*quiet.metrics()[position], expected.metrics);
                             for table in TableId::ALL {
                                 assert_eq!(
                                     quiet.sampled_at(position, table),

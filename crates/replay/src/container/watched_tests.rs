@@ -140,7 +140,11 @@ impl Log {
                 let positions = 0..quiet.hours().len();
                 self.steps.push(Step::Quiet {
                     hours: quiet.hours().to_vec(),
-                    metrics: quiet.metrics().to_vec(),
+                    metrics: quiet
+                        .metrics()
+                        .iter()
+                        .map(|metrics| Metrics::clone(metrics))
+                        .collect(),
                     sampled: positions
                         .clone()
                         .flat_map(|at| TableId::ALL.map(|table| quiet.sampled_at(at, table)))
@@ -783,4 +787,67 @@ fn watched_and_frame_decoders_attribute_each_public_table_application() {
         private,
         std::collections::HashMap::from([(("reader_raw_apply", table), 1)])
     );
+}
+
+/// Every watch keeping an hour quiet holds that hour's one copy of its
+/// metrics rather than its own.
+#[test]
+fn watches_keeping_an_hour_quiet_share_its_metrics() {
+    let replay = fixture();
+    let fields = [TableFields::keys(TableId::Countries)];
+    let mut seen: Vec<Vec<(Hour, *const Metrics)>> = vec![Vec::new(), Vec::new()];
+    {
+        let mut watches: Vec<BlockWatch<'_>> = seen
+            .iter_mut()
+            .map(|seen| {
+                BlockWatch::new(Watching::Changes(&fields), move |step| {
+                    if let Watched::Change(BlockChange::Quiet(quiet)) = step {
+                        for (&hour, metrics) in quiet.hours().iter().zip(quiet.metrics()) {
+                            seen.push((hour, Arc::as_ptr(metrics)));
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        replay
+            .read_block_watched(&replay.index[0], &mut watches, || Ok(()))
+            .unwrap();
+        for watch in watches {
+            watch.finish().unwrap();
+        }
+    }
+    assert!(seen[0].len() > 10, "{:?}", seen[0].len());
+    assert_eq!(seen[0], seen[1]);
+}
+
+/// A directly decoded delta keeps no room to grow: its block's column holds
+/// it until the block's last reader is done with it.
+#[test]
+fn directly_decoded_deltas_hold_exactly_their_rows_and_deleted_keys() {
+    let replay = fixture();
+    replay.cache_decoded_sections(false);
+    replay.log_section_decodes();
+    let (mut changed_rows, mut deleted_keys) = (0, 0);
+    for index in &replay.index {
+        for frame in replay
+            .read_block_recorded_selected(index, &[TableId::Countries])
+            .unwrap()
+        {
+            if let TableUpdate::Delta {
+                changed, deleted, ..
+            } = &frame.tables[TableId::Countries.index()]
+            {
+                assert_eq!(changed.capacity(), changed.len(), "hour {}", frame.hour);
+                assert_eq!(deleted.capacity(), deleted.len(), "hour {}", frame.hour);
+                changed_rows += changed.len();
+                deleted_keys += deleted.len();
+            }
+        }
+    }
+    assert!(changed_rows > 0 && deleted_keys > 0);
+    assert!(replay.wire_decodes().iter().any(|read| {
+        read.table == TableId::Countries.index()
+            && read.route == crate::container::WireRoute::Direct
+    }));
 }

@@ -798,6 +798,8 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
         }
         self.tables.advance(&frame, &self.reconstructed)?;
         let metrics = &frame.metrics;
+        // Every watch keeping this hour quiet shares one copy of its metrics.
+        let mut quiet_metrics: Option<Arc<Metrics>> = None;
         for (consumer, watch) in self.consumers.iter_mut().zip(self.watches.iter()) {
             if watch.stopped() {
                 continue;
@@ -828,7 +830,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
                 let rebuilt = &self.tables.rebuilt;
                 changes.quiet.push(
                     frame.hour,
-                    metrics.clone(),
+                    Arc::clone(quiet_metrics.get_or_insert_with(|| Arc::new(metrics.clone()))),
                     consumer.own.iter().map(|&position| {
                         (
                             views[position].as_ref().and_then(SharedView::sampled_at),

@@ -1341,7 +1341,7 @@ impl Follow {
             .clone()
             .ok_or_else(|| io::Error::other("A quiet hour came before the block's first"))?;
         frame.hour = hours.hours()[position];
-        frame.metrics = hours.metrics()[position].clone();
+        frame.metrics = (*hours.metrics()[position]).clone();
         for &table in &self.reconstructed {
             let index = table.index();
             let view = if hours.rebuilt(position, table) {
