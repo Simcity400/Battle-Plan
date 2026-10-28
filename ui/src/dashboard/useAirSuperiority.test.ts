@@ -34,6 +34,7 @@ const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery
       export const usePlaybackSpeed = clock => clock.getSpeed();
       export const useContentRevision = () => 0;
       export const useProduct = (_, request) => { if (request) globalThis.airRequests.push(request); return { data: request?.params.view === 'timeline' ? globalThis.airTimeline : request?.params.view === 'moment' ? globalThis.airDay : request?.params.windowsOnly ? globalThis.airWindows : request?.params.view === 'choices' ? globalThis.airChoices : undefined, error: request?.params.view === 'moment' ? globalThis.airDayError : null, retry() {} }; };
+      export const useFollowedProduct = (client, request, moving, ...rest) => { const product = useProduct(client, request, ...rest); return { ...product, moment: product.data === undefined ? undefined : JSON.stringify(moving.map(name => request.params[name])) }; };
       export const useProductWindows = () => ({ data: new Map(globalThis.airDay ? [[0, globalThis.airDay]] : []), errors: new Map(), retry() {} });
       export const useFactionColours = () => ({ factions: [{ id: '7', name: 'Latest faction name' }], colours: new Map(globalThis.airFactionColours ?? []), displayNames: new Map(globalThis.airFactionName ? [['7', globalThis.airFactionName]] : []), warnings: [], setColour() {}, names: f => ({ name: globalThis.airFactionName ?? f.name, reason: null }) });
       export const STYLES = {};
