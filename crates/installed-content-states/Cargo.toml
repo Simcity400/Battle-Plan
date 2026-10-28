@@ -11,6 +11,7 @@ doctest = false
 
 [dependencies]
 installed-content-core.workspace = true
+job-priority.workspace = true
 
 [dev-dependencies]
 installed-content-core = { workspace = true, features = ["layer-fixtures"] }

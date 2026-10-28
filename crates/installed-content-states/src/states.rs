@@ -789,18 +789,26 @@ pub fn read_with_diagnostics(
 ) -> io::Result<(States, Vec<Diagnostic>)> {
     let resources = resources(layers)?;
     let names = layers.key_names()?;
-    let context = Context {
-        resource: &|name| resources.find(name),
-        max_building_levels: defines.int32("NBuildings", "MAX_BUILDING_LEVELS")?,
-        province_count: province_count(provinces),
-        names: &names,
-    };
+    let max_building_levels = defines.int32("NBuildings", "MAX_BUILDING_LEVELS")?;
+    let counted = province_count(provinces);
+    let paths = script_files::paths(layers, DIRECTORY, Some(".txt"));
+    // Each file reads and parses on its own; they merge below in listed order.
+    let parsed = each_file(&paths, |listed| {
+        let context = Context {
+            resource: &|name| resources.find(name),
+            max_building_levels,
+            province_count: counted,
+            names: &names,
+        };
+        listed
+            .read(layers)
+            .map(|input| parse_states_attributed(&input, &context))
+    });
     let mut states = States::default();
     let mut conflicts = Vec::new();
-    for listed in script_files::paths(layers, DIRECTORY, Some(".txt")) {
+    for (listed, file) in paths.into_iter().zip(parsed) {
         let path = listed.to_string();
-        let file = parse_states_attributed(&listed.read(layers)?, &context)
-            .map_err(|error| invalid(format!("{path}: {error}")))?;
+        let file = file?.map_err(|error| invalid(format!("{path}: {error}")))?;
         let notes: Vec<_> = file
             .diagnostics
             .into_iter()
@@ -832,6 +840,53 @@ pub fn read_with_diagnostics(
         }
     }
     Ok((states, conflicts))
+}
+
+/// `read` of every path, in order, spread over helper threads that run as the caller does.
+fn each_file<P: Sync, T: Send>(paths: &[P], read: impl Fn(&P) -> T + Sync) -> Vec<T> {
+    let helpers = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(8)
+        .min(paths.len());
+    if helpers <= 1 {
+        return paths.iter().map(read).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let caller = job_priority::Caller::current();
+    let mut read_at: Vec<Option<T>> = std::iter::repeat_with(|| None).take(paths.len()).collect();
+    std::thread::scope(|threads| {
+        let helpers: Vec<_> = (0..helpers)
+            .map(|_| {
+                let caller = caller.clone();
+                let cpu = job_priority::accounting::Context::capture();
+                let (next, read) = (&next, &read);
+                threads.spawn(move || {
+                    let _cpu = cpu.enter("content states");
+                    caller.enter();
+                    let mut done = Vec::new();
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(path) = paths.get(at) else {
+                            return done;
+                        };
+                        done.push((at, read(path)));
+                    }
+                })
+            })
+            .collect();
+        for helper in helpers {
+            let done = helper
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            for (at, value) in done {
+                read_at[at] = Some(value);
+            }
+        }
+    });
+    read_at
+        .into_iter()
+        .map(|value| value.expect("every path is read"))
+        .collect()
 }
 
 #[cfg(test)]

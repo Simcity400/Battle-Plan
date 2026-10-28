@@ -5300,6 +5300,7 @@ dependencies = [
  "engine-executable",
  "installed-content-core",
  "installed-content-states",
+ "job-priority",
  "replay-identity",
  "test-unify",
 ]
