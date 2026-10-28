@@ -386,8 +386,9 @@ fn watches_in_one_read_are_handed_what_their_own_reads_hand_them() {
 }
 
 /// Watches visited at once on a fanout's helpers, every one or every other,
-/// are handed exactly what they are handed one after another, releasing or
-/// not, and with no fanout every watch is visited on the reading thread.
+/// with the tables each hour replaces advanced at once on them, are handed
+/// exactly what they are handed one after another, releasing or not, and with
+/// no fanout every watch is visited on the reading thread.
 #[test]
 fn watches_visited_at_once_are_handed_what_they_are_one_after_another() {
     let (memory, held, path) = replays();
@@ -432,6 +433,70 @@ fn watches_visited_at_once_are_handed_what_they_are_one_after_another() {
     }
     drop(held);
     std::fs::remove_file(path).unwrap();
+}
+
+/// Tables a fanout advances at once apply each delta in place, reuse a
+/// replaced view or copy, exactly as tables advanced in order do: for a watch
+/// keeping no frame, and for one keeping only the latest. Within a block, a
+/// table's rows keep their address in place, return to the one of two hours
+/// before when reused, and move when copied, since the copied view is alive.
+#[test]
+fn tables_advanced_at_once_reuse_their_rows_as_in_order() {
+    let replay = fixture();
+    let fanout = Fanout::new("watched test hour", 3).unwrap();
+    let tables = [TableId::Clock, TableId::Countries, TableId::SunkShips];
+    for keep_latest in [false, true] {
+        let reuse = |fanout: Option<&Fanout>| {
+            let mut seen = Vec::new();
+            for index in &replay.index {
+                let mut before: [Option<usize>; 2] = [None; 2];
+                let mut latest: Option<DecodedFrame> = None;
+                {
+                    let visit = |step: Watched<'_>| {
+                        if let Watched::Hour { frame, .. } = step {
+                            let rows = match &*frame.tables[TableId::Countries.index()] {
+                                TableView::Complete(TableRows::Countries(rows)) => {
+                                    Some(rows.as_ptr() as usize)
+                                }
+                                _ => None,
+                            };
+                            seen.push((
+                                frame.hour,
+                                rows.is_some() && rows == before[0],
+                                rows.is_some() && rows == before[1],
+                            ));
+                            before = [rows, before[0]];
+                            if keep_latest {
+                                latest = Some(frame.clone());
+                            }
+                        }
+                        Ok(())
+                    };
+                    let mut watches = [BlockWatch::sendable(Watching::Every(&tables), visit)];
+                    replay
+                        .read_block_watched_keeping(index, &mut watches, None, fanout, || Ok(()))
+                        .unwrap();
+                    for watch in watches {
+                        watch.finish().unwrap();
+                    }
+                }
+                drop(latest);
+            }
+            seen
+        };
+        let ordered = reuse(None);
+        if !keep_latest {
+            assert!(
+                ordered.iter().any(|&(_, in_place, _)| in_place),
+                "deltas apply in place: {ordered:?}"
+            );
+        }
+        assert_eq!(
+            reuse(Some(&fanout)),
+            ordered,
+            "keeping the latest frame: {keep_latest}"
+        );
+    }
 }
 
 /// One read of a grouped block decodes each table section once however many
@@ -896,7 +961,7 @@ fn watched_and_frame_decoders_attribute_each_public_table_application() {
             decoder.advance(&*frame).unwrap();
         });
         let (_, shared) =
-            crate::cpu::capture_reader_calls(|| watched.advance(&frame, &[0]).unwrap());
+            crate::cpu::capture_reader_calls(|| watched.advance(&frame, &[0], None).unwrap());
         let expected = std::collections::HashMap::from([(("reader_public_apply", table), 1)]);
         assert_eq!(ordinary, expected);
         assert_eq!(shared, expected);

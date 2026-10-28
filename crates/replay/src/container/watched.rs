@@ -33,7 +33,7 @@ use crate::frame::{
 };
 use crate::{
     BranchId,
-    frame::{SharedView, Spares, TableUpdate, keyframe_update, not_selected},
+    frame::{SharedView, Spare, Spares, TableUpdate, keyframe_update, not_selected},
     rows::{compatibility::HISTORY, full_mask},
 };
 use std::sync::Arc;
@@ -490,60 +490,68 @@ impl<'r> BlockTables<'r> {
     /// Advance the watches' tables to `frame`'s hour from their updates,
     /// exactly as `FrameDecoder::advance` advances them, and check the
     /// campaign. Tables decoded only for another reader stay unreconstructed.
-    fn advance(&mut self, frame: &RecordedFrame, reconstructed: &[usize]) -> io::Result<()> {
+    /// With a fanout, the tables an update replaces advance at once on its
+    /// helpers: each from its own update and view of the hour before alone.
+    fn advance(
+        &mut self,
+        frame: &RecordedFrame,
+        reconstructed: &[usize],
+        fanout: Option<&Fanout>,
+    ) -> io::Result<()> {
         // Measurement only: each table's reconstruct cycles, when enabled.
         let _cpu = crate::cpu::scope("reconstruct", None);
         let measured = crate::cpu::enabled();
-        let mut spent: Vec<(usize, u64)> = Vec::new();
         let hour = frame.hour;
         // As the decoder: only the hour before's complete views are
         // baselines, and a keyframe has none.
         let before_hour = self.last_hour.filter(|_| !frame.keyframe);
-        for &position in reconstructed {
-            let table = self.tables[position];
-            let update = &frame.tables[table.index()];
-            let read = frame.metrics.table_ns[table.index()] != 0;
-            let started = if measured { crate::cpu::stamp() } else { 0 };
-            let before = self.views[position].take();
-            let view = if let TableUpdate::Delta { .. } = update {
-                // The view moves into the delta, which applies in place when
-                // no visited frame still holds it. A delta always yields a
-                // new view, as it does for a reader holding the hour before.
-                self.count[position] = before.as_deref().and_then(complete_len);
-                self.before[position] = None;
-                self.rebuilt[position] = true;
-                advance_public_table_reusing(
-                    table,
-                    update,
-                    frame.shared_update(table.index()),
-                    baseline(before_hour, before),
-                    self.spares.slot(table.index()),
-                    hour,
-                    read,
-                )?
-            } else {
-                // A spare serves only the delta right after the one that kept it.
-                self.spares.slot(table.index()).take();
-                let view = advance_public_table(
-                    table,
-                    update,
-                    baseline(before_hour, before.clone()),
-                    hour,
-                    read,
-                )?;
-                // Only an unchanged table keeps the hour before's view; it is
-                // still held here, so a new view cannot reuse its address.
-                self.rebuilt[position] = before
-                    .as_ref()
-                    .is_none_or(|before| !SharedView::ptr_eq(before, &view));
-                self.count[position] = None;
-                self.before[position] = before;
-                view
-            };
-            if measured {
-                spent.push((table.index(), crate::cpu::stamp().wrapping_sub(started)));
+        let mut lanes = self.lanes(reconstructed)?;
+        let replaced = |lane: &Lane<'_>| {
+            !matches!(
+                frame.tables[lane.table.index()],
+                TableUpdate::Unchanged { .. }
+            )
+        };
+        match fanout {
+            Some(fanout) if lanes.iter().filter(|lane| replaced(lane)).count() > 1 => {
+                let priority = job_priority::Caller::current();
+                let cpu = replay_frame::cpu::Context::capture();
+                // Room made before the helpers allocate, so filling it cannot fail meanwhile.
+                let mut here = engine_allocation::vec(lanes.len())?;
+                fanout.0.in_place_scope(|scope| {
+                    for lane in &mut lanes {
+                        if replaced(lane) {
+                            let (priority, cpu) = (priority.clone(), cpu.clone());
+                            scope.spawn(move |_| {
+                                let _cpu = cpu.enter("reconstruct");
+                                priority.enter();
+                                lane.advance(frame, before_hour, measured);
+                            });
+                        } else {
+                            here.push(lane);
+                        }
+                    }
+                    for lane in here {
+                        lane.advance(frame, before_hour, measured);
+                    }
+                });
             }
-            self.views[position] = Some(view);
+            _ => {
+                for lane in &mut lanes {
+                    lane.advance(frame, before_hour, measured);
+                    if matches!(lane.outcome, Some(Err(_))) {
+                        break;
+                    }
+                }
+            }
+        }
+        let mut spent: Vec<(usize, u64)> = Vec::new();
+        for lane in lanes {
+            match lane.outcome {
+                Some(Err(error)) => return Err(error),
+                Some(Ok(())) if measured => spent.push((lane.table.index(), lane.spent)),
+                _ => {}
+            }
         }
         if measured {
             crate::cpu::reconstructed(hour, &spent);
@@ -555,6 +563,40 @@ impl<'r> BlockTables<'r> {
         }
         self.last_hour = Some(hour);
         Ok(())
+    }
+
+    /// Each reconstructed table's own state, borrowed apart, in table order.
+    fn lanes(&mut self, reconstructed: &[usize]) -> io::Result<Vec<Lane<'_>>> {
+        let mut chosen = [false; TABLE_COUNT];
+        for &position in reconstructed {
+            chosen[self.tables[position].index()] = true;
+        }
+        let mut spares = self
+            .spares
+            .slots()
+            .iter_mut()
+            .enumerate()
+            .filter(|(index, _)| chosen[*index])
+            .map(|(_, spare)| spare);
+        engine_allocation::collect_vec(
+            self.views
+                .iter_mut()
+                .zip(&mut self.count)
+                .zip(&mut self.before)
+                .zip(&mut self.rebuilt)
+                .zip(&self.tables)
+                .filter(|(_, table)| chosen[table.index()])
+                .map(|((((view, count), before), rebuilt), &table)| Lane {
+                    table,
+                    view,
+                    count,
+                    before,
+                    rebuilt,
+                    spare: spares.next().expect("a spare for every table"),
+                    outcome: None,
+                    spent: 0,
+                }),
+        )
     }
 
     /// Whether the table at `position` differs this hour in availability, a
@@ -588,6 +630,75 @@ impl<'r> BlockTables<'r> {
         for before in &mut self.before {
             *before = None;
         }
+    }
+}
+
+/// One table's state while an hour advances it ([`BlockTables::advance`]).
+struct Lane<'t> {
+    table: TableId,
+    view: &'t mut Option<SharedView>,
+    count: &'t mut Option<usize>,
+    before: &'t mut Option<SharedView>,
+    rebuilt: &'t mut bool,
+    spare: &'t mut Option<Spare>,
+    /// None until it advanced, or when an earlier table failed first.
+    outcome: Option<io::Result<()>>,
+    /// Its reconstruct cycles, when measured.
+    spent: u64,
+}
+
+impl Lane<'_> {
+    fn advance(&mut self, frame: &RecordedFrame, before_hour: Option<Hour>, measured: bool) {
+        let started = if measured { crate::cpu::stamp() } else { 0 };
+        self.outcome = Some(self.advanced(frame, before_hour));
+        if measured {
+            self.spent = crate::cpu::stamp().wrapping_sub(started);
+        }
+    }
+
+    fn advanced(&mut self, frame: &RecordedFrame, before_hour: Option<Hour>) -> io::Result<()> {
+        let table = self.table;
+        let update = &frame.tables[table.index()];
+        let read = frame.metrics.table_ns[table.index()] != 0;
+        let hour = frame.hour;
+        let before = self.view.take();
+        let view = if let TableUpdate::Delta { .. } = update {
+            // The view moves into the delta, which applies in place when
+            // no visited frame still holds it. A delta always yields a
+            // new view, as it does for a reader holding the hour before.
+            *self.count = before.as_deref().and_then(complete_len);
+            *self.before = None;
+            *self.rebuilt = true;
+            advance_public_table_reusing(
+                table,
+                update,
+                frame.shared_update(table.index()),
+                baseline(before_hour, before),
+                self.spare,
+                hour,
+                read,
+            )?
+        } else {
+            // A spare serves only the delta right after the one that kept it.
+            self.spare.take();
+            let view = advance_public_table(
+                table,
+                update,
+                baseline(before_hour, before.clone()),
+                hour,
+                read,
+            )?;
+            // Only an unchanged table keeps the hour before's view; it is
+            // still held here, so a new view cannot reuse its address.
+            *self.rebuilt = before
+                .as_ref()
+                .is_none_or(|before| !SharedView::ptr_eq(before, &view));
+            *self.count = None;
+            *self.before = before;
+            view
+        };
+        *self.view = Some(view);
+        Ok(())
     }
 }
 
@@ -812,7 +923,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
                 }
             }
         }
-        self.tables.advance(&frame, &self.reconstructed)?;
+        self.tables.advance(&frame, &self.reconstructed, self.fanout)?;
         let metrics = &frame.metrics;
         // Every watch keeping this hour quiet shares one copy of its metrics.
         let mut quiet_metrics: Option<Arc<Metrics>> = None;

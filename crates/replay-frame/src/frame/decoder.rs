@@ -475,6 +475,11 @@ impl Spares {
     pub fn slot(&mut self, index: usize) -> &mut Option<Spare> {
         &mut self.0[index]
     }
+
+    /// Every table's spare by table index, each to borrow on its own.
+    pub fn slots(&mut self) -> &mut [Option<Spare>] {
+        &mut self.0
+    }
 }
 
 /// A view a delta replaced while another holder still shared it, that delta,
