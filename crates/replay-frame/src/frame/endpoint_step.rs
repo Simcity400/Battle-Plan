@@ -559,6 +559,59 @@ impl Default for EndpointStats {
 fn put<T: Value>(value: &T, out: &mut Vec<u8>) -> io::Result<()> {
     Value::encode(value, out)
 }
+/// The step a writer of every table in `parts` writes, from the steps writers of disjoint
+/// table selections wrote between the same two points: their header, then every table's
+/// entry in table order. Parts of other points, or naming one table twice, are refused.
+pub fn merge(parts: &[&[u8]], out: &mut Vec<u8>) -> io::Result<()> {
+    let mut header: Option<&[u8]> = None;
+    let mut entries: Vec<(u16, &[u8])> = Vec::new();
+    for part in parts {
+        let mut input = Decoder::new(part);
+        if input.take(4)? != MAGIC || input.u16()? != VERSION || input.u16()? != FORMAT_VERSION {
+            return Err(invalid("unsupported endpoint schema"));
+        }
+        if input.bool()? {
+            Point::read(&mut input)?;
+        }
+        Point::read(&mut input)?;
+        input.u64()?;
+        let _: [u64; TABLE_COUNT] = Value::decode(&mut input)?;
+        input.u64()?;
+        input.u64()?;
+        let at = part.len() - input.remaining();
+        match header {
+            None => header = Some(&part[..at]),
+            Some(held) if held != &part[..at] => {
+                return Err(invalid("merged endpoint steps reach other points"));
+            }
+            Some(_) => {}
+        }
+        let count = input.count(6)?;
+        allocation::reserve(&mut entries, count)?;
+        for _ in 0..count {
+            let start = part.len() - input.remaining();
+            let index = input.u16()?;
+            let length = input.u32()? as usize;
+            input.take(length)?;
+            entries.push((index, &part[start..part.len() - input.remaining()]));
+        }
+        input.finish()?;
+    }
+    entries.sort_unstable_by_key(|&(index, _)| index);
+    if entries.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(invalid("merged endpoint steps name a table twice"));
+    }
+    let header = header.ok_or_else(|| invalid("no endpoint steps to merge"))?;
+    let bytes = entries.iter().map(|(_, entry)| entry.len()).sum::<usize>();
+    allocation::reserve(out, header.len() + 4 + bytes)?;
+    out.extend_from_slice(header);
+    put_count(entries.len(), out)?;
+    for (_, entry) in entries {
+        out.extend_from_slice(entry);
+    }
+    Ok(())
+}
+
 fn put_count(count: usize, out: &mut Vec<u8>) -> io::Result<()> {
     put(
         &u32::try_from(count).map_err(|_| invalid("endpoint count exceeds u32"))?,

@@ -540,6 +540,49 @@ fn endpoint_owned_sparse_patch_keeps_its_table_buffer_and_membership_changes_mer
     assert_eq!(canonical(&held), held_bytes);
 }
 
+/// Steps of disjoint table selections between the same two points merge into the step of
+/// their union, byte for byte; steps of other points, or of one table twice, do not.
+#[test]
+fn steps_of_disjoint_selections_merge_into_the_step_of_their_union() {
+    let (_, frames) = window();
+    let groups: [&[TableId]; 3] = [
+        &[TableId::Clock, TableId::DivisionStatus],
+        &[TableId::Campaign, TableId::EventFeedHistory],
+        &[TableId::Countries, TableId::DivisionHistory],
+    ];
+    for (from, to) in [(0, 1), (3, 17), (24, 27)] {
+        let mut whole = Vec::new();
+        EndpointWriter::diff(SELECTED, &frames[from], &frames[to], &mut whole).unwrap();
+        let parts: Vec<Vec<u8>> = groups
+            .iter()
+            .map(|group| {
+                let mut part = Vec::new();
+                EndpointWriter::diff(group, &frames[from], &frames[to], &mut part).unwrap();
+                part
+            })
+            .collect();
+        let mut merged = Vec::new();
+        merge(
+            &parts.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+            &mut merged,
+        )
+        .unwrap();
+        assert_eq!(merged, whole, "{from} to {to}");
+    }
+    let mut one = Vec::new();
+    EndpointWriter::diff(groups[0], &frames[0], &frames[1], &mut one).unwrap();
+    let mut later = Vec::new();
+    EndpointWriter::diff(groups[1], &frames[0], &frames[2], &mut later).unwrap();
+    assert!(
+        merge(&[&one, &later], &mut Vec::new()).is_err(),
+        "another point"
+    );
+    assert!(
+        merge(&[&one, &one], &mut Vec::new()).is_err(),
+        "a table twice"
+    );
+}
+
 #[test]
 fn endpoint_diff_between_any_two_hours_reaches_the_later_hour_and_patches_across_keyframes() {
     let (_, frames) = window();

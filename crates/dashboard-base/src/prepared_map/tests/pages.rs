@@ -1136,6 +1136,93 @@ fn page_allocation_failures_retry_natively_and_propagate_only_with_the_native_ro
     assert_eq!(kinds, [io::ErrorKind::OutOfMemory; 2]);
 }
 
+/// A block's pages produced in table groups at once are those produced whole: the same
+/// chain points, frames, refusals and step bytes, for every block and grouping.
+#[test]
+fn grouped_production_makes_the_whole_blocks_pages() {
+    let replay = recording();
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let canonical = |frame: Option<&DecodedFrame>| {
+        frame.map(|frame| {
+            let mut bytes = Vec::new();
+            frame.encode_checkpoint(&mut bytes).unwrap();
+            bytes
+        })
+    };
+    for block in 0..replay.index.len() {
+        let whole = produced(&replay, block);
+        for groups in [2, 3, SELECTED.len()] {
+            let grouped =
+                BlockPages::produce_grouped(&replay, block, SELECTED, STRIDES, groups, &cancelled)
+                    .unwrap();
+            assert_eq!(grouped.steps(), whole.steps(), "block {block} in {groups}");
+            assert_eq!(grouped.reached(), whole.reached());
+            assert_eq!(grouped.refused(), whole.refused());
+            for &stride in STRIDES {
+                assert_eq!(
+                    canonical(grouped.head(stride)),
+                    canonical(whole.head(stride))
+                );
+                assert_eq!(
+                    canonical(grouped.last(stride)),
+                    canonical(whole.last(stride))
+                );
+            }
+        }
+    }
+}
+
+/// Tables an alias joins share a group, so no two groups' readers resolve tables the other
+/// holds in the decoded-section cache; every selected table is in exactly one group.
+#[test]
+fn groups_keep_tables_an_alias_joins_together() {
+    let selected = [
+        TableId::Campaign,
+        TableId::DivisionMovement,
+        TableId::DivisionStatus,
+        TableId::LandCombatDivisions,
+        TableId::LandCombatDivisionModifiers,
+        TableId::Countries,
+    ];
+    for groups in 1..=selected.len() {
+        let split = super::super::pages::split(&selected, groups);
+        let group_of = |table: TableId| {
+            split
+                .iter()
+                .position(|group| group.contains(&table))
+                .unwrap()
+        };
+        let mut all: Vec<TableId> = split.iter().flatten().copied().collect();
+        all.sort_unstable_by_key(|table| table.index());
+        let mut expected = selected.to_vec();
+        expected.sort_unstable_by_key(|table| table.index());
+        assert_eq!(all, expected, "{groups} groups");
+        let joined = group_of(TableId::DivisionStatus);
+        for table in [
+            TableId::DivisionMovement,
+            TableId::LandCombatDivisions,
+            TableId::LandCombatDivisionModifiers,
+        ] {
+            assert_eq!(group_of(table), joined, "{table:?} in {groups} groups");
+        }
+        assert!(split.len() <= groups.min(3));
+    }
+    // The map's own tables, in the production grouping, keep every alias join in one group.
+    let tables = super::super::selected_tables();
+    let split = super::super::pages::split(tables, 4);
+    for &table in tables {
+        let group = split
+            .iter()
+            .position(|group| group.contains(&table))
+            .unwrap();
+        for source in replay::container::alias_sources(table) {
+            if let Some(other) = split.iter().position(|group| group.contains(source)) {
+                assert_eq!(other, group, "{table:?} and {source:?}");
+            }
+        }
+    }
+}
+
 #[test]
 fn the_producer_returns_each_allocation_failure_as_its_error_never_as_a_refusal() {
     let replay = recording();

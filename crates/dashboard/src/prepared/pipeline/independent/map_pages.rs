@@ -34,6 +34,15 @@ impl Own for MapPages {
     }
 }
 
+/// The groups of map tables a block's pages are produced in at once: one per four CPUs
+/// preparation uses, as the family's own thread is one chain among many. Tests produce whole.
+fn groups() -> usize {
+    if cfg!(test) {
+        return 1;
+    }
+    (super::super::parallelism() / 4).clamp(1, 8)
+}
+
 /// One branch's page fold.
 struct State {
     fold: PageFold,
@@ -95,13 +104,14 @@ impl Branch for State {
         observed: &mut Observed<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
-        self.fold_block(block, observed, check, |ordinal, check| {
-            BlockPages::produce(
+        self.fold_block(block, observed, check, |ordinal, _| {
+            BlockPages::produce_grouped(
                 block.replay,
                 ordinal,
                 selected_tables(),
                 &pages::STRIDES,
-                check,
+                groups(),
+                block.cancelled,
             )
         })
     }

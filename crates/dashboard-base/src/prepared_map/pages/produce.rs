@@ -7,8 +7,14 @@ use crate::prepared::{
 };
 use replay::container::Replay;
 use replay_data::{BranchId, Hour, format::FormatVersion, rows::TableId};
-use replay_frame::frame::{DecodedFrame, FrameDecoder, FrameSource, endpoint_step::EndpointWriter};
-use std::{any::Any, io, sync::LazyLock};
+use replay_frame::frame::{
+    DecodedFrame, FrameDecoder, FrameSource, endpoint_step, endpoint_step::EndpointWriter,
+};
+use std::{
+    any::Any,
+    io,
+    sync::{LazyLock, atomic::AtomicBool},
+};
 
 /// The strides prepared now ([`provisional_strides`]).
 pub static STRIDES: [u32; 2] = provisional_strides();
@@ -188,6 +194,147 @@ impl BlockPages {
         Ok(producer.finish())
     }
 
+    /// [`Self::produce`] with the selected tables split into `groups` groups, each read,
+    /// reconstructed and stepped on its own thread, and their pages merged into the block's:
+    /// the same pages and chain points, as each table's are its own. A block one group
+    /// refuses, or whose groups disagree, is produced whole instead, so its refusal is the
+    /// whole block's.
+    pub fn produce_grouped(
+        replay: &Replay,
+        block: usize,
+        selected: &[TableId],
+        strides: &[u32],
+        groups: usize,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self> {
+        let check = || crate::metadata::check_cancel(cancelled);
+        let groups = groups.min(selected.len());
+        if groups <= 1 {
+            return Self::produce(replay, block, selected, strides, check);
+        }
+        let split = split(selected, groups);
+        if split.len() <= 1 {
+            return Self::produce(replay, block, selected, strides, check);
+        }
+        let priority = crate::prepared::priority::Caller::current();
+        let cpu = replay_frame::cpu::Context::capture();
+        let parts: Vec<io::Result<Self>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = split
+                .iter()
+                .enumerate()
+                .map(|(group, tables)| {
+                    let (priority, cpu) = (priority.clone(), cpu.clone());
+                    std::thread::Builder::new()
+                        .name(format!("preparation map pages {group}"))
+                        .spawn_scoped(scope, move || {
+                            let _cpu = cpu.enter("fold driver");
+                            priority.enter();
+                            Self::produce(replay, block, tables, strides, check)
+                        })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| match handle {
+                    Ok(handle) => handle
+                        .join()
+                        .unwrap_or_else(|_| Err(io::Error::other("A map page group panicked"))),
+                    Err(error) => Err(error),
+                })
+                .collect()
+        });
+        let parts = parts.into_iter().collect::<io::Result<Vec<Self>>>()?;
+        match Self::merged(parts, &split)? {
+            Some(merged) => Ok(merged),
+            None => Self::produce(replay, block, selected, strides, check),
+        }
+    }
+
+    /// The pages of disjoint groups' `parts` as one block's, None when a group refused or
+    /// the groups disagree on the block's chain points.
+    fn merged(parts: Vec<Self>, split: &[Vec<TableId>]) -> io::Result<Option<Self>> {
+        let first = &parts[0];
+        if parts.iter().any(|part| {
+            part.refused.is_some()
+                || part.branch != first.branch
+                || part.reached != first.reached
+                || part.lanes.len() != first.lanes.len()
+        }) {
+            return Ok(None);
+        }
+        let frame = |frames: &[Option<&DecodedFrame>]| -> Option<Option<DecodedFrame>> {
+            let base = frames[0];
+            if frames.iter().any(|frame| frame.is_some() != base.is_some()) {
+                return None;
+            }
+            let Some(base) = base else {
+                return Some(None);
+            };
+            if frames.iter().flatten().any(|frame| {
+                (frame.branch, frame.hour, &frame.metrics)
+                    != (base.branch, base.hour, &base.metrics)
+            }) {
+                return None;
+            }
+            let mut merged = base.clone();
+            for (frame, tables) in frames.iter().flatten().zip(split).skip(1) {
+                for table in tables {
+                    merged.tables[table.index()] = frame.tables[table.index()].clone();
+                }
+            }
+            Some(Some(merged))
+        };
+        let mut lanes = engine_allocation::vec(first.lanes.len())?;
+        for at in 0..first.lanes.len() {
+            let each: Vec<&Lane> = parts.iter().map(|part| &part.lanes[at]).collect();
+            let pages = each[0].pages.len();
+            if each.iter().any(|lane| {
+                lane.stride != each[0].stride
+                    || lane.pages.len() != pages
+                    || lane
+                        .pages
+                        .iter()
+                        .zip(&each[0].pages)
+                        .any(|(page, base)| (page.from, page.to) != (base.from, base.to))
+            }) {
+                return Ok(None);
+            }
+            let heads: Vec<Option<&DecodedFrame>> =
+                each.iter().map(|lane| lane.head.as_ref()).collect();
+            let lasts: Vec<Option<&DecodedFrame>> =
+                each.iter().map(|lane| lane.last.as_ref()).collect();
+            let (Some(head), Some(last)) = (frame(&heads), frame(&lasts)) else {
+                return Ok(None);
+            };
+            let mut merged = engine_allocation::vec(pages)?;
+            for page in 0..pages {
+                let steps: Vec<&[u8]> = each
+                    .iter()
+                    .map(|lane| lane.pages[page].step.as_slice())
+                    .collect();
+                let mut step = Vec::new();
+                endpoint_step::merge(&steps, &mut step)?;
+                merged.push(Page {
+                    from: each[0].pages[page].from,
+                    to: each[0].pages[page].to,
+                    step,
+                });
+            }
+            lanes.push(Lane {
+                stride: each[0].stride,
+                head,
+                pages: merged,
+                last,
+            });
+        }
+        Ok(Some(Self {
+            branch: first.branch,
+            lanes,
+            reached: first.reached,
+            refused: None,
+        }))
+    }
+
     fn refuse(mut self, hour: Hour, error: io::Error) -> io::Result<Self> {
         if engine_allocation::is_allocation_error(&error) {
             return Err(error);
@@ -204,6 +351,19 @@ impl BlockPages {
     /// The hour whose read, decode or identity check refused, and why.
     pub fn refused(&self) -> Option<&(Hour, String)> {
         self.refused.as_ref()
+    }
+
+    /// Every lane's stride and pages, as hours and step bytes, for comparing productions.
+    #[cfg(test)]
+    pub(crate) fn steps(&self) -> Vec<(u32, Hour, Hour, &[u8])> {
+        self.lanes
+            .iter()
+            .flat_map(|lane| {
+                lane.pages
+                    .iter()
+                    .map(move |page| (lane.stride, page.from, page.to, page.step.as_slice()))
+            })
+            .collect()
     }
 
     /// The block's first chain point of `stride`.
@@ -230,6 +390,57 @@ impl Held for BlockPages {
             reason.held(bytes);
         }
     }
+}
+
+/// `selected` in up to `groups` groups of tables read on their own. Tables an alias joins (one
+/// reads the other's private aliases, or both read the same table's) stay in one group: each
+/// group's reader resolves those sources and enters them in the block's shared decoded-section
+/// cache, and two readers each holding a table the other resolves would wait on each other.
+pub(crate) fn split(selected: &[TableId], groups: usize) -> Vec<Vec<TableId>> {
+    use replay_data::rows::TABLE_COUNT;
+    let mut root: Vec<usize> = (0..TABLE_COUNT).collect();
+    fn find(root: &mut [usize], at: usize) -> usize {
+        let mut at = at;
+        while root[at] != at {
+            root[at] = root[root[at]];
+            at = root[at];
+        }
+        at
+    }
+    for &table in selected {
+        for &source in replay::container::alias_sources(table) {
+            let (a, b) = (
+                find(&mut root, table.index()),
+                find(&mut root, source.index()),
+            );
+            root[a] = b;
+        }
+    }
+    let mut joined: Vec<Vec<TableId>> = Vec::new();
+    let mut at: Vec<Option<usize>> = vec![None; TABLE_COUNT];
+    for &table in selected {
+        let key = find(&mut root, table.index());
+        match at[key] {
+            Some(set) => joined[set].push(table),
+            None => {
+                at[key] = Some(joined.len());
+                joined.push(vec![table]);
+            }
+        }
+    }
+    joined.sort_by_key(|set| std::cmp::Reverse(set.len()));
+    let mut split: Vec<Vec<TableId>> = vec![Vec::new(); groups.min(joined.len()).max(1)];
+    for set in joined {
+        let smallest = split
+            .iter_mut()
+            .min_by_key(|group| group.len())
+            .expect("a group");
+        smallest.extend(set);
+    }
+    for group in &mut split {
+        group.sort_unstable_by_key(|table| table.index());
+    }
+    split
 }
 
 pub struct PageExtract {

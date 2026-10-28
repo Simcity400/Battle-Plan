@@ -56,6 +56,12 @@ mod watched;
 pub use changes::{BlockChange, QuietHours, TableFields};
 pub use stream::{ReplayCursor, ReplayStream};
 pub use watched::{BlockWatch, Fanout, Keep, Watched, Watching};
+
+/// The tables `table`'s private aliases read: a reader of `table` also resolves these, and
+/// enters them in the block's decoded-section cache.
+pub fn alias_sources(table: TableId) -> &'static [TableId] {
+    aliases::private::dependencies(table)
+}
 // A decoder allocation bound, not a campaign-size or frame-count limit.
 // V1E branch 6 held 720 valid frames (~5.95 GB raw) between keyframes;
 // writers must close smaller independently decodable blocks before this bound.

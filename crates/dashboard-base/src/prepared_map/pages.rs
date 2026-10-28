@@ -7,6 +7,8 @@ use store::{SourceKey, Store};
 mod fold;
 mod produce;
 pub use fold::PageFold;
+#[cfg(test)]
+pub(crate) use produce::split;
 pub use produce::{BlockPages, FAMILY, PageExtract, Producer, STRIDES};
 
 const MAGIC: &[u8; 8] = b"HOIPAG01";
