@@ -1838,3 +1838,24 @@ fn faction_names_in_effect_descriptions_use_bound_template_names_and_literals() 
 
 #[path = "recorded_source_tests.rs"]
 mod recorded_source;
+
+#[test]
+fn reads_alongside_reach_this_threads_consumers_once_joined() {
+    let refused = BTreeSet::from(["artwork.dds: refused".to_owned()]);
+    let (seen, noted) = crate::catalogue::capture(|| {
+        std::thread::scope(|threads| {
+            let read = alongside(threads, || {
+                installed_content_core::content::credit_overlay_refusals(&refused);
+                7
+            });
+            joined(read)
+        })
+    });
+    assert_eq!(seen, 7);
+    assert!(
+        noted
+            .fallback_line()
+            .is_some_and(|line| line.contains("artwork.dds: refused")),
+        "{noted:?}"
+    );
+}

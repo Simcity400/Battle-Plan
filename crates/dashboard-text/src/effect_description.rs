@@ -254,9 +254,41 @@ pub struct CachedContent {
     pub notes: Vec<String>,
 }
 
+/// Runs `read` on a helper thread working for this one: at its priority, with what the
+/// catalogues note there credited to this thread's consumers once [`joined`].
+fn alongside<'s, T: Send + 's>(
+    threads: &'s std::thread::Scope<'s, '_>,
+    read: impl FnOnce() -> T + Send + 's,
+) -> std::thread::ScopedJoinHandle<'s, (T, crate::catalogue::OwnRefusals)> {
+    let caller = job_priority::Caller::current();
+    let cpu = replay_frame::cpu::Context::capture();
+    threads.spawn(move || {
+        let _cpu = cpu.enter("effect description content");
+        caller.enter();
+        crate::catalogue::capture(read)
+    })
+}
+
+/// What [`alongside`] read, its notes credited here as if read on this thread.
+fn joined<T>(read: std::thread::ScopedJoinHandle<'_, (T, crate::catalogue::OwnRefusals)>) -> T {
+    let (value, noted) = read
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    crate::catalogue::credit(&noted);
+    value
+}
+
 impl CachedContent {
     pub(crate) fn read(
         layers: &installed_content_core::ResolvedLayers,
+        environment: &crate::scripted_text::Environment,
+    ) -> std::io::Result<Self> {
+        std::thread::scope(|threads| Self::read_with(threads, layers, environment))
+    }
+
+    fn read_with<'s>(
+        threads: &'s std::thread::Scope<'s, '_>,
+        layers: &'s installed_content_core::ResolvedLayers,
         environment: &crate::scripted_text::Environment,
     ) -> std::io::Result<Self> {
         fn keep<T>(
@@ -270,21 +302,17 @@ impl CachedContent {
             .ok()
         }
         let mut gaps = BTreeMap::new();
-        let mut doctrines = keep(
-            installed_content_core::doctrines::read(layers),
-            "doctrines",
-            &mut gaps,
-        );
-        let decisions = keep(
-            installed_content_core::decisions::read(layers),
-            "decisions",
-            &mut gaps,
-        );
+        // The largest reads that need only the layers run alongside the rest.
+        let doctrines = alongside(threads, || installed_content_core::doctrines::read(layers));
+        let decisions = alongside(threads, || installed_content_core::decisions::read(layers));
+        let division_names = alongside(threads, || {
+            installed_content_division_names::division_names::read_directories::<String>(
+                layers,
+                &installed_content_division_names::division_names::DIRECTORIES,
+            )
+        });
+        let politics = alongside(threads, || politics::PoliticsContent::read(layers));
         let defines = environment.defines();
-        if let Some(doctrines) = &mut doctrines {
-            doctrines.tactic_sources.default_reward_mastery =
-                defines.fixed5("NDoctrines", "DEFAULT_REWARD_MASTERY").ok();
-        }
         let dynamic_modifiers = keep(
             installed_content_core::dynamic_modifiers::read(layers),
             "dynamic modifiers",
@@ -327,14 +355,13 @@ impl CachedContent {
             "Wargoal definitions",
             &mut gaps,
         );
-        let division_names = keep(
-            installed_content_division_names::division_names::read_directories::<String>(
-                layers,
-                &installed_content_division_names::division_names::DIRECTORIES,
-            ),
-            "division name groups",
-            &mut gaps,
-        );
+        let mut doctrines = keep(joined(doctrines), "doctrines", &mut gaps);
+        if let Some(doctrines) = &mut doctrines {
+            doctrines.tactic_sources.default_reward_mastery =
+                defines.fixed5("NDoctrines", "DEFAULT_REWARD_MASTERY").ok();
+        }
+        let decisions = keep(joined(decisions), "decisions", &mut gaps);
+        let division_names = keep(joined(division_names), "division name groups", &mut gaps);
         let mut notes = doctrines
             .as_ref()
             .map(|db| db.notes.clone())
@@ -455,9 +482,10 @@ impl CachedContent {
             notes.extend(warnings.into_iter().map(|(_, why)| why));
             (!refused).then_some(resources)
         });
-        let politics = politics::PoliticsContent::read(layers);
+        let politics = joined(politics);
         notes.extend(politics.notes.iter().cloned());
         let characters = characters::CharacterContent::read(
+            threads,
             layers,
             environment,
             advisor_templates

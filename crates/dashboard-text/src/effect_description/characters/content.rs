@@ -15,11 +15,18 @@ pub(in crate::effect_description) struct CharacterContent {
 }
 
 impl CharacterContent {
-    pub(in crate::effect_description) fn read(
-        layers: &installed_content_core::ResolvedLayers,
+    pub(in crate::effect_description) fn read<'s>(
+        threads: &'s std::thread::Scope<'s, '_>,
+        layers: &'s installed_content_core::ResolvedLayers,
         environment: &crate::scripted_text::Environment,
         advisor_templates: Result<&installed_content_core::characters::Characters, String>,
     ) -> Self {
+        let mio_traits = crate::effect_description::alongside(threads, || {
+            installed_content_core::mio_traits::read(layers)
+        });
+        let name_groups = crate::effect_description::alongside(threads, || {
+            installed_content_raids::raids::names::Groups::read(layers)
+        });
         let mut notes = Vec::new();
         let catalogue = (|| {
             let templates = advisor_templates?.clone();
@@ -53,12 +60,12 @@ impl CharacterContent {
         let factions = installed_content_core::faction_templates::read(layers)
             .inspect(|db| notes.extend(db.warnings.iter().cloned()))
             .map_err(|why| why.to_string());
-        let mio_traits = installed_content_core::mio_traits::read(layers)
+        let mio_traits = crate::effect_description::joined(mio_traits)
             .inspect(|db| notes.extend(db.warnings.iter().cloned()))
             .map_err(|why| why.to_string());
         // Load all naming families into one database, including codenames.
         // The four common/units/ naming directories differ from name_lists' common/names/.
-        let name_groups = installed_content_raids::raids::names::Groups::read(layers)
+        let name_groups = crate::effect_description::joined(name_groups)
             .inspect(|db| notes.extend(db.warnings.iter().map(|(_, why)| why.clone())))
             .map_err(|why| why.to_string());
         Self {
