@@ -518,3 +518,209 @@ fn dormant_chunk_integrity_failure_preserves_the_oracle_reason_and_boundary() {
         }
     }
 }
+
+/// Every frame of `replay`'s blocks, read with every later section joined
+/// or not, and this thread's later sections read a chunk at a time and
+/// fallen back to their joined section meanwhile.
+fn frames_read(replay: &Replay, joined: bool) -> (Vec<Frame>, [usize; 2]) {
+    let replay = Replay::open(replay.bytes.to_vec()).unwrap();
+    replay.cache_decoded_sections(false);
+    JOINED.set(joined);
+    CHUNKED_READS.set([0; 2]);
+    let frames = replay
+        .index
+        .iter()
+        .flat_map(|index| replay.read_block(index).unwrap())
+        .collect();
+    JOINED.set(false);
+    (frames, CHUNKED_READS.get())
+}
+
+fn alias_hours() -> Vec<Hour> {
+    (10..=220).chain([600, 650, 729]).chain(730..=940).collect()
+}
+
+/// Later sections read a chunk at a time, keeping only their alias marks,
+/// decode every table at every hour as their joined sections do: across
+/// empty chunks, gaps, alias marks and several blocks.
+#[test]
+fn later_sections_read_a_chunk_at_a_time_decode_as_their_joined_sections() {
+    for (label, replay) in [
+        ("chunked", super::chunk_tests::fixture().0),
+        (
+            "aliased",
+            direct_tests::alias_fixture_at(Layout::Chosen, &alias_hours()).0,
+        ),
+    ] {
+        let (chunked, reads) = frames_read(&replay, false);
+        let (joined, none) = frames_read(&replay, true);
+        assert_eq!(chunked, joined, "{label}");
+        assert!(reads[0] > 0 && reads[1] == 0, "{label}: {reads:?}");
+        assert_eq!(none, [0, 0], "{label}");
+    }
+}
+
+/// A chunk whose columns end inside an hour holds the same joined bytes cut
+/// elsewhere: its table falls back to the joined section and reads as the
+/// unchanged recording does.
+#[test]
+fn a_chunk_cut_inside_an_hour_falls_back_to_the_joined_section() {
+    let (replay, _) = direct_tests::alias_fixture_at(Layout::Chosen, &alias_hours());
+    let table = TableId::DivisionMovement;
+    let index = replay.index[0].clone();
+    let directory = Directory::read(&replay, &index).unwrap();
+    let raws: Vec<Vec<u8>> = directory
+        .chunk_extents(Section::Later(table))
+        .into_iter()
+        .map(|(offset, stored, raw)| {
+            if stored == 0 {
+                Vec::new()
+            } else {
+                Directory::inflate(&replay.block_range(&index, offset, stored).unwrap(), raw)
+                    .unwrap()
+            }
+        })
+        .collect();
+    let slot = (0..raws.len() - 1)
+        .find(|&at| !raws[at].is_empty() && !raws[at + 1].is_empty())
+        .unwrap();
+    let columns = |raw: &[u8]| -> Vec<Vec<u8>> {
+        chunked::columns(raw)
+            .unwrap()
+            .into_iter()
+            .map(<[u8]>::to_vec)
+            .collect()
+    };
+    let (mut before, mut after) = (columns(&raws[slot]), columns(&raws[slot + 1]));
+    // A column every entry reads after its control byte: the next chunk's
+    // first entry finds this chunk's control column read to its end.
+    let moved = (CONTROL + 1..after.len() - 1)
+        .find(|&column| !after[column].is_empty())
+        .unwrap();
+    let byte = after[moved].remove(0);
+    before[moved].push(byte);
+    let id = later_section(table);
+    let changed = chunked::replace_chunks(
+        &replay,
+        &index,
+        &[],
+        &[
+            (id, slot, chunked::frame(&before).unwrap()),
+            (id, slot + 1, chunked::frame(&after).unwrap()),
+        ],
+    )
+    .unwrap();
+    let mut blocks = vec![changed];
+    for index in &replay.index[1..] {
+        blocks.push((
+            index.clone(),
+            replay.block_bytes(index).unwrap().into_owned(),
+        ));
+    }
+    let cut = rebuilt(&replay, blocks);
+    let (actual, reads) = frames_read(&cut, false);
+    let (expected, _) = frames_read(&replay, true);
+    assert_eq!(actual, expected);
+    assert!(reads[1] > 0, "{reads:?}");
+}
+
+/// Every frame of `replay`'s blocks with each table's plain bytes bounded by
+/// `budget`, or the read's refusal, and this thread's later sections read a
+/// chunk at a time and fallen back to their joined section meanwhile.
+fn budgeted(
+    replay: &Replay,
+    budget: usize,
+    joined: bool,
+) -> (Result<Vec<Frame>, String>, [usize; 2]) {
+    let replay = Replay::open(replay.bytes.to_vec()).unwrap();
+    replay.cache_decoded_sections(false);
+    RAW_BUDGET.set(Some(budget));
+    JOINED.set(joined);
+    CHUNKED_READS.set([0; 2]);
+    let mut frames = Vec::new();
+    let mut read = Ok(());
+    for index in &replay.index {
+        match replay.read_block(index) {
+            Ok(block) => frames.extend(block),
+            Err(error) => {
+                read = Err(error.to_string());
+                break;
+            }
+        }
+    }
+    JOINED.set(false);
+    RAW_BUDGET.set(None);
+    (read.map(|()| frames), CHUNKED_READS.get())
+}
+
+/// A tag shrunk by a patch in the first chunk, then a new long tag every
+/// hour of the later chunks, in the same column.
+fn patch_budget_fixture() -> Replay {
+    let hours: Vec<Hour> = (10..=400).collect();
+    let tag = |seed: u64, length: usize| -> Vec<u8> {
+        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        (0..length)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect()
+    };
+    let replay =
+        test_recording::build(b"synthetic-chunked-patch-budget", &hours, |hour, tables| {
+            let tag = match hour {
+                10 => tag(0, 20_000),
+                11..178 => tag(0, 20_000)[..100].to_vec(),
+                _ => tag(hour as u64, 2_000),
+            };
+            tables[TableId::Countries.index()] =
+                TableView::Complete(TableRows::Countries(vec![crate::rows::CountryRow {
+                    id: 1,
+                    canonical_slot: 1,
+                    tag,
+                    ..Default::default()
+                }]));
+            Metrics::default()
+        });
+    assert_eq!(replay.index.len(), 1);
+    assert!(
+        replay
+            .section_chunks(&replay.index[0], Section::Later(TableId::Countries))
+            .unwrap()
+            .len()
+            >= 3
+    );
+    replay
+}
+
+/// A patch's budget counts what its column holds in later chunks, as the
+/// joined section's column does: a block the joined read refuses for it is
+/// refused when read a chunk at a time too, though the chunk alone fits.
+#[test]
+fn a_patch_budgets_its_column_bytes_in_later_chunks() {
+    let replay = patch_budget_fixture();
+    // The least budget the joined read decodes the block in.
+    let (mut refused, mut fits) = (0, MAX_BLOCK_RAW_BYTES);
+    while fits - refused > 1 {
+        let budget = refused + (fits - refused) / 2;
+        if budgeted(&replay, budget, true).0.is_ok() {
+            fits = budget;
+        } else {
+            refused = budget;
+        }
+    }
+    let refusal = budgeted(&replay, refused, true).0.unwrap_err();
+    CHUNK_LOCAL.set(true);
+    let (local, _) = budgeted(&replay, refused, false);
+    CHUNK_LOCAL.set(false);
+    assert!(local.is_ok(), "{local:?}");
+    let (chunked, reads) = budgeted(&replay, refused, false);
+    assert_eq!(chunked, Err(refusal));
+    assert!(reads[1] > 0, "{reads:?}");
+    assert_eq!(
+        budgeted(&replay, fits, false).0,
+        budgeted(&replay, fits, true).0
+    );
+}

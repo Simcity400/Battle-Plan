@@ -1112,10 +1112,12 @@ fn take_residual_rows<R: Residuals>(
                 let changed = if stored_field {
                     let input = input.as_deref_mut().expect("stored fields have an entry");
                     let used = output.written() + at;
+                    let ahead = input.2;
                     take_byte_field(
                         table,
                         field,
                         &mut input.0[FIELDS + field],
+                        ahead,
                         base,
                         prediction.as_deref(),
                         &mut values,

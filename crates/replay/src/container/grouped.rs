@@ -493,7 +493,10 @@ impl Columns {
     }
 }
 
-struct ColumnReader<'a>(Vec<Decoder<'a>>, Option<&'a [u8]>);
+/// A section's columns, its alias marks, and, for one chunk of a chunked
+/// section, the inflated bytes of the chunks after it: at least what each
+/// column holds there.
+struct ColumnReader<'a>(Vec<Decoder<'a>>, Option<&'a [u8]>, usize);
 
 impl<'a> ColumnReader<'a> {
     fn open(raw: &'a [u8], fields: usize) -> io::Result<Self> {
@@ -510,7 +513,7 @@ impl<'a> ColumnReader<'a> {
             columns.push(Decoder::new(input.take(length)?));
         }
         input.finish()?;
-        Ok(Self(columns, None))
+        Ok(Self(columns, None, 0))
     }
     fn stored(raw: &'a [u8], fields: usize, table: TableId, version: u16) -> io::Result<Self> {
         let marked = super::aliases::private::stored(table, version);
@@ -524,6 +527,7 @@ impl<'a> ColumnReader<'a> {
         Self(
             (0..FIELDS + fields).map(|_| Decoder::new(&[])).collect(),
             None,
+            0,
         )
     }
     /// Consume a chosen later section's row-coding byte before its rows.
@@ -545,8 +549,11 @@ impl<'a> ColumnReader<'a> {
             ))),
         }
     }
+    fn exhausted(&self) -> bool {
+        self.0.iter().all(|column| column.remaining() == 0)
+    }
     fn finish(self) -> io::Result<()> {
-        if self.0.iter().all(|column| column.remaining() == 0) {
+        if self.exhausted() {
             Ok(())
         } else {
             Err(invalid_static("grouped section has unread column bytes"))
@@ -783,12 +790,13 @@ fn put_byte_field(
 
 /// Read a stored byte field ([`put_byte_field`]), appending its plain
 /// encoding to `values`; false when it stopped. `used` is the entry's plain
-/// bytes so far.
+/// bytes so far, and `ahead` at least what `column` holds in later chunks.
 #[allow(clippy::too_many_arguments)]
 fn take_byte_field(
     table: TableId,
     field: usize,
     column: &mut Decoder<'_>,
+    ahead: usize,
     base: Option<&[u8]>,
     prediction: Option<&[u8]>,
     values: &mut Vec<u8>,
@@ -824,7 +832,9 @@ fn take_byte_field(
         tag @ (PATCH | PATCH_PREDICTION) => {
             let base = if tag == PATCH { base } else { prediction }
                 .ok_or_else(|| invalid_static("grouped patch has no base"))?;
-            budget.check(used + base.len() + column.remaining())?;
+            // At least the joined column's remainder: a chunk refused by this
+            // bound alone falls back to the joined section.
+            budget.check((used + base.len() + column.remaining()).saturating_add(ahead))?;
             patch::apply_with(base, column, values, differences)?;
             // The patched value is one complete plain field encoding.
             let mut value = Decoder::new(&values[at..]);
@@ -1075,7 +1085,7 @@ fn take_body_checked(
                         .and_then(|fields| fields.get(&field))
                         .map(Vec::as_slice);
                     take_byte_field(
-                        table, field, column, base, None, plain, used, budget, layout,
+                        table, field, column, input.2, base, None, plain, used, budget, layout,
                     )?;
                 }
                 budget.check(plain.len() - start)?;
@@ -2746,6 +2756,30 @@ impl Directory {
         }
     }
 
+    /// Whether section `id` is stored, in chunks.
+    fn chunked(&self, id: usize) -> bool {
+        self.sections[id].is_some() && !self.chunks[id].is_empty()
+    }
+
+    fn chunks<'a>(&'a self, block: &'a [u8], id: usize) -> chunked::Chunks<'a> {
+        chunked::Chunks::new(block, &self.chunks[id])
+    }
+
+    /// [`Self::raw`]'s inflation and checks of section `id`, holding one
+    /// chunk of a chunked section at a time.
+    fn verify_raw(&self, block: &[u8], id: usize) -> io::Result<()> {
+        let Some((offset, length, raw)) = self.sections[id] else {
+            return Ok(());
+        };
+        if !self.chunks[id].is_empty() {
+            let mut chunks = self.chunks(block, id);
+            chunks.first()?;
+            while chunks.next()?.is_some() {}
+            return Ok(());
+        }
+        Self::inflate(&block[offset..offset + length], raw).map(drop)
+    }
+
     fn raw(&self, block: &[u8], id: usize) -> io::Result<Option<Vec<u8>>> {
         let Some((offset, length, raw)) = self.sections[id] else {
             return Ok(None);
@@ -2900,7 +2934,7 @@ pub(super) fn verify_with(
         #[cfg(test)]
         let _step = super::check::Scope::enter(super::check::Step::Verify(id));
         check.run()?;
-        directory.raw(block, id)?;
+        directory.verify_raw(block, id)?;
     }
     Ok(())
 }
@@ -4089,6 +4123,63 @@ fn raw_stage(
     super::aliases::private::hooks::fail_raw(table)?;
     #[cfg(test)]
     super::aliases::private::hooks::gate_raw(table);
+    #[cfg(test)]
+    let joined = JOINED.get();
+    #[cfg(not(test))]
+    let joined = false;
+    if !joined && context.complete && context.directory.chunked(later_section(table)) {
+        match raw_column(context, table, use_direct, true, check) {
+            Err(error) if !check.failed() && !engine_allocation::is_allocation_error(&error) => {
+                #[cfg(test)]
+                CHUNKED_READS.with(|reads| reads.set([reads.get()[0], reads.get()[1] + 1]));
+            }
+            read => {
+                #[cfg(test)]
+                if read.is_ok() {
+                    CHUNKED_READS.with(|reads| reads.set([reads.get()[0] + 1, reads.get()[1]]));
+                }
+                return read;
+            }
+        }
+    }
+    raw_column(context, table, use_direct, false, check)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// This thread's reads take every later section joined.
+    pub(super) static JOINED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// This thread's later sections read a chunk at a time, and those that
+    /// fell back to their joined section.
+    pub(super) static CHUNKED_READS: std::cell::Cell<[usize; 2]> =
+        const { std::cell::Cell::new([0; 2]) };
+    /// This thread's tables' plain-byte budget, in place of a block's.
+    pub(super) static RAW_BUDGET: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+    /// This thread's chunks bound their columns by their own bytes alone.
+    pub(super) static CHUNK_LOCAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A table's budget of plain bytes in one block.
+fn raw_budget() -> usize {
+    #[cfg(test)]
+    if let Some(budget) = RAW_BUDGET.get() {
+        return budget;
+    }
+    MAX_BLOCK_RAW_BYTES
+}
+
+/// [`raw_stage`]'s column. A `chunked` read of a complete block holds one
+/// chunk of the later section at a time and keeps only its alias marks;
+/// whatever the joined section reads differently it refuses, for the joined
+/// read to answer.
+fn raw_column(
+    context: &Context<'_>,
+    table: TableId,
+    use_direct: bool,
+    chunked: bool,
+    check: &mut Check<'_>,
+) -> io::Result<RawColumn> {
     let format = context.format;
     let version = format.version();
     let change: &LastChange = &HISTORY[table.index()];
@@ -4103,11 +4194,22 @@ fn raw_stage(
         .directory
         .raw(context.block, key_id)?
         .ok_or_else(|| invalid(format!("grouped block has no keyframe entry for {table:?}")))?;
-    let later_raw = context.directory.raw(context.block, later_id)?;
+    let mut chunks = chunked.then(|| context.directory.chunks(context.block, later_id));
+    let mut later_raw = match &mut chunks {
+        Some(chunks) => Some(chunks.first()?),
+        None => context.directory.raw(context.block, later_id)?,
+    };
     let mut later_input = match &later_raw {
         Some(raw) => ColumnReader::stored(raw, fields, table, format.version())?,
         None => ColumnReader::empty(fields),
     };
+    // A chunked read's marks: the joined section's last column.
+    let mut marks_read = Vec::new();
+    let marked = later_input.1.is_some();
+    if let Some(chunks) = &chunks {
+        later_input.2 = chunks.ahead();
+        keep_marks(&mut marks_read, later_input.1)?;
+    }
     let decode = |plain: &[u8], keyframe: bool| -> io::Result<TableUpdate> {
         let _cpu = crate::cpu::scope("decode_wire", None);
         let mut input = Decoder::new(plain);
@@ -4116,7 +4218,7 @@ fn raw_stage(
         Ok(update)
     };
     let layout = context.directory.layout;
-    let budget = Budget(AtomicUsize::new(MAX_BLOCK_RAW_BYTES));
+    let budget = Budget(AtomicUsize::new(raw_budget()));
     let mut predictor = predicted::Predictor::default();
     // A keyed block's later entries name rows among the table's rows at the
     // frame before and store masks against the masks before them.
@@ -4154,6 +4256,27 @@ fn raw_stage(
         #[cfg(test)]
         let _step = super::check::Scope::enter(super::check::Step::Raw(table, frame));
         check.run()?;
+        if let Some(chunks) = &mut chunks {
+            // The joined section goes on with its next chunk's columns only
+            // once every column of this one is read; this one goes before the
+            // next is inflated.
+            while later_input.exhausted() && chunks.holds_more() {
+                later_input = ColumnReader::empty(fields);
+                later_raw = None;
+                let Some(raw) = chunks.next()? else {
+                    break;
+                };
+                later_raw = Some(raw);
+                later_input = ColumnReader::stored(
+                    later_raw.as_deref().expect("a chunk"),
+                    fields,
+                    table,
+                    format.version(),
+                )?;
+                later_input.2 = chunks.ahead();
+                keep_marks(&mut marks_read, later_input.1)?;
+            }
+        }
         let previous = context.hours[frame - 1];
         if !get(
             &context.entries[frame * width..(frame + 1) * width],
@@ -4295,14 +4418,34 @@ fn raw_stage(
     } else {
         drop(later_input);
     }
-    Ok(RawColumn {
-        updates,
-        key_marks: marks,
-        later: LaterSection {
+    let later = match &mut chunks {
+        Some(chunks) => {
+            drop(later_raw);
+            if chunks.next()?.is_some() {
+                return Err(invalid_static("grouped section has unread column bytes"));
+            }
+            LaterSection {
+                marks: marked.then_some(marks_read.len()),
+                raw: Some(marks_read),
+            }
+        }
+        None => LaterSection {
             raw: later_raw,
             marks: later_marks,
         },
+    };
+    Ok(RawColumn {
+        updates,
+        key_marks: marks,
+        later,
     })
+}
+
+fn keep_marks(marks: &mut Vec<u8>, chunk: Option<&[u8]>) -> io::Result<()> {
+    let chunk = chunk.unwrap_or_default();
+    engine_allocation::reserve(marks, chunk.len())?;
+    marks.extend_from_slice(chunk);
+    Ok(())
 }
 
 /// A keyframe as a later keyframe's anchor: its rows (none for a table this
@@ -5028,6 +5171,7 @@ mod tests {
                 table,
                 field,
                 &mut Decoder::new(&tag),
+                0,
                 Some(base),
                 None,
                 &mut values,
@@ -5067,6 +5211,7 @@ mod tests {
                     table,
                     field,
                     &mut Decoder::new(&[DROP_FIRST]),
+                    0,
                     Some(&base),
                     None,
                     &mut values,

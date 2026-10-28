@@ -309,6 +309,7 @@ pub(super) fn take_delta(
                     table,
                     field,
                     column,
+                    input.2,
                     base,
                     None,
                     &mut values,

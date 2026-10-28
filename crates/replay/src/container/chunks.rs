@@ -492,6 +492,7 @@ impl Columns {
                     .map(|range| Decoder::new(&self.raw[range.clone()])),
             )?,
             None,
+            0,
         );
         let value = read(&mut input)?;
         for (range, column) in self.ranges.iter_mut().zip(input.0.iter()) {

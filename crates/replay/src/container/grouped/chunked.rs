@@ -84,6 +84,73 @@ pub(super) fn split_at(
     Ok(sections)
 }
 
+/// A chunked section a chunk at a time, inflated and checked as [`join`]
+/// inflates and checks it, without its joined columns.
+pub(super) struct Chunks<'a> {
+    block: &'a [u8],
+    chunks: std::slice::Iter<'a, (usize, usize, usize)>,
+    columns: Option<usize>,
+}
+
+impl<'a> Chunks<'a> {
+    pub(super) fn new(block: &'a [u8], chunks: &'a [(usize, usize, usize)]) -> Self {
+        Self {
+            block,
+            chunks: chunks.iter(),
+            columns: None,
+        }
+    }
+
+    /// The next chunk holding bytes; None after the last.
+    pub(super) fn next(&mut self) -> io::Result<Option<Vec<u8>>> {
+        for &(offset, length, raw) in &mut self.chunks {
+            if length == 0 {
+                continue;
+            }
+            let raw = Directory::inflate(&self.block[offset..offset + length], raw)?;
+            if raw.is_empty() {
+                continue;
+            }
+            let columns = columns(&raw)?;
+            if columns.iter().all(|column| column.is_empty()) {
+                return Err(invalid_static("non-empty chunk holds no column bytes"));
+            }
+            if *self.columns.get_or_insert(columns.len()) != columns.len() {
+                return Err(invalid_static("chunk column counts disagree"));
+            }
+            return Ok(Some(raw));
+        }
+        Ok(None)
+    }
+
+    /// [`join`]'s refusal of a section whose chunks all hold nothing.
+    pub(super) fn first(&mut self) -> io::Result<Vec<u8>> {
+        self.next()?
+            .ok_or_else(|| invalid_static("later section contains only empty chunks"))
+    }
+
+    /// Whether a chunk after the last one taken stores any bytes.
+    pub(super) fn holds_more(&self) -> bool {
+        self.chunks
+            .as_slice()
+            .iter()
+            .any(|&(_, length, _)| length != 0)
+    }
+
+    /// The inflated bytes of the chunks after the last one taken.
+    pub(super) fn ahead(&self) -> usize {
+        #[cfg(test)]
+        if CHUNK_LOCAL.get() {
+            return 0;
+        }
+        self.chunks
+            .as_slice()
+            .iter()
+            .filter(|&&(_, length, _)| length != 0)
+            .fold(0, |ahead, &(_, _, raw)| ahead.saturating_add(raw))
+    }
+}
+
 pub(super) fn join(chunks: impl IntoIterator<Item = io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
     let mut joined: Vec<Vec<u8>> = Vec::new();
     for raw in chunks {
