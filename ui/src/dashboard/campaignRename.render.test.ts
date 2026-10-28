@@ -152,3 +152,17 @@ test('a recording Battle Plan Recorder renames while open shows its new name, an
   assert.equal(view.opened.at(-1), again);
   assert.equal(shown(view).path, again);
 }));
+
+test('a look for the open recordings waits for the one before it to answer', () => dashboard(async view => {
+  const looks: ((located: (string | null)[]) => void)[] = [];
+  view.props.client.locateRecordings = () => new Promise(resolve => { looks.push(resolve); });
+  await view.poll();
+  // Renders replace the interval; the look still pending holds the next ones back.
+  await view.poll();
+  await view.poll();
+  assert.equal(looks.length, 1, 'a slow host is asked once');
+  looks[0]([null]);
+  await settle();
+  await view.poll();
+  assert.equal(looks.length, 2, 'answered, it is asked again');
+}));

@@ -451,14 +451,17 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     const source = campaign.loading ? null : bindingsRef.current[campaign.id]?.source;
     return source ? [{ path: campaign.path, campaignKey: source.metadata.campaignKey }] : [];
   }), []);
+  // A look the host has not answered yet is never stacked with another, whichever effect started it.
+  const locating = useRef(false);
   // Each open recording is found again by its folder and campaign, so a rename shows at once.
   useEffect(() => {
     if (!client.locateRecordings) return;
     let live = true;
     const timer = setInterval(() => {
       const shown = shownRecordings();
-      if (!shown.length) return;
-      void client.locateRecordings!(shown).then(located => {
+      if (!shown.length || locating.current) return;
+      locating.current = true;
+      void client.locateRecordings!(shown).finally(() => { locating.current = false; }).then(located => {
         if (!live) return;
         let moved = false;
         // A new name, or the same one with different capitals.
