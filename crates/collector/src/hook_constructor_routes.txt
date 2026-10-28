@@ -215,7 +215,7 @@ call:wait_quiet
 call:write_status
 call:write_status_bytes
 macro-definition:refuse_detach:2869dd9f05ed5db5
-macro-definition:retain_detach:ce4899457bad5d3e
+macro-definition:retain_detach:40146af004503c5e
 macro:crate::status::status
 macro:format
 macro:format_args

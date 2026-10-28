@@ -913,7 +913,7 @@ fn every_hook_capture_producer_table_has_an_explicit_classification() {
             covered.extend(actual.intersection(&dependent).copied());
         }};
     }
-    producer!(air; [AirBases,WingCumulative,AirAces,AirStatistics,AirReferenceWitnesses,AirMissionInputs,AirSortieBaseCountries,AirSortieModifiers,AirSortieSpecialBases,AirSortieModifierMetadata,AirNavalPatrolCombats]);
+    producer!(air; [WingCumulative,AirAces,AirStatistics,AirReferenceWitnesses,AirMissionInputs,AirSortieBaseCountries,AirSortieModifiers,AirSortieSpecialBases,AirSortieModifierMetadata,AirNavalPatrolCombats]);
     producer!(air_histories; []);
     producer!(air_records; []);
     producer!(air_relations; []);

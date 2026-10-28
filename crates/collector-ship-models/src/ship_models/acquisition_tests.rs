@@ -3282,6 +3282,8 @@ mod carry_cost_bench {
                     u64::from_le_bytes(world.memory.low[bank..bank + 8].try_into().unwrap())
                         as usize;
                 world.memory.low[variant - fleet::LOW..variant - fleet::LOW + 8].fill(0);
+                // Held variants carry until a design writer touches them.
+                drop(watches.notify_variant(variant));
             }
             let memory = MetadataMemory {
                 inner: &world.memory,
