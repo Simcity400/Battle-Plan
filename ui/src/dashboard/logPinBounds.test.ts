@@ -34,7 +34,8 @@ test('actual Raid and windowed Espionage logs refuse aligned Follow and Pin hour
         : request.product === 'espionage-log' && request.params.window === null ? ${JSON.stringify(manifest)} : undefined;
       if (data === undefined) throw new Error('Unexpected branch-product request');
       return { data: validate(data), retry() {} };
-    }; export const loadTransientProduct = () => { throw new Error('Unexpected detail tooltip request'); };`,
+    }; export const loadTransientProduct = () => { throw new Error('Unexpected detail tooltip request'); };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useProductWindows = (_client, identity, request, wanted, active, validate) => {
       const windows = ${JSON.stringify([early, late])};
       return { data: new Map(active && identity !== null ? wanted.map(index => {

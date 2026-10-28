@@ -44,7 +44,9 @@ test('experience widget reads only viewport summaries and reached hours while pr
       if (request) globalThis.__preparedExperienceFixture.products.push({product:request.product,active}); return {retry(){}};
     }; export const useProducts = (_client, requests, active) => {
       for (const request of requests) globalThis.__preparedExperienceFixture.products.push({product:request.product,active}); return {retry(){}};
-    };`,
+    };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({retry(){},error:globalThis.__preparedExperienceFixture.groupError,data:globalThis.__preparedExperienceFixture.groupsHeld
       ? {warnings:[],capitulations:[],countryIdentities:globalThis.__preparedExperienceFixture.histories} : undefined});`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 100; export const usePlaybackSpeed = () => 24;',

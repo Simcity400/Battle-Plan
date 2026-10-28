@@ -5,7 +5,7 @@ import { useContentRevision } from '../../dashboard/contentRevision';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { useProductWindows } from '../../dashboard/productWindows';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct } from '../../dashboard/products';
 import type { EventFeedKind, ScriptOccurrenceReply } from '../../generated/dashboard';
 import { validateScriptPage } from './scriptOccurrences';
 import type { ScriptPage } from './scriptOccurrences';
@@ -27,18 +27,20 @@ export function useScriptOccurrences<T>(runtime: WidgetRuntime, track: BoundTrac
   tally: (rows: readonly LogRow<T>[]) => number) {
   const content = useContentRevision(runtime.client);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : null;
-  const request = (cursor: string | null) => ({ sourceId: track!.source.id, revision: track!.source.revision, product,
-    params: { branchId: track!.branch.id, firstHour, lastHour: hour, cursor, pageSize: PAGE_SIZE, kinds: [...kinds] } });
-  const first = useProduct<ScriptPage>(runtime.client, track && hour !== null ? request(null) : null, active, validateScriptPage, track?.source);
+  const request = (cursor: string | null, lastHour: number | null) => ({ sourceId: track!.source.id, revision: track!.source.revision, product,
+    params: { branchId: track!.branch.id, firstHour, lastHour, cursor, pageSize: PAGE_SIZE, kinds: [...kinds] } });
+  const first = useFollowedProduct<ScriptPage>(runtime.client, track && hour !== null ? request(null, hour) : null, ['lastHour'], active, validateScriptPage, track?.source);
+  // The page chain follows the hour the first page answers.
+  const read = first.data && first.moment ? (JSON.parse(first.moment) as [number | null])[0] : hour;
   // A first page answered from the prepared prefix reads back from the prefix's
   // last hour, and its continuations keep that hour: a grown prefix starts the
   // chain again.
   const live = first.data?.prefix?.pending.length ? first.data.prefix.coverage.lastHour : null;
-  const boundsKey = JSON.stringify([identity, product, filterKey, hour, live]);
+  const boundsKey = JSON.stringify([identity, product, filterKey, read, live]);
   const owner = useMemo(() => ({ client: runtime.client, boundsKey, prepare }), [runtime.client, boundsKey, prepare]);
   const current = useRef(owner); current.current = owner;
   const [chain, setChain] = useState<{ owner: typeof owner; pages: PageInfo[]; error?: string }>({ owner, pages: [] });
-  const initial: PageInfo = { cursor: null, start: Math.max(firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: hour ?? 0,
+  const initial: PageInfo = { cursor: null, start: Math.max(firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: read ?? 0,
     count: PAGE_SIZE, tally: null, final: false };
   const descriptors = chain.owner === owner && chain.pages.length ? chain.pages : [initial];
   const [wanted, setWanted] = useState<{ owner: typeof owner; pages: readonly string[] }>({ owner, pages: [] });
@@ -46,14 +48,16 @@ export function useScriptOccurrences<T>(runtime: WidgetRuntime, track: BoundTrac
   const indices = [...new Set(chosen.flatMap(page => Number.isInteger(Number(page)) && Number(page) > 0
     && Number(page) < descriptors.length ? [Number(page)] : []))];
   const chunks = useProductWindows<ScriptPage>(runtime.client, boundsKey,
-    index => request(descriptors[index].cursor), indices, active && !!first.data, validateScriptPage, track?.source);
+    index => request(descriptors[index].cursor, read), indices, active && !!first.data, validateScriptPage, track?.source);
   const loaded = useMemo(() => new Map<number, ScriptPage>([...chunks.data, ...(first.data ? [[0, first.data] as const] : [])]), [chunks.data, first.data]);
   const prepared = useMemo(() => new Map([...loaded].map(([index, page]) => [index, prepare(page.reply)])), [loaded, prepare]);
-  const rendered = useMemo(() => new Map([...prepared].map(([index, rows]) => [index, hour === null ? [] : rows.flatMap(row => {
-    const shown = at(row, hour);
+  // Cards stop where the shown pages were read, which a page kept while the next hour loads bounds.
+  const cut = hour === null ? null : read === null ? hour : Math.min(read, hour);
+  const rendered = useMemo(() => new Map([...prepared].map(([index, rows]) => [index, cut === null ? [] : rows.flatMap(row => {
+    const shown = at(row, cut);
     // A card read in two pages stays two log rows; its occurrence ID is unchanged.
     return shown ? [{ ...shown, key: JSON.stringify([index, row.key]), id: JSON.stringify([index, row.id ?? row.key]) }] : [];
-  })])), [prepared, at, hour]);
+  })])), [prepared, at, cut]);
   useEffect(() => {
     if (!active || !first.data) return;
     setChain(previous => {

@@ -173,7 +173,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
 
   const ruling = rulingAt(data, presentationHour);
   const rulingBand = list.find(band => band.token === ruling);
-  const rulingRaw = rulingBand ? rawAt(rulingBand.series, Math.floor(head)) : null;
+  const rulingRaw = rulingBand ? rawAt(rulingBand.series, Math.floor(presentationHour)) : null;
   const leaderRun = leaderAt(data, presentationHour);
   const leader = leaderShown(data, leaderRun);
   // Portrait ringed in the ruling ideology's colour (grey when not
@@ -198,7 +198,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     <CountryPeople runtime={runtime} track={track} tag={tag} hour={presentationHour} active={active} view="politics" onWarnings={setPeopleWarnings} />
     {/* Names only; each popularity is still read out to assistive technology. */}
     <Legend label="Parties" items={list.map(band => {
-      const raw = rawAt(band.series, Math.floor(head));
+      const raw = rawAt(band.series, Math.floor(presentationHour));
       return { id: band.token, label: band.name, color: band.color, spokenValue: raw == null ? 'not recorded' : formatPopularity(raw, data.decimals) };
     })} />
     <div className="ruling-party-chart">

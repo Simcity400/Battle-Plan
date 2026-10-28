@@ -12,7 +12,7 @@ test('widget metadata preserves world controls and content-choice title policies
   const fixtures: Record<string, string> = {
     '/components/Popover.tsx': `export const usePopover = () => ({ trigger: null, open: true, close() {} });
       export const Popover = ({ children }) => children; export const PopoverBody = ({ children }) => children();`,
-    '/dashboard/products.ts': 'export const useProduct = () => ({});',
+    '/dashboard/products.ts': 'export const useProduct = () => ({}); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/CountryChip.tsx': 'export default () => "COUNTRY_CHIP";',
     '/dashboard/WidgetSettingsMenu.tsx': 'export default () => null;',
     '/dashboard/widgets.tsx': 'export const WidgetBody = () => "WIDGET_BODY";',

@@ -202,15 +202,46 @@ export function useProduct<T>(client: DashboardClient, request: ProductRequest |
 /** `useProduct` for a read that follows playback: a change to the `moving` params (its
  * hour) does not cancel the running read, which lands and stays shown while the newest
  * moment is read. Cancelled reads hold a connection until they end, so restarting a
- * slow read every hour would starve every other widget. `moment` names the shown reply. */
+ * slow read every hour would starve every other widget. `moment` names the shown reply, `asking` the one in flight. */
 export function useFollowedProduct<T>(client: DashboardClient, request: ProductRequest | null, moving: readonly string[], active: boolean,
-  validate?: (data: unknown) => T, source?: DashboardSource): ProductState<T> & { moment?: string } {
+  validate?: (data: unknown) => T, source?: DashboardSource): ProductState<T> & { moment?: string; asking?: string } {
   const content = useContentRevision(client);
   const params = (request?.params ?? {}) as Record<string, unknown>;
   const lane = request ? JSON.stringify([request.sourceId, request.revision, request.product, !!source, content,
     Object.entries(params).filter(([name]) => !moving.includes(name))]) : null;
-  const read = useViewRead<ProductRequest, T>(lane, request, JSON.stringify(moving.map(name => params[name])), active,
+  const viewKey = JSON.stringify(moving.map(name => params[name]));
+  const read = useViewRead<ProductRequest, T>(lane, request, viewKey, active,
     (at, signal, publish, restart) => loadProduct<T>(client, at, signal, validate, source, restart, publish), client);
-  const error = useHeldFailure(read.error, read.data !== undefined, read.retry);
-  return { data: read.data, error, retry: read.retry, moment: read.viewKey };
+  // A failure belongs to the moment it was asked for; a newer moment is still loading.
+  const error = useHeldFailure(read.errorKey === viewKey ? read.error : undefined, read.data !== undefined, read.retry);
+  return { data: read.data, error, retry: read.retry, moment: read.viewKey, asking: read.asking };
+}
+
+/** `useProducts` for requests that follow playback, read as `useFollowedProduct` reads one:
+ * the last set stays shown while the newest moment's set is read. `requests` are the
+ * ones `data` answers, index for index. */
+export function useFollowedProducts<T>(client: DashboardClient, requests: readonly ProductRequest[], moving: readonly string[], active: boolean,
+  validate?: (data: unknown) => T, source?: DashboardSource): ProductState<T[]> & { requests?: readonly ProductRequest[] } {
+  const content = useContentRevision(client);
+  const params = (request: ProductRequest) => (request.params ?? {}) as Record<string, unknown>;
+  const lane = requests.length ? JSON.stringify([content, !!source, requests.map(request => [request.sourceId, request.revision, request.product,
+    Object.entries(params(request)).filter(([name]) => !moving.includes(name))])]) : null;
+  const viewKey = JSON.stringify(requests.map(request => moving.map(name => params(request)[name])));
+  const read = useViewRead<readonly ProductRequest[], { requests: readonly ProductRequest[]; values: T[] }>(lane, requests, viewKey,
+    active, (at, signal, publish, restart) => {
+      // One failure ends the whole set: its other reads stop and never publish.
+      const batch = new AbortController();
+      const stop = () => batch.abort();
+      signal.addEventListener('abort', stop, { once: true });
+      const values: T[] = [];
+      const published = new Set<number>();
+      return Promise.all(at.map((request, index) => loadProduct<T>(client, request, batch.signal, validate, source, restart, value => {
+        if (batch.signal.aborted) return;
+        values[index] = value; published.add(index);
+        if (published.size === at.length) publish({ requests: at, values: [...values] });
+      }))).then(results => ({ requests: at, values: results }), error => { batch.abort(); throw error; })
+        .finally(() => signal.removeEventListener('abort', stop));
+    }, client);
+  const error = useHeldFailure(read.errorKey === viewKey ? read.error : undefined, read.data !== undefined, read.retry);
+  return { data: read.data?.values, requests: read.data?.requests, error, retry: read.retry };
 }

@@ -13,8 +13,8 @@ function effects(grant: Grant): string {
     grant.costReductionRaw !== null ? `Cost reduction ${researchNumber(BigInt(grant.costReductionRaw) * 100n)}%` : null].filter(Boolean).join(' · ');
 }
 
-export default function ResearchGrants({ inventory }: { inventory?: GrantInventory }) {
-  if (!inventory) return <p role="status">Research bonuses are still being prepared.</p>;
+export default function ResearchGrants({ inventory, loading = false }: { inventory?: GrantInventory; loading?: boolean }) {
+  if (!inventory) return <p role="status">{loading ? 'Loading research bonuses…' : 'Research bonuses are still being prepared.'}</p>;
   if (inventory.unavailable) return <p role="status">Research bonuses unavailable: {inventory.unavailable}</p>;
   return <details className="research-grants" open>
     <summary>Research bonuses <span className="pill">{inventory.grants.length} held</span></summary>

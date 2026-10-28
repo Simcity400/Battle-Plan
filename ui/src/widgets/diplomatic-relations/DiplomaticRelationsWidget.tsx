@@ -25,7 +25,7 @@ import { MEMBERSHIP_PREPARING, noMembersAt, resolveCountries } from '../../dashb
 import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, resolveOptions, setToken } from '../../dashboard/options';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useHeldFailure } from '../../dashboard/heldFailures';
@@ -118,22 +118,24 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const measure = registryData ? rankingSort(registryData.columns, { column: '', direction: 'descending' }, options.topMeasure, registryData.defaultSort).column : null;
   const ranked = useTopCountries(runtime.client, track?.source, track?.branch.id, hour, top, measure, active);
   const tags = top === null ? members : ranked.tags ?? NO_TAGS;
-  const opinions = useProduct<DiplomacyOpinionsReply>(runtime.client, track && tags.length > 1 ? { sourceId: track.source.id, revision: track.source.revision, product: 'diplomacy-state',
-    params: { view: 'opinions', branchId: track.branch.id, hour, tags } } : null, active, undefined, track?.source);
+  // The last matrix stays shown while the next hour's is read.
+  const opinions = useFollowedProduct<DiplomacyOpinionsReply>(runtime.client, track && tags.length > 1 ? { sourceId: track.source.id, revision: track.source.revision, product: 'diplomacy-state',
+    params: { view: 'opinions', branchId: track.branch.id, hour, tags } } : null, ['hour'], active, undefined, track?.source);
   const data = opinions.data;
+  const shown = data?.hour ?? hour;
   const [visibleTags, setVisibleTags] = useState<readonly string[]>([]);
   const [picked, setPicked] = useState<ChosenPair | null>(null);
   // The matrix names its countries at the hour shown; a chosen pair, for its pinned title,
   // at the hour it was chosen.
-  const names = useCountryNamesRead(runtime.client, track, useMemo(() => [...tags.map(tag => ({ hour, tag })),
-    ...(picked ? pairHolders(picked).map(holder => ({ hour: holder.hour, tag: holder.tag })) : [])], [tags, hour, picked]), active);
-  const flagsWanted = useMemo(() => visibleTags.map(tag => ({ hour, tag })), [visibleTags, hour]);
+  const names = useCountryNamesRead(runtime.client, track, useMemo(() => [...tags.map(tag => ({ hour: shown, tag })),
+    ...(picked ? pairHolders(picked).map(holder => ({ hour: holder.hour, tag: holder.tag })) : [])], [tags, shown, picked]), active);
+  const flagsWanted = useMemo(() => visibleTags.map(tag => ({ hour: shown, tag })), [visibleTags, shown]);
   const flags = useCountryLabelsAt(runtime.client, track, flagsWanted, active);
-  const label = useCallback((tag: string, at = hour) => ({ name: nameReadText(names.get(nameKey(at, tag))) }), [names, hour]);
-  const ordered = useMemo(() => orderCountries(tags, options.order === 'name' ? 'name' : 'faction', tag => label(tag).name, groups.data, hour,
-    id => { const faction = groups.data?.factions.find(item => item.id === id); return faction ? factionNameAt(faction, hour) : id; }), [tags, options.order, label, groups.data, hour]);
-  const axis = useMemo<MatrixAxisItem[]>(() => ordered.map(tag => { const country = flags.labelAt(hour)(tag); const named = label(tag);
-    return { id: tag, label: named.name, countryFlag: { flag: country.flag, flagReason: country.flagReason, flagPending: country.flagPending } }; }), [ordered, flags, label, hour]);
+  const label = useCallback((tag: string, at = shown) => ({ name: nameReadText(names.get(nameKey(at, tag))) }), [names, shown]);
+  const ordered = useMemo(() => orderCountries(tags, options.order === 'name' ? 'name' : 'faction', tag => label(tag).name, groups.data, shown,
+    id => { const faction = groups.data?.factions.find(item => item.id === id); return faction ? factionNameAt(faction, shown) : id; }), [tags, options.order, label, groups.data, shown]);
+  const axis = useMemo<MatrixAxisItem[]>(() => ordered.map(tag => { const country = flags.labelAt(shown)(tag); const named = label(tag);
+    return { id: tag, label: named.name, countryFlag: { flag: country.flag, flagReason: country.flagReason, flagPending: country.flagPending } }; }), [ordered, flags, label, shown]);
   const lookup = useMemo(() => data ? opinionIndex(data) : null, [data]);
   const [low, high] = useMemo(() => data ? opinionDomain(data) : [0, 0], [data]);
   const grey = mix(tokens.surface, tokens.text, 0.2);
@@ -147,11 +149,11 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
     const there = lookup?.(a, b), back = lookup?.(b, a);
     const text = (found: typeof there) => !found ? 'Not recorded' : 'unknown' in found ? 'Not recorded' : opinionText(found.value);
     const read = there && !('unknown' in there) ? there.readHour : null;
-    return { title: `${label(a).name}’s opinion of ${label(b).name}: ${text(there)}`, subtitle: dayLabel(hour), rows: [
+    return { title: `${label(a).name}’s opinion of ${label(b).name}: ${text(there)}`, subtitle: dayLabel(shown), rows: [
       { label: `${label(b).name}’s opinion of ${label(a).name}`, value: text(back) },
-      ...(read != null && read !== hour ? [{ label: 'As of', value: dayLabel(read) }] : []),
+      ...(read != null && read !== shown ? [{ label: 'As of', value: dayLabel(read) }] : []),
     ] };
-  }, [ordered, lookup, label, hour]);
+  }, [ordered, lookup, label, shown]);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const savedPairKey = typeof options.pair === 'string' && options.pair ? contentKey(options.pair) : null;
   const savedPair = pairOf(savedPairKey);
@@ -181,8 +183,8 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const main = <HeatMatrix label="Opinions" rows={axis} columns={axis} cell={cell} revision={`${data.hour}:${ordered.join(',')}:${low}:${high}:${grey}`} active={active && (!picked || options.drill === 'popout')}
     tooltip={tooltip} onVisible={(rows, columns) => setVisibleTags(previous => { const next = [...new Set([...rows, ...columns])];
       return previous.length === next.length && previous.every((tag, index) => tag === next[index]) ? previous : next; })}
-    onSelect={(row, column) => { setPicked({ first: ordered[row], second: ordered[column], hour }); dispatch({ type: 'open', breakdown: PAIR.id, hour, playing: false, playhead: null }); }}
-    menu={(row) => { const read = data.owners.find(owner => owner.tag === ordered[row])?.readHour; return read != null && read !== hour ? [jumpItem(runtime, track.id, read)] : []; }}
+    onSelect={(row, column) => { setPicked({ first: ordered[row], second: ordered[column], hour: shown }); dispatch({ type: 'open', breakdown: PAIR.id, hour: shown, playing: false, playhead: null }); }}
+    menu={(row) => { const read = data.owners.find(owner => owner.tag === ordered[row])?.readHour; return read != null && read !== shown ? [jumpItem(runtime, track.id, read)] : []; }}
     legend={[{ id: 'low', label: low < 0 ? opinionText(low) : '0', color: low < 0 ? tokens.error : grey }, { id: 'zero', label: '0', color: grey },
       { id: 'high', label: high > 0 ? opinionText(high) : '0', color: high > 0 ? tokens.positive : grey }]} />;
   return <div ref={anchor} className="diplomatic-relations">{groupFailure}

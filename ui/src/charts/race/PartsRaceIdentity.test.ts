@@ -72,7 +72,8 @@ test('registered force breakdowns date their native headers and follow an indepe
     '/dashboard/products.ts': `const reply = request => request?.product === 'country-groups' ? undefined : request ? globalThis.__partsIdentity.reply : undefined;
       export const useProduct = (_client, request) => ({ data: reply(request), retry() {} });
       export const loadProduct = (_client, request, _signal, _validate, _source, _restart, publish) => {
-        const data = reply(request); if (data !== undefined) publish?.(data); return new Promise(() => {}); };`,
+        const data = reply(request); if (data !== undefined) publish?.(data); return new Promise(() => {}); };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     // The race's view read answers in the same render, as its products do here.
     '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
       if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });

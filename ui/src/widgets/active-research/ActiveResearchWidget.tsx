@@ -48,14 +48,18 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
   const owner = useId();
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const live = widget.time.mode === 'follow';
-  const { track, tag, data: currentData, grants, error, retry, historyPreparing, countdownPreparing } = useActiveResearch(widget, runtime, active);
+  const { track, tag, data: currentData, answeredHour, grants, error, retry, historyPreparing, countdownPreparing } = useActiveResearch(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window && Math.floor(window.lastHour);
   const history = useResearchReply(widget, runtime, active && !historyPreparing);
   const data = !historyPreparing && history.data && hour != null && !pendingAt(preparedPrefix(history.data), hour) ? history.data : currentData;
   const { categories } = useChartTokens();
-  const slots = useMemo(() => data && hour != null ? researchAt(data.history, hour) : null, [data, hour]);
-  const cards = useMemo(() => slots && data && hour != null ? activeSlots(slots, coverageAt(data.history.coverage, hour), hour) : [], [slots, data, hour]);
+  // Reached slots answer their own hour; assignment history answers the asked one.
+  const slotHour = data === currentData ? answeredHour ?? hour : hour;
+  // The bonus inventory answers the reached read's hour: shown beside cards of that hour only.
+  const grantsShown = answeredHour === slotHour ? grants : undefined;
+  const slots = useMemo(() => data && slotHour != null ? researchAt(data.history, slotHour) : null, [data, slotHour]);
+  const cards = useMemo(() => slots && data && slotHour != null ? activeSlots(slots, coverageAt(data.history.coverage, slotHour), slotHour) : [], [slots, data, slotHour]);
   if (import.meta.env.MODE === 'parity') useParityRows(parity, () => ({ kind: 'windowed', label: 'Active research', complete: true, total: cards.length,
     rows: cards.map((card, index) => ({ index, key: `slot:${card.slot.index}`, item: card.kind === 'idle' ? { ...card, savedRaw: card.savedRaw.toString() } : card })) }));
   const looks = useMemo(() => data ? researchFolderLooks(data, historyTokens(data.history), categories) : new Map(), [data, categories]);
@@ -128,8 +132,8 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
     {header}
     {error && <WidgetState kind="error" detail={error} onRetry={retry} />}
     <div className="active-cards">{cards.map(card)}</div>
-    {!cards.length && <p>No research slots recorded at {researchDate(hour)}.</p>}
-    <ResearchGrants inventory={grants} />
+    {!cards.length && <p>No research slots recorded at {researchDate(slotHour ?? hour)}.</p>}
+    <ResearchGrants inventory={grantsShown} loading={grants !== undefined && grantsShown === undefined} />
     {historyPreparing && <p className="chart-line-key" role="status">Assignment dates and time breakdown are still being prepared.{countdownPreparing && ' The carried days-left estimate is still being prepared.'}</p>}
     <Popover menu={breakdown} className="research-popover" aria-label="Research time breakdown">
       {breakdown.open && <>

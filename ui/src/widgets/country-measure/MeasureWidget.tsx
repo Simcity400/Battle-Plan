@@ -37,7 +37,7 @@ import { pinTime, resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { powerDecimals } from '../../dashboard/powerDecimals';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct, useProducts } from '../../dashboard/products';
+import { useFollowedProducts, useProduct } from '../../dashboard/products';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
 import { FAILED_FACT } from '../../dashboard/countryFacts';
@@ -173,9 +173,13 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   const ledgerRequests = track ? requestedTags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
     product: 'politics-ledger', params: runtime.client.preparedQuery ? { branchId: track.branch.id, tag, view: 'balance',
       from: Math.floor(ledgerAt / 24) * 24, hour: ledgerAt } : { branchId: track.branch.id, tag, view: 'balance' } })) : [];
-  const ledger = useProducts<PoliticsLedgerReply>(runtime.client, ledgerRequests, active && reachedDetails, validatePowerBalance);
+  const ledger = useFollowedProducts<PoliticsLedgerReply>(runtime.client, ledgerRequests, ['from', 'hour'], active && reachedDetails, validatePowerBalance);
   const currency = config.measure === 'politicalPower' ? 'Political' : 'Command';
   const details = useMemo(() => new Map((ledger.data ?? []).map(reply => [reply.tag, powerBalanceIndex(reply, currency)])), [ledger.data, currency]);
+  // The day and hour the shown ledgers answer; a ledger kept while the next day loads answers only its own.
+  const ledgerAnswer = ledger.requests?.[0]?.params as { from?: number; hour?: number } | undefined;
+  const detailsAnswer = (hour: number) => ledgerAnswer?.from === undefined || ledgerAnswer.hour === undefined
+    || Math.floor(hour / 24) * 24 === ledgerAnswer.from && Math.floor(hour) <= ledgerAnswer.hour;
   const ledgerModel = useMemo(() => ledger.data ? JSON.stringify(ledger.data.map(powerLedgerModelKey)) : undefined, [ledger.data]);
   const heldDetails = useRef<{ owner: typeof captureOwner; model?: string; indexes: typeof details }>({ owner: captureOwner, indexes: details });
   if (heldDetails.current.owner !== captureOwner) heldDetails.current = { owner: captureOwner, indexes: details };
@@ -483,14 +487,14 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
           // Past a few countries the tooltip lists balances only, so it fits the window.
           for (const item of series.length > CEILING_ROWS_MAX ? [] : series) {
             if (!isMember(item.membership, hour) || item.valueAt(hour) === null) continue;
-            const detail = details.get(item.tag);
+            const detail = detailsAnswer(hour) ? details.get(item.tag) : undefined;
             if (series.length > 1) rows.push({ label: labels.labelAt(hour)(item.tag).name, strong: true, divider: true });
             if (detail) rows.push(...powerBalanceRows(detail, hour, Math.floor(detailsThrough), digits));
             else rows.push({ label: 'Income and causes', value: ledger.error ? 'Couldn’t load income and causes.' : 'Loading…', tone: 'muted' });
             const drop = item.drops.find(entry => entry.hour === hour);
             const cover = detail && powerCoverageAt(detail, hour);
             const captured = currency === 'Political' ? cover?.political : cover?.command;
-            if (drop && !captured) rows.push({ label: 'Balance fell', value: netSpend(drop, decimals, digits), divider: true });
+            if (drop && detail && !captured) rows.push({ label: 'Balance fell', value: netSpend(drop, decimals, digits), divider: true });
           }
           rows.push(...badgeRows(hovered));
           const notes = [

@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { HourSpan, PoliticsLedgerReply } from '../../generated/dashboard';
-import { loadProduct, useProducts } from '../../dashboard/products';
+import { loadProduct, useFollowedProducts } from '../../dashboard/products';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useViewRead } from '../../dashboard/viewRead';
@@ -52,20 +52,21 @@ export function usePreparedPowerParts(client: DashboardClient | undefined, sourc
     return to < from ? [] : [{ sourceId: source.id, revision: source.revision, product: 'politics-ledger',
       params: { branchId, tag, view: 'balance', from, hour: to, within } }];
   })) : [];
-  const exact = useProducts<PoliticsLedgerReply>(requestClient, requests, active && enabled, validate);
+  const exact = useFollowedProducts<PoliticsLedgerReply>(requestClient, requests, ['from', 'hour'], active && enabled, validate);
+  // Replies are indexed by the day they answer, which can be an earlier ask still shown.
   const indexes = useMemo(() => {
     const result = new Map<number, ReturnType<typeof powerBalanceIndex>>();
-    if (!enabled || !bindings) return result;
-    let offset = 0;
-    for (const hour of asked) {
-      const from = Math.floor(hour / 24) * 24, to = Math.min(hour, Math.floor(through));
-      if (to < from) continue;
-      const replies = exact.data?.slice(offset, offset + bindings!.size); offset += bindings!.size;
-      const reply = replies && powerCountryLedger(replies, bindings!, tag, countryId!);
-      if (reply) result.set(hour, powerBalanceIndex(reply, currency));
+    if (!enabled || !bindings || !exact.data || !exact.requests) return result;
+    const size = bindings.size;
+    for (let offset = 0; offset + size <= exact.requests.length; offset += size) {
+      const { from, hour: to } = exact.requests[offset].params as { from: number; hour: number };
+      const reply = powerCountryLedger(exact.data.slice(offset, offset + size), bindings, tag, countryId!);
+      if (!reply) continue;
+      const index = powerBalanceIndex(reply, currency);
+      for (const hour of asked) if (Math.floor(hour / 24) * 24 === from && Math.min(hour, Math.floor(through)) === to) result.set(hour, index);
     }
     return result;
-  }, [exact.data, owner, JSON.stringify(asked), through]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [exact.data, exact.requests, owner, JSON.stringify(asked), through]); // eslint-disable-line react-hooks/exhaustive-deps
   const onSummaryView = useCallback((next: { from: number; to: number; width: number }) => setViewport(previous => previous?.owner === owner
     && previous.from === next.from && previous.to === next.to && previous.width === next.width ? previous : { owner, ...next }), [owner]);
   const navigate = useCallback(async (key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End', from: number | null, bounds: readonly [number, number], cutoff: number | null, signal: AbortSignal) => {

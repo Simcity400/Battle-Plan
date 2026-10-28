@@ -132,7 +132,7 @@ export async function waitForFocusPreparation(client: FocusPreparedClient, sourc
       started = true;
       await client.prepareSource({ sourceId: source.id, revision: source.revision, requestId: newId() }, signal);
       progress = undefined;
-    } else if (reply.state === 'queued' || reply.state === 'preparing') {
+    } else if (reply.state === 'queued' || reply.state === 'preparing' || reply.state === 'paused') {
       const next = preparationProgress(reply);
       const changed = next !== progress;
       progress = next;
@@ -140,7 +140,7 @@ export async function waitForFocusPreparation(client: FocusPreparedClient, sourc
       await wait(signal);
       if (signal.aborted) break;
       if (!changed && Date.now() - before < POLL_MS / 2) throw new Error('Focus preparation made no progress.');
-    } else throw new Error(reply.error ?? (reply.state === 'paused' ? 'Focus preparation is paused and resumes automatically. Prepare this recording to continue now.' : reply.state === 'idle' ? (reply.backgroundEnabled ? 'Prepare this recording from Preparation and storage.' : 'Background preparation is off. Prepare this recording or enable it in Settings.') : reply.state === 'cancelled' ? 'Focus preparation cancelled.' : 'Focus preparation failed.'));
+    } else throw new Error(reply.error ?? (reply.state === 'idle' ? (reply.backgroundEnabled ? 'Prepare this recording from Preparation and storage.' : 'Background preparation is off. Prepare this recording or enable it in Settings.') : reply.state === 'cancelled' ? 'Focus preparation cancelled.' : 'Focus preparation failed.'));
   }
   throw new DOMException('Focus preparation cancelled', 'AbortError');
 }

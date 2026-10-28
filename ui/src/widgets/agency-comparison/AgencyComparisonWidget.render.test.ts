@@ -16,7 +16,8 @@ test('agencies of a group counted at an hour still being prepared are loading, n
   const state = { groups: pendingGroups() as CountryGroupReply };
   const host = globalThis as typeof globalThis & { __agencyPending?: typeof state }; host.__agencyPending = state;
   const { module, close } = await mountModule<{ default: ComponentType<WidgetProps> }>('/ui/src/widgets/agency-comparison/AgencyComparisonWidget.tsx', {
-    '/dashboard/products.ts': `export const useProduct = request => ({ data: request ? ${JSON.stringify(data)} : undefined, retry() {} });`,
+    '/dashboard/products.ts': `export const useProduct = request => ({ data: request ? ${JSON.stringify(data)} : undefined, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__agencyPending.groups, retry() {} });',
     '/widgets/agency-comparison/IntelSection.tsx': 'export default () => null;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',

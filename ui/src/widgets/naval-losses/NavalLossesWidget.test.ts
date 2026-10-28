@@ -33,7 +33,8 @@ test('known zero naval rows render inside a wrapper that fills the widget height
   // Keep the widget, drill host and race view; replace transport and country artwork.
   const replacements: Record<string, string> = {
     '/dashboard/productWindows.ts': navalWindowFixture,
-    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(reply)} });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(reply)} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 1;',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({ name: tag => tag,
@@ -127,7 +128,8 @@ test('an open naval drill keeps its chosen country and full history after Top N 
   const replacements: Record<string, string> = {
     '/dashboard/productWindows.ts': navalWindowFixture,
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request?.params.top === null
-      && request.params.tags.length === 1 && request.params.tags[0] === 'mod country A' ? ${JSON.stringify(full)} : ${JSON.stringify(reply)} });`,
+      && request.params.tags.length === 1 && request.params.tags[0] === 'mod country A' ? ${JSON.stringify(full)} : ${JSON.stringify(reply)} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/components/CountryPicker.tsx': `import { createElement } from 'react'; export default props => createElement('button', { 'data-selected': props.selectedTag }, props.selectedTag);`,
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: ${JSON.stringify(groups)} });`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
@@ -179,7 +181,8 @@ test('Pin as widget keeps the picked February hour rather than the March display
   assert.equal(navalReadHour(reply, pickedHour, 'both'), readHour);
   const replacements: Record<string, string> = {
     '/dashboard/productWindows.ts': navalWindowFixture,
-    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(reply)} });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(reply)} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123456", "#654321"] });',
@@ -242,7 +245,7 @@ test('a queued drill history pick survives playback and artwork updates but reje
   host.__navalReducer = reducer => [state.drill, action => { state.drill = reducer(state.drill, action); }];
   const replacements: Record<string, string> = {
     '/dashboard/productWindows.ts': navalWindowFixture,
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__navalPick.reply });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__navalPick.reply }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 1;',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({ name: tag => globalThis.__navalPick.name + tag,
@@ -334,7 +337,8 @@ test('the actual Naval adapter holds overlapping drawn choices, follows the alig
     '/dashboard/productWindows.ts': navalWindowFixture,
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request ?
       request.params.top === null && request.params.tags.length === 1 && globalThis.__navalAdapter.detailReply
-        ? globalThis.__navalAdapter.detailReply : globalThis.__navalAdapter.reply : undefined });`,
+        ? globalThis.__navalAdapter.detailReply : globalThis.__navalAdapter.reply : undefined });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted, active) => {

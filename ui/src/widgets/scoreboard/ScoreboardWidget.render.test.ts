@@ -13,7 +13,8 @@ test('a scoreboard of a group with no member known at an hour still being prepar
   const state = { groups: pendingGroups() as CountryGroupReply };
   const host = globalThis as typeof globalThis & { __scoreboardPending?: typeof state }; host.__scoreboardPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/scoreboard/ScoreboardWidget.tsx', {
-    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(registry)}, retry() {} });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(registry)}, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__scoreboardPending.groups, retry() {} });',
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,
@@ -42,7 +43,8 @@ test('a scoreboard of a group with no member found yet says what the hour was on
   const state = { groups: { ...pendingGroups({ humans: [] }), unobserved: { humans: [{ firstHour: 140, lastHour: 150 }], factions: [], wars: [] } } as CountryGroupReply, hour: 0 };
   const host = globalThis as typeof globalThis & { __scoreboardGap?: typeof state }; host.__scoreboardGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/scoreboard/ScoreboardWidget.tsx', {
-    '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request ? ${JSON.stringify(registry)} : undefined, retry() {} });`,
+    '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request ? ${JSON.stringify(registry)} : undefined, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__scoreboardGap.groups, retry() {} });',
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => globalThis.__scoreboardGap.hour;',

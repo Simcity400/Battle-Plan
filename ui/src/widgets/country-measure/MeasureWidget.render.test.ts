@@ -14,7 +14,9 @@ test('a group balance with no recorded line while membership is still being prep
   const host = globalThis as typeof globalThis & { __measurePending?: typeof state }; host.__measurePending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps & { config: MeasureConfig }) => ReactElement }>('/ui/src/widgets/country-measure/MeasureWidget.tsx', {
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request?.product === 'country-measure' ? ${JSON.stringify(reply)} : undefined, retry() {} });
-      export const useProducts = () => ({ retry() {} });`,
+      export const useProducts = () => ({ retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__measurePending.groups, retry() {} });',
     '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour};`,
     '/dashboard/useCountryLineStyles.ts': 'export const useCountryLineStyles = () => ({ known: new Map(), data: { warnings: [] } });',

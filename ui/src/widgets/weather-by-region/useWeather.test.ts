@@ -46,7 +46,8 @@ async function mountHooks() {
         if (path.endsWith('/dashboard/products.ts')) return `
           export const useProduct = (_client, request) => { globalThis.__weatherHooks.products.push(request); return { ...globalThis.__weatherHooks.product(request), retry() {} }; };
           export const loadTransientProduct = (_client, request, signal) => new Promise((resolve, reject) =>
-            globalThis.__weatherHooks.loads.push({ request, signal, resolve, reject }));`;
+            globalThis.__weatherHooks.loads.push({ request, signal, resolve, reject }));
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`;
       } }] });
   const hooks = await vite.ssrLoadModule('/ui/src/widgets/weather-by-region/useWeather.ts') as typeof import('./useWeather.ts');
   const react = await vite.ssrLoadModule('fake-react') as { render: <T>(hook: () => T) => T; reset: () => void };

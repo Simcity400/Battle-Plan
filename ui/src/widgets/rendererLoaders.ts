@@ -115,6 +115,9 @@ export const rendererLoaders = {
   'event-feed': () => import('./event-feed'),
 } satisfies Record<(typeof widgetMetas)[number]['kind'], () => Promise<{ default: WidgetRenderer }>>;
 const loaded = new Map<string, Promise<WidgetRenderer>>();
+const ready = new Map<string, WidgetRenderer>();
+/** A renderer already loaded and registered, so its settings can show without suspending. */
+export const loadedWidgetRenderer = (kind: string): WidgetRenderer | undefined => ready.get(kind);
 export function loadWidgetRenderer(kind: string): Promise<WidgetRenderer | undefined> {
   if (!Object.hasOwn(rendererLoaders, kind)) return Promise.resolve(undefined);
   const loader = rendererLoaders[kind as keyof typeof rendererLoaders];
@@ -124,6 +127,7 @@ export function loadWidgetRenderer(kind: string): Promise<WidgetRenderer | undef
     held = loader().then(module => {
       const meta = widgetMetas.find(meta => meta.kind === kind)!;
       registerWidgets([{ ...meta, useOptionChoices: (module.default as WidgetRenderer).useOptionChoices }]);
+      ready.set(kind, module.default);
       return module.default;
     });
     loaded.set(kind, held);

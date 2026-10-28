@@ -10,7 +10,7 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { CountrySelection, WidgetSpec } from '../../dashboard/model';
 import { setToken } from '../../dashboard/options';
-import { loadProduct, useProduct, useProducts } from '../../dashboard/products';
+import { loadProduct, useFollowedProduct, useFollowedProducts } from '../../dashboard/products';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useViewRead } from '../../dashboard/viewRead';
@@ -75,9 +75,10 @@ export function useResourceBalance(widget: WidgetSpec, runtime: WidgetRuntime, a
       params: { branchId: track!.branch.id, tag, ...(prepared ? { ...at, hours: [Math.floor(at.to)], within, ...(parity?.requested ? { requireComplete: true } : {}) } : {}) } },
     signal, value => validateResourceBalanceReply(value) as PreparedResourceReply, track?.source, restart, publish), runtime.client);
   const product = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
-  const points = useProduct<PreparedResourceReply>(runtime.client, track && tag && prepared ? {
+  // The last hour's points stay merged in while playback's newest hour is read.
+  const points = useFollowedProduct<PreparedResourceReply>(runtime.client, track && tag && prepared ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'resource-balance',
-    params: { branchId: track.branch.id, tag, from: hour, to: hour, hours: exact, within } } : null, active,
+    params: { branchId: track.branch.id, tag, from: hour, to: hour, hours: exact, within } } : null, ['from', 'to', 'hours'], active,
   value => validateResourceBalanceReply(value) as PreparedResourceReply, track?.source);
   const onSummaryView = useCallback((view: { from: number; to: number; width: number }, resources: readonly number[] = []) => {
     if (view.from > view.to) return;
@@ -154,8 +155,8 @@ export function useResourceCountry(selection: ResourceCountrySelection | null, r
     }, runtime.client);
   const product = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
   const hours = [...new Set([...(view?.hours ?? []), ...(moment === null || moment === undefined ? [] : [moment])])];
-  const points = useProducts<PreparedResourceReply>(runtime.client, runtime.client.preparedQuery && hours.length ? requests.map(request => ({ ...request,
-    params: { ...request.params, from: hours[0], to: hours[0], width: undefined, hours } })) : [], active && !!selection, validate, track?.source);
+  const points = useFollowedProducts<PreparedResourceReply>(runtime.client, runtime.client.preparedQuery && hours.length ? requests.map(request => ({ ...request,
+    params: { ...request.params, from: hours[0], to: hours[0], width: undefined, hours } })) : [], ['from', 'to', 'hours'], active && !!selection, validate, track?.source);
   const store = useMemo(() => new NumericReply<PreparedResourceReply[]>(), [runtime.client]);
   const numbers = store.update(JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, selection, [...(spans ?? [])]]), product.data, replies => replies.map(resourceNumbers));
   const data = useMemo(() => {

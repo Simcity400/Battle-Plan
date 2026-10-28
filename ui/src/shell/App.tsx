@@ -373,7 +373,7 @@ export default function App() {
       <main className="workspace" ref={content}>
         {workspaceBackdrop.kind !== 'same' && <Backdrop className="is-workspace" backdrop={{ ...workspaceBackdrop, kind: workspaceBackdrop.kind }} image={appearance.workspaceImage} />}
         <section id="panel-settings" aria-label="Settings" tabIndex={-1} className="settings-panel" hidden={tab !== 'settings'}>
-          {tab === 'settings' && <Suspense fallback={<p role="status">Loading settings?</p>}><Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersChange={value => { setFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} branch={branch} library={replayLibrary} client={client} appearance={appearance}
+          {tab === 'settings' && <Suspense fallback={<p role="status">Loading settings…</p>}><Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersChange={value => { setFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} branch={branch} library={replayLibrary} client={client} appearance={appearance}
             onResetPages={pagesReset()} /></Suspense>}
         </section>
         <section id="panel-map" aria-labelledby="tab-map" tabIndex={-1}

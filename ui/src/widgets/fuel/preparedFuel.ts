@@ -119,7 +119,7 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
   const [view,setView]=useState<{owner:typeof owner;from:number;to:number;width:number}>();
   const [hover,setHover]=useState<number|null>(null);
   const [states,setStates]=useState<{owner:typeof owner;data:FuelStates}>();
-  const [error,setError]=useState<{owner:typeof owner;message:string}>();
+  const [error,setError]=useState<{owner:typeof owner;message:string;reads?:string}>();
   const [attempt,setAttempt]=useState(0);
   const [keyboard,setKeyboard]=useState<{owner:typeof owner;hour:number|null;revision:number}>();
   const requests=useRef(new Set<AbortController>());
@@ -135,14 +135,13 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
   const wanted=[Math.floor(hour),...(originHour===undefined?[]:[originHour]),...(hover===null?[]:[Math.floor(hover)]),...(currentView?[Math.floor(currentView.from),Math.floor(currentView.to)]:[])];
   const reads=fuelReadRequests(tags,wanted,currentSummary);
   const readKey=JSON.stringify(reads);
-  useEffect(()=>{
-    if(!enabled || !active) return;
-    const controller=new AbortController();
-    void preparedSeriesQuery(client,track!.source,'series-state',{branchId:track!.branch.id,family:{kind:'country-fuel'},reads},controller.signal,attempt>0,undefined,undefined,
-      value=>{if(!controller.signal.aborted && alive.current===owner){const data=validateFuelStates(value);fuelStateIndex(data,reads);setStates({owner,data});}})
-      .catch(reason=>{if(!controller.signal.aborted && alive.current===owner)setError({owner,message:String(reason)});});
-    return ()=>controller.abort();
-  },[owner,readKey,active,enabled,attempt,content]);
+  // One state read at a time while playback and the hover move (`useViewRead`): the last
+  // states stay shown, and a slow read lands instead of being cancelled every hour.
+  // A shown partial reply lets a moved view replace a read still preparing.
+  useViewRead<typeof reads,null>(enabled ? JSON.stringify([identity,content,attempt]) : null,reads,readKey,active,(at,signal,publish)=>
+    preparedSeriesQuery(client,track!.source,'series-state',{branchId:track!.branch.id,family:{kind:'country-fuel'},reads:at},signal,attempt>0,undefined,undefined,
+      value=>{if(!signal.aborted && alive.current===owner){const data=validateFuelStates(value);fuelStateIndex(data,at);setStates({owner,data});publish(null);}})
+      .then(()=>null,reason=>{if(!signal.aborted && alive.current===owner)setError({owner,message:String(reason),reads:JSON.stringify(at)});return null;}),client);
   useEffect(()=>()=>{for(const controller of requests.current)controller.abort();requests.current.clear();},[owner,active]);
   const exactAt=useCallback(async(at:number)=>{
     if(!enabled || !active)return null;
@@ -174,7 +173,9 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
     summary:(tag:string,measure:string)=>currentSummary?.series.find(line=>line.tag===tag && line.measure===measure)?.summary,
     onSummaryView,onHover:setHover,onNavigateHour,keyboardHour:keyboard?.owner===owner?keyboard.hour:undefined,
     keyboardRevision:keyboard?.owner===owner?keyboard.revision:undefined,exactAt,
-    error:(error?.owner===owner?error.message:undefined) ?? summaries.error,retry:()=>{setError(undefined);setAttempt(value=>value+1);summaries.retry();}};
+    // A state read's failure belongs to the reads it asked for; a newer set is still loading.
+    error:(error?.owner===owner && (error.reads===undefined || error.reads===readKey)?error.message:undefined)
+      ?? (summaries.errorKey===JSON.stringify([currentView?.from,currentView?.to,currentView?.width]) ? summaries.error : undefined),retry:()=>{setError(undefined);setAttempt(value=>value+1);summaries.retry();}};
 }
 
 /** Both strip halves keep their own dated peak; exact bins retain every day. */

@@ -25,7 +25,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProducts } from '../../dashboard/products';
+import { useFollowedProducts } from '../../dashboard/products';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -123,7 +123,10 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const historyMembershipUnknown = resolved.unobserved.some(span => span.firstHour <= at && first <= span.lastHour);
   const requestedTags = view === 'live' ? tags.filter(tag => resolved.match.matches(tag, at)) : tags;
   const requests = track && resolved.ready ? requestedTags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects', params: { branchId: track.branch.id, tag, selectionTags: resolved.rootsFor.get(tag) ?? [], ...(view === 'live' ? { hour: at } : {}) } })) : [];
-  const { data, error, retry } = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply);
+  // The last hour's projects stay shown while playback's newest hour is read.
+  const { data, error, retry, requests: answered } = useFollowedProducts<SpecialProjectsReply>(runtime.client, requests, ['hour'], active, validateSpecialProjectsReply);
+  // The live hour the shown replies answer: a retained set keeps its own.
+  const shownAt = view === 'live' && answered?.length ? (answered[0].params as { hour?: number }).hour ?? at : at;
   const parity = useMemo(() => data?.map(reply => ({ tag: reply.tag, identities: reply.identities,
     available: reply.available, readHours: reply.readHours, projects: reply.projects,
     presentations: reply.presentations, people: reply.people, iterationTexts: reply.iterationTexts,
@@ -197,16 +200,16 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   else if (data.some(reply => !reply.details && currentProjectReply(reply)?.unavailable?.includes('still being prepared'))) body = <WidgetState kind="loading" label="This range is still being prepared." />;
   else if (data.every(reply => !reply.details && reply.unavailable && (!currentProjectReply(reply) || currentProjectReply(reply)!.unavailable))) body = <WidgetState kind="unavailable" message={PROJECTS_UNRECORDED} />;
   else if (view === 'live') {
-    const reply = data.find(reply => resolved.match.matches(reply.tag, at));
+    const reply = data.find(reply => resolved.match.matches(reply.tag, shownAt));
     const prefix = reply ? projectPrefix(reply) : null;
     const current = reply ? currentProjectReply(reply) : null;
     if (!reply) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
     // Past the prepared prefix: what it holds through its last hour, the rest still being prepared.
-    else if (current && !observedAt(current, at)) body = <><WidgetState kind="unavailable" message="Projects were not recorded at this time." /><ProjectDetails details={reply.details} /></>;
-    else if (current) body = <CurrentList reply={reply} at={prefix?.coverage.lastHour ?? at} item={item(reply)} preparing={prefix?.coverage} current={current} currentItem={item(current, true)} />;
-    else if (prefix && pendingAt(prefix, at)) body = <CurrentList reply={reply} at={prefix.coverage.lastHour} item={item(reply)} preparing={prefix.coverage} />;
-    else if (!observedAt(reply, at)) body = <><WidgetState kind="unavailable" message="Projects were not recorded at this time." /><ProjectDetails details={reply.details} /></>;
-    else body = <CurrentList reply={reply} at={at} item={item(reply)} />;
+    else if (current && !observedAt(current, shownAt)) body = <><WidgetState kind="unavailable" message="Projects were not recorded at this time." /><ProjectDetails details={reply.details} /></>;
+    else if (current) body = <CurrentList reply={reply} at={prefix?.coverage.lastHour ?? shownAt} item={item(reply)} preparing={prefix?.coverage} current={current} currentItem={item(current, true)} />;
+    else if (prefix && pendingAt(prefix, shownAt)) body = <CurrentList reply={reply} at={prefix.coverage.lastHour} item={item(reply)} preparing={prefix.coverage} />;
+    else if (!observedAt(reply, shownAt)) body = <><WidgetState kind="unavailable" message="Projects were not recorded at this time." /><ProjectDetails details={reply.details} /></>;
+    else body = <CurrentList reply={reply} at={shownAt} item={item(reply)} />;
   } else if (!pending?.length && !lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) body = historyMembershipUnknown
     ? <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />
     : !resolved.match.known(from, at) ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />

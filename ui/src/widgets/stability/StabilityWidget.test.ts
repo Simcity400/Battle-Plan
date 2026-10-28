@@ -59,7 +59,9 @@ test('the registered Stability renderer opens a drawn comparison chooser and pin
       ? globalThis.__stabilityRenderer.data && { ...globalThis.__stabilityRenderer.data, series:
         globalThis.__stabilityRenderer.data.series.filter(row => request.params.tags.includes(row.tag)) } : request?.product === 'stability-parts'
       ? { ...${JSON.stringify(detail(''))}, tag: request.params.tag } : undefined, retry() {} });
-      export const useProducts = (client, requests) => ({data: requests.length ? requests.map(request => useProduct(client, request).data) : undefined, retry() {}});`,
+      export const useProducts = (client, requests) => ({data: requests.length ? requests.map(request => useProduct(client, request).data) : undefined, retry() {}});
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/useCountryGroups.ts': `const data = {branchId: 'branch', humans: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [], warnings: [],
       countryIdentities: ['actor A', 'actor B'].map((tag, index) => ({tag, identities: [{firstHour: 0, lastHour: 101, slot: index + 1, countryId: index + 10}]})),
       unobserved: {humans: [], factions: [], wars: []}}; export const useCountryGroups = (_runtime, _track, active) => ({data: active ? data : undefined});`,

@@ -87,7 +87,7 @@ test('bombing breakdown keeps damage amounts and uses readable missing-content l
   reply.buildings = [{id: 'synthetic-private-token', name: null, missing: 'Synthetic raw building lookup refusal'}];
   reply.leaves = reply.leaves.map(leaf => ({...leaf, buildingToken: 'synthetic-private-token', state: 0}));
   const vite = await server({...common,
-    '/dashboard/products.ts': 'export const useProduct = () => ({error: "Synthetic raw place-name failure"});',
+    '/dashboard/products.ts': 'export const useProduct = () => ({error: "Synthetic raw place-name failure"}); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/charts/sunburst/Sunburst.tsx': 'export default props => {globalThis.__bombingBreakdown = props; return null;};',
   });
   try {
@@ -390,7 +390,7 @@ test('bombing sunburst uses content titles and hover keys while exact recorded d
   globals.__bombingTitles = state;
   const vite = await server({ ...common,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
-    '/dashboard/products.ts': 'export const useProduct = () => globalThis.__bombingTitles;',
+    '/dashboard/products.ts': 'export const useProduct = () => globalThis.__bombingTitles; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/charts/sunburst/Sunburst.tsx': 'export default props => { globalThis.__bombingTitles.sunburst = props; return null; };',
   });
   try {

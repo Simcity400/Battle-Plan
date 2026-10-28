@@ -503,7 +503,7 @@ test('the actual spending widget shows the census-backed empty state even with i
     server: { middlewareMode: true, watch: null, hmr: false, ws: false },
     plugins: [{ name: 'spending-empty-fixture', enforce: 'pre', transform(_source, id) {
       const path = id.replaceAll('\\', '/');
-      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = (_client, request, _active, _validate, source) => { globalThis.__spendingEmpty.request = request; globalThis.__spendingEmpty.source = source; return { data: globalThis.__spendingEmpty.data }; };';
+      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = (_client, request, _active, _validate, source) => { globalThis.__spendingEmpty.request = request; globalThis.__spendingEmpty.source = source; return { data: globalThis.__spendingEmpty.data }; }; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });';
       if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => {};';
       if (path.endsWith('/charts/sunburst/Sunburst.tsx')) return "import { createElement } from 'react'; export default props => { globalThis.__spendingEmpty.footnote = props.footnote; return createElement('div', null, 'Spending chart'); };";
     } }] });

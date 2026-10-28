@@ -15,7 +15,7 @@ test('lend-lease at an hour whose group membership is still being prepared is lo
   const state = { data, groups: pendingGroups() };
   const host = globalThis as typeof globalThis & { __lendLeasePending?: typeof state }; host.__lendLeasePending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/lend-lease-balance/LendLeaseBalanceWidget.tsx', {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__lendLeasePending.data, retry() {} });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__lendLeasePending.data, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__lendLeasePending.groups, retry() {} });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 0;',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag: () => null, color: () => null });',

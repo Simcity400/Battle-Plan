@@ -93,7 +93,8 @@ test('actual dated log callers select all native holders and send the same bound
       const data = request && f.replies[request.product];
       return { data: request?.product === 'air-aces' && request.params.view === 'roster'
         ? { manifest: data, roster: f.windows['air-aces'], readHour: f.actor.hour, preparing: [] } : data, retry() {} };
-    }; export const loadProduct = () => { throw new Error('Unexpected label request'); };`,
+    }; export const loadProduct = () => { throw new Error('Unexpected label request'); };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useProductWindows = (_client, _identity, request) => ({
       data: new Map([[0, globalThis.__datedLogHolder.windows[request(0).product]]]), errors: new Map(), retry() {} });
       export const useWindowDisplay = (_identity, data, hour) => ({ data, hour });`,

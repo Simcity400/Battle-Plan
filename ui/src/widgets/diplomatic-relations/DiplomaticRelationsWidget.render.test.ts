@@ -11,7 +11,7 @@ test('opinions of a group at an hour still being prepared are loading, not a cho
   const state = { groups: pendingGroups() as CountryGroupReply };
   const host = globalThis as typeof globalThis & { __relationsPending?: typeof state }; host.__relationsPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/diplomatic-relations/DiplomaticRelationsWidget.tsx', {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__relationsPending.groups, retry() {} });',
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ surface: '#000', text: '#fff', error: '#f00', positive: '#0f0' });",
@@ -36,7 +36,7 @@ test('opinions of a group with no member found yet say what the hour was once re
   const host = globalThis as typeof globalThis & { __relationsGap?: typeof state }; host.__relationsGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/diplomatic-relations/DiplomaticRelationsWidget.tsx', {
     // No request, no reply.
-    '/dashboard/products.ts': 'export const useProduct = (_client, request) => ({ data: request ? { owners: [], opinions: [], warnings: [], unresolved: 0, hour: 0 } : undefined, retry() {} });',
+    '/dashboard/products.ts': 'export const useProduct = (_client, request) => ({ data: request ? { owners: [], opinions: [], warnings: [], unresolved: 0, hour: 0 } : undefined, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__relationsGap.groups, retry() {} });',
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => globalThis.__relationsGap.hour;',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ surface: '#000', text: '#fff', error: '#f00', positive: '#0f0' });",

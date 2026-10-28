@@ -81,7 +81,7 @@ export function usePreparedGovernments(client: DashboardClient, source: Dashboar
   return { enabled, owner, exact, view, data: geometry.data, details: details.data, parityRows, prepareParity,
     parityError: parity?.key === parityKey ? parity.error : undefined,
     error: geometry.error ?? details.error ?? page.error, retry: () => { geometry.retry(); details.retry(); page.retry(); },
-    onSummaryView, onHover: (hour: number | null) => setHover({ owner, hour }), navigate,
+    onSummaryView, onHover: (hour: number | null) => setHover(previous => previous?.owner === owner && previous.hour === hour ? previous : { owner, hour }), navigate,
     cluster, rows, onMarkHover: (cluster: MarkCluster | null) => {
       if (cluster) setPicked(previous => previous?.owner === owner && previous.through === through
         && previous.cluster.tag === cluster.tag && previous.cluster.firstOrdinal === cluster.firstOrdinal && previous.cluster.count === cluster.count

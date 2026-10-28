@@ -12,7 +12,8 @@ test('fixed grey colours use the full country catalogue when visible pair order 
     readHours: [0], periods: [{ firstHour: 0, lastHour: 20, availability: 'recorded' }] };
   const host = globalThis as typeof globalThis & { __placementColourNodes?: { label: string; color: string }[] };
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': `export const reply = ${JSON.stringify(reply)}; export const useProduct = (_client, request) => ({ data: request?.product === 'country-groups' ? ${JSON.stringify(groups)} : reply });`,
+    '/dashboard/products.ts': `export const reply = ${JSON.stringify(reply)}; export const useProduct = (_client, request) => ({ data: request?.product === 'country-groups' ? ${JSON.stringify(groups)} : reply });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({labelAt: () => tag => ({name: tag})});',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsAt = (_client, _track, wanted) => new Map(wanted.map(item => [nameKey(item.hour, item.tag), [128,128,128]]));',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 20;',
@@ -48,7 +49,8 @@ test('registered operative placements retain feature and missing-read reasons in
   const reply = { branchId: 'branch', warnings: [], pairs: [], readHours: [],
     periods: [{ firstHour: 0, lastHour: 20, availability: 'featureAbsent' }] };
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': `export const reply = ${JSON.stringify(reply)}; export const useProduct = () => ({ data: reply });`,
+    '/dashboard/products.ts': `export const reply = ${JSON.stringify(reply)}; export const useProduct = () => ({ data: reply });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({labelAt: () => tag => ({name: tag})});',
     '/dashboard/countryNamesAt.ts': 'export const useCountryFactsAt = () => new Map(); export const nameKey = (hour, tag) => JSON.stringify([hour, tag]);',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',

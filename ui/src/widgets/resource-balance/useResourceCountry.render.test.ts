@@ -13,7 +13,7 @@ test('a resource breakdown chosen at an hour still being prepared is loading, no
   const state = { groups: pendingGroups() as CountryGroupReply };
   const host = globalThis as typeof globalThis & { __resourcePending?: typeof state }; host.__resourcePending = state;
   const { module, close } = await mountModule<{ useResourceCountry: typeof UseResourceCountry }>('/ui/src/widgets/resource-balance/useResourceBalance.ts', {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} }); export const useProducts = () => ({ retry() {} });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} }); export const useProducts = () => ({ retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined }); export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__resourcePending.groups, retry() {} });',
   });
   try {

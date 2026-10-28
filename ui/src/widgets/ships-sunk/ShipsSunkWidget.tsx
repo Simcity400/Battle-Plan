@@ -132,7 +132,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
 
   const pageError = history.errors.get(browseIndex);
   if (pageError) return <>{groupFailure}<WidgetState kind="error" detail={pageError} onRetry={history.retry} /></>;
-  if (browseIndex >= 0 && !history.data.has(browseIndex)) return <>{groupFailure}<WidgetState kind="loading" label="Loading ships sunk?" /></>;
+  if (browseIndex >= 0 && !history.data.has(browseIndex)) return <>{groupFailure}<WidgetState kind="loading" label="Loading ships sunk…" /></>;
   const preceding = wantedWindows.filter(index => index <= browseIndex);
   const oldest = preceding.length ? Math.min(...preceding) : 0;
   const earlier = oldest > 0 && manifest.data!.windows[oldest - 1].lastHour >= (from ?? Number.MIN_SAFE_INTEGER);

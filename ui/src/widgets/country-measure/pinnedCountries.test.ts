@@ -94,7 +94,9 @@ test('registered politics and losses pins retain native holders through local pi
           preparedHeadHour:request.params.headHour, preparedDetailHour:request.params.detailHour,
           preparedFrom:request.params.from, preparedTo:request.params.to, preparedWidth:request.params.width});
         const {data} = useProduct(client, request, true, validate); if (data !== undefined) publish(data); return new Promise(() => {});
-      };`,
+      };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     // View reads answer in the same render through the transport above.
     '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
       if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });

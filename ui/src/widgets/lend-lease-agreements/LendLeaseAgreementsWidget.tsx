@@ -43,6 +43,8 @@ const validate = validateMarketHistory('agreements');
 /** What each country sends or receives through lend-lease: schedule, delivered and
  * lost per agreement; ended agreements muted. A row opens Trade flows' agreement drill. */
 export default function LendLeaseAgreementsWidget({ widget, runtime, active, headerSlot, onDiagnostics, setOption }: WidgetProps) {
+  // The open drill may still show an earlier hour while its newest loads.
+  const [drillShown, setDrillShown] = useState<number | undefined>();
   const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
   const tokens = useChartTokens();
@@ -168,10 +170,10 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   return <div ref={anchor} className="lend-lease-agreements-host">{groupFailure}
     {headerSlot && createPortal(<span className="pill">{active_.toLocaleString()} active</span>, headerSlot)}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
-      title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={dayLabel(at)}
+      title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={dayLabel(drillShown ?? at)}
       following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
       main={main}>
-      {picked && <MarketDrill runtime={runtime} track={track} hour={drill.follow ? hour : at} active={active}
+      {picked && <MarketDrill runtime={runtime} track={track} hour={drill.follow ? hour : at} active={active} onAnswered={setDrillShown}
         tags={[picked.from, picked.partner].filter((tag): tag is string => tag !== null)} selected={`agreement:${picked.agreement.id}`} />}
     </DrillHost>
   </div>;

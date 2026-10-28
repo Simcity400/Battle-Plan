@@ -10,7 +10,7 @@ import { resolveWindow } from './model';
 import { contentKey, contentSet, setToken } from './options';
 import type { OptionValue } from './options';
 import { usePlaybackHour, usePlaybackSpeed } from './playback';
-import { useProduct } from './products';
+import { useFollowedProduct, useProduct } from './products';
 import { defaultCountryTag, selectedTags } from './countrySelection';
 import { useProductWindows } from './productWindows';
 import { useFactionColours } from './FactionColours';
@@ -113,7 +113,8 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
       branchId: track.branch.id, view: 'moment', firstHour: dayFirst,
       lastHour: Math.min(timelineRequestLast(lastHour, timelineData.dayHours) + timelineData.dayHours - 1, track.branch.lastHour), ...params, regions: timelineData.rows.map(row => row.region),
     } } : null;
-  const day = useProduct<AirMoment>(runtime.client, dayRequest, active, momentReply, track?.source);
+  // The last day stays shown while playback's newest is read.
+  const day = useFollowedProduct<AirMoment>(runtime.client, dayRequest, ['firstHour', 'lastHour'], active, momentReply, track?.source);
   const catalogueRequest = track && !moment && !needsViewpoint ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority',
     params: { branchId: track.branch.id, view: 'choices' } } : null;
   const catalogue = useProduct<AirChoices>(runtime.client, catalogueRequest, active, choicesReply, track?.source);

@@ -16,7 +16,9 @@ test('a group with no recorded fuel while membership is still being prepared is 
   const host = globalThis as typeof globalThis & { __fuelPending?: typeof state }; host.__fuelPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/fuel/FuelWidget.tsx', {
     '/dashboard/products.ts': `export const useProducts = (_client, requests) => ({ data: requests.map(request => ({ ...${JSON.stringify(reply)}, tag: request.params.tag })), retry() {} });
-      export const useProduct = () => ({ retry() {} });`,
+      export const useProduct = () => ({ retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__fuelPending.groups, retry() {} });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ revision: 0, labelAt: () => tag => ({ name: tag }) });',

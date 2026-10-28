@@ -110,7 +110,9 @@ async function fixture() {
           if (active) globalThis.__stockRequests?.push(...requests);
           const replies = requests.map(request => globalThis.__stockReplies?.find(reply => reply.tag === request.params.tag) ?? globalThis.__stockReply);
           return { data: replies.length && replies.every(Boolean) ? replies.map(validate) : undefined, retry() {} };
-        }`;
+        }
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`;
         if (path.endsWith('/dashboard/useCountryGroups.ts')) return `export const useCountryGroups = (_runtime, track) => ({
           data: globalThis.__stockCatalogue ?? { branchId: track?.branch.id, warnings: [], humans: [], factions: [], wars: [], warStarts: [], capitulations: [],
             identityChanges: [], unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: [

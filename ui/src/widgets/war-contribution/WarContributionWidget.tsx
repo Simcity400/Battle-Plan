@@ -15,7 +15,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { currentWarsAt, observationAt, validateWarsReply } from '../wars/warsData';
 import { OPTIONS, SHOW_CHOICES } from './definition';
@@ -48,17 +48,29 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   const war = structural.data ? chosenWar(structural.data, saved, at) : null;
   const readHour = war ? readHourFor(war, at) : null;
   // The requested-hour groups, read from that hour's frame alone as Wars reads them.
-  const exact = useProduct(runtime.client, track && readHour != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
-    params: { branchId: track.branch.id, viewpointTag, reads: [{ hour: readHour }] } } : null, active, validateWarsReply, track?.source);
-  const current = readHour == null ? null : currentWarsAt(exact.data, readHour);
-  const observation = war && readHour != null ? observationAt(war, readHour) : null;
+  // The last read hour's groups stay shown while playback's newest is read; both halves use its hour.
+  const exact = useFollowedProduct(runtime.client, track && readHour != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
+    params: { branchId: track.branch.id, viewpointTag, reads: [{ hour: readHour }] } } : null, ['reads'], active, validateWarsReply, track?.source);
+  const shownHour = readHour == null ? null : exact.moment ? (JSON.parse(exact.moment) as [{ hour: number }[]])[0][0]?.hour ?? readHour : readHour;
+  // The war each read hour was asked for: a reply still shown presents its own war.
+  const asked = useRef(new Map<number, NonNullable<typeof war>>());
+  if (war && readHour != null) { asked.current.delete(readHour); asked.current.set(readHour, war); }
+  const askingHour = exact.asking ? (JSON.parse(exact.asking) as [{ hour: number }[]])[0][0]?.hour : undefined;
+  for (const hour of asked.current.keys()) {
+    if (asked.current.size <= 64) break;
+    if (hour !== shownHour && hour !== readHour && hour !== askingHour) asked.current.delete(hour);
+  }
+  // A reply whose war is no longer known waits for one that is, rather than borrowing the newer war.
+  const shownWar = shownHour == null || shownHour === readHour ? war : asked.current.get(shownHour) ?? null;
+  const current = shownHour == null ? null : currentWarsAt(exact.data, shownHour);
+  const observation = shownWar && shownHour != null ? observationAt(shownWar, shownHour) : null;
   const group = current ? warGroup(current.contributions, observation) : null;
   const rows = useMemo(() => group && !group.reason ? contributionRows(group) : [], [group]);
   const tags = useMemo(() => [...new Set(rows.flatMap(row => [...row.left.members, ...row.right.members].map(member => member.tag)))], [rows]);
   // Colours and names for every participant, read at the war's read hour itself: every
   // participant held its tag then, so no other holder's look is sampled or kept. No flag
   // artwork, since the bars draw none.
-  const holders = useMemo(() => readHour == null ? [] : tags.map(tag => ({ key: tag, tag, hour: readHour })), [tags, readHour]);
+  const holders = useMemo(() => shownHour == null ? [] : tags.map(tag => ({ key: tag, tag, hour: shownHour })), [tags, shownHour]);
   const looks = useHolderLooks(runtime.client, track, holders, active, tokens);
   const [width, setWidth] = useState(0);
   const root = useRef<HTMLDivElement>(null);
@@ -93,7 +105,7 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
     return null;
   }, []);
   const tooltip = useCallback((item: Item, part?: ButterflyPartHit | null): TooltipContent | null => {
-    if (readHour == null) return null;
+    if (shownHour == null) return null;
     const participation = item.row.key === 'participation';
     const format = (raw: bigint) => participation ? `${amount(raw * 100n, 5)}%` : amount(raw, 5);
     const sideRows = (label: string, side: SideTotal): TooltipRow[] => [
@@ -105,25 +117,25 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
       const found = partAt(side, part.index);
       if (found) {
         const value = found.unknown ? found.member.unknown ?? 0n : found.member.value;
-        return { title: looks.name(found.member.tag), subtitle: `${item.label} · ${dayLabel(readHour)}`, rows: [
+        return { title: looks.name(found.member.tag), subtitle: `${item.label} · ${dayLabel(shownHour)}`, rows: [
             { label: found.unknown ? 'Unknown casualties contribution' : item.label, value: format(value) },
             { label: 'Share of side', value: shareText(value, sideAmount(side)) },
           ] };
       }
     }
-    return { title: item.label, subtitle: `${warName(observation)} · ${dayLabel(readHour)}`,
+    return { title: item.label, subtitle: `${warName(observation)} · ${dayLabel(shownHour)}`,
       rows: [...sideRows('Viewpoint’s side', item.row.left), ...sideRows('Opposing side', item.row.right)] };
-  }, [readHour, observation, looks, partAt]);
+  }, [shownHour, observation, looks, partAt]);
   const menu = useCallback((item: Item) => {
-    if (!war || !track || readHour == null) return [];
-    const runs = war.participants.filter(run => run.firstHour <= readHour);
+    if (!shownWar || !track || shownHour == null) return [];
+    const runs = shownWar.participants.filter(run => run.firstHour <= shownHour);
     const joins = [...new Set([...item.row.left.members, ...item.row.right.members].map(member => member.tag))].flatMap(tag => {
       const run = runs.filter(entry => entry.tag === tag).at(-1);
-      return run && run.firstHour !== war.firstHour ? [{ ...jumpItem(runtime, track.id, run.firstHour), label: `Jump to ${looks.name(tag)} joining ${dayLabel(run.firstHour)}` }] : [];
+      return run && run.firstHour !== shownWar.firstHour ? [{ ...jumpItem(runtime, track.id, run.firstHour), label: `Jump to ${looks.name(tag)} joining ${dayLabel(run.firstHour)}` }] : [];
     });
-    return [{ ...jumpItem(runtime, track.id, war.firstHour), label: `Jump to war start ${dayLabel(war.firstHour)}` }, ...joins];
-  }, [war, track, readHour, runtime, looks]);
-  const header = headerSlot && war && createPortal(<span className="pill" title={warName(observation)}>{warName(observation ?? (readHour == null ? null : war.observations.at(-1) ?? null))}</span>, headerSlot);
+    return [{ ...jumpItem(runtime, track.id, shownWar.firstHour), label: `Jump to war start ${dayLabel(shownWar.firstHour)}` }, ...joins];
+  }, [shownWar, track, shownHour, runtime, looks]);
+  const header = headerSlot && shownWar && createPortal(<span className="pill" title={warName(observation)}>{warName(observation ?? (readHour == null ? null : shownWar.observations.at(-1) ?? null))}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="swords" message="Load a campaign to see war contributions." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (structural.error) return <WidgetState kind="error" detail={structural.error} onRetry={structural.retry} />;
@@ -131,13 +143,14 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   if (!structural.data) return <WidgetState kind="loading" label="Loading war contributions…" />;
   if (!structural.data.available) return <WidgetState kind="unavailable" message="Wars are not in this recording." />;
   if (!war) return <WidgetState kind="empty" icon="swords" message={widget.time.mode === 'follow' ? 'This country has fought no war yet.' : 'This country has fought no war in this campaign.'} />;
+  if (!shownWar) return <WidgetState kind="loading" label="Loading war contributions…" />;
   if (!observation) return <>{header}<WidgetState kind="unavailable" message="This war was not recorded at this time." /></>;
   if (!current) return <>{header}<WidgetState kind="loading" label="Loading war contributions…" /></>;
   if (!group || group.reason) return <>{header}<WidgetState kind="unavailable" message="This war’s contributions were not recorded at this time." /></>;
   return <div ref={root} className="war-contribution">
     {header}
     {setOption && <div className="war-contribution-caption"><Segmented value={show} options={SHOW_CHOICES} label="Show" onChange={value => setOption('show', value)} /></div>}
-    <ButterflyChart key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, war.id])} label={`Contributions to ${warName(observation)}`}
+    <ButterflyChart key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, shownWar!.id])} label={`Contributions to ${warName(observation)}`}
       items={items} leftLabel="◀ Viewpoint’s side" rightLabel="Opposing side ▶" ratioLabel="" showRatio={false} showFlags={false}
       showValues={values} axis={show === 'share'} formatTick={value => `${Math.round(value * 100)}%`}
       active={active} hoursPerSecond={hoursPerSecond} tooltip={tooltip} contextItems={menu} />

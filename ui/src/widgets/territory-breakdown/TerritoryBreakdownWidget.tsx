@@ -15,7 +15,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { TerritoryBreakdownReply } from '../../generated/dashboard';
 import { measureOf, ruleOf, territoryColumn, territoryNote } from '../territory/territoryData';
@@ -34,8 +34,11 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
   const end = widget.time.mode === 'range' ? hour : branchEnd;
   const request = (at:number) => track ? {sourceId:track.source.id,revision:track.source.revision,product:'series-state',params:{branchId:track.branch.id,
     family:{kind:'territory',measure,rule,breakdown:true},tags:[],reads:[{hour:Math.floor(at)}]}} : null;
-  const current = useProduct<TerritoryBreakdownReply>(runtime.client,request(hour),active,validateBreakdownReply,track?.source);
+  // The last hour stays shown while playback's newest hour is read.
+  const current = useFollowedProduct<TerritoryBreakdownReply>(runtime.client,request(hour),['reads'],active,validateBreakdownReply,track?.source);
   const ending = useProduct<TerritoryBreakdownReply>(runtime.client,request(end),active,validateBreakdownReply,track?.source);
+  // The hour the shown reply answers, which a retained one keeps while the next loads.
+  const shown = current.data && current.moment ? (JSON.parse(current.moment) as [{ hour: number }[]])[0][0].hour : hour;
   const data = useMemo(()=>current.data && ending.data ? mergeBreakdownReplies(current.data,ending.data) : undefined,[current.data,ending.data]);
   const product={data,error:current.error ?? ending.error,retry:()=>{current.retry();ending.retry();}};
   const parityRoot=useRef<HTMLDivElement>(null);
@@ -46,32 +49,32 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
   const model = useMemo(() => product.data ? breakdownModel(product.data, measure, rule) : null, [product.data, measure, rule]);
   const identities = model?.identities ?? null;
   const fallback = defaultCountryTag(track);
-  const filter = useMemo(() => worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, hour, branchEnd, identities),
-    [widget.countries, fallback, groups.data, hour, branchEnd, identities]);
+  const filter = useMemo(() => worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, shown, branchEnd, identities),
+    [widget.countries, fallback, groups.data, shown, branchEnd, identities]);
   const endFilter = useMemo(() => worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, end, branchEnd, identities),
     [widget.countries, fallback, groups.data, end, branchEnd, identities]);
   const countries = useMemo(() => new Map(product.data?.countries.map(country => [country.tag, country]) ?? []), [product.data]);
   const tags = useMemo(() => [...countries.keys()], [countries]);
   const segmentAt = useCallback((tag: string, at: number) => runAt(countries.get(tag)?.segments ?? [], at)?.firstHour ?? null, [countries]);
-  const looks = useCountryLooks(runtime.client, track, tags, hour, active, segmentAt);
+  const looks = useCountryLooks(runtime.client, track, tags, shown, active, segmentAt);
   const endLooks = useCountryLooks(runtime.client, track, tags, end, active, segmentAt);
   const includes = useCallback((tag: string | null, at: number) => { const chosen = at === end ? endFilter : filter;
     const key = tag === null ? null : identities?.keyAt(tag, at);
     return chosen.countryIds == null || key != null && chosen.countryIds.has(key); }, [end, filter, endFilter, identities]);
-  const shape = useMemo(() => model && groups.data ? breakdownItems(model, groups.data, hour, end, {
+  const shape = useMemo(() => model && groups.data ? breakdownItems(model, groups.data, shown, end, {
     country: (tag, at) => {
       const atLooks = at === end ? endLooks : looks;
       return { name: atLooks.name(tag, at), flag: atLooks.flag(tag, at),
         flagPending: atLooks.flagPending(tag, at), flagReason: atLooks.flagReason(tag, at) };
     }, faction: colours.names,
     colour: id => colours.colours.get(id), selected: includes,
-  }) : { items: [] }, [model, groups.data, hour, end, looks, endLooks, colours.names, colours.colours, includes]);
-  const whole = model ? widget.countries.kind === 'all' ? breakdownWhole(model.data, hour, end, measure, rule)
-    : breakdownSelectedWhole(model.data, hour, end, measure, rule, includes, model.identities) : undefined;
+  }) : { items: [] }, [model, groups.data, shown, end, looks, endLooks, colours.names, colours.colours, includes]);
+  const whole = model ? widget.countries.kind === 'all' ? breakdownWhole(model.data, shown, end, measure, rule)
+    : breakdownSelectedWhole(model.data, shown, end, measure, rule, includes, model.identities) : undefined;
   const worldRuns = useMemo(() => product.data?.worldTotals.filter(run => run.values[territoryColumn(measure, rule)] !== null) ?? [], [product.data, measure, rule]);
   const worldStarts = useMemo(() => stretchStarts(worldRuns), [worldRuns]);
   const stretch = shape.items.some(item => item.present && (item.unknownValue || item.unknownLevels?.some(Boolean)))
-    ? null : stretchAt(worldRuns, worldStarts, hour);
+    ? null : stretchAt(worldRuns, worldStarts, shown);
   const text = useMemo<SunburstText>(() => ({ format: (value, exact, denominator = 1n) => {
     // At most three decimals: the en-US default.
     if (exact == null) return usNumber.format(value);
@@ -101,5 +104,5 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
     stretch={stretch} unavailableReason={whole?.unknownValue ? 'Territory not recorded at this hour.' : undefined}
     levels={levelsShown(options, LEVELS)} text={text} settings={sunburstSettings(options)} active={active}
     hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} footnote={territoryNote(measure)}
-    onContextMenu={(_node, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />{menu.menu}</div>;
+    onContextMenu={(_node, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, shown)])} />{menu.menu}</div>;
 }

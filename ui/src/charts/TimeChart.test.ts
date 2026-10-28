@@ -109,10 +109,10 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     assert.equal(layoutReads, reads, 'frames reuse the canvas size measured until it resizes');
     const refreshedAt = seen.length;
     props.onHover = observe('B'); canvas = render(); draw();
-    assert.deepEqual(seen.at(-1), ['B', 37]);
-    assert.ok(seen.slice(refreshedAt).every(([name]) => name === 'B'), 'callback refresh keeps the same owner');
+    assert.equal(seen.length, refreshedAt, 'a new callback for the same owner is not told the unchanged hour again');
     key(canvas, 'End'); draw();
     assert.deepEqual(seen.at(-1), ['B', 80]); assert.equal(described.at(-1), 80);
+    assert.ok(seen.slice(refreshedAt).every(([name]) => name === 'B'), 'callback refresh keeps the same owner');
     const numericTooltip = props.tooltip;
     const simultaneous = Array.from({ length: 5000 }, (_, index) => ({ hour: 80, glyph: '\u00d7', label: `opaque actor ${index} capitulated` }));
     const early = { hour: 10, glyph: '\u00d7', label: 'earlier country capitulated' };

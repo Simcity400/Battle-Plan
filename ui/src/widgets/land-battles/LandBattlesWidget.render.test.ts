@@ -19,7 +19,8 @@ test('land battles over hours whose group membership is still being prepared are
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/land-battles/LandBattlesWidget.tsx', {
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request?.product.endsWith('-manifest')
-      ? { windows: [{ firstHour: ${BRANCH.firstHour}, lastHour: ${BRANCH.lastHour} }], available: true, unavailable: null, contentWarnings: [] } : undefined, retry() {} });`,
+      ? { windows: [{ firstHour: ${BRANCH.firstHour}, lastHour: ${BRANCH.lastHour} }], available: true, unavailable: null, contentWarnings: [] } : undefined, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': 'export const useProductWindows = () => ({ data: new Map([[0, globalThis.__landPending.window]]), errors: new Map(), retry() {} });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__landPending.groups, retry() {} });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',

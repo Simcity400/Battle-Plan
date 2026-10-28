@@ -272,7 +272,8 @@ test('native focus details request only opened dated rows and preserve static de
         completed: [{ ordinal: 0, token: 'scoped', completedByHour: 101 }, { ordinal: 1, token: 'plain', completedByHour: 102 }] } }], progress: [] },
       artwork: ['scoped', 'plain'].map(token => ({ token, baseDurationDays: 10 })),
       staticText: [{ token: 'plain', name: '', description: 'Static recorded description' }], warnings: [],
-    } });`,
+    } });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = (_report, warnings) => { globalThis.__focusDetails.diagnostics = warnings; };',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__focusDetails.content;',
@@ -366,7 +367,8 @@ test('a closing row keeps the description it showed while its demand is released
       history: { segments: [{ firstHour: 100, lastHour: 200, order: { current: null, continuous: null, paused: false,
         completed: [{ ordinal: 0, token: 'scoped', completedByHour: 101 }] } }], progress: [] },
       artwork: [{ token: 'scoped', baseDurationDays: 10 }], staticText: [], warnings: [],
-    } });`,
+    } });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__focusShown.content;',
@@ -449,7 +451,8 @@ test('repeated completions of one focus read at one hour open and close independ
       history: { segments: [{ firstHour: 100, lastHour: 200, order: { current: null, continuous: null, paused: false,
         completed: [{ ordinal: 0, token: 'repeatable', completedByHour: null }, { ordinal: 1, token: 'repeatable', completedByHour: null }] } }], progress: [] },
       artwork: [{ token: 'repeatable', baseDurationDays: 10 }], staticText: [], warnings: [],
-    } });`,
+    } });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',

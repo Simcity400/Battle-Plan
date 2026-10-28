@@ -92,7 +92,8 @@ test('a parts race whose group membership is still being prepared is loading, no
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__partsPending.groups, retry() {} });',
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request?.product === 'air-force-size' ? globalThis.__partsPending.reply : undefined, retry() {} });
       export const loadProduct = (_client, request, _signal, _validate, _source, _restart, publish) => {
-        if (request?.product === 'air-force-size') publish?.(globalThis.__partsPending.reply); return new Promise(() => {}); };`,
+        if (request?.product === 'air-force-size') publish?.(globalThis.__partsPending.reply); return new Promise(() => {}); };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     // The race's view read answers in the same render, as its products do here.
     '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
       if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });

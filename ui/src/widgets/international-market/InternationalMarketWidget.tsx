@@ -40,6 +40,8 @@ const VALIDATORS = { contracts: validateMarketHistory('contracts'), requests: va
 /** Who buys what from whom on the international market at the moment shown:
  * contracts, open requests or listed inventory. A row opens Trade flows' market drill. */
 export default function InternationalMarketWidget({ widget, runtime, active, headerSlot, onDiagnostics, setOption }: WidgetProps) {
+  // The open drill may still show an earlier hour while its newest loads.
+  const [drillShown, setDrillShown] = useState<number | undefined>();
   const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
   const tokens = useChartTokens();
@@ -181,9 +183,9 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   return <div ref={anchor} className="international-market">{groupFailure}
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
-      title={picked?.title ?? DETAILS.label} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
+      title={picked?.title ?? DETAILS.label} day={dayLabel(drillShown ?? at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={<div className="international-market-table">{body}</div>}>
-      {picked && (drillTags ? <MarketDrill runtime={runtime} track={track} hour={drillAt} tags={drillTags} selected={picked.selected} active={active} />
+      {picked && (drillTags ? <MarketDrill runtime={runtime} track={track} hour={drillAt} tags={drillTags} selected={picked.selected} active={active} onAnswered={setDrillShown} />
         : <WidgetState kind="unavailable" message="This seller was not recorded at this hour." />)}
     </DrillHost>
   </div>;

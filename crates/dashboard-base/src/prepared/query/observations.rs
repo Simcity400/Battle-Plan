@@ -5,10 +5,11 @@
 //!
 //! Each product's observations and branch replies share a budget of its largest
 //! observed entry (including owned allocation capacities) times the live block
-//! count, evicting least recently used entries across request shapes. Branch
-//! replies retain at most the current publication per request. Concurrent asks
-//! for one key share one extraction. Values held by callers and in-flight
-//! extractions are transient, outside retained bytes.
+//! count, evicting least recently used entries across request shapes, and a
+//! source's products together keep at most [`CACHE_BYTES`]. Branch replies
+//! retain at most the current publication per request. Concurrent asks for one
+//! key share one extraction. Values held by callers and in-flight extractions
+//! are transient, outside retained bytes.
 
 use crate::{Source, metadata::check_cancel};
 use replay::container::BlockIndex;
@@ -22,6 +23,10 @@ use std::{
 
 type Value = Arc<dyn Any + Send + Sync>;
 type Slot = Arc<Mutex<Option<Value>>>;
+
+/// Bytes a source's products keep together. Each product's own budget scales
+/// with the recording's blocks, which alone let a long playback keep every hour.
+pub const CACHE_BYTES: usize = 1 << 30;
 
 /// Capacity charge for a transient reply kept as ordinary serde JSON. Object
 /// nodes are conservatively charged twice their key/value inline storage.
@@ -56,6 +61,7 @@ struct Key {
 struct Entry {
     slot: Slot,
     publication: Option<Vec<u8>>,
+    lineage: Option<Vec<u8>>,
     bytes: usize,
     used: u64,
 }
@@ -154,6 +160,7 @@ impl Scope {
             bytes,
             |_| extract(),
             true,
+            None,
         )
     }
 
@@ -179,6 +186,7 @@ impl Scope {
             bytes,
             |_| extract(),
             false,
+            None,
         )
     }
 
@@ -207,18 +215,22 @@ impl Scope {
             bytes,
             |_| extract(),
             false,
+            None,
         )
     }
 
     /// Replace a publication while offering its completed predecessor to an
-    /// incremental reader. A busy predecessor is skipped without waiting; the
-    /// extractor must validate every part it reuses against the new publication.
+    /// incremental reader; a request without one is offered the most recently
+    /// used completed answer of the same `lineage` on the branch. A busy
+    /// predecessor is skipped without waiting; the extractor must validate
+    /// every part it reuses against the new publication and request.
     #[allow(clippy::too_many_arguments)]
     pub fn continue_entry<T: Send + Sync + 'static>(
         &self,
         branch: u64,
         params: &impl Serialize,
         publication: &impl Serialize,
+        lineage: &impl Serialize,
         cancelled: &AtomicBool,
         bytes: impl FnOnce(&T) -> usize,
         extract: impl FnOnce(Option<Arc<T>>) -> io::Result<T>,
@@ -232,6 +244,7 @@ impl Scope {
             bytes,
             extract,
             false,
+            Some(serde_json::to_vec(lineage)?),
         )
     }
 
@@ -287,6 +300,7 @@ impl Scope {
         bytes: impl FnOnce(&T) -> usize,
         extract: impl FnOnce(Option<Arc<T>>) -> io::Result<T>,
         recording: bool,
+        lineage: Option<Vec<u8>>,
     ) -> io::Result<Arc<T>> {
         check_cancel(cancelled)?;
         let key = Key {
@@ -318,12 +332,33 @@ impl Scope {
                 let product = cache.products.get_mut(self.product).unwrap();
                 product.bytes -= old.bytes;
             }
+            if lineage.is_some() && previous.is_none() && !cache.entries.contains_key(&key) {
+                previous = cache
+                    .entries
+                    .iter()
+                    .filter(|(other, entry)| {
+                        other.product == key.product
+                            && other.generation == key.generation
+                            && other.branch == key.branch
+                            && other.block.is_none()
+                            && other.kind == key.kind
+                            && entry.lineage == lineage
+                    })
+                    .filter_map(|(_, entry)| {
+                        let held = entry.slot.try_lock().ok()?;
+                        let value = Arc::clone(held.as_ref()?).downcast::<T>().ok()?;
+                        Some((entry.used, value))
+                    })
+                    .max_by_key(|(used, _)| *used)
+                    .map(|(_, value)| value);
+            }
             if recording && !cache.entries.contains_key(&key) {
                 super::progressive::decodes_allowed()?;
             }
             let entry = cache.entries.entry(key.clone()).or_insert_with(|| Entry {
                 slot: Arc::new(Mutex::new(None)),
                 publication: publication.clone(),
+                lineage,
                 bytes: 0,
                 used: clock,
             });
@@ -410,6 +445,25 @@ impl Scope {
                 let entry = cache.entries.remove(&oldest).unwrap();
                 cache.products.get_mut(self.product).unwrap().bytes -= entry.bytes;
             }
+            while cache
+                .products
+                .values()
+                .map(|product| product.bytes)
+                .sum::<usize>()
+                > CACHE_BYTES
+            {
+                let oldest = cache
+                    .entries
+                    .iter()
+                    .filter(|(_, entry)| entry.bytes > 0)
+                    .min_by_key(|(_, entry)| entry.used)
+                    .map(|(key, _)| key.clone());
+                let Some(oldest) = oldest else {
+                    break;
+                };
+                let entry = cache.entries.remove(&oldest).unwrap();
+                cache.products.get_mut(oldest.product).unwrap().bytes -= entry.bytes;
+            }
         } else if cache
             .entries
             .get(&key)
@@ -463,6 +517,7 @@ mod tests {
                     1,
                     &"selection",
                     &publication,
+                    &"lineage",
                     &flag,
                     |_: &u32| 4,
                     |old: Option<Arc<u32>>| {
@@ -478,6 +533,7 @@ mod tests {
                         1,
                         &"selection",
                         &publication,
+                        &"lineage",
                         &flag,
                         |_: &u32| 4,
                         |_| panic!("unchanged publication recomputed")
@@ -490,6 +546,63 @@ mod tests {
         assert!(bytes <= bound);
         assert_eq!(computations, 4);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_new_request_continues_from_its_products_latest_answer_on_the_branch() {
+        let (source, root) = file_source(replay(vec![frame(1, 0, None)]));
+        let flag = AtomicBool::new(false);
+        let block = &source.replay_ref().index[0];
+        let cache = scope(&source, "test-recent", None);
+        let other = scope(&source, "test-recent-other", None);
+        let ask = |cache: &Scope, branch: u64, hour: u32, lineage: &str, expected: Option<u32>| {
+            *cache
+                .continue_entry(
+                    branch,
+                    &hour,
+                    &0,
+                    &lineage,
+                    &flag,
+                    |_: &u32| 4,
+                    |old: Option<Arc<u32>>| {
+                        assert_eq!(old.as_deref().copied(), expected, "hour {hour}");
+                        Ok(hour)
+                    },
+                )
+                .unwrap()
+        };
+        cache.get(block, &(), &flag, |_: &u32| 4, || Ok(99_u32)).unwrap();
+        other.get_entry(1, &(), &(), &flag, |_: &u32| 4, || Ok(77_u32)).unwrap();
+        assert_eq!(ask(&cache, 1, 10, "a", None), 10, "blocks and other products are not offered");
+        assert_eq!(ask(&cache, 1, 11, "a", Some(10)), 11);
+        assert_eq!(ask(&cache, 1, 20, "b", None), 20, "another lineage starts afresh");
+        assert_eq!(ask(&cache, 1, 12, "a", Some(11)), 12);
+        assert_eq!(ask(&cache, 2, 12, "a", None), 12, "another branch starts afresh");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_sources_products_together_stay_within_the_cache_bound() {
+        let (source, root) = file_source(replay(vec![frame(1, 0, None)]));
+        let flag = AtomicBool::new(false);
+        let half = CACHE_BYTES / 2;
+        let mut first = scope(&source, "test-bound-first", None);
+        let mut second = scope(&source, "test-bound-second", None);
+        first.blocks = 663;
+        second.blocks = 663;
+        let ask = |cache: &Scope, hour: u32| {
+            cache
+                .get_entry(1, &hour, &(), &flag, |_: &u32| half, || Ok(hour))
+                .unwrap()
+        };
+        let kept = Arc::downgrade(&ask(&first, 0));
+        ask(&second, 1);
+        assert!(kept.upgrade().is_none(), "the least recently used entry is evicted");
+        let total = usage(&source, "test-bound-first").0 + usage(&source, "test-bound-second").0;
+        assert!(total > 0 && total <= CACHE_BYTES);
+        assert_eq!(*ask(&first, 0), 0, "an evicted answer is recomputed exactly");
+        assert_eq!(usage(&source, "test-bound-first").2, 2);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

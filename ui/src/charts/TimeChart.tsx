@@ -126,6 +126,8 @@ const LABEL_MARGIN = 4;
 const MIN_SPAN = 14 * 24;
 /** The least time between summary requests while the view keeps moving. */
 const SUMMARY_INTERVAL_MS = 150;
+/** How long a pointer rests on an hour before the widget hears it. */
+const HOVER_REST_MS = 80;
 const BOX_THRESHOLD = 8;
 
 /** What a pointer is over: the crosshair's hour, the hour it is about and any badges. */
@@ -153,7 +155,7 @@ export default function TimeChart(props: TimeChartProps) {
   const shownHour = useRef<number | null>(null);
   // The last notified callback owns any outstanding hover facts, even after a render changes the owner.
   const hoverObserver = useRef<{ callback: NonNullable<TimeChartProps['onHover']>;
-    pickOwner: unknown; branchStart: number; first: number; last: number } | undefined>(undefined);
+    pickOwner: unknown; branchStart: number; first: number; last: number; hour: number | null } | undefined>(undefined);
   const rowRef = useRef(0);
   // The keyboard's stop, beside the hover state's hour: two stops can share an hour.
   const keyedStopRef = useRef<KeyStop | null>(null);
@@ -182,6 +184,9 @@ export default function TimeChart(props: TimeChartProps) {
     let reported: { handler: (x: Range) => void; x: Range } | null = null;
     let eased: { x: [number, number]; y: [number, number] } | null = null;
     let frame: PlotFrame | null = null;
+    // While the pointer is over the chart, its drawing without the crosshair is kept, so a
+    // pointer move repaints only the crosshair, not every series. Dropped when it leaves.
+    let base: { canvas: HTMLCanvasElement; key: readonly unknown[] } | null = null;
     const surface = watchCanvasSize(element, () => wake());
     let pointer: { x: number; y: number; clientX: number; clientY: number } | null = null;
     let drag: Drag | null = null;
@@ -191,6 +196,9 @@ export default function TimeChart(props: TimeChartProps) {
     // badges or the data change.
     let hovered: { hour: number; row: number; badges: readonly EventBadge[]; cluster?: MarkCluster; markTooltip: TimeChartProps['markTooltip']; rows: TimeChartProps['rows']; tooltip: TimeChartProps['tooltip']; revision: unknown; content: TooltipContent | null; key: string } | null = null;
     let keyedBadges: { source: TimeChartProps['badges']; hour: number; badges: readonly EventBadge[] } | null = null;
+    // The cluster `onMarkHover` last heard about, and a pointer hour waiting to rest.
+    let markHovered: MarkCluster | null | undefined;
+    let pendingHover: { hour: number; since: number; timer: ReturnType<typeof setTimeout> } | null = null;
     type SummaryView = { callback: TimeChartProps['onSummaryView']; from: number; to: number; width: number };
     // The view last asked for, when, and a newer one waiting for the interval.
     let summaryView: SummaryView | null = null, summaryLatest: SummaryView | null = null;
@@ -241,6 +249,13 @@ export default function TimeChart(props: TimeChartProps) {
       // enough that a relative snap threshold would jump the last tens of hours.
       const glide = (current: number, target: number) => target + approach(current - target, 0, info.dt, tau);
       const x: [number, number] = eased ? [glide(eased.x[0], targetX[0]), glide(eased.x[1], targetX[1])] : [targetX[0], targetX[1]];
+      // Within half a pixel of its target an eased range looks settled: snap to it, so the
+      // chart stops redrawing instead of easing invisibly for another second or two.
+      const plotWidth = Math.max(1, layoutWidth - padding.left - padding.right);
+      const plotHeight = Math.max(1, layoutHeight - padding.top - padding.bottom);
+      if ((Math.abs(x[0] - targetX[0]) + Math.abs(x[1] - targetX[1])) * plotWidth < 0.5 * Math.max(1e-9, Math.abs(targetX[1] - targetX[0]))) {
+        x[0] = targetX[0]; x[1] = targetX[1];
+      }
       let data: [number, number] | null = null;
       for (const layer of p.layers) {
         const extent = layer.extent?.(x);
@@ -251,7 +266,7 @@ export default function TimeChart(props: TimeChartProps) {
       const y: [number, number] = eased ? [glide(eased.y[0], targetY.range[0]), glide(eased.y[1], targetY.range[1])] : [targetY.range[0], targetY.range[1]];
       const ySpan = Math.abs(targetY.range[1] - targetY.range[0]) || Math.max(1, Math.abs(targetY.range[1]));
       // The final scheduled frame must paint the fitted scale exactly.
-      if (Math.abs(y[0] - targetY.range[0]) + Math.abs(y[1] - targetY.range[1]) < 1e-5 * ySpan) {
+      if ((Math.abs(y[0] - targetY.range[0]) + Math.abs(y[1] - targetY.range[1])) * plotHeight < 0.5 * ySpan) {
         y[0] = targetY.range[0]; y[1] = targetY.range[1];
       }
       eased = { x, y };
@@ -268,26 +283,44 @@ export default function TimeChart(props: TimeChartProps) {
         }
       }
 
-      context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
-      context.clearRect(0, 0, layoutWidth, layoutHeight);
-      drawAxes(context, frame, tokens, (p.formatValue ?? formatAxisValue), p.rows?.labels);
-      context.save();
-      clipToPlot(context, frame);
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
+      const preparedMarks = p.markSummary !== undefined || p.markSummaries !== undefined;
+      const summaries = [...(p.markSummary ? [p.markSummary] : []), ...(p.markSummaries ?? [])].filter(summary => markSummaryMatches(summary, frame!, until));
+      const baseKey = [size.width, size.height, frame.plotLeft, frame.plotTop, frame.plotWidth, frame.plotHeight, frame.x[0], frame.x[1], frame.y[0], frame.y[1],
+        frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, preparedMarks, p.overlay, p.rows, p.formatValue, p.valueTicks, ...summaries];
+      const kept = base;
       pickFrame.current = { ...picks.drawn({ frame, until }, p.onPick), props: p };
-      for (const layer of p.layers) layer.draw(context, frame, tokens, { playhead: until });
-      context.restore();
-      if (p.strip && frame.strip) p.strip.draw(context, frame, tokens, { playhead: until });
+      if (kept && kept.key.length === baseKey.length && kept.key.every((value, index) => Object.is(value, baseKey[index]))) {
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.clearRect(0, 0, size.width, size.height);
+        context.drawImage(kept.canvas, 0, 0);
+        context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
+      } else {
+        context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
+        context.clearRect(0, 0, layoutWidth, layoutHeight);
+        drawAxes(context, frame, tokens, (p.formatValue ?? formatAxisValue), p.rows?.labels);
+        context.save();
+        clipToPlot(context, frame);
+        for (const layer of p.layers) layer.draw(context, frame, tokens, { playhead: until });
+        context.restore();
+        if (p.strip && frame.strip) p.strip.draw(context, frame, tokens, { playhead: until });
+        if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
+        for (const summary of summaries) drawMarkSummary(context, frame, tokens, summary);
+        if (!preparedMarks && p.badges) drawBadges(context, frame, tokens, p.badges, until);
+        p.overlay?.(context, frame, tokens);
+        if (pointer) {
+          const canvas = kept?.canvas ?? document.createElement('canvas');
+          if (canvas.width !== size.width) canvas.width = size.width;
+          if (canvas.height !== size.height) canvas.height = size.height;
+          const copy = canvas.getContext('2d');
+          if (copy) { copy.clearRect(0, 0, size.width, size.height); copy.drawImage(element, 0, 0); base = { canvas, key: baseKey }; }
+        } else base = null;
+      }
       shown.current = { x, until };
       if (p.onViewChange && (p.onViewChange !== reported?.handler || x[0] !== reported.x[0] || x[1] !== reported.x[1])) {
         reported = { handler: p.onViewChange, x };
         p.onViewChange(x);
       }
-      if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
-      const preparedMarks = p.markSummary !== undefined || p.markSummaries !== undefined;
-      const summaries = [...(p.markSummary ? [p.markSummary] : []), ...(p.markSummaries ?? [])].filter(summary => markSummaryMatches(summary, frame!, until));
-      for (const summary of summaries) drawMarkSummary(context, frame, tokens, summary);
-      if (!preparedMarks && p.badges) drawBadges(context, frame, tokens, p.badges, until);
       // Whole hours, and while the view keeps moving (playback, a pan or zoom) at most
       // one request per interval, the newest view sent when it ends: not one per
       // animation frame. The last summary draws in place until the next arrives
@@ -315,7 +348,6 @@ export default function TimeChart(props: TimeChartProps) {
           : `${dayLabel(cluster.firstHour) === dayLabel(cluster.lastHour) ? dayLabel(cluster.firstHour) : `${dayLabel(cluster.firstHour)} to ${dayLabel(cluster.lastHour)}`}, ${eventCount(cluster.count)}`)).join('; ');
         setSpoken(previous => previous === text ? previous : text);
       }
-      p.overlay?.(context, frame, tokens);
       if (drag?.mode === 'box') drawSelection(context, tokens, drag);
 
       // Live hover: re-resolved every frame, so a still pointer stays current during playback.
@@ -325,7 +357,9 @@ export default function TimeChart(props: TimeChartProps) {
       const plot = frame;
       const hit = hoverAt(hover.current, frame.x, until, point => !drag || drag.mode !== 'box' ? pointedAt(point, plot, p) : null);
       const pointed = hit?.by === 'pointer' ? hit as Pointed : null;
-      p.onMarkHover?.(pointed?.cluster ?? null);
+      // Hover callbacks hear only changes: widgets pass new ones each render, and repeating the
+      // same news would render them again, which wakes this chart again, every frame.
+      if ((pointed?.cluster ?? null) !== markHovered) { markHovered = pointed?.cluster ?? null; p.onMarkHover?.(markHovered); }
       // The crosshair sits at `hour`; the tooltip and the keys are about `describes`. A
       // keyboard stop at a strip bar the view cuts off is about the bar's read.
       const stop = keyedStopRef.current;
@@ -342,11 +376,26 @@ export default function TimeChart(props: TimeChartProps) {
       shownHour.current = at ? Math.floor(at.describes) : null;
       if (p.active && p.onHover) {
         const previous = hoverObserver.current;
-        if (previous && (!Object.is(previous.pickOwner, p.pickOwner) || previous.branchStart !== p.branchStart
-          || previous.first !== p.extent[0] || previous.last !== p.extent[1])) previous.callback(null);
+        const moved = !!previous && (!Object.is(previous.pickOwner, p.pickOwner) || previous.branchStart !== p.branchStart
+          || previous.first !== p.extent[0] || previous.last !== p.extent[1]);
+        if (moved) previous!.callback(null);
+        const told = !previous || moved ? undefined : previous.hour, hour = shownHour.current;
+        let tell = hour !== told;
+        // Back at the hour already heard: a later move rests afresh.
+        if (!tell && pendingHover) { clearTimeout(pendingHover.timer); pendingHover = null; }
+        // A pointer sweeping the plot is heard where it rests: widgets read exact values for
+        // each hour they hear, which would otherwise rebuild and repaint them every move.
+        if (tell && hour !== null && told !== undefined && hit?.by === 'pointer') {
+          if (pendingHover?.hour !== hour) {
+            if (pendingHover) clearTimeout(pendingHover.timer);
+            pendingHover = { hour, since: info.now, timer: setTimeout(() => wake(), HOVER_REST_MS) };
+          }
+          tell = info.now - pendingHover.since >= HOVER_REST_MS;
+        }
+        if (tell && pendingHover) { clearTimeout(pendingHover.timer); pendingHover = null; }
         hoverObserver.current = { callback: p.onHover, pickOwner: p.pickOwner,
-          branchStart: p.branchStart, first: p.extent[0], last: p.extent[1] };
-        p.onHover(shownHour.current);
+          branchStart: p.branchStart, first: p.extent[0], last: p.extent[1], hour: tell ? hour : told ?? null };
+        if (tell) p.onHover(hour);
       }
       if (at) {
         if (p.rows && hit?.by === 'pointer' && pointer) rowRef.current = Math.max(0, Math.min(p.rows.labels.length - 1,
@@ -471,7 +520,11 @@ export default function TimeChart(props: TimeChartProps) {
       wake();
     };
     const cancel = () => { drag = null; wake(); };
-    const leave = () => { pendingNavigation.current = null; pointer = null; hover.current = reduceHover(hover.current, { type: 'pointer-leave' }); hideTooltip(owner); wake(); };
+    const leave = () => {
+      pendingNavigation.current = null; pointer = null; base = null;
+      if (pendingHover) { clearTimeout(pendingHover.timer); pendingHover = null; }
+      hover.current = reduceHover(hover.current, { type: 'pointer-leave' }); hideTooltip(owner); wake();
+    };
     const wheel = (event: WheelEvent) => {
       if (!frame) return;
       const point = local(event);
@@ -511,6 +564,7 @@ export default function TimeChart(props: TimeChartProps) {
     element.addEventListener('contextmenu', menu);
     return () => {
       if (summaryTimer) clearTimeout(summaryTimer);
+      if (pendingHover) clearTimeout(pendingHover.timer);
       remove(); unsubscribe(); surface.disconnect(); hideTooltip(owner);
       element.removeEventListener('pointerdown', down);
       element.removeEventListener('pointermove', move);

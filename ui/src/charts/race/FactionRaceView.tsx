@@ -77,6 +77,8 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
   }
   const params = requests.params;
   const prepared = usePreparedFactionTotals(runtime.client, track, params, moment, active, extent, undefined, !renderMain);
+  // Totals kept while playback's newest loads are ranked and named at the hour they answer.
+  const shownMoment = view === 'lines' ? moment : prepared.headHour ?? moment;
   const { data, error, retry } = prepared;
   const numeric = useMemo(() => new NumericReply<FactionTotalsReply>(), [runtime.client]);
   const numbers = numeric.update(JSON.stringify([scope, params]), data, factionNumbers);
@@ -93,8 +95,8 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
   const series = useMemo(() => raceSeriesIndex(lines), [lines]);
   const reachedSeries = useMemo(() => raceSeriesIndex(factionLines(model, range)), [model, range]);
   const slots = Math.max(1, Math.min(params?.top ?? 1, lines.length));
-  const entries = useMemo(() => view === 'race' ? seriesRaceEntries(series, moment, slots, formatValue) : [],
-    [view, series, moment, slots, formatValue]);
+  const entries = useMemo(() => view === 'race' ? seriesRaceEntries(series, shownMoment, slots, formatValue) : [],
+    [view, series, shownMoment, slots, formatValue]);
   const recordedFactions = useMemo(() => new Map(looks.factions.map(faction => [faction.id, faction])), [looks.factions]);
   const names = useMemo(() => ({ factions: recordedFactions, names: looks.names }), [recordedFactions, looks.names]);
   const colourState = useMemo(() => ({ key: '', colours: new Map<string, string>() as ReadonlyMap<string, string> }), [runtime.client]);
@@ -103,9 +105,9 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
   const tokens = useChartTokens();
   const colours = useMemo(() => new Map(lines.map(line => [line.tag, colourState.colours.get(line.tag) ?? tokens.muted])), [lines, colourState.colours, tokens.muted]);
   const entityLooks = useMemo(() => ({
-    name: (id: string, hour = moment) => factionLabelAt(namedModel, id, hour, names),
+    name: (id: string, hour = shownMoment) => factionLabelAt(namedModel, id, hour, names),
     color: (id: string) => colours.get(id)!,
-  }), [namedModel, moment, names, colours]);
+  }), [namedModel, shownMoment, names, colours]);
   const owner = prepared.owner;
   const currentOwner = useRef(owner);
   currentOwner.current = owner;
@@ -173,9 +175,9 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
   const colourOf = entityLooks.color;
   const mainActive = active && !pinned && (current === null || options.drill === 'popout');
   const main = renderMain ? renderMain(open, owner, reportMain, mainActive) : <CountryRaceView runtime={runtime} track={track} active={mainActive} options={options} view={view} extent={extent} playhead={playhead}
-    moment={moment} slots={slots} ranked={entries} lines={lines} entityLooks={entityLooks} lineLegendLabel="Factions"
-    label={label} empty={`Not recorded on ${dayLabel(moment)}.`} formatValue={formatValue}
-    labels={{ race: `${label}, ${countName}, ${dayLabel(moment)}`, lines: `${label} over time, ${countName}`, actions: `${label} actions` }}
+    moment={shownMoment} slots={slots} ranked={entries} lines={lines} entityLooks={entityLooks} lineLegendLabel="Factions"
+    label={label} empty={`Not recorded on ${dayLabel(shownMoment)}.`} formatValue={formatValue}
+    labels={{ race: `${label}, ${countName}, ${dayLabel(shownMoment)}`, lines: `${label} over time, ${countName}`, actions: `${label} actions` }}
     presentation={{ ...SMOOTH_TOTALS_PRESENTATION, countryLooks: false, linePadding: CHART_LAYOUT.countryEndLabels }}
     onPick={open} pickOwner={owner} lineSummaries={prepared.lineSummaries} onSummaryView={prepared.onSummaryView}
     onReachHour={prepared.onReachHour} exactLineTags={prepared.exactLineTags} navigation={prepared.navigation}

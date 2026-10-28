@@ -44,7 +44,8 @@ test('actual SpecialProjects preserves literal roots, selected dated flag failur
       globalThis.__projectRequests = requests; const replies = globalThis.__projectReplies ?? ${JSON.stringify({ X: reply('X'), Y: reply('Y') })};
       const failed = requests.find(request => globalThis.__projectErrors?.[request.params.tag]);
       return { data: globalThis.__projectPending || failed ? undefined : requests.map(request => validate(replies[request.params.tag])),
-        error: failed && globalThis.__projectErrors[failed.params.tag], retry() { globalThis.__projectRetries.push(failed?.params.tag ?? 'projects'); } }; };`,
+        error: failed && globalThis.__projectErrors[failed.params.tag], retry() { globalThis.__projectRetries.push(failed?.params.tag ?? 'projects'); } }; };
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = (_client, _track, wanted) => { globalThis.__projectWanted = wanted; return { labelAt: hour => tag => { globalThis.__projectLabels.push([hour, tag]); return globalThis.__projectFlag; } }; };',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
@@ -341,7 +342,7 @@ test('a reply answered from its prepared prefix lists what the prefix holds and 
   shared.__projectPrefix = { ...state, reply: prefix };
   const replacements: Record<string, string> = {
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: ${JSON.stringify(groups)} });`,
-    '/dashboard/products.ts': 'export const useProducts = (_client, requests, _active, validate) => ({ data: requests.map(() => validate(globalThis.__projectPrefix.reply)) });',
+    '/dashboard/products.ts': 'export const useProducts = (_client, requests, _active, validate) => ({ data: requests.map(() => validate(globalThis.__projectPrefix.reply)) }); export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',

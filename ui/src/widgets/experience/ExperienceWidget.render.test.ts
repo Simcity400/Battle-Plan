@@ -12,7 +12,8 @@ test('a group with no recorded experience while membership is still being prepar
   const state = { groups: pendingGroups() as CountryGroupReply };
   const host = globalThis as typeof globalThis & { __experiencePending?: typeof state }; host.__experiencePending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/experience/ExperienceWidget.tsx', {
-    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(data)}, retry() {} });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(data)}, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__experiencePending.groups, retry() {} });',
     '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour}; export const usePlaybackSpeed = () => 0;`,
     '/dashboard/countryLooks.ts': `export const lookPlan = (_branch, tags, hour) => ({ wanted: tags.map(tag => ({ tag, hour })), maxHours: 16 });

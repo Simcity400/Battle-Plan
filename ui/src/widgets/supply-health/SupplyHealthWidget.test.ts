@@ -24,7 +24,7 @@ test('actual Supply main requests and flags require a dated actor while missing 
     capitulations: [10, 11, 12, 14, 17, 21].map(hour => ({ tag, hour })).concat([{ tag: 'unselected actor', hour: 14 }]),
     unobserved: { humans: [], factions: [], wars: [] } };
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__supplyMainReply, retry() {} }); export const loadProduct = () => { throw new Error("Unexpected fact read"); };',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__supplyMainReply, retry() {} }); export const loadProduct = () => { throw new Error("Unexpected fact read"); }; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = (_runtime, _track, active) => { globalThis.__supplyMarkerDemand = active; return { data: ${JSON.stringify(groups)} }; };`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 20; export const usePlaybackSpeed = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = (_client, _track, wanted) => { globalThis.__supplyMainWanted = wanted; return { labelAt: hour => tag => { globalThis.__supplyMainLabelReads.push([hour, tag]); return { name: "Actor at " + hour, ...globalThis.__supplyMainFlag }; }, revision: 0 }; };',
@@ -107,7 +107,7 @@ test('actual Supply picks and standalone selection require recorded identity whi
   host.__supplyIdentityDispatch = action => { actions.push(action); };
   host.__supplyCountryPortal = chip => { portals.push(chip.props); portalled.push(chip); return null; };
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__supplyIdentityReply, retry() {} });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__supplyIdentityReply, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 10; export const usePlaybackSpeed = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = (_client, _track, wanted) => { globalThis.__supplyIdentityWanted = wanted; return { labelAt: hour => tag => ({ name: tag + " at " + hour }), revision: 0 }; };',

@@ -25,7 +25,8 @@ test('the loss overview combines data availability with amount completeness and 
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': `export const useProduct = () => ({ data: globalThis.__lossReply, retry() {} });
       export const loadProduct = (_client, _request, _signal, _validate, _source, _restart, publish) => {
-        if (globalThis.__lossReply !== undefined) publish?.(globalThis.__lossReply); return new Promise(() => {}); };`,
+        if (globalThis.__lossReply !== undefined) publish?.(globalThis.__lossReply); return new Promise(() => {}); };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     // Effects never run here: the view read lands within the render, as the reply it is given.
     '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
       if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });

@@ -5,7 +5,7 @@ import type { OptionChoices, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
 import { contentKey, setToken } from './options.ts';
 import { selectedTags } from './countrySelection.ts';
-import { useProduct } from './products';
+import { useFollowedProduct } from './products';
 import { useCountryGroups } from './useCountryGroups';
 
 export { FACTION_OPTION } from './factionOption.ts';
@@ -53,8 +53,9 @@ export function useChosenFaction(widget: WidgetSpec, runtime: WidgetRuntime, tra
 
 /** The faction's held state at one hour, as Factions' details read it. */
 export function useFactionDetails(runtime: WidgetRuntime, track: BoundTrack | undefined, faction: string | null, hour: number, active: boolean) {
-  return useProduct<FactionDetailReply>(runtime.client, track && faction ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'faction-details', params: { branchId: track.branch.id, hour: Math.floor(hour), faction } } : null, active);
+  // The last hour's details stay shown while playback's newest hour is read.
+  return useFollowedProduct<FactionDetailReply>(runtime.client, track && faction ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'faction-details', params: { branchId: track.branch.id, hour: Math.floor(hour), faction } } : null, ['hour'], active);
 }
 
 /** Every recorded faction, by its latest name, for the Faction setting. */

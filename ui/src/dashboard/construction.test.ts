@@ -89,7 +89,7 @@ test('both construction renderers release dated-name demand outside their branch
   const replacements: Record<string, string> = {
     '/construction-log/useConstructionLog.ts': `export const useConstructionLog = (_runtime, _track, _active, hour) =>
       ({manifest: globalThis.__constructionDemand.log.manifest, log: globalThis.__constructionDemand.log, hour, onDrawn() {}});`,
-    '/dashboard/products.ts': 'export const useProduct = () => ({data: globalThis.__constructionDemand.spending});',
+    '/dashboard/products.ts': 'export const useProduct = () => ({data: globalThis.__constructionDemand.spending}); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({data: globalThis.__constructionDemand.groups});',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => undefined;',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted, active) => {

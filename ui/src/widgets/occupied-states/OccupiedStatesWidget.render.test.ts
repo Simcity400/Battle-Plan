@@ -16,7 +16,8 @@ test('occupied states of a group counted at an hour still being prepared are loa
   const state = { groups: pendingGroups() as CountryGroupReply };
   const host = globalThis as typeof globalThis & { __occupiedPending?: typeof state }; host.__occupiedPending = state;
   const { module, close } = await mountModule<{ default: ComponentType<WidgetProps> }>('/ui/src/widgets/occupied-states/OccupiedStatesWidget.tsx', {
-    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(manifest)}, retry() {} });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(manifest)}, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useProductWindows = () => ({ data: new Map([[0, ${JSON.stringify(window)}]]), errors: new Map(), retry() {} });
       export const useWindowDisplay = (_identity, data, hour) => data ? { data, hour } : undefined;`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__occupiedPending.groups, retry() {} });',

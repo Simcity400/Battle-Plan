@@ -18,7 +18,7 @@ import { selectedTags } from '../../dashboard/countrySelection';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useParityRows } from '../../dashboard/parityRows';
 import { STYLES, useCountriesAt } from '../../dashboard/useCountriesAt';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -73,9 +73,9 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const product = useProduct(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
     params: { branchId: track.branch.id, viewpointTag } } : null, active, validateWarsReply, track?.source);
   // The structural reply stays mounted while independent exact counter reads load.
-  const exact=useProduct(runtime.client,track ? {sourceId:track.source.id,revision:track.source.revision,product:'wars',
+  const exact=useFollowedProduct(runtime.client,track ? {sourceId:track.source.id,revision:track.source.revision,product:'wars',
     params:{branchId:track.branch.id,viewpointTag,reads:[...new Set([at,...(hoverHour===null ? [] : [hoverHour])])].map(hour=>({hour}))}} : null,
-    active,validateWarsReply,track?.source);
+    ['reads'],active,validateWarsReply,track?.source);
   const data = product.data;
   // Before preparation covers the branch, the lanes are the prepared prefix's
   // and the hours after it are still being prepared; a read past it lists the
@@ -84,6 +84,8 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const preparedThrough = prefix?.pending.length ? prefix.coverage.lastHour : null;
   const current = preparedThrough != null && at > preparedThrough ? currentWarsAt(exact.data, at) : null;
   const exactWars=useMemo(()=>new Map(exact.data?.wars.map(war=>[war.id,war]) ?? []),[exact.data]);
+  // The hours the shown exact reply answers; another hour's losses are still loading.
+  const answered = useMemo(() => exact.data && exact.moment ? new Set((JSON.parse(exact.moment) as [{ hour: number }[]])[0].map(read => read.hour)) : new Set<number>(), [exact.data, exact.moment]);
   const groups = useCountryGroups(runtime, track, active);
   const factions = useFactionColours(runtime.client, track?.source);
   const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : undefined, [groups.data]);
@@ -201,10 +203,10 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
       : [...new Set([...(labelled ? [labelled.viewpointTag] : []), ...(observation ? [...observation.viewpointSide, ...observation.opposingSide] : [])])];
     if (recorded) hover.ask(hour, tags.filter(tag => prepared.identities?.keyAt(tag, hour) !== null));
     const participant = about.kind === 'participant' ? about.participant : bar?.participant;
-    const content = warTooltip({ war, observation, losses: exactWars.has(war.id) ? casualtiesAt(exactWars.get(war.id)!,hour) : null,
+    const content = warTooltip({ war, observation, losses: exactWars.has(war.id) && answered.has(Math.floor(hour)) ? casualtiesAt(exactWars.get(war.id)!,hour) : null,
       contributions: warContributions(currentWarsAt(exact.data, hour)?.contributions, observation),
       contributionsPending: !currentWarsAt(exact.data, hour),
-      lossesPending:!exact.data, hour, until: at, preparedThrough,
+      lossesPending:!answered.has(Math.floor(hour)), hour, until: at, preparedThrough,
       branchLast: track.branch.lastHour, unobserved: data.unobserved, branchGaps: track.branch.gaps, capitulationsUnobserved: data.capitulationsUnobserved,
       country: labels, day: dayLabel,
       ...(tag ? { participant: { tag, run: bar?.holding ?? (participant ? participantHoldingAt(participant, hour) : null),

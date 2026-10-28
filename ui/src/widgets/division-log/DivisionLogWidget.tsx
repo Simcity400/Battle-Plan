@@ -20,7 +20,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { contentSet, resolveOptions, toggleContentSet } from '../../dashboard/options';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useParityRows } from '../../dashboard/parityRows';
@@ -81,8 +81,8 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
     templates, match.matches, widget.countries.kind === 'all'), [history.data, shownHour, first, events, templates, match, widget.countries.kind]);
   const countries = useMemo(() => countryMatchFilter(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0,
     undefined, track?.branch.firstHour), [widget.countries, fallback, groups.data, track?.branch.lastHour, track?.branch.firstHour]);
-  const totals = useProduct<DivisionLogTotalsReply>(runtime.client, track && hour !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'division-log-totals', params: { branchId: branch, firstHour: first, lastHour: hour, countries, templates } } : null,
+  const totals = useFollowedProduct<DivisionLogTotalsReply>(runtime.client, track && hour !== null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'division-log-totals', params: { branchId: branch, firstHour: first, lastHour: hour, countries, templates } } : null, ['lastHour'],
   active && options.totals === true && match.ready && !match.reason && manifest.data?.available === true, validateDivisionTotals);
   const [visible, setVisible] = useState<readonly LogRow<DivisionLogItem>[]>(NO_ROWS);
   const currentRows = useMemo(() => new Map(rows.map(row => [row.key, row])), [rows]);

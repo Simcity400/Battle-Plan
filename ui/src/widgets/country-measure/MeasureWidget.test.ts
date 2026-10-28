@@ -70,7 +70,9 @@ for (const kind of ['political-power', 'command-power']) test(`${kind} uses moun
         if (requests.some(request => request.product !== 'politics-ledger')) throw Error('Unexpected measure fixture comparison product');
         const data = globalThis.__powerFlags.ledger;
         return {data: data?.map(validate), retry() {}};
-      }; export const loadProduct = () => Promise.resolve({});`,
+      }; export const loadProduct = () => Promise.resolve({});
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/useCountryGroups.ts': `import {validateCountryGroupReply} from './groupsReply.ts';
       export const useCountryGroups = (_runtime, _track, active) => ({data: active && globalThis.__powerFlags.groups
         ? validateCountryGroupReply(globalThis.__powerFlags.groups) : undefined, retry() {}});`,

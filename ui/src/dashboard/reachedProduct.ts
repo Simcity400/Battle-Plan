@@ -9,35 +9,24 @@ import { selectedTags } from './countrySelection.ts';
 import { choiceAt, resolveChoice, type CountryHolder, type ReachedCountry } from './reachedCountry.ts';
 import { datedCountryToken, readDatedCountry, type DatedCountrySelection } from './datedCountry.ts';
 import { useCountryGroups } from './useCountryGroups';
-import { reachedKeys, reachedView, settle, type ReachedState, type Settled } from './reachedState.ts';
+import { reachedKeys, reachedView, type ReachedState } from './reachedState.ts';
+import { useViewRead } from './viewRead';
 
 export type { ReachedState };
 
 /** A reached-hour product (one country or unit at the playback hour). Requests
  * are transient, so playback never pushes branch histories out of the shared
- * cache; a newer request cancels the one before. `subject` names what the
- * answer is about apart from the hour: a changed subject drops the old answer. */
+ * cache. One read runs at a time per subject: a newer hour never cancels it, so
+ * it lands and stays shown while the newest hour is read. `subject` names what
+ * the answer is about apart from the hour: a changed subject cancels and drops
+ * the old answer. */
 export function useReachedProduct<T>(client: DashboardClient, source: DashboardSource | undefined, request: ProductRequest | null,
   subject: string, active: boolean, validate: (data: unknown) => T): ReachedState<T> {
   const content = useContentRevision(client);
   const { owner, key } = reachedKeys(request, subject, content);
-  const [state, setState] = useState<{ client: DashboardClient; settled: Settled<T> }>();
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    if (!active || !request || !key) return;
-    const controller = new AbortController();
-    const finish = (outcome: { data: T } | { error: string }) => {
-      if (!controller.signal.aborted) setState(previous => ({ client,
-        settled: settle(previous?.client === client ? previous.settled : undefined, owner, key, outcome) }));
-    };
-    loadTransientProduct<unknown>(client, request, controller.signal, source).then(validate).then(
-      data => finish({ data }), error => finish({ error: error instanceof Error ? error.message : String(error) }));
-    return () => controller.abort();
-    // The structured key names the request; the request object is rebuilt each render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, key, owner, active, attempt]);
-  return { ...reachedView(state?.client === client ? state.settled : undefined, owner, key),
-    retry: () => { setState(undefined); setAttempt(value => value + 1); } };
+  const read = useViewRead<ProductRequest, T>(key === null ? null : owner, request, key ?? '', active,
+    (asked, signal) => loadTransientProduct<unknown>(client, asked, signal, source).then(validate), client);
+  return { ...reachedView(read, key), retry: read.retry };
 }
 
 /** Rebinding waits for complete identity history; held history remains usable alongside errors. */

@@ -46,7 +46,8 @@ async function fixture() {
     plugins: [{ name: 'combat-log-consumers', enforce: 'pre', transform(source, id) {
       const path = id.replaceAll('\\', '/');
       if (path.endsWith('/dashboard/products.ts')) return `export const useProduct = (_client, request) => {
-        const state = globalThis.__combatLogDetails; state.request = request; return { data: state.reply }; };`;
+        const state = globalThis.__combatLogDetails; state.request = request; return { data: state.reply }; };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`;
       if (path.endsWith('/dashboard/useCountryGroups.ts')) return 'export const useCountryGroups = () => ({data: globalThis.__combatLogDetails.groups});';
       if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => {};';
       if (path.endsWith('/land-battles/CombatLogDetails.tsx')) return source.replace(/\buseMemo(?:<[^;\n]*>)?\(/g, '((factory) => factory())(');
@@ -102,7 +103,7 @@ test('a retained Combat Log at an hour whose group membership is still being pre
   const state = { groups: pendingGroups(), reply: { ...reply(), hour: PENDING_HOUR } };
   const globals = globalThis as typeof globalThis & { __combatLogPending?: typeof state }; globals.__combatLogPending = state;
   const { module, close } = await mountModule<typeof import('./CombatLogDetails')>('/ui/src/widgets/land-battles/CombatLogDetails.tsx', {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__combatLogPending.reply });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__combatLogPending.reply }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__combatLogPending.groups });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
   });

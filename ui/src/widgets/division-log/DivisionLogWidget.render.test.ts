@@ -16,7 +16,8 @@ test('an empty division log whose group hours are still being prepared is loadin
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 200;',
     '/dashboard/productWindows.ts': 'export const useProductWindows = () => ({ data: new Map(), errors: new Map(), retry() {} });',
     '/dashboard/products.ts': `export const useProduct = (client, request) => ({ retry() {}, data: request?.product === 'division-log-manifest'
-      ? { available: true, lossesAvailable: true, windows: [], templates: [], contentWarnings: [] } : undefined });`,
+      ? { available: true, lossesAvailable: true, windows: [], templates: [], contentWarnings: [] } : undefined });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/log/LogList.tsx': 'import { createElement } from "react"; export default props => createElement("p", {}, props.empty); export const PreparedLogCoverage = () => null;',
   });
   try {

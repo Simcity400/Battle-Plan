@@ -34,7 +34,9 @@ test('resource acquisition uses alias membership and preserves end/ever historie
           export const loadProduct = (_client, request, _signal, validate, source, _restart, publish) => { globalThis.__resourceSource = source; globalThis.__resourceReads.push(request);
             publish?.(validate({ branchId: 'b', tag: request.params.tag, decimals: 5, warnings: [], resources: [], series: [], trades: [], dealHours: [] })); return new Promise(() => {}); };
           export const useProducts = (_client, requests, _active, validate, source) => { globalThis.__resourceSource = source; globalThis.__resourceRequests.push(requests); return ({ data: requests.map(request => validate({
-            branchId: 'b', tag: request.params.tag, decimals: 5, warnings: [], resources: [], series: [], trades: [], dealHours: [] })), retry() {} }); };`;
+            branchId: 'b', tag: request.params.tag, decimals: 5, warnings: [], resources: [], series: [], trades: [], dealHours: [] })), retry() {} }); };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`;
       },
     }] });
   try {

@@ -20,7 +20,7 @@ export function usePreparedMeasure<M extends string>(client: DashboardClient, so
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
   const alive = useRef(owner); alive.current = owner;
   const [viewport, setViewport] = useState<{ owner: typeof owner; from: number; to: number; width: number }>();
-  const [states, setStates] = useState<{ owner: typeof owner; data?: MeasureStates; error?: string }>();
+  const [states, setStates] = useState<{ owner: typeof owner; error?: string }>();
   const [attempt, setAttempt] = useState(0);
   const [pendingSummary, setPendingSummary] = useState<{ owner: typeof owner; pending: boolean }>();
   const [pendingStates, setPendingStates] = useState<{ owner: typeof owner; pending: boolean }>();
@@ -51,18 +51,16 @@ export function usePreparedMeasure<M extends string>(client: DashboardClient, so
     if (line) for (let at = line.buckets.length - 1; at >= 0; at--) if (line.buckets[at]) { end = line.buckets[at]!.lastHour; break; }
     return [...new Set([Math.floor(headHour), ...(hoverHour === null ? [] : [Math.floor(hoverHour)]), ...(end === undefined ? [] : [end])])].map(hour => ({ tag, hour }));
   }) : [];
-  const readKey = JSON.stringify(reads);
-  useEffect(() => {
-    if (!enabled || !active || !reads.length) return;
-    const controller = new AbortController();
-    void preparedSeriesQuery(client, source!, 'series-state', { branchId, family: { kind: family, measure }, reads }, controller.signal, attempt > 0,
-      () => { if (!controller.signal.aborted && alive.current === owner) setPendingStates({ owner, pending: true }); }, undefined,
-      value => { if (!controller.signal.aborted && alive.current === owner) setStates({ owner, data: validateMeasureStates(value) }); }).then(
-      value => { if (!controller.signal.aborted && alive.current === owner) { setStates({ owner, data: validateMeasureStates(value) }); setPendingStates({ owner, pending: false }); } }).catch(
-      error => { if (!controller.signal.aborted && alive.current === owner) setStates(previous => ({ ...previous, owner, error: String(error) })); },
-    );
-    return () => controller.abort();
-  }, [owner, readKey, active, enabled, attempt]);
+  // One state read at a time while playback and the hover move (`useViewRead`): the last
+  // hour's states stay shown while the newest is read.
+  const stateRead = useViewRead<typeof reads, MeasureStates>(enabled && reads.length ? JSON.stringify([ownerKey, content]) : null,
+    reads, JSON.stringify(reads), active, (at, signal, publish, restart) => preparedSeriesQuery(client, source!, 'series-state',
+      { branchId, family: { kind: family, measure }, reads: at }, signal, restart,
+      () => { if (!signal.aborted && alive.current === owner) setPendingStates({ owner, pending: true }); }, undefined,
+      value => publish(validateMeasureStates(value))).then(value => {
+      if (!signal.aborted && alive.current === owner) setPendingStates({ owner, pending: false });
+      return validateMeasureStates(value);
+    }), client);
   useEffect(() => () => {
     navigation.current?.abort();
     for (const controller of picks.current) controller.abort(); picks.current.clear();
@@ -76,6 +74,7 @@ export function usePreparedMeasure<M extends string>(client: DashboardClient, so
       if (controller.signal.aborted || alive.current !== owner) return;
       if (reply.hour !== null && (typeof reply.hour !== 'number' || !Number.isFinite(reply.hour))) throw new Error('The prepared keyboard reply is malformed.');
       setKeyboard(previous => ({ owner, hour: reply.hour as number | null, revision: (previous?.revision ?? 0) + 1 }));
+      setStates(previous => previous?.error ? undefined : previous);
     }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setStates(previous => ({ ...previous, owner, error: String(error) })); });
   }, [owner, active, enabled, attempt]);
   const exactAt = useCallback(async (hour: number): Promise<MeasureStates | null> => {
@@ -83,17 +82,23 @@ export function usePreparedMeasure<M extends string>(client: DashboardClient, so
     const controller = new AbortController(); picks.current.add(controller);
     try {
       const value = await preparedSeriesQuery(client, source!, 'series-state', { branchId, family: { kind: family, measure }, reads: tags.map(tag => ({ tag, hour: Math.floor(hour) })) }, controller.signal, attempt > 0);
-      return controller.signal.aborted || alive.current !== owner ? null : validateMeasureStates(value);
+      if (controller.signal.aborted || alive.current !== owner) return null;
+      const reply = validateMeasureStates(value);
+      setStates(previous => previous?.error ? undefined : previous);
+      return reply;
     } catch (error) {
       if (!controller.signal.aborted && alive.current === owner) setStates(previous => ({ ...previous, owner, error: String(error) }));
       return null;
     } finally { picks.current.delete(controller); }
   }, [owner, active, enabled, attempt]);
-  const currentStates = states?.owner === owner ? states.data : undefined;
+  const currentStates = stateRead.data;
   const data = useMemo(() => enabled && currentStates ? reachedMeasureReply(branchId!, measure, tags, currentStates) : undefined,
     [owner, enabled, currentStates]);
-  const retry = () => { setAttempt(previous => previous + 1); summaries.retry(); };
-  const error = useHeldFailure((states?.owner === owner ? states.error : undefined) ?? summaries.error,
+  const retry = () => { setStates(undefined); setAttempt(previous => previous + 1); summaries.retry(); stateRead.retry(); };
+  // A read's failure belongs to the reads or view it asked for; newer ones are still loading.
+  const stateError = stateRead.errorKey === JSON.stringify(reads) ? stateRead.error : undefined;
+  const summaryError = summaries.errorKey === JSON.stringify([view?.from, view?.to, view?.width]) ? summaries.error : undefined;
+  const error = useHeldFailure((states?.owner === owner ? states.error : undefined) ?? stateError ?? summaryError,
     data !== undefined || currentSummaries !== undefined, retry);
   return { enabled, owner, data, states: currentStates, summaries: currentSummaries, summaryByTag, onSummaryView, onNavigateHour, exactAt,
     pending: currentSummaries?.pending,

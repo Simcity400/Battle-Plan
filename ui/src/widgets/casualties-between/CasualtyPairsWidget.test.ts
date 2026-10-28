@@ -55,7 +55,7 @@ async function fixture(state: State, module: string, realCareer = false) {
     return refs[index] ?? (refs[index] = { current: initial });
   };
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__landDrill.data, retry() {} });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__landDrill.data, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/productWindows.ts': `export const useProductWindows = (_client, identity, request, wanted) => {
       const state = globalThis.__landDrill; state.windowIdentity = identity;
       state.windowRequests = identity ? wanted.map(request) : [];

@@ -36,6 +36,8 @@ const PALETTE: Record<number, number> = { 10: 0, 11: 2, 12: 5, 20: 1, 21: 3, 34:
 /** Every market occurrence of the chosen countries' deals, newest first: contracts
  * made and removed, requests posted, deliveries and payments. A row opens the contract. */
 export default function MarketLedgerWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
+  // The open drill may still show an earlier hour while its newest loads.
+  const [drillShown, setDrillShown] = useState<number | undefined>();
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
@@ -122,11 +124,11 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
   </div>;
   return <div ref={anchor} className="market-ledger-host">{groupFailure}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
-      title={picked ? ledgerTitle(picked, tag => tag ?? 'Country name unavailable') : DETAILS.label} day={dayLabel(drillAt)}
+      title={picked ? ledgerTitle(picked, tag => tag ?? 'Country name unavailable') : DETAILS.label} day={dayLabel(drillShown ?? drillAt)}
       following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
       main={main}>
       {/* A posted request (kind 10) is the market's request with that id, not a contract. */}
-      {picked && <MarketDrill runtime={runtime} track={track} hour={drill.follow ? hour : drillAt} active={active}
+      {picked && <MarketDrill runtime={runtime} track={track} hour={drill.follow ? hour : drillAt} active={active} onAnswered={setDrillShown}
         tags={[picked.seller, picked.buyer].filter((tag): tag is string => tag !== null)} selected={`contract:${picked.row.kind === 10}:${picked.row.contract}`} />}
     </DrillHost>
   </div>;

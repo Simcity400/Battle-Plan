@@ -20,7 +20,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct } from '../../dashboard/products';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useWindowDisplay } from '../../dashboard/productWindows';
 import { usePlaybackSpeed } from '../../dashboard/playback';
@@ -55,11 +55,13 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   const window = track && resolveWindow(widget, track, runtime.tracks, hourAt);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const options = resolveOptions(OPTIONS, widget.options);
-  const loaded = useProduct<AceRosterData>(runtime.client, track ? {
+  const loaded = useFollowedProduct<AceRosterData>(runtime.client, track ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'air-aces', params: { branchId: track.branch.id, view: 'roster', hour },
-  } : null, active, validateAceRoster, track?.source);
+  } : null, ['hour'], active, validateAceRoster, track?.source);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : null;
-  const display = useWindowDisplay(identity, loaded.data, hour, runtime.client);
+  // A roster still shown while the next hour loads keeps the hour it answers.
+  const answered = loaded.moment ? (JSON.parse(loaded.moment) as [number])[0] : hour;
+  const display = useWindowDisplay(identity, loaded.data, answered, runtime.client);
   const data = display?.data.manifest, detail = display?.data.roster;
   const read = display?.data.readHour ?? null;
   const preparing = !!display?.data.preparing.length;

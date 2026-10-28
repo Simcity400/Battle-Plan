@@ -21,7 +21,8 @@ test('background battle loading has one Updating status; dynamic and explicit so
       data: request?.product.endsWith('-manifest') ? { windows: ${JSON.stringify(windows)},
         ...globalThis.__battleRefresh.prefix, available: globalThis.__battleRefresh.available, unavailable: 'Synthetic native refusal', contentWarnings: [] }
         : request?.product.endsWith('-ranking') ? {censusHour: 125, effectiveMeasure: 'losses', warnings: [], contentWarnings: []} : undefined,
-      retry() {} });`,
+      retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': 'export const useProductWindows = () => ({data: globalThis.__battleRefresh.data, errors: new Map(), retry() {}});',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({retry() {}});',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({labelAt: () => tag => ({name: tag})});',
@@ -77,7 +78,8 @@ test('actual battle loader refuses aligned Follow and stored Pin moments outside
     '/charts/table/useTableHour.ts': 'export const useTableHour = clock => clock.getHour();',
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({
       data: request?.product.endsWith('-manifest') ? { windows: [{ firstHour: 100, lastHour: 200 }],
-        available: true, unavailable: null, contentWarnings: [] } : undefined, retry() {} });`,
+        available: true, unavailable: null, contentWarnings: [] } : undefined, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useProductWindows = (_client, _identity, _request, wanted, active) => {
       globalThis.__battleWindowLoads.push({ wanted, active });
       return { data: new Map([[0, { observed: [[100, 200]], warnings: [], contentWarnings: [] }]]), errors: new Map(), retry() {} };
@@ -136,7 +138,8 @@ test('an adapter view gets the rows, an empty list, and names still loading told
         // Server rendering draws no rows, so the place-names hook asks for nothing yet.
         : request?.product.endsWith('-ranking') ? globalThis.__battleView.ranking
         : !request || request.product === 'place-names' ? globalThis.__battleView.places : undefined,
-      error: !request || request.product === 'place-names' ? globalThis.__battleView.error : undefined, retry() {} });`,
+      error: !request || request.product === 'place-names' ? globalThis.__battleView.error : undefined, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': 'export const useProductWindows = () => ({ data: new Map([[0, { observed: [[100, 200]], warnings: [], contentWarnings: [] }]]), errors: new Map(), retry() {} });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
@@ -181,7 +184,8 @@ test('a battle log over hours whose group membership is still being prepared is 
   const { module, close } = await mountModule<typeof import('./BattleLogView')>('/ui/src/widgets/battles/BattleLogView.tsx', {
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request?.product.endsWith('-manifest')
-      ? { windows: [{ firstHour: ${BRANCH.firstHour}, lastHour: ${BRANCH.lastHour} }], available: true, unavailable: null, contentWarnings: [] } : undefined, retry() {} });`,
+      ? { windows: [{ firstHour: ${BRANCH.firstHour}, lastHour: ${BRANCH.lastHour} }], available: true, unavailable: null, contentWarnings: [] } : undefined, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useProductWindows = () => ({ data: new Map([[0, { observed: [[${BRANCH.firstHour}, ${BRANCH.lastHour}]], warnings: [], contentWarnings: [] }]]), errors: new Map(), retry() {} });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__battlePending.groups, retry() {} });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({labelAt: () => tag => ({name: tag})});',

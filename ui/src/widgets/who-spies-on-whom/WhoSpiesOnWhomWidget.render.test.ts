@@ -15,7 +15,8 @@ test('placements of a group counted at an hour still being prepared are loading,
   const state = { groups: pendingGroups({ tags }) as CountryGroupReply };
   const host = globalThis as typeof globalThis & { __placementsPending?: typeof state }; host.__placementsPending = state;
   const { module, close } = await mountModule<{ default: ComponentType<WidgetProps> }>('/ui/src/widgets/who-spies-on-whom/WhoSpiesOnWhomWidget.tsx', {
-    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(reply)}, retry() {} });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(reply)}, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__placementsPending.groups, retry() {} });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsAt = () => new Map();',

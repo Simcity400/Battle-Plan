@@ -1,4 +1,4 @@
-import { loadWidgetRenderer } from '../widgets/rendererLoaders';
+import { loadedWidgetRenderer, loadWidgetRenderer } from '../widgets/rendererLoaders';
 import { Popover, PopoverHeading, usePopover } from '../components/Popover';
 import { lazy, Suspense, useId, useMemo } from 'react';
 import { Icon } from '../components/Icons';
@@ -14,12 +14,15 @@ export default function WidgetSettingsMenu({ widget, template, runtime, onApply,
   const id = useId();
   const menu = usePopover();
   const { trigger, open } = menu;
+  // A widget on screen has loaded its renderer: suspending would hold the fallback for React's reveal delay.
+  const loaded = loadedWidgetRenderer(widget.kind) !== undefined;
   return <>
     <button ref={trigger} className="dash-icon-button" type="button" data-widget-settings aria-label={`Configure ${widget.title}`} data-tooltip="Widget settings"
       popoverTarget={id} aria-haspopup="dialog" aria-expanded={open}><Icon name="settings" /></button>
     <Popover menu={menu} id={id} className="widget-settings-menu" aria-label={`${widget.title} settings`}>
       <PopoverHeading title="Widget settings" menu={menu} onDelete={onRemove} onReset={onReset} />
-      {open && <Suspense fallback={<p role="status">Loading settings?</p>}><Settings widget={widget} template={template} runtime={runtime} onChange={onApply} /></Suspense>}
+      {open && (loaded ? <WidgetSettings widget={widget} template={template} runtime={runtime} onChange={onApply} />
+        : <Suspense fallback={<p role="status">Loading settings…</p>}><Settings widget={widget} template={template} runtime={runtime} onChange={onApply} /></Suspense>)}
     </Popover>
   </>;
 }

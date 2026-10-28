@@ -104,7 +104,7 @@ test('actual Territory breakdown forwards unknown current and final selection to
   const host = globalThis as typeof globalThis & { __breakdownR2?: typeof fixture };
   host.__breakdownR2 = fixture;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__breakdownR2.data });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__breakdownR2.data }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: ${JSON.stringify(groups)} });`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 15;',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag: () => undefined, flagPending: () => false, flagReason: () => undefined });',

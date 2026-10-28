@@ -51,8 +51,8 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const data = state.data;
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   const first = widget.time.mode === 'range' && window ? Math.floor(window.firstHour) : track?.branch.firstHour ?? 0;
-  const bars = useMemo(() => data ? monthBars(data, measure, stack, ledger, first, Math.min(hour, data.hour), CATEGORY_LIMIT) : null,
-    [data, measure, stack, ledger, first, hour]);
+  const bars = useMemo(() => data ? monthBars(data, measure, stack, ledger, first, data.hour, CATEGORY_LIMIT) : null,
+    [data, measure, stack, ledger, first]);
   const colour = useCallback((key: string) => {
     if (key === OTHER) return tokens.muted;
     const index = bars?.parts.findIndex(part => part.key === key) ?? -1;
@@ -103,9 +103,10 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} keyHours={columnStops(bars.periods)}
         fitValues={shown => shown ? [Math.min(0, shown[0]), Math.max(0, shown[1])] : null}
         active={active} revision={`${data.hour}:${measure}:${stack}:${ledger}:${tokens.categories.join()}`}
-        tooltip={at => { const period = monthAt(at); return period ? monthTooltip(period, bars.parts, measure, caption, following ? hour : null, colour) : null; }}
+        // A reply kept while the next hour loads totals months only through its own hour.
+        tooltip={at => { const period = monthAt(at); return period ? monthTooltip(period, bars.parts, measure, caption, following ? data.hour : null, colour) : null; }}
         onPick={at => { const period = monthAt(at); if (period && !period.unknown) pick(Math.floor(at)); }}
-        onContextMenu={(_at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, Math.min(hour, data.hour))])} />
+        onContextMenu={(_at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, data.hour)])} />
     </div>;
   }
   const legend = bars && bars.parts.length > 1 ? bars.parts.map(part => ({ id: part.key, label: part.label, color: colour(part.key) })) : [];
@@ -132,7 +133,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
               return designs.length ? [{ label: LEDGER_LABELS[name], strong: true, divider: true }, ...designs.map(design => ({ label: design.name, value: designAmount(design.amountRaw), indent: true }))] : [];
             }),
           ] })}
-          menu={() => [jumpItem(runtime, track.id, Math.min(hour, data.hour))]} />
+          menu={() => [jumpItem(runtime, track.id, data.hour)]} />
           : <WidgetState kind="empty" message="No army kept an entry for this month." />}
       </div>}
     </DrillHost>

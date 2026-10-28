@@ -17,7 +17,8 @@ test('special projects of a group counted at hours still being prepared are load
   const { module, close } = await mountModule<{ default: ComponentType<WidgetProps> }>('/ui/src/widgets/special-projects/SpecialProjectsWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__projectsPending.groups, retry() {} });',
     // As the real hook: nothing asked, nothing answered.
-    '/dashboard/products.ts': `export const useProducts = (_client, requests) => ({ data: requests.length ? requests.map(() => (${JSON.stringify(reply)})) : undefined, retry() {} });`,
+    '/dashboard/products.ts': `export const useProducts = (_client, requests) => ({ data: requests.length ? requests.map(() => (${JSON.stringify(reply)})) : undefined, retry() {} });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
@@ -49,7 +50,7 @@ test('live special projects of a group with no member found yet say what the mom
   const { module, close } = await mountModule<{ default: ComponentType<WidgetProps> }>('/ui/src/widgets/special-projects/SpecialProjectsWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__projectsGap.groups, retry() {} });',
     // Nothing asked, nothing answered.
-    '/dashboard/products.ts': 'export const useProducts = (_client, requests) => ({ data: requests.length ? [] : undefined, retry() {} });',
+    '/dashboard/products.ts': 'export const useProducts = (_client, requests) => ({ data: requests.length ? [] : undefined, retry() {} }); export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',

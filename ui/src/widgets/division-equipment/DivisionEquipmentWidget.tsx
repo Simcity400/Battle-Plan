@@ -71,7 +71,8 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const owner = JSON.stringify([track?.source.id, track?.source.revision, subject, content]);
   const drawn = useRef<{ client: typeof runtime.client; owner: string; data: DivisionEquipmentReply } | null>(null);
   const kept = drawn.current?.client === runtime.client && drawn.current.owner === owner ? drawn.current.data : undefined;
-  const data = held ?? (state.current || !kept ? state.data : kept);
+  // The newest landed reply replaces the drawn one, whichever hour it answers.
+  const data = held ?? state.data ?? kept;
   if (data) drawn.current = { client: runtime.client, owner, data };
   const drillParams = drill?.kind === 'template' ? { template: drill.template } : drill?.kind === 'division' ? { division: drill.division } : null;
   const detail = useReachedProduct(runtime.client, track?.source, base && drillParams && { ...base, params: { branchId: track!.branch.id, hour, tag, countFor, ...drillParams } },
@@ -157,6 +158,9 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
         onRowClick={row => setDrill({ kind: 'template', template: row.template })} tooltip={templateTip} menu={menu} />}</>;
   const type = drill?.kind === 'type' ? data?.types.find(row => typeKey(row) === drill.key) : undefined;
   const drillData = detail.data;
+  // Template and division drills show their own reply, which can answer another hour than the overview.
+  const drillMenu = () => drillData?.poolHour == null || !track ? [] : [jumpItem(runtime, track.id, drillData.poolHour)];
+  const drillHour = drill && drill.kind !== 'type' ? drillData?.hour : data?.hour;
   let body = null;
   if (drill?.kind === 'type') body = type ? <div className="division-equipment-drill">
     <Table label={`${typeName(type)} models`} rows={type.variants} columns={[
@@ -174,13 +178,13 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
         { label: 'Equipment', value: row.poolKnown ? `${items(row.heldRaw) ?? '—'} of ${items(row.neededRaw) ?? '—'}` : 'Not recorded' },
         { label: 'Types short', value: row.typesShort === null ? 'Not recorded' : usNumber.format(row.typesShort) },
         ...(row.convertingFrom ? [{ label: 'Converting from', value: row.convertingFrom }] : []),
-      ] })} menu={menu} /></div>;
+      ] })} menu={drillMenu} /></div>;
   else if (drill?.kind === 'division' && drillData) body = drillData.pool ? <div className="division-equipment-drill">
     <p><b>{divisionName(drillData.pool)}</b> · {drillData.pool.templateName ?? 'Template name unavailable'}</p>
     {!drillData.pool.poolKnown && <WidgetState kind="unavailable" message="This division's equipment was not recorded at this date." />}
     {(drillData.pool.poolKnown || drillData.pool.types.length > 0)
       && <Table label={drillData.pool.poolKnown ? 'Equipment in this division' : 'Equipment this division needs'} rows={drillData.pool.types} columns={poolColumns}
-        rowKey={poolKey} sort={MISSING_SORT} cellBars={bars} narrow={narrowTableOf(options)} menu={menu}
+        rowKey={poolKey} sort={MISSING_SORT} cellBars={bars} narrow={narrowTableOf(options)} menu={drillMenu}
         tooltip={row => ({ title: typeName(row), rows: row.variants.map(variant => ({ label: variant.name ?? 'Design name unavailable', value: items(variant.heldRaw) ?? '—' })) })} />}</div>
     : <WidgetState kind="unavailable" message="This division is not in service at this date." />;
   const back = drill?.kind === 'division' && drill.template ? { kind: 'template' as const, template: drill.template } : null;
@@ -189,7 +193,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
     {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" detail={country.error} onRetry={country.retry} /> : null}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill !== null}
       title={drill?.kind === 'type' ? type ? typeName(type) : 'Equipment' : drill?.kind === 'template'
-        ? templateName(data?.templates.find(row => row.template === drill.template) ?? { name: null }) : 'Division'}
-      day={formatDateTime(hour)} following={widget.time.mode === 'follow'} canFollow={false} anchor={anchor}
+        ? templateName(drillData?.templates.find(row => row.template === drill.template) ?? data?.templates.find(row => row.template === drill.template) ?? { name: null }) : 'Division'}
+      day={formatDateTime(drillHour ?? hour)} following={widget.time.mode === 'follow'} canFollow={false} anchor={anchor}
       onClose={() => setDrill(back)} onFollow={() => {}} main={main}>{body}</DrillHost></div>;
 }

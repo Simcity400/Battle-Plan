@@ -14,7 +14,8 @@ test('the breakdown widget supplies prepared sources for its manifest and window
     '/dashboard/products.ts': `export function useProduct(_client, request, _active, _validate, source) {
       globalThis.__breakdownRouting.push({ kind: 'manifest', request, source });
       return { data: { branchId: '1', tag: 'mod holder', available: false, windows: [{firstHour: 100,lastHour: 101}],
-        window: null, observed: [], countries: [], series: [], wars: [], hasGap: false, warnings: [] }, retry() {} }; }`,
+        window: null, observed: [], countries: [], series: [], wars: [], hasGap: false, warnings: [] }, retry() {} }; }
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export function useProductWindows(_client, _identity, request, _wanted, _active, _validate, source) {
       globalThis.__breakdownRouting.push({ kind: 'window', request: request(0), source, identity: _identity });
       return { data: new Map(), errors: new Map(), retry() {} }; }`,

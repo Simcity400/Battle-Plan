@@ -39,7 +39,7 @@ test('the actual occupation mix waits for a native country choice and keeps that
       const state = globalThis.__occupationHolderAdapter;
       if (request) state.requests.push(request);
       return { data: request ? validate(state.reply) : undefined, error: request ? state.productError : null, retry() {} }; };
-    export const useFollowedProduct = (client, request, _moving, active, validate) => useProduct(client, request, active, validate);`,
+    export const useFollowedProduct = (client, request, moving, active, validate) => ({ ...useProduct(client, request, active, validate), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = (_runtime, _track, active) => {
       const state = globalThis.__occupationHolderAdapter; state.groupsActive = active; return state.groups; };`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',

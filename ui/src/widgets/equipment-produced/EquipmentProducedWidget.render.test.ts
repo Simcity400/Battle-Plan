@@ -16,7 +16,7 @@ test('equipment produced by a group at an hour still being prepared is loading, 
   const state = { groups: pendingGroups() as CountryGroupReply, reply, view: undefined as CountryRaceViewProps | undefined };
   const host = globalThis as typeof globalThis & { __producedPending?: typeof state }; host.__producedPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/equipment-produced/EquipmentProducedWidget.tsx', {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__producedPending.reply, retry() {} });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__producedPending.reply, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__producedPending.groups, retry() {} });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;",
@@ -53,7 +53,7 @@ test('equipment produced by a group with no member found yet says what the momen
   const host = globalThis as typeof globalThis & { __producedGap?: typeof state }; host.__producedGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/equipment-produced/EquipmentProducedWidget.tsx', {
     // No member to ask for: no request, so no reply.
-    '/dashboard/products.ts': 'export const useProduct = (_client, request) => ({ data: request ? globalThis.__producedGap.reply : undefined, retry() {} });',
+    '/dashboard/products.ts': 'export const useProduct = (_client, request) => ({ data: request ? globalThis.__producedGap.reply : undefined, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__producedGap.groups, retry() {} });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;",

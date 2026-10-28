@@ -18,7 +18,8 @@ test('the casualty-pairs catalogue probe carries its source into prepared produc
         if (path.endsWith('/components/Popover.tsx')) return `export const usePopover = () => ({ trigger: null, open: true });
           export const Popover = ({ children }) => children; export const PopoverBody = ({ children }) => children();`;
         if (path.endsWith('/dashboard/products.ts')) return `export function useProduct(_client, request, active, _validate, source) {
-          globalThis.__pickerAvailability.push({ request, active, source }); return { data: { available: true }, retry() {} }; }`;
+          globalThis.__pickerAvailability.push({ request, active, source }); return { data: { available: true }, retry() {} }; }
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`;
         if (path.endsWith('/dashboard/WidgetPreview.tsx')) return 'export default function Preview() { return null; }';
       },
     }] });

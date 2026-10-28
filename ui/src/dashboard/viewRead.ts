@@ -7,9 +7,14 @@ const ownerId = (owner: object) => { let id = owners.get(owner); if (id === unde
 export interface ViewRead<T> {
   /** The newest read that landed for this lane, whichever view it was asked for. */
   data?: T;
+  /** The failure of the view now asked for. */
   error?: string;
   /** The view key `data` answers. */
   viewKey?: string;
+  /** The view key whose read failed with `error`. */
+  errorKey?: string;
+  /** The view key of the read in flight, as of the last commit. */
+  asking?: string;
   retry: () => void;
 }
 
@@ -23,7 +28,7 @@ export function useViewRead<V, T>(reads: string | null, view: V | null | undefin
   read: (view: V, signal: AbortSignal, publish: (value: T) => void, restart: boolean) => Promise<T>, owner?: object): ViewRead<T> {
   // The reading client is part of the lane: another client's reply is never shown.
   const lane = reads == null ? null : owner ? `${ownerId(owner)}:${reads}` : reads;
-  const [state, setState] = useState<{ lane: string; viewKey: string; data?: T; error?: string }>();
+  const [state, setState] = useState<{ lane: string; viewKey: string; data?: T; error?: string; errorKey?: string }>();
   const [attempt, setAttempt] = useState(0);
   const [landed, setLanded] = useState(0);
   const flight = useRef<{ lane: string; id: string; viewKey: string; shown: boolean; controller: AbortController } | null>(null);
@@ -49,7 +54,8 @@ export function useViewRead<V, T>(reads: string | null, view: V | null | undefin
     void reader.current(asked.view as V, controller.signal, publish, attempt > 0).then(publish, error => {
       // Kept data keeps the view it answers; only the failure is the asked view's.
       if (!controller.signal.aborted) setState(previous => ({ lane, ...(previous?.lane === lane && previous.data !== undefined
-        ? { viewKey: previous.viewKey, data: previous.data } : { viewKey: asked.viewKey }), error: error instanceof Error ? error.message : String(error) }));
+        ? { viewKey: previous.viewKey, data: previous.data } : { viewKey: asked.viewKey }), error: error instanceof Error ? error.message : String(error),
+        errorKey: asked.viewKey }));
     }).finally(() => {
       if (flight.current?.controller !== controller) return;
       flight.current = null;
@@ -61,5 +67,8 @@ export function useViewRead<V, T>(reads: string | null, view: V | null | undefin
   // Leaving a lane, or the screen, cancels that lane's read only.
   useEffect(() => () => { if (flight.current?.lane === lane) { flight.current.controller.abort(); flight.current = null; } }, [lane, active]);
   const current = state?.lane === lane ? state : undefined;
-  return { data: current?.data, error: current?.error, viewKey: current?.viewKey, retry: () => { setState(undefined); setAttempt(value => value + 1); } };
+  // A failure belongs to the view it was asked for: a moved view is still loading.
+  return { data: current?.data, error: current?.errorKey === viewKey ? current.error : undefined, viewKey: current?.viewKey, errorKey: current?.errorKey,
+    asking: flight.current?.lane === lane ? flight.current.viewKey : undefined,
+    retry: () => { setState(undefined); setAttempt(value => value + 1); } };
 }

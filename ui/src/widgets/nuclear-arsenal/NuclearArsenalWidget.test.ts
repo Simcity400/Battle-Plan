@@ -30,7 +30,8 @@ test('actual nuclear widget aligns drill playback and projects manual roots thro
     '/dashboard/products.ts': `export const useProduct = (_client, request) => {
       if (request) globalThis.__nuclearRequests.push(request); return { data: ${JSON.stringify(reply)}, retry() {} }; };
       export const loadProduct = (client, request, _signal, _validate, _source, _restart, publish) => {
-        publish?.(useProduct(client, request).data); return new Promise(() => {}); };`,
+        publish?.(useProduct(client, request).data); return new Promise(() => {}); };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     // The race's view read answers in the same render, as its products do here.
     '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
       if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });

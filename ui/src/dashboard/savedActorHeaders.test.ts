@@ -90,7 +90,8 @@ test('registered saved native-actor bodies supply country headers at their displ
       } export const loadProduct = (client, request, _signal, validate, _source, _restart, publish) => {
         if (!publish) return Promise.resolve({ flags: [] });
         const { data, error } = useProduct(client, request, true, validate); if (error) throw Error(error);
-        if (data !== undefined) publish(data); return new Promise(() => {}); };`,
+        if (data !== undefined) publish(data); return new Promise(() => {}); };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     // View reads answer in the same render through the transport above.
     '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data, error;
       if (active && lane != null && view != null) try { void read(view, new AbortController().signal, value => { data = value; }); } catch (failure) { error = failure.message; }

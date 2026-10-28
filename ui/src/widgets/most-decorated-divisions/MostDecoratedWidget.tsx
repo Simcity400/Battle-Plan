@@ -95,13 +95,16 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} onRowClick={open} tooltip={tooltip}
     onVisibleRows={setVisible} hoursPerSecond={hoursPerSecond} menu={row => [{ label: 'Open service record', run: () => open(row) }]} />;
   const pickedHour = drillHour(drill, Math.floor(runtime.clock.getHour()) + (track?.axisOffset ?? 0)) ?? hour;
+  // The opened record may still show an earlier hour while the picked one loads.
+  const [answered, setAnswered] = useState<number | undefined>();
+  const shownHour = drill.breakdown ? answered ?? pickedHour : pickedHour;
   return <div ref={anchor} className="most-decorated">
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null} title="Division service record"
-      day={formatDateTime(pickedHour)} following={drill.follow} canFollow anchor={anchor}
+      day={formatDateTime(shownHour)} following={drill.follow} canFollow anchor={anchor}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => { if (drill.breakdown) dispatch({ type: 'follow' }); }}
-      onPin={drill.breakdown && track ? () => runtime.addWidgetBelow(widget.id, pinnedRecord(widget, drill.breakdown!, track, pickedHour, drill.follow)) : undefined}
+      onPin={drill.breakdown && track ? () => runtime.addWidgetBelow(widget.id, pinnedRecord(widget, drill.breakdown!, track, shownHour, drill.follow)) : undefined}
       main={main}>
       {drill.breakdown && track && <RecordView runtime={runtime} trackId={track.id} division={drill.breakdown} hour={pickedHour} show="both"
-        log={RECORD_LOG} live={drill.follow} active={active} onDiagnostics={onDiagnostics} />}
+        log={RECORD_LOG} live={drill.follow} active={active} onDiagnostics={onDiagnostics} onAnswered={setAnswered} />}
     </DrillHost></div>;
 }

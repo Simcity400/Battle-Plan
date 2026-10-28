@@ -17,7 +17,7 @@ test('trade viewport, followed drill and pointer hours acquire independent prepa
     plugins: [{ name: 'trade-exact-demand', enforce: 'pre', transform(code, id) {
       const path = id.replaceAll('\\', '/');
       if (path.endsWith('/dashboard/useCountryGroups.ts')) return 'export const useCountryGroups = () => ({});';
-      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = (_client, request, _active, _validate, source) => { if (request) { globalThis.__tradeAcquisition.requests.push(request); globalThis.__tradeAcquisition.sources.push(source); } return { retry() {} }; };'
+      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = (_client, request, _active, _validate, source) => { if (request) { globalThis.__tradeAcquisition.requests.push(request); globalThis.__tradeAcquisition.sources.push(source); } return { retry() {} }; }; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });'
         + ' export const loadProduct = (client, request, _signal, validate, source) => { useProduct(client, request, true, validate, source); return new Promise(() => {}); };';
       // The viewport read asks synchronously, as each render's demand.
       if (path.endsWith('/dashboard/viewRead.ts')) return `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
@@ -67,7 +67,7 @@ test('market view shares source, native country filter and moment demand without
     plugins: [{ name: 'trade-market-demand', enforce: 'pre', transform(_code, id) {
       const path = id.replaceAll('\\', '/');
       if (path.endsWith('/dashboard/useCountryGroups.ts')) return 'export const useCountryGroups = (_runtime, _track, active) => { globalThis.__marketAcquisition.groupDemand = active; return { data: globalThis.__marketAcquisition.groups }; };';
-      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = (_client, request) => { if (request) globalThis.__marketAcquisition.requests.push(request); return { retry() {} }; };';
+      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = (_client, request) => { if (request) globalThis.__marketAcquisition.requests.push(request); return { retry() {} }; }; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });';
     } }] });
   try {
     const { useTradeFlows } = await vite.ssrLoadModule('/ui/src/widgets/trade-flows/useTradeFlows.ts');

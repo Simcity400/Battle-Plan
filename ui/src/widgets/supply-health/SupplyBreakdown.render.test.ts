@@ -14,7 +14,7 @@ test('pinned supply omits its country heading only when the frame names it and d
   const state = { data };
   const host = globalThis as typeof globalThis & { __supplyPresentation?: typeof state }; host.__supplyPresentation = state;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__supplyPresentation.data });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__supplyPresentation.data }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: "Country " + tag }) });',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000; export const useChartTokens = () => ({ error: "bad", warning: "warn", positive: "good" });',

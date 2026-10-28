@@ -187,6 +187,8 @@ export default function Sunburst(props: SunburstProps) {
       const fade = tokens.reducedMotion ? 0 : tau * 1.2;
       const blend = tau > 0 ? 1 - Math.exp(-info.dt / tau) : 1;
       let moving = false;
+      // Motion ends within half a pixel of its target, so a still chart stops redrawing.
+      const angleWithin = 0.5 / Math.max(1, g.hole + rings * g.ring), ringWithin = 0.5 / Math.max(1, g.ring);
       const present = new Set<string>();
       for (const node of nodes) {
         present.add(node.id);
@@ -201,10 +203,10 @@ export default function Sunburst(props: SunburstProps) {
           state.rgb = goal; state.colour = toHex(goal); state.stretch = node.stretch;
         }
         if (!state) { state = { a0: target.a0, a1: target.a0, ring: target.ring, alpha: 0, rgb: goal, colour: toHex(goal), stretch: node.stretch }; motion.set(node.id, state); }
-        state.a0 = approach(state.a0, target.a0, info.dt, tau);
-        state.a1 = approach(state.a1, target.a1, info.dt, tau);
-        state.ring = approach(state.ring, target.ring, info.dt, tau);
-        state.alpha = approach(state.alpha, alphaTarget, info.dt, fade);
+        state.a0 = approach(state.a0, target.a0, info.dt, tau, angleWithin);
+        state.a1 = approach(state.a1, target.a1, info.dt, tau, angleWithin);
+        state.ring = approach(state.ring, target.ring, info.dt, tau, ringWithin);
+        state.alpha = approach(state.alpha, alphaTarget, info.dt, fade, 1 / 512);
         const recolouring = colour != null && (state.rgb.r !== goal.r || state.rgb.g !== goal.g || state.rgb.b !== goal.b);
         if (recolouring) { state.rgb = approachColour(state.rgb, goal, blend); state.colour = toHex(state.rgb); }
         if (state.a0 !== target.a0 || state.a1 !== target.a1 || state.ring !== target.ring || state.alpha !== alphaTarget || recolouring) moving = true;

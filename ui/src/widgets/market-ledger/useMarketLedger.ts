@@ -5,7 +5,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useProductWindows } from '../../dashboard/productWindows';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct } from '../../dashboard/products';
 import type { MarketLedgerReply } from '../../generated/dashboard';
 import { extendCursors, ledgerCursors, ledgerPages, MARKET_LEDGER, PAGE_SIZE, validateLedger } from './ledgerData';
 import type { LedgerCountries, LedgerItem } from './ledgerData';
@@ -22,14 +22,16 @@ const NO_WARNINGS: readonly string[] = [];
 export function useMarketLedger(runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean, hour: number | null,
   countries: LedgerCountries | null, kinds: readonly number[]) {
   const content = useContentRevision(runtime.client);
-  const request = (before: string | null) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: MARKET_LEDGER,
+  const request = (before: string | null, lastHour: number | null) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: MARKET_LEDGER,
     params: { branchId: track!.branch.id, tags: countries!.tags, ...countries!.members.length ? { members: countries!.members } : {},
-      kinds: [...kinds], lastHour: hour, pageSize: PAGE_SIZE, ...before === null ? {} : { before } } });
-  const first = useProduct<MarketLedgerReply>(runtime.client, track && countries && hour !== null && kinds.length ? request(null) : null,
-    active, validateLedger, track?.source);
+      kinds: [...kinds], lastHour, pageSize: PAGE_SIZE, ...before === null ? {} : { before } } });
+  const first = useFollowedProduct<MarketLedgerReply>(runtime.client, track && countries && hour !== null && kinds.length ? request(null, hour) : null,
+    ['lastHour'], active, validateLedger, track?.source);
+  // Later pages continue the hour the first page answers; rows still stop at `hour`.
+  const read = first.data && first.moment ? (JSON.parse(first.moment) as [number | null])[0] : hour;
   const snapshot = first.data ? JSON.stringify([first.data.lastHour, first.data.total, first.data.next, first.data.rows.length,
     first.data.rows[0]?.id ?? null, preparedPrefix(first.data)]) : null;
-  const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content, countries, kinds, hour, snapshot]) : null;
+  const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content, countries, kinds, read, snapshot]) : null;
   const [wanted, setWanted] = useState<{ identity: string | null; pages: readonly number[] }>({ identity, pages: [] });
   const wantedPages = wanted.identity === identity ? wanted.pages : NO_PAGES;
   // Each page's cursor, as far as the loaded pages reach: page 0 has none.
@@ -37,7 +39,7 @@ export function useMarketLedger(runtime: WidgetRuntime, track: BoundTrack | unde
   const known = cursors.identity === identity ? cursors.next : NO_CURSORS;
   const chained = useMemo(() => first.data ? ledgerCursors(first.data, known) : [], [first.data, known]);
   const indices = wantedPages.filter(index => index > 0 && chained[index] !== undefined);
-  const chunks = useProductWindows<MarketLedgerReply>(runtime.client, identity, index => request(chained[index] ?? null),
+  const chunks = useProductWindows<MarketLedgerReply>(runtime.client, identity, index => request(chained[index] ?? null, read),
     indices, active && !!first.data, validateLedger, track?.source);
   // A loaded page's `next` opens the page after it.
   useEffect(() => {

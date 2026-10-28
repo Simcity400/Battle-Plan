@@ -429,7 +429,7 @@ test('missing and loading viewpoints have honest subtitles and availability uses
 test('actual Wars participant hover preserves completed native UI-word and empty names', async () => {
   const host = globalThis as typeof globalThis & { __warsFixture?: unknown; __warsName?: { name: string; known: boolean; flag?: string; flagReason?: string; flagPending?: boolean }; __warsTips?: TooltipContent[]; __warsMissing?: string; __warsAsked?: string[] };
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__warsFixture });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__warsFixture }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: { identityChanges: [], countryIdentities: ["Mod: player", "One side", "Other side"].filter(tag => tag !== globalThis.__warsMissing).map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 39, slot, countryId: slot + 1 }] })), warnings: [] } });',
     '/dashboard/FactionColours.tsx': 'export const useFactionColours = () => ({ colours: new Map(), warnings: [] });',
     '/dashboard/useCountriesAt.ts': 'export const STYLES = {}; export const useCountriesAt = () => ({ country: () => globalThis.__warsName, revision: 0 });',

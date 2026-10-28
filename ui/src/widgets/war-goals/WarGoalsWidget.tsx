@@ -10,7 +10,7 @@ import { selectedTags } from '../../dashboard/countrySelection';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { resolveWindow } from '../../dashboard/model';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { WargoalStanding, WargoalsReply } from '../../generated/dashboard';
 import { fixed5, validateWargoalsReply } from './warGoalsData';
@@ -25,9 +25,10 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window ? Math.floor(window.lastHour) : null;
   const tag = track ? selectedTags(widget.countries, track)[0] ?? null : null;
-  const product = useProduct<WargoalsReply>(runtime.client, track && tag && hour != null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'wargoals', params: { branchId: track.branch.id, hour, tag } } : null, active, validateWargoalsReply, track?.source);
-  const data = product.data?.hour === hour && product.data.tag === tag && product.data.branchId === track?.branch.id ? product.data : null;
+  // The last hour's goals stay shown, labelled with their own hour, while playback's newest is read.
+  const product = useFollowedProduct<WargoalsReply>(runtime.client, track && tag && hour != null ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'wargoals', params: { branchId: track.branch.id, hour, tag } } : null, ['hour'], active, validateWargoalsReply, track?.source);
+  const data = product.data?.tag === tag && product.data.branchId === track?.branch.id ? product.data : null;
   useDiagnostics(onDiagnostics, active ? product.error ? [`War-goal inventory refused (1): ${product.error}`] : data?.warnings ?? EMPTY : EMPTY);
   const wanted = useMemo(() => data ? [...new Set([data.tag, ...data.goals.flatMap(goal => [goal.actor, goal.recipient, ...goal.liberate, ...goal.puppets]),
     ...data.justifications.map(entry => entry.recipient)])].map(country => ({ hour: data.hour, tag: country })) : [], [data]);

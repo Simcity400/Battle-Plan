@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react';
 import { defaultCountryTag } from '../../dashboard/countrySelection.ts';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions.ts';
 import { resolveWindow, type WidgetSpec } from '../../dashboard/model.ts';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries.ts';
-import type { ResearchReply, GrantInventory } from '../../generated/dashboard.ts';
+import { useHeldFailure } from '../../dashboard/heldFailures.ts';
+import { useViewRead } from '../../dashboard/viewRead.ts';
 import { validateResearchReply } from '../research/researchData.ts';
 import { researchGrants } from './researchGrants.ts';
 
@@ -23,23 +23,15 @@ export function useActiveResearch(widget: WidgetSpec, runtime: WidgetRuntime, ac
   const hour = window && Math.floor(window.lastHour);
   const { client } = runtime;
   const content = useContentRevision(client);
-  const key = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, hour, content]);
-  const [state, setState] = useState<{ client: typeof client; key: string; data?: ResearchReply; grants?: GrantInventory; historyPreparing?: boolean; countdownPreparing?: boolean; error?: string }>();
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    if (!active || !track || !tag || hour == null) return;
-    const controller = new AbortController();
-    const publish = (value: unknown) => {
-      const result = activeResearchReply(value, tag, hour);
-      if (!controller.signal.aborted) setState({ client, key, ...result });
-    };
-    void preparedSeriesQuery(client, track.source, 'series-state', { branchId: track.branch.id, family: { kind: 'research' }, reads: [{ tag, hour }] },
-      controller.signal, attempt > 0, undefined, undefined, publish).then(publish).catch(error => {
-      if (!controller.signal.aborted) setState(previous => ({ ...(previous?.client === client && previous.key === key ? previous : {}), client, key, error: String(error) }));
-    });
-    return () => controller.abort();
-  }, [client, key, active, attempt]);
-  const current = state?.client === client && state.key === key ? state : undefined;
-  return { track, tag, data: current?.data, grants: current?.grants, error: current?.error, historyPreparing: current?.historyPreparing ?? true, countdownPreparing: current?.countdownPreparing ?? false,
-    retry: () => { setState(undefined); setAttempt(value => value + 1); } };
+  const lane = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, content]) : null;
+  // One read at a time while playback moves (`useViewRead`): the last hour's slots stay shown while the newest is read.
+  const read = useViewRead<number, ReturnType<typeof activeResearchReply>>(lane, hour ?? null, String(hour), active,
+    (at, signal, publish, restart) => preparedSeriesQuery(client, track!.source, 'series-state', { branchId: track!.branch.id, family: { kind: 'research' },
+      reads: [{ tag: tag!, hour: at }] }, signal, restart, undefined, undefined, value => publish(activeResearchReply(value, tag!, at)))
+      .then(value => activeResearchReply(value, tag!, at)), client);
+  const error = useHeldFailure(read.errorKey === String(hour) ? read.error : undefined, read.data !== undefined, read.retry);
+  // The hour the shown slots answer, which an older read still shown keeps.
+  const answeredHour = read.viewKey === undefined ? undefined : Number(read.viewKey);
+  return { track, tag, data: read.data?.data, answeredHour, grants: read.data?.grants, error, historyPreparing: read.data?.historyPreparing ?? true,
+    countdownPreparing: read.data?.countdownPreparing ?? false, retry: read.retry };
 }

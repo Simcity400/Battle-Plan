@@ -11,7 +11,8 @@ test('no licence at an hour whose group membership is still being prepared is lo
   const host = globalThis as typeof globalThis & { __licencesPending?: typeof state }; host.__licencesPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/production-licences/ProductionLicencesWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__licencesPending.groups, retry() {} });',
-    '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { lastHour: 200, known: [{ firstHour: 0, lastHour: 200 }], licences: [], holders: [], warnings: [] } });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { lastHour: 200, known: [{ firstHour: 0, lastHour: 200 }], licences: [], holders: [], warnings: [] } });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 200;',
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ muted: "#777", fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',

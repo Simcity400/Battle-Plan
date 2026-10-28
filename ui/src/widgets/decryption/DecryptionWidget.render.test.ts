@@ -11,7 +11,8 @@ test('no decryption pair at an hour whose group membership is still being prepar
   const host = globalThis as typeof globalThis & { __decryptionPending?: typeof state }; host.__decryptionPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/decryption/DecryptionWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__decryptionPending.groups, retry() {} });',
-    '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { pairs: [], coverage: [{ firstHour: 0, lastHour: 200, complete: true }], warnings: [] } });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { pairs: [], coverage: [{ firstHour: 0, lastHour: 200, complete: true }], warnings: [] } });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
     '/charts/useRowTooltips.ts': 'export const useRowTooltips = () => ({});',

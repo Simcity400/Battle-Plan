@@ -48,7 +48,7 @@ function TopDivisionRecord({ widget, ...record }: Omit<ComponentProps<typeof Rec
   if (state.error) return <WidgetState kind="error" detail={state.error} onRetry={state.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading divisions…" />;
   if (data.missing) return <WidgetState kind="unavailable" message="Divisions weren’t recorded at this time." />;
-  if (top) return <RecordView {...record} division={top.division} caption={dashboard ? `Following ${country}’s most decorated division.` : 'Following the most decorated division of these countries.'} />;
+  if (top) return <RecordView {...record} hour={data.hour} division={top.division} caption={dashboard ? `Following ${country}’s most decorated division.` : 'Following the most decorated division of these countries.'} />;
   if (!selection.known) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (data.divisions.some(row => row.facts.medals === null)) return <WidgetState kind="unavailable" message="Some divisions’ medals weren’t recorded at this time." />;
   return <WidgetState kind="empty" message={dashboard ? `${country} has no decorated divisions yet.` : 'These countries have no decorated divisions yet.'} />;

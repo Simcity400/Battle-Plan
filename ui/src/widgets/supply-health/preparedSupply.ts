@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
-import { loadProduct, useProduct } from '../../dashboard/products';
+import { loadProduct, useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useViewRead } from '../../dashboard/viewRead';
@@ -48,7 +48,7 @@ export function usePreparedSupply(client: DashboardClient, track: BoundTrack | u
     (at, signal, publish, restart) => loadProduct(client, request(at.from, at.to, at.width, selected)!, signal,
       value => validateSupplyHealthReply(value) as PreparedReply, prepared ? track?.source : undefined, restart, publish), client);
   const display = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
-  const reached = useProduct<SupplyHealthReply>(client, request(hour, hour), active,
+  const reached = useFollowedProduct<SupplyHealthReply>(client, request(hour, hour), ['from', 'to'], active,
     validateSupplyHealthReply, prepared ? track?.source : undefined);
   const pointed = useProduct<SupplyHealthReply>(client, request(hover ?? origin ?? hour, hover ?? origin ?? hour), active,
     validateSupplyHealthReply, prepared ? track?.source : undefined);

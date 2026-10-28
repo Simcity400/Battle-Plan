@@ -48,6 +48,8 @@ export default function FactionGoalsWidget({ widget, runtime, active, headerSlot
   const fallback = !!faction && asksDetails(lookup, part?.error !== undefined, retried === at);
   const details = useFactionDetails(runtime, track, fallback ? faction.id : null, hour, active);
   const data = fallback ? details.data : lookup?.kind === 'held' ? lookup.view : undefined;
+  // Asked details still shown while the next hour loads keep the hour they answer.
+  const dataHour = fallback && details.data && details.moment ? (JSON.parse(details.moment) as [number])[0] : hour;
   const failure = fallback ? details.error : lookup?.kind === 'absent' ? ABSENT_FACTION : undefined;
   const retry = fallback ? details.retry : () => setRetried(at);
   const historyFailure = history.error === undefined ? null : `Goal history unavailable: ${history.error}`;
@@ -84,11 +86,11 @@ export default function FactionGoalsWidget({ widget, runtime, active, headerSlot
       { label: 'Progress', value: row.progress == null ? missingProgress(row) : `${formatFixed(row.progressRaw!, 3, 3)}%` },
       ...(row.categoryName ? [{ label: 'Term', value: row.categoryName }] : []),
     ];
-    return fitTooltip([{ title: row.name, subtitle: dayLabel(hour), rows, description: row.definition.description ?? undefined }], viewport);
-  }, [hour, viewport]);
+    return fitTooltip([{ title: row.name, subtitle: dayLabel(dataHour), rows, description: row.definition.description ?? undefined }], viewport);
+  }, [dataHour, viewport]);
   const groupBy = useCallback((row: GoalRow) => ({ key: row.category ?? '', order: order.get(row.category ?? '') ?? 0,
     label: row.categoryName ?? (row.category ? 'Term name unavailable' : 'No term') }), [order]);
-  const header = headerSlot && data && !data.goalReason && createPortal(<span className="pill" title={faction ? factionNameAt(faction, hour) : undefined}>
+  const header = headerSlot && data && !data.goalReason && createPortal(<span className="pill" title={faction ? factionNameAt(faction, dataHour) : undefined}>
     {completedCount(all)} completed</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see faction goals." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
@@ -103,7 +105,7 @@ export default function FactionGoalsWidget({ widget, runtime, active, headerSlot
   if (!rows.length) return <>{groupFailure}{header}<WidgetState kind="empty" icon="target" message="No goals match this setting." /></>;
   return <div className="faction-goals">{groupFailure}
     {header}
-    <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, faction.id])} label={`${factionNameAt(faction, hour)} goals`}
+    <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, faction.id])} label={`${factionNameAt(faction, dataHour)} goals`}
       rows={rows} columns={columns} rowKey={rowKey} groupBy={groupBy} sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption}
       cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
       muted={row => row.state === 'cancelled'} tooltip={tooltip} />

@@ -111,7 +111,9 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
           parts: [{ key: 'original-occurrence', kind: 0, reference: '7', parent: '0', ordinal: 0, owners: ['1', '1', '1'],
             wingOwner: null, group: null, topologyReason: null, site: null, amountRaw: read.knownDailyRaw[0], reason: null,
             recordedName: 'Original occurrence', nameReason: null }], commands: [], fleets: [], sites: [], topologyReason: null, warnings: [] }), retry() {} };
-      }`,
+      }
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/productWindows.ts': `export function useProductWindows(_client, _identity, request, wanted, active, validate) {
       const state = globalThis.__fuelCountryMount; if (active) for (const window of wanted) state.requests.push(request(window));
       const call = request(0);

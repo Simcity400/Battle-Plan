@@ -16,20 +16,32 @@ const reply = (count: number): GameScoreReply => ({ branchId: '1', scale: 100000
 // Execute the real hook and shared preparation loop; only React scheduling and the transport are controlled.
 test('score draws 5000 tail countries immediately and refreshes once accepted coverage advances', async () => {
   const states: unknown[] = [];
-  let cursor = 0;
-  let effect: (() => void | (() => void)) | undefined;
-  let cleanup: (() => void) | undefined;
-  let deps: readonly unknown[] | undefined;
+  const effects: { deps: readonly unknown[]; cleanup?: () => void }[] = [];
+  let pending: { index: number; run: () => void | (() => void); deps: readonly unknown[] }[] = [];
+  let cursor = 0, effectCursor = 0;
   const harness = {
     useState(initial: unknown) {
       const index = cursor++;
       if (!(index in states)) states[index] = typeof initial === 'function' ? initial() : initial;
       return [states[index], (next: unknown) => { states[index] = typeof next === 'function' ? next(states[index]) : next; }];
     },
+    useRef(initial: unknown) {
+      const index = cursor++;
+      if (!(index in states)) states[index] = { current: initial };
+      return states[index];
+    },
     useEffect(callback: () => void | (() => void), next: readonly unknown[]) {
-      if (!deps || next.some((value, index) => value !== deps![index])) { effect = callback; deps = next; }
+      const index = effectCursor++, old = effects[index];
+      if (!old || next.some((value, at) => !Object.is(value, old.deps[at]))) pending.push({ index, run: callback, deps: next });
     },
   };
+  // As React commits: every changed effect's cleanup, then every changed effect.
+  const commit = () => {
+    const run = pending; pending = [];
+    for (const effect of run) effects[effect.index]?.cleanup?.();
+    for (const effect of run) effects[effect.index] = { deps: effect.deps, cleanup: effect.run() || undefined };
+  };
+  const unmount = () => { for (const effect of effects) effect?.cleanup?.(); };
   const globals = globalThis as typeof globalThis & { __scoreHookFixture?: typeof harness };
   globals.__scoreHookFixture = harness;
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
@@ -37,8 +49,8 @@ test('score draws 5000 tail countries immediately and refreshes once accepted co
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => 0;';
-        if (path.endsWith('/widgets/game-score/usePreparedScore.ts')) return source.replace("import { useEffect, useState } from 'react';",
-          'const {useEffect,useState} = globalThis.__scoreHookFixture;');
+        if (path.endsWith('/dashboard/viewRead.ts')) return source.replace("import { useEffect, useRef, useState } from 'react';",
+          'const {useEffect,useRef,useState} = globalThis.__scoreHookFixture;');
       } }] });
   try {
     const { usePreparedScore, validatePreparedScore } = await vite.ssrLoadModule('/ui/src/widgets/game-score/usePreparedScore.ts') as typeof import('./usePreparedScore');
@@ -65,9 +77,9 @@ test('score draws 5000 tail countries immediately and refreshes once accepted co
       },
     } as unknown as DashboardClient;
     const render = (currentTrack = track, currentClient = client) => {
-      cursor = 0;
+      cursor = 0; effectCursor = 0;
       const result = usePreparedScore({ client: currentClient }, currentTrack, 104, true);
-      if (effect) { cleanup?.(); const run = effect; effect = undefined; cleanup = run() || undefined; }
+      commit();
       return result;
     };
     render();
@@ -115,5 +127,5 @@ test('score draws 5000 tail countries immediately and refreshes once accepted co
     const pendingClient = { preparedQuery: async () => { assert.ok(++changedQueries <= 1); return new Promise(() => {}); } } as unknown as DashboardClient;
     assert.equal(render(changed, pendingClient).data, undefined, 'a new source revision cannot inherit old rows');
     assert.equal(changedQueries, 1);
-  } finally { cleanup?.(); await vite.close(); delete globals.__scoreHookFixture; }
+  } finally { unmount(); await vite.close(); delete globals.__scoreHookFixture; }
 });

@@ -256,7 +256,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
 
   const description = `${dayLabel(head)}: ${lanesData.map((lane, index) => {
     const tag = laneTags[index];
-    return `${tag === null ? lane.tag : looks.name(tag)}: ${!data.exactHours.includes(head) && !runOf(numericLaneAt(lane.id, head) ?? { ...lane, runs: [] }, head) ? 'Loading autonomy?' : laneLabels(data, numericLaneAt(lane.id, head) ?? { ...lane, runs: [] }, head, unobserved, tag !== null).description}`;
+    return `${tag === null ? lane.tag : looks.name(tag)}: ${!data.exactHours.includes(head) && !runOf(numericLaneAt(lane.id, head) ?? { ...lane, runs: [] }, head) ? 'Loading autonomy…' : laneLabels(data, numericLaneAt(lane.id, head) ?? { ...lane, runs: [] }, head, unobserved, tag !== null).description}`;
   }).join('; ')}.`;
   const binding = (id: string) => ({ id,spans: subjects.find(subject => subject.countryId === id)?.runs.flatMap(run => identities.aliasesAt(new Set([id]),run.firstHour)
     .map(tag => ({tag,firstHour:run.firstHour,lastHour:run.lastHour,startsSegment:run.startsSegment}))) ?? [] });

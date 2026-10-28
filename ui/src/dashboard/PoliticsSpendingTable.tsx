@@ -46,13 +46,13 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
   const digits = powerDecimals(options);
   const unit = currency === 'Political' ? 'PP' : 'CP';
   const noun = currency === 'Political' ? 'political power' : 'command power';
-  const { track, tags, data, error, groupError, retry, ready, reason, known, selection, groupWarnings } = usePoliticsSpending(widget, runtime, active);
+  const { track, tags, data, error, groupError, retry, ready, reason, known, selection, groupWarnings, shownHour } = usePoliticsSpending(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const hour = window?.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
-  const spends = useMemo(() => data && hour != null ? spendingAt(data, currency, hour, from, selection) : [], [data, currency, hour, from, selection]);
-  const gaps = useMemo(() => data && hour != null ? spendingGaps(data, currency, { from, hour }, selection) : [], [data, currency, hour, from, selection]);
-  const gain = useMemo(() => data && hour != null ? powerGain(data, currency, { from, hour }, selection) : null, [data, currency, hour, from, selection]);
+  const spends = useMemo(() => data && shownHour != null ? spendingAt(data, currency, shownHour, from, selection) : [], [data, currency, shownHour, from, selection]);
+  const gaps = useMemo(() => data && shownHour != null ? spendingGaps(data, currency, { from, hour: shownHour }, selection) : [], [data, currency, shownHour, from, selection]);
+  const gain = useMemo(() => data && shownHour != null ? powerGain(data, currency, { from, hour: shownHour }, selection) : null, [data, currency, shownHour, from, selection]);
   const chips = useMemo(() => categoryChoices(data, currency), [data, currency]);
   const normalized = normalizePoliticsSpendingOptions(widget.options, data ? chips : undefined);
   const categories = normalized.categories;

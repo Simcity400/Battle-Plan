@@ -7,6 +7,7 @@
 #[global_allocator]
 static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+pub mod allocator;
 pub mod content_check;
 pub mod prepared;
 pub mod prepared_focus;

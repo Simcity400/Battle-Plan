@@ -20,7 +20,8 @@ test('division rows forward dated flag state while null actors and the unknown k
   const manifest = { windows: [reply.interval], available: true, lossesAvailable: true, templates: [], contentWarnings: [] };
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request?.product === 'division-log-manifest' ? ${JSON.stringify(manifest)} : undefined });
-      export const loadProduct = () => { throw new Error('Unexpected country request'); };`,
+      export const loadProduct = () => { throw new Error('Unexpected country request'); };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useProductWindows = () => ({ data: new Map([[0, ${JSON.stringify(reply)}]]), errors: new Map(), retry() {} });`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',

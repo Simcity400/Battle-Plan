@@ -131,7 +131,8 @@ export function usePreparedFactionTotals(client: DashboardClient, track: BoundTr
   }, [owner, active, pickOwner]);
   const data = useMemo(() => mergeFactionReads(head.data, reached.data, geometryData, anchor.data), [head.data, reached.data, geometryData, anchor.data]);
   const lineSummaries = useMemo(() => new Map(Object.entries(geometryData?.summaries ?? {})), [geometryData]);
-  return { data, geometryData, lineSummaries, onSummaryView, onReachHour, exactLineTags, owner: pickOwner,
+  // The hour the shown head answers; one kept while playback's newest loads holds its own.
+  return { headHour: head.data && head.moment ? (JSON.parse(head.moment) as [{ hour: number }[]])[0][0]?.hour : undefined, data, geometryData, lineSummaries, onSummaryView, onReachHour, exactLineTags, owner: pickOwner,
     navigation: { onNavigateHour, keyboardHour: next.data?.hour, keyboardRevision: navigation?.revision },
     error: head.error ?? reached.error ?? summary.error ?? anchor.error ?? next.error,
     retry: () => { head.retry(); reached.retry(); summary.retry(); anchor.retry(); next.retry(); } };

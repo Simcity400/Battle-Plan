@@ -38,7 +38,7 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   const identity = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, contentRevision]);
   const [selection, setSelection] = useState<{ identity: string; page: bigint } | null>(null);
   const selected = selection?.identity === identity ? selection.page : null;
-  const [answer, setAnswer] = useState<{ identity: string; client: typeof runtime.client; snapshot: Snapshot | null; pending: boolean; error: string | null; warnings: string[] } | null>(null);
+  const [answer, setAnswer] = useState<{ identity: string; client: typeof runtime.client; hour: number; snapshot: Snapshot | null; pending: boolean; error: string | null; warnings: string[] } | null>(null);
   const presented = useRef<{ identity: string; client: typeof runtime.client; snapshot: Snapshot } | null>(null);
   if (presented.current && (presented.current.identity !== identity || presented.current.client !== runtime.client)) presented.current = null;
   const [retry, setRetry] = useState(0);
@@ -46,52 +46,79 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   useEffect(() => { setOpened(null); }, [identity, runtime.client]);
   const menu = useContextMenu('National focus actions');
   const inRange = !!track && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
+  // Playback moves the hour without cancelling: the running read lands, then the newest hour is read.
+  const lane = JSON.stringify([identity, selected === null ? null : String(selected), live, retry]);
+  const flight = useRef<{ lane: string; hour: number; running: boolean; shown: boolean; controller: AbortController } | null>(null);
+  const wanted = useRef(hour); wanted.current = hour;
+  const [landed, setLanded] = useState(0);
   useEffect(() => {
     if (!active || !track || !tag || !inRange) return;
+    // A read that has shown its hour gives way to a moved one, even while it still prepares.
+    if (flight.current?.lane === lane && flight.current.running && (!flight.current.shown || flight.current.hour === hour)) return;
+    flight.current?.controller.abort();
     const controller = new AbortController();
-    let current = true;
+    const mine = { lane, hour, running: true, shown: false, controller };
+    flight.current = mine;
     const prior = presented.current;
     const crossesGap = (snapshot: Snapshot) => track.branch.gaps.some(gap => gap.firstHour <= Math.max(hour, snapshot.displayHour) && gap.lastHour >= Math.min(hour, snapshot.displayHour));
-    setAnswer({ identity, client: runtime.client,
+    setAnswer({ identity, client: runtime.client, hour,
       snapshot: prior && canCarryPreparedFocus(prior.snapshot.hour, hour) && !crossesGap(prior.snapshot) ? prior.snapshot : null,
       pending: true, error: null, warnings: [] });
     const client = runtime.client as FocusPreparedClient;
-    let generation = 0, lastRow = '';
-    const publish = async (value: unknown) => {
-      const row = validatePreparedHour(value, hour);
-      const key = JSON.stringify(row);
-      if (lastRow === key) return;
-      lastRow = key;
-      const own = ++generation;
+    let generation = 0, lastRow = '', presentation: Promise<void> = Promise.resolve();
+    const landedHour = () => { mine.shown = true; if (wanted.current !== hour) setLanded(value => value + 1); };
+    const show = async (row: ReturnType<typeof validatePreparedHour>, own: number) => {
       if (!row) {
         const warnings = validateUnavailableFocus(await client.preparedQuery!(track.source, 'focus-unavailable', { branchId: track.branch.id, hour }, { signal: controller.signal }), hour);
-        if (current && own === generation) setAnswer({ identity, client: runtime.client, snapshot: null, pending: false, error: null, warnings });
+        if (!controller.signal.aborted && own === generation) { setAnswer({ identity, client: runtime.client, hour, snapshot: null, pending: false, error: null, warnings }); landedHour(); }
         return;
       }
-      if (current && prior && !canCarryPreparedFocus(prior.snapshot.hour, row)) {
+      if (!controller.signal.aborted && prior && !canCarryPreparedFocus(prior.snapshot.hour, row)) {
         presented.current = null;
-        setAnswer({ identity, client: runtime.client, snapshot: null, pending: true, error: null, warnings: [] });
+        setAnswer({ identity, client: runtime.client, hour, snapshot: null, pending: true, error: null, warnings: [] });
       }
       const page = selected == null ? live ? lastPage(row.completed) : 0n : selected > lastPage(row.completed) ? lastPage(row.completed) : selected;
       const data = await loadPreparedFocusPage(client, track.source, track.branch.id, tag, hour, row, page, controller.signal);
-      if (!current || own !== generation) return;
+      if (controller.signal.aborted || own !== generation) return;
       const snapshot = { ...data, hour: row, page };
       presented.current = { identity, client: runtime.client, snapshot };
       setOpened(previous => previous && (previous.identity !== identity || previous.client !== runtime.client || previous.slot !== row.slot || previous.countryId !== row.countryId) ? null : previous);
-      setAnswer({ identity, client: runtime.client, snapshot, pending: false, error: null, warnings: [] });
+      setAnswer({ identity, client: runtime.client, hour, snapshot, pending: false, error: null, warnings: [] });
+      landedHour();
     };
     // A failed seek must not reuse another hour's page and progress.
-    const failed = (error: unknown, own = generation) => { if (current && own === generation) setAnswer(previous => ({ identity, client: runtime.client,
-      snapshot: previous?.snapshot && previous.snapshot.hour.at === hour ? previous.snapshot : null, pending: false, error: error instanceof Error ? error.message : String(error), warnings: [] })); };
-    const present = (value: unknown) => {
-      const result = publish(value), own = generation;
-      return result.catch(error => failed(error, own));
+    const failed = (error: unknown, own = generation) => {
+      if (controller.signal.aborted || own !== generation) return;
+      setAnswer(previous => ({ identity, client: runtime.client, hour,
+        snapshot: previous?.snapshot && previous.snapshot.hour.at === hour ? previous.snapshot : null, pending: false, error: error instanceof Error ? error.message : String(error), warnings: [] }));
+      landedHour();
+    };
+    // The final reply waits for the presentation an equal partial reply started.
+    const present = (value: unknown): Promise<void> => {
+      let row: ReturnType<typeof validatePreparedHour>;
+      try { row = validatePreparedHour(value, hour); } catch (error) { failed(error); return presentation; }
+      const key = JSON.stringify(row);
+      if (lastRow === key) return presentation;
+      lastRow = key;
+      const own = ++generation;
+      presentation = show(row, own).catch(error => failed(error, own));
+      return presentation;
     };
     void preparedSeriesQuery(client, track.source, 'focus-hour', { branchId: track.branch.id, tag, hour }, controller.signal, retry > 0,
-      undefined, undefined, value => { void present(value); }).then(present).catch(error => failed(error));
-    return () => { current = false; controller.abort(); };
-  }, [runtime.client, track, tag, hour, identity, selected, active, inRange, retry, live]);
-  const shown = answer?.identity === identity && answer.client === runtime.client ? answer : null;
+      undefined, undefined, value => { void present(value); }).then(present).catch(error => failed(error)).finally(() => {
+      mine.running = false;
+      if (!controller.signal.aborted && wanted.current !== hour) setLanded(value => value + 1);
+    });
+  }, [runtime.client, track, tag, hour, identity, selected, active, inRange, retry, live, landed]);
+  // Leaving this lane, the screen or the recording cancels its read.
+  useEffect(() => () => { flight.current?.controller.abort(); flight.current = null; }, [lane, active, inRange, runtime.client, track]);
+  // An answer for another hour is still pending for this one, keeps its snapshot only where it may
+  // carry to this hour, and keeps its failure to itself.
+  const held = answer?.identity === identity && answer.client === runtime.client ? answer : null;
+  const carries = (snapshot: Snapshot) => canCarryPreparedFocus(snapshot.hour, hour) && !(track?.branch.gaps ?? []).some(gap =>
+    gap.firstHour <= Math.max(hour, snapshot.displayHour) && gap.lastHour >= Math.min(hour, snapshot.displayHour));
+  const shown = !held ? null : held.hour === hour ? held : { ...held, pending: true, error: null,
+    snapshot: held.snapshot && carries(held.snapshot) ? held.snapshot : null };
   const snapshot = shown?.snapshot;
   const detailEntries = useMemo(() => opened?.identity === identity && opened.client === runtime.client && opened.slot === snapshot?.hour.slot && opened.countryId === snapshot?.hour.countryId
     ? snapshot.order.filter(item => opened.rows.has(disclosureKey(item.ordinal, preparedArtKey(item.completedByHour ?? snapshot.hour.orderFirstHour ?? snapshot.hour.at, item.token)))) : [], [opened, identity, runtime.client, snapshot]);

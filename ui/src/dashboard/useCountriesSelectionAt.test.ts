@@ -33,7 +33,7 @@ async function fixture() {
           const state = globalThis.__holderCompanions; state.groupReads.push({ track: track?.id, active });
           return { data: track && active ? state.groups : undefined, error: state.error, retry() { state.groupRetries++; } };
         };`;
-        if (path.endsWith('/dashboard/products.ts')) return `export const useProducts = (_client, requests) => {
+        if (path.endsWith('/dashboard/products.ts')) return `export const useFollowedProducts = (_client, requests) => {
           const state = globalThis.__holderCompanions; state.requests = requests;
           return { data: [], retry() { state.ledgerRetries++; } };
         };`;

@@ -17,7 +17,8 @@ test('casualty pairs of a group counted at an hour still being prepared are load
   const state = { groups: pendingGroups({ tags }) as CountryGroupReply };
   const host = globalThis as typeof globalThis & { __pairsPending?: typeof state }; host.__pairsPending = state;
   const { module, close } = await mountModule<{ default: ComponentType<WidgetProps> }>('/ui/src/widgets/casualties-between/CasualtyPairsWidget.tsx', {
-    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify({ ...reply, window: null, observed: [], pairs: [] })}, retry() {} });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify({ ...reply, window: null, observed: [], pairs: [] })}, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useProductWindows = (_client, identity) => ({ data: identity ? new Map([[0, ${JSON.stringify(reply)}]]) : new Map(), errors: new Map(), retry() {} });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__pairsPending.groups, retry() {} });',
     '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour}; export const usePlaybackSpeed = () => 0;`,

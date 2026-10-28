@@ -40,16 +40,19 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   const digits = powerDecimals(options);
   const text = useMemo<SunburstText>(() => ({ format: (value, exact) => formatPower(exact ?? BigInt(Math.round(value)), digits),
     unit: 'PP', valueLabel: 'Spent', countLabel: 'Payments' }), [digits]);
-  const { track, tags, data, finalData, error, groupError, retry, ready, reason, known, selection, groupWarnings } = usePoliticsSpending(widget, runtime, active, true);
+  const { track, tags, data, finalData, error, groupError, retry, ready, reason, known, selection, groupWarnings, shownHour } = usePoliticsSpending(widget, runtime, active, true);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour;
-  const items = useMemo(() => data && hour != null && end != null ? spendingItems(data, 'Political', { from, hour, end }, selection, finalData ?? data) : [], [data, finalData, from, hour, end, selection]);
-  const spends = useMemo(() => data && hour != null ? spendingAt(data, 'Political', hour, from, selection) : [], [data, hour, from, selection]);
+  // Ledgers kept while the next hour loads answer their own hour.
+  const answered = widget.time.mode === 'range' ? shownHour : end;
+  const items = useMemo(() => data && shownHour != null && answered != null ? spendingItems(data, 'Political', { from, hour: shownHour, end: answered }, selection, finalData ?? data) : [],
+    [data, finalData, from, shownHour, answered, selection]);
+  const spends = useMemo(() => data && shownHour != null ? spendingAt(data, 'Political', shownHour, from, selection) : [], [data, shownHour, from, selection]);
   // Before preparation reaches the hour shown, the totals are those of the
   // prepared prefix: the hours after it are still being prepared, not unrecorded.
-  const through = useMemo(() => hour == null ? hour : preparedThrough(data, hour), [data, hour]);
+  const through = useMemo(() => shownHour == null ? shownHour : preparedThrough(data, shownHour), [data, shownHour]);
   const gaps = useMemo(() => data && through != null ? spendingGaps(data, 'Political', { from, hour: through }, selection) : [], [data, through, from, selection]);
   const gain = useMemo(() => data && through != null ? powerGain(data, 'Political', { from, hour: through }, selection) : null, [data, through, from, selection]);
   const grouped = useMemo(() => spendingGroups(spends), [spends]);
@@ -87,7 +90,7 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   if (through != null && through < track.branch.firstHour) return <>{groupNotice}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   if (data.every(reply => !reply.spendingCoverage.length)) return <>{groupNotice}<WidgetState kind="unavailable" message="Political power spending wasn’t recorded." /></>;
   if (through != null && from != null && from > through) return <>{groupNotice}<WidgetState kind="loading" label="This range is still being prepared." /></>;
-  const notes = [through != null && through < hour ? `Spent through ${dayLabel(through)}; the rest is still being prepared.` : null,
+  const notes = [through != null && shownHour != null && through < shownHour ? `Spent through ${dayLabel(through)}; the rest is still being prepared.` : null,
     gainNote(gain, digits), spendingGapNote(gaps), ...spendingCostNotes(spendingSummary(spends))].filter(Boolean);
   if (!items.some(item => item.present) && !known(from ?? track.branch.firstHour, end ?? hour)) return <>{groupNotice}<WidgetState kind="loading" label={MEMBERSHIP_PREPARING} /></>;
   if (!items.some(item => item.present)) {

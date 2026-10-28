@@ -17,7 +17,8 @@ test('army sizes of a group at an hour still being prepared are loading, not unk
   const host = globalThis as typeof globalThis & { __armyPending?: typeof state }; host.__armyPending = state;
   const manifest = { ...reply, windows: [window], window: null, interval: null, series: [] };
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/army-size/ArmySizeWidget.tsx', {
-    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(manifest)}, retry() {} });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(manifest)}, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': 'export const useProductWindows = () => ({ data: new Map([[0, globalThis.__armyPending.reply]]), errors: new Map(), retry() {} });',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__armyPending.groups, retry() {} });',
@@ -51,7 +52,8 @@ test('army sizes of a group with no member found yet say what the moment was onc
   const state = { groups: gapGroups(), reply: { ...manifest, windows: [], window: 0, interval: window } };
   const host = globalThis as typeof globalThis & { __armyGap?: typeof state }; host.__armyGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/army-size/ArmySizeWidget.tsx', {
-    '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request ? ${JSON.stringify(manifest)} : undefined, retry() {} });`,
+    '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request ? ${JSON.stringify(manifest)} : undefined, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     // No member to ask for: no history identity, so no window replies.
     '/dashboard/productWindows.ts': `export const useProductWindows = (_client, identity) => ({ data: identity ? new Map([[0, globalThis.__armyGap.reply]]) : new Map(),
       errors: new Map(), retry() {} });`,

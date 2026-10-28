@@ -11,7 +11,8 @@ test('an empty roster at an hour whose group membership is still being prepared 
   const host = globalThis as typeof globalThis & { __operativesPending?: typeof state }; host.__operativesPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/operatives-roster/OperativesRosterWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__operativesPending.groups, retry() {} });',
-    '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { countries: [{ tag: "GER", observed: [{ firstHour: 0, lastHour: 200 }], operatives: [] }], agencyAbsent: [], warnings: [] } });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { countries: [{ tag: "GER", observed: [{ firstHour: 0, lastHour: 200 }], operatives: [] }], agencyAbsent: [], warnings: [] } });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 200;',
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',
@@ -39,7 +40,8 @@ test('a roster of a group with no member found yet says what the hour was once r
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/operatives-roster/OperativesRosterWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__operativesGap.groups, retry() {} });',
     // No request, no reply.
-    '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ retry() {}, data: request ? { countries: [], agencyAbsent: [], warnings: [] } : undefined });`,
+    '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ retry() {}, data: request ? { countries: [], agencyAbsent: [], warnings: [] } : undefined });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => globalThis.__operativesGap.hour;',
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',
@@ -68,7 +70,8 @@ test('a roster published before its preparation failed stays in its widget frame
     '/dashboard/products.ts': `import * as held from './heldFailures.ts'; globalThis.__heldFailures = held;
       const data = { countries: [{ tag: "GER", observed: [{ firstHour: 0, lastHour: 200 }], operatives: [] }], agencyAbsent: [], warnings: [] };
       const retry = () => {};
-      export const useProduct = () => ({ data, error: held.useHeldFailure('Preparation stopped', data !== undefined, retry), retry });`,
+      export const useProduct = () => ({ data, error: held.useHeldFailure('Preparation stopped', data !== undefined, retry), retry });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 200;',
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',

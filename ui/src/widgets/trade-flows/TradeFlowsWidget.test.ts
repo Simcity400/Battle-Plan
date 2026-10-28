@@ -128,7 +128,8 @@ test('a country’s flag or name opens its whole trade, reading its own reply on
           scope: tradeScope(decodeTrade(data), widget.countries, resolved, undefined, track.branch.lastHour, false) };
       };`,
     '/dashboard/products.ts': `export const useProduct = (client, request) => { const s = globalThis.__tradeCountry;
-      if (request) s.requests.push(request); return { data: request ? s.reply : undefined, retry() {} }; };`,
+      if (request) s.requests.push(request); return { data: request ? s.reply : undefined, retry() {} }; };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/countryFlagsAt.ts': `export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});

@@ -85,7 +85,9 @@ test('mounted force views keep witnessed actors through pending names and reject
                 : request.params.tags.length === 1 ? s.detail : s.main, error: s.error, retry() {} }; };
             export const loadProduct = (client, request, _signal, _validate, _source, _restart, publish) => {
               const { data, error } = useProduct(client, request); if (error) throw Error(error);
-              if (data !== undefined) publish?.(data); return new Promise(() => {}); };`;
+              if (data !== undefined) publish?.(data); return new Promise(() => {}); };
+            export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+            export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`;
         // The race's view read answers in the same render, as its products do here.
         if (path.endsWith('/dashboard/viewRead.ts')) return `export const useViewRead = (lane, view, _viewKey, active, read) => { let data, error;
           if (active && lane != null && view != null) try { void read(view, new AbortController().signal, value => { data = value; }); } catch (failure) { error = failure.message; }

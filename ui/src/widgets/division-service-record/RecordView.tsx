@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
 import LogList from '../../charts/log/LogList';
@@ -15,9 +15,11 @@ import './serviceRecord.css';
 
 /** One division's header line and dated record: the standalone widget's body and
  * the Most decorated divisions drill. */
-export default function RecordView({ runtime, trackId, division, hour, show, log, live, active, onDiagnostics, caption }: {
+export default function RecordView({ runtime, trackId, division, hour, show, log, live, active, onDiagnostics, caption, onAnswered }: {
   runtime: WidgetRuntime; trackId: string; division: string; hour: number; show: string; log: LogSettings; live: boolean; active: boolean;
   onDiagnostics: WidgetProps['onDiagnostics']; caption?: string;
+  /** The hour the shown record answers, which a record kept while the next hour loads holds. */
+  onAnswered?: (hour: number | undefined) => void;
 }) {
   const track = runtime.tracks.find(t => t.id === trackId);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'division-record',
@@ -25,6 +27,10 @@ export default function RecordView({ runtime, trackId, division, hour, show, log
   const state = useReachedProduct(runtime.client, track?.source, request, JSON.stringify([track?.branch.id, division]), active, validateDivisionRecord);
   const data = state.data;
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
+  useEffect(() => {
+    onAnswered?.(data?.hour);
+    return () => onAnswered?.(undefined);
+  }, [onAnswered, data?.hour]);
   const rows = useMemo(() => data ? recordRows(data, show) : [], [data, show]);
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see a division’s record." />;
   if (state.error) return <WidgetState kind="error" detail={state.error} onRetry={state.retry} />;

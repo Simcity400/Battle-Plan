@@ -12,7 +12,7 @@ import { approximateAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { icDecimals } from '../../dashboard/icDecimals';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct } from '../../dashboard/products';
 import type { ProductionSpendingReply } from '../../generated/dashboard';
 import { useParityRows } from '../../dashboard/parityRows';
 import { NumericReply } from '../../dashboard/numericReply';
@@ -39,14 +39,23 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   const end = range ? hour : track?.branch.lastHour;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'production-spending',
     params: { branchId: track.branch.id, tag, refits: options.refits === true, ...(runtime.client.preparedQuery ? { from, hour, end } : {}) } } : null;
-  const product = useProduct<ProductionSpendingReply>(runtime.client, request, active, validateProductionSpendingReply, track?.source);
+  // The last window's spending stays shown while playback's newest is read.
+  const product = useFollowedProduct<ProductionSpendingReply>(runtime.client, request, ['from', 'hour', 'end'], active, validateProductionSpendingReply, track?.source);
+  // Numbers kept across a content refresh belong to the request without its window, and keep the window they answer.
+  const lane = request && JSON.stringify([request.sourceId, request.revision, request.params.branchId, request.params.tag, request.params.refits]);
   const retained = useMemo(() => new NumericReply<ProductionSpendingReply>(), [runtime.client]);
-  const numbers = retained.update(JSON.stringify(request), product.data, data => ({ ...data, warnings: [], rocketName: null,
-    leaves: data.leaves.map(leaf => ({ ...leaf, name: null, names: [] })) }));
+  const numbers = lane ? retained.update(lane, product.data, data => ({ ...data, warnings: [], rocketName: null,
+    leaves: data.leaves.map(leaf => ({ ...leaf, name: null, names: [] })) })) : undefined;
   const data = product.data ?? numbers, { error, retry } = product;
+  const answered = product.data && product.moment ? JSON.parse(product.moment) as [number | null, number | null, number | null] : null;
+  const held = useRef<{ lane: string; window: { from: number | null; hour: number | null | undefined; end: number | null | undefined } } | null>(null);
+  if (lane && answered && answered[1] != null) held.current = { lane, window: { from: answered[0], hour: answered[1], end: answered[2] } };
+  const asked = product.data ? answered && answered[1] != null ? { from: answered[0], hour: answered[1], end: answered[2] } : { from, hour, end }
+    : numbers && held.current?.lane === lane ? held.current.window : { from, hour, end };
   // Before preparation reaches the dates shown, the reply answers its prepared
   // prefix: the amounts spent through the prefix's last hour.
-  const shown = useMemo(() => data && hour != null && end != null ? preparedWindow(data, { from, hour, end }) : null, [data, from, hour, end]);
+  const shown = useMemo(() => data && asked.hour != null && asked.end != null ? preparedWindow(data, { from: asked.from, hour: asked.hour, end: asked.end }) : null,
+    [data, asked.from, asked.hour, asked.end]);
   const finals = useMemo(() => data && shown ? spendingFinals(data, shown.from, shown.end, kind) : [], [data, shown, kind]);
   const items = useMemo(() => data && shown ? productionSpendingItems(data, shown, finals, kind) : [], [data, shown, finals, kind]);
   const root = useRef<HTMLDivElement>(null);
@@ -58,7 +67,7 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   const decimals = data?.decimals ?? 5;
   const digits = icDecimals(options, decimals);
   const emptyLabel = data && shown ? spendingEmptyLabel(data, shown.hour, shown.from, kind) : 'Loading production spending…';
-  const footnote = [shown && hour != null && shown.hour < hour ? `Spent through ${dayLabel(shown.hour)}; the rest is still being prepared.` : null,
+  const footnote = [shown && asked.hour != null && shown.hour < asked.hour ? `Spent through ${dayLabel(shown.hour)}; the rest is still being prepared.` : null,
     shown && approximateAt(preparedPrefix(data), shown.hour) ? 'Approximate equipment types while preparation continues.' : null].filter(Boolean).join(' ') || undefined;
   const text = useMemo<SunburstText>(() => ({
     format: (value, exact) => formatAppliedIc(value, exact, decimals, digits), unit: UNIT, valueLabel: 'IC spent', countLabel: 'Designs',

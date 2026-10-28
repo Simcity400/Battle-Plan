@@ -4,7 +4,7 @@ import type { OptionChoices, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
 import { defaultCountryTag } from './countrySelection';
 import { countryMatch, countryMatchFilter, resolveCountries } from './groups';
-import { useProducts } from './products';
+import { useFollowedProducts } from './products';
 import { categoryChoices } from './politicsSpending.ts';
 import { validatePowerBalance } from './powerBalance.ts';
 import type { PowerCurrency, SpendingSelection } from './politicsSpending';
@@ -48,12 +48,15 @@ export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, 
   const requests = track && hour != null ? hours.flatMap(hour => tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
     product: 'politics-ledger', params: prepared ? { branchId: track.branch.id, tag, view: 'spending', from, hour, totals,
       within: selection.membership?.get(tag) } : { branchId: track.branch.id, tag, view: 'balance' } }))) : [];
-  const ledger = useProducts<PoliticsLedgerReply>(runtime.client, requests, active, validatePowerBalance);
+  // The last hour's ledgers stay shown while playback's newest hour is read.
+  const ledger = useFollowedProducts<PoliticsLedgerReply>(runtime.client, requests, ['hour'], active, validatePowerBalance);
   // Stable while the replies are: row motion commits a new history for every new array.
   const data = useMemo(() => ledger.data?.slice(0, tags.length), [ledger.data, tags.length]);
   const finalData = useMemo(() => hours.length > 1 ? ledger.data?.slice(tags.length, tags.length * 2) : data,
     [ledger.data, tags.length, hours.length, data]);
-  return { track, tags, ...ledger, data, finalData,
+  // The hour the shown ledgers answer, which ledgers kept while the next hour loads hold.
+  const shownHour = (ledger.requests?.[0]?.params as { hour?: number } | undefined)?.hour ?? hour;
+  return { track, tags, ...ledger, data, finalData, shownHour,
     prepared, selection, ready: match.ready, reason: resolved.reason ?? match.reason, known: match.known,
     groupWarnings: groups.data?.warnings ?? NO_WARNINGS,
     error: ledger.error ?? (groups.data ? undefined : groups.error),

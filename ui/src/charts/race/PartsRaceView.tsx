@@ -21,7 +21,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { loadProduct, useProduct } from '../../dashboard/products';
+import { loadProduct, useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useViewRead } from '../../dashboard/viewRead';
@@ -481,7 +481,8 @@ export function usePreparedRace<T extends { series: { tag: string; runs: { first
       return reply;
     }, enabled ? track?.source : undefined, restart, publish), client);
   const display = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
-  const reached = useProduct(client, enabled ? page(hour, hour, 1) : null, active, validate, track?.source);
+  // The last reached hour stays merged in while playback's newest is read.
+  const reached = useFollowedProduct(client, enabled ? page(hour, hour, 1) : null, ['from', 'to'], active, validate, track?.source);
   const pointedHour = hover?.key === key ? hover.hour : null;
   const pointed = useProduct(client, enabled && pointedHour != null ? page(pointedHour, pointedHour, 1) : null, active, validate, track?.source);
   const full = useProduct(client, enabled && parity?.requested && track ? page(track.branch.firstHour, track.branch.lastHour,

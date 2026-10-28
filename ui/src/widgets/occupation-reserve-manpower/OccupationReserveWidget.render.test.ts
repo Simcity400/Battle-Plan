@@ -24,7 +24,7 @@ const replacements = (key: string) => ({
   '/widgets/occupation-reserve-manpower/useOccupationReserve.ts': `export const useOccupationReserve = () => ({ track: globalThis.${key}.track,
     options: {}, data: globalThis.${key}.reply, retry() {} });`,
   '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: globalThis.${key}.groups, retry() {} });`,
-  '/dashboard/products.ts': 'export const useProduct = () => ({ data: undefined, retry() {} });',
+  '/dashboard/products.ts': 'export const useProduct = () => ({ data: undefined, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
   '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0; export const usePlaybackSpeed = () => 0;',
   '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ color: () => "#888", name: tag => tag });',
   '/charts/race/countryColours.ts': 'export const useCountryColours = () => () => "#888";',

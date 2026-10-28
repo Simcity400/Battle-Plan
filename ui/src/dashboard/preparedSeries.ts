@@ -131,8 +131,9 @@ export async function preparedSeriesQuery(client: DashboardClient, source: Dashb
       const request = { sourceId: source.id, revision: source.revision, requestId: newId() };
       const status = validatePreparationReply(await client.preparationStatus(request, signal), request);
       if (signal.aborted) break;
-      const terminal = ['failed', 'cancelled', 'idle', 'paused'].includes(status.state);
-      if (!started && client.prepareSource && restart && terminal) {
+      // A pause resumes on its own (another recording first, disk space, the game running): wait it out.
+      const terminal = ['failed', 'cancelled', 'idle'].includes(status.state);
+      if (!started && client.prepareSource && restart && (terminal || status.state === 'paused')) {
         deferred = progressKey(status) !== progress ? status : undefined;
         started = true;
         validatePreparationReply(await client.prepareSource(request, signal), request);
@@ -151,7 +152,7 @@ export async function preparedSeriesQuery(client: DashboardClient, source: Dashb
         if (terminal || status.state === 'ready' || moved && (!shown || complete || now() - lastReply >= preparedRefreshMs(replies))) {
           if (await refresh(status)) return value;
         }
-        if (terminal) throw new Error(status.error ?? (status.state === 'paused' ? 'Campaign preparation is paused and resumes automatically. Prepare this recording to continue now.' : status.state === 'idle' ? (status.backgroundEnabled ? 'Prepare this recording from Preparation and storage.' : 'Background preparation is off. Prepare this recording or enable it in Settings.') : status.state === 'cancelled' ? 'Campaign preparation cancelled.' : 'Campaign preparation failed.'));
+        if (terminal) throw new Error(status.error ?? (status.state === 'idle' ? (status.backgroundEnabled ? 'Prepare this recording from Preparation and storage.' : 'Background preparation is off. Prepare this recording or enable it in Settings.') : status.state === 'cancelled' ? 'Campaign preparation cancelled.' : 'Campaign preparation failed.'));
         if (status.state === 'ready') throw new Error('Prepared series coverage is unavailable.');
       }
       const before = now();

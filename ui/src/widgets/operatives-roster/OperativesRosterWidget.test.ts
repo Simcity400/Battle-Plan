@@ -34,7 +34,8 @@ test('registered roster identifies multiple native owners selected by one reused
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': `export const useProduct = (_client, _request, _active, validate) =>
       ({data: validate(globalThis.__rosterNativeOwners.data), retry() {}});
-      export const loadProduct = () => {throw new Error('Unexpected transient product request');};`,
+      export const loadProduct = () => {throw new Error('Unexpected transient product request');};
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({data: globalThis.__rosterNativeOwners.groups});',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({labelAt: hour => tag =>
       ({name: tag, known: true, flag: 'flag-' + tag + '-at-' + hour})});`,

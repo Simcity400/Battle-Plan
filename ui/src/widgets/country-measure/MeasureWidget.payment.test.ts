@@ -57,7 +57,9 @@ for (const measure of ['politicalPower', 'commandPower'] as const) test(`${measu
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': `export const useProduct = (_client, request, active, validate) => ({
       data: request?.product === 'country-measure' && active ? validate(globalThis.__paymentFixture.balance) : undefined, retry() {} });
-      export const useProducts = () => ({ data: globalThis.__paymentFixture.ledger, retry() {} });`,
+      export const useProducts = () => ({ data: globalThis.__paymentFixture.ledger, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__paymentFixture.groups, retry() {} });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__paymentFixture.clock;',
     '/dashboard/useCountryLineStyles.ts': 'export const useCountryLineStyles = () => globalThis.__paymentFixture.styles;',

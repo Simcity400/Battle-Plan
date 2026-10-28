@@ -18,7 +18,8 @@ test('actual Army breakdown renders a country template roster when its deployed 
   const roster = { ...manifest, windows: [], templateSections: ['Unused template with holes', 'Staff and garrison priority: -3', 'Queued HQ without deployed units'] };
   const host = globalThis as typeof globalThis & { __armyTemplateRequest?: { params: { templateAt: [string, number] } } };
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': `export const useProduct = (_client, request) => { globalThis.__armyTemplateRequest = request; return { data: ${JSON.stringify(roster)}, retry() {} }; };`,
+    '/dashboard/products.ts': `export const useProduct = (_client, request) => { globalThis.__armyTemplateRequest = request; return { data: ${JSON.stringify(roster)}, retry() {} }; };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useProductWindows = () => ({ data: new Map([[0, ${JSON.stringify(reply)}]]), errors: new Map(), retry() {} });`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => () => null });',
@@ -59,7 +60,8 @@ test('actual Army keeps dated flags, full inventories and focusable chart return
     unobserved: { humans: [], factions: [], wars: [] } };
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(manifest)}, retry() {} });
-      export const loadProduct = () => { throw new Error('Unexpected country request'); };`,
+      export const loadProduct = () => { throw new Error('Unexpected country request'); };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useProductWindows = () => ({ data: new Map([[0, ${JSON.stringify(reply)}]]), errors: new Map(), retry() {} });`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = (_runtime, _track, active) => { globalThis.__armyMarkerDemand = active; return { data: ${JSON.stringify(groups)} }; };`,

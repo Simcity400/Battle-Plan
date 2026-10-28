@@ -14,7 +14,7 @@ test('members ever, known so far but not yet all found, leave a moment with no v
   const state = { groups: pendingGroups(), reply };
   const host = globalThis as typeof globalThis & { __volunteersPending?: typeof state }; host.__volunteersPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/volunteers/VolunteersWidget.tsx', {
-    '/dashboard/products.ts': 'export const useProduct = (_client, request) => ({ data: request ? globalThis.__volunteersPending.reply : undefined, retry() {} });',
+    '/dashboard/products.ts': 'export const useProduct = (_client, request) => ({ data: request ? globalThis.__volunteersPending.reply : undefined, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__volunteersPending.groups, retry() {} });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 0;',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });

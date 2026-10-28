@@ -99,6 +99,8 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
     hour:moment,rows:countryProduct.data?.series.map(series=>({tag:series.tag,values:runAt(series.runs,moment)?.values ?? null})) ?? []}));
   const factionParams = track ? factionTotalsRequest(track.branch.id, widget.countries, { kind: 'territory', measure, rule }, definition.countries.max) : null;
   const factionProduct = usePreparedFactionTotals(runtime.client, track, factionParams, moment, active && factions, extent, undefined, false);
+  // A head kept while playback's newest loads is ranked and named at the hour it answers.
+  const shownMoment = view === 'lines' ? moment : (factions ? factionProduct.headHour : prepared.headHour) ?? moment;
   const { error, retry } = factions ? factionProduct : countryProduct;
   const worldStore = useMemo(() => new NumericReply<TerritoryReply>(), [runtime.client]);
   const data = factions ? worldStore.update(numericKey, countryProduct.data, reply => ({ ...reply, warnings: [] })) : countryProduct.data;
@@ -124,9 +126,9 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   const count = Math.max(1, manual ? model?.selectedCount ?? resolved.tags.length : resolved.tags.length);
   const slots = factionParams?.top ?? (aggregate ? 1 : resolved.top ?? count);
   const shareCount = factionParams?.top ?? resolved.top ?? count;
-  const raceTags = useMemo(() => seriesAt(series, moment), [series, moment]);
+  const raceTags = useMemo(() => seriesAt(series, shownMoment), [series, shownMoment]);
   const shareTags = useMemo(() => view === 'share' && !factions ? topCountries(new Map(raceTags.map(tag =>
-    [tag, runAt(series.series.get(tag)!.runs, moment)?.value ?? null])), shareCount) : [], [view, factions, raceTags, series, moment, shareCount]);
+    [tag, runAt(series.series.get(tag)!.runs, shownMoment)?.value ?? null])), shareCount) : [], [view, factions, raceTags, series, shownMoment, shareCount]);
   const shownTags = factions ? [] : view === 'share' ? shareTags : aggregate ? [] : view === 'race' ? raceTags : lines.map(line => line.tag);
   const factionLooks = useFactionColours(runtime.client, factions ? track?.source : undefined);
   const factionWarnings = factions ? factionLooks.warnings : NO_WARNINGS;
@@ -157,13 +159,13 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   const menu = useContextMenu('Territory actions');
   const segmentAt = useCallback((tag: string, hour: number) => territorySegmentAt(model, tag, hour), [model]);
   const lookTags = view === 'share' ? shownTags : widget.countries.kind === 'group' && widget.countries.group.type === 'war' ? [widget.countries.group.tag] : [];
-  const looks = useCountryLooks(runtime.client, track, lookTags, moment, active, segmentAt);
-  const totalName = widget.countries.kind === 'group' ? groupLabel(widget.countries.group, groupReply.data, looks.name, moment) : 'Countries';
-  const nameOf = (tag: string, hour?: number) => factions ? factionNameAt(factionModel, tag, hour ?? moment, factionNames) : aggregate ? totalName : looks.name(tag, hour);
+  const looks = useCountryLooks(runtime.client, track, lookTags, shownMoment, active, segmentAt);
+  const totalName = widget.countries.kind === 'group' ? groupLabel(widget.countries.group, groupReply.data, looks.name, shownMoment) : 'Countries';
+  const nameOf = (tag: string, hour?: number) => factions ? factionNameAt(factionModel, tag, hour ?? shownMoment, factionNames) : aggregate ? totalName : looks.name(tag, hour);
   const colorOf = (tag: string) => factions ? shareFactionColours.get(tag)! : tokens.accent;
   const entityLooks = useMemo(() => aggregate ? { name: () => totalName, color: () => tokens.accent } : undefined,
     [aggregate, totalName, tokens.accent]);
-  const entries = useMemo(() => view === 'race' ? seriesRaceEntries(series, moment, slots, formatTerritory) : [], [view, series, moment, slots]);
+  const entries = useMemo(() => view === 'race' ? seriesRaceEntries(series, shownMoment, slots, formatTerritory) : [], [view, series, shownMoment, slots]);
   const { showTip, tipWanted } = useRaceTooltip(active, view === 'share' && !factions);
   const labels = useCountryLabelsAt(runtime.client, track, tipWanted, active);
 
@@ -176,7 +178,7 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   if (!factions && resolved.reason) return <>{groupFailure}<WidgetState kind="empty" icon="map" message={resolved.reason} /></>;
   // A group with no member found yet asks for no country totals, so no reply will come; the
   // share view reads world totals and says so itself.
-  const none = factions || view === 'share' ? null : noMembersAt(widget.countries, resolved, groupReply.data, moment, lastHour);
+  const none = factions || view === 'share' ? null : noMembersAt(widget.countries, resolved, groupReply.data, shownMoment, lastHour);
   if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="map" /></>;
   if (options.measure && !MEASURES.some(item => item.value === options.measure)) return <>{groupFailure}<WidgetState kind="unavailable" message={'This territory measure is unavailable. Choose another in settings.'} /></>;
   if (!sourceData || (factions ? !factionModel : !model) || ((grouped || factions) && !groupData) || (view === 'share' && !data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading territory…" /></>;
@@ -194,8 +196,8 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   const jump = (hour: number, x: number, y: number) => menu.open(x, y, [jumpItem(runtime, track.id, hour)]);
   if (view === 'share') {
     const groupReason = factions && widget.countries.kind === 'group' ? factionData?.series.find(series => series.id === factionParams?.factionId)?.unavailableReason
-      : grouped && widget.countries.kind === 'group' ? groupShareReason(resolved, widget.countries.membership, moment) : null;
-    if (!factions && !groupReason && !resolved.known(moment)) return preparing;
+      : grouped && widget.countries.kind === 'group' ? groupShareReason(resolved, widget.countries.membership, shownMoment) : null;
+    if (!factions && !groupReason && !resolved.known(shownMoment)) return preparing;
     const shareColours = new Map(shareTags.map(tag => {
       const colour = looks.color(tag);
       return [tag, colour ? toHex({ r: colour[0], g: colour[1], b: colour[2] }) : null] as const;
@@ -205,27 +207,27 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
     return <div ref={parityRoot} className="country-race">{groupFailure}
       <div className="country-race-chart" onPointerLeave={() => showTip(null)}>
         <TerritoryShare key={`${track.source.id}:${track.branch.id}:${measure}:${rule}`} series={series} worldReply={data!} measure={measure} rule={rule}
-          hour={moment} count={shareCount} nameOf={factions ? nameOf : looks.name} countryFlagOf={tag => ({
+          hour={shownMoment} count={shareCount} nameOf={factions ? nameOf : looks.name} countryFlagOf={tag => ({
             flag: looks.flag(tag), flagPending: looks.flagPending(tag), flagReason: looks.flagReason(tag),
           })} colourOf={shareColour}
           factions={factions ? { reply: factionData! } : undefined} unavailableReason={reason}
           onPick={factions ? onFactionPick : undefined} pickOwner={shareOwner}
-          expectedKeys={!factions && resolved.top == null ? territoryShareKeys(model!, resolved, moment) : undefined}
+          expectedKeys={!factions && resolved.top == null ? territoryShareKeys(model!, resolved, shownMoment) : undefined}
           membershipNote={factions ? id => factionMembershipNote(factionModel, id) : undefined}
-          nameReason={factions ? id => factionNameReasonAt(factionModel, id, moment, factionNames) ? 'Name unavailable' : null : undefined}
-          hoverLabel={factions ? undefined : labels.labelAt(moment)} onHover={factions ? undefined : tag => showTip(moment, [tag])}
-          active={active} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onContextMenu={(x, y) => jump(moment, x, y)} />
+          nameReason={factions ? id => factionNameReasonAt(factionModel, id, shownMoment, factionNames) ? 'Name unavailable' : null : undefined}
+          hoverLabel={factions ? undefined : labels.labelAt(shownMoment)} onHover={factions ? undefined : tag => showTip(shownMoment, [tag])}
+          active={active} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onContextMenu={(x, y) => jump(shownMoment, x, y)} />
       </div>{menu.menu}
     </div>;
   }
   return <div ref={parityRoot} className="country-race">{groupFailure}<CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead}
-    moment={moment} slots={slots} ranked={entries} lines={lines} segmentAt={segmentAt} countryTags={shownTags}
+    moment={shownMoment} slots={slots} ranked={entries} lines={lines} segmentAt={segmentAt} countryTags={shownTags}
     entityLooks={entityLooks} lineLegendLabel={territoryLegend(false).label}
     badges={badges}
     lineSummaries={prepared.lineSummaries.size ? prepared.lineSummaries : undefined} onSummaryView={prepared.onSummaryView} onReachHour={prepared.onHoverHour}
     navigation={prepared} pickOwner={prepared.owner}
-    label="Territory" empty={factions || resolved.known(moment) ? `Not recorded on ${dayLabel(moment)}.` : MEMBERSHIP_PREPARING} formatValue={formatTerritory}
-    labels={{ race: `Territory, ${countName}, ${dayLabel(moment)}`, lines: `Territory over time, ${countName}`, actions: 'Territory actions' }}
+    label="Territory" empty={factions || resolved.known(shownMoment) ? `Not recorded on ${dayLabel(shownMoment)}.` : MEMBERSHIP_PREPARING} formatValue={formatTerritory}
+    labels={{ race: `Territory, ${countName}, ${dayLabel(shownMoment)}`, lines: `Territory over time, ${countName}`, actions: 'Territory actions' }}
     presentation={{ ...TERRITORY_PRESENTATION, countryLooks: !aggregate, linePadding: CHART_LAYOUT.countryEndLabels }}
     tooltipTags={aggregate ? () => [] : undefined}
     tooltip={(tag, hour, _name, _colours, labelAt) => {

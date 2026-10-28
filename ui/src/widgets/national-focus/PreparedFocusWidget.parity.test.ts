@@ -37,7 +37,7 @@ test('the prepared widget supplies its settled page and description to one parit
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open(){}, menu:null });',
-    '/dashboard/products.ts': 'export const useProduct = () => ({data:globalThis.__focusCapture.oracle});',
+    '/dashboard/products.ts': 'export const useProduct = () => ({data:globalThis.__focusCapture.oracle}); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _tag, wanted) => ({
       read: new Map(wanted.map(({tag,hour}) => [JSON.stringify([hour,tag]), {artwork:{token:tag,name:'Observed',description:null,baseDurationDays:7,icon:null},reason:null}])),
       details: globalThis.__focusCapture.emptyDetails, warnings: [] });`,

@@ -57,7 +57,7 @@ test('chosen countries the market view cannot place at an hour still being prepa
   const host = globalThis as typeof globalThis & { __marketPending?: typeof state }; host.__marketPending = state;
   const { module, close } = await mountModule<{ useTradeFlows: (...args: unknown[]) => { marketReason: string | null } }>('/ui/src/widgets/trade-flows/useTradeFlows.ts', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__marketPending.groups });',
-    '/dashboard/products.ts': 'export const useProduct = (_client, request) => { if (request) globalThis.__marketPending.requests.push(request); return { retry() {} }; };',
+    '/dashboard/products.ts': 'export const useProduct = (_client, request) => { if (request) globalThis.__marketPending.requests.push(request); return { retry() {} }; }; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
   });
   try {
     const widget = { trackIds: ['t'], countries: { kind: 'tags', tags: ['ENG'] }, time: { mode: 'campaign' }, options: { view: 'market' } };

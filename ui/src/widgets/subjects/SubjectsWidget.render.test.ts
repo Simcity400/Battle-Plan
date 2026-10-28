@@ -21,7 +21,7 @@ test('subject legends keep missing and folded level names without raw tokens or 
   const state = { data, groups, legend: [] as LegendItem[], timeline: undefined as TimelineProps | undefined };
   const host = globalThis as typeof globalThis & { __subjectLegend?: typeof state }; host.__subjectLegend = state;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = (client, request, active, validate, source) => { if (source?.id !== request.sourceId || request.product !== "subjects") throw new Error("Subjects require prepared loading"); return { data: globalThis.__subjectLegend.data }; };',
+    '/dashboard/products.ts': 'export const useProduct = (client, request, active, validate, source) => { if (source?.id !== request.sourceId || request.product !== "subjects") throw new Error("Subjects require prepared loading"); return { data: globalThis.__subjectLegend.data }; }; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__subjectLegend.groups });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/useCountriesAt.ts': 'export const useCountriesAt = () => ({ country: tag => ({ name: tag }), revision: 0 });',
@@ -63,7 +63,7 @@ test('a reply answered from its prepared prefix marks sampled hours approximate 
   const state = { data, groups, legend: [] as LegendItem[], timeline: undefined as TimelineProps | undefined };
   const host = globalThis as typeof globalThis & { __subjectLegend?: typeof state }; host.__subjectLegend = state;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__subjectLegend.data });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__subjectLegend.data }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__subjectLegend.groups });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/useCountriesAt.ts': 'export const useCountriesAt = () => ({ country: tag => ({ name: tag }), revision: 0 });',
@@ -105,7 +105,7 @@ test('a group counted at an hour still being prepared is loading, not a choice w
   const state = { data, groups: pendingGroups({ tags: ['GER', 'ENG', 'S'] }) };
   const host = globalThis as typeof globalThis & { __subjectPending?: typeof state }; host.__subjectPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/subjects/SubjectsWidget.tsx', {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__subjectPending.data });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__subjectPending.data }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__subjectPending.groups });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/useCountriesAt.ts': 'export const useCountriesAt = () => ({ country: tag => ({ name: tag }), revision: 0 });',

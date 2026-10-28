@@ -92,7 +92,9 @@ async function fuelFixture() {
             const data = request.product === 'country-fuel-consumption' ? fixture ? fixture.consumption : ${JSON.stringify(consumption)}
               : request.product === 'country-fuel-demand' ? fixture ? fixture.demand : ${JSON.stringify(demand)} : fixture ? fixture.awards : ${JSON.stringify(awards)};
             return { data: data ? validate(data) : undefined, error: request.product === 'country-fuel-demand' ? fixture?.demandError : fixture?.awardsError, retry() {} };
-          }`;
+          }
+            export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+            export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`;
         if (path.endsWith('/dashboard/productWindows.ts')) return source.slice(0, source.indexOf('export function useProductWindows<T>')) + `
           export function useProductWindows(_client, identity, request, wanted, active, validate) {
             globalThis.__fuelHistoryIdentities?.push(identity);

@@ -132,7 +132,8 @@ test('race bars are one total or one segment per group, summing to the label', (
 test('production tooltips name the hovered hour and lines name their own drawn ends', async () => {
   // Render the widget and shared view; only transport, artwork and canvas leaves are replaced.
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': `export const useProduct = (_client, request) => request?.product === 'equipment-produced' ? ({ data: ${JSON.stringify(REPLY)} }) : {};`,
+    '/dashboard/products.ts': `export const useProduct = (_client, request) => request?.product === 'equipment-produced' ? ({ data: ${JSON.stringify(REPLY)} }) : {};
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/playback.ts': `export const usePlaybackHour = () => {};
       export const usePlaybackSpeed = clock => clock.getSnapshot().hoursPerSecond;`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',

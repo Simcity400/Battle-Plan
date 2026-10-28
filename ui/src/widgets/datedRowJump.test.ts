@@ -35,7 +35,7 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
       globalThis.__datedRowKey = items.length ? itemKey(items[0]) : undefined;
       return items.map((item, index) => createElement('li', { ...rowProps?.(item, index), key: index }, children(item, index))); };`,
     '/research/preparedResearch.ts': 'export const usePreparedResearch = () => ({ data: globalThis.__datedRowData });',
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__datedRowData });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__datedRowData }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     // Server rendering has no document to read theme colours from.
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: ['#3987e5'] }); export const useViewportHeight = () => 800;",

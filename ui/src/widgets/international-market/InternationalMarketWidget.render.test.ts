@@ -12,7 +12,8 @@ test('no contract at an hour whose group membership is still being prepared is l
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/international-market/InternationalMarketWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__marketPending.groups, retry() {} });',
     '/dashboard/products.ts': `export const useProduct = (client, request) => ({ retry() {}, data: { view: request?.params.view, lastHour: 200,
-      known: [{ firstHour: 0, lastHour: 200 }], contracts: [], offers: [], agreements: [], holders: [], warnings: [] } });`,
+      known: [{ firstHour: 0, lastHour: 200 }], contracts: [], offers: [], agreements: [], holders: [], warnings: [] } });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 200;',
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',

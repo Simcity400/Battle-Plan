@@ -56,7 +56,7 @@ test('lazy body fallback exposes loading readiness only in parity builds', async
       const { lazyWidget } = await vite.ssrLoadModule('/ui/src/widgets/lazyWidget.tsx');
       const body = lazyWidget('synthetic-delayed-widget', ['render']).render({});
       assert.equal(body.props.fallback.props['data-parity-loading'], mode === 'parity' ? true : undefined);
-      assert.equal(body.props.fallback.props.children, 'Loading widget?');
+      assert.equal(body.props.fallback.props.children, 'Loading widget…');
     } finally { await vite.close(); }
   }
 });

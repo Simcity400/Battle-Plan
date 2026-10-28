@@ -19,7 +19,7 @@ test('Biggest shows the measure the ranking fell back to, not the one asked for'
       export default ({ rows, renderRow }) => createElement(Fragment, null, ...rows.map(row => createElement(Fragment, { key: row.key }, renderRow(row))));`,
     '/charts/drill/DrillHost.tsx': 'export default ({ main }) => main;',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['red', 'blue'] });`,
-    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'land-battle-list-fixture', enforce: 'pre',
@@ -58,7 +58,7 @@ test('the redesigned list prepares raw full-history rows in log order and keeps 
     '/charts/log/LogList.tsx': 'export default props => { globalThis.__landParity = props; return null; };',
     '/charts/drill/DrillHost.tsx': 'export default ({ main }) => main;',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['red', 'blue'] });`,
-    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
   };
   for (const mode of ['parity', 'test']) {
     const vite = await createServer({ mode, configFile: false, optimizeDeps: { noDiscovery: true },

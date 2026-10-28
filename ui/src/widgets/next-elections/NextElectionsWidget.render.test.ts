@@ -11,7 +11,8 @@ test('no election at an hour whose group membership is still being prepared is l
   const host = globalThis as typeof globalThis & { __electionsPending?: typeof state }; host.__electionsPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/next-elections/NextElectionsWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__electionsPending.groups, retry() {} });',
-    '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { lastHour: 200, known: [{ firstHour: 0, lastHour: 200 }], elections: [], holders: [], warnings: [] } });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { lastHour: 200, known: [{ firstHour: 0, lastHour: 200 }], elections: [], holders: [], warnings: [] } });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 200;',
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',

@@ -188,7 +188,7 @@ test('actual occupation columns date hourly Owner looks and retain unknown nativ
   const host = globalThis as typeof globalThis & { __occupiedR2?: typeof fixture };
   host.__occupiedR2 = fixture;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__occupiedR2.manifest });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__occupiedR2.manifest }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/productWindows.ts': `export const useProductWindows = (_client, _identity, request, wanted) => {
       const f = globalThis.__occupiedR2; f.windows = wanted; f.request = request(wanted[0]);
       return { data: new Map(wanted.map(index => [index, f.data])), errors: new Map(), retry() {} }; };

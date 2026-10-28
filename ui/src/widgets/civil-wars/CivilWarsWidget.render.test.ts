@@ -17,7 +17,8 @@ test('civil wars of a group counted at an hour still being prepared are loading,
   const state = { groups: pendingGroups({ tags }) as CountryGroupReply };
   const host = globalThis as typeof globalThis & { __civilPending?: typeof state }; host.__civilPending = state;
   const { module, close } = await mountModule<{ default: ComponentType<WidgetProps> }>('/ui/src/widgets/civil-wars/CivilWarsWidget.tsx', {
-    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(data)}, retry() {} });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(data)}, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__civilPending.groups, retry() {} });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag() {}, color() {}, revision: 0 });',

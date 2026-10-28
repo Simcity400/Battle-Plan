@@ -684,7 +684,7 @@ test('a moved gate cannot spin an instant wait while a shown reply is throttled'
 
 
 test('stopping preparation delivers a throttled exact focus point before raising its terminal state', async () => {
-  for (const state of ['paused', 'failed', 'cancelled', 'idle'] as const) {
+  for (const state of ['failed', 'cancelled', 'idle'] as const) {
     let time = 0, reads = 0, statuses = 0;
     const first = { coverage: { firstHour: 0, lastHour: 9, complete: false },
       pending: [{ firstHour: 10, lastHour: 20 }], preparing: ['completedByHour'] };
@@ -725,8 +725,24 @@ test('stopping preparation publishes its latest prefix before retaining the term
   assert.deepEqual(published, [first, latest]);
 });
 
+test('paused preparation waits without failing and the read finishes once it resumes', async () => {
+  let time = 0, reads = 0;
+  const first = { coverage: { firstHour: 0, lastHour: 9, complete: false }, rows: ['first'] };
+  const exact = { coverage: { firstHour: 0, lastHour: 20, complete: true }, rows: ['exact'] };
+  const published: unknown[] = [];
+  const client = {
+    preparedQuery: async () => ++reads === 1 ? first : exact,
+    preparationStatus: async (request: object) => ({ ...request, state: time < 2000 ? 'paused' : 'ready', pauseReason: time < 2000 ? 'game' : null,
+      coverage: { '1': time < 2000 ? first.coverage : exact.coverage }, sections: [], backgroundEnabled: true, bytes: '0', error: null }),
+  } as unknown as DashboardClient;
+  assert.equal(await preparedSeriesQuery(client, source, 'series-summary', { branchId: '1' }, new AbortController().signal,
+    false, undefined, async () => { time += 500; }, value => published.push(value), () => time), exact);
+  assert.deepEqual(published, [first, exact]);
+  assert.equal(reads, 2, 'an unchanged pause asks for nothing new');
+});
+
 test('null replies receive one final ask on a terminal state even when the named gate stays empty', async () => {
-  for (const state of ['paused', 'failed', 'cancelled', 'idle'] as const) {
+  for (const state of ['failed', 'cancelled', 'idle'] as const) {
     let reads = 0, statuses = 0;
     const client = {
       preparedQuery: async (_source: DashboardSource, _product: string, _params: unknown, options: PreparedQueryOptions) => {

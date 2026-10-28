@@ -64,6 +64,7 @@ fn emit(event: &DataEvent) -> bool {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dashboard::allocator::return_freed_memory_promptly();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments
         .first()

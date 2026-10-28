@@ -3,11 +3,11 @@
 export type MotionFeel = 'snappy' | 'smooth' | 'cinematic';
 const BASE_MS: Record<MotionFeel, number> = { snappy: 90, smooth: 180, cinematic: 320 };
 
-/** Moves `current` toward `target`, framerate-independently; tau 0 snaps. */
-export function approach(current: number, target: number, dtMs: number, tauMs: number): number {
+/** Moves `current` toward `target`, framerate-independently; tau 0 snaps, and within `within` of it, it arrives. */
+export function approach(current: number, target: number, dtMs: number, tauMs: number, within = 0): number {
   if (!(tauMs > 0) || !Number.isFinite(current)) return target;
   const next = current + (target - current) * (1 - Math.exp(-Math.max(0, dtMs) / tauMs));
-  return Math.abs(next - target) < 1e-6 * Math.max(1, Math.abs(target)) ? target : next;
+  return Math.abs(next - target) < Math.max(within, 1e-6 * Math.max(1, Math.abs(target))) ? target : next;
 }
 
 /** Missing values and recording gaps start afresh; only known shapes glide. */

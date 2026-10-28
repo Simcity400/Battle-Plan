@@ -121,7 +121,9 @@ test('economy and shared race picks keep their mounted numeric owner through con
               if (!state) throw Error('Unexpected economy product: ' + request.product);
               check(state.data, request, validate);
               return state;
-            }`;
+            }
+            export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+            export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`;
         const replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
         if (replacement) return replacement[1];
         const module = memoModules.find(suffix => path.endsWith(suffix));

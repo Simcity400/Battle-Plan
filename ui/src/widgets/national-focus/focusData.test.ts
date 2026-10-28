@@ -264,7 +264,7 @@ test('Follow schedules the current and newest focus first while every time mode 
   const host = globalThis as typeof globalThis & { __focusPriorities?: typeof fixture };
   host.__focusPriorities = fixture;
   const replacements: Record<string, string> = {
-    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__focusPriorities.data });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__focusPriorities.data }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',

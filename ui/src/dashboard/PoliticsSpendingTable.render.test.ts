@@ -101,7 +101,7 @@ for (const kind of ['political-power-spending', 'political-power-spending-breakd
   const host = globalThis as typeof globalThis & { __spendingPending?: typeof state }; host.__spendingPending = state;
   const { module, close } = await mountModule<{ default: { render: ComponentType<WidgetProps> } }>(`/ui/src/widgets/${kind}/index.ts`, {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__spendingPending.groups, retry() {} });',
-    '/dashboard/products.ts': 'export const useProducts = () => ({ data: undefined, retry() {} }); export const useProduct = () => ({ data: undefined, retry() {} });',
+    '/dashboard/products.ts': 'export const useProducts = () => ({ data: undefined, retry() {} }); export const useProduct = () => ({ data: undefined, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined }); export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });',
     '/dashboard/useIdeaTooltips.ts': 'export const useIdeaTooltips = () => undefined;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,

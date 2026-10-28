@@ -77,7 +77,8 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
         if (globalThis.__navalPinLifecycle.windowRequests > 512) throw Error('Naval window request bound exceeded');
         const reply = globalThis.__navalPinLifecycle.reply;
         return validate ? validate(reply) : reply;
-      };`,
+      };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__navalPinLifecycle.groups });',
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted, active) => {

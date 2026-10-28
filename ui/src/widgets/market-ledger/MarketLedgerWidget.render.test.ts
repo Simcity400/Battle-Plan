@@ -130,7 +130,8 @@ test('the market ledger keeps its pages whole as preparation advances and asks a
       transform(_source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/products.ts')) return `export function useProduct(_client, request, active, validate) {
-          return { data: request && active ? globalThis.__ledger.product(request, validate) : undefined, retry() {} }; }`;
+          return { data: request && active ? globalThis.__ledger.product(request, validate) : undefined, retry() {} }; }
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`;
         if (path.endsWith('/dashboard/productWindows.ts')) return `export function useProductWindows(_client, identity, request, wanted, active, validate) {
           return globalThis.__ledger.windows(identity, request, wanted, active, validate); }`;
         if (path.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => 0;';

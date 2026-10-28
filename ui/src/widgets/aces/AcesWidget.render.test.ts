@@ -24,7 +24,8 @@ test('ace portrait slots use a helmet and refresh failures retain Retry without 
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': `export const useProduct = () => { const state = globalThis.__acePresentation; return {
       data: state.pending ? undefined : { manifest: state.manifest, roster: state.detail, readHour: 100, preparing: state.preparing ? ['firstSeen','death'] : [] },
-      error: state.failure ? 'Synthetic native refusal' : undefined, retry() { state.retries++; } }; };`,
+      error: state.failure ? 'Synthetic native refusal' : undefined, retry() { state.retries++; } }; };
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useWindowDisplay = () => { const state = globalThis.__acePresentation; return {
       data: { manifest: state.manifest, roster: state.detail, readHour: 100, preparing: state.preparing ? ['firstSeen','death'] : [] }, hour: 100 }; };`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 100;',
@@ -84,7 +85,8 @@ test('aces read at an hour whose group membership is still being prepared are lo
   const host = globalThis as typeof globalThis & { __acesPending?: typeof state }; host.__acesPending = state;
   const display = `{ manifest: ${JSON.stringify(manifest)}, roster: ${JSON.stringify(detail)}, readHour: ${PENDING_HOUR}, preparing: [] }`;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/aces/AcesWidget.tsx', {
-    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${display}, retry() {} });`,
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${display}, retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useWindowDisplay = () => ({ data: ${display}, hour: ${PENDING_HOUR} });`,
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${PENDING_HOUR};`,
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',

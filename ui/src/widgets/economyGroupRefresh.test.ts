@@ -71,7 +71,9 @@ test('actual economy group requests and open drills retain pending/name refreshe
               if (request) globalThis.__economyGroup.requests.push(request);
               return { data: request && globalThis.__economyGroup.data !== undefined ? validate(globalThis.__economyGroup.data) : undefined, retry() {} }; };
             export const loadProduct = (client, request, _signal, validate, _source, _restart, publish) => {
-              const { data } = useProduct(client, request, true, validate); if (data !== undefined) publish?.(data); return new Promise(() => {}); };`;
+              const { data } = useProduct(client, request, true, validate); if (data !== undefined) publish?.(data); return new Promise(() => {}); };
+            export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+            export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`;
         // The race's view read answers in the same render, as its products do here.
         if (path.endsWith('/dashboard/viewRead.ts')) return `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
           if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });

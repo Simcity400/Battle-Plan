@@ -37,7 +37,8 @@ export function usePreparedOccupation(client: DashboardClient, track: BoundTrack
         ? summaryMembership.within && Object.fromEntries(summaryMembership.within) : within && Object.fromEntries(within), ...extra,
     },
   } : null;
-  const head = useProduct<OccupationTrendReply>(client, request('series-state', rank, { reads: [{ hour }] }), active, validateOccupationTrendReply, track?.source);
+  // The last hour's state stays shown while playback's newest hour is read.
+  const head = useFollowedProduct<OccupationTrendReply>(client, request('series-state', rank, { reads: [{ hour }] }), ['reads'], active, validateOccupationTrendReply, track?.source);
   const hovered = hover?.owner === owner ? hover.hour : null;
   const reached = useProduct<OccupationTrendReply>(client, hovered == null ? null : request('series-state', rank, { reads: [{ hour: hovered }] }), active, validateOccupationTrendReply, track?.source);
   const viewport = view?.owner === owner ? view : undefined;
@@ -71,7 +72,8 @@ export function usePreparedOccupation(client: DashboardClient, track: BoundTrack
   const lineSummaries = useMemo(() => new Map<string, ChartSummary>([resistance.data, compliance.data].flatMap(reply =>
     reply?.series.map(line => [JSON.stringify([line.tag, reply.measure]), line.summary] as const) ?? [])), [resistance.data, compliance.data]);
   const data = useMemo(() => mergeOccupationReads(head.data, reached.data, resistance.data, compliance.data), [head.data, reached.data, resistance.data, compliance.data]);
-  return { data, lineSummaries, onSummaryView, onReachHour, onSummaryMembership, navigation: { onNavigateHour, keyboardHour: next.data?.hour, keyboardRevision: navigation?.revision },
+  // The hour the shown head answers; one kept while playback's newest loads holds its own.
+  return { headHour: head.data && head.moment ? (JSON.parse(head.moment) as [{ hour: number }[]])[0][0]?.hour : undefined, data, lineSummaries, onSummaryView, onReachHour, onSummaryMembership, navigation: { onNavigateHour, keyboardHour: next.data?.hour, keyboardRevision: navigation?.revision },
     error: head.error ?? reached.error ?? resistance.error ?? compliance.error ?? next.error,
     retry: () => { head.retry(); reached.retry(); resistance.retry(); compliance.retry(); next.retry(); } };
 }

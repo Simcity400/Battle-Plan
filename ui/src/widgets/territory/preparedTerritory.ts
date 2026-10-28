@@ -28,7 +28,8 @@ export function usePreparedTerritory(client: DashboardClient, track: BoundTrack 
   const family = {kind:'territory',measure,rule,top:selection?.top?.count ?? null,aggregate};
   const request = (product:string,extra:object) => track && selection ? {sourceId:track.source.id,revision:track.source.revision,product,
     params:{branchId:track.branch.id,family,tags:selection.tags,within:within && Object.fromEntries(within),unobserved,...extra}} : null;
-  const head = useProduct<TerritoryReply>(client,request('series-state',{reads:[{hour}]}),active,validateTerritoryReply,track?.source);
+  // The last hour's state stays shown while playback's newest hour is read.
+  const head = useFollowedProduct<TerritoryReply>(client,request('series-state',{reads:[{hour}]}),['reads'],active,validateTerritoryReply,track?.source);
   const hovered = hover?.owner===owner ? hover.hour : null;
   const reached = useProduct<TerritoryReply>(client,hovered===null ? null : request('series-state',{reads:[{hour:hovered}]}),active,validateTerritoryReply,track?.source);
   const viewport = view?.owner===owner ? view : undefined;
@@ -55,7 +56,8 @@ export function usePreparedTerritory(client: DashboardClient, track: BoundTrack 
     const runs=new Map(replies.flatMap(reply=>reply?.sum ?? []).map(run=>[JSON.stringify(run),run]));
     return [...runs.values()].sort((a,b)=>a.firstHour-b.firstHour);
   },[head.data,reached.data,summaries.data]);
-  return {data,sumRuns,lineSummaries,onSummaryView,onHoverHour,onNavigateHour,owner,
+  // The hour the shown head answers; one kept while playback's newest loads holds its own.
+  return {headHour: head.data && head.moment ? (JSON.parse(head.moment) as [{ hour: number }[]])[0][0]?.hour : undefined, data,sumRuns,lineSummaries,onSummaryView,onHoverHour,onNavigateHour,owner,
     keyboardHour:next.data?.hour,keyboardRevision:navigation?.revision,
     error:head.error ?? reached.error ?? summaries.error ?? next.error,
     retry:()=>{head.retry();reached.retry();summaries.retry();next.retry();}};

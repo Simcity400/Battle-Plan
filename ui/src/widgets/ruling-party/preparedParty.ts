@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
-import { loadProduct, useProduct } from '../../dashboard/products';
+import { loadProduct, useFollowedProduct, useProduct } from '../../dashboard/products';
 import { isChartSummary } from '../../charts/chartSummary';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import type { ChartSummary } from '../../charts/chartSummary';
@@ -67,8 +67,9 @@ export function usePreparedParty(client: DashboardClient, source: DashboardSourc
     JSON.stringify([currentView?.from, currentView?.to, currentView?.width]), active, (at, signal, publish, restart) => loadProduct(client,
       request({ mode: 'summary', from: at.from, to: at.to, width: at.width, fields, values: withValues })!, signal, validatePreparedParty, source, restart, publish), client);
   const summary = { ...summaryRead, error: useHeldFailure(summaryRead.error, summaryRead.data !== undefined, summaryRead.retry) };
-  const hours = [...new Set([Math.floor(head), ...(hover == null ? [] : [Math.floor(hover)])])].sort((a, b) => a - b);
-  const state = useProduct(client, withValues ? request({ mode: 'state', hours }) : null, active, validatePreparedParty, source);
+  // The playhead's hour first: an answer names the playhead it was read for.
+  const hours = [...new Set([Math.floor(head), ...(hover == null ? [] : [Math.floor(hover)])])];
+  const state = useFollowedProduct(client, withValues ? request({ mode: 'state', hours }) : null, ['hours'], active, validatePreparedParty, source);
   const currentPage = page?.owner === owner ? page : undefined;
   const events = useProduct(client, currentPage ? request({ mode: 'events', field: currentPage.field, from: currentPage.from, to: currentPage.to, cursor: currentPage.cursor, pageSize: 128 }) : null, active,
     value => validatePreparedParty(value, currentPage?.cursor), source);
@@ -94,9 +95,11 @@ export function usePreparedParty(client: DashboardClient, source: DashboardSourc
       : { owner, field, from: cluster.firstHour, to: cluster.lastHour, cursor: cluster.firstOrdinal, start: cluster.firstOrdinal });
   }, [owner]);
   const onNavigateHour = useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((key, from, x, until) => setKeyboard({ owner, key, from, x, until, view: viewKey }), [owner,viewKey]);
-  if (state?.data) previous.current={owner,data:state.data,hour:Math.floor(head)};
+  const answered = state?.moment ? (JSON.parse(state.moment) as [number[]])[0] : undefined;
+  if (state?.data && answered) previous.current={owner,data:state.data,hour:answered[0]};
   const retained=previous.current?.owner===owner ? previous.current : undefined;
-  const presentationHour=state?.data || !retained?.data.segments?.some(span=>span.firstHour<=Math.floor(head) && span.lastHour>=Math.floor(head)) ? Math.floor(head) : retained.hour;
+  const current = !!state?.data && answered?.[0] === Math.floor(head);
+  const presentationHour=current || !retained?.data.segments?.some(span=>span.firstHour<=Math.floor(head) && span.lastHour>=Math.floor(head)) ? Math.floor(head) : retained.hour;
   const exact = state?.data?.reply ?? retained?.data.reply;
   const data = useMemo(() => {
     if (!exact) return summary?.data?.reply;
@@ -106,7 +109,7 @@ export function usePreparedParty(client: DashboardClient, source: DashboardSourc
   }, [exact, summary?.data]);
   return { enabled, owner, data, presentationHour, summary: summary?.data, events: events.data, reached: reached.data, page: currentPage, onSummaryView, onMarkHover, onNavigateHour, navigate,
     keyboardHour: navigation.data?.hour, keyboardRevision: navigation.data,
-    loaded: (hour: number) => !!state?.data && hours.includes(hour),
+    loaded: (hour: number) => !!state?.data && !!answered?.includes(hour),
     closePage: () => setPage(undefined),
     previousPage: () => setPage(previous => previous?.owner === owner ? {...previous,cursor:String(BigInt(previous.cursor)-128n>BigInt(previous.start) ? BigInt(previous.cursor)-128n : BigInt(previous.start))} : previous),
     nextPage: () => { const cursor = events.data?.cursor; if (cursor) setPage(previous => previous?.owner === owner ? { ...previous, cursor } : previous); },

@@ -14,7 +14,9 @@ test('a group with no stability line while membership is still being prepared is
   const host = globalThis as typeof globalThis & { __stabilityPending?: typeof state }; host.__stabilityPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/stability/StabilityWidget.tsx', {
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request?.product === 'country-stability' ? ${JSON.stringify(reply)} : undefined, retry() {} });
-      export const useProducts = () => ({ retry() {} });`,
+      export const useProducts = () => ({ retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__stabilityPending.groups, retry() {} });',
     '/dashboard/campaignSettings.ts': 'export const useCampaignSettings = () => ({ campaigns: {} });',
     '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour};`,
@@ -52,7 +54,9 @@ test('law and advisor markers read the prepared idea history through the branch 
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/stability/StabilityWidget.tsx', {
     '/dashboard/products.ts': `export const useProduct = (_client, request) => { if (request) globalThis.__stabilityIdeas.products.push(request.product);
       return { data: request?.product === 'country-stability' ? ${JSON.stringify(reply)} : undefined, retry() {} }; };
-      export const useProducts = () => ({ retry() {} });`,
+      export const useProducts = () => ({ retry() {} });
+export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
+export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/ideaHistory.ts': `export const usePreparedIdeaHistory = (...args) => { globalThis.__stabilityIdeas.ideas.push(args.slice(1)); return { retry() {} }; };`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
     '/dashboard/campaignSettings.ts': 'export const useCampaignSettings = () => ({ campaigns: {} });',

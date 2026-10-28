@@ -2941,6 +2941,7 @@ pub fn query(
                 branch,
                 &request.params,
                 &publication,
+                &name,
                 cancelled,
                 |reply: &CachedQuery| {
                     let mut bytes = dashboard_base::prepared::prepass::HeldBytes::default();

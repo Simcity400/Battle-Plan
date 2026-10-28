@@ -26,7 +26,7 @@ test('market moment respects pin/campaign/range while closed and pins/restores e
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({}); export const useCountryLabelsAt = () => ({ labelAt: () => () => ({}) });',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = () => ""; export const useCountryFactsRead = () => new Map();',
-    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} });',
+    '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: [], surface: "#000000", text: "#ffffff", countryColours: "raw" }); export const useViewportHeight = () => 1000;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',
     '/charts/drill/DrillHost.tsx': `import { createElement } from 'react'; export default props => { globalThis.__marketWidget.host = props; return createElement('div', null, props.open ? props.children : props.main); };`,
