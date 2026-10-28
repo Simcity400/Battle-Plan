@@ -544,6 +544,72 @@ fn paged_census_holds_open_battles_and_those_its_window_ended() {
 }
 
 #[test]
+fn paged_histories_take_the_same_pages_whatever_the_hash_order() {
+    // Six battles are read every hour of six ten-hour blocks, so every block pages each
+    // battle's earlier runs; a census's open map has a fresh hash order each time.
+    let present = |hour: i32| {
+        (0..6)
+            .map(|i| Combat {
+                attackers: 1 + ((hour - 100) / 15) as u64 % 3,
+                lost: Some(hour - 99),
+                ..Combat::new(1 + i, 100)
+            })
+            .collect::<Vec<_>>()
+    };
+    let blocks: Vec<Vec<DecodedFrame>> = (0..6)
+        .map(|block| {
+            (100 + 10 * block..=109 + 10 * block)
+                .map(|hour| hour_frame(1, hour, present(hour)))
+                .collect()
+        })
+        .collect();
+    let source = recording(blocks);
+    let pages = || {
+        let flag = AtomicBool::new(false);
+        let replay = source.replay_ref();
+        let context = LoadContext { content: None };
+        let fixture = Fixture::new();
+        let mut census = Census::new(replay.format);
+        let mut tracker = FrameChangeTracker::new();
+        let mut pages = Vec::new();
+        for (ordinal, index) in replay.index.iter().enumerate() {
+            replay
+                .read_block_alone(
+                    index,
+                    &CENSUS_TABLES,
+                    |_, frame| {
+                        census.configure(&source, &context);
+                        let changes = tracker.observe(frame, replay.format);
+                        census.observe_prepared(frame, &changes)
+                    },
+                    || Ok(()),
+                )
+                .unwrap();
+            let mut writer = fixture.writer();
+            census
+                .publish_block(&mut writer, replay, 1, ordinal, &flag)
+                .unwrap();
+            writer.commit().unwrap();
+            pages.push(
+                census
+                    .episodes
+                    .iter()
+                    .map(|(&at, episode)| (at, episode.history))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        pages
+    };
+    let first = pages();
+    let last = first.last().unwrap();
+    assert_eq!(last.len(), 6);
+    assert!(last.iter().all(|(_, history)| history.is_some()));
+    for _ in 0..4 {
+        assert_eq!(pages(), first);
+    }
+}
+
+#[test]
 fn paged_census_holds_only_a_long_battles_newest_runs_and_reads() {
     // One battle is read every hour of 40 ten-hour blocks: its roster changes
     // every 15 hours and its losses every hour.

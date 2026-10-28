@@ -560,7 +560,9 @@ impl Census {
                 });
             }
             // An open battle keeps its runs from `before` and the loss read carried into it.
-            let open: Vec<usize> = self.open.values().copied().collect();
+            // Pages are numbered as written: in battle order, not the open map's hash order.
+            let mut open: Vec<usize> = self.open.values().copied().collect();
+            open.sort_unstable();
             for at in open {
                 let episode = held(&mut self.episodes, at);
                 let runs = episode
