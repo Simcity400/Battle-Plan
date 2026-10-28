@@ -2227,6 +2227,13 @@ impl RowChanges {
     pub fn heap_bytes(&self) -> usize {
         self.rows.heap_bytes() + self.deleted.capacity() * size_of::<u128>()
     }
+
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            rows: self.rows.try_clone_validated()?,
+            deleted: allocation::copy_vec(&self.deleted)?,
+        })
+    }
 }
 
 #[inline(never)]

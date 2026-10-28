@@ -7,9 +7,13 @@ use super::{
     BranchId, DecodedFrame, FieldStamp, Hour, Metrics, SharedView, TABLE_COUNT, TableView,
     not_selected,
 };
-use crate::rows::RowChanges;
+use crate::rows::{RowChanges, TableRows};
 use engine_allocation as allocation;
-use std::{io, sync::Arc};
+use std::{
+    cell::RefCell,
+    io,
+    sync::{Arc, Weak},
+};
 
 /// Frames kept in hour order ([`Self::push`]), read back with
 /// [`Self::into_frames`].
@@ -35,7 +39,67 @@ enum Kept {
     /// The frame before's allocation, with this frame's acquisition.
     Same(Acquisition),
     /// A new allocation of the frame before's rows with these changes.
-    Changed(RowChanges, Acquisition),
+    Changed(Arc<RowChanges>, Acquisition),
+}
+
+/// Changes this thread found lately between two allocations, which another
+/// log keeping the same frames takes rather than compare the tables again.
+/// Weak identities keep both addresses from being reused while it is held,
+/// and only the logs keeping the changes keep them alive.
+struct Found {
+    before: Weak<TableView>,
+    now: Weak<TableView>,
+    changes: Weak<RowChanges>,
+}
+
+thread_local! {
+    static FOUND: RefCell<Vec<Found>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Changes found at once by other logs on this thread at most.
+const FOUND_KEPT: usize = 16;
+
+/// `now`'s rows' changes since `before`'s, found on this thread before or now.
+fn changes_between(before: &SharedView, now: &SharedView) -> io::Result<Option<Arc<RowChanges>>> {
+    let (TableView::Complete(old), TableView::Complete(rows)) = (&*before.0, &*now.0) else {
+        return Ok(None);
+    };
+    let is = |found: &Found| {
+        std::ptr::eq(found.before.as_ptr(), Arc::as_ptr(&before.0))
+            && std::ptr::eq(found.now.as_ptr(), Arc::as_ptr(&now.0))
+    };
+    if let Some(changes) = FOUND.with_borrow(|found| {
+        found
+            .iter()
+            .find(|found| is(found))
+            .and_then(|found| found.changes.upgrade())
+    }) {
+        crate::cpu::logged("diff-shared", rows.len());
+        return Ok(Some(changes));
+    }
+    let Some(changes) = rows.changes_since(old)? else {
+        return Ok(None);
+    };
+    crate::cpu::logged("diff", rows.len());
+    let changes = Arc::new(changes);
+    FOUND.with_borrow_mut(|found| -> io::Result<()> {
+        found.retain(|found| {
+            found.before.strong_count() != 0
+                && found.now.strong_count() != 0
+                && found.changes.strong_count() != 0
+        });
+        if found.len() == FOUND_KEPT {
+            found.remove(0);
+        }
+        allocation::reserve(found, 1)?;
+        found.push(Found {
+            before: Arc::downgrade(&before.0),
+            now: Arc::downgrade(&now.0),
+            changes: Arc::downgrade(&changes),
+        });
+        Ok(())
+    })?;
+    Ok(Some(changes))
 }
 
 /// A view's acquisition beside its rows. A frame log keeps no change facts.
@@ -108,14 +172,9 @@ impl FrameLog {
                         }
                         Kept::Same(Acquisition::of(now))
                     } else {
-                        match (&*before.0, &*now.0) {
-                            (TableView::Complete(old), TableView::Complete(rows)) => {
-                                match rows.changes_since(old)? {
-                                    Some(changes) => Kept::Changed(changes, Acquisition::of(now)),
-                                    None => Kept::View(now.clone()),
-                                }
-                            }
-                            _ => Kept::View(now.clone()),
+                        match changes_between(before, now)? {
+                            Some(changes) => Kept::Changed(changes, Acquisition::of(now)),
+                            None => Kept::View(now.clone()),
                         }
                     };
                     allocation::reserve(&mut tables, 1)?;
@@ -162,12 +221,15 @@ impl FrameLog {
     }
 
     /// The frames kept, in order. A table changed since the frame before is
-    /// changed in place once the frame before is no longer held, and copied
-    /// first otherwise.
+    /// changed in place once the frame before is no longer held. A reader
+    /// holding it makes it a copy, and the view so replaced is kept until the
+    /// next frame, to catch up in place there once the reader lets it go.
     pub fn into_frames(self) -> LoggedFrames {
         LoggedFrames {
             entries: self.entries.into_iter(),
             current: None,
+            spares: Vec::new(),
+            spared: Vec::new(),
         }
     }
 }
@@ -176,6 +238,36 @@ impl FrameLog {
 pub struct LoggedFrames {
     entries: std::vec::IntoIter<Entry>,
     current: Option<Box<[SharedView; TABLE_COUNT]>>,
+    spares: Vec<Option<Spare>>,
+    /// The tables with a spare, which serves the next frame only.
+    spared: Vec<usize>,
+}
+
+/// A view read back that a reader held when the next one was built from it,
+/// and the changes that built the next one.
+struct Spare {
+    view: SharedView,
+    changes: RowChanges,
+    made: Weak<TableView>,
+}
+
+impl Spare {
+    /// `current`'s rows, owned, when `current` is the view these changes made
+    /// and nothing else holds the spare's view.
+    fn take_rows(self, current: &SharedView) -> io::Result<Option<TableRows>> {
+        let Self {
+            view,
+            changes,
+            made,
+        } = self;
+        if !std::ptr::eq(made.as_ptr(), Arc::as_ptr(&current.0)) {
+            return Ok(None);
+        }
+        match view.try_unwrap() {
+            Ok(TableView::Complete(rows)) => rows.apply_changes(changes).map(Some),
+            _ => Ok(None),
+        }
+    }
 }
 
 impl LoggedFrames {
@@ -183,25 +275,69 @@ impl LoggedFrames {
         let current = self
             .current
             .get_or_insert_with(|| Box::new(std::array::from_fn(|_| not_selected())));
+        if self.spares.is_empty() {
+            self.spares = allocation::vec(TABLE_COUNT)?;
+            self.spares.resize_with(TABLE_COUNT, || None);
+            self.spared = allocation::vec(TABLE_COUNT)?;
+        }
+        for index in self.spared.drain(..) {
+            if entry
+                .tables
+                .binary_search_by_key(&index, |(table, _)| *table)
+                .is_err()
+            {
+                self.spares[index] = None;
+            }
+        }
         for (index, kept) in entry.tables {
+            let spare = self.spares[index].take();
             current[index] = match kept {
                 Kept::View(view) => view,
                 Kept::Same(acquisition) => acquisition.on(current[index].clone()),
                 Kept::Changed(changes, acquisition) => {
+                    let incomplete = || super::invalid("kept rows changed an incomplete view");
+                    let changes = Arc::try_unwrap(changes).or_else(|shared| shared.try_clone())?;
                     let before = std::mem::replace(&mut current[index], not_selected());
-                    let rows = match before.try_unwrap() {
-                        Ok(TableView::Complete(rows)) => rows,
-                        Ok(_) => {
-                            return Err(super::invalid("kept rows changed an incomplete view"));
+                    let (rows, replaced) = match before.try_unwrap() {
+                        Ok(TableView::Complete(rows)) => {
+                            crate::cpu::logged("rebuild-in-place", rows.len());
+                            (rows, None)
                         }
-                        Err(shared) => match &*shared.0 {
-                            TableView::Complete(rows) => rows.try_clone_validated()?,
-                            _ => {
-                                return Err(super::invalid("kept rows changed an incomplete view"));
-                            }
-                        },
+                        Ok(_) => return Err(incomplete()),
+                        Err(shared) => {
+                            let TableView::Complete(rows) = &*shared.0 else {
+                                return Err(incomplete());
+                            };
+                            let caught = match spare {
+                                Some(spare) => spare.take_rows(&shared)?,
+                                None => None,
+                            };
+                            let rows = match caught {
+                                Some(rows) => {
+                                    crate::cpu::logged("rebuild-reused", rows.len());
+                                    rows
+                                }
+                                None => {
+                                    crate::cpu::logged("rebuild-copied", rows.len());
+                                    rows.try_clone_validated()?
+                                }
+                            };
+                            (rows, Some(shared))
+                        }
                     };
-                    let view = TableView::Complete(rows.apply_changes(changes)?).into();
+                    let kept = match &replaced {
+                        Some(_) => Some(changes.try_clone()?),
+                        None => None,
+                    };
+                    let view: SharedView = TableView::Complete(rows.apply_changes(changes)?).into();
+                    if let (Some(view_before), Some(changes)) = (replaced, kept) {
+                        self.spares[index] = Some(Spare {
+                            view: view_before,
+                            changes,
+                            made: Arc::downgrade(&view.0),
+                        });
+                        self.spared.push(index);
+                    }
                     acquisition.on(view)
                 }
             };

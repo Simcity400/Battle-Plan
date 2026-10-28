@@ -34,6 +34,8 @@ static HOURS: OnceLock<HourBits> = OnceLock::new();
 static NOTES: Mutex<Option<HashMap<Label, [u64; 2]>>> = Mutex::new(None);
 static COPIES: Mutex<Option<Vec<[u64; 3]>>> = Mutex::new(None);
 static REUSES: Mutex<Option<Vec<[u64; 3]>>> = Mutex::new(None);
+type LogKey = (&'static str, &'static str);
+static LOGGED: Mutex<Option<HashMap<LogKey, [u64; 2]>>> = Mutex::new(None);
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
@@ -41,6 +43,40 @@ thread_local! {
         const { RefCell::new([[0; 2]; TABLE_COUNT]) };
     static DELTA_REUSES: RefCell<[[u64; 2]; TABLE_COUNT]> =
         const { RefCell::new([[0; 2]; TABLE_COUNT]) };
+    static FRAME_LOG: RefCell<HashMap<&'static str, [u64; 2]>> = RefCell::new(HashMap::new());
+}
+
+/// This thread's frame log work by kind ([`logged`]): how many times, and the
+/// rows each moved or compared.
+#[cfg(any(test, feature = "test-support"))]
+pub fn frame_log_counts() -> HashMap<&'static str, [u64; 2]> {
+    FRAME_LOG.with(|counts| counts.borrow().clone())
+}
+
+/// Frame log work, charged to the family on top of this thread's labels:
+/// `diff` a table compared on keeping a frame, `diff-shared` one another log
+/// on this thread had just compared, `rebuild-in-place` a table changed in
+/// place on reading back, `rebuild-reused` one caught up from a view the
+/// reader let go, and `rebuild-copied` one copied because the reader held it.
+pub(crate) fn logged(kind: &'static str, rows: usize) {
+    #[cfg(any(test, feature = "test-support"))]
+    FRAME_LOG.with(|counts| {
+        let mut counts = counts.borrow_mut();
+        let value = counts.entry(kind).or_default();
+        value[0] += 1;
+        value[1] += rows as u64;
+    });
+    if !enabled() {
+        return;
+    }
+    let family = with_local(|acc| owner(&acc.stack)).unwrap_or("-");
+    let mut logged = LOGGED.lock().unwrap_or_else(PoisonError::into_inner);
+    let value = logged
+        .get_or_insert_with(HashMap::new)
+        .entry((kind, family))
+        .or_default();
+    value[0] += 1;
+    value[1] += rows as u64;
 }
 
 /// This thread's shared-baseline delta applications and the baseline rows
@@ -666,6 +702,19 @@ pub fn snapshot() -> Value {
     };
     let copies = charged(&COPIES, "copies");
     let reuses = charged(&REUSES, "reuses");
+    let frame_log: Vec<Value> = LOGGED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|logged| {
+            logged
+                .iter()
+                .map(|((kind, family), value)| {
+                    json!({"kind": kind, "family": family, "count": value[0], "rows": value[1]})
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     json!({
         "readerPhases": ({
             let mut phases: Vec<_> = reader_phases.into_iter().collect();
@@ -684,6 +733,7 @@ pub fn snapshot() -> Value {
         "notes": notes,
         "deltaCopies": copies,
         "deltaReuses": reuses,
+        "frameLog": frame_log,
         "scope": "Thread cycle time (QueryThreadCycleTime, which a blocked thread does not accrue) charged to the (category, family) label on top of each thread's stack, converted at the calibrated counter rate. A thread's time before its first label is its base label from its thread name. Live threads include their current label's open span. readerPhases are exclusive among reader phases by table (nested generic inflate/wire/shadow scopes remain within the active reader phase); alias_group_inclusive notes overlap phases and source decoding and must not be added to them. readerOperations are operation counts, copy bytes are source-level element traffic, not allocator or hardware measurements. relevantSourceMasks OR the propagated source-field masks. decodeTables: each non-group table section decode of a block, first, by another family after one had, or by the same family again. reconstructTables: each reconstructed table-hour, first or repeated (by any decoder) by hour, ignoring branch.",
         "tscHz": hz,
         "processCpuNs": process_ns(),

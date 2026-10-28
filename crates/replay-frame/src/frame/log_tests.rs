@@ -132,3 +132,111 @@ fn a_log_keeps_no_frame_between_the_first_and_the_last() {
     let last = log.into_frames().last().unwrap().unwrap();
     assert_eq!(*last.tables[index], links(&[(0, 7), (1, 9), (8, 8)]));
 }
+
+/// Hours whose links change a row every hour.
+fn moving(hours: u32) -> Vec<DecodedFrame> {
+    (0..hours)
+        .map(|hour| {
+            let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| not_selected());
+            tables[TableId::CountryLinks.index()] = links(&[(1, 1), (2, 2 + hour), (3, 3)]).into();
+            DecodedFrame {
+                branch: 1,
+                hour: hour as Hour,
+                tables,
+                metrics: Metrics::default(),
+            }
+        })
+        .collect()
+}
+
+fn counted(kind: &str) -> u64 {
+    crate::cpu::frame_log_counts()
+        .get(kind)
+        .map_or(0, |count| count[0])
+}
+
+/// A reader holding each frame until it has the next, as a fold comparing
+/// hours does, makes the first changed table read back a copy; every later
+/// one catches up the view the reader let go in place. The frames, and which
+/// of them share an allocation, are those kept.
+#[test]
+fn a_reader_holding_the_frame_before_costs_one_copy() {
+    // Equal frames apart from those kept, which the log alone then holds.
+    let kept = moving(6);
+    let index = TableId::CountryLinks.index();
+    let (copied, reused) = (counted("rebuild-copied"), counted("rebuild-reused"));
+    let mut previous: Option<DecodedFrame> = None;
+    for (at, frame) in logged(&moving(6)).into_frames().enumerate() {
+        let frame = frame.unwrap();
+        assert_same(&frame, &kept[at]);
+        if let Some(previous) = &previous {
+            assert!(!previous.tables[index].identity().is(&frame.tables[index]));
+            assert!(previous.tables[0].identity().is(&frame.tables[0]));
+        }
+        previous = Some(frame);
+    }
+    assert_eq!(counted("rebuild-copied") - copied, 1);
+    assert_eq!(counted("rebuild-reused") - reused, 4);
+}
+
+/// A reader holding every frame keeps every version: each changed table read
+/// back is a copy, and each frame its own rows.
+#[test]
+fn a_reader_holding_every_frame_gets_each_its_own_rows() {
+    let kept = moving(5);
+    let (copied, reused) = (counted("rebuild-copied"), counted("rebuild-reused"));
+    let read: Vec<DecodedFrame> = logged(&kept).into_frames().map(Result::unwrap).collect();
+    for (read, kept) in read.iter().zip(&kept) {
+        assert_same(read, kept);
+    }
+    assert_eq!(counted("rebuild-copied") - copied, 4);
+    assert_eq!(counted("rebuild-reused"), reused);
+}
+
+/// A second log keeping the same frames on the same thread takes the changes
+/// the first found between the same two allocations instead of comparing the
+/// tables again, and reads back the same frames.
+#[test]
+fn logs_keeping_the_same_frames_compare_each_table_once() {
+    let kept = moving(4);
+    let (diffs, shared) = (counted("diff"), counted("diff-shared"));
+    let (first, second) = (logged(&kept), logged(&kept));
+    assert_eq!(counted("diff") - diffs, 3);
+    assert_eq!(counted("diff-shared") - shared, 3);
+    for log in [first, second] {
+        for (read, kept) in log.into_frames().zip(&kept) {
+            assert_same(&read.unwrap(), kept);
+        }
+    }
+}
+
+/// Changes found between two views are taken again only between those same
+/// allocations: once both logs and frames are gone, equal frames at new
+/// allocations are compared anew, never matched to the released pair.
+#[test]
+fn changes_between_released_views_are_never_taken_for_new_ones() {
+    let (diffs, shared) = (counted("diff"), counted("diff-shared"));
+    drop(logged(&moving(2)));
+    let again = moving(2);
+    let log = logged(&again);
+    assert_eq!(counted("diff") - diffs, 2);
+    assert_eq!(counted("diff-shared"), shared);
+    for (read, kept) in log.into_frames().zip(&again) {
+        assert_same(&read.unwrap(), kept);
+    }
+}
+
+/// Only logs keep the changes they found: once the log that found them is
+/// gone, a log keeping the same frames compares the tables again.
+#[test]
+fn changes_found_live_only_as_long_as_a_log_keeps_them() {
+    let kept = moving(3);
+    let (diffs, shared) = (counted("diff"), counted("diff-shared"));
+    drop(logged(&kept));
+    let log = logged(&kept);
+    assert_eq!(counted("diff") - diffs, 4);
+    assert_eq!(counted("diff-shared"), shared);
+    for (read, kept) in log.into_frames().zip(&kept) {
+        assert_same(&read.unwrap(), kept);
+    }
+}
