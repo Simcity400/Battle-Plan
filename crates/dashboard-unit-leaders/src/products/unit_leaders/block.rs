@@ -67,7 +67,9 @@ use replay_data::{
     rows::RowCodec, rows::StateRow, rows::TableId, rows::TableRows, rows::TableSchema,
     rows::TaskForceRow, rows::WarRelationRow, rows::full_mask, rows::tables,
 };
-use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::SharedView, frame::TableView};
+use replay_frame::{
+    frame::DecodedFrame, frame::FrameLog, frame::Metrics, frame::SharedView, frame::TableView,
+};
 use std::{any::Any, collections::BTreeMap, io, marker::PhantomData, ops::Range, sync::LazyLock};
 
 /// What the family watches of a table.
@@ -638,17 +640,14 @@ fn reduction() -> Changes {
     Changes(changes)
 }
 
-/// One hour of a block's facts, in hour order.
+/// One hour of a block's facts, in hour order. A whole or kept hour's frame
+/// is the next the block's kept frames hold ([`BlockFacts::kept`]).
 enum Hour {
     /// The block's first hour, or one after a gap, with its frame as read.
-    Whole {
-        frame: DecodedFrame,
-        changes: FrameChanges,
-    },
+    Whole { changes: FrameChanges },
     /// An hour at which something leaders read changed, with its kept frame,
     /// its change facts and what changed since the hour before.
     Kept {
-        frame: DecodedFrame,
         changes: FrameChanges,
         since: Changes,
     },
@@ -674,6 +673,8 @@ enum Hour {
 /// A block's hours as the extract kept them.
 struct BlockFacts {
     hours: Vec<Hour>,
+    /// The frames of the whole and kept hours, in hour order.
+    kept: FrameLog,
     /// What every kept frame's rows may differ from the whole frame's by.
     reduction: Changes,
     /// What a frame kept as read may differ from the whole frame by: the
@@ -813,6 +814,8 @@ struct BlockExtract {
     /// What the block is read with.
     selection: &'static Selection,
     hours: Vec<Hour>,
+    /// The frames of the whole and kept hours, in hour order.
+    kept: FrameLog,
     /// The last frame observed, as read, where the block reader's changed
     /// tables are not given: the hour before's rows of every watched field,
     /// which the next hour read is compared with.
@@ -842,6 +845,7 @@ fn start(format: FormatVersion, selection: &'static Selection) -> Box<dyn Extrac
         format,
         selection,
         hours: Vec::new(),
+        kept: FrameLog::new(),
         last: None,
         branch: None,
         previous: None,
@@ -1165,8 +1169,8 @@ impl BlockExtract {
             && self.branch == Some(frame.branch)
             && (!compare || self.last.is_some());
         if !continues {
+            self.kept.push(frame)?;
             self.hours.push(Hour::Whole {
-                frame: frame.clone(),
                 changes: kept_changes(changes),
             });
             self.stale = Changes::default();
@@ -1232,8 +1236,8 @@ impl BlockExtract {
             self.push_quiet(hour, hour, since);
         } else {
             let kept = self.reduce(frame);
+            self.kept.push(&kept)?;
             self.hours.push(Hour::Kept {
-                frame: kept,
                 changes: kept_changes(changes),
                 since,
             });
@@ -1252,22 +1256,23 @@ impl dashboard_base::prepared::prepass::Held for Changes {
 }
 
 impl Extract for BlockExtract {
-    /// What the block's facts hold: each kept frame's views once, its change
-    /// facts, and the hours kept between them, with what changed at each.
+    /// What the block's facts hold: the kept frames' views once and the rows
+    /// they changed, each hour's change facts, and the hours kept between
+    /// them, with what changed at each.
     fn bytes(&self) -> u64 {
         let mut held = dashboard_base::prepared::prepass::HeldBytes::default();
         held.add(self.hours.capacity() * size_of::<Hour>());
+        for view in self.kept.views() {
+            held.view(view);
+        }
+        held.add(self.kept.bytes());
         for hour in &self.hours {
             match hour {
-                Hour::Whole { frame, changes } => {
-                    held.frame(frame).changes(changes);
+                Hour::Whole { changes } => {
+                    held.changes(changes);
                 }
-                Hour::Kept {
-                    frame,
-                    changes,
-                    since,
-                } => {
-                    held.frame(frame).changes(changes).heap(since);
+                Hour::Kept { changes, since } => {
+                    held.changes(changes).heap(since);
                 }
                 Hour::Built {
                     sampled,
@@ -1382,6 +1387,7 @@ impl Extract for BlockExtract {
             reduction,
             unread,
             hours: self.hours,
+            kept: self.kept,
             frames: self.frames,
             work: self.work,
         }))
@@ -1440,10 +1446,12 @@ pub fn fold(
     }
     let BlockFacts {
         hours,
+        kept,
         reduction,
         unread,
         ..
     } = *facts;
+    let mut kept = kept.into_frames();
     let mut reached = None;
     // The last kept hour's frame, and whether it is reduced.
     let mut base: Option<(DecodedFrame, bool)> = None;
@@ -1451,7 +1459,10 @@ pub fn fold(
         let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
-            Hour::Whole { frame, changes } => {
+            Hour::Whole { changes } => {
+                // A frame the fold no longer holds is changed in place.
+                base = None;
+                let frame = next_frame(&mut kept)?;
                 // A frame that lacks tables the read left out gives its
                 // verdicts as a kept frame does: only where they read none
                 // of them, else the block is observed with every table.
@@ -1486,11 +1497,9 @@ pub fn fold(
                 }
                 base = Some((frame, false));
             }
-            Hour::Kept {
-                frame,
-                changes,
-                since,
-            } => {
+            Hour::Kept { changes, since } => {
+                base = None;
+                let frame = next_frame(&mut kept)?;
                 let result = {
                     let _cpu = ::replay_frame::cpu::scope("fold observe", None);
                     prepared.observe_kept(&frame, replay, content, &changes, &since, &reduction)
@@ -1598,6 +1607,12 @@ pub fn fold(
         }
     }
     Ok((Folded::Fast, reached))
+}
+
+/// The next whole or kept hour's frame.
+fn next_frame(kept: &mut replay_frame::frame::LoggedFrames) -> io::Result<DecodedFrame> {
+    kept.next()
+        .ok_or_else(|| io::Error::other("Leader facts lack a kept hour's frame"))?
 }
 
 /// Observe the block hour by hour from `from` (every hour without it), on its

@@ -85,12 +85,17 @@ fn bound_content_keeps_variables_and_only_the_tag_resolvers_counter_field() {
     let facts = extract.finish().unwrap().downcast::<BlockFacts>().unwrap();
     assert!(!facts.reduction.has(TableId::ScriptVariables));
     assert_eq!(facts.hours.len(), frames.len());
-    for (position, hour) in facts.hours.iter().enumerate() {
-        let kept = match hour {
-            Hour::Whole { frame, .. } if position == 0 => frame,
-            Hour::Kept { frame, .. } if position != 0 => frame,
+    let BlockFacts { hours, kept, .. } = *facts;
+    assert_eq!(kept.len(), frames.len());
+    let mut kept = kept.into_frames();
+    for (position, hour) in hours.iter().enumerate() {
+        match hour {
+            Hour::Whole { .. } if position == 0 => {}
+            Hour::Kept { .. } if position != 0 => {}
             _ => panic!("changed variable hour was not kept"),
-        };
+        }
+        let kept = kept.next().unwrap().unwrap();
+        assert_eq!(kept.hour, frames[position].hour);
         assert_eq!(
             kept.complete::<tables::ScriptVariables>().unwrap(),
             frames[position]
@@ -107,6 +112,66 @@ fn bound_content_keeps_variables_and_only_the_tag_resolvers_counter_field() {
                 }]
             );
         }
+    }
+}
+
+#[test]
+fn kept_hours_hold_the_rows_they_change_not_a_copy_of_each_table() {
+    use dashboard_base::prepared::prepass::HeldBytes;
+    // One leader of 256 gains experience every hour, so every hour is kept.
+    let frames: Vec<_> = (100..=119)
+        .map(|hour| {
+            let mut frame = frame(hour, 256);
+            if let replay_frame::frame::TableView::Complete(TableRows::UnitLeaders(rows)) =
+                &mut *frame.tables[TableId::UnitLeaders.index()]
+            {
+                rows[0].experience = i64::from(hour);
+            }
+            frame
+        })
+        .collect();
+    let table = {
+        let mut held = HeldBytes::default();
+        held.view(&frames[0].tables[TableId::UnitLeaders.index()]);
+        held.total()
+    };
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let selection = selected(false);
+    let mut extract = start(replay.format, selection);
+    let mut tracker = FrameChangeTracker::new();
+    let mut held = Vec::new();
+    replay
+        .read_block_alone(
+            &replay.index[0],
+            &selection.tables,
+            |_, frame| {
+                extract.observe(&replay, frame, &tracker.observe(frame, replay.format))?;
+                held.push(extract.bytes());
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .unwrap();
+    // From the first kept hour, whose reduced tables differ from the whole
+    // first hour's once.
+    let grown = held.last().unwrap() - held[1];
+    assert!(
+        grown < 18 * table / 8,
+        "18 kept hours grew {grown} bytes; the leaders table is {table}"
+    );
+    let facts = extract.finish().unwrap().downcast::<BlockFacts>().unwrap();
+    assert!(
+        facts
+            .hours
+            .iter()
+            .skip(1)
+            .all(|hour| matches!(hour, Hour::Kept { .. }))
+    );
+    for (kept, frame) in facts.kept.into_frames().zip(&frames) {
+        assert_eq!(
+            kept.unwrap().complete::<tables::UnitLeaders>().unwrap(),
+            frame.complete::<tables::UnitLeaders>().unwrap()
+        );
     }
 }
 
