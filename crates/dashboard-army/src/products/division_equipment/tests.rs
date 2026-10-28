@@ -1805,6 +1805,73 @@ fn restored_designs_keep_their_count_and_nothing_to_find_again() {
     assert_eq!(restored.designs().kept(), 0);
 }
 
+/// The name of `reply`'s one series ending `suffix`.
+fn series_ending(reply: &history::DivisionEquipmentHistoryReply, suffix: &str) -> String {
+    let names: Vec<_> = reply
+        .window
+        .series
+        .iter()
+        .filter(|series| series.name.ends_with(suffix))
+        .map(|series| series.name.clone())
+        .collect();
+    assert_eq!(names.len(), 1, "{suffix}: {names:?}");
+    names[0].clone()
+}
+
+#[test]
+fn a_designs_read_looking_every_design_up_alike_renumbers_them_as_rebuilding_would() {
+    let count = 3;
+    // Designs reads at 22, 46 and 70. At 46 design 70 is renamed: numbered anew, looked up
+    // alike. At 70 its equipment is unresolved, so both countries holding it rebuild.
+    let frames = (2..=74)
+        .map(|offset| {
+            let mut f = stock_frame(count, offset, |_| vec![(71, 1_000)]);
+            if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+                &mut *f.tables[TableId::VariantDefinitions.index()]
+            {
+                if offset >= 46 {
+                    rows[0].display_name = b"Renamed 70".to_vec();
+                }
+                if offset >= 70 {
+                    rows[0].equipment_token = 99;
+                }
+            }
+            f
+        })
+        .collect();
+    let (source, context, _folder) = content_blocks(frames, &[], "designs-alike");
+    let (fixtures, hours) = compare_numeric_preparation(&source, &context);
+    let at = |offset: i32| {
+        hours
+            .iter()
+            .find(|&&(hour, _, _)| hour == 60_000_000 + offset)
+            .map(|&(_, builds, reference)| (builds, reference))
+    };
+    // Two armed countries, each built for both attributions.
+    assert_eq!(at(46), Some((0, 4)));
+    assert_eq!(at(70), Some((4, 4)));
+    assert_numeric_histories_equal(
+        &source,
+        &context,
+        &fixtures,
+        &["C0000", "C0001", "C0002"],
+        60_000_074,
+    );
+    let patched = history_of(
+        &source,
+        &context,
+        &fixtures[0],
+        "C0001",
+        ArmyAttribution::Owner,
+        Some(60_000_069),
+    );
+    let design = series_ending(&patched, "|design|70");
+    assert_ne!(
+        held_value(&patched, &design, 60_000_045),
+        held_value(&patched, &design, 60_000_046)
+    );
+}
+
 #[test]
 fn stockpile_reads_every_reply_reads_alike_are_patched_as_rebuilding_every_country_would() {
     let count = 3;

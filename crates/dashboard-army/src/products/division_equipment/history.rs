@@ -951,6 +951,24 @@ enum Dirty {
     Slots(BTreeSet<u32>),
 }
 
+/// How a country's replies are brought to the hour.
+#[derive(Clone, Copy)]
+enum Rebuild {
+    /// Built again whole.
+    Whole,
+    /// Its stockpile part patched from a new stockpile read ([`Prepared::restock`]).
+    Restock,
+    /// Its designs numbered again from a new designs read ([`Prepared::redesign`]).
+    Redesign,
+}
+
+/// Whether two lookups of a design give a reply alike: the same notes and the same archetype.
+fn looked_alike(before: &super::Looked, now: &super::Looked) -> bool {
+    before.notes == now.notes
+        && before.operand.as_ref().map(|operand| &operand.archetype)
+            == now.operand.as_ref().map(|operand| &operand.archetype)
+}
+
 impl Dirty {
     fn contains(&self, slot: u32) -> bool {
         match self {
@@ -1070,6 +1088,9 @@ struct Stocked {
 struct Unstocked {
     types: Vec<(usize, Option<String>)>,
     notes: BTreeMap<String, (KeptReason, usize)>,
+    /// Each variant held, by its type's number and its handle, in the order a rebuild numbers
+    /// their designs.
+    designs: Vec<(usize, u64)>,
 }
 
 impl Stocked {
@@ -1087,7 +1108,7 @@ impl Stocked {
                         96 + note.len() + text(&reason.text) + text(&reason.tables)
                     })
                     .sum();
-                48 + reply.types.len() * 48 + notes
+                48 + reply.types.len() * 48 + reply.designs.len() * 16 + notes
             })
             .sum();
         96 + replies + self.keys.len() * 8
@@ -1271,7 +1292,6 @@ impl Carried {
         &mut self,
         frame: &DecodedFrame,
         changes: &FrameChanges,
-        reads: &[Option<usize>; 4],
     ) -> io::Result<(Dirty, BTreeSet<u64>)> {
         let previous = self.previous.clone();
         let Some(previous) = previous.as_deref() else {
@@ -1430,10 +1450,6 @@ impl Carried {
         for template in hourly {
             let slots: Vec<u32> = self.template_slots(template).collect();
             dirty.slots(slots);
-        }
-        if reads[2] != self.reads[2] {
-            let armed = self.armed();
-            dirty.slots(armed);
         }
         Ok((dirty, numeric))
     }
@@ -1795,7 +1811,7 @@ impl Prepared {
         let (mut dirty, numeric) = if starts {
             (Dirty::All, BTreeSet::new())
         } else {
-            carried.dirty(frame, changes, &reads)?
+            carried.dirty(frame, changes)?
         };
         // A new stockpile read changes only each reply's stockpile part, patched into the others.
         let restock = reads[1] != carried.reads[1] || reads[3] != carried.reads[3];
@@ -1824,8 +1840,45 @@ impl Prepared {
                 dirty.slots(carried.division_slots(id));
             }
         }
+        // A new designs read numbers every design again. An armed country whose designs it looks
+        // up as the last read did has only those numbers to patch; any other rebuilds.
+        let looked_again = reads[2] != carried.reads[2] && !matches!(dirty, Dirty::All);
+        let mut redesigned = BTreeSet::new();
+        if looked_again {
+            let before = std::mem::take(&mut carried.shared.designs);
+            carried.designs_numbered.clear();
+            let cat = self.cat.clone().flatten();
+            let designs = LazyDesigns::new(carried.designs.read.as_deref(), cat.as_ref());
+            for slot in carried.armed() {
+                #[cfg(test)]
+                if self.reference {
+                    dirty.slots([slot]);
+                }
+                if dirty.contains(slot) {
+                    continue;
+                }
+                let looked = &mut carried.shared.designs;
+                let alike = carried.slots.get(&slot).into_iter().flatten().all(|tag| {
+                    carried.stocked.get(tag).is_some_and(|stocked| {
+                        stocked.replies.iter().flatten().all(|reply| {
+                            reply.designs.iter().all(|&(_, handle)| {
+                                let now = looked
+                                    .entry(handle)
+                                    .or_insert_with(|| super::Looked::of(&designs, handle));
+                                before.get(&handle).is_some_and(|was| looked_alike(was, now))
+                            })
+                        })
+                    })
+                });
+                if alike {
+                    redesigned.insert(slot);
+                } else {
+                    dirty.slots([slot]);
+                }
+            }
+        }
         let patch = self.stage_numeric(frame, carried, &numeric, &mut dirty);
-        if reads[2] != carried.reads[2] {
+        if reads[2] != carried.reads[2] && !looked_again {
             carried.shared.designs.clear();
             carried.designs_numbered.clear();
         }
@@ -1904,24 +1957,41 @@ impl Prepared {
                 dirty.slots([slot]);
             }
         }
-        // Each country to rebuild whole, or (false) to patch for a new stockpile read alone.
-        let rebuilt: BTreeMap<String, bool> = match &dirty {
+        // Each country to rebuild whole, or to patch for a new stockpile or designs read alone.
+        let rebuilt: BTreeMap<String, Rebuild> = match &dirty {
             Dirty::All => {
                 scanned(carried.tags.len());
-                carried.tags.keys().map(|tag| (tag.clone(), true)).collect()
+                carried
+                    .tags
+                    .keys()
+                    .map(|tag| (tag.clone(), Rebuild::Whole))
+                    .collect()
             }
             Dirty::Slots(slots) if restock => carried
                 .slots
                 .iter()
                 .flat_map(|(slot, tags)| {
-                    tags.iter()
-                        .map(move |tag| (tag.clone(), slots.contains(slot)))
+                    let kind = if slots.contains(slot) || redesigned.contains(slot) {
+                        Rebuild::Whole
+                    } else {
+                        Rebuild::Restock
+                    };
+                    tags.iter().map(move |tag| (tag.clone(), kind))
                 })
                 .collect(),
-            Dirty::Slots(slots) => slots
+            // A slot the numeric patch found dirty after all rebuilds whole.
+            Dirty::Slots(slots) => redesigned
                 .iter()
-                .flat_map(|slot| carried.slots.get(slot).into_iter().flatten())
-                .map(|tag| (tag.clone(), true))
+                .map(|slot| (slot, Rebuild::Redesign))
+                .chain(slots.iter().map(|slot| (slot, Rebuild::Whole)))
+                .flat_map(|(slot, kind)| {
+                    carried
+                        .slots
+                        .get(slot)
+                        .into_iter()
+                        .flatten()
+                        .map(move |tag| (tag.clone(), kind))
+                })
                 .collect(),
         };
         let pool = carried.pool.read.as_ref().map(|read| read.hour);
@@ -2069,7 +2139,7 @@ impl Prepared {
         &mut self,
         frame: &Arc<DecodedFrame>,
         carried: &mut Carried,
-        tags: &BTreeMap<String, bool>,
+        tags: &BTreeMap<String, Rebuild>,
         hour: i32,
         starts: bool,
     ) -> io::Result<()> {
@@ -2102,8 +2172,13 @@ impl Prepared {
         };
         let never = AtomicBool::new(false);
         let mut refreshed = BTreeSet::new();
-        for (tag, &whole) in tags {
-            if !whole && self.restock(tag, carried, &context, hour)? {
+        for (tag, &kind) in tags {
+            let patched = match kind {
+                Rebuild::Whole => false,
+                Rebuild::Restock => self.restock(tag, carried, &context, hour)?,
+                Rebuild::Redesign => self.redesign(tag, carried, hour),
+            };
+            if patched {
                 continue;
             }
             let mut values = Vec::new();
@@ -2231,6 +2306,7 @@ impl Prepared {
                     .parse::<u64>()
                     .map_err(|_| io::Error::other("Invalid design handle"))?;
                 values.push((format!("{base}variant|{handle}"), parse(&variant.held_raw)?));
+                unstocked.designs.push((id, handle));
                 let number = design_number(
                     &mut self.catalogued,
                     &carried.shared.designs,
@@ -2421,6 +2497,50 @@ impl Prepared {
             stocked.keys = keys;
         }
         Ok(true)
+    }
+
+    /// Number a country's designs again from a new designs read that looks each of them up as the
+    /// last read did, as rebuilding it would; false, unchanged, where its replies were not kept.
+    fn redesign(&mut self, tag: &str, carried: &mut Carried, hour: i32) -> bool {
+        let Some(stocked) = carried.stocked.get(tag) else {
+            return false;
+        };
+        if !self.owned.contains_key(tag) {
+            return false;
+        }
+        // In the order a rebuild numbers them: each attribution's types and their variants.
+        let mut values = Vec::new();
+        for (at, reply) in stocked.replies.iter().enumerate() {
+            let Some(reply) = reply else {
+                continue;
+            };
+            let attribution = [ArmyAttribution::Owner, ArmyAttribution::Host][at];
+            let prefix = format!("{tag}|{}|", mode(attribution));
+            for &(id, handle) in &reply.designs {
+                let number = design_number(
+                    &mut self.catalogued,
+                    &carried.shared.designs,
+                    &mut carried.designs_numbered,
+                    handle,
+                );
+                if let Some(number) = number {
+                    values.push((format!("{prefix}type|{id}|design|{handle}"), number as i128));
+                }
+            }
+        }
+        let keys: Vec<(u64, i128)> = values
+            .into_iter()
+            .map(|(name, value)| (self.number(&name), value))
+            .collect();
+        let Some(owned) = self.owned.get_mut(tag) else {
+            return false;
+        };
+        for (key, value) in keys {
+            if owned.insert(key, value) != Some(value) {
+                self.batch.observe(key, hour, Some(value), false);
+            }
+        }
+        true
     }
 
     /// One country's values at `hour`, observed against those it last published; their keys.
