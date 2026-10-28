@@ -884,6 +884,8 @@ export default function Timeline(props: TimelineProps) {
       else keyed.current = null;
       const hadKey = keyed.current !== null;
       const at = keyed.current ?? { lane: 0, id: lanes[0].id, span: Math.max(0, bars(0) - 1) };
+      // Prepared navigation searches from the stop shown before this key moved it.
+      const shownHour = barsOf(at.lane)[at.span]?.hour;
       if (keyed.current) {
         if (event.key === 'ArrowDown') { at.lane = Math.min(lanes.length - 1, at.lane + 1); at.span = Math.max(0, bars(at.lane) - 1); }
         if (event.key === 'ArrowUp') { at.lane = Math.max(0, at.lane - 1); at.span = Math.max(0, bars(at.lane) - 1); }
@@ -904,7 +906,7 @@ export default function Timeline(props: TimelineProps) {
           const lane = p.lanes.find(lane => lane.id === selected.id);
           if (!lane || !p.onNavigateHour) return;
           const start = first ? Math.floor(labelMoment(p.playhead, to, p.labelHour)) + 1
-            : selected.hour ?? barsOf(selected.lane)[selected.span]?.hour ?? labelMoment(p.playhead, to, p.labelHour);
+            : selected.hour ?? shownHour ?? labelMoment(p.playhead, to, p.labelHour);
           const hour = await p.onNavigateHour(lane, start, forward);
           const currentView = viewed.current ?? latest.current.extent;
           if (keyed.current !== selected || currentView[0] !== from || currentView[1] !== to || !latest.current.active) return;

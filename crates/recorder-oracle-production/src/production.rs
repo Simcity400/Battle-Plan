@@ -738,6 +738,20 @@ fn compare_deployment(
             row.amount_raw,
         ));
     }
+    // Child rows are compared only through their line, so one without a line is reported here.
+    let orphans: BTreeSet<_> = manpower
+        .keys()
+        .map(|&(line, _)| ("DeploymentManpower", line))
+        .chain(equipment.keys().map(|&line| ("DeploymentEquipment", line)))
+        .filter(|(_, line)| !lines.contains_key(line))
+        .collect();
+    for (table, line) in orphans {
+        report.difference(
+            format!("{table} line {line}"),
+            "present",
+            "no captured deployment line",
+        );
+    }
 
     let mut compared = 0;
     let mut missing_role_tokens = 0;

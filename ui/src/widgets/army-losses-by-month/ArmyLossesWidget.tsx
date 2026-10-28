@@ -15,6 +15,7 @@ import TimeChart from '../../charts/TimeChart';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { hatchStyle } from '../../charts/hatch';
 import { jumpItem } from '../../charts/jump';
+import type { TooltipRow } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -68,17 +69,16 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const pick = (at: number) => dispatch({ type: 'open', breakdown: String(monthOf(at)), hour: at, playing: false, playhead: null });
   const month = drill.breakdown === null ? null : Number(drill.breakdown);
-  const drillRows = useMemo(() => data && month !== null ? monthArmies(data, month) : [], [data, month]);
   const kinds = LEDGERS[ledger];
+  const drillRows = useMemo(() => data && month !== null ? monthArmies(data, month, kinds) : [], [data, month, kinds]);
   const columns = useMemo<readonly TableColumn<MonthArmy>[]>(() => [
     { key: 'army', header: 'Army', label: 'Army', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.army.ordinal,
       text: row => armyName(row.army), render: row => <span data-tooltip={row.army.reference}>{armyName(row.army)}</span> },
     ...(measure === 'manpower' ? CHANNELS.map((channel, index): TableColumn<MonthArmy> => ({ key: channel.key, header: channel.label, label: channel.label,
       numeric: true, width: 'max-content', priority: index + 1, value: row => row.losses?.[index] ?? null })) : [
-      { key: 'amount', header: caption, label: caption, numeric: true, width: 'max-content', value: row => row.designs.filter(design => kinds.includes(design.ledger))
-        .reduce((sum, design) => sum + BigInt(design.amountRaw), 0n), render: row => designAmount(String(row.designs.filter(design => kinds.includes(design.ledger))
-        .reduce((sum, design) => sum + BigInt(design.amountRaw), 0n))) } satisfies TableColumn<MonthArmy>]),
-  ], [measure, caption, kinds]);
+      { key: 'amount', header: caption, label: caption, numeric: true, width: 'max-content', value: row => row.amount,
+        render: row => designAmount(String(row.amount)) } satisfies TableColumn<MonthArmy>]),
+  ], [measure, caption]);
   let main, charted = false;
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see army losses." />;
   else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -106,7 +106,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
         // A reply kept while the next hour loads totals months only through its own hour.
         tooltip={at => { const period = monthAt(at); return period ? monthTooltip(period, bars.parts, measure, caption, following ? data.hour : null, colour) : null; }}
         onPick={at => { const period = monthAt(at); if (period && !period.unknown) pick(Math.floor(at)); }}
-        onContextMenu={(_at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, data.hour)])} />
+        onContextMenu={(at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, Math.floor(at))])} />
     </div>;
   }
   const legend = bars && bars.parts.length > 1 ? bars.parts.map(part => ({ id: part.key, label: part.label, color: colour(part.key) })) : [];
@@ -128,12 +128,13 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
           cellBars={false} rankMarkers={false} narrow={narrowTableOf(options)}
           tooltip={row => ({ title: armyName(row.army), rows: [
             ...(row.losses ? CHANNELS.map((channel, index) => ({ label: channel.label, value: formatAmount(row.losses![index], 'manpower') })) : [{ label: 'Manpower', value: 'Not recorded' }]),
-            ...(['combat', 'attrition', 'recovered', 'enemy'] as const).flatMap(name => {
+            ...(['combat', 'attrition', 'recovered', 'enemy'] as const).flatMap((name): TooltipRow[] => {
+              if (row.unknown.some(kind => LEDGERS[name].includes(kind))) return [{ label: LEDGER_LABELS[name], value: 'Not recorded', strong: true, divider: true }];
               const designs = row.designs.filter(design => LEDGERS[name].includes(design.ledger));
               return designs.length ? [{ label: LEDGER_LABELS[name], strong: true, divider: true }, ...designs.map(design => ({ label: design.name, value: designAmount(design.amountRaw), indent: true }))] : [];
             }),
           ] })}
-          menu={() => [jumpItem(runtime, track.id, data.hour)]} />
+          menu={() => [jumpItem(runtime, track.id, drill.hour ?? data.hour)]} />
           : <WidgetState kind="empty" message="No army kept an entry for this month." />}
       </div>}
     </DrillHost>

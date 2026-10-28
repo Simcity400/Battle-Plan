@@ -69,7 +69,8 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   const keep = useMemo(() => linkFilter(all ? null : match.matches, options.between === 'between'), [all, match, options.between]);
   const current = useMemo(() => reply.data ? linksAt(reply.data, at, keep) : { links: [], unknown: 0 }, [reply.data, at, keep]);
   const [capacity, setCapacity] = useState(12);
-  const perSide = Math.max(1, Math.min(Number(options.perSide) || 12, capacity));
+  // The combined Other node takes one of the rows the diagram has room for.
+  const perSide = Math.max(1, Math.min(Number(options.perSide) || 12, capacity - 1));
   const summed = useMemo(() => sumFlowParts(flowParts(current.links), perSide), [current.links, perSide]);
   // Totals also change where a chosen holder starts carrying a tag or joins the group.
   const boundaries = useMemo(() => (chosen.membership ?? []).map(run => run.firstHour), [chosen.membership]);

@@ -818,6 +818,7 @@ impl Scan {
                     TableId::Provinces,
                     TableId::States,
                     TableId::CountryAppearance,
+                    TableId::ReservedCountryNaming,
                 ]
                 .iter()
                 .any(|table| changes.rows_changed[table.index()])

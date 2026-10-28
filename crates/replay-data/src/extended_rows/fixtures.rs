@@ -2684,7 +2684,22 @@ fixture!(StateResourceInputRow, |key| {state: key as u32}, {gate: u8, global_fac
 fixture!(StateResourceRow, |key| {state: (key >> 32) as u32, resource: key as u32}, {pool: i64, additive: i64, factor: i64, cost: i64});
 fixture!(StateDynamicModifierRow, |key| {state: (key >> 32) as u32, ordinal: key as u32}, {token: Vec<u8>, scope_country: u32, scope_state: i32});
 fixture!(CountryBuildingResourceRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {entry: u32, building: u32, count: u32, resource: u32, amount: i64});
-fixture!(ResourceOriginRow, |key| {state: (key >> 32) as u32, country: key as u32}, {ordinal: u32, list: u8, efficiency: i64, route_factor: i64, local_resources_factor: i64, bad: bool, convoys_assigned: i32, convoys_required: i32});
+impl Fixture for ResourceOriginRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            state: (key >> 32) as u32,
+            country: key as u32,
+            ordinal: u32::sample(tick),
+            list: (tick % 2) as u8,
+            efficiency: i64::sample(tick),
+            route_factor: i64::sample(tick),
+            local_resources_factor: i64::sample(tick),
+            bad: bool::sample(tick),
+            convoys_assigned: i32::sample(tick),
+            convoys_required: i32::sample(tick),
+        }
+    }
+}
 fixture!(ResourceRightRow, |key| {state: (key >> 32) as u32, resource: key as u32}, {holder: u32, ordinal: u32});
 fixture!(CountryOilFactorRow, |key| {country: key as u32}, {factor: i64});
 fixture!(StateTemporaryResourceRow, |key| {state: (key >> 32) as u32, resource: key as u32}, {amount: i64});

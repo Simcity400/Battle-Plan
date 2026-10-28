@@ -4,8 +4,8 @@ export interface LogRevealHistory {
   playhead?: number | null;
   from: number | null;
   loaded: ReadonlySet<string>;
-  /** Stable server windows already presented at this playhead. */
-  presented: ReadonlyMap<string, number>;
+  /** The rows of each stable server window already presented at this playhead. */
+  presented: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 export const EMPTY_LOG_REVEALS: LogRevealHistory = { from: null, loaded: new Set(), presented: new Map() };
@@ -20,20 +20,21 @@ export function logReveals(previous: LogRevealHistory, items: readonly LogItem<u
     ? playhead > previous.playhead ? previous.playhead : playhead === previous.playhead ? previous.from : null
     : null;
   const loaded = new Set<string>();
-  const presented = typeof playhead === 'number' && playhead === previous.playhead ? new Map(previous.presented) : new Map<string, number>();
+  const presented = typeof playhead === 'number' && playhead === previous.playhead ? new Map(previous.presented) : new Map<string, ReadonlySet<string>>();
+  const shown = new Map<string, Set<string>>();
   const entering = new Set<string>();
   for (const item of items) {
     if (item.kind !== 'row') continue;
     const { pageKey, row } = item;
-    if (pageKey != null) loaded.add(pageKey);
+    if (pageKey != null) { loaded.add(pageKey); shown.set(pageKey, (shown.get(pageKey) ?? new Set<string>()).add(item.key)); }
     if (playhead === undefined) {
       if (pageKey == null || previous.loaded.has(pageKey)) entering.add(item.key);
     } else if (typeof playhead === 'number' && from != null) {
       const revealed = Math.max(row.hour, row.revealedHour ?? row.hour);
-      if (revealed > from && revealed <= playhead && (pageKey == null || presented.get(pageKey) !== playhead)) entering.add(item.key);
+      if (revealed > from && revealed <= playhead && (pageKey == null || !presented.get(pageKey)?.has(item.key))) entering.add(item.key);
     }
   }
-  if (typeof playhead === 'number') for (const key of loaded) presented.set(key, playhead);
+  if (typeof playhead === 'number') for (const [key, rows] of shown) presented.set(key, new Set([...presented.get(key) ?? [], ...rows]));
   return { history: { playhead, from, loaded, presented }, entering };
 }
 

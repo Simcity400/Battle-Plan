@@ -49,7 +49,7 @@ function Recording({ metadata, shown }: { metadata: ReplayMetadata; shown: Branc
   const gaps = branches.reduce((sum, branch) => sum + branch.gaps.length, 0);
   const losses = branches.flatMap(branch => (branch.eventLosses ?? []).map(loss => ({ branch: branch.id, loss })));
   const status = metadata.partial ? { tone: 'warning', label: 'Stopped early' } : gaps ? { tone: 'warning', label: `${gaps} ${gaps === 1 ? 'gap' : 'gaps'}` }
-    : { tone: 'positive', label: 'Complete' };
+    : losses.length ? { tone: 'warning', label: 'Events incomplete' } : { tone: 'positive', label: 'Complete' };
   return <>
     <div className="settings-row"><span className="settings-row-text"><strong data-tooltip={`${recordingFilename(metadata.path)}\n${metadata.path}`}>{recordingDisplayName(metadata.path)}</strong>
       <small>{branches.length ? `${formatDateTime(first)} – ${formatDateTime(last)}` : 'No recorded time'}</small></span>

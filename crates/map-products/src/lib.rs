@@ -340,6 +340,7 @@ impl<'a> ProductHour<'a> {
                 ),
             );
         }
+        labels::note_withheld_capitals(&mut out, frame, &links)?;
         Ok(out)
     }
 

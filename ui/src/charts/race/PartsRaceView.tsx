@@ -207,9 +207,11 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     selection?.hour ?? initialOrigin.hour, selection?.key ?? null) : null, [nativeDetail, originTag, selection, initialOrigin]);
   const drillTag = missingPinnedDate ? null : binding?.tagAt(drillAt) ?? null;
   const drillGeometry = useMemo(() => preparedDrill.geometry ? partsRaceModel(preparedDrill.geometry) : null, [preparedDrill.geometry]);
-  const drillBands = useMemo(() => drillGeometry && drillTag ? partsRaceMixBands(drillGeometry, drillTag, null, detailRange)
-    : binding && originTag ? binding.data.bands(originTag, detailRange) : null,
-    [drillGeometry, drillTag, binding, originTag, detailRange]);
+  // The drawn history keeps the exact path's Other band and its native holder's aliases.
+  const geometryBinding = useMemo(() => drillGeometry && drillNumbers && originTag ? bindCountryParts(partsRaceDrillData(drillGeometry, drillNumbers.series, () => null),
+    originTag, selection?.hour ?? initialOrigin.hour, selection?.key ?? null) : null, [drillGeometry, drillNumbers, originTag, selection, initialOrigin]);
+  const drillBands = useMemo(() => originTag ? (geometryBinding ?? binding)?.data.bands(originTag, detailRange) ?? null : null,
+    [geometryBinding, binding, originTag, detailRange]);
   const colours = useMemo(() => partColours(drillParts, tokens.categories), [drillParts, tokens.categories]);
   const drillValue = drillModel && drillTag ? partsRaceAt(drillModel, drillTag, drillAt) : null;
   const remainder = drillValue?.total == null ? null : drillValue.total - drillValue.values.reduce<number>((sum, value) => sum + (value ?? 0), 0);

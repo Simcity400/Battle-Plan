@@ -33,13 +33,17 @@ import './weather.css';
  * conditions as stripes, or one recorded weather modifier on a ramp. Long views fold
  * their days into the plot's pixel columns. */
 export default function WeatherWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  const playback = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  // A drill that follows playback follows it whatever the widget's own time.
+  const playback = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
   const tokens = useChartTokens();
   const menu = useContextMenu('Weather by region');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const extent: [number, number] | null = track && window ? windowExtent(track, window) : null;
+  // Playback in this campaign's hours, not the comparison clock's, within its branch.
+  const clockHour = track ? Math.max(track.branch.firstHour, Math.min(Math.floor(playback) + track.axisOffset, track.branch.lastHour)) : null;
   const { options, show, modifier, data, error, retry, onSummaryView } = useWeatherInView(widget, runtime, active, extent);
   const dayHours = data?.dayHours ?? 1;
   const regions = useMemo(() => data ? shownRegions(data, contentSet(options.regions).map(contentKey), contentSet(options.theatres).map(contentKey)) : [],
@@ -69,6 +73,7 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
     return { reply: read.data, day: keyedDays(read.data.window, [Math.max(start, extent[0]), Math.min(start + dayHours - 1, extent[1])], dayHours)[0] ?? null };
   }, [days, dayHours, extent?.[0], extent?.[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const tooltip = useCallback((row: { id: string }, period: HeatPeriod | null, hour: number): TooltipContent | null => {
+    days.hover(Math.floor(hour / dayHours));
     const region: Choice | undefined = regions.find(item => item.id === row.id);
     if (!data?.columns || !region) return null;
     const date = dayLabel(Math.floor(hour));
@@ -100,10 +105,9 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
     if (track) menu.open(x, y, [jumpItem(runtime, track.id, readAt(hour) ?? hour)]);
   }, [track, readAt, menu.open, runtime]);
   const anchor = useRef<HTMLDivElement>(null);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const [picked, setPicked] = useState<{ id: string; name: string } | null>(null);
   const [drillWarnings, setDrillWarnings] = useState<readonly string[]>([]);
-  const drillAt = drillHour(drill, Math.min(playback, extent?.[1] ?? playback));
+  const drillAt = drillHour(drill, clockHour);
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...data.temperature === 'available' ? [] : [data.temperature], ...drillWarnings] : null);
   if (!track) return <WidgetState kind="empty" icon="sun" message="Load a campaign to see weather." />;
   if (!window || !extent || extent[1] < extent[0]) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
@@ -118,8 +122,8 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
     {setOption && <Segmented value={show} options={SHOWS} label="Show" onChange={value => setOption('show', value)} />}
   </div>;
   if (!heat || !heat.rows.length) return <div className="air-timeline weather">{caption}<WidgetState kind="empty" message="No regions match these filters." /></div>;
-  const chart = <div className="air-timeline-chart"><HeatChart label="Weather by region" rows={heat.rows} periods={periods} labelCatalogue={regions.map(region => region.name)}
-      extent={extent} playhead={widget.time.mode === 'follow' ? Math.min(playback, extent[1]) : null} branchStart={track.branch.firstHour}
+  const chart = <div className="air-timeline-chart" onPointerLeave={() => days.hover(null)}><HeatChart label="Weather by region" rows={heat.rows} periods={periods} labelCatalogue={regions.map(region => region.name)}
+      extent={extent} playhead={widget.time.mode === 'follow' && clockHour !== null ? Math.min(clockHour, extent[1]) : null} branchStart={track.branch.firstHour}
       legend={legend} afterPlayhead={widget.time.mode !== 'follow'} look="split" active={active} revision={`${show}:${modifier}:${data.window.lastHour}`}
       hoursPerSecond={hoursPerSecond} pending={pending} tooltip={tooltip} onContextMenu={onMenu} onSummaryView={onSummaryView}
       pickOwner={track.source.id} onPick={(row, _period, hour) => {
@@ -127,7 +131,7 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
         if (!region) return;
         setPicked(region);
         // The provinces of the day under the pointer, whatever its column holds.
-        dispatch({ type: 'open', breakdown: 'provinces', hour: pickedDay(hour, dayHours, extent), playing: widget.time.mode === 'follow', playhead: Math.min(playback, extent[1]) });
+        dispatch({ type: 'open', breakdown: 'provinces', hour: pickedDay(hour, dayHours, extent), playing: widget.time.mode === 'follow', playhead: widget.time.mode === 'follow' ? clockHour : null });
       }} /></div>;
   return <div ref={anchor} className="air-timeline weather">
     {caption}

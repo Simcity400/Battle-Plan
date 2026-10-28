@@ -224,9 +224,11 @@ const shownLeaves = (reply: ProductionSpendingReply, kind?: FactoryKind) =>
   kind ? reply.leaves.filter(leaf => inFactoryKind(leaf, kind)) : reply.leaves;
 
 /** The country's total, or one kind's: the sum of its designs, unknown while any of
- * them is, or while spending on a design of unresolved domain could belong to either. */
+ * them is, or while spending on a design of unresolved domain could belong to either.
+ * Dockyards build no Rockets, so only the equipment source's coverage gates theirs. */
 function kindAmount(reply: ProductionSpendingReply, from: number | null, hour: number, kind?: FactoryKind): SpendingAmount {
-  const all = amountIn(reply, reply.total, from, hour);
+  const all = kind === 'dockyards' ? amountIn(reply, reply.equipmentTotal, from, hour, reply.equipmentObservations, 'equipment')
+    : amountIn(reply, reply.total, from, hour);
   if (!kind || all.exact == null) return all;
   let exact = 0n;
   for (const leaf of shownLeaves(reply, kind)) {

@@ -5,6 +5,8 @@
 /* The viewport never takes its size from the rows it draws. Only rows in view
    are drawn, so a sideways scrollbar brought by one of them would shorten the
    view that chose it, and drop it again. Rows fit the width and clip instead. */
+/* The held month heads the scroller, below any note above it. */
+.log-view { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .log-scroll { position: relative; flex: 1; min-height: 0; overflow: hidden auto; padding: 0 var(--space-3) var(--space-3); outline: none; }
 .log-scroll:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-line); border-radius: var(--r-sm); }
 .log-body { position: relative; }

@@ -1888,6 +1888,10 @@ pub fn compare_naval_units(
                 expected.max_manpower,
             ),
         ] {
+            if matches!(actual, Recorded::Value(None)) {
+                report.difference(format!("{label}.{field}"), "crew read refused", expected);
+                continue;
+            }
             report.compared(&format!("Ships.{field}"), 1);
             if actual.require(field).ok().copied().flatten() != expected {
                 report.difference(format!("{label}.{field}"), actual, expected);

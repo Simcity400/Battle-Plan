@@ -72,10 +72,6 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
   const shown = numbers ?? incomingData;
   const data = useMemo(() => shown ? { ...shown, ...labels } : undefined, [shown, labels]);
   const [peopleWarnings, setPeopleWarnings] = useState<string[]>([]);
-  useEffect(() => {
-    onWarnings([...(data?.warnings ?? []), ...peopleWarnings]);
-    return () => onWarnings([]);
-  }, [data, peopleWarnings, onWarnings]);
   const selected = useMemo(() => data && tag ? armyDrillIdentityReply(data, tag, originHour) : null, [data, tag, originHour]);
   const identitySpans = useMemo(() => countryDrillSpans(data?.series ?? [], tag ?? '', originHour), [data, tag, originHour]);
   const actor = countryDrillTagAt(identitySpans, hour);
@@ -84,9 +80,9 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
     params: { ...armySizeRequest(track.branch.id, { tags: [actor] }, measure, countFor, false, null), templateAt: [actor, hour] },
   } : null, active, validateArmySizeReply, track?.source);
   useEffect(() => {
-    onWarnings([...(data?.warnings ?? []), ...(roster.data?.warnings ?? [])]);
+    onWarnings([...(data?.warnings ?? []), ...peopleWarnings, ...(roster.data?.warnings ?? [])]);
     return () => onWarnings([]);
-  }, [data, roster.data, onWarnings]);
+  }, [data, peopleWarnings, roster.data, onWarnings]);
   const model = useMemo(() => selected ? countryValuesModel(selected) : null, [selected]);
   const pickOwner = useMemo(() => ({ client: runtime.client, scope: pickScope, model: numbers }),
     [runtime.client, pickScope, numbers]);

@@ -266,9 +266,9 @@ pub struct LabelReport {
 }
 
 mod projection;
-pub use projection::{LabelTables, unreadable_overrides};
+pub use projection::{LabelTables, note_withheld_capitals, unreadable_overrides};
 #[cfg(test)]
-use projection::capital_provinces;
+use projection::{capital_provinces, withheld_capitals};
 #[cfg(test)]
 mod projection_oracle;
 
@@ -609,7 +609,7 @@ pub(crate) mod tests {
 
     use viewer_foundation::map::test_support::localisation::loaded;
     #[test]
-    fn label_candidates_keep_province_order_and_zero_point_capitals() {
+    fn label_candidates_keep_province_order_and_chosen_capitals() {
         use replay_data::rows::{
             CountryLinkRow, CountryRow, PoliticsRow, ProvinceRow, StateRow, TableRows,
         };
@@ -647,19 +647,25 @@ pub(crate) mod tests {
                 ..Default::default()
             }]),
         );
-        test_put(
-            &mut frame,
+        // The capital state 10 holds province 12 (2 points) and province 13 (`tied`).
+        let provinces = |capital_points: i32, tied: i32| {
             TableRows::Provinces(
                 (0..5000)
                     .map(|index| ProvinceRow {
                         id: index + 1,
-                        state: if index == 11 { 10 } else { 0 },
-                        victory_points: if index == 7 || index == 4999 { 1 } else { 0 },
+                        state: if index == 11 || index == 12 { 10 } else { 0 },
+                        victory_points: match index {
+                            7 | 4999 => 1,
+                            11 => capital_points,
+                            12 => tied,
+                            _ => 0,
+                        },
                         ..Default::default()
                     })
                     .collect(),
-            ),
-        );
+            )
+        };
+        test_put(&mut frame, provinces(2, 1));
         test_put(
             &mut frame,
             TableRows::ProvinceNames(vec![
@@ -679,7 +685,7 @@ pub(crate) mod tests {
         );
         let tables = LabelTables::read(&frame, 1, &synthetic_labels()).unwrap();
         assert_eq!(tables.capitals, BTreeSet::from([12]));
-        assert_eq!(tables.candidates, [7, 11, 4999]);
+        assert_eq!(tables.candidates, [7, 11, 12, 4999]);
         assert_eq!(
             tables.names[&8].as_ref().unwrap().as_deref(),
             Some("Port Haven")
@@ -697,6 +703,17 @@ pub(crate) mod tests {
             tables.names[&8].as_ref().unwrap().as_ref().unwrap(),
             cloned.names[&8].as_ref().unwrap().as_ref().unwrap()
         ));
+        // A tie needs the unrecorded state order, and no points the unrecorded anchor.
+        let links = BTreeMap::from([(1, 1)]);
+        for (capital_points, tied, why) in [(2, 2, "tie"), (0, 0, "none of its provinces")] {
+            test_put(&mut frame, provinces(capital_points, tied));
+            let tables = LabelTables::read(&frame, 1, &synthetic_labels()).unwrap();
+            assert!(tables.capitals.is_empty());
+            let withheld = withheld_capitals(&frame, &links).unwrap();
+            assert_eq!(withheld.len(), 1);
+            assert_eq!(withheld[0].0, 10);
+            assert!(withheld[0].1.contains(why), "{withheld:?}");
+        }
     }
 
     #[test]

@@ -150,8 +150,11 @@ impl Runtime {
         for row in rows {
             let key = (row.owner, row.local_id);
             if !self.held.contains_key(&key) {
+                // Unheld, this row records no runtime; the rows after it still refresh.
                 if engine_allocation::reserve_map(&mut self.held, 1).is_err() {
-                    return;
+                    PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
+                    PROJECT_REWARD_REFUSALS.fetch_add(1, Relaxed);
+                    continue;
                 }
                 self.held.insert(key, Held::default());
             }

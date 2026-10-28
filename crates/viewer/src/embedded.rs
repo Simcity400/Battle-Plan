@@ -1386,6 +1386,7 @@ mod tests {
                     message: GamepadMessage::State {
                         owner,
                         state: state(x),
+                        pressed: 0,
                     },
                 })
                 .unwrap();
@@ -1400,6 +1401,7 @@ mod tests {
                             buttons: GamepadButton::South.bit(),
                             ..GamepadState::default()
                         },
+                        pressed: 0,
                     },
                 })
                 .is_err()
@@ -1421,6 +1423,7 @@ mod tests {
                 message: GamepadMessage::State {
                     owner,
                     state: state(0.9),
+                    pressed: 0,
                 },
             })
             .unwrap();

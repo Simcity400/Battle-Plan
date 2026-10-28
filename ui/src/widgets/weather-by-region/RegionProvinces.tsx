@@ -5,6 +5,7 @@ import type { TableColumn } from '../../charts/table/Table';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { loadTransientProduct } from '../../dashboard/products';
+import { useContentRevision } from '../../dashboard/contentRevision';
 import * as requests from '../../dashboard/batch5Requests';
 import { temperatureText, validateProvinces } from './weatherData';
 import type { ProvinceWeather, ProvincesReply } from './weatherData';
@@ -17,21 +18,22 @@ const rowKey = (row: ProvinceWeather) => row.id;
 export default function RegionProvinces({ runtime, track, region, hour, active, onWarnings }: {
   runtime: WidgetRuntime; track: BoundTrack; region: string; hour: number; active: boolean; onWarnings: (warnings: readonly string[]) => void;
 }) {
-  const [state, setState] = useState<{ key: string; data?: ProvincesReply; error?: string }>();
+  const content = useContentRevision(runtime.client);
+  const [state, setState] = useState<{ client: WidgetRuntime['client']; key: string; data?: ProvincesReply; error?: string }>();
   const request = useMemo(() => ({ sourceId: track.source.id, revision: track.source.revision, product: 'regional-weather',
     params: requests.weatherProvinces(track.branch.id, region, hour) }), [track, region, hour]);
-  const key = JSON.stringify(request);
+  const key = JSON.stringify([request, content]);
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
     void loadTransientProduct<unknown>(runtime.client, request, controller.signal, track.source).then(reply => {
       if (controller.signal.aborted) return;
       const data = validateProvinces(reply);
-      setState({ key, data });
+      setState({ client: runtime.client, key, data });
       onWarnings(data.warnings);
-    }).catch(error => { if (!controller.signal.aborted) setState({ key, error: error instanceof Error ? error.message : String(error) }); });
+    }).catch(error => { if (!controller.signal.aborted) setState({ client: runtime.client, key, error: error instanceof Error ? error.message : String(error) }); });
     return () => controller.abort();
-    // The request's identity is its key.
+    // The request's identity is its key, with the content binding it was read under.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime.client, key, active]);
   const columns = useMemo<readonly TableColumn<ProvinceWeather>[]>(() => [
@@ -43,7 +45,7 @@ export default function RegionProvinces({ runtime, track, region, hour, active, 
     { key: 'mud', header: 'Mud', label: 'Mud', width: 'max-content', priority: 1, value: row => row.mud === null ? null : row.mud ? 1 : 0,
       render: row => row.mud === null ? '—' : row.mud ? 'Mud' : '' },
   ], []);
-  const current = state?.key === key ? state : undefined;
+  const current = state?.client === runtime.client && state.key === key ? state : undefined;
   if (current?.error) return <WidgetState kind="error" what="the region's provinces" detail={current.error} />;
   if (!current?.data) return <WidgetState kind="loading" label="Loading provinces…" />;
   if (!current.data.provinces.length) return <p className="drill-empty">No provinces are recorded for this region at this date.</p>;

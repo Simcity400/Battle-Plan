@@ -43,6 +43,11 @@ test('a design or flag first read after a gap is only bounded by that read', () 
   assert.equal(seenText(d.firstSeen, label), 'By h80');
   assert.equal(seenNote(d.firstSeen), 'First shown after hours the designs were not recorded');
   assert.equal(seenText(e.seenObsolete, label), 'By h80');
+  // Obsolete on both sides of the gap: it may have changed in between, so only the resumed read dates it.
+  const resumed = validateDesigns({ ...gapped, designs: [design('g', [[10, 59, '1'], [80, 200, '1']], [[10, 59, '1'], [80, 200, '1']])] });
+  const [g] = designsAt(resumed, 'AAA', 100, null);
+  assert.equal(seenText(g.seenObsolete, label), 'By h80');
+  assert.equal(seenNote(g.seenObsolete), 'First shown after hours the designs were not recorded');
   // Obsolete at its first read with no current read before it: a bound, not a date.
   const fresh = validateDesigns({ ...reply(), designs: [design('f', [[50, 200, '1']], [[50, 200, '1']])] });
   assert.equal(seenText(designsAt(fresh, 'AAA', 100, null)[0].seenObsolete, label), 'By h50');

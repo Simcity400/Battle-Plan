@@ -146,6 +146,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
       total: rows.length, rows: rows.map((row, index) => ({ index, key: `${row.tag}:${row.firstHour}:${row.lastHour}`, ...row })), types: incomingData?.types };
   }, { prepare: parity?.prepare, ready: () => !!parity?.requested && !!metadata.data && wantedWindows.every(index => history.data.has(index)) });
   const error = prepared.error ?? required.map(index => history.errors.get(index)).find(Boolean);
+  const retry = prepared.error ? prepared.retry : history.retry;
   const numericScope = JSON.stringify([sourceScope, resolved.tags, resolved.top, membershipKey, measure, countFor, byType, extent]);
   const previousNumbers = stores.numbers.update(numericScope, undefined, armyDrillNumbers);
   const numbers = stores.numbers.update(numericScope, pending && previousNumbers ? undefined : incomingData, armyDrillNumbers);
@@ -246,7 +247,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Saved country unavailable." />;
     if (metadata.error) return <WidgetState kind="error" detail={metadata.error} onRetry={metadata.retry} />;
-    if (error) return <WidgetState kind="error" detail={error} onRetry={history.retry} />;
+    if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
     if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="shield" message={resolved.reason} />;
     if (metadata.data && !metadata.data.measures.length) return <WidgetState kind="unavailable" message="Not in this recording" />;

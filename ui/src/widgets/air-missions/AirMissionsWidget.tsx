@@ -16,6 +16,7 @@ import { contentKey, contentSet } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
 import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { loadTransientProduct } from '../../dashboard/products';
+import { useContentRevision } from '../../dashboard/contentRevision';
 import * as requests from '../../dashboard/batch5Requests';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useCountryNamesAt, nameKey } from '../../dashboard/countryNamesAt';
@@ -40,11 +41,14 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   const { track, tag, options, data, error, retry } = useAirMissions(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
-  const at = useMemo(() => data && tag ? missionRowsAt(data, tag, hour) : null, [data, tag, hour]);
   const chosenRegions = contentSet(options.regions).map(contentKey);
   const chosenTheatres = contentSet(options.theatres).map(contentKey);
   const theatres = useAirTheatres(runtime, track, 'air-missions', track && tag ? requests.airMissionsHistory(track.branch.id, tag) : null, hour, active && chosenTheatres.length > 0);
-  const inTheatres = theatreRegions(theatres ?? undefined, chosenTheatres);
+  // Filtered by theatre, rows are read at the hour their membership answers.
+  const rowsHour = chosenTheatres.length && theatres.hour !== undefined ? theatres.hour : hour;
+  const at = useMemo(() => data && tag ? missionRowsAt(data, tag, rowsHour) : null, [data, tag, rowsHour]);
+  const theatresKnown = !chosenTheatres.length || !!theatres.theatres;
+  const inTheatres = theatreRegions(theatres.theatres ?? undefined, chosenTheatres);
   const regionKey = JSON.stringify([chosenRegions, inTheatres && [...inTheatres]]);
   const rows = useMemo(() => {
     if (!at) return NO_ROWS;
@@ -87,7 +91,7 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...wings.data?.warnings ?? []] : null);
   const country = useCountryNamesAt(runtime.client, track, useMemo(() => tag && readHour !== undefined ? [{ hour: readHour, tag }] : [], [tag, readHour]), active);
   const countryName = tag && readHour !== undefined ? country.get(nameKey(readHour, tag)) : undefined;
-  const pill = headerSlot && at && createPortal(<span className="pill">{rows.length} {rows.length === 1 ? 'region' : 'regions'}</span>, headerSlot);
+  const pill = headerSlot && at && theatresKnown && createPortal(<span className="pill">{rows.length} {rows.length === 1 ? 'region' : 'regions'}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see air missions." />;
   if (!tag) return <WidgetState kind="empty" icon="plane" message="Choose a country in the widget's header." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -96,7 +100,10 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   if (pendingReplyAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!at) return <WidgetState kind="unavailable" message="Air missions were not recorded at this time." />;
   const prefix = preparedPrefix(data);
-  const main = !rows.length ? <WidgetState kind="empty" message={`${countryName ?? 'This country'} has no air missions at this date.`} />
+  const main = !theatresKnown ? theatres.error ? <WidgetState kind="error" what="the air theatres" detail={theatres.error} onRetry={theatres.retry} />
+    : theatres.theatres === undefined ? <WidgetState kind="loading" label="Loading air theatres…" />
+    : <WidgetState kind="unavailable" message="Air theatre membership was not recorded at this time." />
+    : !rows.length ? <WidgetState kind="empty" message={`${countryName ?? 'This country'} has no air missions at this date.`} />
     : <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Air missions by region" rows={rows} columns={columns}
       rowKey={rowKey} sort={sort} setOption={setOption} sortOptionValue={tableSortToken} cellBars={options.cellBars === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} menu={menu}
@@ -115,21 +122,22 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
 
 /** One region's wings at the drill's hour, read on demand. */
 function useWings(runtime: WidgetProps['runtime'], track: ReturnType<typeof useAirMissions>['track'], tag: string | null, region: string | null, hour: number | null, active: boolean) {
-  const [state, setState] = useState<{ key: string; data?: AirWingsReply; error?: string }>();
+  const content = useContentRevision(runtime.client);
+  const [state, setState] = useState<{ client: WidgetProps['runtime']['client']; key: string; data?: AirWingsReply; error?: string }>();
   const params = track && tag && region !== null && hour !== null ? requests.airMissionsWings(track.branch.id, tag, region, hour) : null;
   const request = track && params ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-missions', params } : null;
-  const key = JSON.stringify(request);
+  const key = JSON.stringify([request, content]);
   useEffect(() => {
     if (!active || !request || !track) return;
     const controller = new AbortController();
     void loadTransientProduct<unknown>(runtime.client, request, controller.signal, track.source).then(reply => {
-      if (!controller.signal.aborted) setState({ key, data: validateAirWings(reply) });
-    }).catch(error => { if (!controller.signal.aborted) setState({ key, error: error instanceof Error ? error.message : String(error) }); });
+      if (!controller.signal.aborted) setState({ client: runtime.client, key, data: validateAirWings(reply) });
+    }).catch(error => { if (!controller.signal.aborted) setState({ client: runtime.client, key, error: error instanceof Error ? error.message : String(error) }); });
     return () => controller.abort();
-    // The request's identity is its key.
+    // The request's identity is its key, with the content binding it was read under.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime.client, key, active]);
-  return state?.key === key ? state : { key, data: undefined, error: undefined };
+  return state?.client === runtime.client && state.key === key ? state : { key, data: undefined, error: undefined };
 }
 
 function WingTable({ reply, error, missions, hoursPerSecond }: { reply?: AirWingsReply; error?: string; missions: readonly { id: string; name: string }[]; hoursPerSecond: number }) {
@@ -147,7 +155,8 @@ function WingTable({ reply, error, missions, hoursPerSecond }: { reply?: AirWing
   ], [names]);
   if (error) return <WidgetState kind="error" what="the region's wings" detail={error} />;
   if (!reply) return <WidgetState kind="loading" label="Loading wings…" />;
-  if (!reply.wings.length) return <WidgetState kind="empty" message="No wings are assigned here at this date." />;
+  if (!reply.wings.length) return reply.readHour === null ? <WidgetState kind="unavailable" message="This region's wings were not recorded at this date." />
+    : <WidgetState kind="empty" message="No wings are assigned here at this date." />;
   return <Table label="Wings in this region" rows={reply.wings} columns={columns} rowKey={wingKey}
     sort={{ column: 'planes', direction: 'descending' }} hoursPerSecond={hoursPerSecond}
     tooltip={row => ({ title: row.name ?? 'Wing name unavailable', rows: [

@@ -10,10 +10,13 @@ import type { EventFeedKind, ScriptOccurrenceReply } from '../../generated/dashb
 import { validateScriptPage } from './scriptOccurrences';
 import type { ScriptPage } from './scriptOccurrences';
 
-/** `tally` is the page's summary count once measured; `final` marks the chain's last page. */
-interface PageInfo { cursor: string | null; start: number; end: number; count: number; tally: number | null; final: boolean }
+/** `tally` is the page's summary count once measured; `final` marks the chain's last page;
+ * `cards` counts its prepared cards before the hour's visibility cut. */
+interface PageInfo { cursor: string | null; start: number; end: number; count: number; tally: number | null; final: boolean; cards: number | null }
 const NO_WARNINGS: string[] = [];
 const PAGE_SIZE = 256;
+/** A page counted under another visibility: estimated by its cards, its tally unknown, until read again. */
+const recount = (info: PageInfo): PageInfo => ({ ...info, count: info.cards ?? info.count, tally: null });
 
 /** Event choices' and Decisions' occurrence pages, read as the event feed reads
  * its own: native dates page backward while every cursor keeps the same Live
@@ -39,10 +42,12 @@ export function useScriptOccurrences<T>(runtime: WidgetRuntime, track: BoundTrac
   const boundsKey = JSON.stringify([identity, product, filterKey, read, live]);
   const owner = useMemo(() => ({ client: runtime.client, boundsKey, prepare }), [runtime.client, boundsKey, prepare]);
   const current = useRef(owner); current.current = owner;
-  const [chain, setChain] = useState<{ owner: typeof owner; pages: PageInfo[]; error?: string }>({ owner, pages: [] });
+  // `shown` is the visibility cut the pages were counted under.
+  const [chain, setChain] = useState<{ owner: typeof owner; pages: PageInfo[]; error?: string; shown?: typeof at }>({ owner, pages: [] });
   const initial: PageInfo = { cursor: null, start: Math.max(firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: read ?? 0,
-    count: PAGE_SIZE, tally: null, final: false };
-  const descriptors = chain.owner === owner && chain.pages.length ? chain.pages : [initial];
+    count: PAGE_SIZE, tally: null, final: false, cards: null };
+  const kept = chain.owner === owner && chain.pages.length ? chain.pages : null;
+  const descriptors = !kept ? [initial] : chain.shown === at ? kept : kept.map(recount);
   const [wanted, setWanted] = useState<{ owner: typeof owner; pages: readonly string[] }>({ owner, pages: [] });
   const chosen = wanted.owner === owner ? wanted.pages : ['0'];
   const indices = [...new Set(chosen.flatMap(page => Number.isInteger(Number(page)) && Number(page) > 0
@@ -62,8 +67,9 @@ export function useScriptOccurrences<T>(runtime: WidgetRuntime, track: BoundTrac
     if (!active || !first.data) return;
     setChain(previous => {
       if (current.current !== owner) return previous;
-      const pages = previous.owner === owner && previous.pages.length ? [...previous.pages] : [initial];
-      let changed = previous.owner !== owner || !previous.pages.length;
+      const same = previous.owner === owner && previous.pages.length > 0;
+      const pages = !same ? [initial] : previous.shown === at ? [...previous.pages] : previous.pages.map(recount);
+      let changed = !same || previous.shown !== at;
       let error: string | undefined;
       for (const [index, page] of loaded) {
         const rows = rendered.get(index)!;
@@ -78,16 +84,17 @@ export function useScriptOccurrences<T>(runtime: WidgetRuntime, track: BoundTrac
         const end = Math.max(...hours, start);
         const counted = tally(rows);
         const final = page.nextCursor === null;
-        if (info.count !== rows.length || info.start !== start || info.end !== end || info.tally !== counted || info.final !== final) {
-          pages[index] = { ...info, start, end, count: rows.length, tally: counted, final }; changed = true;
+        const cards = prepared.get(index)!.length;
+        if (info.count !== rows.length || info.start !== start || info.end !== end || info.tally !== counted || info.final !== final || info.cards !== cards) {
+          pages[index] = { ...info, start, end, count: rows.length, tally: counted, final, cards }; changed = true;
         }
         if (index === pages.length - 1 && page.nextCursor !== null) {
-          pages.push({ cursor: page.nextCursor, start: initial.start, end: start, count: PAGE_SIZE, tally: null, final: false }); changed = true;
+          pages.push({ cursor: page.nextCursor, start: initial.start, end: start, count: PAGE_SIZE, tally: null, final: false, cards: null }); changed = true;
         }
       }
-      return changed || previous.error !== error ? { owner, pages, error } : previous;
+      return changed || previous.error !== error ? { owner, pages, error, shown: at } : previous;
     });
-  }, [owner, descriptors, loaded, rendered, active, first.data, tally]);
+  }, [owner, descriptors, loaded, prepared, rendered, at, active, first.data, tally]);
   const committedPages = useRef<{ owner: typeof owner; pages: readonly LogPage<T>[] }>({ owner, pages: [] });
   const pages = useMemo(() => stableLogPages(committedPages.current.owner === owner ? committedPages.current.pages : [], !first.data ? []
     : descriptors.map((info, index) => ({ key: String(index), start: info.start, end: info.end,

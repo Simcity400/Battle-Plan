@@ -51,7 +51,7 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
   const lists = scroll.identity === identity ? scroll.lists : NO_SCROLL;
   const key = JSON.stringify([identity, hour, lists]);
   const [shown, setShown] = useState<{ identity: string; key: string; reply: GameWindowReply } | null>(null);
-  const [failure, setFailure] = useState<{ identity: string; detail: string } | null>(null);
+  const [failure, setFailure] = useState<{ key: string; detail: string } | null>(null);
   const [attempt, retry] = useReducer((count: number) => count + 1, 0);
   const shownKey = useRef<string | null>(null);
   shownKey.current = shown?.key ?? null;
@@ -72,27 +72,28 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
       setShown({ identity, key, reply: data });
       setFailure(null);
     }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setFailure({ identity, detail: message(error) });
+      if (!controller.signal.aborted) setFailure({ key, detail: message(error) });
     });
     return () => controller.abort();
   // The target and lists are read through `identity` and `key`.
   }, [client, sourceId, revision, branchId, hour, identity, key, active, attempt]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A reply of another window or recording is never shown; one of an earlier hour or scroll is, until its successor arrives.
-  const reply = shown?.identity === identity ? shown.reply : null;
+  // A reply of another window or recording is never shown; one of an earlier hour or scroll is, until its successor
+  // arrives or fails.
+  const drawn = shown?.identity === identity ? shown.reply : null;
+  const failed = failure?.key === key ? failure.detail : null;
+  const reply = failed ? null : drawn;
   const scene = reply?.scene ?? null;
 
-  const title = reply?.title ?? null;
+  const title = drawn?.title ?? null;
   useEffect(() => { onTitle?.(title); }, [onTitle, title]);
-  const failed = failure?.identity === identity ? failure.detail : null;
   useEffect(() => {
     if (!onDiagnostics) return;
     // Hidden, it reports nothing; what it reported belonged to what was shown.
     const lines = !active ? NO_LINES : [...reply?.warnings ?? [], ...reply?.refused ?? [], ...scene?.notes ?? [],
-      ...(reply?.slots ?? []).filter(slot => slot.state !== 'bound').map(slot => `${slot.name}: ${slot.detail ?? (slot.state === 'refused' ? 'refused' : 'not filled')}`),
-      ...reply && failed ? [`Couldn’t load the window again: ${failed}`] : []];
+      ...(reply?.slots ?? []).filter(slot => slot.state !== 'bound').map(slot => `${slot.name}: ${slot.detail ?? (slot.state === 'refused' ? 'refused' : 'not filled')}`)];
     onDiagnostics(lines.length ? lines : NO_LINES);
-  }, [onDiagnostics, active, reply, scene, failed]);
+  }, [onDiagnostics, active, reply, scene]);
   useEffect(() => () => onDiagnostics?.(NO_LINES), [onDiagnostics]);
 
   // The offsets the wheel has reached, ahead of the scene drawn at the last settled ones.

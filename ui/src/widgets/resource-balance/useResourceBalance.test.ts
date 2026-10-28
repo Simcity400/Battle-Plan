@@ -79,6 +79,11 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     assert.deepEqual(expanded.series[0].runs.map((run: { firstHour: number; lastHour: number; producedRaw: string }) => [run.firstHour, run.lastHour, run.producedRaw]),
       [[100, 104, '9007199254740993'], [105, 105, '-9'], [106, 109, '9007199254740993']]);
     assert.equal(expanded.resources[0].token, 'mod/new');
+    const deal = { deal: '51', resource: 7, direction: 'import', partner: 'Y', deliveredRaw: '4', factories: 1, convoysAssigned: 0, convoysRequired: 0, startsSegment: true };
+    const reached = mergePreparedResource({ ...a, trades: [{ ...deal, firstHour: 100, lastHour: 120 }], dealHours: [{ firstHour: 100, lastHour: 120 }] },
+      { ...b, trades: [{ ...deal, firstHour: 100, lastHour: 125 }], dealHours: [{ firstHour: 100, lastHour: 125 }] });
+    assert.deepEqual(reached.trades.map((run: { firstHour: number; lastHour: number }) => [run.firstHour, run.lastHour]), [[100, 125]], 'a deal read at a later frontier is listed once');
+    assert.deepEqual(reached.dealHours, [{ firstHour: 100, lastHour: 125 }]);
     globals.__resourceGroups = { ...catalogue, countryIdentities: [...catalogue.countryIdentities, ...Array.from({ length: 4998 }, (_, index) => ({
       tag: `mod country ${index}`, identities: [{ firstHour: 100, lastHour: 120, slot: index + 100, countryId: index + 1000 }] }))] };
     render('ever');

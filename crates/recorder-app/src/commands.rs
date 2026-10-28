@@ -423,11 +423,16 @@ fn recording_file(path: &str) -> Result<PathBuf, String> {
     {
         return Err("Choose a .battleplan recording".into());
     }
-    // Explorer and the replay app take a plain path.
-    let plain = path.display().to_string();
-    Ok(plain
-        .strip_prefix(r"\\?\")
-        .map_or(path.clone(), PathBuf::from))
+    Ok(plain_path(path))
+}
+
+/// The plain path Explorer and the replay app take: `\\?\C:\…` as `C:\…`, `\\?\UNC\…` as `\\…`.
+fn plain_path(path: PathBuf) -> PathBuf {
+    let text = path.display().to_string();
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{share}"));
+    }
+    text.strip_prefix(r"\\?\").map_or(path, PathBuf::from)
 }
 
 /// Details: the session folder holding the collector's status and completion records.
@@ -477,4 +482,24 @@ pub async fn open_replay(path: Option<String>) -> Result<(), String> {
         launch_replay(recording.as_deref())
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plain_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn plain_paths_keep_the_network_root() {
+        let plain = |text: &str| plain_path(PathBuf::from(text)).display().to_string();
+        assert_eq!(
+            plain(r"\\?\C:\saves\a.battleplan"),
+            r"C:\saves\a.battleplan"
+        );
+        assert_eq!(
+            plain(r"\\?\UNC\server\share\a.battleplan"),
+            r"\\server\share\a.battleplan"
+        );
+        assert_eq!(plain(r"D:\a.battleplan"), r"D:\a.battleplan");
+    }
 }

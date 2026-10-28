@@ -91,7 +91,7 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   const name = useCallback((tag: string | null) => tag === null ? 'Country name unavailable' : names.get(nameKey(hour, tag)) ?? tag, [names, hour]);
   const country = useCallback((key: 'seller' | 'buyer', header: string, priority?: number) => ({ key, header, label: header, priority,
     width: 'minmax(4em, 1fr)', renderMissing: true,
-    value: (row: ContractRow | OfferRow) => (row as ContractRow)[key] ?? null, text: (row: ContractRow | OfferRow) => name((row as ContractRow)[key] ?? null),
+    value: (row: ContractRow | OfferRow) => { const tag = (row as ContractRow)[key] ?? null; return tag === null ? null : name(tag); }, text: (row: ContractRow | OfferRow) => name((row as ContractRow)[key] ?? null),
     render: (row: ContractRow | OfferRow) => { const tag = (row as ContractRow)[key] ?? null; return tag === null ? 'Country name unavailable' : <CountryCell {...labelAt(hour)(tag)} />; } }), [name, labelAt, hour]);
   const contractColumns = useMemo<readonly TableColumn<ContractRow>[]>(() => view === 'contracts' ? [
     country('seller', 'Seller'), country('buyer', 'Buyer'),

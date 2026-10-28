@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, open, readFile, realpath, stat, unlink } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -40,6 +40,12 @@ export function mapSettingsCommand(input: Record<string, any>): Record<string, u
   };
 }
 
+/** The native prepared-query command for a browser request, keeping a refresh's lower priority. */
+export function preparedQueryCommand(input: Record<string, any>): Record<string, unknown> {
+  if (!(input.refresh == null || typeof input.refresh === 'boolean')) throw new Error('Invalid prepared query request');
+  return { type: 'preparedQuery', request: input.request, refresh: input.refresh ?? false };
+}
+
 export function browserBridge(root: string, recordingsRoot: string, gameDir: string, userDir: string): Plugin {
   const libraryRoot = savedReplayFolder(recordingsRoot).then(folder => { recordingsRoot = folder; });
   let contentConfig: Promise<void> | null = null;
@@ -54,11 +60,25 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     userDir = saved.user_dir || userDir;
   })();
   const importedPaths = new Set<string>();
+  // Each server keeps its imports under its process id; a later server removes those whose server has gone.
+  const importsRoot = path.join(tmpdir(), 'battle-plan-imports');
+  const importsOwned = path.join(importsRoot, `${process.pid}-${randomUUID()}`);
+  const running = (pid: number) => {
+    try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+  };
+  const sweepImports = async () => {
+    const entries = await readdir(importsRoot).catch(() => [] as string[]);
+    await Promise.all(entries.map(entry => {
+      const owner = /^(\d+)-/.exec(entry);
+      return owner && Number(owner[1]) !== process.pid && !running(Number(owner[1])) ? rm(path.join(importsRoot, entry), { recursive: true, force: true }).catch(() => {}) : undefined;
+    }));
+  };
   let child: ChildProcessWithoutNullStreams | null = null;
   let picker: AbortController | null = null;
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; parts: string[]; bytes: number; sequence: number; timer: ReturnType<typeof setTimeout> }>();
   let next = 0;
   const exits = new Set<Promise<void>>();
+  let stopped: Promise<void> | null = null;
   const fail = (message: string) => {
     for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error(message)); }
     pending.clear();
@@ -133,6 +153,11 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     if (childPath.startsWith('..') || path.isAbsolute(childPath)) throw new Error('Choose a recording inside the configured recordings folder.');
     return { target, relative: childPath.replaceAll('\\', '/') };
   };
+  /** Stops the bridge and, once it has let go of them, removes this server's imported recordings. */
+  const stop = () => {
+    picker?.abort(); fail('Development server stopped');
+    return stopped ??= Promise.all(exits).then(() => rm(importsOwned, { recursive: true, force: true })).catch(() => {});
+  };
   const recordingSummaries = async (library: ReplayLibrary, signal: AbortSignal) => {
     for (let first = 0; first < library.files.length;) {
       const paths: string[] = [];
@@ -152,9 +177,10 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
   };
   return {
     name: 'battle-plan-browser-recordings', apply: 'serve',
-    async closeBundle() { picker?.abort(); fail('Development server stopped'); await Promise.all(exits); },
+    async closeBundle() { await stop(); },
     configureServer(server) {
-      server.httpServer?.once('close', () => { picker?.abort(); fail('Development server stopped'); });
+      void sweepImports();
+      server.httpServer?.once('close', () => { void stop(); });
       server.middlewares.use('/api/recordings', async (request, response) => {
         response.setHeader('Content-Type', 'application/json');
         response.setHeader('Cache-Control', 'no-store');
@@ -167,7 +193,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             if (request.headers['content-type'] !== 'application/octet-stream') throw new Error('Expected a recording file');
             const name = path.basename(decodeURIComponent(String(request.headers['x-recording-name'] ?? ''))).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
             if (!(/\.(?:battleplan|hoi4replay)$/i.test(name)) || name.length > 180) throw new Error('Choose a .battleplan recording');
-            const target = path.join(tmpdir(), 'battle-plan-imports', randomUUID(), name);
+            const target = path.join(importsOwned, randomUUID(), name);
             await mkdir(path.dirname(target), { recursive: true });
             const file = await open(target, 'wx');
             let bytes = 0;
@@ -182,7 +208,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
               const canonical = await realpath(target);
               importedPaths.add(canonical);
               response.end(JSON.stringify({ path: canonical }));
-            } catch (error) { await file.close(); await unlink(target).catch(() => {}); throw error; }
+            } catch (error) { await file.close(); await rm(path.dirname(target), { recursive: true, force: true }).catch(() => {}); throw error; }
             return;
           }
           if (request.method !== 'POST' || !request.headers['content-type']?.startsWith('application/json')) throw new Error('Expected a JSON recording request');
@@ -246,7 +272,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             if (typeof input.id !== 'string' || typeof input.sourceId !== 'string' || typeof input.revision !== 'string' || !['status', 'start', 'cancel', 'clear'].includes(input.action)) throw new Error('Invalid preparation request');
             command = { type: 'preparation', id: input.id, sourceId: input.sourceId, revision: input.revision, action: input.action };
           } else if (input.type === 'preparedQuery') {
-            command = { type: 'preparedQuery', request: input.request };
+            command = preparedQueryCommand(input);
           } else if (input.type === 'product') {
             command = { type: 'product', request: input.request };
           } else if (input.type === 'release') {

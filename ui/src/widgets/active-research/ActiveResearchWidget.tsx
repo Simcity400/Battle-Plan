@@ -77,7 +77,12 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
   const untip = useCallback(() => hideTooltip(owner), [owner]);
   useEffect(() => untip, [untip]);
   const breakdown = usePopover('start');
-  const [shown, setShown] = useState<{ slotIndex: number; token: string } | null>(null);
+  // An open breakdown names one assignment of the recording, branch and country it was opened for.
+  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag]);
+  const [stored, setShown] = useState<{ scope: string; slotIndex: number; token: string; firstObservedHour: number | null } | null>(null);
+  const shown = stored?.scope === scope ? stored : null;
+  const { close } = breakdown;
+  useEffect(() => close(), [close, scope]);
   const historySlots = useMemo(() => history.data && hour != null ? researchAt(history.data.history, hour) : null, [history.data, hour]);
   const researching = cards.filter(card => card.kind === 'researching').length;
   const header = headerSlot && cards.length > 0 && createPortal(<span className="pill">{researching} of {cards.length} researching</span>, headerSlot);
@@ -86,7 +91,9 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
   if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || !slots) return <ListSkeleton label="Loading research..." />;
   const shownSlot = shown ? historySlots?.find(slot => slot.index === shown.slotIndex) : undefined;
-  const shownEntry = shownSlot?.entries.find(entry => entry.outcome === 'active' && entry.token === shown!.token);
+  // The assignment stays resolved once it completes or is switched out.
+  const shownEntry = shownSlot?.entries.find(entry => entry.token === shown!.token
+    && (shown!.firstObservedHour === null ? entry.outcome === 'active' : entry.firstObservedHour === shown!.firstObservedHour));
   const card = (item: ActiveSlot) => {
     const key = `slot:${item.slot.index}`;
     const meta = <span className="active-card-meta">Slot {item.slot.index + 1}</span>;
@@ -124,7 +131,7 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
     </>;
     return <button key={key} type="button" className="active-card" aria-label={`${name}, researching in slot ${slot.index + 1}, show time breakdown`} {...tips}
       {...rowJumpProps(runtime, track.id, entry ? () => researchJourney(slots, slot, entry).firstHour : null, menu.open)}
-      onClick={event => { const target = event.currentTarget; untip(); setShown({ slotIndex: slot.index, token });
+      onClick={event => { const target = event.currentTarget; untip(); setShown({ scope, slotIndex: slot.index, token, firstObservedHour: entry?.firstObservedHour ?? null });
         breakdown.openAt(() => target.isConnected ? target.getBoundingClientRect() : null); }}>
       {body}<Icon name="chevron-down" className="active-card-chevron" aria-hidden="true" /></button>;
   };

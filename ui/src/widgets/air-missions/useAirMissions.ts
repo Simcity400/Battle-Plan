@@ -31,7 +31,7 @@ export function useAirMissionChoices(widget: WidgetSpec, runtime: WidgetRuntime)
   return {
     missions: missions.map(mission => ({ value: setToken(mission.id), label: mission.name, icon: icon(mission.icon) })),
     regions: (data?.regions ?? []).map(region => ({ value: setToken(region.id), label: region.name })),
-    theatres: (theatres ?? []).map(theatre => ({ value: setToken(theatre.id), label: theatre.name })),
+    theatres: (theatres.theatres ?? []).map(theatre => ({ value: setToken(theatre.id), label: theatre.name })),
     tableSort: tableSortChoices([{ key: 'region', label: 'Region' }, ...missions.map(mission => ({ key: `m${mission.id}`, label: mission.name })),
       { key: 'wings', label: 'Wings' }]),
   };

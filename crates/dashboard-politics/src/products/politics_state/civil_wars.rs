@@ -6,11 +6,11 @@
 //! An episode is the holders joined by rival listings that overlap or meet
 //! in time; listings that are apart in time are separate episodes, and no
 //! two-coalition split is forced on three or more sides. A side lasts from
-//! its first listing to its last. A side "broke from" the earliest-listed
-//! rival that was already a side when it was first listed; a side whose
-//! holder was read before the outbreak existed before it. Lists are kept as
-//! the game stores them: one country's list is never assumed to answer
-//! another's.
+//! its first listing to its last. A side "broke from" the earliest-listed of
+//! its rivals at its first listing that was already a side then; a later
+//! rival never changes it. A side whose holder was read before the outbreak
+//! existed before it. Lists are kept as the game stores them: one country's
+//! list is never assumed to answer another's.
 //!
 //! Each episode carries the hours the game's own civil-war predicate held for
 //! one of its sides ([`history::Field::CivilWar`]), and the reply the hours
@@ -20,9 +20,10 @@
 //!
 //! The winner is shown only when every other side was annexed by a side,
 //! through a civil war's resolution or another route such as a peace
-//! conference. An annexation by a country that was not a side, a later split,
-//! a gap or a capitulation decides nothing. Annexations still name how a side
-//! left, and by which route.
+//! conference. An annexation by a country that was not a side yet, a later
+//! split, a gap or a capitulation decides nothing. A side's last annexation
+//! decides; one that later annexes was restored. Annexations still name how a
+//! side left, and by which route.
 
 use super::history::{self, Field, HolderTag, Metadata, Part, tag_at};
 use dashboard_base::{
@@ -32,7 +33,7 @@ use dashboard_base::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     io,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -298,9 +299,10 @@ fn war(
         .iter()
         .map(|&holder| {
             let (side_first, side_last) = spans[&holder];
-            // The earliest-listed rival already a side when this one was.
+            // The earliest-listed rival, among those at its first listing, already a side then.
             let parent = group
                 .iter()
+                .filter(|listing| listing.first == side_first)
                 .filter_map(|listing| {
                     let other = if listing.a == holder {
                         listing.b
@@ -337,29 +339,47 @@ fn war(
             .iter()
             .position(|&holder| tag_at(tags(holder), hour) == Some(tag))
     };
-    let mut proven = BTreeSet::new();
-    let mut proven_at = None;
+    // The hour after the episode's last listing; a restoration later than it is another episode's.
+    let ended = sides
+        .iter()
+        .map(|side| side.last_hour)
+        .max()
+        .unwrap_or(i32::MIN)
+        .saturating_add(1);
+    let mut annexations: Vec<&Annexation> = annexations.iter().collect();
+    annexations.sort_by_key(|annexation| (annexation.hour, annexation.read_hour));
     for annexation in annexations {
-        let Some(annexed) = annexation
+        let annexed = annexation
             .annexed
             .as_deref()
-            .and_then(|tag| side_at(tag, annexation.hour))
-        else {
-            continue;
-        };
-        let side = &sides[annexed];
-        // The annexation ends the side's listings, or follows them at once.
-        if annexation.hour < side.first_hour || annexation.hour > side.last_hour.saturating_add(1) {
-            continue;
-        }
+            .and_then(|tag| side_at(tag, annexation.hour));
+        // A country annexes as a side only once it is listed.
         let by = annexation
             .annexer
             .as_deref()
-            .and_then(|tag| side_at(tag, annexation.hour));
+            .and_then(|tag| side_at(tag, annexation.hour))
+            .filter(|&by| sides[by].first_hour <= annexation.hour);
+        // Annexing anyone after its own annexation, the side was restored: that exit was not last.
+        if let Some(by) = by
+            && annexed != Some(by)
+            && annexation.hour <= ended
+            && sides[by]
+                .exit
+                .as_ref()
+                .is_some_and(|exit| exit.hour < annexation.hour)
+        {
+            sides[by].exit = None;
+        }
+        let Some(annexed) = annexed else {
+            continue;
+        };
+        let side = &sides[annexed];
+        // The annexation falls within the side's listings, or follows them at once.
+        if annexation.hour < side.first_hour || annexation.hour > side.last_hour.saturating_add(1) {
+            continue;
+        }
         let kind = match by {
             Some(by) if by != annexed => {
-                proven.insert(annexed);
-                proven_at = proven_at.max(Some((annexation.hour, annexation.read_hour)));
                 if annexation.civil_war {
                     SideExitKind::AnnexedBySide
                 } else {
@@ -369,6 +389,7 @@ fn war(
             Some(_) => continue,
             None => SideExitKind::AnnexedByOther,
         };
+        // A later annexation supersedes an earlier one: the side was restored between them.
         sides[annexed].exit = Some(SideExit {
             kind,
             hour: annexation.hour,
@@ -376,7 +397,16 @@ fn war(
             by: annexation.annexer.clone(),
         });
     }
-    let remaining: Vec<usize> = (0..sides.len()).filter(|side| !proven.contains(side)).collect();
+    let by_side = |side: &CivilWarSide| {
+        side.exit
+            .as_ref()
+            .filter(|exit| exit.kind != SideExitKind::AnnexedByOther)
+            .map(|exit| (exit.hour, exit.read_hour))
+    };
+    let proven_at = sides.iter().filter_map(by_side).max();
+    let remaining: Vec<usize> = (0..sides.len())
+        .filter(|&side| by_side(&sides[side]).is_none())
+        .collect();
     let outcome = match (remaining.as_slice(), proven_at) {
         ([winner], Some((hour, read_hour))) if sides[*winner].exit.is_none() => {
             Some(CivilWarOutcome {

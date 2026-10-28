@@ -32,7 +32,7 @@ async function mount() {
   return mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/weather-by-region/WeatherWidget.tsx', {
     '/widgets/weather-by-region/useWeather.ts': `export const useWeatherInView = () => ({ options: {}, show: 'conditions', modifier: null, data: globalThis.__weather.data,
         retry() {}, onSummaryView() {} });
-      export const useWeatherDays = () => ({ get: day => globalThis.__weather.read.get(day), want: day => globalThis.__weather.wanted.push(day) });`,
+      export const useWeatherDays = () => ({ get: day => globalThis.__weather.read.get(day), want: day => globalThis.__weather.wanted.push(day), hover() {} });`,
     '/charts/TimeChart.tsx': `export default props => { globalThis.__weather.chart = props; return null; };`,
     '/charts/jump.ts': 'export const jumpItem = (_runtime, _track, hour) => ({ hour });',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open: (_x, _y, items) => { globalThis.__weather.menu = items; }, menu: null });',
@@ -114,6 +114,19 @@ test('one-day columns snap to their read and show their tooltip without asking f
     assert.deepEqual(tooltip.rows.map(row => [row.label, row.value]), [[dayLabel(140), undefined], ['Conditions', 'Snow'],
       ['Temperature (average of provinces)', 'Not available'], ['As of', dayLabel(140)]]);
     assert.deepEqual(fixture.wanted, []);
+  } finally { delete host.__weather; await close(); }
+});
+
+test('the playhead is this campaign\'s hour, not the comparison clock\'s', async () => {
+  const fixture: Fixture = { data: daily, read: new Map(), wanted: [] };
+  host.__weather = fixture;
+  const { module, close } = await mount();
+  try {
+    // Aligned 100 hours later than the clock: clock hour 239 is this campaign's hour 339.
+    const shifted = { ...props, widget: { ...props.widget, time: { mode: 'follow' } },
+      runtime: { ...props.runtime, tracks: [{ ...props.runtime.tracks[0], axisOffset: 100, branch: { id: '1', firstHour: 0, lastHour: 479 } }] } } as unknown as WidgetProps;
+    renderToStaticMarkup(createElement(module.default, shifted));
+    assert.equal(fixture.chart!.playhead, 339);
   } finally { delete host.__weather; await close(); }
 });
 

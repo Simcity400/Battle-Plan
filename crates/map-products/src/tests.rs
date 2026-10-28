@@ -825,6 +825,7 @@ impl Original<'_> {
                 ),
             );
         }
+        labels::note_withheld_capitals(&mut out, frame, &links)?;
         Ok(out)
     }
     pub fn viewing_tag(&self, ours: u32) -> io::Result<String> {

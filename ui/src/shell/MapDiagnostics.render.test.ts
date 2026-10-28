@@ -37,6 +37,9 @@ test('diagnostics say how complete the recording is in plain words, with the fil
     const gapped = visible({ ...metadata, branches: [{ ...branch, gaps: [{ firstHour: branch.firstHour + 24, lastHour: branch.firstHour + 24 * 4 - 1, reason: 'Game paused' }] }] });
     assert.match(gapped, /1 gap/);
     assert.match(gapped, /3 days missing in 1 gap/);
+    const lossy = visible({ ...metadata, branches: [{ ...branch, eventLosses: [{ afterHour: branch.firstHour, hour: branch.firstHour + 1, reason: 'Events overflowed' }] }] });
+    assert.match(lossy, /Events incomplete/, 'known event loss is not called complete');
+    assert.doesNotMatch(lossy, /Complete/);
     const stopped = visible({ ...metadata, partial: { sessionId: 's1', reason: 'The game closed.', failedHour: branch.lastHour } });
     assert.match(stopped, /Stopped early/);
     assert.match(stopped, /was saved: The game closed\./);

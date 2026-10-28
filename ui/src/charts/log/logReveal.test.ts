@@ -35,6 +35,15 @@ test('async page loads at one advancing hour preserve the whole revelation inter
   assert.deepEqual([...reloaded.entering], []);
 });
 
+test('a reply arriving after the playhead moved animates the rows the retained one lacked', () => {
+  const shown = logReveals(EMPTY_LOG_REVEALS, pageItems('0', [row('old', 3)]), 10);
+  const retained = logReveals(shown.history, pageItems('0', [row('old', 3)]), 15);
+  assert.deepEqual([...retained.entering], []);
+  const fresh = logReveals(retained.history, pageItems('0', [row('new', 12), row('old', 3)]), 15);
+  assert.deepEqual([...fresh.entering], ['new']);
+  assert.deepEqual([...logReveals(fresh.history, pageItems('0', [row('new', 12), row('old', 3)]), 15).entering], [], 'presented once');
+});
+
 test('continuously loaded pages animate only newly reached rows and future advances stay eligible', () => {
   const first = logReveals(EMPTY_LOG_REVEALS, pageItems('same', [row('old', 3)]), 10);
   const forward = logReveals(first.history, pageItems('same', [row('new', 12), row('old', 3)]), 15);

@@ -25,7 +25,7 @@ export default function Tooltip() {
       // Keep sidebar hints in the rail, outside the native child window.
       // Menus already hide the native surface and can use the full viewport.
       const overlay = hasMapOverlay();
-      const rail = !overlay ? target.closest('.side-rail')?.getBoundingClientRect() : null;
+      const rail = !overlay ? target.closest('.sidebar')?.getBoundingClientRect() : null;
       const header = !overlay ? target.closest('.shell-header')?.getBoundingClientRect() : null;
       tip.style.maxWidth = rail ? `${Math.max(80, rail.width - 16)}px` : '';
       tip.style.maxHeight = header ? `${Math.max(24, header.height - 8)}px` : '';

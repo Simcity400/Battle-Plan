@@ -890,6 +890,35 @@ fn an_omitted_name_order_is_compared_against_zero_not_waived() {
     assert!(report.differences[0].contains("name_order"));
 }
 
+#[test]
+fn deployment_child_rows_without_a_captured_line_are_differences() {
+    let (saved, countries, conveyors, lines, mut manpower, mut equipment) = deployment_context();
+    let links: BTreeMap<u32, &CountryRow> = countries.iter().map(|row| (row.id, row)).collect();
+    let tokens: TokenNames<'_> = [(11_u32, b"armor".as_slice())].into_iter().collect();
+    let orphan = (9999_u64 << 32) | 63;
+    manpower.push(replay_data::rows::DeploymentManpowerRow {
+        line: orphan,
+        ..manpower[0].clone()
+    });
+    equipment.push(replay_data::rows::DeploymentEquipmentRow {
+        line: orphan,
+        ..equipment[0].clone()
+    });
+    let frame = deployment_frame(
+        conveyors,
+        lines,
+        manpower,
+        equipment,
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut report = Report::default();
+    compare_deployment(&frame, &saved, &links, &tokens, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+    assert!(report.differences[0].contains("DeploymentEquipment line"));
+    assert!(report.differences[1].contains("DeploymentManpower line"));
+}
+
 /// Gated exile and flagged custom-name emission: present values compare
 /// exactly, omitted values prove empty/clear, and any mismatch is a real
 /// difference rather than a printed limitation.

@@ -11,6 +11,7 @@ import { PreparedKey } from '../../charts/PreparedKey';
 import { useChartTokens } from '../../charts/useChartTokens';
 import type { TooltipContent } from '../../charts/tooltip';
 import { countryPart } from '../../dashboard/keyedHistory';
+import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -35,7 +36,9 @@ const UNRESOLVED = 'unresolved';
  * split by the country that sent it; a holder opens its sources over time. */
 export default function OccupationReserveWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics } = props;
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  // A drill that follows playback follows it whatever the widget's own time.
+  usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
   const { track, options, data, error, retry } = useOccupationReserve(widget, runtime, active);
@@ -76,12 +79,13 @@ export default function OccupationReserveWidget(props: WidgetProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [shown, looks, colour]);
   const byTag = useMemo(() => new Map(shown.map(holder => [holder.tag, holder])), [shown]);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const [holder, setHolder] = useState<string | null>(null);
   const pinned = options.show === 'breakdown';
   const pinnedHolder = pinned && options.holder ? contentKey(String(options.holder)) : null;
   const drilled = pinned ? pinnedHolder : drill.breakdown ? holder : null;
-  const drillAt = pinned ? moment : drillHour(drill, moment);
+  // Playback in this campaign's hours, within its branch.
+  const clockHour = track ? Math.max(track.branch.firstHour, Math.min(Math.floor(runtime.clock.getHour()) + track.axisOffset, track.branch.lastHour)) : moment;
+  const drillAt = pinned ? moment : drillHour(drill, clockHour);
   const none = grouped ? noMembersAt(widget.countries, resolved, groups.data, moment, track?.branch.lastHour ?? 0) : null;
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...groups.data?.warnings ?? []] : null);
   if (!track) return <WidgetState kind="empty" icon="flag" message="Load a campaign to see occupation manpower." />;
@@ -107,7 +111,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
     empty={resolved.known(moment) ? 'No reserve manpower is held at this date.' : MEMBERSHIP_PREPARING} formatValue={value => Math.round(value).toLocaleString('en-US')}
     labels={{ race: `Occupation reserve manpower, ${dayLabel(moment)}`, actions: 'Occupation reserve actions' }}
     presentation={{ exact: true, windowedLegend: true }} tooltip={tooltip}
-    onPick={(hour, tag) => { if (!tag) return; setHolder(shown.find(item => item.tag === tag)?.holder ?? null); dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour, playing: widget.time.mode === 'follow', playhead: moment }); }} />;
+    onPick={(hour, tag) => { if (!tag) return; setHolder(shown.find(item => item.tag === tag)?.holder ?? null); dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour, playing: widget.time.mode === 'follow', playhead: widget.time.mode === 'follow' ? moment : null }); }} />;
   const prefix = preparedPrefix(data);
   return <div ref={anchor} className="parts-race occupation-reserve">{groupFailure}
     <PreparedKey pending={prefix?.pending} approximate={prefix?.approximate} />
@@ -119,7 +123,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
         pin.options = { ...pin.options, holder: setToken(drilled) };
         runtime.addWidgetBelow(widget.id, pin);
       } : undefined}>
-      {drilled && <HolderSources {...props} holder={drilled} hour={drillAt ?? moment} extent={extent} playhead={drill.follow ? playhead : null} />}
+      {drilled && <HolderSources {...props} holder={drilled} hour={drillAt ?? moment} extent={extent} playhead={drill.follow ? clockHour : null} />}
     </DrillHost>
   </div>;
 }
@@ -161,9 +165,17 @@ function HolderSources({ widget, runtime, active, holder, hour, extent, playhead
   }) } : null,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [holderTag, bands, sources, at, looks, colour, hour]);
+  // A history tooltip names its sources as they were at the read it shows; swatches stay the bands' colours.
+  const [reached, setReached] = useState<number | null>(null);
+  const tipRead = useMemo(() => data && reached !== null ? reservesAt(data, reached)?.readHour ?? reached : null, [data, reached]);
+  const dated = useCountryLabelsAt(runtime.client, track, useMemo(() => tipRead === null ? [] : tags.map(tag => ({ tag, hour: tipRead })), [tags, tipRead]), active);
   const tooltip = (_tag: string, hourAt: number, name: string): TooltipContent[] | null => {
-    const reserve = data && holder ? reservesAt(data, hourAt)?.holders.find(item => item.holder === holder) : undefined;
-    return reserve ? [holderTooltip(reserve, name, sourceName, sourceColour, dayLabel(reservesAt(data!, hourAt)?.readHour ?? hourAt))] : null;
+    const read = data && holder ? reservesAt(data, hourAt) : null;
+    const reserve = read?.holders.find(item => item.holder === holder);
+    if (!read || !reserve) return null;
+    const readHour = read.readHour ?? Math.floor(hourAt);
+    const datedName = (source: string | null) => source === null ? 'Source country unavailable' : dated.labelAt(readHour)(countryPart(source)!.tag).name;
+    return [holderTooltip(reserve, name, datedName, sourceColour, dayLabel(readHour))];
   };
   if (!track) return null;
   if (!holder) return <WidgetState kind="empty" icon="flag" message="Choose a holder: click its bar in the race." />;
@@ -186,7 +198,7 @@ function HolderSources({ widget, runtime, active, holder, hour, extent, playhead
     labels={{ mix: name => `Reserve manpower ${name} holds by source country` }} partsLabel="Source countries"
     presentation={{ exact: true, held: true, windowedLegend: true }}
     mixEmpty={{ icon: 'flag', message: 'Choose a holder: click its bar in the race.', unavailable: name => `Reserve manpower was not recorded for ${name} at this date.` }}
-    tooltip={tooltip} />
+    tooltip={tooltip} onReachHour={setReached} />
     {list}
   </div>;
 }

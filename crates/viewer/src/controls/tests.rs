@@ -23,7 +23,11 @@ fn take(input: &mut Input, owner: GamepadOwner, state: GamepadState) {
 
 /// The controller this map holds under `owner` changed.
 fn update(input: &mut Input, owner: GamepadOwner, state: GamepadState) {
-    input.gamepad(GamepadMessage::State { owner, state });
+    input.gamepad(GamepadMessage::State {
+        owner,
+        state,
+        pressed: 0,
+    });
 }
 
 fn window(events: &[egui::Event], focused: bool, now: Instant) -> Window<'_> {
@@ -193,6 +197,26 @@ fn double_taps_and_button_presses_are_reported_once() {
     input.forget_pad_taps();
     assert!(!press(&mut input, 0, 2650).double_tapped(GamepadButton::South));
     assert!(!press(&mut input, south, 2780).double_tapped(GamepadButton::South));
+}
+
+#[test]
+fn a_press_released_again_before_the_frame_is_pressed_once() {
+    let mut input = Input::default();
+    let now = Instant::now();
+    take(&mut input, OWNER, GamepadState::default());
+    let south = GamepadButton::South.bit();
+    // The host saw South go down and up between two of its readings, then another state.
+    for pressed in [south, 0] {
+        input.gamepad(GamepadMessage::State {
+            owner: OWNER,
+            state: GamepadState::default(),
+            pressed,
+        });
+    }
+    let frame = input.frame(window(&[], true, now));
+    assert!(frame.pad.pressed(GamepadButton::South) && !frame.pad.held(GamepadButton::South));
+    let next = input.frame(window(&[], true, now));
+    assert!(!next.pad.pressed(GamepadButton::South));
 }
 
 /// A key event with its place on the keyboard.

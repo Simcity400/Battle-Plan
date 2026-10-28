@@ -2014,6 +2014,8 @@ pub(crate) fn capture(
     // admission; loading another campaign closes its segment, so it saves within seconds.
     let mut admitted: Option<(String, i64)> =
         opening.map(|(campaign, load)| (campaign.to_owned(), load));
+    // Whether the game's load was read when Stop was chosen; `None` when Stop read nothing.
+    let mut stop_read = None;
     let mut closing = Vec::new();
     let capture_ended = Arc::new(AtomicBool::new(false));
     loop {
@@ -2022,6 +2024,25 @@ pub(crate) fn capture(
             stop_observed = true;
             stop_qpc = requested_stop_counter(control, &directory);
             stop_load = system_times();
+            // Stop acts on the load the game holds as it is chosen, not on the last poll's; the
+            // detach that follows closes every segment.
+            if control.stopping() && admit_staged.is_some() {
+                let now = loaded.and_then(|loaded| loaded());
+                stop_read = Some(now.is_some());
+                if let Some((campaign, load)) = now {
+                    if let Some((left, _)) = admitted
+                        .replace((campaign.clone(), load))
+                        .filter(|(left, _)| *left != campaign)
+                        && let Some(settling) = &settling
+                        && admission.admitted.loads.contains_key(&left)
+                    {
+                        locked(&settling.left).insert(left);
+                    }
+                    if let Some(settling) = &settling {
+                        *locked(&settling.loaded) = Some(campaign);
+                    }
+                }
+            }
             ahead.promote();
         }
         if process.handle.signaled()? {
@@ -2193,15 +2214,19 @@ pub(crate) fn capture(
     if let Some(settling) = &settling {
         report_set_aside(settling, stage);
     }
-    // The campaign in progress: the one the game has loaded, else the one the collector wrote last.
-    let current = admitted
-        .as_ref()
-        .map(|(campaign, _)| campaign.clone())
-        .or_else(|| {
-            read_status(&status_path)
-                .and_then(|status| status["campaign"].as_str().map(str::to_owned))
-                .filter(|campaign| replay_data::identity::is_campaign_uuid(campaign.as_bytes()))
-        });
+    let written = read_status(&status_path)
+        .and_then(|status| status["campaign"].as_str().map(str::to_owned))
+        .filter(|campaign| replay_data::identity::is_campaign_uuid(campaign.as_bytes()));
+    let current = in_progress(
+        admitted.as_ref().map(|(campaign, _)| campaign.as_str()),
+        stop_read,
+        written,
+    );
+    if stop_read == Some(false) && admitted.is_some() && current.is_none() {
+        println!(
+            "The campaign in progress could not be read when Stop was chosen, so Stop neither saves nor discards one."
+        );
+    }
     let _lock = finalization_lock(target)?;
     let mut outcome = terminal_outcome(
         &directory,
@@ -2556,6 +2581,26 @@ pub(crate) fn capture(
             Some(diagnostics)
         },
     )
+}
+
+/// The campaign in progress, which Stop saves or discards: the one the game has loaded, else the
+/// one the collector wrote last. When Stop could not read the game's load (`stop_read`) and the
+/// collector wrote another campaign, the game may have left the one loaded for it: none then.
+fn in_progress(
+    loaded: Option<&str>,
+    stop_read: Option<bool>,
+    written: Option<String>,
+) -> Option<String> {
+    match loaded {
+        Some(loaded)
+            if stop_read == Some(false)
+                && written.as_deref().is_some_and(|written| written != loaded) =>
+        {
+            None
+        }
+        Some(loaded) => Some(loaded.to_owned()),
+        None => written,
+    }
 }
 
 /// Without Auto save, only Stop's Save saves, and only the campaign in progress.
@@ -4737,6 +4782,35 @@ mod tests {
         assert_eq!(saved(false, false, false), [false, false]);
         assert_eq!(saved(false, true, false), [true, false]);
         assert_eq!(saved(false, true, true), [false, false]);
+    }
+
+    #[test]
+    fn stop_acts_on_no_campaign_when_it_cannot_read_the_one_the_game_left_for() {
+        let written = |campaign: &str| Some(campaign.to_owned());
+        // The load read when Stop was chosen, or by the last poll when Stop read nothing.
+        assert_eq!(
+            in_progress(Some("b"), Some(true), written("a")).as_deref(),
+            Some("b")
+        );
+        assert_eq!(
+            in_progress(Some("a"), None, written("b")).as_deref(),
+            Some("a")
+        );
+        // Unread at Stop, the last poll's campaign stands only while the collector wrote no other.
+        assert_eq!(
+            in_progress(Some("a"), Some(false), written("a")).as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            in_progress(Some("a"), Some(false), None).as_deref(),
+            Some("a")
+        );
+        assert_eq!(in_progress(Some("a"), Some(false), written("b")), None);
+        // Nothing loaded: the campaign the collector wrote last.
+        assert_eq!(
+            in_progress(None, Some(false), written("b")).as_deref(),
+            Some("b")
+        );
     }
 
     fn take_done(settling: &Settling) -> Vec<SetAside> {

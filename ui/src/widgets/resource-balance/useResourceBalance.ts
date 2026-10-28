@@ -19,7 +19,7 @@ import { groupNumbers } from '../../dashboard/groupsReply';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { BoundTrack } from '../../dashboard/model';
 import { groupsKnownAt, MEMBERSHIP_PREPARING, resolveCountries } from '../../dashboard/groups';
-import type { CountryGroupReply, ResourceBalanceReply } from '../../generated/dashboard';
+import type { CountryGroupReply, ResourceBalanceReply, TradeRun } from '../../generated/dashboard';
 import { resourceName, resourceNumbers, validateResourceBalanceReply } from './balanceData';
 import { resourceCountryData, resourceCountrySpans } from './resourceDrill';
 import type { ResourceCountrySelection } from './resourceDrill';
@@ -31,6 +31,17 @@ export type PreparedResourceReply = ResourceBalanceReply & {
   coverage?: { firstHour: number; lastHour: number; complete: boolean };
 };
 
+/** `b`'s runs of each deal (one series per native handle and resource, as prepared)
+ * replace `a`'s at the hours they cover: an open run read at a later frontier ends later. */
+function overlayTrades(a: readonly TradeRun[], b: readonly TradeRun[]): TradeRun[] {
+  const id = (trade: TradeRun) => JSON.stringify([trade.deal, trade.resource]);
+  const newer = new Map<string, TradeRun[]>();
+  for (const trade of b) newer.set(id(trade), [...(newer.get(id(trade)) ?? []), trade]);
+  const kept = a.flatMap(trade => withoutHours([trade], newer.get(id(trade)) ?? [])
+    .map(part => ({ ...part, startsSegment: trade.startsSegment && part.firstHour === trade.firstHour })));
+  return [...kept, ...b].sort((a, b) => a.firstHour - b.firstHour);
+}
+
 /** Reached facts join the same inventory while accepted viewport geometry stays. */
 export function mergePreparedResource(a: PreparedResourceReply, b: PreparedResourceReply): PreparedResourceReply {
   if (a.branchId !== b.branchId || a.tag !== b.tag) throw new Error('Resource pages belong to different countries.');
@@ -40,8 +51,8 @@ export function mergePreparedResource(a: PreparedResourceReply, b: PreparedResou
     return { ...old, runs: withoutHours(old.runs, next.runs) }; });
   return { ...a, resources: [...new Map([...a.resources, ...b.resources].map(resource => [resource.id, resource])).values()].sort((a, b) => a.id - b.id),
     series: mergeReachedRows(rows, ids.map(id => second.get(id) ?? { id, runs: [] }), row => String(row.id)),
-    dealHours: mergeReachedRows([{ runs: a.dealHours }], [{ runs: b.dealHours }], () => '')[0].runs,
-    trades: [...new Map([...a.trades, ...b.trades].map(row => [JSON.stringify(row), row])).values()].sort((a, b) => a.firstHour - b.firstHour),
+    dealHours: mergeReachedRows([{ runs: withoutHours(a.dealHours, b.dealHours) }], [{ runs: b.dealHours }], () => '')[0].runs,
+    trades: overlayTrades(a.trades, b.trades),
     exactHours: [...new Set([...(a.exactHours ?? []), ...(b.exactHours ?? [])])] };
 }
 

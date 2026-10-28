@@ -211,16 +211,63 @@ impl LabelTables {
     }
 }
 
-/// Select the greatest victory-point value in the controller's current capital
-/// state, breaking ties by lowest province id because recorded data lacks the
-/// state's province order. Country/state fallback anchors are unrecorded, so
-/// states without positive victory points also use the selected province.
-/// Missing `Politics` or `States` rows cannot establish a capital; table
-/// limitations report those gaps while ordinary labels remain available.
+/// The province carrying each capital star ([`capital_choices`]).
 pub(super) fn capital_provinces(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
 ) -> io::Result<BTreeSet<u32>> {
+    Ok(capital_choices(frame, links)?
+        .into_values()
+        .filter_map(Result::ok)
+        .collect())
+}
+
+/// The capital states whose star is withheld, each with why ([`capital_choices`]).
+pub(super) fn withheld_capitals(
+    frame: &DecodedFrame,
+    links: &BTreeMap<u32, u32>,
+) -> io::Result<Vec<(u32, &'static str)>> {
+    Ok(capital_choices(frame, links)?
+        .into_iter()
+        .filter_map(|(state, choice)| choice.err().map(|why| (state, why)))
+        .collect())
+}
+
+/// One limitation line per reason a capital state's star is withheld, naming the states.
+pub fn note_withheld_capitals(
+    out: &mut viewer_foundation::map::tables::Limitations,
+    frame: &DecodedFrame,
+    links: &BTreeMap<u32, u32>,
+) -> io::Result<()> {
+    let mut withheld: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for (state, why) in withheld_capitals(frame, links)? {
+        withheld.entry(why).or_default().push(state.to_string());
+    }
+    for (why, states) in withheld {
+        let (noun, verb) = if states.len() == 1 {
+            ("state", "carries")
+        } else {
+            ("states", "carry")
+        };
+        out.note_field(
+            "Capital stars",
+            &format!("capital {noun} {} {verb} no star: {why}", states.join(", ")),
+        );
+    }
+    Ok(())
+}
+
+/// Each controller's current capital state and the province its star stands on.
+/// The game takes the first province of the state's own order with the most
+/// positive victory points, else an unrecorded country or state anchor. The
+/// recorded rows lack that order, so a tie for the most is withheld, as is a
+/// state without victory points. Missing `Politics` or `States` rows cannot
+/// establish a capital; table limitations report those gaps while ordinary
+/// labels remain available.
+fn capital_choices(
+    frame: &DecodedFrame,
+    links: &BTreeMap<u32, u32>,
+) -> io::Result<BTreeMap<u32, Result<u32, &'static str>>> {
     let provinces = core::<tables::Provinces>(frame)?;
     let capitals: BTreeMap<u32, u32> = rows::<tables::Politics>(frame)?
         .rows()
@@ -245,22 +292,40 @@ pub(super) fn capital_provinces(
         })
         .map(|state| state.id)
         .collect();
-    let mut best: BTreeMap<u32, (i32, u32)> = BTreeMap::new();
+    // Each wanted state's most positive victory points and the provinces holding them.
+    let mut best: BTreeMap<u32, (i32, Vec<u32>)> = wanted
+        .into_iter()
+        .map(|state| (state, (0, Vec::new())))
+        .collect();
     for province in provinces {
-        if !wanted.contains(&province.state) {
+        let Some((most, holders)) = best.get_mut(&province.state) else {
             continue;
+        };
+        if province.victory_points > *most {
+            *most = province.victory_points;
+            holders.clear();
         }
-        let candidate = (province.victory_points, province.id);
-        best.entry(province.state)
-            .and_modify(|current| {
-                if candidate.0 > current.0 || (candidate.0 == current.0 && candidate.1 < current.1)
-                {
-                    *current = candidate;
-                }
-            })
-            .or_insert(candidate);
+        if province.victory_points > 0 && province.victory_points == *most {
+            holders.push(province.id);
+        }
     }
-    Ok(best.into_values().map(|(_, province)| province).collect())
+    Ok(best
+        .into_iter()
+        .map(|(state, (_, holders))| {
+            let choice = match holders[..] {
+                [province] => Ok(province),
+                [] => Err(
+                    "none of its provinces has victory points, and the anchor the game falls \
+                     back on is not recorded",
+                ),
+                _ => Err(
+                    "its provinces tie for the most victory points, and the state's province \
+                     order that settles the tie is not recorded",
+                ),
+            };
+            (state, choice)
+        })
+        .collect())
 }
 
 /// The recorded `ProvinceNames` rows of one hour, by province.

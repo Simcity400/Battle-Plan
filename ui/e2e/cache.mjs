@@ -7,8 +7,9 @@ const run = promisify(execFile);
 export const readJSON = async file => JSON.parse(await readFile(file, 'utf8'));
 export const writeJSON = async (file, data) => { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, JSON.stringify(data)); };
 export function outsideRepository(directory) {
-  const root = path.resolve(directory), relative = path.relative(repository, root);
-  if (!relative || (!relative.startsWith('..') && !path.isAbsolute(relative))) throw Error('Keep captures outside Git');
+  const root = path.resolve(directory), inside = base => { const relative = path.relative(base, root); return !relative.startsWith('..') && !path.isAbsolute(relative); };
+  // The checkout's own captures folder is ignored by Git.
+  if (inside(repository) && !inside(path.join(repository, 'captures'))) throw Error('Keep captures outside Git');
   return root;
 }
 export async function validateDependencyLock(root) {

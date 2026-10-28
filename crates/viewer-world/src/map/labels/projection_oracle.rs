@@ -155,12 +155,12 @@ impl LabelTables {
     }
 }
 
-/// Select the greatest victory-point value in the controller's current capital
-/// state, breaking ties by lowest province id because recorded data lacks the
-/// state's province order. Country/state fallback anchors are unrecorded, so
-/// states without positive victory points also use the selected province.
-/// Missing `Politics` or `States` rows cannot establish a capital; table
-/// limitations report those gaps while ordinary labels remain available.
+/// Select the one province with the most positive victory points in the
+/// controller's current capital state. A tie needs the unrecorded state order
+/// and a state without victory points the unrecorded fallback anchor, so
+/// neither carries a star. Missing `Politics` or `States` rows cannot establish
+/// a capital; table limitations report those gaps while ordinary labels remain
+/// available.
 fn capital_provinces(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
@@ -189,22 +189,24 @@ fn capital_provinces(
         })
         .map(|state| state.id)
         .collect();
-    let mut best: BTreeMap<u32, (i32, u32)> = BTreeMap::new();
+    let mut most: BTreeMap<u32, i32> = BTreeMap::new();
     for province in provinces {
-        if !wanted.contains(&province.state) {
-            continue;
+        if wanted.contains(&province.state) && province.victory_points > 0 {
+            let points = most.entry(province.state).or_default();
+            *points = (*points).max(province.victory_points);
         }
-        let candidate = (province.victory_points, province.id);
-        best.entry(province.state)
-            .and_modify(|current| {
-                if candidate.0 > current.0 || (candidate.0 == current.0 && candidate.1 < current.1)
-                {
-                    *current = candidate;
-                }
-            })
-            .or_insert(candidate);
     }
-    Ok(best.into_values().map(|(_, province)| province).collect())
+    let mut holders: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for province in provinces {
+        if most.get(&province.state) == Some(&province.victory_points) {
+            holders.entry(province.state).or_default().push(province.id);
+        }
+    }
+    Ok(holders
+        .into_values()
+        .filter(|ids| ids.len() == 1)
+        .map(|ids| ids[0])
+        .collect())
 }
 
 /// The recorded `ProvinceNames` rows of one hour, by province.

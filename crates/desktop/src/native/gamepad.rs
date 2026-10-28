@@ -20,7 +20,7 @@ use super::NativeHost;
 use crate::popout::PopOuts;
 use dashboard::protocol::{GamepadButton, GamepadMessage, GamepadOwner, GamepadState};
 use gilrs::{Axis, Button, EventType, GamepadId, Gilrs, GilrsBuilder};
-use std::{thread, time::Duration};
+use std::{collections::HashMap, thread, time::Duration};
 use tauri::{AppHandle, Manager};
 use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
@@ -103,15 +103,23 @@ struct Router {
 }
 
 impl Router {
-    /// One reading: `state`, for the map in front, `target`, or none.
-    fn route(&mut self, maps: &impl Maps, target: Option<Target>, state: GamepadState) {
+    /// One reading: `state`, for the map in front, `target`, or none, and the buttons `pressed`
+    /// since the last reading, released again or not.
+    fn route(
+        &mut self,
+        maps: &impl Maps,
+        target: Option<Target>,
+        state: GamepadState,
+        pressed: u32,
+    ) {
         let wanted = target.and_then(|target| Some((target, maps.ready(target)?)));
         if let Some(holder) = self.holder {
             if Some((holder.target, holder.owner.viewer)) == wanted {
-                if holder.sent != state {
+                if holder.sent != state || pressed != 0 {
                     let message = GamepadMessage::State {
                         owner: holder.owner,
                         state,
+                        pressed,
                     };
                     self.holder = maps
                         .send(holder.target, holder.owner.viewer, message)
@@ -219,16 +227,37 @@ fn run(app: &AppHandle) {
         popouts: popouts.inner(),
     };
     let mut active: Option<GamepadId> = None;
+    // Each controller's buttons at its last reading, which its presses count against.
+    let mut buttons: HashMap<GamepadId, u32> = HashMap::new();
+    // Each controller's presses since the last poll, released again or not.
+    let mut presses: HashMap<GamepadId, u32> = HashMap::new();
     let mut router = Router::default();
     while !campaign.stopping() {
+        presses.clear();
         while let Some(event) = gilrs.next_event() {
             match event.event {
-                EventType::Disconnected if active == Some(event.id) => active = None,
-                EventType::Connected | EventType::Disconnected | EventType::Dropped => {}
-                _ => active = last_touched(active, event.id, &read(&gilrs, event.id)),
+                EventType::Disconnected => {
+                    if active == Some(event.id) {
+                        active = None;
+                    }
+                    buttons.remove(&event.id);
+                }
+                EventType::Connected | EventType::Dropped => {}
+                _ => {
+                    // Each event's state is read, so a press released again before this poll counts.
+                    let state = read(&gilrs, event.id);
+                    active = last_touched(active, event.id, &state);
+                    let held = buttons.entry(event.id).or_default();
+                    *presses.entry(event.id).or_default() |= state.buttons & !*held;
+                    *held = state.buttons;
+                }
             }
         }
         let state = active.map_or_else(GamepadState::default, |id| read(&gilrs, id));
+        let pressed = active.and_then(|id| presses.get(&id).copied()).unwrap_or(0);
+        if let Some(id) = active {
+            buttons.insert(id, state.buttons);
+        }
         // SAFETY: GetForegroundWindow takes no arguments and only reads the window in front.
         let foreground = unsafe { GetForegroundWindow() } as usize;
         let main = app
@@ -236,7 +265,7 @@ fn run(app: &AppHandle) {
             .and_then(|window| window.hwnd().ok())
             .map(|hwnd| hwnd.0 as usize);
         let target = front(foreground, main, popouts.in_front(foreground));
-        router.route(&maps, target, state);
+        router.route(&maps, target, state, pressed);
         thread::sleep(POLL);
     }
 }
@@ -418,17 +447,17 @@ mod tests {
         maps.set(Target::Campaign, Some(7));
         let mut router = Router::default();
         // The stick held in the pop-out.
-        router.route(&maps, Some(popout), held(0.8));
+        router.route(&maps, Some(popout), held(0.8), 0);
         assert_eq!(taken(&maps.take()), [(popout, held(0.8))]);
-        router.route(&maps, Some(popout), held(0.8));
+        router.route(&maps, Some(popout), held(0.8), 0);
         assert!(maps.take().is_empty());
         // The main window in front shows the dashboard: the campaign map cannot take the
         // controller, and the pop-out lets go of it.
         maps.set(Target::Campaign, None);
-        router.route(&maps, Some(Target::Campaign), held(0.8));
+        router.route(&maps, Some(Target::Campaign), held(0.8), 0);
         assert_eq!(maps.take(), [(popout, 1, GamepadMessage::Release)]);
         // Back to the pop-out without moving the stick: it takes what is held again.
-        router.route(&maps, Some(popout), held(0.8));
+        router.route(&maps, Some(popout), held(0.8), 0);
         assert_eq!(taken(&maps.take()), [(popout, held(0.8))]);
     }
 
@@ -439,8 +468,8 @@ mod tests {
         maps.set(popout, Some(1));
         maps.set(Target::Campaign, Some(7));
         let mut router = Router::default();
-        router.route(&maps, Some(Target::Campaign), held(0.5));
-        router.route(&maps, Some(popout), held(0.5));
+        router.route(&maps, Some(Target::Campaign), held(0.5), 0);
+        router.route(&maps, Some(popout), held(0.5), 0);
         let sent = maps.take();
         let owners: Vec<_> = sent
             .iter()
@@ -466,7 +495,7 @@ mod tests {
         // A restarted pop-out viewer in the same window is another viewer: the old one is
         // released and the new one takes the controller under a new handoff.
         maps.set(popout, Some(2));
-        router.route(&maps, Some(popout), held(0.5));
+        router.route(&maps, Some(popout), held(0.5), 0);
         let sent = maps.take();
         assert_eq!(sent[0], (popout, 1, GamepadMessage::Release));
         assert!(matches!(
@@ -497,19 +526,19 @@ mod tests {
         assert_eq!(front(30, Some(10), None), None);
         assert_eq!(front(0, None, None), None);
         let mut router = Router::default();
-        router.route(&maps, Some(Target::Campaign), held(0.8));
+        router.route(&maps, Some(Target::Campaign), held(0.8), 0);
         maps.take();
         // Another program comes to the front with the stick held: the map lets go, as Windows
         // stops reporting the controller to the host.
-        router.route(&maps, None, held(0.8));
+        router.route(&maps, None, held(0.8), 0);
         assert_eq!(
             maps.take(),
             [(Target::Campaign, 7, GamepadMessage::Release)]
         );
-        router.route(&maps, None, held(0.8));
+        router.route(&maps, None, held(0.8), 0);
         assert!(maps.take().is_empty());
         // Back in front, it takes what is held then.
-        router.route(&maps, Some(Target::Campaign), held(0.3));
+        router.route(&maps, Some(Target::Campaign), held(0.3), 0);
         assert_eq!(taken(&maps.take()), [(Target::Campaign, held(0.3))]);
     }
 
@@ -526,10 +555,40 @@ mod tests {
             }
         }
         let mut router = Router::default();
-        router.route(&Gone, Some(Target::Campaign), held(0.1));
+        router.route(&Gone, Some(Target::Campaign), held(0.1), 0);
         assert!(router.holder.is_some());
-        router.route(&Gone, Some(Target::Campaign), held(0.2));
+        router.route(&Gone, Some(Target::Campaign), held(0.2), 0);
         assert!(router.holder.is_none());
+    }
+
+    #[test]
+    fn a_tap_between_readings_reaches_the_holder_as_a_press() {
+        let maps = Fake::default();
+        maps.set(Target::Campaign, Some(7));
+        let mut router = Router::default();
+        router.route(&maps, Some(Target::Campaign), held(0.0), 0);
+        maps.take();
+        // South pressed and released again between two readings: nothing held changed.
+        let south = GamepadButton::South.bit();
+        router.route(&maps, Some(Target::Campaign), held(0.0), south);
+        let sent = maps.take();
+        assert!(
+            matches!(
+                sent[..],
+                [(Target::Campaign, 7, GamepadMessage::State { pressed, .. })] if pressed == south
+            ),
+            "{sent:?}"
+        );
+        router.route(&maps, Some(Target::Campaign), held(0.0), 0);
+        assert!(maps.take().is_empty());
+        // A handoff presses nothing, whatever was pressed as it happened.
+        maps.set(Target::Campaign, Some(8));
+        router.route(&maps, Some(Target::Campaign), held(0.0), south);
+        assert!(
+            maps.take()
+                .iter()
+                .all(|(_, _, message)| !matches!(message, GamepadMessage::State { .. }))
+        );
     }
 
     #[test]

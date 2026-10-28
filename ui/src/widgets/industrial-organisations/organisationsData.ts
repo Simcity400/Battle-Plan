@@ -1,6 +1,7 @@
 import type { OrganisationHistory, ProductionCatalogueReply } from '../../generated/dashboard';
 import { object } from '../../dashboard/validation.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
+import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { bigAt, fixedText, isEconomyRuns, isHolderMap, numberAt, runAt, tagAt, validateEconomyReply, valueAt } from '../../dashboard/economyHistory.ts';
 
 export function validateOrganisations(value: unknown): ProductionCatalogueReply {
@@ -45,17 +46,24 @@ export function organisationsAt(reply: ProductionCatalogueReply, tag: string, ho
     const policy = numberAt(organisation.policy, hour), policyName = numberAt(organisation.policyName, hour);
     // A selected policy whose token the recording cannot spell is a policy, not "None".
     const unresolved = runAt(organisation.policyUnresolved, hour) !== null;
-    const cooldown = numberAt(organisation.cooldown, hour);
+    const cooldown = remainingDays(numberAt(organisation.cooldown, hour), hour);
     rows.push({ key: organisation.id, organisation, holder, name: label?.name ?? null, token: label?.token ?? '',
       icon: label?.icon ? reply.icons[label.icon] ?? null : null,
       size: numberAt(organisation.size, hour), funds: bigAt(organisation.funds, hour), points: numberAt(organisation.points, hour),
       traits: numberAt(organisation.unlocked, hour),
       policy: policyName !== null ? reply.texts[policyName] ?? null : policy !== null || unresolved ? 'Policy name unavailable' : null,
       policyToken: policy !== null ? reply.texts[policy] ?? null : null,
-      cooldownDays: cooldown !== null && cooldown > hour ? Math.ceil((cooldown - hour) / 24) : null });
+      cooldownDays: cooldown > 0 ? cooldown : null });
   }
   return rows.sort((a, b) => (b.size ?? -Infinity) - (a.size ?? -Infinity)
     || (a.funds === null ? 1 : b.funds === null ? -1 : a.funds === b.funds ? 0 : a.funds > b.funds ? -1 : 1) || (BigInt(a.key) < BigInt(b.key) ? -1 : BigInt(a.key) > BigInt(b.key) ? 1 : 0));
+}
+
+/** A policy cooldown's remaining days as the game counts them: the calendar day of its end hour
+ * less that of `hour` (none for no end). The whole end day is already off cooldown. */
+export function remainingDays(end: number | null, hour: number): number {
+  const day = (at: number) => Math.trunc((at - HOUR_EPOCH) / 24);
+  return end === null ? 0 : day(end) - day(hour);
 }
 
 /** Funds as the game's organisation screen shows them: whole numbers. */

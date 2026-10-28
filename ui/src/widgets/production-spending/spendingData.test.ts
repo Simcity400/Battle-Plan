@@ -385,6 +385,9 @@ test('missing Rocket coverage keeps equipment slices exact while the whole remai
   const tree = groupTree(productionSpendingItems(data, window), ROOT, [], spendingTotal(data, window));
   assert.equal(tree.exact, null);
   assert.equal(tree.children.find(node => node.key === 'land')?.exact, 2000001n);
+  // Dockyards build no Rockets: their whole stays exact.
+  assert.equal(spendingTotal(data, window, 'dockyards').exact, 5000000n);
+  assert.equal(spendingTotal(data, window, 'military').exact, null);
 });
 
 test('unresolved Rocket type does not make unrelated equipment arms unknown', () => {

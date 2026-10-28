@@ -65,10 +65,11 @@ export const MIN_NODE = 2;
 export const MIN_GAP = 2;
 
 /** How many nodes a side can show in `height` pixels, each with its own label row
- * (`rowHeight`, the label's line), so no node and no name falls off the diagram.
- * A widget folds the rest into one node (as the race shows "+N more"). */
+ * (`rowHeight`, the label's line, with the labels' gap between rows), so no node and no
+ * name falls off the diagram. A widget folds the rest into one node, which counts
+ * (as the race shows "+N more"). */
 export function flowCapacity(height: number, rowHeight: number): number {
-  return Math.max(2, Math.floor((height + MIN_GAP) / Math.max(1, rowHeight, MIN_NODE + MIN_GAP)));
+  return Math.max(2, Math.floor((height + MIN_GAP) / Math.max(1, rowHeight + MIN_GAP, MIN_NODE + MIN_GAP)));
 }
 
 /** An earlier playback extent removes future geometry immediately. */

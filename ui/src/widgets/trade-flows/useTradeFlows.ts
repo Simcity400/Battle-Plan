@@ -72,8 +72,9 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
     countryIdentities: groups.data.countryIdentities.map(country => ({ tag: country.tag, runs: country.identities })) }) : null, [groups.data]);
   const groupScope = useMemo(() => groupTrade ? tradeScope(groupTrade, widget.countries, resolved, groups.data, lastHour, widget.options?.between === 'between') : null,
     [groupTrade, widget.countries, resolved, groups.data, lastHour, widget.options?.between]);
-  const selection = groupScope?.kind === 'countries' ? { identities: [...(groupScope.countryIds ?? [])],
-    ...(groupScope.membership ? { membership: Object.fromEntries(groupScope.membership), unobserved: groupScope.unobserved ?? [] } : {}), between: groupScope.between } : { between: widget.options?.between === 'between' };
+  const selection = useMemo(() => groupScope?.kind === 'countries' ? { identities: [...(groupScope.countryIds ?? [])],
+    ...(groupScope.membership ? { membership: Object.fromEntries(groupScope.membership), unobserved: groupScope.unobserved ?? [] } : {}), between: groupScope.between }
+    : { between: widget.options?.between === 'between' }, [groupScope, widget.options?.between]);
   const pageAt = (at: typeof view) => prepared ? { ...at, basis: first, measure: widget.options?.measure ?? 'current', ...selection,
     hours: [last], ...(parity?.requested ? { requireComplete: true } : {}) } : undefined;
   const page = pageAt(view);
@@ -118,26 +119,31 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
     const at = hour === null ? null : Math.floor(hour);
     return before?.key === key && before.hour === at ? before : { key, hour: at };
   }), [key]);
-  const onNavigateHour = useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((action, from, x, until) => {
+  /** The keyboard's next change among exactly the flows a chart draws (`flows`, by key): read
+   * with the widget's selection, or for one country's whole trade with its own `tags`. */
+  const navigateFlows = useCallback((flows: readonly string[], country?: readonly string[]): NonNullable<TimeChartProps['onNavigateHour']> => (action, from, x, until) => {
     if (!track || !active) return;
     navigation.current?.abort(); const controller = new AbortController(); navigation.current = controller;
     setNavigationError(undefined);
-    void preparedSeriesQuery(runtime.client, track.source, 'trade-flows' as Parameters<typeof preparedSeriesQuery>[2], { branchId: track.branch.id, tags,
+    void preparedSeriesQuery(runtime.client, track.source, 'trade-flows' as Parameters<typeof preparedSeriesQuery>[2], { branchId: track.branch.id,
+      ...(country ? { tags: country, between: false } : { tags, ...selection }), flows,
       op: 'navigate', key: action, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }, controller.signal)
       .then(value => { if (!controller.signal.aborted) { const hour = (value as { hour: number | null }).hour;
         onHover(hour); setKeyboard(before => ({ key, hour, revision: (before?.revision ?? 0) + 1 })); } })
       .catch(error => { if (!controller.signal.aborted) setNavigationError({ key, error: String(error) }); });
-  }, [runtime.client, key, track, tags, active, onHover]);
+  }, [runtime.client, key, track, tags, selection, active, onHover]);
   const scope = useMemo(() => data ? tradeScope(decodeTrade(data), widget.countries, resolved, groups.data, lastHour,
     widget.options?.between === 'between') : null, [data, widget.countries, widget.options?.between, resolved, groups.data, lastHour]);
   return { track, all, resolved, groups, scope, ...product, data, market, marketReason,
     scaleData: prepared ? scale.data : data,
+    // Without the campaign scale, ribbons would silently size to the moment instead.
+    scaleError: prepared && scale.data === undefined ? scale.error : undefined,
     retry: () => { product.retry(); reached.retry(); pointed.retry(); scale.retry(); },
     hasExactHour: (hour: number) => !prepared || (data?.exactHours ?? []).includes(Math.floor(hour)),
     error: product.error ?? reached.error ?? pointed.error ?? (navigationError?.key === key ? navigationError.error : undefined),
     onSummaryView: prepared ? onSummaryView : undefined, onHover: prepared ? onHover : undefined,
     onReachedHour: prepared ? onReachedHour : undefined,
-    onNavigateHour: prepared ? onNavigateHour : undefined, keyboardHour: keyboard?.key === key ? keyboard.hour : undefined,
+    navigateFlows: prepared ? navigateFlows : undefined, keyboardHour: keyboard?.key === key ? keyboard.hour : undefined,
     keyboardRevision: keyboard?.key === key ? keyboard.revision : undefined, pointHour, page: page ? { ...page, hours: [hour, last, ...(pointHour === null ? [] : [pointHour])] } : undefined,
     parityPrepare: parity?.prepare, parityComplete: !!product.data && (!prepared || product.data.coverage?.complete === true) && !!parity?.requested };
 

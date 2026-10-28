@@ -7,11 +7,11 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { BRANCH, humansBy, mountModule, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
 
 test('no election at an hour whose group membership is still being prepared is loading, not none', async () => {
-  const state = { groups: pendingGroups() };
+  const state = { groups: pendingGroups(), elections: [] as unknown[] };
   const host = globalThis as typeof globalThis & { __electionsPending?: typeof state }; host.__electionsPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/next-elections/NextElectionsWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__electionsPending.groups, retry() {} });',
-    '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { lastHour: 200, known: [{ firstHour: 0, lastHour: 200 }], elections: [], holders: [], warnings: [] } });
+    '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { lastHour: 200, known: [{ firstHour: 0, lastHour: 200 }], elections: globalThis.__electionsPending.elections, holders: [], warnings: [] } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 200;',
     '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
@@ -31,5 +31,11 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     // The final reply proves there is no human player then.
     state.groups = pendingGroups({ final: true });
     assert.match(render(), /No country holds elections at this date\./);
+    // A member whose schedule was read but whose eligibility was not may hold elections.
+    state.groups = pendingGroups({ final: true, humans: [{ tag: 'GER', firstHour: 0, lastHour: BRANCH.lastHour }] });
+    state.elections = [{ tags: [{ hour: 0, tag: 'GER' }], held: [], interval: [{ firstHour: 0, lastHour: 200, value: '48' }], next: [], last: [] }];
+    const unknown = render();
+    assert.match(unknown, /Election eligibility was not recorded at this date\./);
+    assert.doesNotMatch(unknown, /No country holds elections/);
   } finally { delete host.__electionsPending; await close(); }
 });

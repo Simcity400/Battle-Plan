@@ -71,6 +71,27 @@ export function ownerAmount(series: OwnerSeries, region: string, hour: number): 
   return extent && Number(region) < Number(extent[2]) ? 0n : null;
 }
 
+/** One owner's runs in a region: its recorded amounts, and zero runs where its witnessed extent
+ * proves the region empty. Hours with neither stay unknown. */
+export function regionRuns(series: OwnerSeries, region: string): KeyedRun[] {
+  const amounts = series.regions.get(region) ?? [];
+  const zeros: KeyedRun[] = [];
+  let next = 0;
+  for (const [first, last, count, fresh] of series.extent) {
+    if (Number(region) >= Number(count)) continue;
+    while (next < amounts.length && amounts[next][1] < first) next++;
+    let from = first, breaks = fresh;
+    for (let index = next; index < amounts.length && amounts[index][0] <= last; index++) {
+      const run = amounts[index];
+      if (run[0] > from) zeros.push([from, run[0] - 1, '0', breaks]);
+      from = run[1] + 1;
+      breaks = false;
+    }
+    if (from <= last) zeros.push([from, last, '0', breaks]);
+  }
+  return [...amounts, ...zeros].sort((a, b) => a[0] - b[0]);
+}
+
 export interface RegionMines { region: string; name: string; owners: { owner: string; tag: string; amount: bigint }[]; total: bigint; unknownOwners: number }
 
 /** Sea regions holding mines at `hour`, each with its owners' amounts (largest first) and how

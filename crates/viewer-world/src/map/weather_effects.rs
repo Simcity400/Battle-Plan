@@ -344,7 +344,7 @@ pub fn read_emitters(
             .map(|k| param(k, 0.0)),
             color: ["x", "y", "z", "alpha"].map(|k| Parameter::read(col, k, 255.0, &curves)),
             emission: number(s, "emission", 0.0),
-            max: number(s, "max_amount", 0.0) as usize,
+            max: installed_content_core::particles::subsystem_capacity(s)?,
             acceleration,
             turbulence,
             noise_division,

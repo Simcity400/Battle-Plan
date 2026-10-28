@@ -86,13 +86,6 @@ export function chosenWar(reply: WarsReply, saved: string | null, at: number): W
  * observed hour once it has ended. */
 export const readHourFor = (war: WarTimeline, at: number) => Math.min(Math.floor(at), war.lastHour);
 
-/** The read group that is this war's at its read hour: the one with the same native sides. */
-export function warGroup(groups: readonly WarContributionGroup[], observation: WarObservation | null): WarContributionGroup | null {
-  if (!observation) return null;
-  const sides = JSON.stringify([observation.viewpointSide, observation.opposingSide]);
-  return groups.find(group => JSON.stringify([group.viewpointSide, group.opposingSide]) === sides) ?? null;
-}
-
 /** A share of a side's total in percent, with two decimals; none for an empty side. */
 export function shareText(value: bigint, total: bigint): string {
   if (total <= 0n) return '—';

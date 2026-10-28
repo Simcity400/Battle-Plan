@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom';
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
@@ -73,7 +73,12 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => tag ? [{ hour, tag }] : [], [tag, hour]), active);
   const anchor = useRef<HTMLDivElement>(null);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const [picked, setPicked] = useState<DesignRow | null>(null);
+  // The sheet belongs to the recording, branch and country its design was picked from.
+  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag]);
+  const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
+  const [stored, setPicked] = useState<{ owner: object; row: DesignRow } | null>(null);
+  const picked = stored?.owner === owner ? rows.find(row => row.key === stored.row.key) ?? stored.row : null;
+  useEffect(() => dispatch({ type: 'close' }), [owner]);
   const columns = useCallback((withObsolete: boolean): readonly TableColumn<DesignRow>[] => [
     { key: 'design', header: 'Design', label: 'Design', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.name ?? EQUIPMENT_UNNAMED,
       render: row => <EquipmentCell name={row.name} detail={row.type} icon={art.get(row.key)} /> },
@@ -95,7 +100,7 @@ export default function EquipmentDesignsWidget({ widget, runtime, active, header
   ] }], viewport), [viewport]);
   const menu = useCallback((row: DesignRow) => track ? [row.firstSeen, row.seenObsolete].flatMap(seen => seen ? [jumpItem(runtime, track.id, seen.hour)] : []) : [], [runtime, track]);
   const open = (row: DesignRow) => {
-    setPicked(row);
+    setPicked({ owner, row });
     dispatch({ type: 'open', breakdown: SHEET.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
   const at = drillHour(drill, hour) ?? hour;

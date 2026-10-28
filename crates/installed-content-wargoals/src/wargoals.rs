@@ -125,6 +125,7 @@ impl Terms {
                 } else {
                     &mut out.threat_factors[index - 4]
                 };
+                // The game converts the held factor again even when the read fails.
                 let value = installed_content_core::modifiers::read_fixed5(item).unwrap_or(*factor);
                 *factor = value
                     .wrapping_mul(1000)

@@ -37,9 +37,10 @@ pub const TABLES: &[TableId] = &[
     TableId::ResourceExchanges,
     TableId::ConvoyClients,
 ];
-const WATCHED: [TableId; 6] = [
+const WATCHED: [TableId; 7] = [
     TableId::Countries,
     TableId::CountryLinks,
+    TableId::LexicalTokens,
     TableId::ResourceDefinitions,
     TableId::RegionalConvoyEfficiency,
     TableId::ResourceExchanges,
@@ -121,7 +122,12 @@ impl Prepared {
             frame.complete::<tables::ResourceDefinitions>(),
             frame.complete::<tables::LexicalTokens>(),
         ) {
-            self.keyed.meta.extra.resources.learn(definitions, lexical);
+            let resources = &mut self.keyed.meta.extra.resources;
+            let before = super::keyed::json_len(&*resources);
+            if resources.learn(definitions, lexical) {
+                let bytes = super::keyed::json_len(&*resources).saturating_sub(before);
+                self.keyed.note_change(bytes);
+            }
         }
         let tags = match Tags::new(frame) {
             Ok(tags) => tags,

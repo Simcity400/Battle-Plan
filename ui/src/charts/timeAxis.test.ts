@@ -41,6 +41,13 @@ test('zooming in moves to quarters, months and days', () => {
   assert.deepEqual(months.labels.map(label => label.text), ['Nov 1940', 'Dec', 'Jan 1941', 'Feb', 'Mar', 'Apr']);
 });
 
+test('the first month label has room for the year it names', () => {
+  // 20 September has room for "Sep" but not for "Sep 1940".
+  const ticks = timeTicks(at(1940, 9, 20), at(1941), 320, measure);
+  assert.equal(ticks.level, 'month');
+  assert.deepEqual(ticks.labels.map(label => label.text), ['Oct 1940', 'Nov', 'Dec']);
+});
+
 test('hours before the calendar epoch give no ticks rather than invented dates', () => {
   assert.deepEqual(timeTicks(0, 1000, 800, measure).labels, []);
 });

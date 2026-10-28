@@ -125,6 +125,15 @@ test('stale parents, reused PIDs and delayed observers cannot tree-kill', async 
 
 });
 
+test('captures stay out of Git: outside the checkout or in its ignored captures folder', async () => {
+  const { repository } = await import('./settings.mjs');
+  const inside = path.join(repository, 'captures', 'parity-baselines');
+  assert.equal(cache.outsideRepository(inside), path.resolve(inside));
+  assert.throws(() => cache.outsideRepository(path.join(repository, 'ui', 'captures')), /outside Git/);
+  assert.throws(() => cache.outsideRepository(repository), /outside Git/);
+  assert.equal(cache.outsideRepository(tmpdir()), path.resolve(tmpdir()));
+});
+
 test('incomplete instrumentation and mismatched installed dependencies refuse', async () => {
   await assert.rejects(app.validateHook({ evaluate: async fn => { globalThis.window = { __hoi4Parity: { lists() {} } }; try { await fn(); } finally { delete globalThis.window; } } }), /capabilities/);
   const root = await mkdtemp(path.join(tmpdir(), 'parity-lock-check-'));

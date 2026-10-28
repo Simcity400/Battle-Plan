@@ -17,9 +17,9 @@ import { contentKey, resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
 import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { currentWarsAt, observationAt, validateWarsReply } from '../wars/warsData';
+import { currentWarsAt, observationAt, validateWarsReply, warContributions } from '../wars/warsData';
 import { OPTIONS, SHOW_CHOICES } from './definition';
-import { SCALE, chosenWar, contributionRows, readHourFor, rowLengths, shareText, sideAmount, toNumber, warGroup, warName } from './warContributionData';
+import { SCALE, chosenWar, contributionRows, readHourFor, rowLengths, shareText, sideAmount, toNumber, warName } from './warContributionData';
 import type { ContributionRow, SideTotal } from './warContributionData';
 import './warContribution.css';
 
@@ -64,7 +64,8 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   const shownWar = shownHour == null || shownHour === readHour ? war : asked.current.get(shownHour) ?? null;
   const current = shownHour == null ? null : currentWarsAt(exact.data, shownHour);
   const observation = shownWar && shownHour != null ? observationAt(shownWar, shownHour) : null;
-  const group = current ? warGroup(current.contributions, observation) : null;
+  // A war holding several native groups shows the largest within it, as Wars does.
+  const group = current ? warContributions(current.contributions, observation) : null;
   const rows = useMemo(() => group && !group.reason ? contributionRows(group) : [], [group]);
   const tags = useMemo(() => [...new Set(rows.flatMap(row => [...row.left.members, ...row.right.members].map(member => member.tag)))], [rows]);
   // Colours and names for every participant, read at the war's read hour itself: every

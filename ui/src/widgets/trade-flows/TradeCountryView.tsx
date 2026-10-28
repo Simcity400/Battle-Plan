@@ -45,12 +45,14 @@ export default function TradeCountryView({ prepared, holder, trade, resources, t
   hour: number | null; extent: [number, number]; playhead: number | null;
   colours: ReadonlyMap<number, string>; tokens: ChartTokens; active: boolean; onPick: (hour: number) => void;
   onContextMenu: (hour: number, x: number, y: number) => void;
-  prepared?: Pick<ReturnType<typeof useTradeFlows>, 'onSummaryView' | 'onHover' | 'onNavigateHour' | 'keyboardHour' | 'keyboardRevision' | 'hasExactHour'>;
+  prepared?: Pick<ReturnType<typeof useTradeFlows>, 'onSummaryView' | 'onHover' | 'navigateFlows' | 'keyboardHour' | 'keyboardRevision' | 'hasExactHour'>;
 }) {
   const known: readonly HourSpan[] = trade.reply.known;
   const decimals = trade.reply.decimals;
   const scale = 10 ** decimals;
   const country = useMemo(() => countryTrade(trade, holder, resources), [trade, holder, resources]);
+  const navigate = prepared?.navigateFlows;
+  const onNavigateHour = useMemo(() => navigate?.([...country.imports, ...country.exports].map(flow => flow.key)), [navigate, country]);
   const [visible, setVisible] = useState<Record<TradeDirection, readonly string[]>>({ imports: [], exports: [] });
   const onVisible = useMemo(() => ({
     imports: (ids: readonly string[]) => setVisible(before => ({ ...before, imports: ids })),
@@ -199,7 +201,7 @@ export default function TradeCountryView({ prepared, holder, trade, resources, t
       <TimeChart label={`${measureNote(measure)} over time, exports above and imports below, by resource`} extent={extent} branchStart={track.branch.firstHour}
         playhead={playhead} playback="cursor" afterPlayhead hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} onSummaryView={prepared?.onSummaryView} onHover={prepared?.onHover}
-        onNavigateHour={prepared?.onNavigateHour} keyboardHour={prepared?.keyboardHour} keyboardRevision={prepared?.keyboardRevision} keyHours={keyHours}
+        onNavigateHour={onNavigateHour} keyboardHour={prepared?.keyboardHour} keyboardRevision={prepared?.keyboardRevision} keyHours={keyHours}
         formatValue={(value, ticks) => formatAxisValue(Math.abs(value), ticks.map(Math.abs))}
         active={active} revision={dense.exports ?? dense.imports ?? stacks ?? measured} onPick={onPick} onContextMenu={onContextMenu}
         overlay={(ctx, frame, chartTokens) => { if (hour != null) drawPlayhead(ctx, frame, chartTokens, hour); }}

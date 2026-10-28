@@ -130,6 +130,90 @@ fn a_breakaway_that_splits_again_builds_one_tree_with_asymmetric_lists() {
 }
 
 #[test]
+fn a_later_rival_does_not_change_the_side_a_breakaway_broke_from() {
+    let mut state = Prepared::default();
+    record(&mut state, 90, 99, &ALL[..1], &[]);
+    record(&mut state, 100, 104, &ALL[..2], &[(2, 1)]);
+    record(&mut state, 105, 109, &ALL[..3], &[(2, 1), (3, 2)]);
+    // SPL, which broke from NEW, lists OLD only later.
+    record(&mut state, 110, 115, &ALL[..3], &[(2, 1), (3, 2), (3, 1)]);
+    let reply = wars(&mut state, 115, &[]);
+    assert_eq!(
+        reply.wars[0].sides.iter().map(|side| side.parent).collect::<Vec<_>>(),
+        [None, Some(0), Some(1)]
+    );
+}
+
+#[test]
+fn an_annexer_listed_only_after_the_annexation_was_not_a_side() {
+    let mut state = Prepared::default();
+    record(&mut state, 90, 99, &ALL[..3], &[]);
+    record(&mut state, 100, 110, &ALL[..3], &[(1, 2), (2, 1)]);
+    // SPL annexes NEW at 110 and only then becomes OLD's rival, in the same episode.
+    record(&mut state, 111, 120, &ALL[..3], &[(3, 1)]);
+    record(&mut state, 121, 125, &ALL[..1], &[]);
+    let reply = wars(
+        &mut state,
+        125,
+        &[annex(110, "SPL", "NEW", true), annex(121, "OLD", "SPL", true)],
+    );
+    let war = &reply.wars[0];
+    assert_eq!(war.sides.len(), 3);
+    assert_eq!((war.sides[2].tags[0].tag.as_str(), war.sides[2].first_hour), ("SPL", 111));
+    assert_eq!(war.sides[1].exit.as_ref().unwrap().kind, SideExitKind::AnnexedByOther);
+    assert_eq!(war.sides[2].exit.as_ref().unwrap().kind, SideExitKind::AnnexedBySide);
+    assert_eq!(war.outcome, None);
+}
+
+#[test]
+fn a_side_restored_after_its_annexation_was_not_defeated_by_it() {
+    let ended = |present: &[(u32, u32, &str)], lists: &[(u32, u32)], annexations: &[Annexation]| {
+        let mut state = Prepared::default();
+        record(&mut state, 100, 120, present, lists);
+        record(&mut state, 121, 125, &ALL[..1], &[]);
+        wars(&mut state, 125, annexations)
+    };
+    // Annexed by a side, restored, then annexed by an outsider: the last annexation decides.
+    let reply = ended(
+        &ALL[..2],
+        &[(1, 2), (2, 1)],
+        &[annex(110, "OLD", "NEW", true), annex(121, "OUT", "NEW", true)],
+    );
+    let exit = reply.wars[0].sides[1].exit.as_ref().unwrap();
+    assert_eq!((exit.kind, exit.hour), (SideExitKind::AnnexedByOther, 121));
+    assert_eq!(reply.wars[0].outcome, None);
+    // Annexed by a side, then annexing another: it was restored, so it did not leave.
+    let reply = ended(
+        &ALL[..3],
+        &[(1, 2), (2, 1), (3, 1)],
+        &[annex(105, "OLD", "NEW", true), annex(115, "NEW", "SPL", true)],
+    );
+    let war = &reply.wars[0];
+    assert_eq!(war.sides[1].exit, None);
+    assert_eq!(war.sides[2].exit.as_ref().unwrap().kind, SideExitKind::AnnexedBySide);
+    assert_eq!(war.outcome, None);
+    // Annexing a country outside the war restores it all the same.
+    let reply = ended(
+        &ALL[..2],
+        &[(1, 2), (2, 1)],
+        &[annex(110, "OLD", "NEW", true), annex(115, "NEW", "OUT", false)],
+    );
+    assert_eq!(reply.wars[0].sides[1].exit, None);
+    assert_eq!(reply.wars[0].outcome, None);
+    // Restored long after its war ended, it was still defeated in that war.
+    let mut state = Prepared::default();
+    record(&mut state, 100, 120, &ALL[..2], &[(1, 2), (2, 1)]);
+    record(&mut state, 121, 125, &ALL[..1], &[]);
+    record(&mut state, 400, 500, &ALL[..2], &[]);
+    let reply = wars(
+        &mut state,
+        500,
+        &[annex(121, "OLD", "NEW", true), annex(450, "NEW", "OUT", false)],
+    );
+    assert_eq!(reply.wars[0].outcome.as_ref().map(|outcome| outcome.winner), Some(0));
+}
+
+#[test]
 fn annexation_of_every_other_side_by_a_side_proves_a_winner() {
     let lists = [(1, 2), (2, 1)];
     let ended = |annexations: &[Annexation]| {

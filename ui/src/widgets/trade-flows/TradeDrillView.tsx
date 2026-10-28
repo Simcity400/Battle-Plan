@@ -29,8 +29,10 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
   hour: number | null; extent: [number, number]; playhead: number | null; known: readonly HourSpan[];
   colours: ReadonlyMap<number, string>; tokens: ChartTokens; identityNote?: string; active: boolean; onPick: (hour: number) => void;
   onContextMenu: (hour: number, x: number, y: number) => void;
-  prepared?: Pick<ReturnType<typeof useTradeFlows>, 'onSummaryView' | 'onHover' | 'onNavigateHour' | 'keyboardHour' | 'keyboardRevision' | 'hasExactHour'>;
+  prepared?: Pick<ReturnType<typeof useTradeFlows>, 'onSummaryView' | 'onHover' | 'navigateFlows' | 'keyboardHour' | 'keyboardRevision' | 'hasExactHour'>;
 }) {
+  const navigate = prepared?.navigateFlows;
+  const onNavigateHour = useMemo(() => navigate?.(flows.map(flow => flow.key)), [navigate, flows]);
   const [visible, setVisible] = useState<readonly string[]>([]);
   const [hovered, setHovered] = useState<{ hour: number; flows: readonly Flow[] } | null>(null);
   const hoverKey = useRef('');
@@ -118,7 +120,7 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
       <TimeChart label={`Selected trade contributors, ${measureNote(measure).toLowerCase()} over time`} extent={extent} branchStart={track.branch.firstHour}
         playhead={playhead} playback="cursor" afterPlayhead hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
         axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers} onSummaryView={prepared?.onSummaryView} onHover={prepared?.onHover}
-        onNavigateHour={prepared?.onNavigateHour} keyboardHour={prepared?.keyboardHour} keyboardRevision={prepared?.keyboardRevision} keyHours={stack?.hours ?? measured?.hours}
+        onNavigateHour={onNavigateHour} keyboardHour={prepared?.keyboardHour} keyboardRevision={prepared?.keyboardRevision} keyHours={stack?.hours ?? measured?.hours}
         active={active} revision={dense ?? stack ?? measured} onPick={onPick} onContextMenu={onContextMenu}
         overlay={(ctx, frame, chartTokens) => { if (hour != null) drawPlayhead(ctx, frame, chartTokens, hour); }}
         tooltip={at => {

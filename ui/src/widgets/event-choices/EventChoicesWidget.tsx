@@ -124,7 +124,7 @@ export default function EventChoicesWidget({ widget, runtime, active, onDiagnost
     {log.chips && <div className="log-chips"><ChipSet label="Event choices filters" chips={chips} selected={selected} max={chips.length}
       onToggle={key => setOption?.(key, !selected.includes(key))} /></div>}
     <LogList key={feed.identity} pages={kinds.length > 0 ? feed.pages : []} label="Event choices" layout="card" density={log.density} months={log.months}
-      preparedCoverage={feed.prefix?.coverage} rowHeight={cardHeight}
+      preparedCoverage={feed.prefix?.coverage} rowHeight={cardHeight} anchorRows
       animate={log.animate && live} playhead={live ? hour : null} onVisible={setVisible} onWantedPages={feed.onWantedPages}
       renderRow={renderRow} describe={row => choiceDescription(row.item, name(row))} tooltip={row => choiceTooltip(row.item, name(row))}
       menu={row => choiceJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))} empty={!kinds.length || match.known(from ?? track.branch.firstHour, hour!) ? "No recorded events match these settings." : MEMBERSHIP_PREPARING} />

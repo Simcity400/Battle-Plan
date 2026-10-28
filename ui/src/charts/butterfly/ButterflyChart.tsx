@@ -75,6 +75,8 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
   latest.current = { props, tokens, viewport };
   const hits = useRef<{ item: T; y: number; slot: number; left: readonly Span[]; right: readonly Span[] }[]>([]);
   const headerHeight = useRef(0);
+  // The bars' viewport ends here; the value axis below it is no row.
+  const rowsEnd = useRef(0);
   const axisX = useRef(0);
   const keyed = useRef<string | null>(null);
   const keyIntent = useRef(false);
@@ -153,6 +155,7 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
       const ticks = p.axis === false ? [] : butterflyTicks(scale, layout.half);
       const format = p.formatTick ?? formatAxisValue;
       const rowsBottom = layout.top + visible.height;
+      rowsEnd.current = rowsBottom;
       ctx.lineWidth = t.lineWidth.grid; ctx.strokeStyle = t.grid; ctx.font = axisFont; ctx.fillStyle = t.muted;
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       for (const tick of ticks) for (const side of tick ? [-1, 1] : [1]) {
@@ -279,7 +282,7 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
           if (!props.onSelect) return;
           const element = canvas.current!, rect = element.getBoundingClientRect();
           const point = toLocal(event.clientX, event.clientY, rect, element.clientWidth, element.clientHeight);
-          const hit = point.y >= headerHeight.current ? hits.current.find(hit => Math.abs(hit.y - point.y - root.current!.scrollTop) < hit.slot / 2) : undefined;
+          const hit = point.y >= headerHeight.current && point.y <= rowsEnd.current ? hits.current.find(hit => Math.abs(hit.y - point.y - root.current!.scrollTop) < hit.slot / 2) : undefined;
           if (hit) props.onSelect(hit.item, point.x >= axisX.current ? 'right' : 'left');
         }}
         onPointerMove={event => {
@@ -293,7 +296,7 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
           const element = canvas.current!, rect = element.getBoundingClientRect();
           const point = toLocal(event.clientX, event.clientY, rect, element.clientWidth, element.clientHeight);
           const hit = keyed.current ? hits.current.find(hit => hit.item.id === keyed.current)
-            : point.y >= headerHeight.current ? hits.current.find(hit => Math.abs(hit.y - point.y - root.current!.scrollTop) < hit.slot / 2) : undefined;
+            : point.y >= headerHeight.current && point.y <= rowsEnd.current ? hits.current.find(hit => Math.abs(hit.y - point.y - root.current!.scrollTop) < hit.slot / 2) : undefined;
           if (hit) open(hit.item, event.clientX, event.clientY);
         }} onKeyDown={event => {
           const items = props.items;

@@ -137,6 +137,18 @@ pub fn resource_inputs(
         .iter()
         .map(|state| (state.id, state.controller))
         .collect();
+    // A read covers every state of its slice with one row each.
+    let captured: BTreeSet<u32> = rows.iter().map(|row| row.state).collect();
+    for state in states
+        .iter()
+        .filter(|state| sampled(state.id) && !captured.contains(&state.id))
+    {
+        report.difference(
+            format!("StateResourceInputs.{}", state.id),
+            "absent",
+            "the row of a state SliceReads dates to this hour",
+        );
+    }
     let mut matched = 0;
     for row in rows.iter().filter(|row| sampled(row.state)) {
         let subject = format!("StateResourceInputs.{}", row.state);

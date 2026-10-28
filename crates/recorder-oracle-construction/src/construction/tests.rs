@@ -1171,9 +1171,14 @@ fn resource_inputs_compare_origins_and_infrastructure_levels() {
     );
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
     // States read at an earlier hour are named, not compared.
-    let report = run(&[input(2, 0, None)], &|state| state != 2);
-    assert!(report.differences.is_empty());
-    assert_eq!(report.compared_tables["StateResourceInputs"], 0);
+    let earlier = [input(2, 0, None), input(3, 0, None), input(4, 1, None)];
+    let report = run(&earlier, &|state| state != 2);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["StateResourceInputs"], 2);
+    // A state read at this hour without its row is missing, not skipped.
+    let report = run(&exact[..2], &|_| true);
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    assert!(report.differences[0].contains("StateResourceInputs.4"));
 }
 
 #[test]
@@ -3109,6 +3114,30 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
     assert_eq!(report.compared_tables["ResourceRights"], 1);
     assert_eq!(report.compared_tables["TradeRoutes"], 1);
     assert_eq!(report.compared_tables["ConvoyClients"], 2);
+    // An origin list that is neither own nor rights is refused, not indexed.
+    let mut stray = origin.clone();
+    stray.list = 2;
+    let error = resource_map(
+        &ResourceMapRows {
+            origins: std::slice::from_ref(&stray),
+            rights: &rights,
+            clients: &[],
+            routes: &[],
+            regional: &[],
+            reads: &reads,
+            resources: &resources,
+        },
+        &saved,
+        &economy,
+        &countries,
+        &links,
+        &names,
+        80_000,
+        10,
+        &mut Report::default(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("list 2"), "{error}");
     let mut reordered = origin.clone();
     reordered.ordinal = 1;
     let report = run(

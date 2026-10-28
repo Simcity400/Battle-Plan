@@ -1850,8 +1850,34 @@ fn raids_target_names_use_original_tags_and_empty_qualified_names_mask_bare_keys
         ]));
     let mut scan = Scan::new();
     scan.observe(&observed, Some(&content)).unwrap();
+    // Only the reserved naming changes the next hour: the target is named again.
+    let mut next = observed.clone();
+    next.hour = 101;
+    *next.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                tag: b"ZZ0".to_vec(),
+                name_tag: b"unrelated_generator".to_vec(),
+                original_tag_reference: Recorded::Value(Some(1)),
+                original_tag: Recorded::Value(Some(b"other/mod".to_vec())),
+                ..Default::default()
+            },
+        ]));
+    let mut changes = dashboard_base::prepared::frame_changes::FrameChanges {
+        rows_changed: [false; replay_data::rows::TABLE_COUNT],
+        table_read: [true; replay_data::rows::TABLE_COUNT],
+        slot_read: [true; replay_data::rows::TABLE_COUNT],
+        updates: None,
+    };
+    changes.rows_changed[TableId::ReservedCountryNaming.index()] = true;
+    scan.observe_changed(&next, Some(&content), Some(&changes))
+        .unwrap();
     let result = scan.finish();
     assert!(result.episodes[0].runs[0].target_name.is_none());
+    assert_eq!(
+        result.episodes[0].runs[1].target_name.as_deref(),
+        Some("Original target")
+    );
     assert!(result.warnings.iter().any(|line| {
         line.contains("ReservedCountryNaming.original_tag_reference not recorded")
             && line.contains("1 raid facts")

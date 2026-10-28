@@ -106,7 +106,7 @@ export default function BattleLog<T extends BattleRow>({ rows, label, labels, co
       width: compactSides ? 'calc(var(--space-6) * 7)' : 'minmax(160px, 2fr)', render: sides },
     { key: 'winner', header: labels.winner, label: labels.winner, value: row => 'unknown' in row.winner ? null : battleWinner(row), width: 'max-content', priority: 2,
       renderMissing: true, render: row => <span title={battleWinner(row)}>{'unknown' in row.winner ? '—' : battleWinner(row)}</span> },
-  ], [labels, measures, country, label, compactSides, view, live, formatLoss, description]);
+  ], [labels, measures, country, label, compactSides, view, live, formatLoss, description, placePending]);
   let tableParity: TableProps<T>['parity'];
   let logParity: LogListProps<T>['paritySemantic'];
   if (import.meta.env.MODE === 'parity') {

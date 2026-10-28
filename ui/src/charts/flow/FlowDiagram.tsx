@@ -92,7 +92,7 @@ export default function FlowDiagram(props: FlowDiagramProps) {
   // After Escape, no tooltip until the pointer moves again.
   const quiet = useRef(false);
   const [spoken, setSpoken] = useState('');
-  const showKeyed = useRef<() => void>(() => {});
+  const showKeyed = useRef<(explicit?: boolean) => void>(() => {});
   const flagLoaded = useRef(() => { if (task.current) scheduler.wake(task.current); showKeyed.current(); });
 
   useEffect(() => {
@@ -308,12 +308,12 @@ export default function FlowDiagram(props: FlowDiagramProps) {
     const shape = frame.links.find(item => item.id === stop.id);
     return shape ? { hit: { kind: 'link', link: shape.link }, x: (shape.x0 + shape.x1) / 2, y: (shape.y0 + shape.y1 + shape.width) / 2 } : null;
   };
-  // Only while no other chart holds the shared tooltip.
+  // Only while no other chart holds the shared tooltip, unless a key just chose the stop.
   const ownsTooltip = () => { const held = tooltipStore.get(); return held == null || held.owner === owner; };
-  showKeyed.current = () => {
+  showKeyed.current = (explicit = false) => {
     const stop = keyed.current;
     const element = canvas.current;
-    if (!stop || !element || !latest.current.active || !ownsTooltip()) return;
+    if (!stop || !element || !latest.current.active || (!explicit && !ownsTooltip())) return;
     const found = stopHit(stop);
     // A stop playback took away is left: the tooltip closes.
     if (!found) { keyed.current = null; hideTooltip(owner); setSpoken(''); return; }
@@ -339,7 +339,7 @@ export default function FlowDiagram(props: FlowDiagramProps) {
       if (!stops.length) return;
       keyed.current = stops[Math.max(0, Math.min(stops.length - 1, next))];
       quiet.current = false;
-      showKeyed.current();
+      showKeyed.current(true);
       if (task.current) scheduler.wake(task.current);
     };
     if (event.key === 'ArrowDown' || event.key === 'ArrowRight') return go(index < 0 ? 0 : index + 1);

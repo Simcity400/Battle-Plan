@@ -35,11 +35,14 @@ export default function AirStatisticsWidget({ widget, runtime, active, onDiagnos
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const channel = data?.channels.find(item => item.id === channelId);
-  const at = useMemo(() => data && tag ? pairsAt(data, tag, channelId, hour) : null, [data, tag, channelId, hour]);
   const chosen = contentSet(options.regions).map(contentKey);
   const chosenTheatres = contentSet(options.theatres).map(contentKey);
   const theatres = useAirTheatres(runtime, track, 'air-statistics', params, hour, active && chosenTheatres.length > 0);
-  const inTheatres = theatreRegions(theatres ?? undefined, chosenTheatres);
+  // Filtered by theatre, rows are read at the hour their membership answers.
+  const rowsHour = chosenTheatres.length && theatres.hour !== undefined ? theatres.hour : hour;
+  const at = useMemo(() => data && tag ? pairsAt(data, tag, channelId, rowsHour) : null, [data, tag, channelId, rowsHour]);
+  const theatresKnown = !chosenTheatres.length || !!theatres.theatres;
+  const inTheatres = theatreRegions(theatres.theatres ?? undefined, chosenTheatres);
   const regionSet = chosen.length ? new Set(chosen.filter(region => !inTheatres || inTheatres.has(region))) : inTheatres;
   const top = chosen.length ? null : Math.max(1, Number(options.regionCount) || 10);
   const rows = useMemo(() => at ? rankedPairs(at.rows, regionSet, top) : [],
@@ -55,7 +58,7 @@ export default function AirStatisticsWidget({ widget, runtime, active, onDiagnos
     leftText: row.ours === null ? '—' : scaled(row.ours, channel.divisor), rightText: row.enemy === null ? '—' : scaled(row.enemy, channel.divisor),
     ratioText: pairRatio(row, channel.divisor), segment: `${channel.id}:${readHour ?? ''}`, data: row,
   })), [rows, channel, colour, tag, readHour, hour]);
-  useParityRows(anchor, () => ({ kind: 'chart', label: 'Air statistics exact values', complete: !!data, total: rows.length,
+  useParityRows(anchor, () => ({ kind: 'chart', label: 'Air statistics exact values', complete: !!data && theatresKnown, total: rows.length,
     rows: rows.map(row => ({ region: row.region, ours: row.ours?.toString() ?? null, enemy: row.enemy?.toString() ?? null })) }));
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   const readDate = readHour === undefined ? null : dayLabel(readHour);
@@ -76,6 +79,9 @@ export default function AirStatisticsWidget({ widget, runtime, active, onDiagnos
     {picker}
     <PreparedKey pending={prefix?.pending} approximate={prefix?.approximate} />
     {!channel ? <WidgetState kind="unavailable" message="This statistic is not in this recording. Choose another in settings." />
+      : !theatresKnown ? theatres.error ? <WidgetState kind="error" what="the air theatres" detail={theatres.error} onRetry={theatres.retry} />
+        : theatres.theatres === undefined ? <WidgetState kind="loading" label="Loading air theatres…" />
+        : <WidgetState kind="unavailable" message="Air theatre membership was not recorded at this time." />
       : !items.length ? <WidgetState kind="empty" message={`${country ?? 'This country'} has no air statistics yet.`} />
       : <ButterflyChart key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, channel.id])} label="Air statistics by region"
         items={items} slots={top ?? items.length} labelCandidates={data.regions.map(region => region.name)}

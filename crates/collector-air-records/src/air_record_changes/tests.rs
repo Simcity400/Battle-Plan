@@ -11,18 +11,14 @@ fn record(wing_id: u32, date: i32) -> AirCombatRecord {
 
 fn touched_with(holders: usize) -> Touched {
     let touched = Touched::new();
-    touched
-        .set
-        .store(Box::into_raw(Set::new(holders).unwrap()), Ordering::SeqCst);
+    unsafe { touched.replace(Some(Set::new(holders).unwrap())) };
     touched.observing.store(true, Ordering::SeqCst);
     touched
 }
 
 fn free(touched: &Touched) {
-    let set = touched.set.swap(std::ptr::null_mut(), Ordering::SeqCst);
-    if !set.is_null() {
-        drop(unsafe { Box::from_raw(set) });
-    }
+    unsafe { touched.replace(None) };
+    assert_eq!(touched.capacity(), 0);
 }
 
 /// A take names each touched holder once and certifies the interval only
@@ -53,9 +49,7 @@ fn a_take_names_each_touched_holder_once() {
 #[test]
 fn a_never_installed_observer_certifies_no_interval() {
     let touched = Touched::new();
-    touched
-        .set
-        .store(Box::into_raw(Set::new(0).unwrap()), Ordering::SeqCst);
+    unsafe { touched.replace(Some(Set::new(0).unwrap())) };
     let mut offered = None;
     let mut out = Vec::new();
     for _ in 0..3 {

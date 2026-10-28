@@ -9,7 +9,9 @@ import { startUnseen } from '../../charts/timeline/runState';
 import { tooltipText } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useRowTooltips } from '../../charts/useRowTooltips';
+import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
@@ -40,25 +42,34 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
   const founded = life[0]?.firstHour ?? null;
   const from = founded == null ? at : Math.min(at, Math.max(track.branch.firstHour, founded));
   // Runs split across unrecorded hours; only a different country or name is a change.
-  const leaders = changes(view.leaders.filter(run => run.firstHour <= at), run => run.tag);
+  const ledBy = view.leaders.filter(run => run.firstHour <= at);
+  const leaders = changes(ledBy, run => run.tag);
   const leader = leaderAt(view.leaders, at);
   const leaderRun = leaders.at(-1);
   const formerLeader = leaders.length > 1 ? leaders[leaders.length - 2].tag : null;
+  // The former leader as it was when it last led: a later holder of its tag is another country.
+  const formerLeaderHour = formerLeader && leaderRun ? ledBy[ledBy.indexOf(leaderRun) - 1].lastHour : at;
   const nameRuns = changes(names.filter(run => run.firstHour <= at && run.name), run => run.name);
   const formerName = nameRuns.length > 1 ? nameRuns.at(-2)! : null;
   const events = useMemo(() => joinEvents(view, at), [view, at]);
-  const memberTag = useCallback((member: MemberView) => {
-    const last = member.stretches.at(-1)?.lastHour ?? at;
-    return tagAt(view, member, Math.min(at, last));
-  }, [view, at]);
+  // A member is named as it was when it last belonged, at or before the hour shown.
+  const memberHour = useCallback((member: MemberView) =>
+    Math.min(at, member.stretches.filter(stretch => stretch.firstHour <= at).at(-1)?.lastHour ?? at), [at]);
+  const memberTag = useCallback((member: MemberView) => tagAt(view, member, memberHour(member)), [view, memberHour]);
   const wanted = useMemo(() => {
-    const tags = new Set<string>();
-    for (const event of events) for (const member of event.members) { const tag = memberTag(member); if (tag) tags.add(tag); }
-    for (const tag of [leader, formerLeader]) if (tag) tags.add(tag);
-    return [...tags].map(tag => ({ hour: at, tag }));
-  }, [events, memberTag, leader, formerLeader, at]);
-  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
+    const facts = new Map<string, { hour: number; tag: string }>();
+    const add = (tag: string | null, hour: number) => { if (tag) facts.set(JSON.stringify([hour, tag]), { hour, tag }); };
+    for (const event of events) for (const member of event.members) add(memberTag(member), memberHour(member));
+    add(leader, at);
+    add(formerLeader, formerLeaderHour);
+    return [...facts.values()];
+  }, [events, memberTag, memberHour, leader, formerLeader, formerLeaderHour, at]);
+  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active, Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size));
   const label = labelAt(at);
+  const memberLabel = useCallback((member: MemberView) => {
+    const tag = memberTag(member);
+    return tag ? labelAt(memberHour(member))(tag) : null;
+  }, [memberTag, memberHour, labelAt]);
   const manifest = data ? manifestGoal(data) : null;
   const groups = useMemo(() => data ? goalGroups(data, manifest) : [], [data, manifest]);
   const resources = useMemo(() => extracted(data?.resources ?? null), [data]);
@@ -80,8 +91,8 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
     if (kind === 'member') {
       const member = view.members.find(entry => entry.key === id);
       const tag = member && memberTag(member);
-      if (!member || !tag) return null;
-      const country = label(tag);
+      const country = member && memberLabel(member);
+      if (!member || !tag || !country) return null;
       const current = member.stretches.some(span => span.firstHour <= at && at <= span.lastHour);
       const joined = member.stretches[0].firstHour;
       const since = startUnseen(joined, track.branch.firstHour, gaps) ? `before ${dayLabel(joined)}` : dayLabel(joined);
@@ -94,7 +105,7 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
         subtitle: `${usNumber.format(entry.value)} extracted`, rows: [] } : null;
     }
     return null;
-  }, [data, goalTip, view.members, memberTag, label, at, leader, track.branch.firstHour, gaps, resources]);
+  }, [data, goalTip, view.members, memberTag, memberLabel, at, leader, track.branch.firstHour, gaps, resources]);
   const { rowProps, descriptionId } = useRowTooltips<string>({ owner: `faction-drill:${view.id}`, active, content, revision: `${at}:${data?.hour ?? ''}`, onMenu: noMenu });
   const hover = (key: string) => {
     const shown = content(key);
@@ -114,7 +125,7 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
         <p>{founded != null && <span>{startUnseen(founded, track.branch.firstHour, gaps) ? `Founded before ${dayLabel(founded)}` : `Founded ${dayLabel(founded)}`}</span>}
           {leaderLabel && <span className="faction-leader">led by <CountryFlagUrl className="faction-flag" url={leaderLabel.flag} reason={leaderLabel.flagReason} pending={leaderLabel.flagPending} />
             <b>{leaderLabel.name}</b>{formerLeader && leaderRun && <> since {dayLabel(leaderRun.firstHour)}</>}</span>}</p>
-        {formerLeader && <p className="faction-former">Previously led by {label(formerLeader).name}</p>}
+        {formerLeader && <p className="faction-former">Previously led by {labelAt(formerLeaderHour)(formerLeader).name}</p>}
         {formerName && <p className="faction-former">Formerly {formerName.name}, renamed {dayLabel(nameRuns.at(-1)!.firstHour)}</p>}
       </div>
       <div className="faction-stats">
@@ -124,7 +135,7 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
     </div>
     {!exists ? <WidgetState kind="unavailable" message="This faction does not exist at this time." /> : <>
       <Section title="Members" note="joined over time">
-        <MemberChart view={view} from={from} at={at} events={events} memberTag={memberTag} label={label} rowProps={rowProps} hover={hover} leaders={leaders} />
+        <MemberChart view={view} from={from} at={at} events={events} memberLabel={memberLabel} rowProps={rowProps} hover={hover} leaders={leaders} />
       </Section>
       {product.error ? <WidgetState kind="error" detail={product.error} onRetry={product.retry} />
         : !data ? <WidgetState kind="loading" label="Loading faction details…" /> : <>
@@ -192,10 +203,10 @@ function Manifest({ goal }: { goal: FactionDetailReply['goals'][number] }) {
   </div>;
 }
 
-function MemberChart({ view, from, at, events, memberTag, label, rowProps, hover, leaders }: {
-  view: FactionView; from: number; at: number; events: ReturnType<typeof joinEvents>; memberTag: (member: MemberView) => string | null;
-  label: ReturnType<ReturnType<typeof useCountryLabelsAt>['labelAt']>; rowProps: (key: string) => object; hover: (key: string) => ReactNode;
-  leaders: FactionView['leaders'];
+function MemberChart({ view, from, at, events, memberLabel, rowProps, hover, leaders }: {
+  view: FactionView; from: number; at: number; events: ReturnType<typeof joinEvents>;
+  memberLabel: (member: MemberView) => ReturnType<CountryLabel> | null;
+  rowProps: (key: string) => object; hover: (key: string) => ReactNode; leaders: FactionView['leaders'];
 }) {
   const span = Math.max(1, at - from);
   const steps = countSteps(view, from, at);
@@ -222,8 +233,7 @@ function MemberChart({ view, from, at, events, memberTag, label, rowProps, hover
       {events.map(event => <span key={event.hour} className="faction-growth-join" style={{ left: `${x(event.hour) / 10}%`, top: y(valueAt(event.hour)),
         transform: `translate(${edge(x(event.hour) / 10)}, calc(-100% - 3px))` }}>
         {event.members.map(member => {
-          const tag = memberTag(member);
-          const country = tag ? label(tag) : null;
+          const country = memberLabel(member);
           const current = member.stretches.some(stretch => stretch.firstHour <= at && at <= stretch.lastHour);
           return <span key={member.key} className={`faction-growth-flag${current ? '' : ' is-former'}`} {...rowProps(`member:${member.key}`)}>
             <CountryFlagUrl className="faction-flag" url={country?.flag} reason={country?.flagReason} pending={country?.flagPending} />{hover(`member:${member.key}`)}</span>;

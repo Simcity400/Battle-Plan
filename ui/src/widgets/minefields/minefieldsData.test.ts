@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { minesAt, minesText, orderRegions, ownerAmount, ownerSeries, refusedOwnersAt, validateMinefields, validateReports } from './minefieldsData.ts';
+import { minesAt, minesText, orderRegions, ownerAmount, ownerSeries, refusedOwnersAt, regionRuns, validateMinefields, validateReports } from './minefieldsData.ts';
 
 const reply = validateMinefields({
   window: { firstHour: 0, lastHour: 20, known: [{ firstHour: 0, lastHour: 10 }], reads: [[0, 10, 0]], series: [
@@ -64,4 +64,17 @@ test('a refused owner vector, named or not, leaves the inventory incomplete rath
 
 test('the reports reply carries the region as the backend number', () => {
   assert.throws(() => validateReports({ hour: 3, readHour: 3, region: '5', warnings: [], reports: [] }), /malformed/u);
+});
+
+test("a region's drill runs keep witnessed zeros and leave refused hours unknown", () => {
+  const history = validateMinefields({
+    window: { firstHour: 0, lastHour: 20, known: [{ firstHour: 0, lastHour: 20 }], reads: [[0, 20, 0]], series: [
+      { name: 'GER@7|5', runs: [[2, 4, '300000', false], [8, 9, '100000', false]] },
+      { name: 'GER@7|extent', runs: [[0, 11, '40', true], [16, 20, '3', true]] },
+      { name: 'GER@7|refused', runs: [[12, 15, '1', true]] },
+    ] },
+    regions: [{ id: '5', name: 'North Sea' }], scale: 100000, warnings: [],
+  }).window;
+  assert.deepEqual(regionRuns(ownerSeries(history).get('GER@7')!, '5'), [
+    [0, 1, '0', true], [2, 4, '300000', false], [5, 7, '0', false], [8, 9, '100000', false], [10, 11, '0', false]]);
 });

@@ -60,21 +60,24 @@ export function timeTicks(firstHour: number, lastHour: number, plotWidth: number
   const perHour = plotWidth / Math.max(1, lastHour - firstHour);
   const grid = periods.map(period => period.start).filter(hour => hour > firstHour && hour < lastHour);
   const labels: TimeTicks['labels'] = [];
+  // Months and quarters name the year only on January; the first label names it too, so a view
+  // without a visible January still says which year it is. It must fit with its year.
+  const named = (period: TimePeriod, hour: number) => {
+    const year = !labels.length && (level === 'month' || level === 'quarter') ? gameDate(Math.floor(hour))?.year : undefined;
+    return year != null && !period.label.endsWith(` ${year}`) ? `${period.label} ${year}` : period.label;
+  };
   for (const period of periods) {
     // Quarters are labelled at their first month's tick, where the name belongs.
     if (level === 'quarter') {
-      const half = (measure(period.label) / 2 + 4) / perHour;
-      if (period.start - half >= firstHour && period.start + half <= lastHour) labels.push({ hour: period.start, text: period.label });
+      const text = named(period, period.start);
+      const half = (measure(text) / 2 + 4) / perHour;
+      if (period.start - half >= firstHour && period.start + half <= lastHour) labels.push({ hour: period.start, text });
       continue;
     }
     const from = Math.max(period.start, firstHour);
     const to = Math.min(period.end, lastHour);
-    if ((to - from) * perHour >= measure(period.label) + 8) labels.push({ hour: (from + to) / 2, text: period.label });
+    const text = named(period, (from + to) / 2);
+    if ((to - from) * perHour >= measure(text) + 8) labels.push({ hour: (from + to) / 2, text });
   }
-  // Months and quarters name the year only on January; make sure the first label shows
-  // it too, so a view without a visible January still says which year it is.
-  const firstLabel = labels[0];
-  const year = firstLabel && gameDate(Math.floor(firstLabel.hour))?.year;
-  if ((level === 'month' || level === 'quarter') && firstLabel && year != null && !firstLabel.text.endsWith(` ${year}`)) firstLabel.text = `${firstLabel.text} ${year}`;
   return { level, grid, labels };
 }

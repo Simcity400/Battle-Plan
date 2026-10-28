@@ -624,7 +624,8 @@ fn native_completion_self_check_refuses_live_or_future_outcomes() {
         hour: 120,
         cancelled: true,
     }));
-    assert_eq!(checked(&[f.clone()]).differences.len(), 1); // still in queue
+    // Still in queue: its outcome, and the queued line's missing live row.
+    assert_eq!(checked(&[f.clone()]).differences.len(), 2);
     *f.tables[TableId::RailwayConstruction.index()] =
         TableView::Complete(TableRows::RailwayConstruction(Vec::new()));
     let report = checked(&[f.clone()]);
@@ -638,6 +639,31 @@ fn native_completion_self_check_refuses_live_or_future_outcomes() {
         cancelled: false,
     }));
     assert_eq!(checked(&[f]).differences.len(), 1);
+}
+
+#[test]
+fn a_queued_line_without_a_live_output_row_is_a_difference() {
+    let mut frames = [frame(100, 0, 0, 1, false), frame(124, 0, 0, 1, false)];
+    for f in &mut frames {
+        let TableView::Complete(TableRows::BuildingConstruction(queue)) =
+            &mut *f.tables[TableId::BuildingConstruction.index()]
+        else {
+            unreachable!()
+        };
+        queue.push(BuildingConstructionRow {
+            id: 2,
+            ..queue[0].clone()
+        });
+    }
+    let report = checked(&frames);
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+    assert!(
+        report
+            .differences
+            .iter()
+            .all(|difference| difference.contains("ConstructionLineOutput 2 is queued"))
+    );
+    assert_eq!(report.compared_tables["ConstructionLineOutput"], 1);
 }
 
 #[test]

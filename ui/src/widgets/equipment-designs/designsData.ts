@@ -40,12 +40,12 @@ function seenAt(reply: Pick<ProductionCatalogueReply, 'known' | 'designsFrom'>, 
 }
 
 /** When the obsolete flag was first read in its current stretch: the start of the
- * run holding it at `hour`, walked back over earlier runs that held it too. Only a
- * current flag read the hour before bounds it from below. */
+ * run holding it at `hour`, walked back over adjoining earlier runs that held it too.
+ * Only a current flag read the hour before bounds it from below. */
 function obsoleteSeen(reply: ProductionCatalogueReply, runs: DesignHistory['obsolete'], hour: number): DesignSeen | null {
   let index = runs.findIndex(run => run[0] <= hour && hour <= run[1]);
   if (index < 0 || runs[index][2] !== '1') return null;
-  while (index > 0 && runs[index - 1][2] === '1') index--;
+  while (index > 0 && runs[index - 1][2] === '1' && runs[index - 1][1] === runs[index][0] - 1) index--;
   const before = runs[index - 1];
   return seenAt(reply, runs[index][0], !!before && before[2] === '0' && before[1] === runs[index][0] - 1);
 }

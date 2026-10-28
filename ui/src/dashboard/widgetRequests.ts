@@ -76,10 +76,16 @@ export const occupationReserveRequest = (widget: WidgetSpec, track: Track) =>
   track && resolveOptions(OCCUPATION, widget.options).show !== 'breakdown'
     ? request(track, 'occupation-reserve-manpower', requests.occupationRace(track.branch.id, chosenTags(widget))) : null;
 
-export function intelCoverageRequest(widget: WidgetSpec, track: Track) {
+/** How many of the most active countries the matrix shows: a Top countries group's count, else Countries shown. */
+export function intelShown(widget: WidgetSpec): number {
+  const countries = widget.countries;
+  return countries.kind === 'group' && countries.group.type === 'top' ? countries.group.count : Number(resolveOptions(INTEL, widget.options).mostCountries) || 12;
+}
+/** `tags`: the countries chosen, or a group's members over the branch; none asks for the most active. */
+export function intelCoverageRequest(widget: WidgetSpec, track: Track, tags: readonly string[] | undefined = chosenTags(widget)) {
   const options = resolveOptions(INTEL, widget.options);
   return track && options.show !== 'pair'
-    ? request(track, 'intel-network-coverage', requests.intelMatrix(track.branch.id, Number(options.mostCountries) || 12, chosenTags(widget))) : null;
+    ? request(track, 'intel-network-coverage', requests.intelMatrix(track.branch.id, intelShown(widget), tags)) : null;
 }
 
 /** The yard product each yard widget reads. */

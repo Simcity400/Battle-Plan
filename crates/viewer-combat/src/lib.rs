@@ -219,12 +219,11 @@ impl Scope {
     /// contents, or another resolved viewer's, are not this window's.
     fn holds_at(&self, now: &Scope) -> bool {
         // Only land tactics have scripted unit-bonus icons, and land windows
-        // refresh at `now`. A local icon toggle does not end a naval hold.
+        // refresh at `now`. A local icon or playback toggle does not end a naval hold.
         self.branch == now.branch
             && self.selection == now.selection
             && self.perspective == now.perspective
             && self.viewer == now.viewer
-            && self.playing == now.playing
             && self.hour <= now.hour
     }
 
@@ -1108,6 +1107,26 @@ mod tests {
             "held simulation operands stay at their read hour"
         );
         assert!(kept.1.is_none());
+    }
+
+    #[test]
+    fn a_playback_toggle_refreshes_the_key_without_ending_a_naval_hold() {
+        let read = scope(0, 10, 1);
+        let mut toggled = read.clone();
+        toggled.playing = true;
+        assert!(!read.matches_request(
+            toggled.branch,
+            toggled.hour,
+            toggled.selection,
+            &toggled.perspective,
+            toggled.playing,
+            toggled.nato,
+        ));
+        toggled.hour = 12;
+        let (contents, note) = hold(Some((read, Bindings::default())), &toggled, 2, None)
+            .expect("a playback toggle keeps a disengaged naval window");
+        assert_eq!(contents.map(|(at, _)| at.hour), Some(10));
+        assert!(note.is_none());
     }
 
     use super::*;

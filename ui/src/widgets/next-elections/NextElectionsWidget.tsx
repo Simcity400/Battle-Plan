@@ -108,6 +108,8 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   if (!prepared) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   if (!read) return <>{groupFailure}<WidgetState kind="unavailable" message="Election schedules were not recorded at this date." /></>;
   if (!rows.length && !match.known(hour)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  // A country whose eligibility was not read may hold elections: no row is not proof of none.
+  if (!rows.length && view?.unknown) return <>{groupFailure}<WidgetState kind="unavailable" message="Election eligibility was not recorded at this date." /></>;
   if (!rows.length) return <>{groupFailure}<WidgetState kind="empty" icon="ballot" message="No country holds elections at this date." /></>;
   return <div className="next-elections">{groupFailure}
     <Table key={`${track.source.id}:${track.branch.id}`} label="Next elections" rows={rows} columns={columns} rowKey={rowKey} tieKey={tieKey}

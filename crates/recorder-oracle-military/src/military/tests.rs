@@ -1068,8 +1068,8 @@ fn naval_units_compare_locations_and_missing_rows_despite_membership_exclusions(
                 override_set_programmatically: None,
                 equipment: None,
             }),
-            manpower: None,
-            max_manpower: None,
+            manpower: Some(0),
+            max_manpower: Some(0),
 
             has_criticals: false,
             id: 15,
@@ -1137,6 +1137,8 @@ fn naval_units_compare_locations_and_missing_rows_despite_membership_exclusions(
                 ..Default::default()
             })
             .into(),
+            acquired_manpower: Some(0).into(),
+            required_manpower: Some(0).into(),
             id: 15,
             task_force: 14,
             strength: 1,
@@ -1253,6 +1255,12 @@ fn naval_combats_compare_locations_and_missing_rows_despite_membership_exclusion
 /// One saved ship with 30.00999 experience beside a recorded row holding
 /// `recorded`, compared at its display step.
 fn ship_experience_report(recorded: i64) -> Report {
+    ship_report(recorded, Some(0))
+}
+
+/// [`ship_experience_report`] with `crew` as the recorded and saved manpower
+/// fields; `None` is a refused crew read beside a save without the keys.
+fn ship_report(recorded: i64, crew: Option<i32>) -> Report {
     let membership = membership();
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
     let owner = saved.countries.keys().next().unwrap().clone();
@@ -1298,8 +1306,8 @@ fn ship_experience_report(recorded: i64) -> Report {
                 override_set_programmatically: None,
                 equipment: None,
             }),
-            manpower: None,
-            max_manpower: None,
+            manpower: crew,
+            max_manpower: crew,
 
             has_criticals: false,
             id: 15,
@@ -1345,6 +1353,8 @@ fn ship_experience_report(recorded: i64) -> Report {
                 ..Default::default()
             })
             .into(),
+            acquired_manpower: crew.into(),
+            required_manpower: crew.into(),
             id: 15,
             task_force: 14,
             experience: recorded,
@@ -1372,6 +1382,14 @@ fn ship_experience_compares_at_its_display_step() {
     assert_differences(
         &ship_experience_report(2_990_000),
         &["type=15 id=0.experience"],
+    );
+}
+
+#[test]
+fn a_refused_ship_crew_read_is_a_difference_beside_a_save_without_the_keys() {
+    assert_differences(
+        &ship_report(3_000_000, None),
+        &["type=15 id=0.manpower", "type=15 id=0.max_manpower"],
     );
 }
 

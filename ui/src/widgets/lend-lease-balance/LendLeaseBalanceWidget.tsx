@@ -11,6 +11,7 @@ import { pendingLayer } from '../../charts/prepared';
 import { PreparedKey } from '../../charts/PreparedKey';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
+import { extentOfAll } from '../../charts/series';
 import type { Run } from '../../charts/series';
 import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
@@ -52,8 +53,13 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const anchor = useRef<HTMLDivElement>(null);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const [picked, setPicked] = useState<{ holder: string; tag: string } | null>(null);
+  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id]);
+  const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
+  const [storedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const [storedPick, setPicked] = useState<{ owner: object; holder: string; tag: string } | null>(null);
+  // A holder belongs to the recording it was picked in.
+  const picked = storedPick?.owner === owner ? storedPick : null;
+  const drill = picked ? storedDrill : CLOSED;
   const needsGroups = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: LEND_LEASE_BALANCE,
@@ -84,7 +90,7 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
     ] };
   };
   const open = (item: BalanceItem) => {
-    setPicked({ holder: item.row.holder, tag: item.row.tag });
+    setPicked({ owner, holder: item.row.holder, tag: item.row.tag });
     dispatch({ type: 'open', breakdown: PARTNERS.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
   const playbackHour = Math.floor(runtime.clock.getHour()) + (track?.axisOffset ?? 0);
@@ -164,7 +170,7 @@ function Partners({ widget, runtime, active, holder, tag, measure, hour, onPick 
     const ends = lines.flatMap(line => { const end = drawLine(ctx, frame, chartTokens, line.plotted, line.color, { until: state.playhead ?? undefined, held: true });
       return end ? [{ text: line.label, y: end.y, from: end.y, color: line.color }] : []; });
     drawEndLabels(ctx, frame, chartTokens, ends);
-  } }], [lines, pending]);
+  }, extent: x => extentOfAll(lines.map(line => line.plotted), x[0], x[1]) }], [lines, pending]);
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading lend-lease…" />;
   return <div className="lend-lease-partners">

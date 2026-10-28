@@ -26,7 +26,8 @@ test('prepared keyboard stops queue exact reads, use their hour for Jump, and di
     const requests: { from: number; forward: boolean; resolve: (hour: number | null) => void }[] = [];
     const shown: number[] = [], jumped: number[] = [];
     const props: TimelineProps = { label: 'Autonomy', revision: 0, extent: [0, 20], playhead: null, showIcons: false, showNames: false, active: true,
-      lanes: [{ id: 'holder', label: 'Holder', spans: [{ id: 'level', firstHour: 0, lastHour: 20, label: 'Level' }] }],
+      lanes: [{ id: 'holder', label: 'Holder', spans: [{ id: 'level', firstHour: 0, lastHour: 20, label: 'Level' }] },
+        { id: 'changes', label: 'Changes', spans: [{ id: 'a', firstHour: 0, lastHour: 9, label: 'A' }, { id: 'b', firstHour: 10, lastHour: 19, label: 'B' }, { id: 'c', firstHour: 20, lastHour: 20, label: 'C' }] }],
       tooltip: (_lane, _span, hour) => { shown.push(hour); return { title: `Score at ${hour}`, rows: [] }; },
       onNavigateHour: (_lane, from, forward) => new Promise(resolve => requests.push({ from, forward, resolve })),
       onContextMenu: hour => jumped.push(hour) };
@@ -52,6 +53,9 @@ test('prepared keyboard stops queue exact reads, use their hour for Jump, and di
     assert.ok(shown.every(hour => hour <= 20), 'a null first stop never exposes head + 1');
     key('ArrowLeft'); await tick(); key('Escape'); requests[4].resolve(7); await tick();
     assert.notEqual(shown.at(-1), 7);
+    // A lane changed to shows its last change, at 20; Left asks for the change before that one.
+    key('ArrowDown'); key('ArrowDown'); key('ArrowLeft'); await tick();
+    assert.deepEqual([requests.at(-1)!.from, requests.at(-1)!.forward], [20, false]);
   } finally {
     hide?.(); delete host.__preparedNavigation; await vite.close();
     for (const [key, descriptor] of globals) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }

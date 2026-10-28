@@ -261,6 +261,11 @@ pub async fn set_content_folders(
     })
     .await
     .map_err(|error| error.to_string())??;
+    // Unchanged folders bind again too: an installation that was unavailable may be back.
+    *service
+        .configured
+        .lock()
+        .map_err(|error| error.to_string())? = None;
     service.runtime(window.app_handle())?;
     host.set_folders(&config);
     window

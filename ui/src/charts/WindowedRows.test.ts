@@ -51,5 +51,11 @@ test('a new visible-row consumer receives the mounted rows even when their conte
     fixture.rows = rows.map(row => row.slot === 0 ? { ...row, item: 'Renamed country' } : row);
     draw(consumeNext);
     assert.equal(next.at(-1)?.[0].item, 'Renamed country');
+    fixture.rows = rows.map(row => row.slot === 0 ? { ...row, phase: 'leaving' as const } : row);
+    cursor = 0;
+    const body = WindowedRows({ items: items.slice(1), rowHeight: 20, label: 'Countries', children: () => null }).props.children[1];
+    const [leaving, staying] = body.props.children;
+    assert.equal(leaving.props.inert, true, 'a fading row takes no focus, keys or clicks');
+    assert.equal(staying.props.inert, undefined);
   } finally { delete host.__windowedRows; await vite.close(); }
 });

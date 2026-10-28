@@ -289,11 +289,9 @@ pub fn video_settings(
         if game.ui_scale != settings.ui_scale {
             apply_scale(&window, &game)?;
         }
-        if host.status().ready {
-            host.map_action(dashboard::protocol::MapAction::Vsync {
-                enabled: game.vsync,
-            })?;
-        }
+        host.set_display(dashboard::protocol::MapAction::Vsync {
+            enabled: game.vsync,
+        });
         window
             .state::<crate::popout::PopOuts>()
             .mirror(&dashboard::protocol::MapAction::Vsync {
@@ -339,12 +337,11 @@ pub fn set_video_settings(
         if stored.is_err() || settings.ui_scale != previous.ui_scale {
             apply_scale(&window, &settings)?;
         }
-        if host.status().ready {
-            host.map_action(dashboard::protocol::MapAction::Vsync {
-                enabled: settings.vsync,
-            })?;
-            host.map_action(settings.map_ui_scale_action())?;
-        }
+        // Kept for a viewer starting now too, which takes them over its launch-time read.
+        host.set_display(dashboard::protocol::MapAction::Vsync {
+            enabled: settings.vsync,
+        });
+        host.set_display(settings.map_ui_scale_action());
         update(&path()?, Some(&settings), |saved| {
             with_display(saved, &settings)
         })?;
@@ -357,12 +354,10 @@ pub fn set_video_settings(
     })();
     if let Err(error) = result {
         let _ = apply_scale(&window, &previous);
-        if host.status().ready {
-            let _ = host.map_action(dashboard::protocol::MapAction::Vsync {
-                enabled: previous.vsync,
-            });
-            let _ = host.map_action(previous.map_ui_scale_action());
-        }
+        host.set_display(dashboard::protocol::MapAction::Vsync {
+            enabled: previous.vsync,
+        });
+        host.set_display(previous.map_ui_scale_action());
         return Err(error);
     }
     *stored = Ok(settings.clone());

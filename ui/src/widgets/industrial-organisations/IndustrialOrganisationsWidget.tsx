@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom';
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import ArtFallback from '../../components/ArtFallback';
 import { contentTitleHint } from '../../dashboard/contentTitles';
@@ -52,7 +52,14 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const tag = selectedTags(widget.countries, track)[0] ?? null;
   const anchor = useRef<HTMLDivElement>(null);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const [picked, setPicked] = useState<MioPolicySelection | null>(null);
+  // The policy window belongs to the recording, branch and country it was opened for.
+  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag]);
+  const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
+  const [stored, setPicked] = useState<{ owner: object; selection: MioPolicySelection } | null>(null);
+  const picked = stored?.owner === owner ? stored.selection : null;
+  useEffect(() => dispatch({ type: 'close' }), [owner]);
+  const Chooser = gameWindow('mioPolicyChooser');
+  const windowOpen = drill.breakdown !== null && !!picked && !!Chooser;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: PRODUCTION_CATALOGUE,
     params: { branchId: track.branch.id, view: 'organisations', tags: [tag] } } : null;
   const { data, error, retry } = useProduct<ProductionCatalogueReply>(runtime.client, request, active, validateOrganisations, track?.source);
@@ -60,11 +67,11 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const [windowLines, setWindowLines] = useState<readonly string[]>(NO_WARNINGS);
   const onWindowDiagnostics = useCallback((lines: string[]) =>
     setWindowLines(previous => previous.length === lines.length && previous.every((line, index) => line === lines[index]) ? previous : lines), []);
-  const diagnostics = useMemo(() => withWindowDiagnostics(data?.warnings ?? NO_WARNINGS, windowLines), [data?.warnings, windowLines]);
+  const diagnostics = useMemo(() => withWindowDiagnostics(data?.warnings ?? NO_WARNINGS, windowOpen ? windowLines : NO_WARNINGS),
+    [data?.warnings, windowLines, windowOpen]);
   useDiagnostics(onDiagnostics, diagnostics);
   const rows = useMemo(() => data && tag ? organisationsAt(data, tag, hour) : NO_ROWS, [data, tag, hour]);
   const names = useCountryNamesAt(runtime.client, track, useMemo(() => tag ? [{ hour, tag }] : [], [tag, hour]), active);
-  const Chooser = gameWindow('mioPolicyChooser');
   const columns = useMemo<readonly TableColumn<OrganisationRow>[]>(() => [
     { key: 'organisation', header: 'Organisation', label: 'Organisation', width: 'minmax(var(--table-name-min), 2fr)',
       value: row => row.name ?? NAME_UNAVAILABLE,
@@ -94,8 +101,8 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   }, [hour, viewport, Chooser]);
   const open = (row: OrganisationRow) => {
     if (!track || !tag || !Chooser) return;
-    setPicked({ kind: 'mioPolicyChooser', sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id,
-      hour, organisation: row.organisation.id });
+    setPicked({ owner, selection: { kind: 'mioPolicyChooser', sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id,
+      hour, organisation: row.organisation.id } });
     dispatch({ type: 'open', breakdown: POLICY.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
   const at = drillHour(drill, hour) ?? hour;
@@ -116,7 +123,7 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
       onRowClick={Chooser ? open : undefined} tooltip={tooltip} />;
   return <div ref={anchor} className="industrial-organisations">
     {header}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked && !!Chooser} anchor={anchor}
+    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={windowOpen} anchor={anchor}
       title={POLICY.label} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
       {picked && Chooser && <Chooser selection={{ ...picked, hour: drill.follow ? hour : at }} active={active} client={runtime.client}

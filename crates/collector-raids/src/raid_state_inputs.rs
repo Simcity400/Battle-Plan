@@ -294,14 +294,16 @@ impl Captured {
         }
         let started = qpc();
         let scanned = stores.is_some();
+        // The scan's state census, which the cores read.
+        let mut scan_census = Ok(());
         // The ids a complete census saw, sizing each family's mark set.
         let mut ids = [None; 2];
         if let Some(stores) = stores.as_mut() {
             // Scan first, so a new owner joins this hour's read.
             let scan = qpc();
-            let states = native::state_census(memory, game_state, &mut self.census)
-                .map_err(crate::allocation::io)
-                .is_ok();
+            scan_census = native::state_census(memory, game_state, &mut self.census)
+                .map_err(crate::allocation::io);
+            let states = scan_census.is_ok();
             for &state in &self.census {
                 self.states.scan(stores.states, state, Some(0));
             }
@@ -376,7 +378,7 @@ impl Captured {
         let _cores_reads = crate::read_accounting::table(TABLES[4]);
         let cores_started = qpc();
         let census = if scanned {
-            Ok(())
+            scan_census
         } else {
             native::state_census(memory, game_state, &mut self.census)
         };
@@ -674,5 +676,42 @@ mod tests {
         let views = captured.tables();
         assert!(matches!(views[2], TableView::Unavailable { .. }));
         assert!(matches!(views[0], TableView::Complete(_)));
+    }
+
+    /// A scanned state census that does not read leaves StateCores unavailable, never an empty or
+    /// partial table.
+    #[test]
+    fn an_unreadable_state_census_withholds_state_cores() {
+        use crate::raid_changes::Watches;
+        let base = 0x10_0000;
+        let mut bytes = vec![0_u8; 0x1000];
+        // Five state slots whose data lies outside readable memory.
+        let header = engine_native::cgame_state::STATES;
+        bytes[header..header + 8].copy_from_slice(&((base + 0x10_0000) as u64).to_le_bytes());
+        bytes[header + 8..header + 12].copy_from_slice(&5_u32.to_le_bytes());
+        bytes[header + 12..header + 16].copy_from_slice(&5_u32.to_le_bytes());
+        let memory = engine_native::memory::SliceMemory {
+            base,
+            bytes: &bytes,
+        };
+        let watches = Watches::enabled(64, 64);
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let (mut states, mut countries) = (SliceFingerprints::new(), SliceFingerprints::new());
+        captured.capture_sliced(
+            &memory,
+            0,
+            base,
+            0,
+            false,
+            Some(Stores {
+                states: &mut states,
+                countries: &mut countries,
+                changes: &watches,
+            }),
+        );
+        assert!(matches!(
+            captured.outcomes()[4],
+            Outcome::Unavailable { .. }
+        ));
     }
 }

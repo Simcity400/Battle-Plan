@@ -154,6 +154,8 @@ impl Admission {
     }
 }
 
+const RECORDING_CHANGED: &str = "The recording changed. Reopen it before requesting another view.";
+
 /// The first sentence is suitable for the sidebar; retain the technical reason
 /// after it for bug reports. Cancellation and ordinary filesystem errors keep
 /// their existing meaning.
@@ -1155,7 +1157,7 @@ impl Inner {
             .recording_revision(&path)
             .map_err(|error| error.to_string())?;
         if expected.is_some_and(|expected| expected != revision) {
-            return Err("The recording changed. Reopen it before requesting another view.".into());
+            return Err(RECORDING_CHANGED.into());
         }
         let cache_key = (path.clone(), revision.clone());
         let (gate, previous) = {
@@ -1192,6 +1194,10 @@ impl Inner {
             }
         };
         let source = Arc::new(Source::open(key, path, cancelled).map_err(recording_open_error)?);
+        // A publication between the revision read and the open leaves other bytes under it.
+        if self.recording_revision(source.path()).ok().as_ref() != Some(&source.key().revision) {
+            return Err(RECORDING_CHANGED.into());
+        }
         if let Some(previous) = previous {
             source.inherit_append_states(&previous);
         }

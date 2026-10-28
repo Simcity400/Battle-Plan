@@ -143,3 +143,41 @@ fn each_deal_keeps_its_own_truncated_product_and_lend_lease_has_no_efficiency() 
     assert_eq!(lease.bad[0].2, "1");
     assert_eq!(lease.convoys[1][0].2, "4");
 }
+
+#[test]
+fn a_resource_spelled_only_by_a_later_dictionary_is_learned_by_changes() {
+    let mut state = Prepared::default();
+    for (hour, spelled) in [(5, false), (6, true)] {
+        let mut at = base(hour);
+        if spelled {
+            set(
+                &mut at,
+                TableRows::LexicalTokens(vec![LexicalTokenRow {
+                    token: 3,
+                    literal: b"synthetic_ore".to_vec(),
+                }]),
+            );
+        }
+        set(
+            &mut at,
+            TableRows::ResourceDefinitions(vec![ResourceDefinitionRow {
+                id: 0,
+                token: 3,
+                active: 1,
+                factory_cost: 0,
+            }]),
+        );
+        let mut changes = FrameChanges {
+            rows_changed: [hour == 5; TABLE_COUNT],
+            table_read: [true; TABLE_COUNT],
+            slot_read: [true; TABLE_COUNT],
+            updates: None,
+        };
+        // Only the dictionary changes at the second hour.
+        changes.rows_changed[TableId::LexicalTokens.index()] = true;
+        state.observe_changes(&at, &changes).unwrap();
+    }
+    let reply = ask(&mut state, ConvoyView::Trade, 6);
+    assert_eq!(reply.resources.len(), 1);
+    assert_eq!(reply.resources[0].token, "synthetic_ore");
+}

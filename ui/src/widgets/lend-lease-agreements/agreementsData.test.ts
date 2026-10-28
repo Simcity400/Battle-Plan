@@ -36,6 +36,17 @@ test('agreements show schedules, retained totals and fuel in their own units, by
   assert.deepEqual([equipment.giver, equipment.receiver], ['GIV', 'REC']);
 });
 
+test('fuel already sent keeps its row after the fuel terms stop', () => {
+  const stopped = reply();
+  stopped.agreements[0].fuel = [[[10, 19, '32768'], [20, 30, '0']], [[10, 30, '0']], [[10, 30, '65536']], [[10, 30, '0']], []];
+  const rows = agreementRows(validateMarketHistory('agreements')(stopped), 'sent', tag => tag === 'GIV', 25, true);
+  assert.equal(rows.length, 2);
+  const fuel = rows[1];
+  assert.equal(fuel.fuel, true);
+  assert.equal(fuel.items[0].schedule, '');
+  assert.equal(amountOf(fuel, fuel.items[0].delivered), '2');
+});
+
 test('ended agreements keep their last read and can be hidden; later ones are not shown early', () => {
   const data = validateMarketHistory('agreements')(reply());
   const ended = agreementRows(data, 'sent', () => true, 40, true);

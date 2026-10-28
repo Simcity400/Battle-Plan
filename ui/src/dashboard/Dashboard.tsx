@@ -42,6 +42,8 @@ interface Props { page: PageId; resetToken: number; library: ReplayLibraryState;
   cameraOverlays?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
   /** The branch the shown campaign plays, and how to play another; null without one. */
   onBranch?: (branch: BranchChoice | null) => void; onMapError?: (error: string | null) => void;
+  /** Bumped by Retry map; the campaign map is sent the clock's hour again. */
+  mapRetry?: number;
   /** Whether any page has layout changes not yet saved, which resetting the pages discards. */
   onUnsaved?: (unsaved: boolean) => void;
   /** The pages that exist; what a deleted page kept while not shown is dropped. */
@@ -53,7 +55,7 @@ interface Props { page: PageId; resetToken: number; library: ReplayLibraryState;
 
 export interface BranchChoice { id: string; choose: (branchId: string) => void }
 
-export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, onUnsaved, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
+export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, mapRetry = 0, onUnsaved, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
   const [restored] = useState(() => loadLayouts(undefined, page));
   const [library, setLibrary] = useState(restored.library);
   // The page whose layouts are shown; it trails `page` until the swap below runs.
@@ -182,8 +184,14 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   // The pop-out window shown now, which a request captures when it starts.
   const popoutGeneration = useRef(0);
   popoutGeneration.current = popout.generation;
-  const popoutIssue = popoutProblem(popout);
-  useEffect(() => { if (popoutIssue) onMapError?.(popoutIssue); }, [popoutIssue, onMapError]);
+  // Commands the pop-out's viewer `generation:viewer` refused, shown in its controls rather than over the main map.
+  const [popoutFailures, setPopoutFailures] = useState<{ viewer: string; command: 'configure' | 'seek' | 'aircraft'; message: string }[]>([]);
+  const reportPopout = useCallback((viewer: string, command: 'configure' | 'seek' | 'aircraft', message: string | null) => setPopoutFailures(previous => {
+    const kept = previous.filter(failure => failure.viewer === viewer && failure.command !== command);
+    return message == null ? (kept.length === previous.length ? previous : kept) : [...kept, { viewer, command, message }];
+  }), []);
+  const popoutViewer = popout.open ? `${popout.generation}:${popout.viewer}` : null;
+  const popoutIssue = popoutProblem(popout) ?? popoutFailures.find(failure => failure.viewer === popoutViewer)?.message ?? null;
   // A pop-out map keeps following the clock from any page.
   useLayoutEffect(() => { if (!active && !mapActive && !popout.open) clock.stop(); }, [active, mapActive, popout.open, clock]);
   const mapCountry = defaultRoleId ? selectedCountries[defaultRoleId] ?? null : null;
@@ -211,24 +219,25 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       if (error != null) clock.stop();
       onMapError?.(error == null ? null : errorMessage(error));
     });
-  }, [clock, tracks, defaultRoleId, defaultLoading, mapActive, mapSwitching, onMapError]);
+  }, [clock, tracks, defaultRoleId, defaultLoading, mapActive, mapSwitching, onMapError, mapRetry]);
   // Keyed on the window's generation, so every new pop-out window is sent the options and the
   // clock even when it opens in the same render that closed the previous one.
   const popoutConfig = popoutConfigKey(popout);
   useEffect(() => {
     if (popoutConfig == null || defaultLoading) return;
     let current = true;
-    void configurePopout(popout.generation, { ...mapOptions, country: mapCountry }).catch(cause => { if (current) onMapError?.(errorMessage(cause)); });
+    void configurePopout(popout.generation, { ...mapOptions, country: mapCountry })
+      .then(() => { if (current) reportPopout(popoutConfig, 'configure', null); }, cause => { if (current) reportPopout(popoutConfig, 'configure', errorMessage(cause)); });
     return () => { current = false; };
-  }, [popoutConfig, popout.generation, defaultLoading, mapOptions, mapCountry, onMapError]);
+  }, [popoutConfig, popout.generation, defaultLoading, mapOptions, mapCountry, reportPopout]);
   const popoutClock = popoutClockKey(popout);
   useLayoutEffect(() => {
     const reference = tracks.find(track => track.roleId === defaultRoleId);
     if (popoutClock == null || defaultLoading || !reference) return;
     const generation = popout.generation;
     const seek: Parameters<typeof followMapPlayback>[2] = (path, revision, branch, hour, playback) => seekPopout(generation, path, revision, branch, hour, playback);
-    return followMapPlayback(clock, reference, seek, error => { if (error != null) onMapError?.(errorMessage(error)); });
-  }, [clock, tracks, defaultRoleId, defaultLoading, popoutClock, popout.generation, onMapError]);
+    return followMapPlayback(clock, reference, seek, error => reportPopout(popoutClock, 'seek', error == null ? null : errorMessage(error)));
+  }, [clock, tracks, defaultRoleId, defaultLoading, popoutClock, popout.generation, reportPopout]);
   useLayoutEffect(() => active && viewport.current ? maps.start(viewport.current) : undefined, [maps, active]);
   useLayoutEffect(() => { maps.setHidden(nativeHidden || hasMapOverlay()); maps.schedule(); }, [maps, nativeHidden, template.layouts]);
   useEffect(() => {
@@ -523,9 +532,10 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   useEffect(() => {
     if (popoutConfig == null) return;
     let current = true;
-    void setPopoutFlyAircraft(popout.generation, aircraft).catch(cause => { if (current) onMapError?.(errorMessage(cause)); });
+    void setPopoutFlyAircraft(popout.generation, aircraft)
+      .then(() => { if (current) reportPopout(popoutConfig, 'aircraft', null); }, cause => { if (current) reportPopout(popoutConfig, 'aircraft', errorMessage(cause)); });
     return () => { current = false; };
-  }, [popoutConfig, popout.generation, aircraft, onMapError]);
+  }, [popoutConfig, popout.generation, aircraft, reportPopout]);
 
   const onMapBranch = useCallback((trackId: string, branchId: string) => {
     const source = tracks.find(track => track.id === trackId)?.source;

@@ -382,6 +382,8 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     return true;
   };
   const focusSlot = (slot: number) => {
+    // A leaving row keeps focus while it fades, even once no row is left to move to.
+    if (slot < 0 || slot >= ordered.length) return;
     const top = scrollToShow(offsets, slot, view.top, view.height, view.headerHeight);
     bottomAnchor.current = false;
     focusAnchor.current = true;

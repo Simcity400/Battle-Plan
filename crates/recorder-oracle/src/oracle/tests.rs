@@ -3921,8 +3921,8 @@ fn naval_fixture() -> (
                 override_set_programmatically: None,
                 equipment: None,
             }),
-            manpower: None,
-            max_manpower: None,
+            manpower: Some(0),
+            max_manpower: Some(0),
             has_criticals: false,
             roster_ordinal: 0,
             id: ship,
@@ -3964,8 +3964,8 @@ fn naval_fixture() -> (
                 ..Default::default()
             })
             .into(),
-            acquired_manpower: Default::default(),
-            required_manpower: Default::default(),
+            acquired_manpower: Some(0).into(),
+            required_manpower: Some(0).into(),
 
             id: ship,
             task_force: force,

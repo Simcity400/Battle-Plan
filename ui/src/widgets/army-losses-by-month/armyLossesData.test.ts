@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { firstHourOfMonth } from '../../dashboard/calendar.ts';
 import type { ArmyLossesReply, LossArmy } from '../../generated/dashboard';
-import { INDEPENDENT, UNRESOLVED, monthBars, monthTooltip, validateArmyLosses } from './armyLossesData.ts';
+import { INDEPENDENT, LEDGERS, UNRESOLVED, monthArmies, monthBars, monthTooltip, validateArmyLosses } from './armyLossesData.ts';
 
 const M = 1940 * 12; // January 1940
 const army = (reference: string, parent: string | null, parentMissing: string | null = null): LossArmy => ({ reference, ordinal: Number(reference),
@@ -100,4 +100,12 @@ test('equipment subtotals stay exact through grouping, the Other fold and the to
   assert.equal(tip.rows.at(-1)!.value, '1', '0.6 + 0.3 + 0.1 is one item, never 0.9999999999999999');
   const grouped = monthBars(data, 'equipment', 'armyGroup', 'combat', span[0], span[1], 10);
   assert.deepEqual(grouped.periods[0].parts, [{ key: '9', value: 1, raw: 100000n }]);
+});
+
+test('the month drill keeps unknown ledgers unknown and armies that kept only an empty month', () => {
+  const losses = { ...reply(), emptyMonths: [{ army: '2', ledger: 0, month: M, date: 0 }], unknownMonths: [{ army: '3', ledger: 0, month: M, date: 0 }] };
+  const combat = monthArmies(losses, M, LEDGERS.combat);
+  assert.deepEqual(combat.map(row => [row.army.reference, row.amount]), [['1', 0n], ['2', 0n], ['3', null]]);
+  assert.deepEqual(monthArmies(losses, M, LEDGERS.attrition).map(row => row.amount), [300000n, 0n, 0n]);
+  assert.deepEqual(monthArmies(losses, M, LEDGERS.enemy).map(row => row.amount), [null, null, null], 'no army kept the month in this ledger');
 });

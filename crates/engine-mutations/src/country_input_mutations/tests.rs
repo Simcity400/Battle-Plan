@@ -796,6 +796,20 @@ fn a_technology_write_marks_only_the_partners_it_can_change() {
     assert_eq!(shared(&bytes, t2), (true, vec![7, 9, 11]));
 }
 
+/// A research slot that does not read is not an idle one: partner 11's slot outside readable
+/// memory marks every partner, where an idle slot marks only those whose reads the write reaches.
+#[test]
+fn an_unreadable_research_slot_marks_every_partner() {
+    let (mut bytes, [_, t1, _, _]) = partner_world();
+    let shared = |bytes: &[u8]| sorted(named(bytes, Receiver::SharedTechnology, t1, 0));
+    assert_eq!(shared(&bytes), (true, vec![9, 11]));
+    put_u64(&mut bytes, START + 0xc100, (START + 0x2_0000) as u64);
+    assert_eq!(shared(&bytes), (true, vec![7, 9, 11]));
+    put_u64(&mut bytes, START + 0xc100, (START + 0xc200) as u64);
+    put_u64(&mut bytes, START + 0xc200 + cresearch_slot::TECHNOLOGY, 0);
+    assert_eq!(shared(&bytes), (true, vec![9]));
+}
+
 /// The weather writers name no country and reach only the weather count.
 #[test]
 fn weather_writers_reach_only_the_weather_count() {

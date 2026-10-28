@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { desktopAvailable, errorMessage } from './api';
@@ -16,15 +16,24 @@ export function setMapDiagnostics(enabled?: boolean): Promise<boolean> {
 export function useMapDiagnostics() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Events carry no sequence: a reply is dropped once an event newer than its request arrived.
+  const heard = useRef(0);
   useEffect(() => {
     if (!desktopAvailable) return;
     let live = true;
-    void invoke<boolean>('map_diagnostics').then(value => { if (live) setEnabled(value); }, cause => { if (live) setError(errorMessage(cause)); });
-    const changed = listen<boolean>('map-diagnostics', event => { setEnabled(event.payload); setError(null); });
+    const changed = listen<boolean>('map-diagnostics', event => { heard.current += 1; setEnabled(event.payload); setError(null); });
     const failed = listen<string>('map-diagnostics-error', event => setError(event.payload));
-    return () => { live = false; void changed.then(stop => stop()); void failed.then(stop => stop()); };
+    void Promise.all([changed, failed]).then(() => {
+      const seen = heard.current;
+      return invoke<boolean>('map_diagnostics').then(value => { if (live && heard.current === seen) setEnabled(value); });
+    }).catch(cause => { if (live) setError(errorMessage(cause)); });
+    return () => { live = false; void changed.then(stop => stop(), () => {}); void failed.then(stop => stop(), () => {}); };
   }, []);
-  const set = (value: boolean) => { setError(null); void setMapDiagnostics(value).then(setEnabled, cause => setError(errorMessage(cause))); };
+  const set = (value: boolean) => {
+    setError(null);
+    const seen = heard.current;
+    void setMapDiagnostics(value).then(next => { if (heard.current === seen) setEnabled(next); }, cause => setError(errorMessage(cause)));
+  };
   return { enabled, error, set };
 }
 

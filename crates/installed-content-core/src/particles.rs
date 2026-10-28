@@ -289,15 +289,7 @@ fn capacity(fields: &[parser::Item]) -> io::Result<usize> {
         let count = if hidden {
             0
         } else {
-            // Visible subsystems require an authored capacity; no default is set.
-            let value = text(
-                require(fields, "max_amount", "particle capacity")?,
-                "max_amount",
-            )?;
-            let value = crt::scan_i32(value.as_bytes())
-                .stored()
-                .ok_or_else(|| invalid("particle max_amount requires int32"))?;
-            usize::try_from(value).map_err(|_| invalid("negative particle max_amount"))?
+            subsystem_capacity(fields)?
         };
         // Each recursive level adds its parent count times the child capacity.
         let contribution = capacity(fields)?
@@ -310,6 +302,19 @@ fn capacity(fields: &[parser::Item]) -> io::Result<usize> {
             .ok_or_else(|| invalid("particle capacity exceeds native int32"))?;
     }
     Ok(total)
+}
+
+/// A visible subsystem's own `max_amount`, scanned as an int32 prefix.
+pub fn subsystem_capacity(fields: &[parser::Item]) -> io::Result<usize> {
+    // Visible subsystems require an authored capacity; no default is set.
+    let value = text(
+        require(fields, "max_amount", "particle capacity")?,
+        "max_amount",
+    )?;
+    let value = crt::scan_i32(value.as_bytes())
+        .stored()
+        .ok_or_else(|| invalid("particle max_amount requires int32"))?;
+    usize::try_from(value).map_err(|_| invalid("negative particle max_amount"))
 }
 
 #[cfg(test)]
@@ -391,6 +396,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(catalog.max_particles(), 4);
+    }
+
+    #[test]
+    fn a_subsystem_capacity_is_the_catalogue_s_int32_scan() {
+        for (source, expected) in [
+            (br#"max_amount = "4tail""#.as_slice(), 4),
+            (b"max_amount = 0x10", 16),
+            (b"max_amount = 010", 8),
+            (b"max_amount = 1e99", 1),
+        ] {
+            let document = parser::parse(source).unwrap();
+            assert_eq!(subsystem_capacity(&document.items).unwrap(), expected);
+        }
+        for source in [b"max_amount = -1".as_slice(), b"hide = no"] {
+            let document = parser::parse(source).unwrap();
+            assert!(subsystem_capacity(&document.items).is_err());
+        }
     }
 
     #[test]

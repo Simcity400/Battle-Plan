@@ -93,3 +93,31 @@ test('market view shares source, native country filter and moment demand without
     assert.equal(state.groupDemand, false);
   } finally { await vite.close(); delete globals.__marketAcquisition; }
 });
+
+test('keyboard navigation asks for the drawn flows in the selection shown', async () => {
+  type Navigate = (key: string, from: number | null, x: [number, number], until: number | null) => void;
+  const state = { navigations: [] as Record<string, unknown>[], result: null as null | { navigateFlows?: (flows: readonly string[], country?: readonly string[]) => Navigate } };
+  const globals = globalThis as typeof globalThis & { __tradeNavigation?: typeof state }; globals.__tradeNavigation = state;
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'trade-navigation', enforce: 'pre', transform(_code, id) {
+      const path = id.replaceAll('\\', '/');
+      if (path.endsWith('/dashboard/useCountryGroups.ts')) return 'export const useCountryGroups = () => ({});';
+      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = () => ({ retry() {} }); export const loadProduct = () => new Promise(() => {});';
+      if (path.endsWith('/dashboard/viewRead.ts')) return 'export const useViewRead = () => ({ retry() {} });';
+      if (path.endsWith('/dashboard/preparedSeries.ts')) return 'export const preparedSeriesQuery = (_client, _source, _product, params) => { globalThis.__tradeNavigation.navigations.push(params); return new Promise(() => {}); };';
+    } }] });
+  try {
+    const { useTradeFlows } = await vite.ssrLoadModule('/ui/src/widgets/trade-flows/useTradeFlows.ts');
+    const widget = { trackIds: ['t'], countries: { kind: 'tags', tags: ['AAA', 'BBB'] }, time: { mode: 'campaign' }, options: { measure: 'current', between: 'between' } };
+    const track = { id: 't', source: { id: 's', revision: '1', metadata: { campaignKey: 'c', countries: [] } }, branch: { id: '1', firstHour: 0, lastHour: 100 }, axisOffset: 0 };
+    const runtime = { client: { preparedQuery() {} }, tracks: [track], clock: { getHour: () => 100 } };
+    function Probe() { state.result = useTradeFlows(widget, runtime, true); return null; }
+    renderToStaticMarkup(createElement(Probe));
+    state.result!.navigateFlows!(['ab'])('ArrowRight', 10, [0, 100], null);
+    assert.deepEqual(state.navigations[0], { branchId: '1', tags: ['AAA', 'BBB'], between: true, flows: ['ab'],
+      op: 'navigate', key: 'ArrowRight', from: 10, firstHour: 0, lastHour: 100 }, 'only trade between them, and only the flows drawn');
+    state.result!.navigateFlows!(['ac', 'ab'], ['AAA'])('ArrowLeft', 10, [0, 100], 50);
+    assert.deepEqual(state.navigations[1], { branchId: '1', tags: ['AAA'], between: false, flows: ['ac', 'ab'],
+      op: 'navigate', key: 'ArrowLeft', from: 10, firstHour: 0, lastHour: 50 }, "one country's view steps through its own whole trade");
+  } finally { await vite.close(); delete globals.__tradeNavigation; }
+});

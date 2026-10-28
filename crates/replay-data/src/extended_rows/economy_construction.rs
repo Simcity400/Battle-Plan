@@ -1307,7 +1307,8 @@ pub struct ResourceOriginRow {
 }
 typed_codec!(ResourceOriginRow, 64, |row| (row.state as u128) << 32 | row.country as u128,
  |key| Self { state: (key >> 32) as u32, country: key as u32, ..Default::default() },
- { 0 => (list): U8, 1 => (efficiency): I64, 2 => (route_factor): I64, 3 => (local_resources_factor): I64, 4 => (bad): Bool, 5 => (convoys_assigned): I32, 6 => (convoys_required): I32, 7 => (ordinal): U32 }, |_row| Ok(()));
+ { 0 => (list): U8, 1 => (efficiency): I64, 2 => (route_factor): I64, 3 => (local_resources_factor): I64, 4 => (bad): Bool, 5 => (convoys_assigned): I32, 6 => (convoys_required): I32, 7 => (ordinal): U32 },
+ |row| if row.list > 1 { Err(invalid("resource origin list is neither own (0) nor rights (1)")) } else { Ok(()) });
 
 /// ResourceRights: key state:resource (64 bits).
 ///

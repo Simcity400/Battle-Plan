@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { bridgeCommand, mapSettingsCommand, recordingRequestBody } from '../../browserBridge.ts';
+import { bridgeCommand, mapSettingsCommand, preparedQueryCommand, recordingRequestBody } from '../../browserBridge.ts';
 import { MAX_MESSAGE_BYTES } from '../generated/dashboard.ts';
 
 async function* body(...chunks: Buffer[]) { yield* chunks; }
@@ -46,4 +46,12 @@ test('a browser map-settings flip reaches the native bridge with its setting', (
   assert.deepEqual([save.settings, save.flip, save.target], [{ graphics: {} }, null, { scope: 'campaign' }]);
   const read = mapSettingsCommand({ type: 'mapSettings', sourceId: 's', revision: 'r' });
   assert.deepEqual([read.settings, read.flip], [null, null]);
+});
+
+test('a browser prepared-query refresh reaches the native bridge as a refresh', () => {
+  const request = { sourceId: 's', revision: 'r', product: 'p', params: {} };
+  assert.equal(preparedQueryCommand({ type: 'preparedQuery', request, refresh: true }).refresh, true);
+  assert.equal(preparedQueryCommand({ type: 'preparedQuery', request, refresh: false }).refresh, false);
+  assert.equal(preparedQueryCommand({ type: 'preparedQuery', request }).refresh, false, 'a body without the flag is a first ask');
+  assert.throws(() => preparedQueryCommand({ type: 'preparedQuery', request, refresh: 'yes' }), { message: 'Invalid prepared query request' });
 });

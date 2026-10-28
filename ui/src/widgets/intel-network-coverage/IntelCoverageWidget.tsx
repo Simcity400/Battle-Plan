@@ -12,6 +12,8 @@ import { jumpItem } from '../../charts/jump';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
+import { MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
+import { intelShown } from '../../dashboard/widgetRequests';
 import { resolveWindow } from '../../dashboard/model';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
@@ -32,17 +34,21 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
-  const { track, options, data, error, retry } = useIntelCoverage(widget, runtime, active);
+  const { track, options, data, error, retry, grouped, groups, roots, chosen } = useIntelCoverage(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const measure = (options.measure as Measure) ?? 'covered';
   const basis = (options.basis as Basis) ?? 'controlled';
   const field = measureField(measure, basis);
   const at = useMemo(() => data ? pairsAt(data, hour) : null, [data, hour]);
-  const tags = widget.countries.kind === 'tags' ? widget.countries.tags : undefined;
-  const ranked = useMemo(() => data ? countriesAt(data, hour, Math.max(2, Number(options.mostCountries) || 12), tags) : null,
+  // A group's members at the hour shown, by their tags then.
+  const members = useMemo(() => grouped && track ? worldFilter(widget.countries, [], groups.data, hour, track.branch.lastHour) : null,
+    [grouped, widget.countries, groups.data, hour, track]);
+  const tags = members ? [...members.tags ?? []] : chosen;
+  const shown = Math.max(2, intelShown(widget));
+  const ranked = useMemo(() => data ? countriesAt(data, hour, shown, tags) : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [data, hour, options.mostCountries, JSON.stringify(tags)]);
+    [data, hour, shown, JSON.stringify(tags)]);
   const countries = useMemo(() => ranked ?? [], [ranked]);
   const readHour = at?.readHour ?? hour;
   // Names and flags load for the axes the matrix draws, not every shown country.
@@ -82,6 +88,12 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (saved) return <PairHistory {...props} pair={null} hour={hour} />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (grouped && groups.error && !groups.data) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  if (grouped && !groups.data) return <WidgetState kind="loading" label="Loading intel networks…" />;
+  const reason = roots?.reason ?? members?.reason ?? (chosen?.length === 0 ? 'Choose a country in the widget settings.' : null);
+  if (reason) return <WidgetState kind="unavailable" message={reason} />;
+  // A group's members still being prepared are not known yet: never the most active instead.
+  if (roots && !roots.ready || members && !members.known) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!data) return <WidgetState kind="loading" label="Loading intel networks…" />;
   if (pendingReplyAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!at || !ranked) return <WidgetState kind="unavailable" message="Intel networks were not recorded at this time." />;

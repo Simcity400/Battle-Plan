@@ -259,6 +259,20 @@ impl OutputCheck {
                 );
             }
         }
+        // The writer gives every live queue line a row, so a missing one is a lost stream.
+        let live: BTreeSet<u64> = rows.iter().filter(|r| !r.ended).map(|r| r.line).collect();
+        for handle in buildings
+            .iter()
+            .map(|r| r.id)
+            .chain(railways.iter().map(|r| r.id))
+            .filter(|handle| !live.contains(handle))
+        {
+            report.difference(
+                format!("ConstructionLineOutput {handle} is queued but has no live output row"),
+                "absent",
+                "queued",
+            );
+        }
         if let Some((hour, before)) = self.last.take() {
             // Secondary linked lines return before H1 and mirror the primary's
             // progress. A witnessed primary makes its target a shared comparator.

@@ -2519,9 +2519,10 @@ fn partner_reads(memory: &impl Memory, country: usize, roster: Array) -> Option<
     let mut instances = Vec::new();
     for index in 0..slots.count {
         let slot = pointer(memory, slots.element(index, 8)?, 0)?;
-        let Some(technology) = pointer(memory, slot, cresearch_slot::TECHNOLOGY) else {
+        let technology = nullable(memory, slot.checked_add(cresearch_slot::TECHNOLOGY)?)?;
+        if technology == 0 {
             continue;
-        };
+        }
         let template = pointer(memory, technology, ctechnology::TEMPLATE)?;
         let database = read::<i32>(
             memory,
@@ -2533,15 +2534,18 @@ fn partner_reads(memory: &impl Memory, country: usize, roster: Array) -> Option<
         if position >= roster.count {
             continue;
         }
-        if let Some(instance) = read::<u64>(memory, roster.element(position, 8)?)
-            .and_then(|p| usize::try_from(p).ok())
-            .filter(|&p| p != 0)
-        {
+        let instance = nullable(memory, roster.element(position, 8)?)?;
+        if instance != 0 {
             crate::allocation::reserve_push_batch(&mut instances, 1).ok()?;
             instances.push(instance);
         }
     }
     Some(instances)
+}
+
+/// The pointer at `address`, zero when null; `None` only when it does not read.
+fn nullable(memory: &impl Memory, address: usize) -> Option<usize> {
+    usize::try_from(read::<u64>(memory, address)?).ok()
 }
 
 /// Visits each raw id on a sharing group's member array

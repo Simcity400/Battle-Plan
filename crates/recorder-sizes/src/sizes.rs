@@ -10,7 +10,7 @@
 //! each field changed. `--levels` compresses every rewritten section again at
 //! other zstd levels.
 
-use replay::{container::Replay, container::Section};
+use replay::{container::Replay, container::Section, recording_files::NamesLock};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
 use replay_frame::{frame::DecodedFrame, frame::FrameDecoder, frame::TableUpdate};
@@ -103,8 +103,12 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
     }
     if let Some(destination) = write {
         let destination = Path::new(&destination);
-        // Hold the recorder's publish lock so an in-place rewrite targets the measured recording.
+        // Hold the recorder's publish lock so an in-place rewrite targets the measured recording,
+        // then, in the recorder's order, the folder's naming lock so no rename moves it meanwhile.
         let _lock = finalization_lock(destination)?;
+        let folder = folder_of(destination);
+        let _names = NamesLock::wait(folder)
+            .map_err(|error| format!("{} is unavailable: {error}", folder.display()))?;
         if fs::read(source).map_err(|error| error.to_string())? != replay.bytes() {
             return Err(format!(
                 "{} changed while it was measured; nothing was written",
@@ -134,14 +138,17 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
     Ok(())
 }
 
+fn folder_of(destination: &Path) -> &Path {
+    destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
 fn finalization_lock(destination: &Path) -> Result<fs::File, String> {
     use std::os::windows::fs::OpenOptionsExt;
     use std::time::{Duration, Instant};
-    let directory = destination
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let path = directory.join("finalize.lock");
+    let path = folder_of(destination).join("finalize.lock");
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         match fs::OpenOptions::new()

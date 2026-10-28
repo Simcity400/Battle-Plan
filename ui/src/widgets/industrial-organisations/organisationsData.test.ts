@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { organisationsAt, policyText, rosterKnown, validateOrganisations } from './organisationsData.ts';
+import { organisationsAt, policyText, remainingDays, rosterKnown, validateOrganisations } from './organisationsData.ts';
+import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { withWindowDiagnostics } from '../../dashboard/gameWindows.ts';
 
 const mio = (id: string, size: string | null, funds: string, policy: number | null) => ({ id, holder: [[0, 50, '1']], size: size === null ? [] : [[0, 50, size]],
@@ -27,6 +28,14 @@ test('organisations rank by size, keep unknown state unranked and name policies 
 test('a running cooldown shows its remaining days', () => {
   const [, row] = organisationsAt(reply(), 'AAA', 30);
   assert.equal(policyText(row), 'Synthetic Policy · Cooldown 3 days');
+});
+
+test('a cooldown counts calendar days, as the policy window does: its end day is already off cooldown', () => {
+  const day = HOUR_EPOCH + 1936 * 8760;
+  assert.equal(remainingDays(null, day), 0);
+  assert.equal(remainingDays(day + 23, day), 0);
+  assert.equal(remainingDays(day + 24, day + 23), 1);
+  assert.equal(remainingDays(day + 48, day + 1), 2);
 });
 
 test('an unread roster is unknown, not an empty one', () => {

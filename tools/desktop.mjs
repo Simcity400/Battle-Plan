@@ -1,7 +1,7 @@
 // One development command builds the native viewer, then starts Tauri and Vite.
 // No shell interpolation: paths and user arguments remain separate arguments.
 import { spawn } from "node:child_process";
-import { copyFile, cp } from "node:fs/promises";
+import { access, copyFile, cp } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -93,11 +93,11 @@ try {
       && message.target.kind?.includes("bin") && message.executable);
   if (!viewer) throw new Error("Cargo did not report where it built the viewer.");
   const output = path.dirname(viewer.executable);
-  // Every shipped viewer uses the same pinned compiler, including vanilla recordings.
-  if (mode === "build") {
+  // Every viewer uses the same pinned compiler; a development output installs it once unless BATTLE_PLAN_SHADER_COMPILER names one.
+  const dxc = path.join(output, "shader-tools", "dxc");
+  if (mode === "build" || (!(process.env.BATTLE_PLAN_SHADER_COMPILER ?? process.env.HOI4_SHADER_COMPILER) && !(await access(path.join(dxc, "dxc.exe")).then(() => true, () => false)))) {
     await run("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-      path.join(root, "tools", "install-shader-compiler.ps1"), "-Destination",
-      path.join(output, "shader-tools", "dxc")]);
+      path.join(root, "tools", "install-shader-compiler.ps1"), "-Destination", dxc]);
   }
   const cli = path.join(root, "node_modules", "@tauri-apps", "cli", "tauri.js");
   // Resolve hook directories at launch without storing machine paths in source.

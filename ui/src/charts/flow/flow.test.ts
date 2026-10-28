@@ -6,6 +6,7 @@ import { createServer } from 'vite';
 import type { FlowDiagramProps } from './FlowDiagram';
 import type { FrameTask } from '../scheduler';
 import { tokensFromValues } from '../tokens.ts';
+import { layoutEndLabels } from '../labels.ts';
 import { flowCapacity, flowPlaybackSnap, FlowMotion, flowStops, labelAt, linkAt, nodeAt, ribbonTop, slotOrder } from './layout.ts';
 import type { FlowGeometry, FlowLink, FlowNode } from './layout';
 
@@ -52,7 +53,9 @@ test('many nodes shrink the gaps, keep a minimum height and never run past the b
   assert.equal(frame.nodes.length, 80);
   assert.ok(frame.nodes.every(box => box.height >= 2 && box.y + box.height <= 200 + 1e-9), 'every node drawn inside the height');
   // How many a side a widget should ask for at that height, one label row each.
-  assert.equal(flowCapacity(200, 16), 12);
+  assert.equal(flowCapacity(200, 16), 11);
+  const rows = Array.from({ length: flowCapacity(200, 16) }, (_, index) => ({ id: `L${index}`, y: 100, height: 16 }));
+  assert.ok(Math.max(...layoutEndLabels(rows, 0, 200).values()) + 8 <= 200, 'every label row of that many fits, gaps included');
   assert.equal(flowCapacity(10, 16), 2);
 });
 

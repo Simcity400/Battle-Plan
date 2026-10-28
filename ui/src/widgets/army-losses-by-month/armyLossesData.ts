@@ -163,22 +163,42 @@ export function monthTooltip(period: MonthPeriod, parts: readonly Part[], measur
   return { title, subtitle: caption, rows };
 }
 
-/** One army's retained month: its channels and its ledgers' designs, for the drill. */
-export interface MonthArmy { army: LossArmy; losses: [number, number, number] | null; designs: { name: string; amountRaw: string; ledger: number }[] }
+/** One army's retained month: its channels, its ledgers' designs, the ledgers whose amounts
+ * were not witnessed, and its exact amount in the chosen ledgers, for the drill. */
+export interface MonthArmy { army: LossArmy; losses: [number, number, number] | null; designs: { name: string; amountRaw: string; ledger: number }[];
+  unknown: number[]; amount: bigint | null }
 
-export function monthArmies(reply: ArmyLossesReply, month: number): MonthArmy[] {
+/** Every counted army with a retained entry in `month`. Its amount in `kinds` is unknown, never
+ * zero, when its own amounts there were not witnessed or no army kept the month there (as `monthBars`). */
+export function monthArmies(reply: ArmyLossesReply, month: number, kinds: readonly number[]): MonthArmy[] {
   const out = new Map<string, MonthArmy>();
-  const entry = (army: LossArmy) => out.get(army.reference) ?? (out.set(army.reference, { army, losses: null, designs: [] }), out.get(army.reference)!);
+  const entry = (army: LossArmy) => out.get(army.reference)
+    ?? (out.set(army.reference, { army, losses: null, designs: [], unknown: [], amount: null }), out.get(army.reference)!);
   const armies = countedArmies(reply);
+  let kept = false;
   for (const row of reply.manpower) {
     const army = armies.get(row.army);
     if (army && row.month === month) entry(army).losses = [row.losses[0], row.losses[1], row.losses[2]];
   }
   for (const row of reply.equipment) {
     const army = armies.get(row.army);
-    if (army && row.month === month) entry(army).designs.push({ name: row.name ?? 'Design name unavailable', amountRaw: row.amountRaw, ledger: row.ledger });
+    if (!army || row.month !== month) continue;
+    entry(army).designs.push({ name: row.name ?? 'Design name unavailable', amountRaw: row.amountRaw, ledger: row.ledger });
+    kept ||= kinds.includes(row.ledger);
   }
-  return [...out.values()].sort((a, b) => a.army.ordinal - b.army.ordinal);
+  for (const row of reply.emptyMonths) {
+    const army = armies.get(row.army);
+    if (!army || row.month !== month) continue;
+    entry(army);
+    kept ||= kinds.includes(row.ledger);
+  }
+  for (const row of reply.unknownMonths) {
+    const army = armies.get(row.army);
+    if (army && row.month === month) entry(army).unknown.push(row.ledger);
+  }
+  return [...out.values()].map(row => ({ ...row, amount: !kept || row.unknown.some(ledger => kinds.includes(ledger)) ? null
+    : row.designs.filter(design => kinds.includes(design.ledger)).reduce((sum, design) => sum + BigInt(design.amountRaw), 0n) }))
+    .sort((a, b) => a.army.ordinal - b.army.ordinal);
 }
 
 export const designAmount = (raw: string) => formatFixed(raw, 5, 0);

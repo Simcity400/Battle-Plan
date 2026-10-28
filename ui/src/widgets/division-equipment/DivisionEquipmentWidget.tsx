@@ -69,17 +69,18 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   // The last reply drawn for this client, recording, content and subject stays while the next hour's loads.
   const content = useContentRevision(runtime.client);
   const owner = JSON.stringify([track?.source.id, track?.source.revision, subject, content]);
-  const drawn = useRef<{ client: typeof runtime.client; owner: string; data: DivisionEquipmentReply } | null>(null);
-  const kept = drawn.current?.client === runtime.client && drawn.current.owner === owner ? drawn.current.data : undefined;
-  // The newest landed reply replaces the drawn one, whichever hour it answers.
-  const data = held ?? state.data ?? kept;
-  if (data) drawn.current = { client: runtime.client, owner, data };
+  const drawn = useRef<{ client: typeof runtime.client; owner: string; data: DivisionEquipmentReply; reached?: DivisionEquipmentReply } | null>(null);
+  const mine = drawn.current?.client === runtime.client && drawn.current.owner === owner ? drawn.current : null;
+  // The newest landed reply replaces the drawn one, whichever hour it answers; an older reached reply never returns over it.
+  const landed = state.current || state.data !== mine?.reached ? state.data : undefined;
+  const data = held ?? landed ?? mine?.data;
+  if (data) drawn.current = { client: runtime.client, owner, data, reached: state.data };
   const drillParams = drill?.kind === 'template' ? { template: drill.template } : drill?.kind === 'division' ? { division: drill.division } : null;
   const detail = useReachedProduct(runtime.client, track?.source, base && drillParams && { ...base, params: { branchId: track!.branch.id, hour, tag, countFor, ...drillParams } },
     JSON.stringify([subject, drillParams]), active && drillParams !== null, validateDivisionEquipment);
   const viewportHeight = useViewportHeight();
   const anchor = useRef<HTMLDivElement>(null);
-  useDiagnostics(onDiagnostics, data?.warnings ?? null);
+  useDiagnostics(onDiagnostics, data ? [...new Set([...data.warnings, ...detail.data?.warnings ?? []])] : null);
   useEffect(() => setDrill(null), [subject, view]);
   const typeColumns = useMemo<readonly TableColumn<EquipmentType>[]>(() => [
     { key: 'type', header: 'Equipment', label: 'Equipment', width: 'minmax(var(--table-name-min), 2fr)', value: typeName,
@@ -150,10 +151,10 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   else main = <>{data.poolHour !== null && <p className="division-equipment-caption">Equipment as of {formatDateTime(data.poolHour)}{data.unknownDivisions > 0
       ? ` · ${usNumber.format(data.unknownDivisions)} ${data.unknownDivisions === 1 ? 'division' : 'divisions'} not recorded` : ''}</p>}
     {view === 'equipment'
-      ? <Table label="Division equipment by type" rows={data.types} columns={typeColumns} rowKey={typeKey} sort={MISSING_SORT} setOption={setOption}
+      ? <Table key="equipment" label="Division equipment by type" rows={data.types} columns={typeColumns} rowKey={typeKey} sort={MISSING_SORT}
         cellBars={bars} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
         onRowClick={row => setDrill({ kind: 'type', key: typeKey(row) })} tooltip={typeTip} menu={menu} />
-      : <Table label="Division equipment by template" rows={data.templates} columns={templateColumns} rowKey={templateKey} sort={FILL_SORT} setOption={setOption}
+      : <Table key="template" label="Division equipment by template" rows={data.templates} columns={templateColumns} rowKey={templateKey} sort={FILL_SORT}
         cellBars={bars} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
         onRowClick={row => setDrill({ kind: 'template', template: row.template })} tooltip={templateTip} menu={menu} />}</>;
   const type = drill?.kind === 'type' ? data?.types.find(row => typeKey(row) === drill.key) : undefined;

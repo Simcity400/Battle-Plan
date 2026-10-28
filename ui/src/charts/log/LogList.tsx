@@ -399,59 +399,61 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
   if (!ordinals[items.length]) return <div className="log-empty" {...(import.meta.env.MODE === 'parity' ? { ref: parityEmptyRoot } : {})}><PreparedLogCoverage coverage={preparedCoverage} exact={preparedExactFrom} approximate={preparedApproximate} />{empty}</div>;
   return <div className={`log${pages ? ' is-paged' : ''}${geometry.compressed ? ' is-compressed' : ''}${layout === 'card' ? ' is-card-log' : ''}${density === 'compact' ? ' is-compact' : ''}${animate ? '' : ' no-motion'}`}
     style={{ '--log-columns': typeof columns === 'string' ? columns : undefined } as React.CSSProperties}>
-    {topMonth?.label && <div className="log-month is-sticky" aria-hidden="true">{topMonth.label}</div>}
     <PreparedLogCoverage coverage={preparedCoverage} exact={preparedExactFrom} approximate={preparedApproximate} />
-    <div ref={setScroller} className="log-scroll" role="listbox" aria-label={label} tabIndex={0}
-      aria-activedescendant={current ? optionId(current) : undefined}
-      onScroll={event => readScroll(event.currentTarget)}
-      onKeyDown={onKeyDown}
-      onFocus={event => {
-        if (event.target !== event.currentTarget || pending) return;
-        if (rowIds.length) setActive(previous => previous && byId.has(previous) ? previous : rowIds[0]);
-        else if (pages) setSpoken('Loading rows.');
-      }}
-      onFocusCapture={event => { if (event.target !== event.currentTarget && event.target instanceof Element && hasLogPartTip(event.target, event.currentTarget)) { setPending(null); clearTip(); } }}
-      onBlur={() => { setPending(null); clearTip(); }}>
-      <div className="log-body" style={{ height: geometry.extent }}>
-        {shown.map(moved => {
-          const item = moved.item;
-          const style = { transform: `translateY(${scrollItemTop(geometry, place(moved.slot), view.top)}px)` };
-          if (item.kind === 'page') {
-            const margin = ROW_HEIGHT[density] * 6;
-            const top = Math.max(place(moved.slot), view.top - margin);
-            const bottom = Math.min(place(moved.slot) + item.page.count * ROW_HEIGHT[density], view.top + view.height + margin);
-            const height = Math.max(0, bottom - top);
-            const labelTop = Math.max(0, Math.min(Math.max(0, height - ROW_HEIGHT[density]), view.top - top));
-            return <div key={moved.key} className="log-page" style={{ transform: `translateY(${scrollItemTop(geometry, top, view.top)}px)`, height }} aria-hidden="true">
-              <span style={{ transform: `translateY(${labelTop}px)` }}>{item.page.error ? 'Couldn’t load rows.' : 'Loading rows…'}</span>
+    <div className="log-view">
+      {topMonth?.label && <div className="log-month is-sticky" aria-hidden="true">{topMonth.label}</div>}
+      <div ref={setScroller} className="log-scroll" role="listbox" aria-label={label} tabIndex={0}
+        aria-activedescendant={current ? optionId(current) : undefined}
+        onScroll={event => readScroll(event.currentTarget)}
+        onKeyDown={onKeyDown}
+        onFocus={event => {
+          if (event.target !== event.currentTarget || pending) return;
+          if (rowIds.length) setActive(previous => previous && byId.has(previous) ? previous : rowIds[0]);
+          else if (pages) setSpoken('Loading rows.');
+        }}
+        onFocusCapture={event => { if (event.target !== event.currentTarget && event.target instanceof Element && hasLogPartTip(event.target, event.currentTarget)) { setPending(null); clearTip(); } }}
+        onBlur={() => { setPending(null); clearTip(); }}>
+        <div className="log-body" style={{ height: geometry.extent }}>
+          {shown.map(moved => {
+            const item = moved.item;
+            const style = { transform: `translateY(${scrollItemTop(geometry, place(moved.slot), view.top)}px)` };
+            if (item.kind === 'page') {
+              const margin = ROW_HEIGHT[density] * 6;
+              const top = Math.max(place(moved.slot), view.top - margin);
+              const bottom = Math.min(place(moved.slot) + item.page.count * ROW_HEIGHT[density], view.top + view.height + margin);
+              const height = Math.max(0, bottom - top);
+              const labelTop = Math.max(0, Math.min(Math.max(0, height - ROW_HEIGHT[density]), view.top - top));
+              return <div key={moved.key} className="log-page" style={{ transform: `translateY(${scrollItemTop(geometry, top, view.top)}px)`, height }} aria-hidden="true">
+                <span style={{ transform: `translateY(${labelTop}px)` }}>{item.page.error ? 'Couldn’t load rows.' : 'Loading rows…'}</span>
+              </div>;
+            }
+            const motion = !animate ? 'moving-row' : explicitMotion && layout === 'row' && item.kind === 'row' && moved.phase !== 'leaving'
+              ? `moving-row${visibleEntries.entering.has(moved.key) ? ' is-entering' : ''}`
+              : movingRowClass(layout === 'card' && moved.phase === 'entering' ? { ...moved, phase: 'staying' } : moved);
+            if (item.kind === 'month') return <div key={moved.key} className={`log-month ${motion}`} style={style} aria-hidden="true">{item.label}</div>;
+            const row = item.row;
+            const id = rowId(row);
+            // A row fading out is no longer the row its id names: it neither answers nor is read.
+            const leaving = moved.phase === 'leaving';
+            const date = logDate(row.hour);
+            return <div key={moved.key} ref={layout === 'card' ? node => attachCard(moved.key, node) : undefined}
+              id={leaving ? undefined : optionId(id)} data-log-id={leaving ? undefined : id} data-log-key={moved.key} role="option"
+              aria-selected={!leaving && id === current} aria-hidden={leaving || undefined} aria-label={describe(row)}
+              className={`log-row${layout === 'card' ? ' log-card' : ''} ${motion}${!leaving && id === current ? ' is-active' : ''}`}
+              style={{ ...style, ...(layout === 'row' && rowHeight ? { height: rowHeight(row, density) } : {}), '--log-columns': columns == null ? undefined : logRowColumns(columns, row) } as React.CSSProperties}
+              onPointerMove={event => {
+                if (leaving) return;
+                if (event.target instanceof Element && hasLogPartTip(event.target, event.currentTarget)) { setPending(null); clearTip(); return; }
+                showTip({ id, by: 'pointer', x: event.clientX, y: event.clientY });
+              }}
+              onPointerLeave={() => { if (tip.current?.by === 'pointer') clearTip(); }}
+              onClick={() => { if (!leaving) { setPending(null); setActive(id); } }}
+              onContextMenu={event => { event.preventDefault(); if (leaving) return; setPending(null); setActive(id); openMenu(id, event.clientX, event.clientY); }}>
+              {layout === 'row' && <span className="log-when"><span>{row.by && <small>by </small>}{date.day}</span>{date.year && <small>{date.year}</small>}</span>}
+              {renderRow(row)}
             </div>;
-          }
-          const motion = !animate ? 'moving-row' : explicitMotion && layout === 'row' && item.kind === 'row' && moved.phase !== 'leaving'
-            ? `moving-row${visibleEntries.entering.has(moved.key) ? ' is-entering' : ''}`
-            : movingRowClass(layout === 'card' && moved.phase === 'entering' ? { ...moved, phase: 'staying' } : moved);
-          if (item.kind === 'month') return <div key={moved.key} className={`log-month ${motion}`} style={style} aria-hidden="true">{item.label}</div>;
-          const row = item.row;
-          const id = rowId(row);
-          // A row fading out is no longer the row its id names: it neither answers nor is read.
-          const leaving = moved.phase === 'leaving';
-          const date = logDate(row.hour);
-          return <div key={moved.key} ref={layout === 'card' ? node => attachCard(moved.key, node) : undefined}
-            id={leaving ? undefined : optionId(id)} data-log-id={leaving ? undefined : id} data-log-key={moved.key} role="option"
-            aria-selected={!leaving && id === current} aria-hidden={leaving || undefined} aria-label={describe(row)}
-            className={`log-row${layout === 'card' ? ' log-card' : ''} ${motion}${!leaving && id === current ? ' is-active' : ''}`}
-            style={{ ...style, ...(layout === 'row' && rowHeight ? { height: rowHeight(row, density) } : {}), '--log-columns': columns == null ? undefined : logRowColumns(columns, row) } as React.CSSProperties}
-            onPointerMove={event => {
-              if (leaving) return;
-              if (event.target instanceof Element && hasLogPartTip(event.target, event.currentTarget)) { setPending(null); clearTip(); return; }
-              showTip({ id, by: 'pointer', x: event.clientX, y: event.clientY });
-            }}
-            onPointerLeave={() => { if (tip.current?.by === 'pointer') clearTip(); }}
-            onClick={() => { if (!leaving) { setPending(null); setActive(id); } }}
-            onContextMenu={event => { event.preventDefault(); if (leaving) return; setPending(null); setActive(id); openMenu(id, event.clientX, event.clientY); }}>
-            {layout === 'row' && <span className="log-when"><span>{row.by && <small>by </small>}{date.day}</span>{date.year && <small>{date.year}</small>}</span>}
-            {renderRow(row)}
-          </div>;
-        })}
+          })}
+        </div>
       </div>
     </div>
     <span className="sr-only" aria-live="polite">{spoken}</span>

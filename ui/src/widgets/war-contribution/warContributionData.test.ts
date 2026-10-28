@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WarContributionCountry, WarContributionGroup, WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
-import { CATEGORIES, chosenWar, contributionRows, readHourFor, rowLengths, shareText, warGroup } from './warContributionData.ts';
+import { warContributions } from '../wars/warsData.ts';
+import { CATEGORIES, chosenWar, contributionRows, readHourFor, rowLengths, shareText } from './warContributionData.ts';
 
 const score = (tag: string, side: WarContributionCountry['side'], values: Partial<Record<keyof WarContributionCountry, string>> = {}): WarContributionCountry => ({
   tag, side, equipmentDamage: '0', occupation: '0', airDamage: '0', strategicBombing: '0', shipDamage: '0', convoyDamage: '0',
@@ -50,9 +51,15 @@ test('the saved war wins while it exists, else the war with most participants go
   assert.equal(chosenWar(reply, null, -1), null, 'no war has started');
   assert.equal(readHourFor(reply.wars[0], 550), 100, 'an ended war reads its last observed hour');
   const sides = reply.wars[1].observations[0];
-  assert.equal(warGroup([{ viewpointSide: ['A'], opposingSide: ['B'], participants: [], reason: null },
+  assert.equal(warContributions([{ viewpointSide: ['A'], opposingSide: ['B'], participants: [], reason: null },
     { viewpointSide: ['A', 'C'], opposingSide: ['B', 'D', 'E'], participants: [], reason: null }], sides)?.viewpointSide.length, 2);
-  assert.equal(warGroup([], sides), null);
+  assert.equal(warContributions([], sides), null);
+  // One war over several native groups: the largest within it, never their sum.
+  const joined = observation(0, 100, ['A'], ['B', 'C']);
+  const groups = [{ viewpointSide: ['A'], opposingSide: ['B'], participants: [], reason: null },
+    { viewpointSide: ['A'], opposingSide: ['C', 'D'], participants: [], reason: null },
+    { viewpointSide: ['A', 'C'], opposingSide: ['B'], participants: [], reason: null }];
+  assert.equal(warContributions(groups, joined), groups[0]);
 });
 
 test('shares are exact hundredths of the side, signed, and none for an empty side', () => {

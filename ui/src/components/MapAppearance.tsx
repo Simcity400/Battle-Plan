@@ -139,7 +139,7 @@ export default function MapAppearance({ source, client, global = false, viewId, 
   const recorded = new Set(reply?.recordedMods.map(mod => mod.recordedId));
   const refreshMods = async () => {
     if (!client.mapSettings) return;
-    setBusy(true);
+    setBusy(true); setError(null);
     try {
       const value = await client.mapSettings(source?.id ?? '', source?.revision ?? '', null, new AbortController().signal, target); setReply(value); if (!mapDirty) setDraft(value.settings);
       // Open maps whose visual mods were installed, updated or removed reload where they are.

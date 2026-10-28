@@ -31,6 +31,6 @@ export function useAirStatisticsChoices(widget: WidgetSpec, runtime: WidgetRunti
     channel: (data?.channels ?? []).map(channel => ({ value: setToken(channel.id), label: `${statisticName(channel.ours)} / ${statisticName(channel.enemy)}` })),
     regions: [...(data?.regions ?? []).map(region => ({ value: setToken(region.id), label: region.name })),
       ...[...picked].filter(id => !data?.regions.some(region => region.id === id)).map(id => ({ value: setToken(id), label: `${id} · not in this recording` }))],
-    theatres: (theatres ?? []).map(theatre => ({ value: setToken(theatre.id), label: theatre.name })),
+    theatres: (theatres.theatres ?? []).map(theatre => ({ value: setToken(theatre.id), label: theatre.name })),
   };
 }

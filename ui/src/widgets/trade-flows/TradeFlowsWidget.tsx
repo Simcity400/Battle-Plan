@@ -348,7 +348,9 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     const base = countryReply.data ?? countryNumbers;
     return !countryHolder ? null : countryKey ? base ? decodeTrade(countryPoint.data ? mergePreparedTrade(base, countryPoint.data) : base) : null : trade;
   }, [countryHolder, countryKey, countryReply.data, countryNumbers, countryPoint.data, trade]);
-  const countryPrepared = { ...incoming, hasExactHour: (hour: number) => !runtime.client.preparedQuery ||
+  const navigateFlows = incoming.navigateFlows;
+  const countryPrepared = { ...incoming, navigateFlows: navigateFlows && countryTags ? (flows: readonly string[]) => navigateFlows(flows, countryTags) : undefined,
+    hasExactHour: (hour: number) => !runtime.client.preparedQuery ||
     ((countryData?.reply as PreparedTradeReply | undefined)?.exactHours ?? []).includes(Math.floor(hour)) };
   const countrySource = countryData ?? trade;
   const countryFact = countryHolder && drillAt != null && countrySource ? identityCountryAt(countrySource, countryHolder, drillAt) : null;
@@ -393,6 +395,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const selectionReason = selectionMessage(resolved, atMoment, measure, from, moment, groupUnobserved);
   if (selectionReason && !pinnedView && !drill.breakdown) return <>{groupFailure}<WidgetState kind="empty" message={selectionReason} /></>;
   if (error) return <>{groupFailure}{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (incoming.scaleError) return <>{groupFailure}{pinnedHeader}<WidgetState kind="error" what="the campaign-wide ribbon scale" detail={incoming.scaleError} onRetry={retry} /></>;
   // A group with no member found yet asks for nothing, so no reply will come: the moment shown
   // says why. Totals over time can't say so from one moment, and wait for the whole branch.
   const none = measure === 'current' && resolved ? noMembersAt(widget.countries, resolved, groups.data, moment, lastHour) : null;

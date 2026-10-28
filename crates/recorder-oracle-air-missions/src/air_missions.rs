@@ -302,31 +302,10 @@ fn transfers(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
         if !ordinals.entry(row.base).or_default().insert(ordinal) {
             return Err(invalid("Air transfer incoming ordinal repeats"));
         }
-        if wing.eligibility_counter > wing.eligibility_limit {
-            continue;
-        }
-        let progress = row
-            .progress_raw
-            .ok_or_else(|| invalid(format!("Air transfer {} progress is unreadable", row.wing)))?;
-        row.distance_raw.ok_or_else(|| {
-            invalid(format!(
-                "Air transfer {} total distance is unreadable",
-                row.wing
-            ))
-        })?;
         let saved = save
             .air_wings
             .get(&row.wing)
             .ok_or_else(|| invalid("Air transfer wing is absent from the save"))?;
-        if saved.transfer_progress != Some(progress) {
-            report.difference(
-                format!("Air transfer {} progress", row.wing),
-                progress,
-                saved
-                    .transfer_progress
-                    .map_or_else(|| "absent".to_owned(), |raw| raw.to_string()),
-            );
-        }
         if let Some(target) = saved.transferring_to {
             let state = bases
                 .binary_search_by_key(&row.base, |base| base.id)
@@ -339,6 +318,28 @@ fn transfers(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
                     target,
                 );
             }
+        }
+        // The eligibility limit gates only the progress and distance reads.
+        if wing.eligibility_counter > wing.eligibility_limit {
+            continue;
+        }
+        let progress = row
+            .progress_raw
+            .ok_or_else(|| invalid(format!("Air transfer {} progress is unreadable", row.wing)))?;
+        row.distance_raw.ok_or_else(|| {
+            invalid(format!(
+                "Air transfer {} total distance is unreadable",
+                row.wing
+            ))
+        })?;
+        if saved.transfer_progress != Some(progress) {
+            report.difference(
+                format!("Air transfer {} progress", row.wing),
+                progress,
+                saved
+                    .transfer_progress
+                    .map_or_else(|| "absent".to_owned(), |raw| raw.to_string()),
+            );
         }
     }
     contiguous(ordinals.values(), "Air incoming-wing")?;
@@ -1859,6 +1860,20 @@ mod tests {
             assert_eq!(transfers(&frame, &saved, &mut report).is_ok(), valid);
             assert_eq!(report.differences.len(), differences);
         }
+        // Past its eligibility limit a wing's progress is unread, but its destination is not.
+        *frame.tables[TableId::AirWings.index()] =
+            TableView::Complete(TableRows::AirWings(vec![AirWingRow {
+                id: 1,
+                air_base: 3,
+                base_override: 7,
+                eligibility_counter: 2,
+                eligibility_limit: 1,
+                ..Default::default()
+            }]));
+        saved.air_wings.get_mut(&1).unwrap().transferring_to = Some(10);
+        let mut report = Report::default();
+        transfers(&frame, &saved, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
         *frame.tables[TableId::AirTransferInputs.index()] =
             TableView::Complete(TableRows::AirTransferInputs(Vec::new()));
         assert!(transfers(&frame, &saved, &mut Report::default()).is_err());

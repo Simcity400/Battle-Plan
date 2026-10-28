@@ -321,7 +321,11 @@ mod tests {
         draw(&mut viewer);
         assert!(viewer.start_pick.choosing(), "{:?}", viewer.start_pick);
         state.buttons = GamepadButton::South.bit();
-        viewer.input.gamepad(GamepadMessage::State { owner, state });
+        viewer.input.gamepad(GamepadMessage::State {
+            owner,
+            state,
+            pressed: 0,
+        });
         draw(&mut viewer);
         assert!(viewer.flight.is_none(), "the flight waits for its start");
         assert!(viewer.start_pick.at().is_some(), "{:?}", viewer.start_pick);
@@ -330,7 +334,11 @@ mod tests {
             triggers: [0.0, 1.0],
             buttons: 0,
         };
-        viewer.input.gamepad(GamepadMessage::State { owner, state });
+        viewer.input.gamepad(GamepadMessage::State {
+            owner,
+            state,
+            pressed: 0,
+        });
         draw(&mut viewer);
         let start = viewer.flight.clone().expect("the flying mode flies");
         let begun = Instant::now();
@@ -351,7 +359,11 @@ mod tests {
         // The North button changes the view.
         assert_eq!(flown.view, View::Chase);
         state.buttons = GamepadButton::North.bit();
-        viewer.input.gamepad(GamepadMessage::State { owner, state });
+        viewer.input.gamepad(GamepadMessage::State {
+            owner,
+            state,
+            pressed: 0,
+        });
         draw(&mut viewer);
         assert_eq!(
             viewer.flight.as_ref().map(|flight| flight.view),

@@ -81,7 +81,8 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const sortingNames = useMemo(() => sort.column === 'partner' || sort.column === 'from'
     ? rows.flatMap(row => [row.from, row.partner].flatMap(tag => tag ? [{ hour: row.at, tag }] : [])) : [], [rows, sort.column]);
   const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
-  const artTag = fallback[0] ?? null;
+  // Any country recorded at the hour reads the variants' pictures; all countries or a group name none.
+  const artTag = fallback[0] ?? visible.find(row => !row.ended && row.giver !== null)?.giver ?? null;
   const art = useVariantArt(runtime, track, artTag, hour, useMemo(() => visible.flatMap(row => row.items[0]?.variant ? [row.items[0].variant] : []), [visible]), active);
   const name = useCallback((tag: string | null, at: number) => tag === null ? 'Country name unavailable' : names.get(nameKey(at, tag)) ?? tag, [names]);
   // Titles read the shown rows' labels; sorting keeps the tag order until every name has arrived.
@@ -138,7 +139,8 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
     dispatch({ type: 'open', breakdown: AGREEMENT.id, hour: row.at, playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
   const at = drillHour(drill, hour) ?? hour;
-  const active_ = rows.filter(row => !row.ended).length;
+  // An agreement's fuel terms are a row of their own, not another agreement.
+  const active_ = new Set(rows.filter(row => !row.ended).map(row => `${row.agreement.giver}:${row.agreement.id}`)).size;
 
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see lend-lease." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;

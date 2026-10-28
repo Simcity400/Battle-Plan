@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cellState, countriesAt, fieldText, measureField, pairsAt, pairTooltip, validateIntelCoverage, visibleCountries } from './intelCoverageData.ts';
+import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 
 const reply = validateIntelCoverage({
   window: { firstHour: 0, lastHour: 48, known: [{ firstHour: 0, lastHour: 30 }], reads: [[0, 23, 0], [24, 30, 24]], series: [
@@ -74,4 +75,16 @@ test('labels load only for the axes the matrix draws', () => {
 test('a member or rank series must name a country', () => {
   assert.throws(() => validateIntelCoverage({ window: { firstHour: 0, lastHour: 1, known: [], reads: [], series: [{ name: 'member|bad', runs: [] }] }, warnings: [] }),
     /malformed/u);
+});
+
+test('the matrix asks for the chosen group\'s members, and a Top countries group sets how many are shown', async () => {
+  const { intelCoverageRequest, intelShown } = await import('../../dashboard/widgetRequests.ts');
+  const track = { id: 'main', source: { id: 's', revision: '1' }, branch: { id: '1', firstHour: 0, lastHour: 48 } } as unknown as BoundTrack;
+  const widget = (countries: unknown) => ({ id: 'intel', kind: 'intel-network-coverage', trackIds: ['main'], countries, time: { mode: 'follow' },
+    options: { mostCountries: 5 } }) as unknown as WidgetSpec;
+  assert.equal(intelShown(widget({ kind: 'group', group: { type: 'top', count: 30 }, membership: 'hour', aggregate: false })), 30);
+  assert.equal(intelShown(widget({ kind: 'all' })), 5);
+  const humans = widget({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false });
+  assert.deepEqual(intelCoverageRequest(humans, track, ['GER', 'ITA'])!.params, { branchId: '1', view: 'matrix', shown: 5, tags: ['GER', 'ITA'] });
+  assert.deepEqual(intelCoverageRequest(widget({ kind: 'all' }), track)!.params, { branchId: '1', view: 'matrix', shown: 5 });
 });

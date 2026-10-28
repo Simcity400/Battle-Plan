@@ -32,6 +32,8 @@ export async function startUI(ui, config, output) {
     for (const name of ['crates/dashboard-core/src/map_settings.rs', 'crates/dashboard/src/reply_cache.rs']) {
       const marker = path.join(root, name);
       await mkdir(path.dirname(marker), { recursive: true }); await copyFile(path.join(ui.root, name), marker);
+      // An uncommitted edit keeps its own time, so a bridge built before it is refused.
+      if (execFileSync('git', ['status', '--porcelain', '--', name], { cwd: ui.root, encoding: 'utf8' }).trim()) continue;
       const changed = new Date(Number(execFileSync('git', ['log', '-1', '--format=%ct', '--', name], { cwd: ui.root, encoding: 'utf8' })) * 1000);
       await utimes(marker, changed, changed);
     }

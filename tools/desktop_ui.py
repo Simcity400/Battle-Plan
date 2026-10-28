@@ -5,7 +5,7 @@ Never switches desktops or moves the system cursor.
 """
 import ctypes as c
 from ctypes import wintypes as w
-import argparse, hashlib, json, os, pathlib, shutil, socket, subprocess, msvcrt, time
+import argparse, hashlib, json, os, pathlib, shutil, socket, subprocess, msvcrt, sys, time
 
 u = c.WinDLL('user32', use_last_error=True)
 k = c.WinDLL('kernel32', use_last_error=True)
@@ -68,6 +68,9 @@ def launch(args):
     ROOT.mkdir(parents=True, exist_ok=True)
     for filename in [source.name, 'viewer.exe']:
         shutil.copy2(source.parent / filename, ROOT / filename)
+    # The viewer finds its shader compiler beside itself.
+    if (source.parent / 'shader-tools').is_dir():
+        shutil.copytree(source.parent / 'shader-tools', ROOT / 'shader-tools', dirs_exist_ok=True)
     args = [str(ROOT / source.name), *args[1:]]
     desk = desktop(True)
     for key,subdir in [('APPDATA','roaming'),('LOCALAPPDATA','local'),('WEBVIEW2_USER_DATA_FOLDER','webview')]:
@@ -98,6 +101,7 @@ def launch(args):
             k.WaitForSingleObject(info.process, 5000)
     code=w.DWORD();k.GetExitCodeProcess(info.process,c.byref(code));print(json.dumps({'exitCode':code.value}),flush=True)
     k.CloseHandle(info.process);u.CloseDesktop(desk)
+    return code.value
 
 def windows(parent=None):
     items=[]
@@ -147,7 +151,10 @@ def capture(hwnd, filename):
 if __name__=='__main__':
     action=cli.action
     arguments=cli.arguments
-    if action=='launch': launch(arguments)
+    if action=='launch':
+        code=launch(arguments)
+        # Signed, so a crash status such as 0xC0000005 is the script's own exit code.
+        sys.exit(code-(1<<32) if code>=1<<31 else code)
     else:
         desk=desktop()
         def handle(index=0):

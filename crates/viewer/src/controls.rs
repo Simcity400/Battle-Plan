@@ -175,6 +175,8 @@ pub struct Input {
     pad: Option<GamepadState>,
     /// The buttons of the last controller state read, which presses count against.
     pad_buttons: u32,
+    /// Buttons the host saw pressed since the last frame, released again or not.
+    pad_pressed: u32,
     /// The handoff this map holds the controller under, if it holds it.
     pad_owner: Option<GamepadOwner>,
     /// Controller buttons pressed once, waiting for a second press.
@@ -224,17 +226,24 @@ impl Input {
                 self.pad_owner = Some(owner);
                 self.pad = Some(state);
                 self.pad_buttons = state.buttons;
+                self.pad_pressed = 0;
                 self.pad_taps.clear();
             }
-            GamepadMessage::State { owner, state } => {
+            GamepadMessage::State {
+                owner,
+                state,
+                pressed,
+            } => {
                 if self.pad_owner == Some(owner) {
                     self.pad = Some(state);
+                    self.pad_pressed |= pressed;
                 }
             }
             GamepadMessage::Release => {
                 self.pad_owner = None;
                 self.pad = None;
                 self.pad_buttons = 0;
+                self.pad_pressed = 0;
                 self.pad_taps.clear();
             }
         }
@@ -314,6 +323,7 @@ impl Input {
         }
         if let Some(state) = &self.pad {
             frame.pad = Pad::from_state(state, self.pad_buttons);
+            frame.pad.pressed |= std::mem::take(&mut self.pad_pressed);
             self.pad_buttons = state.buttons;
         }
         self.pad_taps

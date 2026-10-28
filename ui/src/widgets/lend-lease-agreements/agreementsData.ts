@@ -60,7 +60,7 @@ export function agreementRows(reply: MarketHistoryReply, direction: Direction, m
       items: variants.map(variant => ({ variant, name: variantAt(reply, variant, at), schedule: (scheduled.get(variant) ?? []).join(' · '),
         delivered: delivered.get(variant) ?? null, lost: lost.get(variant) ?? null })) });
     const [daily, percentage, sent, sunk] = [0, 1, 2, 3].map(index => { const value = valueAt(agreement.fuel[index] ?? [], at); return value === null ? null : BigInt(value); });
-    if (daily || percentage) rows.push({ ...base, key: `${agreement.giver}:${agreement.id}:fuel`, fuel: true,
+    if (daily || percentage || sent || sunk) rows.push({ ...base, key: `${agreement.giver}:${agreement.id}:fuel`, fuel: true,
       items: [{ variant: null, name: 'Fuel', schedule: [daily ? `Daily ${fuel(daily)}` : '', percentage ? `Production share ${share(percentage)}` : ''].filter(Boolean).join(' · '),
         delivered: sent, lost: sunk }] });
   }

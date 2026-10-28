@@ -78,6 +78,11 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
     setView(viewAt(root.current.scrollTop, root.current.clientHeight));
     setFocus({ at, backwards });
   };
+  // A focused row that leaves hands focus to the row now in its place.
+  const leftSlot = moving.find(row => row.key === focusedKey && row.phase === 'leaving')?.slot;
+  useLayoutEffect(() => {
+    if (leftSlot != null && items.length) seek(Math.min(leftSlot, items.length - 1), false);
+  }, [leftSlot]); // eslint-disable-line react-hooks/exhaustive-deps
   return <div ref={root} className={`windowed-rows ${className ?? ''}`} role="list" aria-label={label}
     onFocus={event => {
       const backwards = tabbing.current;
@@ -93,7 +98,7 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
     <div className="windowed-rows-body" style={{ height: padding * 2 + count * rowHeight }}>
       {visible.map(row => <div key={row.key}
         className={movingRowClass(row)} style={{ height: rowHeight, transform: `translateY(${padding + row.slot * rowHeight}px)` }}
-        role="listitem" aria-hidden={row.phase === 'leaving' || undefined}
+        role="listitem" aria-hidden={row.phase === 'leaving' || undefined} inert={row.phase === 'leaving' || undefined}
         aria-setsize={items.length} aria-posinset={row.slot + 1} data-row-index={row.slot}
         onFocusCapture={() => setFocusedKey(row.key)}
         onKeyDown={event => {

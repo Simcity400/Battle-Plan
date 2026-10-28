@@ -44,6 +44,12 @@ pub fn resource_map(
     // Recorded origins by (list owner's tag, list, state).
     let mut captured: BTreeMap<(Vec<u8>, u8, u32), &ResourceOriginRow> = BTreeMap::new();
     for row in rows.origins {
+        if row.list > 1 {
+            return Err(invalid(format!(
+                "resource origin of state {} names list {}, neither own (0) nor rights (1)",
+                row.state, row.list
+            )));
+        }
         let tag = required_country_tag(row.country, links)?.to_vec();
         captured.insert((tag, row.list, row.state), row);
     }

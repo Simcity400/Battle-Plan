@@ -113,6 +113,17 @@ test('a folded day is read through the transient route after its dwell, supersed
     days().want(8);
     mock.timers.tick(hooks.DWELL_MS);
     assert.equal(fixture.loads.length, 7, 'the failed day is read again on return');
+    // Leaving the chart forgets a failed read too, so coming back reads it again.
+    fixture.loads[6].reject(new Error('Synthetic failure'));
+    await flush();
+    assert.equal(days().get(8)?.error, 'Synthetic failure');
+    days().hover(8);
+    assert.equal(days().get(8)?.error, 'Synthetic failure', 'still on the failed day: no retry loop');
+    days().hover(null);
+    assert.equal(days().get(8), undefined);
+    days().want(8);
+    mock.timers.tick(hooks.DWELL_MS);
+    assert.equal(fixture.loads.length, 8, 'the failed day is read again after the pointer left the chart');
     // At most the recent finished days stay.
     for (let day = 20; day < 20 + hooks.RECENT_DAYS; day++) {
       days().want(day);

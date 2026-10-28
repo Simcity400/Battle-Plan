@@ -628,6 +628,8 @@ struct Params {
     unobserved: Vec<HourSpan>,
     #[serde(default)]
     between: bool,
+    /// The flows a chart draws, by key: navigation stops only at their changes.
+    flows: Option<BTreeSet<String>>,
     measure: Option<String>,
     #[serde(default)]
     require_complete: bool,
@@ -1285,8 +1287,34 @@ fn read_pages(
         cancelled,
     )?;
     if input.op.as_deref() == Some("navigate") {
+        // A group's flow counts only while its members do, as the page reads cut it.
+        let shown: Vec<_> = flows
+            .iter()
+            .filter(|(_, flow)| {
+                input
+                    .flows
+                    .as_ref()
+                    .is_none_or(|keys| keys.contains(&flow_key(flow)))
+            })
+            .map(|(key, flow)| {
+                let within = input.membership.as_ref().map(|_| {
+                    combine(
+                        membership
+                            .get(&flow.seller_identity)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                        membership
+                            .get(&flow.buyer_identity)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                        input.between,
+                    )
+                });
+                (*key, within)
+            })
+            .collect();
         return Ok(Some(
-            json!({"hour":series::navigate(&mut[(&mut facts,flows.iter().map(|(key,_)|(*key,None)).collect()),(&mut known,vec![(0,None)]),(&mut refusals,selected_refusals.iter().map(|&id|(id,None)).collect())],&serde_json::from_value(params)?)?}),
+            json!({"hour":series::navigate(&mut[(&mut facts,shown.iter().map(|(key,within)|(*key,within.as_deref())).collect()),(&mut known,vec![(0,None)]),(&mut refusals,selected_refusals.iter().map(|&id|(id,None)).collect())],&serde_json::from_value(params)?)?}),
         ));
     }
     if input.op.is_some() {

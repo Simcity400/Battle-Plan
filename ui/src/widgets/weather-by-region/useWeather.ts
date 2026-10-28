@@ -86,9 +86,12 @@ export function useWeatherDays(widget: WidgetSpec, runtime: WidgetRuntime, activ
   const [revision, bump] = useReducer((value: number) => value + 1, 0);
   const wanted = useRef<{ day: number; timer?: ReturnType<typeof setTimeout>; controller?: AbortController } | null>(null);
   const forget = () => { if (wanted.current) { clearTimeout(wanted.current.timer); wanted.current.controller?.abort(); } wanted.current = null; };
+  // The day under the pointer, or null off the chart: a failure landing after it left is not kept.
+  const pointer = useRef<number | null>(null);
   useEffect(() => forget, [scope, active]);
   const want = useCallback((day: number) => {
     const owner = cache.current;
+    pointer.current = day;
     // A failed read is forgotten once the pointer leaves its day.
     if (owner.last && owner.last.day !== day && owner.last.read.error !== undefined) owner.last = null;
     if (!active || !track || owner.days.has(day) || wanted.current?.day === day) return;
@@ -109,7 +112,7 @@ export function useWeatherDays(widget: WidgetSpec, runtime: WidgetRuntime, activ
             owner.days.set(day, read);
             while (owner.days.size > RECENT_DAYS) owner.days.delete(owner.days.keys().next().value!);
             if (owner.last?.day === day) owner.last = null;
-          } else owner.last = { day, read };
+          } else if (read.error === undefined || pointer.current === day) owner.last = { day, read };
           if (wanted.current === entry) wanted.current = null;
           bump();
         });
@@ -121,7 +124,13 @@ export function useWeatherDays(widget: WidgetSpec, runtime: WidgetRuntime, activ
     const owner = cache.current;
     return owner.days.get(day) ?? (owner.last?.day === day ? owner.last.read : undefined);
   }, [scope, revision]); // eslint-disable-line react-hooks/exhaustive-deps
-  return { get, want };
+  /** The pointer is on `day`, or off the chart (null): a failed read of any other day is forgotten. */
+  const hover = useCallback((day: number | null) => {
+    const owner = cache.current;
+    pointer.current = day;
+    if (owner.last && owner.last.day !== day && owner.last.read.error !== undefined) owner.last = null;
+  }, []);
+  return { get, want, hover };
 }
 
 /** Regions, theatres and modifiers as the recording and its content name them. */

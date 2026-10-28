@@ -247,11 +247,14 @@ pub enum GamepadMessage {
         owner: GamepadOwner,
         state: GamepadState,
     },
-    /// The controller held under `owner` changed. A viewer holding it under another handoff, or
-    /// not at all, drops it.
+    /// The controller held under `owner` changed. `pressed` holds the [`GamepadButton`] bits
+    /// pressed since the host's previous message, also those released again since, so a tap
+    /// between two readings is still a press. A viewer holding it under another handoff, or not
+    /// at all, drops it.
     State {
         owner: GamepadOwner,
         state: GamepadState,
+        pressed: u32,
     },
     /// The viewer no longer holds the controller: it lets go of everything without pressing or
     /// releasing anything, and drops later states. The host never releases a viewer after
@@ -263,19 +266,45 @@ impl GamepadMessage {
     /// Refuses a state outside its ranges.
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
-            Self::Take { state, .. } | Self::State { state, .. } => state.validate(),
+            Self::Take { state, .. } => state.validate(),
+            Self::State { state, pressed, .. } => {
+                if *pressed >> GamepadButton::ALL.len() != 0 {
+                    return Err("Controller state is outside its ranges");
+                }
+                state.validate()
+            }
             Self::Release => Ok(()),
         }
     }
 
     /// The one message to keep when `next` follows `queued` before the receiver reads either. A
     /// take or a release replaces whatever waits; a state refreshes a waiting take of its owner,
-    /// replaces a waiting state and never follows a waiting release.
+    /// replaces a waiting state of its owner keeping both presses, and never follows a waiting
+    /// release.
     pub fn merge(queued: Option<Self>, next: Self) -> Self {
         match (queued, next) {
-            (Some(Self::Take { owner, .. }), Self::State { owner: of, state }) if owner == of => {
-                Self::Take { owner, state }
-            }
+            (
+                Some(Self::Take { owner, .. }),
+                Self::State {
+                    owner: of, state, ..
+                },
+            ) if owner == of => Self::Take { owner, state },
+            (
+                Some(Self::State {
+                    owner,
+                    pressed: earlier,
+                    ..
+                }),
+                Self::State {
+                    owner: of,
+                    state,
+                    pressed,
+                },
+            ) if owner == of => Self::State {
+                owner,
+                state,
+                pressed: earlier | pressed,
+            },
             (Some(waiting @ (Self::Take { .. } | Self::Release)), Self::State { .. }) => waiting,
             (_, next) => next,
         }
@@ -915,6 +944,7 @@ b"
         let update = |handoff, x| GamepadMessage::State {
             owner: owner(handoff),
             state: state(x),
+            pressed: 0,
         };
         // A newer state of a waiting take stays a take, so the viewer still takes it.
         assert_eq!(
@@ -944,6 +974,22 @@ b"
             take(5, 0.2)
         );
         assert_eq!(GamepadMessage::merge(None, update(5, 0.2)), update(5, 0.2));
+        // A press released again before the receiver reads it stays a press.
+        let tapped = |handoff, pressed| GamepadMessage::State {
+            owner: owner(handoff),
+            state: state(0.0),
+            pressed,
+        };
+        let south = GamepadButton::South.bit();
+        let east = GamepadButton::East.bit();
+        assert_eq!(
+            GamepadMessage::merge(Some(tapped(3, south)), tapped(3, east)),
+            tapped(3, south | east)
+        );
+        assert_eq!(
+            GamepadMessage::merge(Some(tapped(3, south)), tapped(4, 0)),
+            tapped(4, 0)
+        );
         let line = serde_json::to_string(&NativeCommand::Gamepad {
             message: take(2, 0.0),
         })
@@ -960,7 +1006,17 @@ b"
                 state: GamepadState {
                     triggers: [2.0, 0.0],
                     ..GamepadState::default()
-                }
+                },
+                pressed: 0,
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            GamepadMessage::State {
+                owner: owner(1),
+                state: GamepadState::default(),
+                pressed: 1 << GamepadButton::ALL.len(),
             }
             .validate()
             .is_err()

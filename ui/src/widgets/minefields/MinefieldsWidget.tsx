@@ -19,6 +19,8 @@ import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { useCountryColours } from '../../charts/race/countryColours';
 import { useCountryLooks } from '../../dashboard/countryLooks';
+import { nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
+import { nameReadText } from '../../dashboard/holderLooks';
 import { chartRuns, countryPart } from '../../dashboard/keyedHistory';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
@@ -26,9 +28,10 @@ import { contentKey, contentSet } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
 import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { loadTransientProduct } from '../../dashboard/products';
+import { useContentRevision } from '../../dashboard/contentRevision';
 import * as requests from '../../dashboard/batch5Requests';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { minesAt, minesText, orderRegions, ownerSeries, validateReports } from './minefieldsData';
+import { minesAt, minesText, orderRegions, ownerSeries, regionRuns, validateReports } from './minefieldsData';
 import type { MineReport, RegionMines, ReportsReply } from './minefieldsData';
 import { useMinefields } from './useMinefields';
 import '../air-superiority-region/airSuperiorityRegion.css';
@@ -72,6 +75,11 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   useEffect(() => { dispatch({ type: 'close' }); setPicked(null); }, [track?.source.id, track?.branch.id]);
   const drillAt = drillHour(drill, hour);
   const reports = useReports(runtime, track, drill.breakdown ? picked?.region ?? null : null, drillAt, active);
+  // Report victims need not own mines, so the reports name their own countries at their read.
+  const reportRead = reports.data ? reports.data.readHour ?? reports.data.hour : null;
+  const reportNames = useCountryNamesRead(runtime.client, track, useMemo(() => reportRead === null || !reports.data ? [] : [...new Set(reports.data.reports
+    .flatMap(report => [report.victim, report.mineOwner]).flatMap(part => part === null ? [] : [countryPart(part)?.tag ?? part]))]
+    .map(tag => ({ hour: reportRead, tag })), [reports.data, reportRead]), active);
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...reports.data?.warnings ?? []] : null);
   const pill = headerSlot && at && createPortal(<span className="pill">{regions.length} {regions.length === 1 ? 'region' : 'regions'} mined</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see minefields." />;
@@ -81,10 +89,8 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   if (pendingReplyAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!at) return <WidgetState kind="unavailable" message="Minefields were not recorded at this time." />;
   const prefix = preparedPrefix(data);
-  const lines = picked ? [...owners.values()].flatMap(series => {
-    const runs = series.regions.get(picked.region);
-    return runs?.length ? [{ id: series.owner, label: looks.name(series.tag, hour), color: colour(series.tag, hour), runs: chartRuns(runs, data.scale) }] : [];
-  }) : [];
+  const lines = picked ? [...owners.values()].flatMap(series => series.regions.get(picked.region)?.length
+    ? [{ id: series.owner, label: looks.name(series.tag, hour), color: colour(series.tag, hour), runs: chartRuns(regionRuns(series, picked.region), data.scale) }] : []) : [];
   const main = <div className="air-regions minefields-rows">
     <WindowedRows items={regions.map(region => ({ key: region.region, item: region }))} rowHeight={38} fit minRowHeight={16} className="air-region-scroll" label="Minefields by sea region"
       empty={at.refused ? <WidgetState kind="unavailable" message="Some countries' minefields were not recorded at this date." />
@@ -113,9 +119,10 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
         <div className="minefields-history"><RunLines label={`Mines in ${picked.name} by owner`} extent={[track.branch.firstHour, track.branch.lastHour]}
           branchStart={track.branch.firstHour} playhead={null} hour={drillAt} lines={lines} known={data.window.known} active={active}
           revision={lines} hoursPerSecond={hoursPerSecond} formatValue={value => value.toLocaleString('en-US', { maximumFractionDigits: 2 })}
-          empty="No mines" onPick={at => dispatch({ type: 'pick', hour: at })}
+          empty="Mines not recorded" onPick={at => dispatch({ type: 'pick', hour: at })}
           onContextMenu={(at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, at)])} /></div>
-        <ReportTable reply={reports.data} error={reports.error} name={tag => looks.name(tag, drillAt ?? hour)} hoursPerSecond={hoursPerSecond} />
+        <ReportTable reply={reports.data} error={reports.error} name={tag => nameReadText(reportRead === null ? null : reportNames.get(nameKey(reportRead, tag)))}
+          hoursPerSecond={hoursPerSecond} />
       </div>}
     </DrillHost>
     {menu.menu}
@@ -136,21 +143,22 @@ function regionTooltip(region: RegionMines, name: (tag: string) => string, colou
 
 /** One region's standing reports at the drill's hour, read on demand. */
 function useReports(runtime: WidgetProps['runtime'], track: ReturnType<typeof useMinefields>['track'], region: string | null, hour: number | null, active: boolean) {
-  const [state, setState] = useState<{ key: string; data?: ReportsReply; error?: string }>();
+  const content = useContentRevision(runtime.client);
+  const [state, setState] = useState<{ client: WidgetProps['runtime']['client']; key: string; data?: ReportsReply; error?: string }>();
   const params = track && region !== null && hour !== null ? requests.minefieldReports(track.branch.id, region, hour) : null;
   const request = track && params ? { sourceId: track.source.id, revision: track.source.revision, product: 'minefields', params } : null;
-  const key = JSON.stringify(request);
+  const key = JSON.stringify([request, content]);
   useEffect(() => {
     if (!active || !request || !track) return;
     const controller = new AbortController();
     void loadTransientProduct<unknown>(runtime.client, request, controller.signal, track.source).then(reply => {
-      if (!controller.signal.aborted) setState({ key, data: validateReports(reply) });
-    }).catch(error => { if (!controller.signal.aborted) setState({ key, error: error instanceof Error ? error.message : String(error) }); });
+      if (!controller.signal.aborted) setState({ client: runtime.client, key, data: validateReports(reply) });
+    }).catch(error => { if (!controller.signal.aborted) setState({ client: runtime.client, key, error: error instanceof Error ? error.message : String(error) }); });
     return () => controller.abort();
-    // The request's identity is its key.
+    // The request's identity is its key, with the content binding it was read under.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime.client, key, active]);
-  return state?.key === key ? state : { key, data: undefined, error: undefined };
+  return state?.client === runtime.client && state.key === key ? state : { key, data: undefined, error: undefined };
 }
 
 function ReportTable({ reply, error, name, hoursPerSecond }: { reply?: ReportsReply; error?: string; name: (tag: string) => string; hoursPerSecond: number }) {
@@ -163,7 +171,8 @@ function ReportTable({ reply, error, name, hoursPerSecond }: { reply?: ReportsRe
   ], [country]);
   if (error) return <WidgetState kind="error" what="the region's reports" detail={error} />;
   if (!reply) return <WidgetState kind="loading" label="Loading reports…" />;
-  if (!reply.reports.length) return <p className="drill-empty">No standing reports in this region at this date.</p>;
+  if (!reply.reports.length) return reply.readHour === null ? <WidgetState kind="unavailable" message="Standing reports in this region were not recorded at this date." />
+    : <p className="drill-empty">No standing reports in this region at this date.</p>;
   return <div className="minefields-reports"><Table label="Standing reports in this region" rows={reply.reports} columns={columns} rowKey={reportKey}
     unsorted sort={{ column: 'ship', direction: 'ascending' }} hoursPerSecond={hoursPerSecond}
     tooltip={row => ({ title: row.ship ?? 'Ship name unavailable', rows: [

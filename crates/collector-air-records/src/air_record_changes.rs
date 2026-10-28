@@ -116,6 +116,8 @@ struct Touched {
     lost: AtomicBool,
     observing: AtomicBool,
     set: AtomicPtr<Set>,
+    /// The installed set's slots, so status never reads a set a take may free.
+    slots: AtomicUsize,
     calls: AtomicU64,
     lost_calls: AtomicU64,
 }
@@ -128,6 +130,7 @@ impl Touched {
             lost: AtomicBool::new(true),
             observing: AtomicBool::new(false),
             set: AtomicPtr::new(std::ptr::null_mut()),
+            slots: AtomicUsize::new(0),
             calls: AtomicU64::new(0),
             lost_calls: AtomicU64::new(0),
         }
@@ -180,11 +183,8 @@ impl Touched {
                 }
             }
             if let Some(next) = offered.take() {
-                let previous = self.set.swap(Box::into_raw(next), Ordering::SeqCst);
-                if !previous.is_null() {
-                    // SAFETY: published by `Box::into_raw`; nothing holds it.
-                    drop(unsafe { Box::from_raw(previous) });
-                }
+                // SAFETY: the gate is closed and no lease remains.
+                unsafe { self.replace(Some(next)) };
             }
             Ok(())
         })();
@@ -198,8 +198,24 @@ impl Touched {
 
     /// The installed set's slots.
     fn capacity(&self) -> usize {
-        // SAFETY: as in `take`; only its length is read.
-        unsafe { self.set.load(Ordering::SeqCst).as_ref() }.map_or(0, |set| set.slots.len())
+        self.slots.load(Ordering::SeqCst)
+    }
+
+    /// Publishes `next`, or no set, and frees the set it replaces.
+    ///
+    /// # Safety
+    /// Nothing may hold the replaced set: no lease spans the call and no hook can start one.
+    unsafe fn replace(&self, next: Option<Box<Set>>) {
+        self.slots.store(
+            next.as_ref().map_or(0, |set| set.slots.len()),
+            Ordering::SeqCst,
+        );
+        let next = next.map_or(std::ptr::null_mut(), Box::into_raw);
+        let previous = self.set.swap(next, Ordering::SeqCst);
+        if !previous.is_null() {
+            // SAFETY: published by `Box::into_raw`; the caller guarantees nothing holds it.
+            drop(unsafe { Box::from_raw(previous) });
+        }
     }
 }
 
@@ -584,11 +600,8 @@ impl Hooks {
                 return Err("air record hook sentinel differs");
             }
             let set = Set::new(0).ok_or("air record touched-holder allocation failed")?;
-            let previous = TOUCHED.set.swap(Box::into_raw(set), Ordering::SeqCst);
-            if !previous.is_null() {
-                // SAFETY: no hook is installed yet, so nothing holds it.
-                drop(unsafe { Box::from_raw(previous) });
-            }
+            // SAFETY: no hook is installed yet, so nothing holds the previous set.
+            unsafe { TOUCHED.replace(Some(set)) };
             let hook = unsafe {
                 Hook::new(
                     base + site.rva,
@@ -634,10 +647,7 @@ impl Drop for Hooks {
     fn drop(&mut self) {
         // SAFETY: like each Hook's relay, the set is dropped only once the
         // hooks were never enabled, or were removed and drained.
-        let set = TOUCHED.set.swap(std::ptr::null_mut(), Ordering::SeqCst);
-        if !set.is_null() {
-            drop(unsafe { Box::from_raw(set) });
-        }
+        unsafe { TOUCHED.replace(None) };
         if let Ok(mut store) = STORE.lock() {
             *store = None;
         }
