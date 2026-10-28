@@ -37,6 +37,8 @@ test('one key line names approximate spans and hours still being prepared, only 
   assert.deepEqual(preparedKeyItems(span, undefined), ['approximate']);
   assert.deepEqual(preparedKeyItems(undefined, span), ['pending']);
   assert.deepEqual(preparedKeyItems(span, span), ['approximate', 'pending']);
+  assert.deepEqual(preparedKeyItems(undefined, [], span), ['loading']);
+  assert.deepEqual(preparedKeyItems(span, span, span), ['approximate', 'pending', 'loading']);
 });
 
 test('pending hours draw a light band through the playhead and no geometry', () => {

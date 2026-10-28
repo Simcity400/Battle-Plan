@@ -32,6 +32,8 @@ export interface HeatChartProps {
   approximate?: readonly Span[];
   /** Hours still being prepared: a light band, with no cells there yet. */
   pending?: readonly Span[];
+  /** Hours whose cells are still loading: the same light band, keyed apart. */
+  loading?: readonly Span[];
   tooltip: (row: HeatRow, period: HeatPeriod | null, hour: number) => TooltipContent | null;
   onContextMenu?: (hour: number, x: number, y: number) => void;
   /** A click on the plot, or Enter/Space on the keyboard row, picks that row at that
@@ -126,7 +128,8 @@ export default function HeatChart(props: HeatChartProps) {
       for (const period of gaps) {
         drawRecordedGap(ctx, frame, tokens, period.firstHour, period.lastHour, state.playhead);
       }
-      for (const [from, to] of spanRanges(props.pending, frame.x[0], frame.x[1], state.playhead))
+      for (const [from, to] of [...spanRanges(props.pending, frame.x[0], frame.x[1], state.playhead),
+        ...spanRanges(props.loading, frame.x[0], frame.x[1], state.playhead)])
         fillPendingBand(ctx, tokens, frame.toX(from), frame.toX(to), frame.plotTop, frame.plotHeight);
       drawnRows.forEach((runs, index) => runs.forEach(({ period, cell }) => {
         const rect = cellRect(period, index, visible.length, { ...frame, plotTop: frame.plotTop - window.offset,
@@ -151,7 +154,7 @@ export default function HeatChart(props: HeatChartProps) {
         }
       }));
     } }];
-  }, [visible, props.periods, props.look, props.approximate, props.pending, navigation.keyHours, window.offset, window.rowHeight]);
+  }, [visible, props.periods, props.look, props.approximate, props.pending, props.loading, navigation.keyHours, window.offset, window.rowHeight]);
   const rows = useMemo(() => ({ labels: visible.map(row => row.label), labelWidth,
     tooltip: (_row: number, hour: number) => {
       const index = keyboard.current ? selected.current : heatRowAt(pointerY.current, window, top, props.rows.length);
@@ -185,5 +188,5 @@ export default function HeatChart(props: HeatChartProps) {
       </div>
     </div>
   </div><Legend label={`${props.label} legend`} items={legend} always windowed />
-    <PreparedKey approximate={props.approximate} pending={props.pending} /></div>;
+    <PreparedKey approximate={props.approximate} pending={props.pending} loading={props.loading} /></div>;
 }

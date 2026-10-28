@@ -31,7 +31,9 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   if (!air.track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see its air superiority." />;
   if (!air.window || air.beforeBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (air.error) return <WidgetState kind="error" detail={air.error} onRetry={air.retry} />;
-  if (!air.data || !air.projectedTimeline || !air.labelCatalogue || air.timelineBehind) return <WidgetState kind="loading" label="Loading air superiority…" />;
+  // Rows the held reply lacks may be in the days still loading: no empty result is shown before they are read.
+  if (!air.data || !air.projectedTimeline || !air.labelCatalogue || (air.timelineBehind && !air.loading.length)
+    || (air.loading.length && !air.projectedTimeline.rows.length)) return <WidgetState kind="loading" label="Loading air superiority…" />;
   if (!air.data.available) return air.data.view === 'timeline' && air.data.rowsApproximate
     ? <WidgetState kind="loading" label="Air superiority is still being prepared." /> : <WidgetState kind="unavailable" />;
   if (!air.projectedTimeline.rows.length) return <div>{air.data.view === 'timeline' && <PreparedKey approximate={air.data.approximate} pending={air.data.pending} />}
@@ -47,7 +49,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
       extent={air.extent} playhead={air.playhead} branchStart={air.track.branch.firstHour} legend={legend} afterPlayhead={props.widget.time.mode !== 'follow'} look={options.look === 'split' ? 'split' : 'margin'}
       active={props.active} revision={air.hoverRevision} hoursPerSecond={air.hoursPerSecond}
       approximate={air.data.view === 'timeline' ? air.data.approximate : undefined} pending={air.data.view === 'timeline' ? air.data.pending : undefined}
-      tooltip={tooltip} onContextMenu={onMenu} /></div>
+      loading={air.loading} tooltip={tooltip} onContextMenu={onMenu} /></div>
     {menu.menu}
   </div>;
 }

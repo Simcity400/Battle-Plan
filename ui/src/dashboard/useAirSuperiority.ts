@@ -30,6 +30,7 @@ import type { AirChoices, AirLooks, AirMoment, AirTimeline, AirView } from './ai
 const NO_WARNINGS: string[] = [];
 const NO_SIDES: AirSide[] = [];
 const NO_COUNTRIES: string[] = [];
+const NO_SPANS: { firstHour: number; lastHour: number }[] = [];
 const timelineReply = (value: unknown) => { const reply = validateAirReply(value); if (reply.view !== 'timeline') throw new Error('Expected air timeline'); return reply; };
 const momentReply = (value: unknown) => { const reply = validateAirReply(value); if (reply.view !== 'moment') throw new Error('Expected air moment'); return reply; };
 const choicesReply = (value: unknown) => { const reply = validateAirReply(value); if (reply.view !== 'choices') throw new Error('Expected air choices'); return reply; };
@@ -88,6 +89,9 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
   const timelineData = timeline.data ?? (follow ? previousTimeline : undefined);
   // The first follow reply only learns the day cadence; drawn, it would read as no activity at all.
   const timelineBehind = follow && !!timelineData && timelineData.lastHour < timelineRequestLast(lastHour, timelineData.dayHours) - timelineData.dayHours;
+  // A read timeline behind the playhead stays drawn: the days after it show as loading, never as no activity.
+  const loading = useMemo(() => timelineBehind && timelineData && timelineData.lastHour >= firstHour + timelineData.dayHours
+    ? [{ firstHour: timelineData.lastHour + 1, lastHour }] : NO_SPANS, [timelineBehind, timelineData, firstHour, lastHour]);
   const windowChoicesRequest = track && moment ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority', params: { branchId: track.branch.id, view: 'choices', windowsOnly: true } } : null;
   const windowChoices = useProduct<AirChoices>(runtime.client, windowChoicesRequest, active, choicesReply, track?.source);
   const recordedWindows = windowChoices.data?.windows;
@@ -182,7 +186,9 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
   const dayLooks = useMemo(() => looksWith(countryColours.latest), [looksWith, countryColours.latest]);
   const baseTimeline = useMemo(() => data?.view === 'timeline' ? timelineViews(data, appearance) : null, [data, appearance]);
   const projectedTimeline = useMemo(() => {
-    if (!baseTimeline || !follow || !dayData || dayRead == null || data?.view !== 'timeline' || Math.floor(dayData.firstHour / data.dayHours) !== Math.floor(data.lastHour / data.dayHours)) return baseTimeline;
+    // While later days load, the held reply's own last column stays its own: nothing is drawn over the band.
+    if (!baseTimeline || !follow || !dayData || dayRead == null || loading.length || data?.view !== 'timeline'
+      || Math.floor(dayData.firstHour / data.dayHours) !== Math.floor(data.lastHour / data.dayHours)) return baseTimeline;
     const regions = data.rows.map(row => ({ id: row.region, name: row.name }));
     const liveRows = new Map(momentViews(dayData, dayRecorded ?? dayRead, dayLooks, { regions }).map(row => [row.region.id, row]));
     const periods = [...baseTimeline.periods];
@@ -197,7 +203,7 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
     });
     const shown = new Set(rows.map(row => Number(row.id)));
     return { rows, periods, viewAt: (region: number, day: number) => day === column && shown.has(region) ? liveRows.get(region)?.view ?? gap : baseTimeline.viewAt(region, day) };
-  }, [baseTimeline, follow, dayData, dayRead, dayRecorded, appearance, dayLooks, data]);
+  }, [baseTimeline, follow, dayData, dayRead, dayRecorded, loading, appearance, dayLooks, data]);
   const allChoices = options.order === 'name' ? choices.data : undefined;
   const projectedMoment = useMemo(() => data?.view === 'moment' ? momentViews(data, dataHour, appearance, allChoices) : [], [data, dataHour, appearance, allChoices]);
   const regionMap = useMemo(() => new Map(projectedMoment.map(row => [row.region.id, row])), [projectedMoment]);
@@ -209,6 +215,8 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
       region = timelineRegions.get(regionId);
       if (region && at != null && pendingAt({ pending: data.pending ?? [] }, at))
         return { title: region.name, rows: [{ label: 'State', value: 'Still being prepared' }] };
+      if (region && at != null && pendingAt({ pending: loading }, at))
+        return { title: region.name, rows: [{ label: 'State', value: 'Loading' }] };
       const cell = projectedTimeline.viewAt(regionId, index);
       if (cell) view = { ...cell, hour: projectedTimeline.periods[index]?.readHour ?? null,
         ...(projectedTimeline.periods[index]?.readHour == null ? { state: 'gap' as const } : {}) };
@@ -217,7 +225,7 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
     if (view.hour != null) askHover(view.hour, airTooltipTags(view));
     const full = airTooltip(region, view, mode.mode === 'viewpoint', view.hour == null ? names.country : hoverLabels(view.hour), !!mode.sides.length, factionNames);
     return fitTooltip([airSummaryTooltip(full, view)], viewport, { keep: view.wings == null ? 1 : 2, full });
-  }, [data, projectedTimeline, regionMap, timelineRegions, askHover, hoverLabels, mode.mode, mode.sides.length, names.country, viewport, factionNames]);
+  }, [data, projectedTimeline, regionMap, timelineRegions, loading, askHover, hoverLabels, mode.mode, mode.sides.length, names.country, viewport, factionNames]);
   const legend = useMemo(() => mode.mode === 'viewpoint' ? [
     { id: 'friendly', label: `${appearance.viewpoint.name} (friendly)`, color: appearance.viewpoint.color },
     { id: 'enemy', label: `Enemies of ${appearance.viewpoint.name}`, color: tokens.error },
@@ -242,5 +250,5 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
   const glideStyle = { '--air-glide': `${glides ? Math.round(3 * easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion)) : 0}ms` } as CSSProperties;
   return { data, error, needsViewpoint, retry: moment ? () => { windows.retry(); choices.retry(); windowChoices.retry(); } : () => { timeline.retry(); catalogue.retry(); if (follow) day.retry(); }, track, window, beforeBranch, playhead, hour,
     readHour, extent: [firstHour, widget.time.mode === 'range' ? lastHour : track?.branch.lastHour ?? lastHour] as [number, number], mode, tokens, projectedTimeline, projectedMoment, tooltip,
-    legend: orderedLegend, labelCatalogue, hoverRevision, choices: choices.data, country: names.country, factionNames, glides, glideStyle, hoursPerSecond, timelineBehind };
+    legend: orderedLegend, labelCatalogue, hoverRevision, choices: choices.data, country: names.country, factionNames, glides, glideStyle, hoursPerSecond, timelineBehind, loading };
 }

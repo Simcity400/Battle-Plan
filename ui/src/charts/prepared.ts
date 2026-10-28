@@ -31,8 +31,10 @@ export const overlapsSpans = (spans: readonly Span[] | undefined, first: number,
 
 /** What a chart's key names: the approximate style when it draws approximate
  * spans, and the pending band when it draws hours still being prepared. */
-export function preparedKeyItems(approximate: readonly Span[] | undefined, pending: readonly Span[] | undefined): ('approximate' | 'pending')[] {
-  return [...(approximate?.length ? ['approximate' as const] : []), ...(pending?.length ? ['pending' as const] : [])];
+export function preparedKeyItems(approximate: readonly Span[] | undefined, pending: readonly Span[] | undefined,
+  loading?: readonly Span[]): ('approximate' | 'pending' | 'loading')[] {
+  return [...(approximate?.length ? ['approximate' as const] : []), ...(pending?.length ? ['pending' as const] : []),
+    ...(loading?.length ? ['loading' as const] : [])];
 }
 
 /** Paints the light band of hours still being prepared from `from` to `to` pixels. */
