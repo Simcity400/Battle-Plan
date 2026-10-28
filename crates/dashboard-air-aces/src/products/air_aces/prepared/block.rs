@@ -94,7 +94,7 @@ fn start(format: FormatVersion) -> Box<dyn Extract> {
 }
 
 struct BlockFacts {
-    hours: Vec<kept::Hour>,
+    hours: kept::Hours,
 }
 
 /// Kept frames hold only what the roster and catalogue read of the tables
@@ -180,8 +180,7 @@ impl Extract for BlockExtract {
         changes: &FrameChanges,
     ) -> io::Result<()> {
         let kept = self.reduce(frame);
-        self.kept.keep(kept, changes);
-        Ok(())
+        self.kept.keep(&kept, changes)
     }
 
     fn quiet(&mut self, _: &Replay, hours: &QuietHours, span: Range<usize>) -> io::Result<()> {

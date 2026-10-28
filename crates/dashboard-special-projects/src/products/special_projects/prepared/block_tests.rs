@@ -109,6 +109,7 @@ fn extract() -> BlockExtract {
         format: replay_data::format::FormatVersion::CURRENT,
         world: true,
         hours: Vec::new(),
+        kept: replay_frame::frame::FrameLog::new(),
         last: None,
         built: Vec::new(),
         deadline: None,

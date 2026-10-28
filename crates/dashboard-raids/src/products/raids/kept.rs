@@ -24,7 +24,7 @@ use replay_data::rows::TABLE_COUNT;
 use replay_data::{
     format::FormatVersion, rows::CountryRow, rows::TableId, rows::TableRows, rows::tables,
 };
-use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
+use replay_frame::{frame::DecodedFrame, frame::FrameLog, frame::SharedView, frame::TableView};
 use std::{io, ops::Range};
 
 /// The countries of kept frames reduced to the keys country identity reads
@@ -112,16 +112,10 @@ impl<R: PartialEq + Clone> Reduced<R> {
 }
 
 /// One hour, or run of quiet hours, of a block, in hour order.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "Block facts retain observed frames inline without a per-hour allocation."
-)]
 pub enum Hour {
-    /// An hour the family observes, with its frame and change facts.
-    Kept {
-        frame: DecodedFrame,
-        changes: FrameChanges,
-    },
+    /// An hour the family observes, with its change facts; its frame is the
+    /// next its block's kept frames hold.
+    Kept { changes: FrameChanges },
     /// Consecutive hours `first..=last` at which nothing the family reads
     /// changed, each with the read evidence `read`.
     Quiet {
@@ -198,19 +192,30 @@ pub struct Kept {
     format: FormatVersion,
     rebuilt: Rebuilt,
     hours: Vec<Hour>,
+    frames: FrameLog,
+}
+
+/// A block's hours and the frames of those kept ([`Kept::finish`]).
+pub struct Hours {
+    hours: Vec<Hour>,
+    frames: FrameLog,
 }
 
 impl Kept {
     /// What the kept hours hold ([`dashboard_base::prepared::prepass::Extract::bytes`]):
-    /// each kept frame's views once and its change facts.
+    /// the kept frames' views once and their change facts.
     pub fn bytes(&self) -> u64 {
         let mut held = dashboard_base::prepared::prepass::HeldBytes::default();
         held.add(self.hours.capacity() * size_of::<Hour>());
         for hour in &self.hours {
-            if let Hour::Kept { frame, changes } = hour {
-                held.frame(frame).changes(changes);
+            if let Hour::Kept { changes } = hour {
+                held.changes(changes);
             }
         }
+        for view in self.frames.views() {
+            held.view(view);
+        }
+        held.add(self.frames.bytes());
         held.total()
     }
 
@@ -222,14 +227,15 @@ impl Kept {
             format,
             rebuilt,
             hours: Vec::new(),
+            frames: FrameLog::new(),
         }
     }
 
     /// An observed hour: its frame as the family reads it, with its change
     /// facts.
-    pub fn keep(&mut self, frame: DecodedFrame, changes: &FrameChanges) {
+    pub fn keep(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> io::Result<()> {
+        self.frames.push(frame)?;
         self.hours.push(Hour::Kept {
-            frame,
             changes: FrameChanges {
                 rows_changed: changes.rows_changed,
                 table_read: changes.table_read,
@@ -237,6 +243,7 @@ impl Kept {
                 updates: None,
             },
         });
+        Ok(())
     }
 
     /// Quiet hours `span` of `hours`, joined into runs of equal evidence.
@@ -278,11 +285,14 @@ impl Kept {
     }
 
     /// The block's hours, in hour order: the first kept.
-    pub fn finish(self) -> io::Result<Vec<Hour>> {
+    pub fn finish(self) -> io::Result<Hours> {
         if !matches!(self.hours.first(), Some(Hour::Kept { .. })) {
             return Err(io::Error::other("A block has no first hour"));
         }
-        Ok(self.hours)
+        Ok(Hours {
+            hours: self.hours,
+            frames: self.frames,
+        })
     }
 }
 
@@ -294,12 +304,14 @@ pub type Observed<'a> = dyn FnMut(i32, io::Result<()>) -> io::Result<bool> + 'a;
 /// hour on its frame and each quiet hour on the last kept frame at its hour.
 /// Returns the last hour observed and how many hours were kept.
 pub fn fold(
-    hours: Vec<Hour>,
+    hours: Hours,
     observe: &mut dyn FnMut(&DecodedFrame, &FrameChanges) -> io::Result<()>,
     observed: &mut Observed<'_>,
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<(Option<i32>, usize)> {
     let _cpu = ::replay_frame::cpu::scope("fold driver", None);
+    let Hours { hours, frames } = hours;
+    let mut frames = frames.into_frames();
     let mut reached = None;
     let mut kept = 0;
     let mut last: Option<DecodedFrame> = None;
@@ -307,7 +319,12 @@ pub fn fold(
         let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
-            Hour::Kept { frame, changes } => {
+            Hour::Kept { changes } => {
+                // Released first, so the next frame changes it in place.
+                drop(last.take());
+                let frame = frames.next().ok_or_else(|| {
+                    io::Error::other("Kept hours lack an observed hour's frame")
+                })??;
                 kept += 1;
                 let hour = frame.hour;
                 reached = Some(hour);

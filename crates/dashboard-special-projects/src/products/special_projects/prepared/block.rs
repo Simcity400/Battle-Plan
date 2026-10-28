@@ -43,7 +43,7 @@ use replay::{
 };
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{format::FormatVersion, rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::SharedView};
+use replay_frame::{frame::DecodedFrame, frame::FrameLog, frame::SharedView};
 use std::{
     any::Any,
     collections::BTreeSet,
@@ -340,6 +340,7 @@ fn start(format: FormatVersion, world: bool) -> Box<dyn Extract> {
         format,
         world,
         hours: Vec::new(),
+        kept: FrameLog::new(),
         last: None,
         built: Vec::new(),
         deadline: None,
@@ -368,18 +369,10 @@ enum Held {
 }
 
 /// One hour of a block's facts, in hour order.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "Block facts retain observed frames inline without a per-hour allocation."
-)]
 enum Hour {
-    /// An hour the block reader observed, with its frame and change facts,
-    /// and how the frame holds the hour's rows.
-    Observed {
-        frame: DecodedFrame,
-        changes: FrameChanges,
-        held: Held,
-    },
+    /// An hour the block reader observed, with its change facts and how its
+    /// frame, the next the block's kept frames hold, holds the hour's rows.
+    Observed { changes: FrameChanges, held: Held },
     /// Consecutive recorded hours from `first`, after the hour before them,
     /// at which no watched field changed: whether each read the projects,
     /// and the tables its update rebuilt.
@@ -392,6 +385,7 @@ enum Hour {
 /// A block's hours as the extract kept them.
 struct BlockFacts {
     hours: Vec<Hour>,
+    kept: FrameLog,
     /// Whether the block was read with the trigger kit, by its fields
     /// ([`watched`]).
     world: bool,
@@ -405,6 +399,7 @@ struct BlockExtract {
     /// Whether the block is read with the trigger kit.
     world: bool,
     hours: Vec<Hour>,
+    kept: FrameLog,
     /// The last frame observed.
     last: Option<DecodedFrame>,
     /// The tables whose rows in the last frame may not be those of the
@@ -467,8 +462,8 @@ impl Extract for BlockExtract {
         held.add(self.built.capacity() * size_of::<TableId>());
         for hour in &self.hours {
             match hour {
-                Hour::Observed { frame, changes, .. } => {
-                    held.frame(frame).changes(changes);
+                Hour::Observed { changes, .. } => {
+                    held.changes(changes);
                 }
                 Hour::Quiet { hours, .. } => {
                     held.add(hours.capacity() * size_of::<(bool, Vec<TableId>)>());
@@ -478,6 +473,10 @@ impl Extract for BlockExtract {
                 }
             }
         }
+        for view in self.kept.views() {
+            held.view(view);
+        }
+        held.add(self.kept.bytes());
         held.total()
     }
 
@@ -512,8 +511,8 @@ impl Extract for BlockExtract {
                 });
         }
         self.last = Some(frame.clone());
+        self.kept.push(frame)?;
         self.hours.push(Hour::Observed {
-            frame: frame.clone(),
             changes: kept_changes(changes),
             held,
         });
@@ -570,6 +569,7 @@ impl Extract for BlockExtract {
         }
         Ok(Box::new(BlockFacts {
             hours: self.hours,
+            kept: self.kept,
             world: self.world,
             frames: self.frames,
         }))
@@ -663,6 +663,12 @@ pub fn fold(
     }
     // The fields the block was read by.
     let read = watched(facts.world);
+    let BlockFacts {
+        hours,
+        kept: frames,
+        ..
+    } = *facts;
+    let mut frames = frames.into_frames();
     let running = AtomicBool::new(false);
     let mut reached = None;
     let mut last: Option<DecodedFrame> = None;
@@ -700,15 +706,14 @@ pub fn fold(
         hour();
         observed(frame.hour, result.map(drop)).map(Some)
     };
-    for kept_hour in facts.hours {
+    for kept_hour in hours {
         let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match kept_hour {
-            Hour::Observed {
-                frame,
-                changes,
-                held,
-            } => {
+            Hour::Observed { changes, held } => {
+                let frame = frames.next().ok_or_else(|| {
+                    io::Error::other("Special projects facts lack an observed hour's frame")
+                })??;
                 let owners = last
                     .as_ref()
                     .and_then(|last| changed_project_owners(last, &frame));

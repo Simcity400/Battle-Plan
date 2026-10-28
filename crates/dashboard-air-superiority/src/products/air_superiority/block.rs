@@ -61,7 +61,7 @@ use replay_data::{
     format::FormatVersion, rows::AirWingRow, rows::CountryRow, rows::TableId, rows::TableRows,
     rows::tables,
 };
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, FrameLog};
 use std::{
     any::Any,
     collections::BTreeMap,
@@ -160,16 +160,11 @@ struct Quiet {
 }
 
 /// One hour of a block's facts, in hour order.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "Block facts retain observed frames inline without a per-hour allocation."
-)]
 enum Hour {
-    /// An hour the groups and air superiority observe, with its frame, change
-    /// facts and the worker's score projection where the scores or their
-    /// identity changed.
+    /// An hour the groups and air superiority observe, with its change facts
+    /// and the worker's score projection where the scores or their identity
+    /// changed; its frame is the next the block's kept frames hold.
     Observed {
-        frame: DecodedFrame,
         changes: FrameChanges,
         scored: Option<Scored>,
     },
@@ -182,6 +177,7 @@ enum Hour {
 /// A block's hours as the extract kept them.
 struct BlockFacts {
     hours: Vec<Hour>,
+    kept: FrameLog,
     /// Frames the extract was given or built.
     #[cfg_attr(not(test), allow(dead_code))]
     frames: usize,
@@ -276,6 +272,7 @@ fn next_war_end(frame: &DecodedFrame) -> Option<i32> {
 struct BlockExtract {
     format: FormatVersion,
     hours: Vec<Hour>,
+    kept: FrameLog,
     countries: Reduced<CountryRow>,
     wings: Reduced<AirWingRow>,
     scores: ScoreTracker,
@@ -291,6 +288,7 @@ impl BlockExtract {
         Self {
             format,
             hours: Vec::new(),
+            kept: FrameLog::new(),
             countries: Reduced::new(TableId::Countries),
             wings: Reduced::new(TableId::AirWings),
             scores: ScoreTracker::default(),
@@ -352,18 +350,18 @@ impl Extract for BlockExtract {
         held.add(self.hours.capacity() * size_of::<Hour>());
         for hour in &self.hours {
             match hour {
-                Hour::Observed {
-                    frame,
-                    changes,
-                    scored,
-                } => {
-                    held.frame(frame).changes(changes).heap(scored);
+                Hour::Observed { changes, scored } => {
+                    held.changes(changes).heap(scored);
                 }
                 Hour::Quiet { hours, .. } => {
                     held.add(hours.capacity() * size_of::<Quiet>());
                 }
             }
         }
+        for view in self.kept.views() {
+            held.view(view);
+        }
+        held.add(self.kept.bytes());
         held.total()
     }
 
@@ -389,8 +387,8 @@ impl Extract for BlockExtract {
                 .collect()
         });
         self.wings.apply(&mut kept, wings, TableRows::AirWings);
+        self.kept.push(&kept)?;
         self.hours.push(Hour::Observed {
-            frame: kept,
             changes: kept_changes(changes),
             scored,
         });
@@ -452,6 +450,7 @@ impl Extract for BlockExtract {
         }
         Ok(Box::new(BlockFacts {
             hours: self.hours,
+            kept: self.kept,
             frames: self.frames,
         }))
     }
@@ -591,16 +590,17 @@ impl OwnBranch {
         };
         #[cfg(any(test, feature = "test-support"))]
         note_frames(FAMILY.name, facts.frames);
+        let BlockFacts { hours, kept, .. } = *facts;
+        let mut kept = kept.into_frames();
         let mut reached = None;
-        for hour in facts.hours {
+        for hour in hours {
             let _cpu = ::replay_frame::cpu::scope("fold driver", None);
             check()?;
             match hour {
-                Hour::Observed {
-                    frame,
-                    changes,
-                    scored,
-                } => {
+                Hour::Observed { changes, scored } => {
+                    let frame = kept.next().ok_or_else(|| {
+                        io::Error::other("Air superiority facts lack an observed hour's frame")
+                    })??;
                     reached = Some(frame.hour);
                     #[cfg(any(test, feature = "test-support"))]
                     note_observed(FAMILY.name);
@@ -835,16 +835,15 @@ mod bytes_tests {
         let mut frames_alone = HeldBytes::default();
         frames_alone.add(extract.hours.capacity() * size_of::<Hour>());
         for hour in &extract.hours {
-            if let Hour::Observed {
-                frame,
-                changes,
-                scored,
-            } = hour
-            {
+            if let Hour::Observed { changes, scored } = hour {
                 assert!(scored.is_some(), "every hour's scores moved");
-                frames_alone.frame(frame).changes(changes);
+                frames_alone.changes(changes);
             }
         }
+        for view in extract.kept.views() {
+            frames_alone.view(view);
+        }
+        frames_alone.add(extract.kept.bytes());
         (extract.bytes(), frames_alone.total())
     }
 
