@@ -646,14 +646,19 @@ fn snapshot_country_scores(
         }
         Ok(witnessed.contains(tag).then_some((0, 0)))
     };
+    // Each side with its read of no region, which is its read of any region none of its tags scores.
     let air_rosters: Vec<_> = rosters
         .iter()
-        .filter(|side| {
-            viewpoint.is_some()
-                || side.faction.is_some()
-                || !matches!(side_pair(side, None, &pair).1, Ok(None))
+        .map(|side| (side, side_pair(side, None, &pair)))
+        .filter(|(side, base)| {
+            viewpoint.is_some() || side.faction.is_some() || !matches!(base.1, Ok(None))
         })
         .collect();
+    let (shown, scored) = if viewpoint.is_none() {
+        region_reads(&air_rosters, pairs)
+    } else {
+        Default::default()
+    };
     let excluded = rosters.len() - air_rosters.len();
     let mut used_keys = BTreeSet::new();
     let mut side_ids = vec![None; air_rosters.len()];
@@ -713,14 +718,21 @@ fn snapshot_country_scores(
             filtered: false,
             excluded: 0,
         };
-        for (at, side) in air_rosters.iter().enumerate() {
-            let (leader, value) = side_pair(side, region, &pair);
-            // Owners without a strategic-air object do not participate. A known
-            // zero contributes no part; never ship the neutral country roster.
-            if matches!(value, Ok(None)) && side.faction.is_none() {
-                continue;
-            }
-            if matches!(value, Ok(Some((0, _)))) {
+        let scoring = region
+            .and_then(|region| scored.get(&region))
+            .map_or(&[][..], Vec::as_slice);
+        let mut read = shown.clone();
+        read.extend(scoring);
+        read.sort_unstable();
+        read.dedup();
+        for at in read {
+            let (side, base) = air_rosters[at];
+            let (leader, value) = if scoring.binary_search(&at).is_ok() {
+                side_pair(side, region, &pair)
+            } else {
+                base
+            };
+            if hidden(side, &value) {
                 continue;
             }
             if keep_keys {
@@ -773,6 +785,50 @@ fn snapshot_country_scores(
 
 type ScorePair = Result<Option<(i64, i64)>, ()>;
 type SidePair<'a> = (Option<&'a str>, ScorePair);
+
+/// Owners without a strategic-air object do not participate. A known
+/// zero contributes no part; never ship the neutral country roster.
+fn hidden(side: &AssignedSide, value: &ScorePair) -> bool {
+    matches!(value, Ok(None)) && side.faction.is_none() || matches!(value, Ok(Some((0, _))))
+}
+
+/// The sides a cell shows from their read of no region, and by region the sides one of
+/// whose tags scores it, each in roster order.
+fn region_reads(
+    air_rosters: &[(&AssignedSide, SidePair<'_>)],
+    pairs: &BTreeMap<(String, u32), (i64, i64)>,
+) -> (Vec<usize>, HashMap<u32, Vec<usize>>) {
+    let shown = air_rosters
+        .iter()
+        .enumerate()
+        .filter(|(_, (side, base))| !hidden(side, &base.1))
+        .map(|(at, _)| at)
+        .collect();
+    // `side_pair` reads only a leader's tag, every member's without one, and none of a faction's.
+    let mut sides: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (at, (side, _)) in air_rosters.iter().enumerate() {
+        match (&side.leader, &side.faction) {
+            (Some(leader), _) => sides.entry(leader.as_str()).or_default().push(at),
+            (None, None) => {
+                for tag in &side.members {
+                    sides.entry(tag.as_str()).or_default().push(at);
+                }
+            }
+            (None, Some(_)) => {}
+        }
+    }
+    let mut scored: HashMap<u32, Vec<usize>> = HashMap::new();
+    for (tag, region) in pairs.keys() {
+        if let Some(at) = sides.get(tag.as_str()) {
+            scored.entry(*region).or_default().extend(at);
+        }
+    }
+    for sides in scored.values_mut() {
+        sides.sort_unstable();
+        sides.dedup();
+    }
+    (shown, scored)
+}
 
 fn side_pair<'a>(
     side: &'a AssignedSide,

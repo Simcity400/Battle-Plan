@@ -3209,3 +3209,48 @@ fn air_superiority_cached_rosters_split_native_replacements_with_unchanged_tags_
     assert!(reply.sides.iter().any(|side| side.key == "w:7:9001"));
     assert!(reply.sides.iter().any(|side| side.key == "w:7:9002"));
 }
+
+#[test]
+fn a_coalition_reads_each_region_from_the_members_scoring_it() {
+    let mut frame = air(0, 1);
+    if let TableView::Complete(TableRows::RaidAirScores(rows)) =
+        &mut *frame.tables[TableId::RaidAirScores.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.country == 55)
+            .unwrap()
+            .friendly = 5;
+    }
+    let replay = recording(vec![frame]);
+    let mut groups = groups(&replay);
+    groups.factions.clear();
+    groups.wars = ["GER", "CTL", "MOD"]
+        .map(|tag| country_groups::WarPairRun {
+            first: tag.into(),
+            second: "FRA".into(),
+            first_hour: 0,
+            last_hour: 0,
+        })
+        .into();
+    let mut request = params(AirView::Moment, 0, 0);
+    request.regions = Some(vec![7000, 7999]);
+    let reply = scan_moment(&replay, 1, &groups, &request, &AtomicBool::new(false)).unwrap();
+    let coalition = reply
+        .sides
+        .iter()
+        .position(|side| side.key.starts_with("w:"))
+        .unwrap() as u32;
+    // GER leads the coalition where FRA's score is, CTL in its own region.
+    for (id, leader, score) in [(7000, "GER", "1"), (7999, "CTL", "5")] {
+        let region = reply.regions.iter().find(|region| region.id == id).unwrap();
+        let cell = moment_cell_sides(&reply, &region.runs[0].2);
+        assert!(
+            cell.scores.contains(&(coalition, score.into())),
+            "{id}: {cell:?}"
+        );
+        assert!(
+            cell.viewpoints.contains(&(coalition, leader.into())),
+            "{id}: {cell:?}"
+        );
+    }
+}
