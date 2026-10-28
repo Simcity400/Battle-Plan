@@ -441,8 +441,8 @@ impl<'a> Projection<'a> {
                         rows,
                     };
                 }
-            }
-            if source.len() == baseline.len()
+                // A key differs, so the rows cannot all be equal either.
+            } else if source.len() == baseline.len()
                 && baseline.iter().enumerate().all(|(index, previous)| {
                     let current = at(index);
                     key(current) == previous.key() && equal(current, previous)
@@ -720,6 +720,39 @@ mod tests {
             assert_eq!(actual, ordinary_decoder.apply(&expected).unwrap());
         }
         assert_eq!(scratch.ordering_status(TableId::States).reused, 5);
+    }
+
+    #[test]
+    fn a_membership_change_compares_each_row_at_most_once() {
+        let mut encoder = FrameEncoder::new();
+        let scratch = ProjectionScratch::default();
+        let compared = Cell::new(0);
+        let state = |id| StateRow {
+            id,
+            owner: 2,
+            controller: 3,
+            movement_infrastructure: 0,
+            ..Default::default()
+        };
+        let capture = |encoder: &FrameEncoder, hour, rows: &[StateRow]| {
+            project_table::<tables::States, _>(
+                Some(&mut Projection::new(encoder, 1, hour, false, &scratch)),
+                Outcome::Rows { len: rows.len() },
+                rows,
+                |row| u128::from(row.id),
+                |row, previous| {
+                    compared.set(compared.get() + 1);
+                    row == previous
+                },
+                Clone::clone,
+            )
+        };
+        let first = capture(&encoder, 0, &[state(1), state(2), state(3)]);
+        encoder.encode_input(input(0, first), false).unwrap();
+        // The last key moved: the rows before it compare once, then all convert.
+        let moved = capture(&encoder, 1, &[state(1), state(2), state(4)]);
+        assert!(matches!(moved, TableInput::Sampled(TableView::Complete(_))));
+        assert_eq!(compared.get(), 2);
     }
 
     #[test]

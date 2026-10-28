@@ -278,6 +278,8 @@ pub(crate) struct Store {
     quiet: Option<(u64, u64)>,
     allocated: usize,
     invalidated: bool,
+    /// Renewed whenever an acquisition may publish other rows or another outcome.
+    generation: u64,
 }
 impl Default for Store {
     fn default() -> Self {
@@ -291,6 +293,7 @@ impl Default for Store {
             quiet: None,
             allocated: 0,
             invalidated: false,
+            generation: crate::projection::generation(),
         }
     }
 }
@@ -342,9 +345,11 @@ impl Store {
         outcome: Outcome,
         observers: &impl CertificatesSource,
     ) {
+        let published = (self.used, self.outcome);
         self.reset();
         if let Outcome::Unavailable { reason } = outcome {
             self.outcome = Outcome::Unavailable { reason };
+            self.generation = crate::projection::generation();
             return;
         }
         observers.demand(sources.len().saturating_mul(9));
@@ -434,6 +439,10 @@ impl Store {
                 Outcome::Unavailable { reason }
             }
         };
+        // Unchanged entries hold the same row allocations in the same order.
+        if changed || (self.used, self.outcome) != published {
+            self.generation = crate::projection::generation();
+        }
         if changed {
             self.allocated = self.measure();
         }
@@ -449,17 +458,20 @@ impl Store {
 pub(crate) struct Occupation {
     rows: Vec<Arc<CapturedRow>>,
     outcome: Option<Outcome>,
+    generation: Option<u64>,
 }
 impl Occupation {
     pub(super) fn fail(&mut self, reason: &'static str) {
         // Keep shared payload retirement off the callback. The verdict alone
         // prevents partially acquired rows from reaching conversion.
         self.outcome = Some(Outcome::Unavailable { reason });
+        self.generation = None;
     }
 
     pub(super) fn reset(&mut self) {
         self.rows.clear();
         self.outcome = None;
+        self.generation = None;
     }
     pub(super) fn bytes(&self) -> usize {
         self.rows.capacity() * size_of::<Arc<CapturedRow>>()
@@ -479,6 +491,7 @@ impl Occupation {
                 .map(Arc::clone),
         );
         self.outcome = Some(store.outcome);
+        self.generation = Some(store.generation);
     }
     pub(crate) fn table(&self) -> replay_frame::frame::TableView {
         crate::table_conversion::table_iter::<rows::tables::StateResistance, _>(
@@ -486,6 +499,19 @@ impl Occupation {
             self.rows.iter(),
             |row| row.output(),
         )
+    }
+    /// [`Self::table`], or compared equal unconverted when the store republished its rows.
+    pub(crate) fn input(
+        &self,
+        projection: Option<&mut crate::projection::Projection<'_>>,
+    ) -> replay_frame::frame::TableInput {
+        let witness = self
+            .generation
+            .filter(|_| matches!(self.outcome, Some(Outcome::Rows { .. })))
+            .map(crate::projection::Witness::generation);
+        crate::projection::held_input::<rows::tables::StateResistance>(projection, witness, |_| {
+            self.table().into()
+        })
     }
     pub(crate) fn outcome(&self) -> Outcome {
         self.outcome.unwrap_or(Outcome::Unavailable {
@@ -1449,6 +1475,119 @@ mod tests {
     }
 
     #[test]
+    fn occupation_generation_renews_whenever_published_rows_or_outcome_may_differ() {
+        let (mut bytes, source) = fixture();
+        let observer = Observer(Cell::new(1));
+        let mut store = Store::default();
+        let acquire = |store: &mut Store, bytes: &[u8], outcome| {
+            store.acquire_observed(
+                &engine_native::memory::SliceMemory { base: 0, bytes },
+                0,
+                0,
+                &[source],
+                outcome,
+                &observer,
+            );
+            store.generation
+        };
+        let rows = Outcome::Rows { len: 1 };
+        let first = acquire(&mut store, &bytes, rows);
+        assert_eq!(acquire(&mut store, &bytes, rows), first);
+        let mut frame = Occupation::default();
+        frame.publish(&store);
+        assert_eq!(frame.generation, Some(first));
+        let unread = acquire(
+            &mut store,
+            &bytes,
+            Outcome::Unavailable { reason: "census" },
+        );
+        assert_ne!(unread, first);
+        let again = acquire(&mut store, &bytes, rows);
+        assert_ne!(again, unread);
+        assert_eq!(acquire(&mut store, &bytes, rows), again);
+        let at = source.pointer + cstate::RESISTANCE + cresistance::LEVEL;
+        bytes[at..at + 8].copy_from_slice(&234_567_i64.to_le_bytes());
+        observer.0.set(2);
+        let written = acquire(&mut store, &bytes, rows);
+        assert_ne!(written, again);
+        store.forget();
+        assert_ne!(acquire(&mut store, &bytes, rows), written);
+        // Without a projection the input is the converted table.
+        frame.publish(&store);
+        let table: replay_frame::frame::TableInput = frame.table().into();
+        assert_eq!(frame.input(None), table);
+        frame.fail("states acquisition failed");
+        assert_eq!(frame.generation, None);
+        frame.publish(&store);
+        frame.reset();
+        assert_eq!(frame.generation, None);
+    }
+
+    #[test]
+    fn occupation_unchanged_store_rows_compare_equal_without_conversion() {
+        use crate::projection::{Projection, ProjectionScratch};
+        use replay_frame::frame::{FrameEncoder, FrameInput, Metrics, TableInput, TableView};
+        let (mut bytes, source) = fixture();
+        let observer = Observer(Cell::new(1));
+        let mut store = Store::default();
+        let frame = |hour, table: TableInput| {
+            let mut frame = FrameInput {
+                branch: 1,
+                hour,
+                tables: std::array::from_fn(|_| {
+                    TableView::Unavailable {
+                        reason: "fixture table".into(),
+                    }
+                    .into()
+                }),
+                metrics: Metrics::default(),
+            };
+            frame.tables[rows::TableId::StateResistance.index()] = table;
+            frame
+        };
+        let mut held = FrameEncoder::new();
+        let mut ordinary = FrameEncoder::new();
+        let scratch = ProjectionScratch::default();
+        let mut occupation = Occupation::default();
+        // Hour 2's writer changes the row; every other hour carries it.
+        for hour in 0..5 {
+            if hour == 2 {
+                let at = source.pointer + cstate::RESISTANCE + cresistance::LEVEL;
+                bytes[at..at + 8].copy_from_slice(&234_567_i64.to_le_bytes());
+                observer.0.set(2);
+            }
+            store.acquire_observed(
+                &engine_native::memory::SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                0,
+                &[source],
+                Outcome::Rows { len: 1 },
+                &observer,
+            );
+            occupation.publish(&store);
+            let input =
+                occupation.input(Some(&mut Projection::new(&held, 1, hour, false, &scratch)));
+            assert_eq!(
+                matches!(input, TableInput::ComparedEqual(_)),
+                hour != 0 && hour != 2,
+                "hour {hour}"
+            );
+            let actual = held.encode_bytes(frame(hour, input), false).unwrap();
+            let expected = ordinary
+                .encode_bytes(frame(hour, occupation.table().into()), false)
+                .unwrap();
+            assert_eq!(
+                actual.into_spool_record().unwrap(),
+                expected.into_spool_record().unwrap(),
+                "hour {hour}"
+            );
+        }
+    }
+
+    #[test]
     fn occupation_worker_failure_join_does_not_walk_or_drop_shared_payloads() {
         let (bytes, source) = fixture();
         let observer = Observer(Cell::new(1));
@@ -1803,6 +1942,7 @@ mod tests {
                 )),
             ],
             outcome: Some(Outcome::Rows { len: 2 }),
+            generation: None,
         };
         let replay_frame::frame::TableView::Complete(table) = frame.table() else {
             panic!("root failure refused the table")

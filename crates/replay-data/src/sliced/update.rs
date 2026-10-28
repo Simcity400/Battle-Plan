@@ -60,19 +60,35 @@ macro_rules! sliced_pair {
     };
 }
 
-/// The rows of `owner` in `rows` (in key order).
-fn owner_range<R: SlicedRow>(rows: &[R], owner: u32) -> Range<usize> {
-    let start = rows.partition_point(|row| row.owner() < owner);
-    start..start + rows[start..].partition_point(|row| row.owner() <= owner)
+/// `rows.partition_point(holds)`, probing outward from the front so short prefixes stay local.
+fn gallop<R>(rows: &[R], holds: impl Fn(&R) -> bool) -> usize {
+    let mut low = 0;
+    let mut high = 1;
+    while high <= rows.len() && holds(&rows[high - 1]) {
+        low = high;
+        high = high.saturating_mul(2);
+    }
+    low + rows[low..high.min(rows.len())].partition_point(holds)
 }
 
-/// The distinct owners of `rows` (in key order), one binary search per owner.
+/// The rows of `owner` in `rows` (in key order), searched onward from an earlier owner's end.
+fn owner_range_from<R: SlicedRow>(rows: &[R], from: usize, owner: u32) -> Range<usize> {
+    let from = if from > 0 && rows[from - 1].owner() >= owner {
+        0
+    } else {
+        from
+    };
+    let start = from + gallop(&rows[from..], |row| row.owner() < owner);
+    start..start + gallop(&rows[start..], |row| row.owner() <= owner)
+}
+
+/// The distinct owners of `rows` (in key order), each found next to the last.
 fn owner_ranges<R: SlicedRow>(rows: &[R]) -> impl Iterator<Item = (u32, Range<usize>)> + '_ {
     let mut start = 0;
     std::iter::from_fn(move || {
         let first = rows.get(start)?;
         let owner = first.owner();
-        let end = start + rows[start..].partition_point(|row| row.owner() <= owner);
+        let end = start + gallop(&rows[start..], |row| row.owner() <= owner);
         let range = start..end;
         start = end;
         Some((owner, range))
@@ -110,7 +126,7 @@ fn merge_owners<R: SlicedRow>(
 fn take_owner<R: SlicedRow>(rows: &[R], next: &mut usize, owner: u32) -> Range<usize> {
     let start = *next;
     if rows.get(start).is_some_and(|row| row.owner() == owner) {
-        *next += rows[start..].partition_point(|row| row.owner() <= owner);
+        *next += gallop(&rows[start..], |row| row.owner() <= owner);
     }
     start..*next
 }
@@ -255,8 +271,11 @@ impl SliceUpdate {
             let mut deleted_count = 0_u32;
             let mut deleted_key = 0_u128;
             let mut next_fresh = 0;
+            let mut next_old = 0;
             for &owner in listed {
-                let old = &previous[owner_range(previous, owner)];
+                let old = owner_range_from(previous, next_old, owner);
+                next_old = old.end;
+                let old = &previous[old];
                 let new = &fresh[take_owner(fresh, &mut next_fresh, owner)];
                 if old == new {
                     continue;
@@ -332,9 +351,11 @@ impl SliceUpdate {
         ) -> io::Result<Vec<R>> {
             let mut same_counts = true;
             let mut next_fresh = 0;
+            let mut next_old = 0;
             let mut removed = 0_usize;
             for &owner in listed {
-                let old = owner_range(previous, owner);
+                let old = owner_range_from(previous, next_old, owner);
+                next_old = old.end;
                 let new = take_owner(&fresh, &mut next_fresh, owner);
                 removed += old.len();
                 same_counts &= old.len() == new.len();
@@ -346,8 +367,11 @@ impl SliceUpdate {
                 // Each listed owner's fresh rows take its old rows' places;
                 // `fresh` then holds the replaced rows.
                 let mut next_fresh = 0;
+                let mut next_old = 0;
                 for &owner in listed {
-                    for index in owner_range(previous, owner) {
+                    let old = owner_range_from(previous, next_old, owner);
+                    next_old = old.end;
+                    for index in old {
                         std::mem::swap(&mut previous[index], &mut fresh[next_fresh]);
                         next_fresh += 1;
                     }
@@ -484,7 +508,116 @@ fn apply_keys<R: crate::rows::RowCodec>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rows::{LendLeaseAgreementRow, MarketEquipment, MarketPool};
+    use crate::rows::{LendLeaseAgreementRow, MarketEquipment, MarketPool, ResearchInputRow};
+
+    fn input(country: u32, index: u32, progress: i64) -> ResearchInputRow {
+        ResearchInputRow {
+            country,
+            index,
+            progress_raw: progress,
+            ..Default::default()
+        }
+    }
+
+    /// Odd owners 1..=79, with group sizes crossing every galloping step.
+    fn grouped(progress: i64) -> Vec<ResearchInputRow> {
+        const SIZES: [u32; 14] = [1, 2, 3, 4, 5, 7, 8, 9, 16, 17, 63, 64, 65, 130];
+        (0..40)
+            .flat_map(|slot: u32| {
+                let size = SIZES[slot as usize % SIZES.len()];
+                (0..size).map(move |index| input(slot * 2 + 1, index, progress))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn galloping_owner_searches_equal_whole_table_binary_searches() {
+        for len in 0..70 {
+            let values: Vec<usize> = (0..len).collect();
+            for split in 0..=len {
+                assert_eq!(gallop(&values, |&value| value < split), split);
+            }
+        }
+        let rows = grouped(0);
+        let naive = |owner: u32| {
+            let start = rows.partition_point(|row| row.country < owner);
+            start..start + rows[start..].partition_point(|row| row.country <= owner)
+        };
+        let expected: Vec<(u32, Range<usize>)> = (1..80)
+            .step_by(2)
+            .map(|owner| (owner, naive(owner)))
+            .collect();
+        assert_eq!(owner_ranges(&rows).collect::<Vec<_>>(), expected);
+        // Every cursor, including one past the owner's rows, finds them.
+        for owner in 0..82 {
+            for from in 0..=rows.len() {
+                assert_eq!(
+                    owner_range_from(&rows, from, owner),
+                    naive(owner),
+                    "{owner} {from}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn updates_of_large_owner_groups_encode_and_apply_the_merged_table() {
+        let previous = TableRows::ResearchInputs(grouped(0));
+        type Read = fn(u32) -> bool;
+        let cases: [(Vec<ResearchInputRow>, Read, Read); 4] = [
+            // Same counts: rows swap in place.
+            (
+                grouped(1)
+                    .into_iter()
+                    .filter(|row| row.country % 7 == 3)
+                    .collect(),
+                |owner| owner % 7 == 3,
+                |_| true,
+            ),
+            // Groups shrink, owner 40 is new, 9 returns nothing, owners ending in 5 are gone.
+            (
+                {
+                    let mut rows: Vec<_> = grouped(2)
+                        .into_iter()
+                        .filter(|row| row.country % 6 == 1 && row.index % 3 != 1)
+                        .chain([input(40, 0, 2), input(53, 200, 2)])
+                        .collect();
+                    rows.sort_by_key(ResearchInputRow::key);
+                    rows
+                },
+                |owner| owner % 6 == 1 || owner == 40 || owner == 53 || owner == 9,
+                |owner| owner % 10 != 5,
+            ),
+            // Nothing read, nothing gone.
+            (Vec::new(), |_| false, |_| true),
+            // Everything read and changed.
+            (grouped(3), |_| true, |_| true),
+        ];
+        for (step, (fresh, read, live)) in cases.into_iter().enumerate() {
+            let fresh = TableRows::ResearchInputs(fresh);
+            let merged = crate::sliced::merge_slice(&previous, fresh.clone(), read, live).unwrap();
+            let update = SliceUpdate::new(&previous, fresh, read, live).unwrap();
+            assert!(update.fits(&previous), "{step}");
+            assert_eq!(update.merged(&previous).unwrap(), merged, "{step}");
+            let (mut expected, mut expected_deleted) = (Vec::new(), Vec::new());
+            let changed = merged
+                .encode_changes(&previous, &mut expected, &mut expected_deleted)
+                .unwrap();
+            let (mut actual, mut deleted) = (Vec::new(), Vec::new());
+            assert_eq!(
+                update
+                    .encode_changes(&previous, &mut actual, &mut deleted)
+                    .unwrap(),
+                changed,
+                "{step}"
+            );
+            assert_eq!(actual, expected, "{step}");
+            let mut applied = previous.clone();
+            update.apply(&mut applied).unwrap();
+            assert_eq!(applied, merged, "{step}");
+        }
+    }
+
     #[test]
     fn keyed_contract_tick_and_removal_keep_sibling_terms_and_route_allocations() {
         use crate::rows::{MarketContractRuntime, MarketContractTermsRow, SharedMarketPool};

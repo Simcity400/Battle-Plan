@@ -4570,7 +4570,10 @@ fn decoded_with_costs(
                     convert_with_helper(captured, &clock, conversion, helpers, &mut tables, span);
             }
         }
-        tables[TableId::StateResistance.index()] = captured.state_inputs.occupation.table().into();
+        tables[TableId::StateResistance.index()] = captured
+            .state_inputs
+            .occupation
+            .input(conversion.projection.as_deref_mut());
         for (table, value) in crate::faction_companions::TABLES
             .into_iter()
             .zip(captured.faction_companions.inputs())
