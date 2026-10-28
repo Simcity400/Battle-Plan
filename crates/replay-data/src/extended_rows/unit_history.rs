@@ -83,6 +83,12 @@ impl RowCodec for SharedDivisionHistoryRow {
     fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
         self.as_ref().visit_nested_field_gaps(visit)
     }
+    fn visit_wire(
+        &self,
+        visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.as_ref().visit_wire(visit)
+    }
     fn recorded_fields_bytes(&self) -> io::Result<usize> {
         self.as_ref().recorded_fields_bytes()
     }
@@ -261,6 +267,12 @@ impl RowCodec for SharedDivisionPanelSourceRow {
     }
     fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
         self.as_ref().visit_nested_field_gaps(visit)
+    }
+    fn visit_wire(
+        &self,
+        visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.as_ref().visit_wire(visit)
     }
     fn recorded_fields_bytes(&self) -> io::Result<usize> {
         self.as_ref().recorded_fields_bytes()

@@ -598,6 +598,13 @@ pub trait RowCodec: Default + Clone + Eq {
     fn check_key_fields(&self) -> io::Result<()>;
     fn not_recorded_fields(&self) -> u64;
     fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str));
+    /// Each schema field in order as the wire holds it: stepped fields in their step's
+    /// units, a field this row did not record as [`Field::NotRecorded`], a restored
+    /// field's tombstone as its empty payload.
+    fn visit_wire(
+        &self,
+        visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
+    ) -> io::Result<()>;
     fn recorded_fields_bytes(&self) -> io::Result<usize>;
     fn delta(&self, previous: Option<&Self>) -> io::Result<Option<DeltaRow>>;
     /// Encode one changed row directly, including its key difference and mask.
@@ -925,6 +932,12 @@ macro_rules! define_tables {
         impl RowRef<'_> {
             pub fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
                 match self { $(Self::$variant(row) => row.visit_nested_field_gaps(visit)),+ }
+            }
+            pub fn visit_wire(
+                &self,
+                visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
+            ) -> io::Result<()> {
+                match self { $(Self::$variant(row) => row.visit_wire(visit)),+ }
             }
             pub fn not_recorded_fields(&self) -> u64 {
                 match self { $(Self::$variant(row) => row.not_recorded_fields()),+ }
@@ -2476,6 +2489,18 @@ fn native_wire_field<T: NativeValue>(value: &T) -> Field<'_> {
         value.field()
     }
 }
+/// One declared field as [`encode_native_field`] would write it, handed to `visit`.
+fn visit_wire_field<T: NativeValue>(
+    value: &T,
+    index: usize,
+    step: Option<Step>,
+    visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
+) -> io::Result<()> {
+    match step {
+        None => visit(index, native_wire_field(value)),
+        Some(step) => visit(index, value.to_units(step)?.field()),
+    }
+}
 /// Encode a declared field, in step units when it has a step.
 fn encode_native_field<T: NativeValue>(
     value: &T,
@@ -2694,6 +2719,13 @@ macro_rules! typed_codec {
             fn check_key_fields(&self) -> io::Result<()> { let $checked = self; $check }
             fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
                 $(NativeValue::visit_field_gaps(&self.$($field)+, visit);)+
+            }
+            fn visit_wire(
+                &self,
+                visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
+            ) -> io::Result<()> {
+                $(visit_wire_field(&self.$($field)+, $index, $crate::value::display_step!($($step)?), visit).map_err(|error| crate::codec::error_context(error, format_args!("row {} column {}", self.key(), stringify!($($field)+))))?;)+
+                Ok(())
             }
             fn not_recorded_fields(&self) -> u64 {
                 let mut mask = 0;
@@ -5435,3 +5467,6 @@ fn raid_memo_table_metadata_uses_the_dispatcher_key() {
 #[cfg(test)]
 #[path = "rows/ship_names_tests.rs"]
 mod ship_names_tests;
+#[cfg(test)]
+#[path = "rows/visit_wire_tests.rs"]
+mod visit_wire_tests;

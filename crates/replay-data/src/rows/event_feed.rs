@@ -121,6 +121,17 @@ impl RowCodec for EventFeedHistoryRow {
         0
     }
     fn visit_nested_field_gaps(&self, _: &mut dyn FnMut(&'static str)) {}
+    fn visit_wire(
+        &self,
+        visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.with_fields(|fields| {
+            for (index, field) in fields.into_iter().enumerate() {
+                visit(index, field)?;
+            }
+            Ok(())
+        })
+    }
     fn try_clone(&self) -> io::Result<Self> {
         Value::try_clone(self)
     }

@@ -14,7 +14,10 @@
 //! Every record is one zstd frame at `--level`. Restarts take a `--window-log`
 //! window; each unit's streams share a walker's `--budget-mb` decode memory.
 
-use replay::container::{Replay, ReplayStream};
+use replay::{
+    container::{Replay, ReplayStream},
+    native_columns::column,
+};
 use replay_columnar::{
     framing::{self, Unit},
     index::{Index, Record, Restart},
@@ -42,28 +45,6 @@ const FILL_MINIMUM: usize = 16;
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
-}
-
-fn column(kind: Kind) -> Column {
-    match kind {
-        Kind::U8 => Column::U8,
-        Kind::I8 => Column::I8,
-        Kind::U16 => Column::U16,
-        Kind::I16 => Column::I16,
-        Kind::U32 => Column::U32,
-        Kind::I32 => Column::I32,
-        Kind::U64 => Column::U64,
-        Kind::I64 => Column::I64,
-        Kind::Bool => Column::Bool,
-        Kind::OptionalI32 => Column::OptionalI32,
-        Kind::OptionalU32 => Column::OptionalU32,
-        Kind::OptionalI64 => Column::OptionalI64,
-        Kind::OptionalU64 => Column::OptionalU64,
-        Kind::Bytes => Column::Bytes,
-        Kind::U32List => Column::U32List,
-        Kind::U64List => Column::U64List,
-        Kind::Opaque => Column::Opaque,
-    }
 }
 
 #[derive(Default)]
@@ -1388,5 +1369,5 @@ fn column_kind_name(table: &str, column: usize) -> Column {
     TableId::ALL
         .iter()
         .find(|id| format!("{id:?}") == table)
-        .map_or(Column::Opaque, |id| self::column(id.schema()[column]))
+        .map_or(Column::Opaque, |id| replay::native_columns::column(id.schema()[column]))
 }

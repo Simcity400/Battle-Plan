@@ -2,6 +2,7 @@
 
 pub mod compression;
 pub mod container;
+pub mod native_columns;
 pub mod progress;
 #[cfg(windows)]
 pub mod publication;
