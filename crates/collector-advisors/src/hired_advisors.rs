@@ -13,7 +13,9 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, table_iter, unavailable},
 };
-use collector_projection::projection::{Projection, project_table, scalar_table};
+use collector_projection::projection::{
+    Projection, Witness, held_input, project_table, scalar_table,
+};
 use engine_allocation::{copy_vec, owned_vec, reserve_exact};
 use engine_characters::advisor_tokens;
 use engine_native::{Memory, ccountry_characters as native, walk::Outcome};
@@ -109,6 +111,8 @@ pub struct Captured {
     available_bytes: Arena<u8>,
     /// Which countries this hour's AvailableAdvisors rows cover.
     available_selection: SliceSelection,
+    /// Per table, the held generation this capture published ([`AdvisorStore::published`]).
+    witness: [Option<Witness>; N],
 }
 
 impl Captured {
@@ -123,6 +127,7 @@ impl Captured {
     }
 
     pub fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.witness = [None; N];
         self.available_selection.reset(hour, force_full);
         self.rows
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
@@ -160,9 +165,11 @@ impl Captured {
             available_bytes: Arena::new(capacity.available_bytes),
             // Owner storage grows on the worker from the countries it scans.
             available_selection: SliceSelection::new(false),
+            witness: [None; N],
         }
     }
     pub fn reset(&mut self) {
+        self.witness = [None; N];
         self.rows.reset();
         self.bytes.reset();
         self.active.reset();
@@ -271,6 +278,11 @@ impl Captured {
             self.rows.outcome = walk.outcome;
             self.bytes.len = walk.bytes_len;
             self.bytes.required = walk.required_bytes;
+            self.witness[0] = match reuse.as_ref() {
+                Some((store, _)) if appointed::CARRY => store.published()[0],
+                _ => None,
+            }
+            .map(Witness::generation);
             ticks[0] = qpc().saturating_sub(started).max(0) as u64;
         } else {
             self.rows.outcome = Outcome::Unavailable {
@@ -312,6 +324,13 @@ impl Captured {
             };
             self.active.outcome = active_outcome;
             self.retired.outcome = retired_outcome;
+            let held = match reuse.as_ref() {
+                Some((store, _)) if records::CARRY && active && retired => store.published()[1],
+                _ => None,
+            }
+            .map(Witness::generation);
+            self.witness[1] = held;
+            self.witness[3] = held;
             ticks[1] = qpc().saturating_sub(started).max(0) as u64;
         }
         for (walked, rows) in [(active, &mut self.active), (retired, &mut self.retired)] {
@@ -349,6 +368,10 @@ impl Captured {
             self.tokens.outcome = walk.outcome;
             self.token_bytes.len = walk.bytes_len;
             self.token_bytes.required = walk.required_bytes;
+            self.witness[2] = reuse
+                .as_ref()
+                .and_then(|(store, _)| store.published()[2])
+                .map(Witness::generation);
             ticks[2] = qpc().saturating_sub(started).max(0) as u64;
         } else {
             self.tokens.outcome = Outcome::Unavailable {
@@ -430,23 +453,40 @@ impl Captured {
             character: row.character,
         };
         let key = |row: &native::ActiveRow| (u128::from(row.country) << 32) | u128::from(row.ordinal);
+        let witness = self.witness;
         [
-            self.hired_input(projection.as_deref_mut()),
-            scalar_table::<tables::CountryCharacters, _>(
+            held_input::<tables::HiredAdvisors>(
                 projection.as_deref_mut(),
-                self.active.outcome,
-                &self.active.rows,
-                key,
-                record,
+                witness[0],
+                |projection| self.hired_input(projection),
             ),
-            self.token_input(projection.as_deref_mut()),
-            scalar_table::<tables::CountryRetiredCharacters, _>(
-                projection,
-                self.retired.outcome,
-                &self.retired.rows,
-                key,
-                record,
+            held_input::<tables::CountryCharacters>(
+                projection.as_deref_mut(),
+                witness[1],
+                |projection| {
+                    scalar_table::<tables::CountryCharacters, _>(
+                        projection,
+                        self.active.outcome,
+                        &self.active.rows,
+                        key,
+                        record,
+                    )
+                },
             ),
+            held_input::<tables::AdvisorTokens>(
+                projection.as_deref_mut(),
+                witness[2],
+                |projection| self.token_input(projection),
+            ),
+            held_input::<tables::CountryRetiredCharacters>(projection, witness[3], |projection| {
+                scalar_table::<tables::CountryRetiredCharacters, _>(
+                    projection,
+                    self.retired.outcome,
+                    &self.retired.rows,
+                    key,
+                    record,
+                )
+            }),
             self.available_table().into(),
         ]
     }

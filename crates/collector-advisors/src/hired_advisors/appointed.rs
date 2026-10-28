@@ -83,6 +83,10 @@ pub struct Appointed {
     key: Option<Key>,
     rows: Vec<Row>,
     bytes: Vec<u8>,
+    /// Names the held walk ([`collector_projection::projection::generation`]).
+    generation: u64,
+    /// The held walk's generation when the latest capture published exactly it.
+    published: Option<u64>,
 }
 
 impl Appointed {
@@ -91,6 +95,12 @@ impl Appointed {
         self.key = None;
         self.rows.clear();
         self.bytes.clear();
+        self.published = None;
+    }
+
+    /// The generation of the held walk the latest capture published, if it published one.
+    pub fn published(&self) -> Option<u64> {
+        self.published
     }
 
     pub fn measure(&self) -> usize {
@@ -109,6 +119,8 @@ impl Appointed {
             self.rows.extend_from_slice(rows);
             self.bytes.extend_from_slice(bytes);
             self.key = Some(key);
+            self.generation = collector_projection::projection::generation();
+            self.published = Some(self.generation);
         }
     }
 }
@@ -141,7 +153,9 @@ pub fn capture(
     let before = key(memory, base, game_state, domains);
     let quiet = before.is_some() && before == held.key;
     let mut counts = Counts::default();
+    held.published = None;
     if quiet && publish(&held.rows, rows) && publish(&held.bytes, bytes) {
+        held.published = Some(held.generation);
         counts.reused = 1;
         counts.reused_rows = held.rows.len() as u64;
         crate::advisor_pool_changes::record(Table::HiredAdvisors, &counts, None);
@@ -221,7 +235,7 @@ mod tests {
                 &memory, 0, 0x1000, &mut held, &domains, &mut rows, &mut bytes,
             );
             assert!(matches!(walk.outcome, Outcome::Unavailable { .. }));
-            assert!(held.key.is_none());
+            assert!(held.key.is_none() && held.published().is_none());
         }
     }
 
@@ -258,17 +272,24 @@ mod tests {
         // The first hour walks and holds the (empty) walk.
         assert_eq!(hour(&mut held), Outcome::Rows { len: 0 });
         assert!(held.key.is_some());
+        let first = held.published().unwrap();
         // A held appointment stands in for the walk's: a quiet hour publishes
         // it, so this hour did not walk.
         held.rows.push(row(7, 0, 70, 0));
         held.bytes.extend_from_slice(b"idea");
         assert_eq!(hour(&mut held), Outcome::Rows { len: 1 });
         assert_eq!(hour(&mut held), Outcome::Rows { len: 1 });
+        // Both quiet hours published the held walk's generation.
+        assert_eq!(held.published(), Some(first));
         // A writer moved the pool token: the hour walks and holds its walk.
         domains
             .pools
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(hour(&mut held), Outcome::Rows { len: 0 });
         assert!(held.rows.is_empty() && held.key.is_some());
+        assert!(
+            held.published()
+                .is_some_and(|generation| generation != first)
+        );
     }
 }

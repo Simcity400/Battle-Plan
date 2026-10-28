@@ -348,6 +348,8 @@ fn a_quiet_hour_walks_no_scope_and_publishes_identical_rows() {
     let (first, reads) = walk_with(&bytes, &mut store, &watches);
     assert_ne!(reads, 0);
     assert!(!first.counts.quiet);
+    // The held walk's rows are what it published.
+    let held = store.witnessed().unwrap();
     watches.boundary(false);
     for _ in 0..3 {
         let (quiet, reads) = walk_with(&bytes, &mut store, &watches);
@@ -356,6 +358,7 @@ fn a_quiet_hour_walks_no_scope_and_publishes_identical_rows() {
         assert!(quiet.counts.quiet);
         assert_eq!((quiet.counts.read, quiet.counts.reused), (0, 5));
         assert_eq!(reads, 0);
+        assert_eq!(store.witnessed(), Some(held));
         watches.boundary(false);
     }
 }
@@ -370,6 +373,7 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     let watches = Watches::enabled(16);
     let mut store = FlagStore::new();
     walk_with(&bytes, &mut store, &watches);
+    let held = store.witnessed().unwrap();
     watches.boundary(false);
     let notification = watches.notify(MANAGERS[1], 0);
     set_value(&mut bytes, 1, 7);
@@ -378,6 +382,9 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     let (written, reads) = walk_with(&bytes, &mut store, &watches);
     assert!(written.counts.quiet);
     assert_eq!((written.counts.read, written.counts.reused), (1, 4));
+    // Changed rows are new held rows.
+    let renewed = store.witnessed().unwrap();
+    assert_ne!(renewed, held);
     // Only the marked manager's header and row were read.
     assert_eq!(reads, written.manager_reads);
     assert_ne!(written.manager_reads, 0);
@@ -391,6 +398,7 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     assert!(quiet.counts.quiet);
     assert_eq!(reads, 0);
     assert_eq!(quiet.rows, written.rows);
+    assert_eq!(store.witnessed(), Some(renewed));
     watches.boundary(false);
     // A third historical character, 47, owning one flag, is appended.
     let character = 0x6400;

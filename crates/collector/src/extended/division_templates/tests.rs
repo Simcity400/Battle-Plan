@@ -1523,6 +1523,10 @@ fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
         if read.is_empty() {
             assert_eq!(recording.shared(), 0, "hour {hour}");
         }
+        // Only a capture that read nothing and moved nothing witnesses its rows.
+        if !read.is_empty() || hour == 6 {
+            assert!(capture.witness.is_none(), "hour {hour}");
+        }
     }
 }
 

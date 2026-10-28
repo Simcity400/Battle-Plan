@@ -450,6 +450,7 @@ fn intel_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a IntelShadow>) -
         let current = shadow.statistics();
         total.hits = total.hits.saturating_add(current.hits);
         total.misses = total.misses.saturating_add(current.misses);
+        total.republished = total.republished.saturating_add(current.republished);
         total.row_capacity_bytes += current.row_capacity_bytes;
         total.replay_capacity_bytes += current.replay_capacity_bytes;
     }
@@ -458,11 +459,57 @@ fn intel_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a IntelShadow>) -
         "table": "ScriptFlags",
         "hits": total.hits,
         "misses": total.misses,
+        "republished": total.republished,
         "retained_native_capacity_bytes": total.row_capacity_bytes,
         "retained_replay_capacity_bytes": total.replay_capacity_bytes,
         "allocation_scope": "current native row Vec capacities plus strongly retained immutable replay Vec capacities across retained campaigns; replay bytes may also be shared with encoder and are not additive to its storage; excludes Arc control blocks and allocator overhead; separate from raw/pool accounting",
-        "counter_scope": "cumulative hourly conversion decisions including later rejected or failed writes; faults count as misses when conversion runs; enclosing clock failure clears shadows without conversion",
+        "counter_scope": "cumulative hourly conversion decisions including later rejected or failed writes; faults count as misses when conversion runs; republished hours published the previous hour's rows on an equal held-rows generation without comparing; enclosing clock failure clears shadows without conversion",
         "cost_scope": "native comparison, snapshot installation and fallback conversion included in spool_work.conversion_packs intel",
+    })
+}
+
+/// Tables whose packs witness their captures ([`crate::projection::Witness`]).
+const REPUBLISHING: [(&str, TableId); 8] = [
+    ("division_templates", TableId::DivisionTemplates),
+    ("division_templates", TableId::DivisionTemplateIcons),
+    ("division_templates", TableId::CountryTemplateState),
+    ("character_portraits", TableId::CharacterPortraits),
+    ("hired_advisors", TableId::HiredAdvisors),
+    ("hired_advisors", TableId::CountryCharacters),
+    ("hired_advisors", TableId::AdvisorTokens),
+    ("hired_advisors", TableId::CountryRetiredCharacters),
+];
+
+fn quiet_republish_status<'a>(
+    scratches: impl IntoIterator<Item = &'a ProjectionScratch>,
+    intel: impl IntoIterator<Item = &'a IntelShadow>,
+) -> impl Serialize {
+    let mut counts = [[0_u64; 2]; REPUBLISHING.len()];
+    for scratch in scratches {
+        for (total, (_, table)) in counts.iter_mut().zip(REPUBLISHING) {
+            let [republished, converted] = scratch.republish_counts(table);
+            total[0] = total[0].saturating_add(republished);
+            total[1] = total[1].saturating_add(converted);
+        }
+    }
+    let mut flags = [0_u64; 2];
+    for shadow in intel {
+        let current = shadow.statistics();
+        flags[0] = flags[0].saturating_add(current.republished);
+        flags[1] = flags[1].saturating_add(current.hits.saturating_add(current.misses));
+    }
+    let tables = REPUBLISHING
+        .into_iter()
+        .zip(counts)
+        .chain(std::iter::once((("intel", TableId::ScriptFlags), flags)));
+    status!({
+        "scope": "cumulative hours across retained campaigns, including later rejected or failed writes: republished compared equal without a projection because this hour's capture read nothing of the table and its witness (writer tokens or held-rows generation) equals the previous hour's on this branch, whose frame committed the encoder's baseline (ScriptFlags: published the previous hour's shared rows uncompared); converted ran the table's projection or comparison",
+        "tables": sequence(tables.map(|((pack, table), [republished, converted])| status!({
+            "pack": pack,
+            "table": DebugValue(table),
+            "republished": republished,
+            "converted": converted,
+        }))),
     })
 }
 
@@ -1445,6 +1492,8 @@ impl<B: SegmentBackend> Campaign<B> {
                     // No refused table may survive in a producer's cached rows.
                     self.staggered_cache.remove(&table);
                     self.sliced_cache.remove(&table);
+                    self.projection_scratch.forget(table);
+                    self.intel_shadow.forget(table);
                     self.pending_slices.retain(|(id, _)| *id != table);
                     match table {
                         TableId::ProductionLineOutput => {
@@ -3083,6 +3132,11 @@ impl Processor {
                 clock.hour,
                 !campaign.spool.is_open(),
             );
+        if captured.hour_cost.force_full {
+            for (_, table) in REPUBLISHING {
+                campaign.projection_scratch.forget(table);
+            }
+        }
         let mut characters = CharacterConversion::new(
             branch,
             &mut campaign.character_shadow,
@@ -3092,7 +3146,7 @@ impl Processor {
             lexical_cache(&campaign.staggered_cache, campaign.staggered_branch, branch),
             &mut campaign.lexical_conversion,
         );
-        let mut intel = IntelConversion::new(branch, &mut campaign.intel_shadow);
+        let mut intel = IntelConversion::new(branch, clock.hour, &mut campaign.intel_shadow);
         let mut projection = Projection::new(
             &campaign.encoder,
             branch,
@@ -4112,6 +4166,10 @@ impl Processor {
                 "comparison": self.comparison.status(),
                 "lexical_conversion": lexical_conversion_status(self.campaigns.values().map(|campaign| &campaign.lexical_conversion)),
                 "intel_shadow": intel_shadow_status(self.campaigns.values().map(|campaign| &campaign.intel_shadow)),
+                "quiet_republish": quiet_republish_status(
+                    self.campaigns.values().map(|campaign| &campaign.projection_scratch),
+                    self.campaigns.values().map(|campaign| &campaign.intel_shadow),
+                ),
                 "character_shadow": character_shadow_status(self.campaigns.values().map(|campaign| &campaign.character_shadow)),
                 "phases": crate::spool_phases::SPOOL.status(self.session.qpc_frequency),
                 "helper_phases": crate::spool_phases::HELPER.status(self.session.qpc_frequency),
@@ -10019,6 +10077,7 @@ mod tests {
             &mut ScriptVariableComparison::default(),
             Some(&mut IntelConversion::new(
                 branch,
+                hour,
                 &mut campaign.intel_shadow,
             )),
         );
@@ -10137,7 +10196,7 @@ mod tests {
         let old = Arc::clone(intel_allocation(&first, table));
         let before = campaign.intel_shadow.statistics();
         source.clock = None;
-        let mut reuse = IntelConversion::new(1, &mut campaign.intel_shadow);
+        let mut reuse = IntelConversion::new(1, 0, &mut campaign.intel_shadow);
         let (current, costs) = decoded_with_costs(
             &source,
             clock(0).borrowed(),

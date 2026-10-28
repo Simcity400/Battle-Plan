@@ -513,21 +513,29 @@ struct ScopedFlag {
 struct NativeShadow<R> {
     rows: Vec<R>,
     output: Option<Arc<TableRows>>,
+    /// `output`'s capture hour and held-rows generation.
+    hour: Option<i32>,
+    witness: Option<u64>,
     hits: u64,
     misses: u64,
+    republished: u64,
 }
 
 impl<R: Copy + PartialEq> NativeShadow<R> {
     fn clear(&mut self) {
         self.rows.clear();
         self.output = None;
+        self.hour = None;
+        self.witness = None;
     }
 
+    /// An equal `witness` at the next hour republishes `output` uncompared.
     fn input(
         &mut self,
         id: TableId,
         current: &CaptureRows<R>,
         outcome: Outcome,
+        (hour, witness): (i32, Option<u64>),
         convert: impl FnOnce() -> TableView,
     ) -> TableInput {
         if matches!(
@@ -537,6 +545,16 @@ impl<R: Copy + PartialEq> NativeShadow<R> {
             }
         ) {
             return TableInput::Sampled(convert());
+        }
+        if witness.is_some()
+            && self.witness == witness
+            && self.hour.and_then(|previous| previous.checked_add(1)) == Some(hour)
+            && let Some(output) = &self.output
+            && output.table() == id
+        {
+            self.hour = Some(hour);
+            self.republished = self.republished.saturating_add(1);
+            return TableInput::SharedComplete(Arc::clone(output));
         }
         let source = match outcome {
             Outcome::Rows { len } => current.rows.get(..len),
@@ -548,6 +566,8 @@ impl<R: Copy + PartialEq> NativeShadow<R> {
             && self.rows == source
         {
             self.hits = self.hits.saturating_add(1);
+            self.hour = Some(hour);
+            self.witness = witness;
             return TableInput::SharedComplete(Arc::clone(output));
         }
         self.misses = self.misses.saturating_add(1);
@@ -563,6 +583,8 @@ impl<R: Copy + PartialEq> NativeShadow<R> {
             }
             self.rows.extend_from_slice(source);
             self.output = Some(Arc::clone(&output));
+            self.hour = Some(hour);
+            self.witness = witness;
             return TableInput::SharedComplete(output);
         }
         TableInput::Sampled(converted)
@@ -578,6 +600,7 @@ impl<R: Copy + PartialEq> NativeShadow<R> {
         IntelShadowStats {
             hits: self.hits,
             misses: self.misses,
+            republished: self.republished,
             row_capacity_bytes: self.rows.capacity() * size_of::<R>(),
             replay_capacity_bytes,
         }
@@ -594,6 +617,8 @@ pub struct IntelShadow {
 pub struct IntelShadowStats {
     pub hits: u64,
     pub misses: u64,
+    /// Hours that published the previous hour's rows on their witness alone.
+    pub republished: u64,
     pub row_capacity_bytes: usize,
     pub replay_capacity_bytes: usize,
 }
@@ -602,19 +627,27 @@ impl IntelShadow {
     pub fn statistics(&self) -> IntelShadowStats {
         self.flags.statistics()
     }
+
+    /// Withdraw `table`'s held rows: a later hour converts it.
+    pub fn forget(&mut self, table: TableId) {
+        if table == TableId::ScriptFlags {
+            self.flags.clear();
+        }
+    }
 }
 
 pub struct IntelConversion<'a> {
     shadow: &'a mut IntelShadow,
+    hour: i32,
 }
 
 impl<'a> IntelConversion<'a> {
-    pub fn new(branch: BranchId, shadow: &'a mut IntelShadow) -> Self {
+    pub fn new(branch: BranchId, hour: i32, shadow: &'a mut IntelShadow) -> Self {
         if shadow.branch != Some(branch) {
             shadow.flags.clear();
             shadow.branch = Some(branch);
         }
-        Self { shadow }
+        Self { shadow, hour }
     }
 }
 
@@ -683,6 +716,8 @@ pub struct Captured {
     variable_names: Arena<u8>,
     tokens: Arena<u32>,
     flag_scratch: Vec<cscript_flag::Row>,
+    /// The held ScriptFlags generation this capture published ([`FlagStore::witnessed`]).
+    flags_witness: Option<u64>,
     /// Worker-payload gate for the relations family. Set by the game thread
     /// on refresh hours with a valid payload; `capture` then skips the typed
     /// relations walk and the decode worker installs these rows before the
@@ -831,6 +866,7 @@ impl Captured {
             variable_names: Arena::new(capacity.variable_names),
             tokens: Arena::new(capacity.tokens),
             flag_scratch: owned_vec(default_vec(capacity.rows[7])),
+            flags_witness: None,
             relations_raw_mode: false,
             relations_selection: SliceSelection::new(capacity.rows[13] != 0),
             relation_active: [false; 2],
@@ -935,6 +971,7 @@ impl Captured {
     }
 
     fn reset_residual(&mut self) {
+        self.flags_witness = None;
         self.subjects.reset();
         self.autonomy.reset();
         self.agencies.reset();
@@ -1653,12 +1690,18 @@ impl Captured {
             }
             if active[7] {
                 let begin = qpc();
+                let mut flags = flags;
                 capture_rows(&mut self.flags, |rows| {
                     let _reads = read_accounting::table(TABLES[7]);
                     let reuse = flags
+                        .as_deref_mut()
                         .map(|store| FlagReuse::begin(store, &crate::flag_changes::Observer));
                     walk_flags_growing(memory, base, state, rows, &mut self.flag_scratch, reuse)
                 });
+                self.flags_witness = flags
+                    .as_deref()
+                    .and_then(FlagStore::witnessed)
+                    .filter(|_| !force_full && matches!(self.flags.outcome, Outcome::Rows { .. }));
                 ticks[7] = elapsed(begin);
             }
             if active[8] {
@@ -1952,12 +1995,13 @@ impl Captured {
     ) -> [TableInput; N] {
         let outcomes = self.outcomes();
         let flags = if let Some(reuse) = reuse {
-            reuse
-                .shadow
-                .flags
-                .input(TableId::ScriptFlags, &self.flags, outcomes[7], || {
-                    self.flags_table(outcomes[7])
-                })
+            reuse.shadow.flags.input(
+                TableId::ScriptFlags,
+                &self.flags,
+                outcomes[7],
+                (reuse.hour, self.flags_witness),
+                || self.flags_table(outcomes[7]),
+            )
         } else {
             TableInput::Sampled(self.flags_table(outcomes[7]))
         };
@@ -5303,7 +5347,7 @@ mod tests {
         capture.table_inputs(
             None,
             &mut ScriptVariableComparison::default(),
-            Some(&mut IntelConversion::new(branch, shadow)),
+            Some(&mut IntelConversion::new(branch, 0, shadow)),
         )
     }
 
@@ -5541,6 +5585,48 @@ mod tests {
         let repeated = memo_inputs(&capture, &mut shadow, 2);
         assert!(Arc::ptr_eq(shared(&empty[7]), shared(&repeated[7])));
         assert!(!Arc::ptr_eq(shared(&next[7]), shared(&empty[7])));
+    }
+
+    #[test]
+    fn a_witnessed_flags_hour_republishes_without_comparing_and_any_other_hour_compares() {
+        let inputs = |capture: &Captured, shadow: &mut IntelShadow, hour| {
+            capture.table_inputs(
+                None,
+                &mut ScriptVariableComparison::default(),
+                Some(&mut IntelConversion::new(1, hour, shadow)),
+            )
+        };
+        let mut capture = intel_shadow_fixture(42);
+        capture.flags_witness = Some(9);
+        let mut shadow = IntelShadow::default();
+        let first = inputs(&capture, &mut shadow, 0);
+        // Republication compares nothing: a change the witness denies goes unseen.
+        capture.flags.rows[0].flag.value += 1;
+        let republished = inputs(&capture, &mut shadow, 1);
+        assert!(Arc::ptr_eq(shared(&first[7]), shared(&republished[7])));
+        let stats = shadow.statistics();
+        assert_eq!((stats.republished, stats.hits, stats.misses), (1, 0, 1));
+        // After a gap the rows are compared, and converted when they differ.
+        let gap = inputs(&capture, &mut shadow, 3);
+        assert!(!Arc::ptr_eq(shared(&first[7]), shared(&gap[7])));
+        assert_eq!(
+            TableView::Complete((**shared(&gap[7])).clone()),
+            capture.tables()[7]
+        );
+        // Another generation, or none, compares the rows.
+        capture.flags_witness = Some(10);
+        let moved = inputs(&capture, &mut shadow, 4);
+        capture.flags_witness = None;
+        let unwitnessed = inputs(&capture, &mut shadow, 5);
+        assert!(Arc::ptr_eq(shared(&gap[7]), shared(&moved[7])));
+        assert!(Arc::ptr_eq(shared(&gap[7]), shared(&unwitnessed[7])));
+        let stats = shadow.statistics();
+        assert_eq!((stats.republished, stats.hits, stats.misses), (1, 2, 2));
+        // A refusal withdraws the rows.
+        shadow.forget(TableId::ScriptFlags);
+        capture.flags_witness = Some(10);
+        let refused = inputs(&capture, &mut shadow, 6);
+        assert!(!Arc::ptr_eq(shared(&gap[7]), shared(&refused[7])));
     }
 
     #[test]

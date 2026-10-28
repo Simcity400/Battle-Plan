@@ -160,6 +160,10 @@ pub struct FlagStore {
     scratch: Vec<cscript_flag::Row>,
     /// The index of `order` a quiet hour visits by ([`Index`]).
     index: Index,
+    /// Names `published` ([`collector_projection::projection::generation`]).
+    generation: u64,
+    /// `published`'s generation when the latest walk's rows are exactly it.
+    witnessed: Option<u64>,
 }
 
 /// Where a quiet hour finds the scopes it reads, so it touches only those
@@ -270,6 +274,11 @@ impl FlagStore {
         self.bytes
     }
 
+    /// The generation of the held rows the latest walk published exactly.
+    pub fn witnessed(&self) -> Option<u64> {
+        self.witnessed
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn counts(&self) -> Counts {
         self.counts
@@ -366,13 +375,17 @@ impl FlagStore {
         }
         // Only an indexed walk lets a later quiet hour publish its rows.
         let indexed = held && self.index.build(&self.order);
-        if !indexed {
+        if indexed {
+            self.generation = collector_projection::projection::generation();
+            self.witnessed = Some(self.generation);
+        } else {
             self.index.clear();
             self.quiet = None;
             self.published.clear();
             self.countries.clear();
             self.order.clear();
             self.epoch = None;
+            self.witnessed = None;
         }
         self.measure();
         crate::flag_changes::record(&self.counts, complete.then_some(self.scopes));
@@ -560,6 +573,7 @@ impl<'a> FlagReuse<'a> {
             scope: (base, state),
         });
         let store = &mut *self.store;
+        store.witnessed = None;
         store.take(self.changes);
         let matched = !store.forgotten
             && self.key.is_some()
@@ -582,7 +596,9 @@ impl<'a> FlagReuse<'a> {
             } else if sample.renewed {
                 store.published.extend_from_slice(&output[..len]);
                 store.index.rows(&store.order);
+                store.generation = collector_projection::projection::generation();
             }
+            store.witnessed = store.quiet.is_some().then_some(store.generation);
             let held_rows = store.current.rows.len() as u64;
             let scopes = store.order.len() as u64;
             store.counts = Counts {

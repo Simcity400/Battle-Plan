@@ -393,6 +393,11 @@ impl Store {
         self.reordered = false;
     }
 
+    /// This walk moved a held template within its roster.
+    pub fn reordered(&self) -> bool {
+        self.reordered
+    }
+
     pub fn allocated_bytes(&self) -> usize {
         self.entries.capacity() * size_of::<Entry>()
             + self.live.capacity() * size_of::<u64>()

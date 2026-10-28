@@ -1,20 +1,58 @@
 //! Exact projections from the current owned native sample into replay baselines.
 //!
-//! Only ordering scratch is retained. Every reuse compares all current row
-//! payloads, after the caller's acquisition and arena checks, with the encoder's
-//! complete baseline. A stable permutation avoids repeatedly sorting the same
-//! census; every use verifies its order against the current native keys.
+//! Only ordering scratch and each table's latest capture witness are retained.
+//! Every reuse but a witnessed one compares all current row payloads, after
+//! the caller's acquisition and arena checks, with the encoder's complete
+//! baseline. A stable permutation avoids repeatedly sorting the same census;
+//! every use verifies its order against the current native keys.
 //! Portrait acquisition may retain owned descriptors certified current by its
 //! native mutation observer; this is distinct from carrying an older sample.
 //! Each table's ordering scratch has its own lock, so clones of one
 //! projection can convert disjoint tables on the spool thread and its helper.
+//! A capture whose [`Witness`] equals the previous hour's compares equal
+//! without a projection ([`Projection::republish`]).
 
 use crate::table_conversion::{table, unavailable};
 use engine_native::walk::Outcome;
-use replay_data::rows::TABLE_COUNT;
+use replay_data::rows::{TABLE_COUNT, TableId};
 use replay_data::{BranchId, Hour, rows::RowCodec, rows::TableRows, rows::TableSchema};
 use replay_frame::{frame::FrameEncoder, frame::TableInput, frame::TableView};
 use std::sync::{Mutex, MutexGuard, PoisonError};
+
+/// Words a [`Witness`] holds.
+pub const WITNESS_WORDS: usize = 9;
+
+/// Writer tokens or held-rows generation of a capture that read and refused
+/// nothing: consecutive captures with equal witnesses published equal rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Witness([u64; WITNESS_WORDS]);
+
+impl Witness {
+    pub fn new<const K: usize>(words: [u64; K]) -> Self {
+        const { assert!(K <= WITNESS_WORDS) };
+        let mut all = [0; WITNESS_WORDS];
+        all[..K].copy_from_slice(&words);
+        Self(all)
+    }
+
+    /// The witness of a capture that published exactly the held rows of `generation`.
+    pub fn generation(generation: u64) -> Self {
+        Self::new([generation])
+    }
+}
+
+/// A held-rows generation no earlier hold in this process had.
+pub fn generation() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The capture of a table's latest complete conversion.
+struct Held {
+    branch: BranchId,
+    hour: Hour,
+    witness: Option<Witness>,
+}
 
 #[derive(Default)]
 struct Ordering {
@@ -26,6 +64,9 @@ struct Ordering {
     updated_rows: u64,
     sorted: u64,
     certified: Option<(BranchId, Hour, u64)>,
+    held: Option<Held>,
+    republished: u64,
+    held_converted: u64,
 }
 
 pub struct ProjectionScratch {
@@ -70,6 +111,17 @@ impl ProjectionScratch {
             sorted: order.sorted,
             capacity_bytes: order.indices.capacity() * std::mem::size_of::<usize>(),
         }
+    }
+
+    /// `table`'s republished and converted hours, cumulative.
+    pub fn republish_counts(&self, table: TableId) -> [u64; 2] {
+        let order = self.table(table);
+        [order.republished, order.held_converted]
+    }
+
+    /// Withdraw `table`'s recorded capture: the next hour converts it.
+    pub fn forget(&self, table: TableId) {
+        self.table(table).held = None;
     }
 
     pub fn status(&self) -> impl serde::Serialize + '_ {
@@ -140,6 +192,48 @@ impl<'a> Projection<'a> {
             force,
             scratch,
         }
+    }
+
+    /// `S` compares equal, unprojected, when the previous hour had this witness.
+    pub fn republish<S: TableSchema>(&self, witness: Option<Witness>) -> Option<TableInput> {
+        let witness = witness?;
+        let mut order = self.scratch.table(S::ID);
+        let order = &mut *order;
+        let held = order.held.as_mut()?;
+        if held.branch != self.branch
+            || held.hour.checked_add(1) != Some(self.hour)
+            || held.witness != Some(witness)
+        {
+            return None;
+        }
+        // The token's frame is the previous hour's; its baseline must be that frame's.
+        let (token, _) =
+            self.encoder
+                .comparison_baseline::<S>(self.branch, self.hour, self.force)?;
+        if self.encoder.committed::<S>()?.0 != held.hour {
+            return None;
+        }
+        held.hour = self.hour;
+        order.republished = order.republished.saturating_add(1);
+        Some(TableInput::ComparedEqual(token))
+    }
+
+    /// Records `table`'s capture for the next hour when `input` names complete rows.
+    pub fn retain(&self, table: TableId, witness: Option<Witness>, input: &TableInput) {
+        let complete = matches!(
+            input,
+            TableInput::Sampled(TableView::Complete(_))
+                | TableInput::SharedComplete(_)
+                | TableInput::ComparedEqual(_)
+                | TableInput::ComparedChanges { .. }
+        );
+        let mut order = self.scratch.table(table);
+        order.held_converted = order.held_converted.saturating_add(1);
+        order.held = complete.then_some(Held {
+            branch: self.branch,
+            hour: self.hour,
+            witness,
+        });
     }
 
     /// Publish only changed certified key ranges when the last capture was
@@ -392,6 +486,25 @@ pub fn project_table<S: TableSchema, T>(
     match projection {
         Some(projection) => projection.table::<S, _>(outcome, source, key, equal, convert),
         None => table::<S, _>(outcome, source, convert).into(),
+    }
+}
+
+/// [`Projection::republish`], else `convert`, recorded by [`Projection::retain`].
+pub fn held_input<'p, S: TableSchema>(
+    projection: Option<&mut Projection<'p>>,
+    witness: Option<Witness>,
+    convert: impl FnOnce(Option<&mut Projection<'p>>) -> TableInput,
+) -> TableInput {
+    match projection {
+        Some(projection) => {
+            if let Some(input) = projection.republish::<S>(witness) {
+                return input;
+            }
+            let input = convert(Some(&mut *projection));
+            projection.retain(S::ID, witness, &input);
+            input
+        }
+        None => convert(None),
     }
 }
 
@@ -744,5 +857,112 @@ mod tests {
                 TableView::Complete(TableRows::VariantDefinitions(rows.to_vec())).into();
             encoder.encode_input(next, false).unwrap();
         }
+    }
+
+    #[test]
+    fn a_witnessed_hour_compares_equal_unprojected_and_any_other_hour_converts() {
+        let mut held_encoder = FrameEncoder::new();
+        let mut ordinary = FrameEncoder::new();
+        let mut held_decoder = FrameDecoder::new();
+        let mut ordinary_decoder = FrameDecoder::new();
+        let scratch = ProjectionScratch::default();
+        let projections = Cell::new(0);
+        let rows = vec![StateRow {
+            id: 1,
+            owner: 2,
+            controller: 3,
+            movement_infrastructure: 0,
+            ..Default::default()
+        }];
+        let frame = |branch, hour, table: TableInput| {
+            let mut frame = input(hour, unavailable("fixture table").into());
+            frame.branch = branch;
+            frame.tables[TableId::States.index()] = table;
+            frame
+        };
+        // The hour's input, and whether it ran the projection.
+        let capture = |encoder: &FrameEncoder, branch, hour, witness| {
+            let before = projections.get();
+            let input = held_input::<tables::States>(
+                Some(&mut Projection::new(encoder, branch, hour, false, &scratch)),
+                witness,
+                |projection| {
+                    projections.set(projections.get() + 1);
+                    scalar_table::<tables::States, _>(
+                        projection,
+                        Outcome::Rows { len: rows.len() },
+                        &rows,
+                        |row| u128::from(row.id),
+                        Clone::clone,
+                    )
+                },
+            );
+            (input, projections.get() != before)
+        };
+        let quiet = Some(Witness::new([7, 11]));
+        let moved = Some(Witness::new([7, 12]));
+        // Branch, hour, the capture's witness, whether its frame commits the
+        // table (None: the frame is dropped; false: the table is refused),
+        // and whether it compares equal unprojected.
+        let hours = [
+            (1, 0, quiet, Some(true), false),
+            (1, 1, quiet, Some(true), true),
+            (1, 2, quiet, Some(true), true),
+            // An hour that read an entry has no witness.
+            (1, 3, None, Some(true), false),
+            // The previous capture had none.
+            (1, 4, quiet, Some(true), false),
+            // A writer moved a token.
+            (1, 5, moved, Some(true), false),
+            (1, 6, moved, Some(true), true),
+            // A gap: hour 7's capture never converted.
+            (1, 8, moved, Some(true), false),
+            // A load starts a branch.
+            (2, 9, moved, Some(true), false),
+            (2, 10, moved, Some(true), true),
+            // The next frame is dropped: the encoder never commits hour 11.
+            (2, 11, moved, None, true),
+            (2, 12, moved, Some(true), false),
+            // A refusal commits no baseline at hour 13.
+            (2, 13, moved, Some(false), true),
+            (2, 14, moved, Some(true), false),
+            (2, 15, moved, Some(true), true),
+        ];
+        for (branch, hour, witness, committed, republished) in hours {
+            let (current, projected) = capture(&held_encoder, branch, hour, witness);
+            assert_eq!(projected, !republished, "hour {hour}");
+            if republished {
+                assert!(
+                    matches!(current, TableInput::ComparedEqual(_)),
+                    "hour {hour}"
+                );
+            }
+            let (held, reference): (TableInput, TableInput) = match committed {
+                None => continue,
+                Some(true) => (
+                    current,
+                    TableView::Complete(TableRows::States(rows.clone())).into(),
+                ),
+                Some(false) => (
+                    unavailable("fixture refusal").into(),
+                    unavailable("fixture refusal").into(),
+                ),
+            };
+            let actual = held_encoder
+                .encode_input(frame(branch, hour, held), false)
+                .unwrap();
+            let expected = ordinary
+                .encode_input(frame(branch, hour, reference), false)
+                .unwrap();
+            assert_eq!(actual, expected, "hour {hour}");
+            let actual: DecodedFrame = held_decoder.apply(&actual).unwrap();
+            assert_eq!(actual, ordinary_decoder.apply(&expected).unwrap());
+        }
+        assert_eq!(scratch.republish_counts(TableId::States), [7, 8]);
+        // A refused or forgotten table converts again.
+        scratch.forget(TableId::States);
+        let (current, projected) = capture(&held_encoder, 2, 16, moved);
+        assert!(projected && matches!(current, TableInput::ComparedEqual(_)));
+        assert_eq!(scratch.republish_counts(TableId::States), [7, 9]);
     }
 }

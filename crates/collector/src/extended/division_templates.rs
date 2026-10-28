@@ -13,7 +13,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
-use collector_projection::projection::{Projection, project_table};
+use collector_projection::projection::{Projection, Witness, held_input, project_table};
 use engine_allocation::{copy_vec, owned_vec};
 use engine_native::{Memory, creferenced_division_template as native, walk::Outcome};
 use replay_data::rows::{
@@ -197,9 +197,12 @@ pub struct Captured {
     /// Each walked template's span of `speed_keys`, by template, ascending;
     /// `None` is its counted refusal.
     speed_spans: Vec<(u64, Option<(usize, usize)>)>,
+    /// Writer tokens unchanged across a capture that read and refused nothing.
+    witness: Option<Witness>,
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.witness = None;
         self.pending_owned = false;
         self.rows
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
@@ -253,10 +256,12 @@ impl Captured {
             locals: Arena::new(capacity.locals),
             speed_keys: Vec::new(),
             speed_spans: Vec::new(),
+            witness: None,
         }
     }
     pub fn reset(&mut self) {
         self.discard_owned();
+        self.witness = None;
         self.preacquired = None;
         self.rows.reset();
         self.bytes.reset();
@@ -459,12 +464,14 @@ impl Captured {
             self.country_cache.forget();
             self.country_snapshot = None;
         }
+        let tokens = (changes.quiet(), changes.core_dependencies());
         self.country_cache.begin();
         self.held.begin();
         self.core.begin();
         self.sample_hour = Some(hour);
         // Carried and read templates.
         let templates: [u64; 2];
+        let speed_refusals: u64;
         // The counter/model inputs, each composition grid's entries and the
         // demanded display-name inputs every hour.
         let mut country_ticks = 0_u64;
@@ -534,7 +541,7 @@ impl Captured {
             self.database.required = walk.required_database;
             self.globals.required = walk.required_database;
             self.locals.required = walk.required_locals;
-            self.capture_speed_keys(memory, base, changes);
+            speed_refusals = self.capture_speed_keys(memory, base, changes);
             if let Some(rows) = self.icon_rows.rows.get(..walk.outcome.len()) {
                 self.held.certify(changes, rows);
                 for row in rows {
@@ -588,6 +595,48 @@ impl Captured {
         );
         self.bytes.len = self.bytes.first.len();
         self.bytes.required = self.bytes.len;
+        let complete = self
+            .outcomes()
+            .iter()
+            .all(|outcome| matches!(outcome, Outcome::Rows { .. }));
+        let held = !force
+            && complete
+            && templates[1] == 0
+            && rereads == 0
+            && speed_refusals == 0
+            && self.model_failures == ModelFailures::default()
+            && !self.country_cache.changed
+            && !self.held.reordered();
+        // The counts catch an unhooked removal; an addition is always read. The
+        // roster digest separates pooled buffers that hold different roster orders.
+        self.witness = match tokens {
+            (Some(quiet), Some(dependencies))
+                if held && (changes.quiet(), changes.core_dependencies()) == tokens =>
+            {
+                let roster = icon_rows.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, row| {
+                    [
+                        row.template,
+                        row.pointer as u64,
+                        u64::from(row.owner),
+                        u64::from(row.settings.roster_ordinal),
+                    ]
+                    .into_iter()
+                    .fold(hash, |hash, word| (hash ^ word).wrapping_mul(0x0100_0000_01b3))
+                });
+                Some(Witness::new([
+                    base as u64,
+                    state as u64,
+                    quiet.0,
+                    quiet.1,
+                    dependencies.0,
+                    dependencies.1,
+                    self.icon_rows.outcome.len() as u64,
+                    self.country_rows.outcome.len() as u64,
+                    roster,
+                ]))
+            }
+            _ => None,
+        };
         [
             qpc().saturating_sub(start).max(0) as u64,
             icons.saturating_sub(country_native_ticks),
@@ -638,13 +687,13 @@ impl Captured {
         }
     }
     /// DivisionTemplateIcons.speed_keys of every walked template, read from
-    /// its template object after the walk.
+    /// its template object after the walk; returns the refused templates.
     fn capture_speed_keys(
         &mut self,
         memory: &impl Memory,
         base: usize,
         changes: &dyn crate::template_changes::Changes,
-    ) {
+    ) -> u64 {
         self.speed_keys.clear();
         self.speed_spans.clear();
         let rows = self
@@ -691,6 +740,7 @@ impl Captured {
         for (total, count) in SPEED_KEY_COUNTS.iter().zip(counts) {
             total.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
         }
+        counts[1]
     }
 
     /// The template's speed keys this hour; `None` is its refusal.
@@ -741,10 +791,15 @@ impl Captured {
         &self,
         mut projection: Option<&mut Projection<'_>>,
     ) -> [TableInput; N] {
+        let witness = self.witness;
         let previous = projection
             .as_deref()
             .and_then(|projection| projection.observed_baseline::<tables::DivisionTemplates>());
-        let dictionary = self.templates(projection.as_deref_mut());
+        let dictionary = held_input::<tables::DivisionTemplates>(
+            projection.as_deref_mut(),
+            witness,
+            |projection| self.templates(projection),
+        );
         let complete;
         let names = match &dictionary {
             TableInput::Sampled(TableView::Complete(rows)) => {
@@ -765,10 +820,12 @@ impl Captured {
             }
             _ => None,
         };
-        let icons = self.icons(projection, names);
-        [
-            dictionary,
-            icons,
+        let icons = held_input::<tables::DivisionTemplateIcons>(
+            projection.as_deref_mut(),
+            witness,
+            |projection| self.icons(projection, names),
+        );
+        let country = held_input::<tables::CountryTemplateState>(projection, witness, |_| {
             if matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
                 self.country_snapshot
                     .as_ref()
@@ -776,8 +833,9 @@ impl Captured {
                     .unwrap_or_else(|| TableInput::Sampled(self.country_state()))
             } else {
                 TableInput::Sampled(self.country_state())
-            },
-        ]
+            }
+        });
+        [dictionary, icons, country]
     }
 
     fn country_state(&self) -> TableView {

@@ -1,6 +1,6 @@
 //! Hourly ordered native inputs with independently bounded owned payloads.
 use crate::{
-    projection::{Projection, project_table},
+    projection::{Projection, Witness, held_input, project_table},
     sampling::qpc,
     spooling::unavailable,
     table_capture::{Arena, CaptureRows},
@@ -76,6 +76,8 @@ pub struct Part {
     /// latest quiet hour matched, the cache unchanged since: a census with
     /// it repeats them without a comparison.
     matched: Option<u64>,
+    /// A quiet hour's scope, portrait revision and roster token.
+    witness: Option<[u64; 6]>,
 }
 impl Part {
     fn new(c: &Capacities) -> Self {
@@ -98,6 +100,7 @@ impl Part {
             plan: crate::snapshot_plan::SnapshotPlan::new(spans, bytes),
             certified: None,
             matched: None,
+            witness: None,
         }
     }
     pub(crate) fn vacant() -> Self {
@@ -108,9 +111,11 @@ impl Part {
             plan: crate::snapshot_plan::SnapshotPlan::new(0, 0),
             certified: None,
             matched: None,
+            witness: None,
         }
     }
     fn reset(&mut self) {
+        self.witness = None;
         self.rows.reset();
         self.arena.reset();
     }
@@ -171,6 +176,7 @@ impl Part {
         let begin = qpc();
         self.reset();
         let before = observer.quiet_revision();
+        let roster = crate::roster_changes::roster();
         let before_any = observer.any_revision();
         let identities = census.and_then(|census| census.rows(context.base, context.game_state));
         let scope = (context.base, context.game_state, part, identities.is_some());
@@ -221,6 +227,19 @@ impl Part {
                     ..Default::default()
                 });
                 crate::portrait_changes::record_planned_part();
+                if quiet
+                    && let (Some(revision), Some(token)) = (before, roster)
+                    && crate::roster_changes::roster() == roster
+                {
+                    self.witness = Some([
+                        context.base as u64,
+                        context.game_state as u64,
+                        revision.0,
+                        revision.1,
+                        token.0,
+                        token.1,
+                    ]);
+                }
             } else {
                 self.rows.outcome = Outcome::Unavailable {
                     reason: "character portrait mutated during acquisition",
@@ -289,6 +308,7 @@ impl Part {
         self.plan.invalidate();
         self.certified = None;
         self.matched = None;
+        self.witness = None;
     }
 }
 
@@ -415,7 +435,30 @@ impl Captured {
         })
     }
 
+    /// Every share was quiet under the same scope, revision and roster token.
+    fn witness(&self) -> Option<Witness> {
+        if self.terminal_failure.is_some() {
+            return None;
+        }
+        let first = self.parts.first()?.witness?;
+        self.parts
+            .iter()
+            .all(|part| part.witness == Some(first))
+            .then(|| Witness::new(first))
+    }
+
     pub(crate) fn table_inputs(&self, projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
+        [held_input::<tables::CharacterPortraits>(
+            projection,
+            self.witness(),
+            |projection| {
+                let [input] = self.projected(projection);
+                input
+            },
+        )]
+    }
+
+    fn projected(&self, projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
         let outcome = self.outcomes()[0];
         if let Outcome::Unavailable { reason } = outcome {
             return [unavailable(reason).into()];

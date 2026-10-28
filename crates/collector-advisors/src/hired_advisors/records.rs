@@ -26,6 +26,10 @@ pub struct Records {
     key: Option<Key>,
     active: Vec<native::ActiveRow>,
     retired: Vec<native::ActiveRow>,
+    /// Names the held walk ([`collector_projection::projection::generation`]).
+    generation: u64,
+    /// The held walk's generation when the latest capture published exactly it.
+    published: Option<u64>,
 }
 
 impl Records {
@@ -34,6 +38,12 @@ impl Records {
         self.key = None;
         self.active.clear();
         self.retired.clear();
+        self.published = None;
+    }
+
+    /// The generation of the held walk the latest capture published, if it published one.
+    pub fn published(&self) -> Option<u64> {
+        self.published
     }
 
     pub fn measure(&self) -> usize {
@@ -52,6 +62,8 @@ impl Records {
             self.active.extend_from_slice(active);
             self.retired.extend_from_slice(retired);
             self.key = Some(key);
+            self.generation = collector_projection::projection::generation();
+            self.published = Some(self.generation);
         }
     }
 }
@@ -72,7 +84,9 @@ pub fn capture(
     let quiet = before.is_some() && before == held.key;
     let mut counts = Counts::default();
     let rows = |active: usize, retired: usize| (active + retired) as u64;
+    held.published = None;
     if quiet && publish(&held.active, active) && publish(&held.retired, retired) {
+        held.published = Some(held.generation);
         counts.reused = 1;
         counts.reused_rows = rows(held.active.len(), held.retired.len());
         crate::advisor_pool_changes::record(Table::CharacterRecords, &counts, None);
@@ -178,15 +192,21 @@ mod tests {
         // The first hour walks and holds the (empty) walk.
         assert_eq!(hour(&mut held), rows(0, 0));
         assert!(held.key.is_some());
+        let first = held.published().unwrap();
         // Held records stand in for the walk's: a quiet hour publishes them,
         // so this hour did not walk.
         held.active.push(record(7, 70));
         held.retired.push(record(7, 71));
         assert_eq!(hour(&mut held), rows(1, 1));
         assert_eq!(hour(&mut held), rows(1, 1));
+        assert_eq!(held.published(), Some(first));
         // A writer moved the pool token: the hour walks and holds its walk.
         domains.pools.fetch_add(1, Relaxed);
         assert_eq!(hour(&mut held), rows(0, 0));
         assert!(held.active.is_empty() && held.retired.is_empty() && held.key.is_some());
+        assert!(
+            held.published()
+                .is_some_and(|generation| generation != first)
+        );
     }
 }

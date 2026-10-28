@@ -146,6 +146,10 @@ struct Tokens {
     certificate: Option<TokenCertificate>,
     rows: Vec<advisor_tokens::Row>,
     bytes: Vec<u8>,
+    /// Names the held table ([`collector_projection::projection::generation`]).
+    generation: u64,
+    /// The held table's generation when the latest walk published exactly it.
+    published: Option<u64>,
 }
 
 /// Hours in a day: AvailableAdvisors reads each pool at one of them.
@@ -200,6 +204,15 @@ impl AdvisorStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn counts(&self) -> (Counts, Counts) {
         (self.counts, self.token_counts)
+    }
+
+    /// Held generations the latest appointed, record and token walks published.
+    pub fn published(&self) -> [Option<u64>; 3] {
+        [
+            self.appointed.published(),
+            self.records.published(),
+            self.tokens.published,
+        ]
     }
 
     /// HiredAdvisors' held walk, after a forgotten store dropped every held
@@ -430,6 +443,7 @@ impl<'a> TokenReuse<'a> {
     pub fn begin(store: &'a mut AdvisorStore, changes: &'a dyn Changes) -> Self {
         store.take_forgotten();
         store.token_counts = Counts::default();
+        store.tokens.published = None;
         Self {
             store,
             changes,
@@ -445,6 +459,7 @@ impl<'a> TokenReuse<'a> {
         let store = self.store;
         if !complete || !(self.carried || self.read == Some(true)) {
             store.tokens.certificate = None;
+            store.tokens.published = None;
         }
         store.measure();
         crate::advisor_pool_changes::record(Table::AdvisorTokens, &store.token_counts, None);
@@ -474,9 +489,10 @@ impl TokenCarry for TokenReuse<'_> {
     }
 
     fn carry(&mut self, rows: &mut [advisor_tokens::Row], bytes: &mut [u8]) {
-        let tokens = &self.store.tokens;
+        let tokens = &mut self.store.tokens;
         rows.copy_from_slice(&tokens.rows);
         bytes.copy_from_slice(&tokens.bytes);
+        tokens.published = Some(tokens.generation);
         self.store.token_counts.reused += 1;
         self.store.token_counts.reused_rows += rows.len() as u64;
         self.carried = true;
@@ -488,6 +504,7 @@ impl TokenCarry for TokenReuse<'_> {
         store.token_counts.read_rows += rows.len() as u64;
         let tokens = &mut store.tokens;
         tokens.certificate = None;
+        tokens.published = None;
         let held = self.certificate.is_some()
             && allocation::advisory(|| {
                 tokens.rows.clear();
@@ -501,6 +518,8 @@ impl TokenCarry for TokenReuse<'_> {
             .is_ok();
         if held {
             tokens.certificate = self.certificate;
+            tokens.generation = collector_projection::projection::generation();
+            tokens.published = Some(tokens.generation);
         }
         self.read = Some(held);
     }
