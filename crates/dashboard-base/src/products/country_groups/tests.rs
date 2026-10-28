@@ -1341,17 +1341,16 @@ fn country_groups_faction_names_keep_all_changes_or_refuse_the_complete_reply() 
         let mut scan = super::scan_branch(&replay, 1, &cancelled).unwrap();
         let faction = scan.factions.get_mut(&1).unwrap();
         // Exercise the complete name history without changing membership histories.
-        let tokens = Arc::clone(&faction.names[0].tokens);
         faction.names = RunHistory::default();
         for hour in 0..count {
             faction.names.push(NameOperands {
-                dictionary: 0,
+                dictionary: None,
                 first_hour: hour as i32,
                 last_hour: hour as i32,
                 literal: format!("{hour}:{tail}").into_bytes(),
                 template_token: None,
                 lexical_read: 0,
-                tokens: Arc::clone(&tokens),
+                tokens: None,
                 template: Err("Faction template not recorded".into()),
             });
         }
@@ -1851,7 +1850,10 @@ fn country_groups_equal_dictionary_reads_share_one_token_index() {
     // The second block reads the dictionary again, which still dates the operands.
     let names: Vec<_> = scan.factions[&5].names.iter().collect();
     assert_eq!(names.len(), 2);
-    assert!(Arc::ptr_eq(&names[0].tokens, &names[1].tokens));
+    let version = |name: &super::NameOperands| name.tokens.as_ref().map(|tokens| tokens.version());
+    assert_eq!(version(names[0]), Some(0));
+    assert_eq!(version(names[1]), Some(0));
+    assert_eq!(scan.continuation.dictionaries.count(), 1);
 }
 
 #[test]
@@ -2462,8 +2464,7 @@ fn prepared_group_roster_continuation_grows_with_changes_not_ten_thousand_hours(
     let mut scan = Scan::new(&replay, 1);
     let evidence = |scan: &Scan| {
         let bytes = scan.saved_bytes().unwrap();
-        let json = zstd::stream::decode_all(bytes.as_slice()).unwrap();
-        let state: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        let (state, _) = Scan::saved_parts(&bytes).unwrap();
         let roster = &state["continuation"]["rosters"];
         assert!(
             roster.is_object(),
@@ -2602,8 +2603,7 @@ fn prepared_groups_snapshot_grows_with_dictionary_changes_not_repeated_reads() {
     }
     prepared.finish(&replay, 1);
     let bytes = prepared.saved_bytes().unwrap();
-    let json = zstd::stream::decode_all(bytes.as_slice()).unwrap();
-    let state: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    let (state, dictionaries) = Scan::saved_parts(&bytes).unwrap();
     assert!(state.get("rosters").is_none());
     assert!(state["continuation"]["lexical_dictionary"].is_null());
     assert!(state["factions"]["5"].get("names").is_none());
@@ -2614,18 +2614,16 @@ fn prepared_groups_snapshot_grows_with_dictionary_changes_not_repeated_reads() {
             .len()
             <= 7
     );
-    let dictionary_rows: usize = state["dictionary_changes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|version| version["Ok"].as_array().map_or(0, Vec::len))
+    let mut input = replay_data::codec::Decoder::new(&dictionaries);
+    let saved = crate::faction_names::DictionaryHistory::decode(&mut input).unwrap();
+    input.finish().unwrap();
+    // Equal rows read again, across both resumes, keep their version.
+    assert_eq!(saved.count(), 5);
+    let base: usize = (1_000..1_512)
+        .map(|token| format!("synthetic_dictionary_entry_{token}").len())
         .sum();
     assert!(
-        dictionary_rows < 550,
-        "unchanged dictionaries must not repeat"
-    );
-    assert!(
-        json.len() < 100_000,
+        dictionaries.len() < 2 * base,
         "only the base dictionary and row changes are saved"
     );
     let restored = Scan::read(bytes.as_slice()).unwrap();
@@ -2703,12 +2701,12 @@ fn reference_prepared_groups_state_size_and_reply_parity() {
         let scan = super::scan_branch(source.replay_ref(), branch.id, &flag).unwrap();
         let bytes = scan.saved_bytes().unwrap();
         println!(
-            "country-groups branch {}: {} compressed JSON state bytes",
+            "country-groups branch {}: {} compressed state bytes",
             branch.id,
             bytes.len()
         );
-        let json = zstd::stream::decode_all(bytes.as_slice()).unwrap();
-        let state: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        let (state, dictionaries) = super::Scan::saved_parts(&bytes).unwrap();
+        let json = serde_json::to_vec(&state).unwrap();
         fn profile(label: &str, value: &serde_json::Value) {
             let json = serde_json::to_vec(value).unwrap();
             let count = match value {
@@ -2743,18 +2741,15 @@ fn reference_prepared_groups_state_size_and_reply_parity() {
                 &serde_json::Value::Array(rows),
             );
         }
-        for (index, version) in state["dictionary_changes"]
-            .as_array()
+        println!(
+            "DICTIONARIES versions={} bytes={}",
+            crate::faction_names::DictionaryHistory::decode(&mut replay_data::codec::Decoder::new(
+                &dictionaries
+            ))
             .unwrap()
-            .iter()
-            .enumerate()
-        {
-            profile(&format!("dictionary_changes[{index}]"), version);
-            println!(
-                "DICTIONARY {index}: changed_or_deleted={}",
-                version["Ok"].as_array().map_or(0, Vec::len)
-            );
-        }
+            .count(),
+            dictionaries.len()
+        );
         let name_runs: usize = state["continuation"]["names"]
             .as_object()
             .unwrap()
@@ -3365,4 +3360,330 @@ fn restored_group_scan_saves_what_continuous_observation_saves() {
             .unwrap()
         },
     );
+}
+
+#[test]
+fn dictionary_versions_read_each_hour_s_rows_and_resume_as_continuous_scans_for_1500_countries() {
+    use super::{Scan, changes::Prepared};
+    use crate::{
+        faction_names::{LexicalNames, template_spelling},
+        prepared::{
+            frame_changes::FrameChangeTracker,
+            series::tests::{Fixture, assert_payloads_equal},
+        },
+    };
+    use replay_data::rows::{FactionMemberRow, FactionRow, LexicalTokenRow, tables};
+    use std::collections::{BTreeMap, BTreeSet};
+    let templates = crate::catalogue::tests::loaded_templates(
+        "pact_a={name={localization_key=NAME ID=token:arg_a}} \
+         pact_b={name={localization_key=NAME ID=token:arg_b}} plain={name=PLAIN}",
+    );
+    let localisation = crate::catalogue::tests::loaded(
+        "l_english:\n NAME:0 \"Pact $ID$\"\n PLAIN:0 \"Plain Pact\"\n",
+    );
+    let dictionary = |hour: i32| {
+        if hour % 17 == 16 {
+            return TableView::Unavailable {
+                reason: "synthetic dictionary gap".into(),
+            };
+        }
+        let phase = hour as u32 / 6;
+        let mut rows: BTreeMap<u32, Vec<u8>> = (10..2_010)
+            .map(|token| (token, format!("entry_{token}").into_bytes()))
+            .chain(
+                [(1, "pact_a"), (2, "pact_b"), (3, "plain")]
+                    .map(|(token, literal)| (token, literal.as_bytes().to_vec())),
+            )
+            .chain((3_000..3_000 + phase).map(|token| (token, format!("late_{token}").into_bytes())))
+            .collect();
+        rows.insert(100 + phase, b"arg_a".to_vec());
+        rows.insert(500 + phase % 3, b"arg_b".to_vec());
+        if phase % 4 == 3 {
+            rows.insert(1_999, b"ARG_B".to_vec());
+        }
+        if phase % 5 == 4 {
+            rows.remove(&(100 + phase));
+        }
+        let rows = TableRows::LexicalTokens(
+            rows.into_iter()
+                .map(|(token, literal)| LexicalTokenRow { token, literal })
+                .collect(),
+        );
+        if hour % 23 == 22 {
+            TableView::Truncated { rows, missing: 2 }
+        } else {
+            TableView::Complete(rows)
+        }
+    };
+    let factions = |hour: i32| {
+        let mut factions = Vec::new();
+        let mut members = Vec::new();
+        for id in 1..=12_u64 {
+            // One founded late and one dissolved; one named literally over its template.
+            if (id == 11 && hour < 20) || (id == 12 && hour >= 40) {
+                continue;
+            }
+            let (name, template_token) = match id % 3 {
+                0 => (format!("Literal {id}").into_bytes(), None),
+                1 => (Vec::new(), Some(1)),
+                _ if id == 8 && hour >= 30 => (b"Renamed eight".to_vec(), Some(2)),
+                _ => (Vec::new(), Some(if id == 5 { 3 } else { 2 })),
+            };
+            factions.push(FactionRow {
+                id,
+                name,
+                template_token,
+                ..Default::default()
+            });
+            // A hundred members each; every ten hours one country moves on.
+            let first = (id as u32 - 1) * 100 + hour as u32 / 10;
+            members.extend(
+                (first..first + 100)
+                    .enumerate()
+                    .map(|(ordinal, country)| FactionMemberRow {
+                        country: 100_000 + country,
+                        faction: id,
+                        ordinal: ordinal as u32,
+                    }),
+            );
+        }
+        members.sort_by_key(|member| member.country);
+        (
+            TableView::Complete(TableRows::Factions(factions)),
+            TableView::Complete(TableRows::FactionMembers(members)),
+        )
+    };
+    let mut frames: Vec<DecodedFrame> = Vec::new();
+    for hour in 0..96 {
+        let mut frame = frames.last().cloned().unwrap_or_else(|| {
+            let mut frame = crate::test_fixtures::scale_frame(1, 0, 1_500);
+            *frame.tables[TableId::HumanControllers.index()] =
+                TableView::Complete(TableRows::HumanControllers(vec![
+                    replay_data::rows::HumanControllerRow {
+                        country: 100_000,
+                        count: 1,
+                    },
+                ]));
+            *frame.tables[TableId::WarRelations.index()] =
+                TableView::Complete(TableRows::WarRelations(Vec::new()));
+            *frame.tables[TableId::Capitulation.index()] =
+                TableView::Complete(TableRows::Capitulation(Vec::new()));
+            frame
+        });
+        frame.hour = 1_000 + hour;
+        // Unchanged tables share the hour before's allocation, as decoded.
+        let (named, members) = factions(hour);
+        for (table, view) in [
+            (TableId::LexicalTokens, dictionary(hour)),
+            (TableId::Factions, named),
+            (TableId::FactionMembers, members),
+        ] {
+            if frames
+                .last()
+                .is_none_or(|last| *last.tables[table.index()] != view)
+            {
+                frame.tables[table.index()] = view.into();
+            }
+        }
+        frames.push(frame);
+    }
+    let source =
+        group_source(Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap());
+    let context = crate::products::LoadContext { content: None };
+    let flag = AtomicBool::new(false);
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut observers = [
+        (Scan::new(source.replay_ref(), 1), Prepared::default()),
+        (Scan::new(source.replay_ref(), 1), Prepared::default()),
+    ];
+    for (ordinal, block) in frames.chunks(8).enumerate() {
+        for ((scan, events), fixture) in observers.iter_mut().zip(&fixtures) {
+            scan.begin_block();
+            let mut tracker = FrameChangeTracker::new();
+            for frame in block {
+                events
+                    .observe_changed(
+                        scan,
+                        frame,
+                        &tracker.observe(frame, source.replay_ref().format),
+                        &source,
+                        &context,
+                    )
+                    .unwrap();
+            }
+            scan.finish(source.replay_ref(), 1);
+            let mut writer = fixture.writer();
+            events.flush(&mut writer, 1, scan, &flag).unwrap();
+            writer
+                .write_at(
+                    "country-groups-1",
+                    0,
+                    scan.saved_bytes().unwrap().as_slice(),
+                )
+                .unwrap();
+            writer
+                .write_at(
+                    "country-group-state-1",
+                    0,
+                    serde_json::to_vec(&*events).unwrap().as_slice(),
+                )
+                .unwrap();
+            writer.commit().unwrap();
+        }
+        assert_payloads_equal(
+            &fixtures[1].payloads(),
+            &fixtures[0].payloads(),
+            &format!("resumed vs continuous after commit {ordinal}"),
+        );
+        let read = |section: &str| {
+            fixtures[1]
+                .store
+                .read(&fixtures[1].key, section, 0)
+                .unwrap()
+                .unwrap()
+        };
+        observers[1] = (
+            Scan::read(read("country-groups-1")).unwrap(),
+            serde_json::from_reader(read("country-group-state-1")).unwrap(),
+        );
+    }
+    let [(continuous, _), (resumed, _)] = observers;
+    let mut read = 0;
+    let mut names = BTreeSet::new();
+    for frame in &frames {
+        let expected = LexicalNames::new(frame.tables[TableId::LexicalTokens.index()].clone());
+        for row in frame.complete::<tables::Factions>().unwrap() {
+            let resolve = |scan: &Scan| {
+                scan.resolved_faction_name_at(
+                    row.id,
+                    frame.hour,
+                    Ok(&templates),
+                    &localisation,
+                    "english",
+                )
+            };
+            let name = resolve(&continuous);
+            assert_eq!(
+                resolve(&resumed),
+                name,
+                "faction {} at {}",
+                row.id,
+                frame.hour
+            );
+            names.insert(name.unwrap_or_else(|reason| reason));
+            let template = template_spelling(frame, row.template_token);
+            for scan in [&continuous, &resumed] {
+                let operands = scan.faction_name_operands(row.id, frame.hour).unwrap();
+                assert_eq!(operands.literal, row.name);
+                // A literal name keeps the template spelled where it began.
+                if row.name.is_empty() {
+                    assert_eq!(
+                        operands.template, template,
+                        "faction {} at {}",
+                        row.id, frame.hour
+                    );
+                }
+                // Only a resolved template holds its hour's dictionary.
+                assert_eq!(
+                    operands.tokens.is_some(),
+                    row.name.is_empty() && matches!(template, Ok(Some(_)))
+                );
+                let Some(tokens) = &operands.tokens else {
+                    continue;
+                };
+                read += 1;
+                for name in [
+                    &b"arg_a"[..],
+                    b"ARG_B",
+                    b"Arg_B",
+                    b"pact_b",
+                    b"entry_1500",
+                    b"",
+                ] {
+                    assert_eq!(
+                        tokens.token_of(name),
+                        expected.token_of(name),
+                        "faction {} at {} reads {}",
+                        row.id,
+                        frame.hour,
+                        String::from_utf8_lossy(name)
+                    );
+                }
+            }
+        }
+    }
+    assert!(read > 1_000);
+    for expected in [
+        "Pact 100",
+        "Pact 502",
+        "Plain Pact",
+        "Literal 3",
+        "Renamed eight",
+    ] {
+        assert!(names.contains(expected), "{expected}: {names:?}");
+    }
+    for reason in [
+        "ARG_B names several lexer tokens",
+        "token arg_a is absent from LexicalTokens",
+        "synthetic dictionary gap",
+        "2 missing rows",
+    ] {
+        assert!(
+            names.iter().any(|name| name.contains(reason)),
+            "{reason}: {names:?}"
+        );
+    }
+    let groups = |scan: &Scan| {
+        serde_json::to_value(scan.faction_groups(
+            Ok(&templates),
+            &localisation,
+            "english",
+            &mut crate::catalogue::Refusals::default(),
+        ))
+        .unwrap()
+    };
+    assert_eq!(groups(&resumed), groups(&continuous));
+    crate::prepared::observer_tests::assert_reply_parity(
+        &resumed.reply(&source, "1", &context).unwrap(),
+        &continuous.reply(&source, "1", &context).unwrap(),
+    )
+    .unwrap();
+    let (_, dictionaries) = Scan::saved_parts(&continuous.saved_bytes().unwrap()).unwrap();
+    let one_table: usize = (10..2_010_u32)
+        .map(|token| format!("entry_{token}").len() + 4)
+        .sum();
+    assert!(continuous.continuation.dictionaries.count() > 16);
+    assert!(dictionaries.len() < 2 * one_table);
+}
+
+#[test]
+fn restored_groups_refuse_dictionary_versions_their_names_did_not_read() {
+    use super::Scan;
+    let frame = template_frame(100, "", Some((17, "demo")));
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame.clone()])]).unwrap();
+    let mut scan = Scan::new(&replay, 1);
+    scan.observe(&frame).unwrap();
+    scan.finish(&replay, 1);
+    let (state, dictionaries) = Scan::saved_parts(&scan.saved_bytes().unwrap()).unwrap();
+    assert_eq!(dictionaries[0], 1, "one version, counted in one byte");
+    let read = |dictionaries: &[u8]| {
+        Scan::read(
+            Scan::saved_from_parts(&state, dictionaries)
+                .unwrap()
+                .as_slice(),
+        )
+    };
+    assert!(read(&dictionaries).is_ok());
+    let mut unread = dictionaries.clone();
+    unread[0] = 2;
+    let mut full = Vec::new();
+    replay_data::codec::put_varint(&mut full, u32::MAX.into());
+    full.push(0);
+    for tampered in [unread, full] {
+        let error = read(&tampered).err().expect("an unread version is refused");
+        assert_eq!(
+            error.to_string(),
+            "Country group dictionaries are not the ones their names read"
+        );
+    }
 }

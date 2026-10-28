@@ -822,21 +822,14 @@ fn prepared_country_groups_query_refuses_missing_and_empty_name_histories() {
             let mut scan = Scan::new(&replay, 1);
             scan.observe(&frame).unwrap();
             scan.finish(&replay, 1);
-            let saved = scan.saved_bytes().unwrap();
-            let mut state: serde_json::Value =
-                serde_json::from_reader(zstd::stream::Decoder::new(saved.as_slice()).unwrap())
-                    .unwrap();
+            let (mut state, dictionaries) = Scan::saved_parts(&scan.saved_bytes().unwrap()).unwrap();
             // Keep the recorded roster and literal, but remove its supplying read.
             state["continuation"]["names"] = if empty_entry {
                 json!({"5":[]})
             } else {
                 json!({})
             };
-            let saved = crate::prepared::series::compress(
-                serde_json::to_vec(&state).unwrap().as_slice(),
-                3,
-            )
-            .unwrap();
+            let saved = Scan::saved_from_parts(&state, &dictionaries).unwrap();
             let mut fixture = Fixture::new(&replay);
             let source = fixture.source("groups-missing-name");
             let (store, key) = super::super::super::files(&source, None).unwrap();

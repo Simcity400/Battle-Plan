@@ -5,11 +5,17 @@ use installed_content_core::{
     gui::native::BoundValue, gui::native::FormattedLocalization,
 };
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
-use replay_data::{rows::TableRows, rows::TableSchema, rows::tables};
+use replay_data::{
+    codec::{Decoder, invalid_static, put_fixed, put_varint},
+    rows::TableRows,
+    rows::TableSchema,
+    rows::tables,
+};
 use replay_frame::{frame::SharedView, frame::TableView};
 use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    collections::{BTreeMap, HashMap},
+    io,
+    sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError},
 };
 
 /// Spell the template operand recorded at this hour. A null template needs no
@@ -70,10 +76,6 @@ pub fn name(
 /// Each folded lexer name to its one token, or why it names none.
 type ReverseIndex = Result<BTreeMap<Vec<u8>, Result<u32, String>>, String>;
 
-/// A dictionary's token rows as changed or deleted from the dictionary saved
-/// before it.
-type SavedChanges = Arc<Vec<(u32, Option<Vec<u8>>)>>;
-
 /// The lexical dictionary behind a name read. Its reverse index is built only
 /// for bound token arguments and shared by factions from the same table read.
 #[derive(Debug)]
@@ -81,9 +83,6 @@ pub struct LexicalNames {
     table: replay_frame::frame::SharedLexical,
     identity: Option<replay_frame::frame::ViewIdentity>,
     names: OnceLock<ReverseIndex>,
-    /// Its changes from the dictionary saved before it (none for the first),
-    /// kept since a history saves every dictionary again at each commit.
-    saved: Mutex<Option<(Option<Weak<LexicalNames>>, SavedChanges)>>,
 }
 
 impl Default for LexicalNames {
@@ -93,20 +92,11 @@ impl Default for LexicalNames {
 }
 
 impl LexicalNames {
-    /// The empty dictionary every saved history starts from. All saves share
-    /// this one allocation, so the first saved dictionary's changes from it
-    /// stay kept between saves.
-    pub fn empty() -> Arc<Self> {
-        static EMPTY: OnceLock<Arc<LexicalNames>> = OnceLock::new();
-        Arc::clone(EMPTY.get_or_init(|| Arc::new(Self::default())))
-    }
-
     pub fn new(table: SharedView) -> Self {
         Self {
             identity: Some(table.identity()),
             table: table.into(),
             names: OnceLock::new(),
-            saved: Mutex::new(None),
         }
     }
 
@@ -115,7 +105,6 @@ impl LexicalNames {
             table: frame.shared_lexical(),
             identity: frame.identity(tables::LexicalTokens::ID.index()),
             names: OnceLock::new(),
-            saved: Mutex::new(None),
         }
     }
     fn recorded(
@@ -137,11 +126,6 @@ impl LexicalNames {
         self.identity
             .as_ref()
             .is_some_and(|identity| identity.is(table))
-    }
-
-    /// Whether `table` holds this dictionary's rows, from whichever read.
-    pub fn holds(&self, table: &SharedView) -> bool {
-        self.table.holds(table)
     }
 
     pub fn token_of(&self, name: &[u8]) -> Result<Option<u32>, String> {
@@ -175,145 +159,385 @@ impl LexicalNames {
     }
 }
 
-/// Persist historical dictionaries as changed/deleted token rows, not full copies.
-pub mod dictionary_history {
-    use super::*;
-    use replay_data::rows::LexicalTokenRow;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+/// Every complete dictionary names read, as versions sharing unchanged spellings.
+#[derive(Clone, Default)]
+pub struct DictionaryHistory {
+    shared: Arc<Mutex<Versions>>,
+    /// The versions this holder added or read; a clone may have added more.
+    count: u32,
+}
 
-    type Changes<T> = Result<Vec<(u32, Option<T>)>, String>;
+#[derive(Clone)]
+pub struct HistoricalDictionary {
+    shared: Arc<Mutex<Versions>>,
+    version: u32,
+}
 
-    #[cfg(test)]
-    thread_local! {
-        /// Dictionaries whose changes were computed on this thread.
-        pub(super) static COMPUTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+/// Each version that changed a token, with its new literal or none once deleted.
+type Spellings = Vec<(u32, Option<Box<[u8]>>)>;
+
+#[derive(Default)]
+struct Versions {
+    count: u32,
+    spellings: BTreeMap<u32, Spellings>,
+    /// Built by the first lookup.
+    folded: Option<HashMap<Box<[u8]>, Folded>>,
+}
+
+/// The tokens one folded name spells now, and what it named from each version on.
+#[derive(Default)]
+struct Folded {
+    tokens: Vec<u32>,
+    outcomes: Vec<(u32, Outcome)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    None,
+    One(u32),
+    /// The highest token: a table's last row of that name is the one refused.
+    Several(u32),
+}
+
+/// A token whose folded name changed at a version.
+type Refold = (u32, Option<Box<[u8]>>, Option<Box<[u8]>>);
+
+impl std::fmt::Debug for DictionaryHistory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DictionaryHistory")
+            .field("count", &self.count)
+            .finish_non_exhaustive()
     }
+}
 
-    /// Each dictionary's changes from the complete one before it. A history
-    /// only grows, so each dictionary's changes are computed once and kept
-    /// with it, rather than every dictionary being compared again at every
-    /// save.
-    pub fn serialize<S: Serializer>(
-        dictionaries: &[Arc<LexicalNames>],
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        let mut previous: Option<&Arc<LexicalNames>> = None;
-        let mut kept = Vec::with_capacity(dictionaries.len());
-        for dictionary in dictionaries {
-            use replay_frame::frame::OperandStatus;
-            kept.push(match dictionary.table.status() {
-                OperandStatus::Complete => {
-                    let changes = changes_from(dictionary, dictionary.table.rows(), previous);
-                    previous = Some(dictionary);
-                    Ok(changes)
-                }
-                OperandStatus::Unavailable(reason) => Err(reason.to_owned()),
-                OperandStatus::Truncated(missing) | OperandStatus::TruncatedWrongLayout(missing) => Err(format!("{missing} rows missing")),
-                _ => {
-                    return Err(serde::ser::Error::custom(
-                        "LexicalTokens has the wrong table layout",
-                    ));
-                }
-            });
-        }
-        let versions: Vec<Changes<&[u8]>> = kept
-            .iter()
-            .map(|version| match version {
-                Ok(changes) => Ok(changes
-                    .iter()
-                    .map(|(token, literal)| (*token, literal.as_deref()))
-                    .collect()),
-                Err(reason) => Err(reason.clone()),
-            })
-            .collect();
-        versions.serialize(serializer)
+impl std::fmt::Debug for HistoricalDictionary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistoricalDictionary")
+            .field("version", &self.version)
+            .finish_non_exhaustive()
     }
+}
 
-    /// `dictionary`'s rows as changed or deleted from `previous`'s, kept on
-    /// the dictionary for the same `previous`.
-    fn changes_from(
-        dictionary: &LexicalNames,
-        rows: replay_frame::frame::Rows<'_, LexicalTokenRow>,
-        previous: Option<&Arc<LexicalNames>>,
-    ) -> SavedChanges {
-        let mut saved = dictionary
-            .saved
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some((from, changes)) = saved.as_ref()
-            && match (from, previous) {
-                // The weak handle keeps the earlier dictionary's allocation
-                // reserved, so an equal address is that dictionary.
-                (Some(from), Some(previous)) => from.as_ptr() == Arc::as_ptr(previous),
-                (None, None) => true,
-                _ => false,
-            }
-        {
-            return Arc::clone(changes);
-        }
+#[cfg(test)]
+thread_local! {
+    static SEARCHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn search<T>(items: &[T], before: impl Fn(&T) -> bool) -> usize {
+    items.partition_point(|item| {
         #[cfg(test)]
-        COMPUTED.with(|computed| computed.set(computed.get() + 1));
-        let before: BTreeMap<u32, &[u8]> = previous
-            .filter(|previous| previous.table.status().is_complete())
-            .map_or_else(BTreeMap::new, |previous| {
-                previous
-                    .table
-                    .rows()
-                    .iter()
-                    .map(|row| (row.token, row.literal.as_slice()))
-                    .collect()
-            });
-        let current: BTreeMap<_, _> = rows
+        SEARCHED.with(|searched| searched.set(searched.get() + 1));
+        before(item)
+    })
+}
+
+fn lock(shared: &Mutex<Versions>) -> MutexGuard<'_, Versions> {
+    shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn fold(literal: Option<&[u8]>) -> Option<Box<[u8]>> {
+    literal.map(|literal| literal.to_ascii_lowercase().into_boxed_slice())
+}
+
+fn spelling_at(spellings: &Spellings, version: u32) -> Option<&[u8]> {
+    let set = search(spellings, |(from, _)| *from <= version);
+    spellings.get(set.checked_sub(1)?)?.1.as_deref()
+}
+
+fn held(spellings: &Spellings, count: u32) -> &[(u32, Option<Box<[u8]>>)] {
+    &spellings[..spellings.partition_point(|(version, _)| *version < count)]
+}
+
+/// Moves each token between its old and new folded names at `version`.
+fn refold(folded: &mut HashMap<Box<[u8]>, Folded>, version: u32, changes: Vec<Refold>) {
+    let mut touched = Vec::new();
+    for (token, old, new) in changes {
+        if old == new {
+            continue;
+        }
+        if let Some(old) = old {
+            let name = folded.get_mut(&old).expect("an indexed spelling");
+            if let Ok(at) = name.tokens.binary_search(&token) {
+                name.tokens.remove(at);
+            }
+            touched.push(old);
+        }
+        if let Some(new) = new {
+            let name = folded.entry(new.clone()).or_default();
+            if let Err(at) = name.tokens.binary_search(&token) {
+                name.tokens.insert(at, token);
+            }
+            touched.push(new);
+        }
+    }
+    touched.sort();
+    touched.dedup();
+    for name in touched {
+        let name = folded.get_mut(&name).expect("a touched name");
+        let outcome = match name.tokens.as_slice() {
+            [] => Outcome::None,
+            [token] => Outcome::One(*token),
+            [.., last] => Outcome::Several(*last),
+        };
+        if name.outcomes.last().map(|(_, last)| *last) != Some(outcome) {
+            name.outcomes.push((version, outcome));
+        }
+    }
+}
+
+impl Versions {
+    fn prefix(&self, count: u32) -> Self {
+        Self {
+            count,
+            spellings: self
+                .spellings
+                .iter()
+                .map(|(token, spellings)| (*token, held(spellings, count).to_vec()))
+                .filter(|(_, spellings)| !spellings.is_empty())
+                .collect(),
+            folded: None,
+        }
+    }
+
+    fn index(&mut self) -> &HashMap<Box<[u8]>, Folded> {
+        let Self {
+            spellings, folded, ..
+        } = self;
+        folded.get_or_insert_with(|| {
+            let mut changes: Vec<(u32, Refold)> = Vec::new();
+            for (token, spellings) in spellings.iter() {
+                let mut old = None;
+                for (version, literal) in spellings {
+                    let new = fold(literal.as_deref());
+                    changes.push((*version, (*token, old, new.clone())));
+                    old = new;
+                }
+            }
+            changes.sort_by_key(|(version, (token, ..))| (*version, *token));
+            let mut folded = HashMap::new();
+            let mut changes = changes.into_iter().peekable();
+            while let Some((version, first)) = changes.next() {
+                let mut at = vec![first];
+                while let Some((_, change)) = changes.next_if(|(next, _)| *next == version) {
+                    at.push(change);
+                }
+                refold(&mut folded, version, at);
+            }
+            folded
+        })
+    }
+}
+
+impl DictionaryHistory {
+    /// `table` as the next version, when complete; equal rows read again are another.
+    pub fn add(&mut self, table: &SharedView) -> io::Result<Option<HistoricalDictionary>> {
+        let TableView::Complete(TableRows::LexicalTokens(rows)) = &**table else {
+            return Ok(None);
+        };
+        let mut next: Vec<(u32, &[u8])> = rows
             .iter()
             .map(|row| (row.token, row.literal.as_slice()))
             .collect();
-        let mut changes: Vec<_> = current
-            .iter()
-            .filter(|(token, literal)| before.get(*token) != Some(*literal))
-            .map(|(token, literal)| (*token, Some(literal.to_vec())))
-            .collect();
-        changes.extend(
-            before
-                .keys()
-                .filter(|token| !current.contains_key(*token))
-                .map(|token| (*token, None)),
-        );
-        let changes = Arc::new(changes);
-        *saved = Some((previous.map(Arc::downgrade), Arc::clone(&changes)));
-        changes
+        if !next.is_sorted_by(|left, right| left.0 < right.0) {
+            next = next.into_iter().collect::<BTreeMap<_, _>>().into_iter().collect();
+        }
+        let mut versions = lock(&self.shared);
+        if versions.count != self.count {
+            let own = versions.prefix(self.count);
+            drop(versions);
+            self.shared = Arc::new(Mutex::new(own));
+            versions = lock(&self.shared);
+        }
+        let version = versions.count;
+        let count = version
+            .checked_add(1)
+            .ok_or_else(|| invalid_static("dictionary versions exceed u32"))?;
+        let Versions {
+            spellings, folded, ..
+        } = &mut *versions;
+        let mut changes = Vec::new();
+        let mut rows = next.iter().copied().peekable();
+        let mut added = Vec::new();
+        for (token, spellings) in spellings.iter_mut() {
+            while let Some(row) = rows.next_if(|(new, _)| new < token) {
+                added.push(row);
+            }
+            let now = rows.next_if(|(new, _)| new == token).map(|(_, literal)| literal);
+            let before = spellings.last().and_then(|(_, literal)| literal.as_deref());
+            if before != now {
+                if folded.is_some() {
+                    changes.push((*token, fold(before), fold(now)));
+                }
+                spellings.push((version, now.map(Box::from)));
+            }
+        }
+        added.extend(rows);
+        for (token, literal) in added {
+            spellings.insert(token, vec![(version, Some(Box::from(literal)))]);
+            if folded.is_some() {
+                changes.push((token, None, fold(Some(literal))));
+            }
+        }
+        if let Some(folded) = folded {
+            refold(folded, version, changes);
+        }
+        versions.count = count;
+        self.count = count;
+        Ok(Some(HistoricalDictionary {
+            shared: Arc::clone(&self.shared),
+            version,
+        }))
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Vec<Arc<LexicalNames>>, D::Error> {
-        let versions = Vec::<Changes<Vec<u8>>>::deserialize(deserializer)?;
-        let mut rows = BTreeMap::new();
-        Ok(versions
-            .into_iter()
-            .map(|version| {
-                let table = match version {
-                    Ok(changes) => {
-                        for (token, literal) in changes {
-                            if let Some(literal) = literal {
-                                rows.insert(token, literal);
-                            } else {
-                                rows.remove(&token);
-                            }
-                        }
-                        TableView::Complete(TableRows::LexicalTokens(
-                            rows.iter()
-                                .map(|(token, literal)| replay_data::rows::LexicalTokenRow {
-                                    token: *token,
-                                    literal: literal.clone(),
-                                })
-                                .collect(),
-                        ))
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+
+    pub fn version(&self, version: u32) -> Option<HistoricalDictionary> {
+        (version < self.count).then(|| HistoricalDictionary {
+            shared: Arc::clone(&self.shared),
+            version,
+        })
+    }
+
+    /// Token by token, each spelling and the version that set it.
+    pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        let versions = lock(&self.shared);
+        let tokens = || {
+            versions
+                .spellings
+                .iter()
+                .map(|(token, spellings)| (*token, held(spellings, self.count)))
+                .filter(|(_, spellings)| !spellings.is_empty())
+        };
+        put_varint(out, self.count.into());
+        put_varint(out, tokens().count() as u128);
+        let mut previous_token = None;
+        for (token, spellings) in tokens() {
+            put_varint(out, gap(previous_token, token));
+            previous_token = Some(token);
+            put_varint(out, spellings.len() as u128);
+            let mut previous_version = None;
+            for (version, literal) in spellings {
+                put_varint(out, gap(previous_version, *version));
+                previous_version = Some(*version);
+                match literal {
+                    None => put_varint(out, 0),
+                    Some(literal) => {
+                        put_varint(out, literal.len() as u128 + 1);
+                        put_fixed(out, literal)?;
                     }
-                    Err(reason) => TableView::Unavailable { reason },
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        let count = u32::try_from(input.varint()?)
+            .map_err(|_| invalid_static("dictionary versions exceed u32"))?;
+        let tokens = bounded(input.varint()?, input.remaining() / 3)?;
+        let mut spellings = BTreeMap::new();
+        let mut previous_token = None;
+        for _ in 0..tokens {
+            let token = after(previous_token, input.varint()?)?;
+            previous_token = Some(token);
+            let entries = bounded(input.varint()?, input.remaining() / 2)?;
+            let mut history: Spellings = Vec::with_capacity(entries);
+            let mut previous_version = None;
+            for _ in 0..entries {
+                let version = after(previous_version, input.varint()?)?;
+                previous_version = Some(version);
+                let literal = match input.varint()? {
+                    0 => None,
+                    length => Some(Box::from(input.take(bounded(length - 1, usize::MAX)?)?)),
                 };
-                Arc::new(LexicalNames::new(table.into()))
+                if version >= count
+                    || history
+                        .last()
+                        .map_or(literal.is_none(), |(_, last)| *last == literal)
+                {
+                    return Err(invalid_static("dictionary spellings are not canonical"));
+                }
+                history.push((version, literal));
+            }
+            if history.is_empty() {
+                return Err(invalid_static("dictionary token has no spelling"));
+            }
+            spellings.insert(token, history);
+        }
+        Ok(Self {
+            shared: Arc::new(Mutex::new(Versions {
+                count,
+                spellings,
+                folded: None,
+            })),
+            count,
+        })
+    }
+}
+
+fn gap(previous: Option<u32>, next: u32) -> u128 {
+    u128::from(previous.map_or(next, |previous| next - previous - 1))
+}
+
+fn after(previous: Option<u32>, gap: u128) -> io::Result<u32> {
+    previous
+        .map_or(Some(gap), |previous| {
+            u128::from(previous).checked_add(1)?.checked_add(gap)
+        })
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| invalid_static("dictionary key exceeds u32"))
+}
+
+fn bounded(value: u128, limit: usize) -> io::Result<usize> {
+    usize::try_from(value)
+        .ok()
+        .filter(|value| *value <= limit)
+        .ok_or_else(|| invalid_static("dictionary length exceeds remaining payload"))
+}
+
+impl HistoricalDictionary {
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
+    /// Whether `table` holds exactly this version's rows.
+    pub fn spells(&self, table: &SharedView) -> bool {
+        let TableView::Complete(TableRows::LexicalTokens(rows)) = &**table else {
+            return false;
+        };
+        let versions = lock(&self.shared);
+        let mut rows = rows.iter();
+        versions.spellings.iter().all(|(token, spellings)| {
+            spelling_at(spellings, self.version).is_none_or(|literal| {
+                rows.next()
+                    .is_some_and(|row| row.token == *token && row.literal == literal)
             })
-            .collect())
+        }) && rows.next().is_none()
+    }
+
+    /// [`LexicalNames::token_of`] on this version's rows.
+    pub fn token_of(&self, name: &[u8]) -> Result<Option<u32>, String> {
+        let mut versions = lock(&self.shared);
+        let outcome = versions
+            .index()
+            .get(&*name.to_ascii_lowercase())
+            .and_then(|name| {
+                let set = search(&name.outcomes, |(from, _)| *from <= self.version);
+                Some(name.outcomes[set.checked_sub(1)?].1)
+            });
+        match outcome {
+            None | Some(Outcome::None) => Ok(None),
+            Some(Outcome::One(token)) => Ok(Some(token)),
+            Some(Outcome::Several(token)) => Err(format!(
+                "{} names several lexer tokens",
+                String::from_utf8_lossy(
+                    spelling_at(&versions.spellings[&token], self.version)
+                        .expect("a spelled token")
+                )
+            )),
+        }
     }
 }
 
@@ -525,95 +749,311 @@ mod tests {
         );
     }
 
-    #[test]
-    fn dictionary_histories_compute_each_dictionarys_changes_once_across_saves() {
-        #[derive(serde::Serialize, serde::Deserialize)]
-        struct Saved {
-            #[serde(with = "dictionary_history")]
-            history: Vec<Arc<LexicalNames>>,
-        }
-        let row = |token, literal: &[u8]| replay_data::rows::LexicalTokenRow {
-            token,
-            literal: literal.to_vec(),
-        };
-        let dictionary = |rows| {
-            Arc::new(LexicalNames::new(
-                TableView::Complete(TableRows::LexicalTokens(rows)).into(),
-            ))
-        };
-        let saved = Saved {
-            history: vec![
-                dictionary(vec![row(1, b"a"), row(2, b"b")]),
-                Arc::new(LexicalNames::new(
-                    TableView::Unavailable {
-                        reason: "gap".into(),
-                    }
-                    .into(),
-                )),
-                dictionary(vec![row(1, b"a"), row(2, b"B"), row(3, b"c")]),
-                dictionary(vec![row(2, b"B"), row(3, b"c")]),
-            ],
-        };
-        dictionary_history::COMPUTED.with(|computed| computed.set(0));
-        let first = serde_json::to_vec(&saved).unwrap();
-        let second = serde_json::to_vec(&saved).unwrap();
-        assert_eq!(first, second);
-        // Each complete dictionary is compared once with the one before it.
-        assert_eq!(dictionary_history::COMPUTED.with(std::cell::Cell::get), 3);
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&first).unwrap()["history"],
-            serde_json::json!([
-                {"Ok": [[1, [97]], [2, [98]]]},
-                {"Err": "gap"},
-                {"Ok": [[2, [66]], [3, [99]]]},
-                {"Ok": [[1, null]]}
-            ])
-        );
-        let restored: Saved = serde_json::from_slice(&first).unwrap();
-        assert_eq!(restored.history.len(), saved.history.len());
-        for (restored, original) in restored.history.iter().zip(&saved.history) {
-            assert_eq!(restored.table.status(), original.table.status());
-            assert_eq!(restored.table.rows(), original.table.rows());
+    fn lexical_table(rows: impl IntoIterator<Item = (u32, Vec<u8>)>) -> SharedView {
+        TableView::Complete(TableRows::LexicalTokens(
+            rows.into_iter()
+                .map(|(token, literal)| replay_data::rows::LexicalTokenRow { token, literal })
+                .collect(),
+        ))
+        .into()
+    }
+
+    fn table_rows(table: &SharedView) -> &[replay_data::rows::LexicalTokenRow] {
+        match &**table {
+            TableView::Complete(TableRows::LexicalTokens(rows)) => rows,
+            _ => &[],
         }
     }
 
+    fn encoded(history: &DictionaryHistory) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        history.encode(&mut bytes).unwrap();
+        bytes
+    }
+
     #[test]
-    fn saved_histories_rebuilt_from_the_shared_empty_dictionary_keep_every_change() {
-        let row = |token, literal: &[u8]| replay_data::rows::LexicalTokenRow {
-            token,
-            literal: literal.to_vec(),
-        };
-        let dictionary = |rows| {
-            Arc::new(LexicalNames::new(
-                TableView::Complete(TableRows::LexicalTokens(rows)).into(),
-            ))
-        };
-        let first = dictionary(vec![row(1, b"a"), row(2, b"b")]);
-        let second = dictionary(vec![row(1, b"a"), row(2, b"B")]);
-        // A save lists the dictionaries again each time, starting from the
-        // empty one, as the country groups' saved state does.
-        let save = || {
-            #[derive(serde::Serialize)]
-            struct Saved {
-                #[serde(with = "dictionary_history")]
-                history: Vec<Arc<LexicalNames>>,
+    fn historical_dictionaries_resolve_every_name_as_their_table_reads_do() {
+        fn random(seed: &mut u64, bound: usize) -> usize {
+            *seed ^= *seed << 13;
+            *seed ^= *seed >> 7;
+            *seed ^= *seed << 17;
+            (*seed % bound as u64) as usize
+        }
+        fn spelling(seed: &mut u64, token: u32, version: usize) -> Vec<u8> {
+            if random(seed, 2) == 0 {
+                return format!("unique_{token}_{version}").into_bytes();
             }
-            serde_json::to_vec(&Saved {
-                history: vec![LexicalNames::empty(), first.clone(), second.clone()],
-            })
-            .unwrap()
+            // A few words in any case, so tokens share folded names.
+            let mut word = format!("word{}", random(seed, 24)).into_bytes();
+            for byte in &mut word {
+                if random(seed, 2) == 0 {
+                    byte.make_ascii_uppercase();
+                }
+            }
+            word
+        }
+        let check = |read: &[(SharedView, HistoricalDictionary)]| {
+            let names: std::collections::BTreeSet<Vec<u8>> = (0..24)
+                .flat_map(|word| [format!("word{word}"), format!("WORD{word}")])
+                .map(String::into_bytes)
+                .chain([b"absent".to_vec(), Vec::new()])
+                .chain(read.iter().flat_map(|(table, _)| {
+                    table_rows(table).iter().map(|row| row.literal.clone())
+                }))
+                .collect();
+            let mut outcomes = [0; 3];
+            for (table, dictionary) in read {
+                let expected = LexicalNames::new(table.clone());
+                for name in &names {
+                    let resolved = dictionary.token_of(name);
+                    assert_eq!(
+                        resolved,
+                        expected.token_of(name),
+                        "{}",
+                        String::from_utf8_lossy(name)
+                    );
+                    outcomes[match resolved {
+                        Ok(None) => 0,
+                        Ok(Some(_)) => 1,
+                        Err(_) => 2,
+                    }] += 1;
+                }
+            }
+            assert!(outcomes.iter().all(|count| *count > 0), "{outcomes:?}");
         };
-        assert!(Arc::ptr_eq(&LexicalNames::empty(), &LexicalNames::empty()));
-        dictionary_history::COMPUTED.with(|computed| computed.set(0));
-        let before = save();
-        let computed = dictionary_history::COMPUTED.with(std::cell::Cell::get);
-        assert!(computed > 0);
-        assert_eq!(save(), before);
-        assert_eq!(
-            dictionary_history::COMPUTED.with(std::cell::Cell::get),
-            computed,
-            "a later save computes no dictionary's changes again"
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut rows: BTreeMap<u32, Vec<u8>> = (0..300)
+            .map(|token| (token * 3, spelling(&mut seed, token * 3, 0)))
+            .collect();
+        let mut history = DictionaryHistory::default();
+        let mut read = Vec::new();
+        for version in 0..48 {
+            // Equal rows read again are a version too.
+            for _ in 0..random(&mut seed, 6) * usize::from(version > 0) {
+                let present: Vec<u32> = rows.keys().copied().collect();
+                let token = present[random(&mut seed, present.len())];
+                match random(&mut seed, 4) {
+                    0 => {
+                        rows.remove(&token);
+                    }
+                    1 => {
+                        let literal = rows[&token].to_ascii_uppercase();
+                        rows.insert(token, literal);
+                    }
+                    2 => {
+                        rows.insert(token, spelling(&mut seed, token, version));
+                    }
+                    _ => {
+                        let token = random(&mut seed, 1_200) as u32;
+                        rows.insert(token, spelling(&mut seed, token, version));
+                    }
+                }
+            }
+            let table = lexical_table(rows.clone());
+            let dictionary = history.add(&table).unwrap().unwrap();
+            assert_eq!(dictionary.version(), version as u32);
+            read.push((table, dictionary));
+            if version == 20 {
+                // Lookups build the folded index; later versions extend it.
+                check(&read);
+            }
+        }
+        check(&read);
+        for pair in read.windows(2) {
+            assert!(pair[0].1.spells(&pair[0].0));
+            assert_eq!(pair[0].1.spells(&pair[1].0), pair[0].0 == pair[1].0);
+            assert_eq!(pair[1].1.spells(&pair[0].0), pair[0].0 == pair[1].0);
+        }
+        assert!(
+            !read[0].1.spells(
+                &TableView::Unavailable {
+                    reason: "gap".into()
+                }
+                .into()
+            )
         );
+        let saved = encoded(&history);
+        let one_table: usize = table_rows(&read[0].0)
+            .iter()
+            .map(|row| row.literal.len() + 2)
+            .sum();
+        assert!(
+            saved.len() < 4 * one_table,
+            "a version costs its changes, not its rows"
+        );
+        let mut input = Decoder::new(&saved);
+        let restored = DictionaryHistory::decode(&mut input).unwrap();
+        input.finish().unwrap();
+        assert_eq!(restored.count(), 48);
+        assert!(restored.version(48).is_none());
+        assert_eq!(encoded(&restored), saved);
+        check(
+            &read
+                .iter()
+                .map(|(table, dictionary)| {
+                    (
+                        table.clone(),
+                        restored.version(dictionary.version()).unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn holders_adding_after_another_keep_their_own_versions() {
+        let table = |rows: &[(u32, &str)]| {
+            lexical_table(
+                rows.iter()
+                    .map(|(token, literal)| (*token, literal.as_bytes().to_vec())),
+            )
+        };
+        let base = [
+            table(&[(1, "a"), (2, "b")]),
+            table(&[(1, "a"), (2, "B"), (3, "c")]),
+        ];
+        let mut first = DictionaryHistory::default();
+        let kept: Vec<_> = base
+            .iter()
+            .map(|table| first.add(table).unwrap().unwrap())
+            .collect();
+        let untouched = first.clone();
+        let mut second = first.clone();
+        let left = table(&[(2, "x"), (3, "c")]);
+        let right = table(&[(1, "x"), (4, "X")]);
+        let from_first = first.add(&left).unwrap().unwrap();
+        let from_second = second.add(&right).unwrap().unwrap();
+        assert_eq!((from_first.version(), from_second.version()), (2, 2));
+        assert_eq!(from_first.token_of(b"X"), Ok(Some(2)));
+        assert_eq!(
+            from_second.token_of(b"x"),
+            Err("X names several lexer tokens".into())
+        );
+        assert_eq!(kept[1].token_of(b"b"), Ok(Some(2)));
+        assert!(kept[1].spells(&base[1]) && from_first.spells(&left) && from_second.spells(&right));
+        for (holder, last) in [
+            (&untouched, None),
+            (&first, Some(&left)),
+            (&second, Some(&right)),
+        ] {
+            let mut fresh = DictionaryHistory::default();
+            for table in base.iter().chain(last) {
+                fresh.add(table).unwrap();
+            }
+            assert_eq!(encoded(holder), encoded(&fresh));
+        }
+        assert!(
+            DictionaryHistory::default()
+                .add(
+                    &TableView::Unavailable {
+                        reason: "gap".into()
+                    }
+                    .into()
+                )
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn lookups_search_each_name_s_outcomes_however_often_its_tokens_respell() {
+        let mut history = DictionaryHistory::default();
+        let read: Vec<_> = (0..4_096_u32)
+            .map(|version| {
+                let seven: &[u8] = match version % 3 {
+                    0 => b"arg",
+                    1 => b"ARG",
+                    _ => b"other",
+                };
+                let mut rows = vec![(7, seven.to_vec())];
+                if version % 5 == 0 {
+                    rows.push((9, b"Arg".to_vec()));
+                }
+                let table = lexical_table(rows);
+                let dictionary = history.add(&table).unwrap().unwrap();
+                (table, dictionary)
+            })
+            .collect();
+        let _ = read[0].1.token_of(b"arg");
+        SEARCHED.with(|searched| searched.set(0));
+        let mut lookups = 0;
+        for (table, dictionary) in &read {
+            let expected = LexicalNames::new(table.clone());
+            for name in [&b"arg"[..], b"OTHER", b"absent"] {
+                assert_eq!(dictionary.token_of(name), expected.token_of(name));
+                lookups += 1;
+            }
+        }
+        // Two binary searches of at most 4,096 entries per lookup.
+        let searched = SEARCHED.with(std::cell::Cell::get);
+        assert!(searched <= lookups * 2 * 13, "{searched} for {lookups}");
+    }
+
+    #[test]
+    fn decoded_histories_refuse_truncation_long_literals_overflowing_gaps_and_a_full_count() {
+        let mut history = DictionaryHistory::default();
+        for rows in [
+            vec![(3, b"a".to_vec()), (u32::MAX, b"top".to_vec())],
+            vec![(3, b"b".to_vec())],
+        ] {
+            history.add(&lexical_table(rows)).unwrap().unwrap();
+        }
+        let saved = encoded(&history);
+        assert!(DictionaryHistory::decode(&mut Decoder::new(&saved)).is_ok());
+        for cut in 0..saved.len() {
+            assert!(
+                DictionaryHistory::decode(&mut Decoder::new(&saved[..cut])).is_err(),
+                "{cut}"
+            );
+        }
+        let decode = |values: &[u128]| {
+            let mut bytes = Vec::new();
+            for value in values {
+                put_varint(&mut bytes, *value);
+            }
+            DictionaryHistory::decode(&mut Decoder::new(&bytes))
+        };
+        let top = u128::from(u32::MAX);
+        // Literal bytes below 0x80 are their own varints: 97 is `a`.
+        assert!(decode(&[1, 1, 5, 1, 0, 2, 97]).is_ok());
+        assert!(decode(&[1, 1, 5, 1, 0, 9, 97, 97]).is_err());
+        assert!(decode(&[1, 1, 5, 1_000, 0, 2, 97]).is_err());
+        assert!(decode(&[1, 1, top + 1, 1, 0, 2, 97]).is_err());
+        assert!(decode(&[1, 2, 5, 1, 0, 2, 97, top, 1, 0, 2, 97]).is_err());
+        assert!(decode(&[2, 1, 5, 2, 0, 2, 97, top, 0]).is_err());
+        assert!(decode(&[top + 1, 0]).is_err());
+        let mut full = decode(&[top, 0]).unwrap();
+        let before = encoded(&full);
+        assert!(full.add(&lexical_table([(1, b"a".to_vec())])).is_err());
+        assert_eq!(full.count(), u32::MAX);
+        assert_eq!(encoded(&full), before);
+    }
+
+    #[test]
+    fn decoded_dictionary_histories_refuse_spellings_that_change_nothing() {
+        let decode = |count: u128, entries: &[Option<&[u8]>]| {
+            let mut bytes = Vec::new();
+            for value in [count, 1, 7, entries.len() as u128] {
+                put_varint(&mut bytes, value);
+            }
+            for literal in entries {
+                put_varint(&mut bytes, 0);
+                match literal {
+                    None => put_varint(&mut bytes, 0),
+                    Some(literal) => {
+                        put_varint(&mut bytes, literal.len() as u128 + 1);
+                        bytes.extend_from_slice(literal);
+                    }
+                }
+            }
+            DictionaryHistory::decode(&mut Decoder::new(&bytes)).map(|history| history.count())
+        };
+        let a = Some(&b"a"[..]);
+        assert_eq!(decode(2, &[a, None]).unwrap(), 2);
+        // Deleted before spelled, spelled again unchanged, or past the versions.
+        assert!(decode(1, &[None]).is_err());
+        assert!(decode(2, &[a, a]).is_err());
+        assert!(decode(1, &[a, None]).is_err());
     }
 
     #[test]

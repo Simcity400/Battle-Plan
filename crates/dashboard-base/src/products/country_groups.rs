@@ -508,9 +508,10 @@ pub struct NameOperands {
     pub(crate) literal: Vec<u8>,
     template_token: Option<u32>,
     lexical_read: i32,
+    /// The dictionary a resolved template reads its bound tokens from.
     #[serde(skip)]
-    tokens: Arc<faction_names::LexicalNames>,
-    dictionary: usize,
+    tokens: Option<faction_names::HistoricalDictionary>,
+    dictionary: Option<u32>,
     template: Result<Option<String>, String>,
 }
 
@@ -534,7 +535,11 @@ impl NameOperands {
             templates,
             localisation,
             recorded_language,
-            |name| self.tokens.token_of(name),
+            |name| {
+                self.tokens
+                    .as_ref()
+                    .map_or(Ok(None), |tokens| tokens.token_of(name))
+            },
         )
         .and_then(|text| {
             let plain = catalogue::plain_text(&text)?;
@@ -930,8 +935,6 @@ pub struct Scan {
     #[serde(skip)]
     history: Arc<std::sync::Mutex<Option<Arc<FactionHistory>>>>,
     continuation: Continuation,
-    #[serde(with = "faction_names::dictionary_history")]
-    dictionary_changes: Vec<Arc<faction_names::LexicalNames>>,
 }
 
 /// The scan state an hour's unchanged test reads besides the hour's own
@@ -1126,11 +1129,13 @@ struct Continuation {
     faction_ids: Vec<u32>,
     invalid_names: BTreeSet<u64>,
     names: BTreeMap<u64, RunHistory<NameOperands>>,
-    /// The latest dictionary read, named without holding its rows, and the
-    /// first read of equal rows, which name operands share.
+    /// Every dictionary a name read, as versions sharing their common rows.
     #[serde(skip)]
-    lexical: Option<Arc<faction_names::LexicalNames>>,
-    lexical_dictionary: Option<usize>,
+    dictionaries: faction_names::DictionaryHistory,
+    /// The latest dictionary read; name operands share its version.
+    #[serde(skip)]
+    lexical: Option<Lexical>,
+    lexical_dictionary: Option<u32>,
     #[serde(skip)]
     lexical_seen: Option<replay_frame::frame::ViewIdentity>,
     lexical_read: i32,
@@ -1158,6 +1163,35 @@ struct Continuation {
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub work: crate::prepared::observer_tests::Work,
+}
+
+/// A dictionary read: its table until a resume, and its version once a name reads it.
+#[derive(Clone)]
+struct Lexical {
+    table: Option<replay_frame::frame::SharedView>,
+    version: Option<faction_names::HistoricalDictionary>,
+}
+
+impl Lexical {
+    fn holds(&self, table: &replay_frame::frame::SharedView) -> bool {
+        match (&self.table, &self.version) {
+            (Some(read), _) => read == table,
+            (None, Some(version)) => version.spells(table),
+            (None, None) => false,
+        }
+    }
+
+    fn version(
+        &mut self,
+        dictionaries: &mut faction_names::DictionaryHistory,
+    ) -> io::Result<Option<faction_names::HistoricalDictionary>> {
+        if self.version.is_none()
+            && let Some(table) = &self.table
+        {
+            self.version = dictionaries.add(table)?;
+        }
+        Ok(self.version.clone())
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1602,17 +1636,14 @@ fn scan_from(
 }
 
 impl Scan {
-    /// Preserve shared dictionaries and their row changes in the scan snapshot.
+    /// The snapshot as JSON, then the dictionaries its names read.
     pub fn saved_bytes(&self) -> io::Result<Vec<u8>> {
         let mut state = self.clone();
         state.seal();
-        state.dictionary_changes = vec![faction_names::LexicalNames::empty()];
-        let mut ids = HashMap::new();
-        let mut dictionary = |tokens: &Arc<faction_names::LexicalNames>| {
-            *ids.entry(Arc::as_ptr(tokens) as usize).or_insert_with(|| {
-                state.dictionary_changes.push(Arc::clone(tokens));
-                state.dictionary_changes.len() - 1
-            })
+        let version = |tokens: &Option<faction_names::HistoricalDictionary>| {
+            tokens
+                .as_ref()
+                .map(faction_names::HistoricalDictionary::version)
         };
         for history in state.continuation.names.values_mut() {
             // Group replies depend on the operands, not repeated supplying reads.
@@ -1629,7 +1660,7 @@ impl Scan {
                             // Only a resolved template reads its dictionary,
                             // and only its dictionary is saved.
                             && (!matches!(&row.template, Ok(Some(_)))
-                                || Arc::ptr_eq(&previous.tokens, &row.tokens))))
+                                || version(&previous.tokens) == version(&row.tokens))))
                 {
                     previous.last_hour = row.last_hour;
                     previous.lexical_read = row.lexical_read;
@@ -1642,40 +1673,74 @@ impl Scan {
             *history = compact;
             for index in 0..history.len() {
                 let row = &mut history[index];
-                row.dictionary = if row.needs_templates() && matches!(&row.template, Ok(Some(_))) {
-                    dictionary(&row.tokens)
-                } else {
-                    0
-                };
+                row.dictionary = version(&row.tokens);
             }
         }
         state.continuation.lexical_dictionary = state
             .continuation
             .lexical
             .as_ref()
-            .and_then(|tokens| ids.get(&(Arc::as_ptr(tokens) as usize)).copied());
-        crate::prepared::series::compress(serde_json::to_vec(&state)?.as_slice(), 3)
+            .and_then(|read| version(&read.version));
+        let json = serde_json::to_vec(&state)?;
+        let mut bytes = Vec::new();
+        replay_data::codec::put_bytes64(&mut bytes, &json)?;
+        drop(json);
+        state.continuation.dictionaries.encode(&mut bytes)?;
+        crate::prepared::series::compress(&bytes, 3)
+    }
+    /// A saved snapshot's JSON state and its dictionaries' bytes.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn saved_parts(saved: &[u8]) -> io::Result<(serde_json::Value, Vec<u8>)> {
+        let bytes = zstd::stream::decode_all(saved)?;
+        let mut input = replay_data::codec::Decoder::new(&bytes);
+        let json = input.count64(1)?;
+        let state = serde_json::from_slice(input.take(json)?)?;
+        Ok((state, input.rest().to_vec()))
+    }
+    /// [`Self::saved_parts`] saved again.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn saved_from_parts(state: &serde_json::Value, dictionaries: &[u8]) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        replay_data::codec::put_bytes64(&mut bytes, &serde_json::to_vec(state)?)?;
+        bytes.extend_from_slice(dictionaries);
+        crate::prepared::series::compress(&bytes, 3)
     }
     pub fn read(reader: impl io::Read) -> io::Result<Self> {
         let bytes = zstd::stream::decode_all(reader)?;
-        let mut state: Self = serde_json::from_slice(&bytes)?;
-        let dictionary = |index: usize| {
-            state
-                .dictionary_changes
-                .get(index)
-                .cloned()
-                .ok_or_else(|| crate::invalid("Missing country group dictionary"))
+        let mut input = replay_data::codec::Decoder::new(&bytes);
+        let json = input.count64(1)?;
+        let mut state: Self = serde_json::from_slice(input.take(json)?)?;
+        let dictionaries = faction_names::DictionaryHistory::decode(&mut input)?;
+        input.finish()?;
+        let dictionary = |version: Option<u32>| {
+            version
+                .map(|version| {
+                    dictionaries
+                        .version(version)
+                        .ok_or_else(|| crate::invalid("Missing country group dictionary"))
+                })
+                .transpose()
         };
-        state.continuation.lexical = state
-            .continuation
-            .lexical_dictionary
-            .map(&dictionary)
-            .transpose()?;
+        state.continuation.lexical = dictionary(state.continuation.lexical_dictionary)?.map(
+            |version| Lexical {
+                table: None,
+                version: Some(version),
+            },
+        );
+        let mut read: BTreeSet<_> = state.continuation.lexical_dictionary.into_iter().collect();
         for history in state.continuation.names.values_mut() {
             for index in 0..history.len() {
                 history[index].tokens = dictionary(history[index].dictionary)?;
+                read.extend(history[index].dictionary);
             }
         }
+        // A version is made only when a name reads it.
+        if read.len() as u64 != u64::from(dictionaries.count()) {
+            return Err(crate::invalid(
+                "Country group dictionaries are not the ones their names read",
+            ));
+        }
+        state.continuation.dictionaries = dictionaries;
         state.sync_faction_names();
         let rosters = &mut state.continuation.rosters;
         let last = rosters
@@ -2230,6 +2295,7 @@ impl Scan {
             faction_ids,
             invalid_names,
             names,
+            dictionaries,
             lexical,
             lexical_seen,
             lexical_read,
@@ -2251,13 +2317,15 @@ impl Scan {
             || decoded.metrics.table_ns[TableId::LexicalTokens.index()] != 0
             || lexical_seen.as_ref().is_none_or(|seen| !seen.is(current))
         {
-            // Every block reads the static dictionary again; equal
-            // rows keep the one copy (and token index) already held.
-            let names = lexical
+            // Equal rows read again keep their version; only this read's table is held.
+            let version = lexical
                 .take()
-                .filter(|names| names.holds(current))
-                .unwrap_or_else(|| Arc::new(faction_names::LexicalNames::new(current.clone())));
-            *lexical = Some(names);
+                .filter(|read| read.holds(current))
+                .and_then(|read| read.version);
+            *lexical = Some(Lexical {
+                table: Some(current.clone()),
+                version,
+            });
             *lexical_seen = Some(current.identity());
             *lexical_read = hour;
         }
@@ -2283,24 +2351,25 @@ impl Scan {
                 {
                     previous.last_hour = hour;
                 } else {
+                    let template = faction_names::template_spelling(decoded, *token);
+                    // Only a resolved template reads the dictionary.
+                    let tokens = if literal.is_empty() && matches!(&template, Ok(Some(_))) {
+                        lexical
+                            .as_mut()
+                            .expect("the hour has a lexical table view")
+                            .version(dictionaries)?
+                    } else {
+                        None
+                    };
                     history.push(NameOperands {
                         first_hour: hour,
                         last_hour: hour,
                         literal: literal.clone(),
                         template_token: *token,
                         lexical_read: *lexical_read,
-                        dictionary: 0,
-                        tokens: if literal.is_empty() && token.is_some() {
-                            Arc::clone(lexical.as_ref().expect("the hour has a lexical table view"))
-                        } else {
-                            Arc::new(faction_names::LexicalNames::new(
-                                replay_frame::frame::TableView::Complete(
-                                    replay_data::rows::TableRows::LexicalTokens(Vec::new()),
-                                )
-                                .into(),
-                            ))
-                        },
-                        template: faction_names::template_spelling(decoded, *token),
+                        tokens,
+                        dictionary: None,
+                        template,
                     });
                 }
             }
