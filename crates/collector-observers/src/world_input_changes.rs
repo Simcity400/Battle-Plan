@@ -380,7 +380,16 @@ pub fn fog_forwarder(enabled: bool) {
     WATCHES[Domain::GameFog as usize].set_enabled(enabled && HOOKS_ENABLED.load(Ordering::Acquire));
 }
 pub fn fog_nudge_entered() -> Notification<'static> {
+    NUDGED.store(true, Ordering::SeqCst);
     WATCHES[Domain::GameFog as usize].notify(0)
+}
+/// Nudge mode was entered during this attachment.
+static NUDGED: AtomicBool = AtomicBool::new(false);
+/// Map content (province bindings, regions, terrain) can be held for a world: the building
+/// family forwards nudge mode, whose editor rebuilds it with no hooked writer, and it was not
+/// entered during this attachment.
+pub fn map_content_stable() -> bool {
+    FOG_BUILDINGS_ENABLED.load(Ordering::SeqCst) && !NUDGED.load(Ordering::SeqCst)
 }
 
 /// Off the game thread: size the dynamic modifier watches for `slots`

@@ -333,6 +333,11 @@ fn constructor_sites(family: Family) -> Vec<usize> {
                     .map(|(rva, _)| *rva),
             );
             sites.extend(
+                engine_mutations::navy_ledger_mutations::MUTATIONS
+                    .iter()
+                    .map(|site| site.rva),
+            );
+            sites.extend(
                 collector_observers::fleet_region_changes::SITES
                     .iter()
                     .map(|s| s.rva),

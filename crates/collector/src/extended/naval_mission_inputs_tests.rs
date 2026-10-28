@@ -536,8 +536,114 @@ fn a_navy_without_registered_missions_reads_no_region_header() {
         LedgerCounts {
             skipped: 1,
             read: 2,
+            carried: 0,
         }
     );
+}
+
+/// A held fleet-leader reference is served without resolution, even when the
+/// registry would now answer differently, until the leader's certificate
+/// moves; then that reference alone resolves and authenticates again.
+#[test]
+fn a_fleet_leader_reference_resolves_again_only_after_its_certificate_moves() {
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    static MOVED: AtomicUsize = AtomicUsize::new(0);
+    fn sequence(leader: usize) -> Option<(u64, u64)> {
+        Some((1, u64::from(MOVED.load(Relaxed) == leader)))
+    }
+    let offset = std::cell::Cell::new(0x1000_usize);
+    let resolve = |reference: u64| -> Result<Option<usize>, &'static str> {
+        Ok(Some(reference as usize + offset.get()))
+    };
+    let authenticated = std::cell::Cell::new(0);
+    let mut leaders = Leaders::default();
+    let take = |leaders: &mut Leaders, reference: u64| {
+        leaders.leader(reference, sequence, &resolve, |_| {
+            authenticated.set(authenticated.get() + 1);
+            Ok(())
+        })
+    };
+    assert_eq!(take(&mut leaders, 7), Some(Some((0x1007, (1, 0)))));
+    assert_eq!(take(&mut leaders, 9), Some(Some((0x1009, (1, 0)))));
+    assert_eq!(leaders.finish(), [0, 2]);
+    offset.set(0x2000);
+    assert_eq!(take(&mut leaders, 7), Some(Some((0x1007, (1, 0)))));
+    assert_eq!(take(&mut leaders, 9), Some(Some((0x1009, (1, 0)))));
+    assert_eq!(leaders.finish(), [2, 0]);
+    MOVED.store(0x1007, Relaxed);
+    assert_eq!(take(&mut leaders, 7), Some(Some((0x2007, (1, 0)))));
+    assert_eq!(take(&mut leaders, 9), Some(Some((0x1009, (1, 0)))));
+    assert_eq!(leaders.finish(), [1, 1]);
+    assert_eq!(authenticated.get(), 3);
+}
+
+/// A quiet hour republishes every certified navy's held registrations and
+/// reads none of its ledger headers or entries, even when the ledgers changed
+/// underneath; presence is still read. A moved certificate rereads that navy
+/// alone, and a full hour rereads every navy.
+#[test]
+fn a_certified_navy_republishes_its_held_ledgers_and_reads_only_presence() {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    fn certificate(navy: usize) -> Option<(u64, u64)> {
+        // Navy addresses differ; a bump below moves only the navy it names.
+        let moved = SEQUENCE.load(std::sync::atomic::Ordering::Relaxed);
+        Some((1, if navy == moved as usize { 1 } else { 0 }))
+    }
+    fn read(
+        captured: &mut Captured,
+        world: &World,
+        hour: i32,
+        force_full: bool,
+    ) -> (
+        Vec<NavalMissionLedgerRow>,
+        LedgerCounts,
+        Vec<(usize, usize)>,
+    ) {
+        let memory = TransportMemory {
+            world,
+            reads: Default::default(),
+            fail_once: None,
+            failed: Default::default(),
+        };
+        captured.capture_with_own_navies(
+            &memory,
+            world.base,
+            world.game_state,
+            hour,
+            force_full,
+            None,
+            false,
+            LedgerSkip { enabled: true },
+        );
+        let views = captured.tables();
+        let ledgers = rows::<tables::NavalMissionLedgers>(&views[1]).to_vec();
+        (ledgers, captured.ledger_counts(), memory.reads.into_inner())
+    }
+    let mut world = build(3);
+    let mut captured = Captured::with_capacities(&fixture_capacities(&world));
+    captured.ledger_sequence = certificate;
+    let (all, counts, _) = read(&mut captured, &world, 0, true);
+    assert_eq!((counts.read, counts.carried), (3, 0));
+    // A quiet hour: the second navy's first ledger is emptied underneath, unobserved.
+    let headers = region_headers(&world, 2);
+    let first = escort_regions(2)[0] as usize;
+    let count = headers - world.base + first * cstrategic_navy::REGION_MISSIONS_STRIDE + 12;
+    world.bytes[count..count + 4].fill(0);
+    let (ledgers, counts, reads) = read(&mut captured, &world, 1, false);
+    assert_eq!(ledgers, all);
+    assert_eq!((counts.read, counts.carried), (0, 3));
+    assert!(reads.iter().all(|&(at, _)| at != headers));
+    // The second navy's certificate moves: it alone is read, without its emptied ledger.
+    SEQUENCE.store(
+        (world.base + navy_of(&world, 2)) as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let (ledgers, counts, _) = read(&mut captured, &world, 2, false);
+    assert_eq!((counts.read, counts.carried), (1, 2));
+    assert_eq!(ledgers.len(), all.len() - 1);
+    // A full hour reads every navy.
+    let (_, counts, _) = read(&mut captured, &world, 3, true);
+    assert_eq!((counts.read, counts.carried), (3, 0));
 }
 
 #[test]
@@ -723,7 +829,7 @@ fn a_ledger_naming_a_task_force_outside_the_census_is_refused_alone() {
 }
 
 #[test]
-fn an_off_hour_reads_its_slice_and_countries_whose_commanders_changed() {
+fn a_quiet_hour_reads_only_countries_whose_commanders_changed() {
     let mut world = build(30);
     let mut captured = Captured::with_capacities(&fixture_capacities(&world));
     let mut fingerprints = SliceFingerprints::new();
@@ -734,25 +840,65 @@ fn an_off_hour_reads_its_slice_and_countries_whose_commanders_changed() {
             .map(|row| row.country)
             .collect::<Vec<_>>()
     };
-    // Hour 5 reads slice 5 only: countries 5 and 29.
+    // No rotating slice: an hour without a changed print reads no country.
     let views = capture(&mut captured, &world, 5, false, &mut fingerprints);
-    assert_eq!(owners(&views), [5, 29]);
-    assert!(captured.selection().contains(29) && !captured.selection().contains(7));
-    // Country 7's fleet takes another leader: it is read at the next hour, early.
+    assert!(owners(&views).is_empty());
+    assert!(!captured.selection().contains(5) && !captured.selection().contains(29));
+    // Country 7's fleet takes another leader: it alone is read at the next hour.
     let fleet = world.fleets[7];
     world.put(fleet + native::FLEET_LEADER, leader(99));
     let views = capture(&mut captured, &world, 6, false, &mut fingerprints);
-    assert_eq!(owners(&views), [6, 7, 30]);
+    assert_eq!(owners(&views), [7]);
     assert_eq!(captured.selection().early_count, 1);
     // The hourly tables are complete every hour.
     assert_eq!(rows::<tables::NavalMissionTaskForces>(&views[0]).len(), 120);
     assert_eq!(rows::<tables::NavalMissionLedgers>(&views[1]).len(), 90);
 }
 
+/// A country whose demanded escort tree was refused is read again at the next hour although
+/// its print held; refusals that did not fit read every country.
+#[test]
+fn a_refused_escort_tree_is_read_again_at_the_next_hour() {
+    let world = build(3);
+    let mut captured = Captured::with_capacities(&fixture_capacities(&world));
+    let mut fingerprints = SliceFingerprints::new();
+    let read = |fingerprints: &mut SliceFingerprints, hour| {
+        let mut selection = SliceSelection::new(true);
+        selection.reset_hooked(hour, false);
+        for country in 1..=3 {
+            selection.scan_marking(fingerprints, country, Some(u64::from(country)));
+        }
+        (1..=3_u32)
+            .filter(|&country| selection.contains(country))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(read(&mut fingerprints, 1), [1, 2, 3]);
+    assert!(read(&mut fingerprints, 2).is_empty());
+    captured.growing = true;
+    captured.retry_escort_tree(2).unwrap();
+    captured.retry_refused_escort_trees(&mut fingerprints);
+    assert_eq!(read(&mut fingerprints, 3), [2]);
+    assert!(read(&mut fingerprints, 4).is_empty());
+    // Growing storage appends each refusal once, never doubling.
+    captured.escort_retries.clear();
+    for country in 0..100 {
+        captured.retry_escort_tree(country).unwrap();
+    }
+    assert_eq!(captured.escort_retries.len(), 100);
+    assert!(captured.escort_retries.capacity() < 1_000);
+    assert!(!captured.escort_retries_full);
+    // Fixed storage never allocates: a refusal that does not fit reads every country.
+    captured.growing = false;
+    captured.escort_retries = Vec::new();
+    captured.retry_escort_tree(2).unwrap();
+    assert!(captured.escort_retries.is_empty() && captured.escort_retries_full);
+    captured.retry_refused_escort_trees(&mut fingerprints);
+    assert_eq!(read(&mut fingerprints, 5), [1, 2, 3]);
+}
+
 /// A modifier rebuild the naval tree family observed (its certificate moved)
-/// is read within the hour, outside the country's slice; the daily slice
-/// alone left it up to a day old. An unobservable certificate reads the
-/// country every hour.
+/// is read within the hour; nothing else is. An unobservable certificate
+/// reads the country every hour.
 #[test]
 fn a_moved_certificate_is_read_within_the_hour() {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -768,13 +914,13 @@ fn a_moved_certificate_is_read_within_the_hour() {
             .collect::<Vec<_>>()
     };
     let views = capture(&mut captured, &world, 5, false, &mut fingerprints);
-    assert_eq!(owners(&views), [5, 29]);
+    assert!(owners(&views).is_empty());
     // Every receiver's tree was rebuilt: every country is read at hour 6.
     SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let views = capture(&mut captured, &world, 6, false, &mut fingerprints);
     assert_eq!(owners(&views), (1..=30).collect::<Vec<_>>());
     let views = capture(&mut captured, &world, 7, false, &mut fingerprints);
-    assert_eq!(owners(&views), [7]);
+    assert!(owners(&views).is_empty());
     // Unobserved: every country, every hour.
     captured.sequence = |_| None;
     let views = capture(&mut captured, &world, 8, false, &mut fingerprints);
@@ -782,7 +928,7 @@ fn a_moved_certificate_is_read_within_the_hour() {
 }
 
 #[test]
-fn without_a_store_the_hour_reads_only_its_slice() {
+fn without_a_store_the_hour_reads_every_country() {
     let world = build(30);
     let mut captured = Captured::with_capacities(&fixture_capacities(&world));
     captured.capture(&world.slice(), world.base, world.game_state, 5, false, None);
@@ -792,7 +938,7 @@ fn without_a_store_the_hour_reads_only_its_slice() {
             .iter()
             .map(|row| row.country)
             .collect::<Vec<_>>(),
-        [5, 29]
+        (1..=30).collect::<Vec<_>>()
     );
 }
 
@@ -856,7 +1002,7 @@ fn a_bad_mission_read_refuses_dependents_and_preserves_independent_map_witnesses
     }
 }
 
-/// Capture cost through the production guarded copies, one country slice per hour.
+/// Capture cost through the production guarded copies of quiet hours.
 #[test]
 #[ignore = "timing bench"]
 fn naval_mission_bench() {

@@ -56,9 +56,35 @@ fn task_gather_enabled() -> bool {
 static PHASES: [std::sync::atomic::AtomicU64; 5] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 5];
 
+/// Mission region ids and fresh ETA location terms served from the world's hold and read, and
+/// fresh ETA fleet leaders carried and read, cumulative.
+static WORLD_HOLDS: [std::sync::atomic::AtomicU64; 6] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 6];
+
+/// What the counter walk may hold across hours: map content for the native world occurrence
+/// (`None`: unobserved) and fleet leaders under the fleet leader binding certificate.
+#[derive(Clone, Copy)]
+pub struct Holds {
+    pub world: Option<u64>,
+    pub fleets: ctask_force::Certify,
+}
+
+fn unobserved(_: usize) -> Option<(u64, u64)> {
+    None
+}
+
+impl Holds {
+    /// Nothing is held: every value is read.
+    pub const NONE: Self = Self {
+        world: None,
+        fleets: unobserved,
+    };
+}
+
 /// Where the task-force counter walk's time goes.
 pub fn phase_data() -> impl serde::Serialize {
     let load = |index: usize| PHASES[index].load(std::sync::atomic::Ordering::Relaxed);
+    let held = |index: usize| WORLD_HOLDS[index].load(std::sync::atomic::Ordering::Relaxed);
     let mut frequency = 0;
     // SAFETY: an out pointer to a live local.
     let hz = unsafe {
@@ -78,7 +104,15 @@ pub fn phase_data() -> impl serde::Serialize {
             .load(std::sync::atomic::Ordering::Relaxed),
         "fresh_eta_ns": ns(engine_native::ctask_force::FRESH_ETA[1]
             .load(std::sync::atomic::Ordering::Relaxed)),
-        "scope": "cumulative since attach: the counter walk's captures, task forces visited, and the whole walk's time with the part spent in the mission reader and the motion reader, of which fresh_eta_ns is the fresh ETA graph (every motion capture since attach, counted in fresh_eta_task_forces); the rest is the fleet and task-force census, counter, cached-name, supply and port-mission reads",
+        "world_holds": {
+            "region_ids_held": held(0),
+            "region_ids_read": held(1),
+            "locations_held": held(2),
+            "locations_read": held(3),
+            "fleet_leaders_carried": held(4),
+            "fleet_leaders_read": held(5),
+        },
+        "scope": "cumulative since attach: the counter walk's captures, task forces visited (each task force's fields gathered in one guarded call after its identity read), and the whole walk's time with the part spent in the mission reader and the motion reader, of which fresh_eta_ns is the fresh ETA graph (every motion capture since attach, counted in fresh_eta_task_forces); the rest is the fleet and task-force census, counter, cached-name, supply and port-mission reads; world_holds counts mission region ids and fresh ETA location region and terrain answered from those held for the native world occurrence and those read (an unobserved world, a new world or a failed Ordinary family holds none), and fresh ETA fleet leaders served while the fleet's leader-binding certificate and the leader's naval tree certificate, each taken before its read, hold, and those read",
     })
 }
 
@@ -329,6 +363,11 @@ pub struct Captured {
     port_answers: Arena<ctask_force::port_mission::ReferenceAnswer>,
     /// The fresh ETA graph's certified censuses, kept across hours.
     censuses: CensusStore,
+    /// Mission region ids and fresh ETA location terms, held for their world.
+    region_ids: ctask_force::WorldIds,
+    locations: ctask_force::WorldHold<(u32, usize)>,
+    /// Fresh ETA fleet leaders, held under their certificates.
+    fleet_leaders: ctask_force::FleetLeaders,
 }
 
 /// The fresh ETA graph's censuses of certified receivers (roster countries'
@@ -450,6 +489,9 @@ impl Captured {
             port_bytes: Arena::new(capacity.port_bytes),
             censuses: CensusStore::default(),
             port_answers: Arena::new(capacity.port_answers),
+            region_ids: Default::default(),
+            locations: Default::default(),
+            fleet_leaders: Default::default(),
         }
     }
     /// Hold no census of the counter walk: an Ordinary family that failed
@@ -460,6 +502,9 @@ impl Captured {
         self.censuses.forget();
         self.fleet_regions.clear();
         self.fleet_region_bytes = 0;
+        self.region_ids.forget();
+        self.locations.forget();
+        self.fleet_leaders.forget();
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -508,6 +553,9 @@ impl Captured {
             + self.port_bytes.allocated_bytes()
             + self.port_answers.allocated_bytes()
             + self.censuses.allocated_bytes()
+            + self.region_ids.allocated_bytes()
+            + self.locations.allocated_bytes()
+            + self.fleet_leaders.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.task_forces.grow(&mut capacity.task_forces);
@@ -567,8 +615,9 @@ impl Captured {
         state: usize,
         hour: i32,
         modifier_guard: Result<(), &'static str>,
+        holds: Holds,
     ) -> [u64; N] {
-        self.capture_impl(memory, base, state, Some(hour), modifier_guard, true)
+        self.capture_impl(memory, base, state, Some(hour), modifier_guard, holds, true)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -580,9 +629,18 @@ impl Captured {
         hour: Option<i32>,
         modifier_guard: Result<(), &'static str>,
     ) -> [u64; N] {
-        self.capture_impl(memory, base, state, hour, modifier_guard, false)
+        self.capture_impl(
+            memory,
+            base,
+            state,
+            hour,
+            modifier_guard,
+            Holds::NONE,
+            false,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn capture_impl(
         &mut self,
         memory: &impl Memory,
@@ -590,15 +648,19 @@ impl Captured {
         state: usize,
         hour: Option<i32>,
         modifier_guard: Result<(), &'static str>,
+        holds: Holds,
         defer_owned: bool,
     ) -> [u64; N] {
         self.clear_fresh_owner_demands();
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
+        self.region_ids.begin(holds.world);
+        self.locations.begin(holds.world);
+        self.fleet_leaders.begin();
         // Answers are valid for one capture only; clearing keeps the reserved room.
         self.combats.clear();
-        // Each task force's fixed fields in one guarded call, selected as the
-        // walk reaches it and served to every reader below.
+        // Each task force's fixed fields in one guarded call, selected once the walk has
+        // authenticated its identity and served to every reader below.
         let tasks = engine_native::cship::SwitchedObject::new(memory, ctask_force::TASK_FIELDS);
         let memory = &tasks;
         // The walk's task forces and the time its mission and motion readers
@@ -619,7 +681,13 @@ impl Captured {
             held: &self.censuses.serve,
             certify: &crate::naval_tree_changes::sequence,
             log: &mut self.censuses.log,
-        });
+        })
+        .with_world_locations(&mut self.locations)
+        .with_fleet_leaders(
+            &mut self.fleet_leaders,
+            holds.fleets,
+            crate::naval_tree_changes::sequence,
+        );
         if let Some(hour) = hour {
             motion = motion.with_fresh_hour(hour);
         }
@@ -629,7 +697,8 @@ impl Captured {
             state,
             &mut self.missions.rows,
             &mut self.regions.first,
-        );
+        )
+        .with_region_ids(&mut self.region_ids);
         let mut names = engine_native::cname_group_member::NameArena {
             bytes: engine_native::walk::Buffer::Growing(&mut self.names.first),
             len: 0,
@@ -663,15 +732,19 @@ impl Captured {
                 Some(&mut supply),
                 port.as_mut(),
             ),
-            |pointer, id| {
-                let started = qpc();
-                visited += 1;
-                if task_gather_enabled() {
-                    tasks.select(pointer);
-                }
-                missions.visit(pointer, id);
-                missions_ticks += qpc().saturating_sub(started).max(0) as u64;
-            },
+            (
+                |pointer: usize| {
+                    if task_gather_enabled() {
+                        tasks.select(pointer);
+                    }
+                },
+                |pointer: usize, id: u64| {
+                    let started = qpc();
+                    visited += 1;
+                    missions.visit(pointer, id);
+                    missions_ticks += qpc().saturating_sub(started).max(0) as u64;
+                },
+            ),
             |pointer, id, _original| {
                 let started = qpc();
                 motion.visit(pointer, id);
@@ -730,6 +803,16 @@ impl Captured {
         );
         crate::naval_tree_changes::censuses(served);
         let registered = missions.finish(failed);
+        for (total, value) in WORLD_HOLDS.iter().zip([
+            self.region_ids.held,
+            self.region_ids.read,
+            self.locations.held,
+            self.locations.read,
+            self.fleet_leaders.carried,
+            self.fleet_leaders.read,
+        ]) {
+            total.fetch_add(value, std::sync::atomic::Ordering::Relaxed);
+        }
         self.missions.outcome = registered.outcome;
         self.regions.len = registered.regions_len;
         self.regions.required = registered.required_regions;
@@ -1156,25 +1239,26 @@ mod tests {
         }
     }
 
-    #[test]
-    fn default_cold_storage_captures_original_headers_and_live_hints() {
+    fn p32(bytes: &mut [u8], at: usize, value: u32) {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    fn p64(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+        p64(bytes, at, data as u64);
+        p32(bytes, at + 8, count);
+        p32(bytes, at + 12, count);
+    }
+    const STATE: usize = 0x1000;
+    const COUNTRY: usize = 0x3000;
+    const FLEET: usize = 0x4000;
+    const TASK: usize = 0x5000;
+    const REGION: usize = 0x8000;
+
+    /// One country, fleet and task force whose mission patrols one strategic region.
+    fn cold_storage_world() -> Vec<u8> {
         use engine_native::{ccountry, cgame_state, cnaval_mission, cstrategic_region, cunit};
-        fn p32(bytes: &mut [u8], at: usize, value: u32) {
-            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
-        }
-        fn p64(bytes: &mut [u8], at: usize, value: u64) {
-            bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
-        }
-        fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
-            p64(bytes, at, data as u64);
-            p32(bytes, at + 8, count);
-            p32(bytes, at + 12, count);
-        }
-        const STATE: usize = 0x1000;
-        const COUNTRY: usize = 0x3000;
-        const FLEET: usize = 0x4000;
-        const TASK: usize = 0x5000;
-        const REGION: usize = 0x8000;
         let mut bytes = vec![0; 0x9000];
         array(&mut bytes, STATE + cgame_state::COUNTRIES, 0x2000, 2);
         array(&mut bytes, STATE + cgame_state::COUNTRY_LINKS, 0x2020, 2);
@@ -1244,6 +1328,66 @@ mod tests {
         bytes[0x7200..0x7203].copy_from_slice(b"mod");
         p64(&mut bytes, 0x7210, 3);
         p64(&mut bytes, 0x7218, 15);
+        bytes
+    }
+
+    /// A mission region's id is read once per native world occurrence: a later hour of the
+    /// same world answers it without a read, even after it changed underneath, and a new or
+    /// unobserved world reads it again. Every other table stays as read.
+    #[test]
+    fn mission_region_ids_are_held_for_their_world() {
+        use engine_native::cstrategic_region;
+        let mut bytes = cold_storage_world();
+        let id_read = |memory: &Singles<'_>| {
+            memory
+                .singles
+                .borrow()
+                .iter()
+                .any(|&(at, _)| at == REGION + cstrategic_region::ID)
+        };
+        let regions = |captured: &Captured| {
+            let [.., TableView::Complete(TableRows::TaskForceMissions(rows))] = captured.tables()
+            else {
+                panic!("complete missions");
+            };
+            rows[0].regions.to_vec()
+        };
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let capture = |captured: &mut Captured, bytes: &[u8], world: Option<u64>| {
+            let slice = SliceMemory { base: 0, bytes };
+            let memory = Singles {
+                source: &slice,
+                singles: Default::default(),
+                calls: Default::default(),
+            };
+            captured.reset();
+            let holds = Holds {
+                world,
+                ..Holds::NONE
+            };
+            captured.capture_impl(&memory, 0, STATE, Some(1), Err("fixture"), holds, false);
+            id_read(&memory)
+        };
+        assert!(capture(&mut captured, &bytes, Some(7)));
+        assert_eq!(regions(&captured), [1]);
+        let first = captured.tables();
+        // Same world: the held id answers, though the region's id changed underneath.
+        p32(&mut bytes, REGION + cstrategic_region::ID, 9);
+        assert!(!capture(&mut captured, &bytes, Some(7)));
+        assert_eq!(regions(&captured), [1]);
+        assert_eq!(captured.tables()[0], first[0]);
+        // A new world reads it again; its changed id no longer sits at its slot.
+        p32(&mut bytes, REGION + cstrategic_region::ID, 1);
+        assert!(capture(&mut captured, &bytes, Some(8)));
+        assert_eq!(regions(&captured), [1]);
+        // An unobserved world holds nothing.
+        assert!(capture(&mut captured, &bytes, None));
+        assert!(capture(&mut captured, &bytes, None));
+    }
+
+    #[test]
+    fn default_cold_storage_captures_original_headers_and_live_hints() {
+        let bytes = cold_storage_world();
         let slice = SliceMemory {
             base: 0,
             bytes: &bytes,

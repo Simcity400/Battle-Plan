@@ -1,7 +1,11 @@
 //! Shared writer owner for country naval map state. Mine slices and standing
 //! report vectors have separate domains; decay cannot dirty report captures.
 //! Native entry observers use bounded metadata and never walk or allocate.
+//! A third domain keys each navy's mission ledgers and registered-mission set
+//! ([`engine_mutations::navy_ledger_mutations`]): registration, removal, the
+//! forwarded reset and the navy lifecycle writers move its certificate.
 use crate::{hook::Hook, watch_registry::WatchRegistry};
+use engine_mutations::navy_ledger_mutations::MUTATIONS as LEDGER_WRITERS;
 use engine_native::{Memory, naval_mine_inputs as mines};
 use std::{
     ops::Range,
@@ -11,24 +15,32 @@ use std::{
 
 static MINES: WatchRegistry = WatchRegistry::retaining();
 static ACCIDENTS: WatchRegistry = WatchRegistry::retaining();
+static LEDGERS: WatchRegistry = WatchRegistry::retaining();
 static METADATA_FAILED: AtomicBool = AtomicBool::new(false);
 static METADATA_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static LOCAL_ENABLED: AtomicBool = AtomicBool::new(false);
 static RESET_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Both ledger writers are patched and published.
+static LEDGER_ENABLED: AtomicBool = AtomicBool::new(false);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 const SITES: usize =
     mines::WRITERS.len() + engine_naval_history::cnaval_accident_report::WRITERS.len();
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
+const LEDGER_SITES: usize = LEDGER_WRITERS.len();
+static LEDGER_ORIGINAL: [AtomicUsize; LEDGER_SITES] = [const { AtomicUsize::new(0) }; LEDGER_SITES];
+static LEDGER_CALLS: [AtomicU64; LEDGER_SITES] = [const { AtomicU64::new(0) }; LEDGER_SITES];
 #[derive(Default)]
 struct Preparation {
     lifetime: Option<Option<u64>>,
     mine_offer: usize,
     accident_offer: usize,
+    ledger_offer: usize,
 }
 static PREPARATION: Mutex<Preparation> = Mutex::new(Preparation {
     lifetime: None,
     mine_offer: 0,
     accident_offer: 0,
+    ledger_offer: 0,
 });
 
 // Keys that collide share invalidations; they can never hide a writer.
@@ -62,8 +74,10 @@ pub(crate) fn prepare(demand: usize) {
         .saturating_mul(mines::DECAY_SLICES + 1)
         .max(if reset { 0 } else { MINES.registered() });
     let accident_demand = demand.max(if reset { 0 } else { ACCIDENTS.registered() });
+    let ledger_demand = demand.max(if reset { 0 } else { LEDGERS.registered() });
     let mine_growth = mine_demand > prepared.mine_offer;
     let accident_growth = accident_demand > prepared.accident_offer;
+    let ledger_growth = ledger_demand > prepared.ledger_offer;
     if mine_growth {
         prepared.mine_offer = mine_demand
             .checked_next_power_of_two()
@@ -74,10 +88,17 @@ pub(crate) fn prepare(demand: usize) {
             .checked_next_power_of_two()
             .unwrap_or(usize::MAX);
     }
+    if ledger_growth {
+        prepared.ledger_offer = ledger_demand
+            .checked_next_power_of_two()
+            .unwrap_or(usize::MAX);
+    }
     MINES.offer(prepared.mine_offer);
     ACCIDENTS.offer(prepared.accident_offer);
+    LEDGERS.offer(prepared.ledger_offer);
     MINES.boundary(reset || mine_growth);
     ACCIDENTS.boundary(reset || accident_growth);
+    LEDGERS.boundary(reset || ledger_growth);
 }
 pub(crate) fn mine_quiet() -> Option<(u64, u64)> {
     (!METADATA_FAILED.load(Ordering::Acquire))
@@ -97,15 +118,31 @@ pub(crate) fn mine_slice(navy: usize, part: usize) -> Option<(u64, u64)> {
 pub(crate) fn accident_token(navy: usize) -> Option<(u64, u64)> {
     ACCIDENTS.sequence(navy)
 }
+/// `(epoch, sequence)` of a navy's ledgers and registered-mission set, registering it; `None`
+/// while unobserved.
+pub(crate) fn ledger_token(navy: usize) -> Option<(u64, u64)> {
+    LEDGERS.sequence(navy)
+}
 pub(crate) fn active() -> usize {
-    MINES.active().saturating_add(ACCIDENTS.active())
+    MINES
+        .active()
+        .saturating_add(ACCIDENTS.active())
+        .saturating_add(LEDGERS.active())
 }
 pub(crate) fn collect() {
     MINES.collect();
     ACCIDENTS.collect();
+    LEDGERS.collect();
 }
 pub(crate) fn status() -> impl serde::Serialize {
+    let calls = LEDGER_CALLS
+        .each_ref()
+        .map(|calls| calls.load(Ordering::Relaxed));
     crate::status::status!({ "mines": MINES.status(), "accidents": ACCIDENTS.status(),
+        "ledgers": LEDGERS.status(),
+        "ledger_writers": crate::status::map(
+            LEDGER_WRITERS.iter().map(|site| site.name).zip(calls)
+        ),
         "mine_event_metadata_failed": METADATA_FAILED.load(Ordering::Acquire),
         "mine_event_metadata_refusals": METADATA_REFUSALS.load(Ordering::Relaxed) })
 }
@@ -125,11 +162,14 @@ fn report_sites() -> impl Iterator<Item = (&'static str, usize, u64)> {
 
 pub(crate) struct Hooks {
     hooks: Vec<Hook>,
+    /// Both ledger writers are among `hooks`.
+    ledgers: bool,
 }
 fn observation_enabled() {
     let enabled = LOCAL_ENABLED.load(Ordering::Acquire) && RESET_ENABLED.load(Ordering::Acquire);
     MINES.set_enabled(enabled);
     ACCIDENTS.set_enabled(enabled);
+    LEDGERS.set_enabled(enabled && LEDGER_ENABLED.load(Ordering::Acquire));
 }
 fn reset_forwarder_enabled(enabled: bool) {
     RESET_ENABLED.store(enabled, Ordering::Release);
@@ -138,6 +178,7 @@ fn reset_forwarder_enabled(enabled: bool) {
 unsafe fn forwarded_reset(a: usize, b: usize, c: usize, d: usize, original: usize) -> usize {
     let _mine = MINES.notify(life_key(a));
     let _accident = ACCIDENTS.notify(a);
+    let _ledger = LEDGERS.notify(a);
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(original) };
     unsafe { original(a, b, c, d) }
@@ -182,6 +223,30 @@ impl Hooks {
                 hooks.push(hook);
             }
         }
+        // A differing ledger entry leaves both unpatched: every ledger is then read hourly.
+        let ledgers = cfg!(feature = "navy_ledger_changes")
+            && LEDGER_WRITERS.iter().all(|site| {
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
+            });
+        if ledgers {
+            let callbacks = [
+                register_mission as *const () as usize,
+                unregister_mission as *const () as usize,
+            ];
+            for (index, site) in LEDGER_WRITERS.iter().enumerate() {
+                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                    .map_err(|reason| {
+                    crate::mission_changes::hook_failure(
+                        "naval_map_changes",
+                        "construction failed",
+                        site.name,
+                        &reason,
+                    )
+                })?;
+                LEDGER_ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
+                hooks.push(hook);
+            }
+        }
         BASE.store(base, Ordering::Release);
         crate::world_input_changes::navy_reset_forwarder(Some(
             crate::world_input_changes::NavyResetForwarder {
@@ -189,11 +254,12 @@ impl Hooks {
                 enabled: reset_forwarder_enabled,
             },
         ));
-        Ok(Self { hooks })
+        Ok(Self { hooks, ledgers })
     }
     pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             LOCAL_ENABLED.store(false, Ordering::Release);
+            LEDGER_ENABLED.store(false, Ordering::Release);
             observation_enabled();
         }
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled).map_err(|reason| {
@@ -207,6 +273,7 @@ impl Hooks {
             return Ok(false);
         }
         LOCAL_ENABLED.store(enabled && !self.hooks.is_empty(), Ordering::Release);
+        LEDGER_ENABLED.store(enabled && self.ledgers, Ordering::Release);
         observation_enabled();
         Ok(true)
     }
@@ -219,9 +286,11 @@ impl Drop for Hooks {
         // The enclosing family disabled and drained all native notifications.
         crate::world_input_changes::navy_reset_forwarder(None);
         LOCAL_ENABLED.store(false, Ordering::Release);
+        LEDGER_ENABLED.store(false, Ordering::Release);
         unsafe {
             MINES.release();
             ACCIDENTS.release();
+            LEDGERS.release();
         }
         crate::naval_mines::release();
         *PREPARATION.lock().unwrap_or_else(|p| p.into_inner()) = Preparation::default();
@@ -237,6 +306,7 @@ pub(crate) fn patch_sites() -> Vec<(&'static str, usize)> {
         .filter(|(index, _)| *index != 5)
         .map(|(_, (name, rva, _))| (name, rva))
         .chain(report_sites().map(|(name, rva, _)| (name, rva)))
+        .chain(LEDGER_WRITERS.iter().map(|site| (site.name, site.rva)))
         .collect()
 }
 
@@ -291,7 +361,23 @@ unsafe fn lifecycle(index: usize, a: usize, b: usize, c: usize, d: usize) -> usi
     let navy = lifecycle_receiver(index, a);
     let _mine = MINES.notify(life_key(navy));
     let _accident = ACCIDENTS.notify(navy);
+    let _ledger = LEDGERS.notify(navy);
     timing.original(|| unsafe { original(index, a, b, c, d) })
+}
+/// Registration or removal (navy, mission[, region]) writes the navy's ledgers and set.
+unsafe fn ledger(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
+    LEDGER_CALLS[index].fetch_add(1, Ordering::Relaxed);
+    let native: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
+        unsafe { std::mem::transmute(LEDGER_ORIGINAL[index].load(Ordering::Acquire)) };
+    ledger_write(&LEDGERS, a, || {
+        timing.original(|| unsafe { native(a, b, c, d) })
+    })
+}
+/// `navy`'s ledger write, notified across `write`.
+fn ledger_write(ledgers: &WatchRegistry, navy: usize, write: impl FnOnce() -> usize) -> usize {
+    let _mark = ledgers.notify(navy);
+    write()
 }
 unsafe fn reports(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
@@ -315,6 +401,8 @@ detour!(accident_update, reports, 7);
 detour!(accident_clear, reports, 8);
 detour!(accident_expire, reports, 9);
 detour!(mine_report, reports, 10);
+detour!(register_mission, ledger, 0);
+detour!(unregister_mission, ledger, 1);
 
 #[cfg(test)]
 mod tests {
@@ -364,6 +452,29 @@ mod tests {
         assert!(mines.quiet().is_none());
         drop(active);
         assert_ne!(mines.sequence(life_key(navy)), life);
+    }
+    /// A ledger write moves its navy's ledger certificate, which no capture can take while the
+    /// write runs; another navy keeps its certificate.
+    #[test]
+    fn a_ledger_write_moves_only_its_navys_certificate_across_the_write() {
+        let ledgers = WatchRegistry::retaining();
+        ledgers.offer(64);
+        ledgers.boundary(false);
+        ledgers.set_enabled(true);
+        let (navy, other) = (0x7_1000, 0x7_2000);
+        let held = ledgers.sequence(navy).unwrap();
+        let unrelated = ledgers.sequence(other).unwrap();
+        for _ in 0..LEDGER_SITES {
+            let before = ledgers.sequence(navy).unwrap();
+            let written = ledger_write(&ledgers, navy, || {
+                assert!(ledgers.sequence(navy).is_none());
+                navy ^ 0x30
+            });
+            assert_eq!(written, navy ^ 0x30);
+            assert_ne!(ledgers.sequence(navy), Some(before));
+        }
+        assert_ne!(ledgers.sequence(navy), Some(held));
+        assert_eq!(ledgers.sequence(other), Some(unrelated));
     }
     #[test]
     fn only_the_persistent_loader_normalizes_its_secondary_receiver() {

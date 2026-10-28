@@ -163,7 +163,7 @@ fn fleet_observer_token_precedes_the_original_region_header_without_extra_reads(
         &mut fleets,
         &mut rosters,
         (&mut tasks, None, None, None),
-        |_, _| {},
+        (|_: usize| (), |_: usize, _: u64| {}),
         |_, _, _| {},
         |_, _| memory.sequence.get(),
         |pointer, id, header, before| {

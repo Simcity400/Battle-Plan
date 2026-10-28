@@ -123,6 +123,15 @@ pub(crate) fn patches() -> Vec<Patch> {
             &hashed_sentinel(rva, hash),
         );
     }
+    for site in engine_mutations::navy_ledger_mutations::MUTATIONS {
+        add(
+            "naval_map_changes",
+            site.name,
+            site.rva,
+            PATCH,
+            &site.sentinel,
+        );
+    }
     for site in collector_observers::fleet_region_changes::SITES {
         add(
             "fleet_region_changes",

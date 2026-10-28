@@ -882,7 +882,7 @@ pub fn visit_task_forces<M: Memory>(
     countries: &ccountry::Reader<'_, M>,
     visit: impl FnMut(Visit) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    visit_task_forces_inner(memory, base, countries, true, visit)
+    visit_task_forces_inner(memory, base, countries, true, |_| (), visit)
 }
 
 /// Use the same authenticated roster for cached fuel. Leader and mission
@@ -893,14 +893,17 @@ pub fn visit_fuel_task_forces<M: Memory>(
     countries: &ccountry::Reader<'_, M>,
     visit: impl FnMut(Visit) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    visit_task_forces_inner(memory, base, countries, false, visit)
+    visit_task_forces_inner(memory, base, countries, false, |_| (), visit)
 }
 
+/// `select` receives each task-force pointer once its identity authenticated, before its visit;
+/// a gather there must not serve the identity, whose faults keep their refusal.
 fn visit_task_forces_inner<M: Memory>(
     memory: &M,
     base: usize,
     countries: &ccountry::Reader<'_, M>,
     body_fields: bool,
+    mut select: impl FnMut(usize),
     mut visit: impl FnMut(Visit) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let fleet_vtable = base
@@ -1029,6 +1032,7 @@ fn visit_task_forces_inner<M: Memory>(
                     if body_fields && copied < 5 {
                         return Err("task force mission unreadable");
                     }
+                    select(task);
                     visit(Visit::TaskForce(
                         TaskForceVisit {
                             country,
@@ -1232,7 +1236,7 @@ pub fn walk_counter_inputs_with_port_observed<M: Memory>(
             supply,
             port,
         ),
-        visit,
+        (|_: usize| (), visit),
         observe,
         |_, _| (),
         |_, _, _, _| {},
@@ -1266,7 +1270,7 @@ pub fn walk_counter_inputs_with_port_observed_growing<M: Memory>(
         fleets,
         rosters,
         inputs,
-        visit,
+        (|_: usize| (), visit),
         observe,
         |_, _| (),
         |_, _, _, _| {},
@@ -1275,6 +1279,7 @@ pub fn walk_counter_inputs_with_port_observed_growing<M: Memory>(
 
 /// Brackets the original fleet-region header with the borrower's opaque token;
 /// its observer can certify the header and payload without reacquiring the header.
+/// `select` receives each task-force pointer once its identity authenticated.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_counter_inputs_with_port_and_fleet_observed_growing<M: Memory, T>(
     memory: &M,
@@ -1283,7 +1288,7 @@ pub fn walk_counter_inputs_with_port_and_fleet_observed_growing<M: Memory, T>(
     fleets: &mut Vec<CounterRow>,
     rosters: &mut Vec<u64>,
     (task_forces, names, supply, port): GrowingPortCounterInputs<'_, '_, '_, '_, '_, '_, '_, M>,
-    visit: impl FnMut(usize, u64),
+    (select, visit): (impl FnMut(usize), impl FnMut(usize, u64)),
     observe: impl FnMut(usize, u64, Option<Result<ctask_force::CounterRow, &'static str>>),
     fleet_regions_before: impl FnMut(usize, u64) -> T,
     fleet_regions: impl FnMut(usize, u64, Array, T),
@@ -1300,7 +1305,7 @@ pub fn walk_counter_inputs_with_port_and_fleet_observed_growing<M: Memory, T>(
             supply,
             port,
         ),
-        visit,
+        (select, visit),
         observe,
         fleet_regions_before,
         fleet_regions,
@@ -1324,7 +1329,7 @@ fn walk_counter_buffers_with_port_observed<M: Memory, T>(
         '_,
         M,
     >,
-    mut visit: impl FnMut(usize, u64),
+    (mut select, mut visit): (impl FnMut(usize), impl FnMut(usize, u64)),
     mut observe: impl FnMut(usize, u64, Option<Result<ctask_force::CounterRow, &'static str>>),
     mut fleet_regions_before: impl FnMut(usize, u64) -> T,
     mut fleet_regions: impl FnMut(usize, u64, Array, T),
@@ -1337,7 +1342,7 @@ fn walk_counter_buffers_with_port_observed<M: Memory, T>(
         let mut task_output = Output::from_buffer(task_forces);
         let mut keep = false;
         let mut task_count = 0;
-        visit_task_forces(memory, base, &countries, |event| {
+        visit_task_forces_inner(memory, base, &countries, true, &mut select, |event| {
             let finished = match event {
                 Visit::Fleet {
                     fleet,

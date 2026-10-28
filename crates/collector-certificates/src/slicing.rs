@@ -161,8 +161,9 @@ pub const FAMILIES: [SliceFamily; 16] = [
         owner: OwnerKind::CanonicalSlot,
         tables: &[TableId::AirNavalPatrolHistories],
     },
-    // The countries the hour's naval mission task forces name; the fingerprint is their
-    // leader and headquarters-commander references (extended/naval_mission_inputs.rs).
+    // The countries the hour's naval mission task forces name, read with no slice: the
+    // fingerprint certifies every recorded field, so a changed print, a new owner and a full
+    // hour read (extended/naval_mission_inputs.rs).
     SliceFamily {
         name: "naval_missions",
         owner: OwnerKind::Country,

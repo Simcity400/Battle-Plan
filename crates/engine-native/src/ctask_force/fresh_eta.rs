@@ -245,7 +245,15 @@ pub(super) struct Reader<'a, M: Memory> {
     /// Successful selectors and identities, valid only in this stopped capture.
     terrain_classes: Recent<(usize, u32), (usize, usize), 16>,
     locations: Recent<usize, (u32, usize), 16>,
+    /// Each location's region id and terrain, held for its world.
+    world_locations: Option<&'a mut ctask_force::WorldHold<(u32, usize)>>,
     fleets: Recent<usize, Option<usize>, 16>,
+    /// Each fleet's navy leader, held under the fleet's and leader's certifiers.
+    fleet_leaders: Option<(
+        &'a mut ctask_force::FleetLeaders,
+        ctask_force::Certify,
+        ctask_force::Certify,
+    )>,
     definitions: [Option<Result<Operands, &'static str>>; VALUE_COUNT + 1],
     metadata_root: Option<Result<usize, &'static str>>,
     eligibility: Option<Result<u32, &'static str>>,
@@ -395,7 +403,9 @@ impl<'a, M: Memory> Reader<'a, M> {
             censuses: Recent::default(),
             terrain_classes: Recent::default(),
             locations: Recent::default(),
+            world_locations: None,
             fleets: Recent::default(),
+            fleet_leaders: None,
             definitions: [None; VALUE_COUNT + 1],
             metadata_root: None,
             eligibility: None,
@@ -421,6 +431,24 @@ impl<'a, M: Memory> Reader<'a, M> {
 
     pub(super) fn with_modifier_guard(mut self, guard: Result<(), &'static str>) -> Self {
         self.modifier_guard = guard;
+        self
+    }
+
+    pub(super) fn with_world_locations(
+        mut self,
+        held: &'a mut ctask_force::WorldHold<(u32, usize)>,
+    ) -> Self {
+        self.world_locations = Some(held);
+        self
+    }
+
+    pub(super) fn with_fleet_leaders(
+        mut self,
+        held: &'a mut ctask_force::FleetLeaders,
+        fleets: ctask_force::Certify,
+        leaders: ctask_force::Certify,
+    ) -> Self {
+        self.fleet_leaders = Some((held, fleets, leaders));
         self
     }
 
@@ -742,7 +770,20 @@ impl<'a, M: Memory> Reader<'a, M> {
     /// The common modifier's authenticated location-to-terrain selector. Risk's
     /// independent province leaves keep their original demand and order.
     fn location(&mut self, location: usize, risk: bool) -> Result<(u32, usize), &'static str> {
-        if let Some(found) = self.locations.get(&location) {
+        let found = match self.locations.get(&location) {
+            Some(found) => Some(found),
+            None => {
+                let held = self
+                    .world_locations
+                    .as_deref_mut()
+                    .and_then(|held| held.get(location));
+                if let Some(found) = held {
+                    self.locations.insert(location, found);
+                }
+                held
+            }
+        };
+        if let Some(found) = found {
             if risk && self.full_risk {
                 self.context.location =
                     field::<u32>(self.memory, location, crate::cprovince::ID).map(Some);
@@ -790,6 +831,9 @@ impl<'a, M: Memory> Reader<'a, M> {
         )?;
         let found = (id, terrain);
         self.locations.insert(location, found);
+        if let Some(held) = self.world_locations.as_deref_mut() {
+            held.hold(location, found);
+        }
         Ok(found)
     }
 
@@ -799,12 +843,28 @@ impl<'a, M: Memory> Reader<'a, M> {
         if let Some(found) = self.fleets.get(&fleet) {
             return Ok(found);
         }
+        if let Some((held, fleets, leaders)) = self.fleet_leaders.as_mut()
+            && let Some(found) = held.get(fleet, *fleets, *leaders)
+        {
+            self.fleets.insert(fleet, found);
+            return Ok(found);
+        }
+        // Each certificate precedes the read of its object.
+        let fleet_certificate = self
+            .fleet_leaders
+            .as_ref()
+            .and_then(|(_, fleets, _)| fleets(fleet));
+        let mut leader_certificate = Some((0, 0));
         let fleet_fields = gather(self.memory, fleet, FLEET_FIELDS);
         let fleet_memory = fleet_fields.memory(self.memory);
         auth(&fleet_memory, self.base, fleet, cfleet::VTABLE_RVA)?;
         let reference = field::<u64>(&fleet_memory, fleet, cfleet::LEADER)?;
         let leader = self.references.resolve(self.memory, reference)?;
         if let Some(leader) = leader {
+            leader_certificate = self
+                .fleet_leaders
+                .as_ref()
+                .and_then(|(_, _, leaders)| leaders(leader));
             let leader_fields = gather(self.memory, leader, LEADER_FIELDS);
             let leader_memory = leader_fields.memory(self.memory);
             auth(
@@ -818,6 +878,9 @@ impl<'a, M: Memory> Reader<'a, M> {
             }
         }
         self.fleets.insert(fleet, leader);
+        if let Some((held, _, _)) = self.fleet_leaders.as_mut() {
+            held.hold(fleet, leader, fleet_certificate.zip(leader_certificate));
+        }
         Ok(leader)
     }
 

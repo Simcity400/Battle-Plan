@@ -592,6 +592,25 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
         self
     }
 
+    /// Answer each location's region id and terrain from `held`, which keeps those read for
+    /// its world.
+    pub fn with_world_locations(mut self, held: &'a mut WorldHold<(u32, usize)>) -> Self {
+        self.fresh = self.fresh.with_world_locations(held);
+        self
+    }
+
+    /// Answer each fleet's navy leader from `held` while `fleets` (leader binding) and
+    /// `leaders` (the leader's lifetime) still give the certificates it was read under.
+    pub fn with_fleet_leaders(
+        mut self,
+        held: &'a mut FleetLeaders,
+        fleets: Certify,
+        leaders: Certify,
+    ) -> Self {
+        self.fresh = self.fresh.with_fleet_leaders(held, fleets, leaders);
+        self
+    }
+
     /// Bind an off-thread prepared sink to the existing original SHIPS walk.
     /// Its immediate pointer loans retire before this owner callback returns.
     pub fn with_risk_ship_observer(mut self, observer: &'a mut dyn OriginalRiskShips) -> Self {
@@ -922,6 +941,155 @@ pub struct MissionWalk {
     pub required_regions: usize,
 }
 
+/// Map content by object address, held while its world lives: provinces, strategic regions and
+/// their templates and terrain are built at load and never rebuilt inside a world, so a held
+/// value needs no read.
+pub struct WorldHold<V> {
+    world: Option<u64>,
+    values: std::collections::HashMap<usize, V>,
+    /// Values served from the hold and read this capture.
+    pub held: u64,
+    pub read: u64,
+}
+
+/// Strategic region ids by region address.
+pub type WorldIds = WorldHold<u32>;
+
+impl<V> Default for WorldHold<V> {
+    fn default() -> Self {
+        Self {
+            world: None,
+            values: std::collections::HashMap::new(),
+            held: 0,
+            read: 0,
+        }
+    }
+}
+
+impl<V: Copy> WorldHold<V> {
+    /// Begin a capture in `world`; an unobserved or different world holds nothing.
+    pub fn begin(&mut self, world: Option<u64>) {
+        if world.is_none() || world != self.world {
+            self.values.clear();
+        }
+        self.world = world;
+        self.held = 0;
+        self.read = 0;
+    }
+
+    pub fn forget(&mut self) {
+        self.values.clear();
+        self.world = None;
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        self.values.capacity() * (size_of::<(usize, V)>() + 1)
+    }
+
+    pub(crate) fn get(&mut self, pointer: usize) -> Option<V> {
+        let value = self.values.get(&pointer).copied();
+        self.held += u64::from(value.is_some());
+        value
+    }
+
+    pub(crate) fn hold(&mut self, pointer: usize, value: V) {
+        self.read += 1;
+        if self.world.is_some() && self.values.try_reserve(1).is_ok() {
+            self.values.insert(pointer, value);
+        }
+    }
+}
+
+/// A receiver's `(epoch, sequence)` certificate, registering it; `None` while unobserved.
+pub type Certify = fn(usize) -> Option<(u64, u64)>;
+
+/// Each fleet's navy leader, held under the fleet's leader-binding certificate and the
+/// leader's naval tree certificate, each taken before its object was read; binding, reserve
+/// conversion and the leader's construction, copy and destruction move them.
+#[derive(Default)]
+pub struct FleetLeaders {
+    held: std::collections::HashMap<usize, (Option<usize>, (u64, u64), (u64, u64))>,
+    /// Fleets served from the hold and read this capture.
+    pub carried: u64,
+    pub read: u64,
+}
+
+impl FleetLeaders {
+    pub fn begin(&mut self) {
+        self.carried = 0;
+        self.read = 0;
+    }
+
+    pub fn forget(&mut self) {
+        self.held.clear();
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        self.held.capacity() * (size_of::<(usize, (Option<usize>, (u64, u64), (u64, u64)))>() + 1)
+    }
+
+    pub(crate) fn get(
+        &mut self,
+        fleet: usize,
+        fleets: Certify,
+        leaders: Certify,
+    ) -> Option<Option<usize>> {
+        let &(leader, fleet_certificate, leader_certificate) = self.held.get(&fleet)?;
+        if fleets(fleet) != Some(fleet_certificate)
+            || leader.is_some_and(|leader| leaders(leader) != Some(leader_certificate))
+        {
+            return None;
+        }
+        self.carried += 1;
+        Some(leader)
+    }
+
+    pub(crate) fn hold(
+        &mut self,
+        fleet: usize,
+        leader: Option<usize>,
+        certificates: Option<((u64, u64), (u64, u64))>,
+    ) {
+        self.read += 1;
+        if let Some((fleet_certificate, leader_certificate)) = certificates
+            && self.held.try_reserve(1).is_ok()
+        {
+            self.held
+                .insert(fleet, (leader, fleet_certificate, leader_certificate));
+        } else {
+            self.held.remove(&fleet);
+        }
+    }
+}
+
+/// The registered id of a `CStrategicRegion*`, which must sit at its own roster slot, or its
+/// id held for this world.
+fn mission_region_id(
+    memory: &impl Memory,
+    regions: Array,
+    held: &mut Option<&mut WorldIds>,
+    region: usize,
+) -> Result<u32, &'static str> {
+    use crate::cstrategic_region as sr;
+    if let Some(id) = held.as_deref_mut().and_then(|held| held.get(region)) {
+        return Ok(id);
+    }
+    let id = region
+        .checked_add(sr::ID)
+        .and_then(|at| read::<u32>(memory, at))
+        .ok_or("mission region id unreadable")?;
+    let registered = regions
+        .element(id, 8)
+        .and_then(|at| read::<u64>(memory, at));
+    if id == 0 || registered != Some(region as u64) {
+        return Err("mission region differs from its registered slot");
+    }
+    if let Some(held) = held.as_deref_mut() {
+        held.hold(region, id);
+    }
+    Ok(id)
+}
+
 /// Collects [`MissionRow`]s for task forces with a current region or an accessible region;
 /// a row buffer or region arena that is too short truncates, a bad read makes it unavailable.
 pub struct MissionCollector<'a, M: Memory> {
@@ -935,6 +1103,7 @@ pub struct MissionCollector<'a, M: Memory> {
     required: usize,
     missing: u32,
     error: Option<&'static str>,
+    held: Option<&'a mut WorldIds>,
 }
 
 impl<'a, M: Memory> MissionCollector<'a, M> {
@@ -996,7 +1165,14 @@ impl<'a, M: Memory> MissionCollector<'a, M> {
             error: regions
                 .is_none()
                 .then_some("task-force mission region roster invalid"),
+            held: None,
         }
+    }
+
+    /// Answer region ids from `held`, which keeps those read for its world.
+    pub fn with_region_ids(mut self, held: &'a mut WorldIds) -> Self {
+        self.held = Some(held);
+        self
     }
 
     /// `pointer` and `id` are a task force the fleet walk has authenticated; its mission is
@@ -1007,23 +1183,6 @@ impl<'a, M: Memory> MissionCollector<'a, M> {
         {
             self.error = Some(reason);
         }
-    }
-
-    /// The registered id of a `CStrategicRegion*`, which must sit at its own roster slot.
-    fn region_id(&self, region: usize) -> Result<u32, &'static str> {
-        use crate::cstrategic_region as sr;
-        let id = region
-            .checked_add(sr::ID)
-            .and_then(|at| read::<u32>(self.memory, at))
-            .ok_or("mission region id unreadable")?;
-        let registered = self
-            .regions
-            .element(id, 8)
-            .and_then(|at| read::<u64>(self.memory, at));
-        if id == 0 || registered != Some(region as u64) {
-            return Err("mission region differs from its registered slot");
-        }
-        Ok(id)
     }
 
     fn read(&mut self, pointer: usize, id: u64) -> Result<(), &'static str> {
@@ -1071,17 +1230,24 @@ impl<'a, M: Memory> MissionCollector<'a, M> {
         let current_region = if current == 0 {
             0
         } else {
-            self.region_id(current)?
+            mission_region_id(self.memory, self.regions, &mut self.held, current)?
         };
-        for index in 0..list.count {
-            let region = list
-                .element(index, 8)
-                .and_then(|at| read::<u64>(self.memory, at))
-                .and_then(|p| usize::try_from(p).ok())
-                .filter(|&p| p != 0)
-                .ok_or("mission accessible region pointer unreadable or null")?;
-            self.arena[self.arena_len + index as usize] = self.region_id(region)?;
-        }
+        // The pointers a page at a time.
+        let start = self.arena_len;
+        let (memory, regions, held, arena) =
+            (self.memory, self.regions, &mut self.held, &mut self.arena);
+        crate::cpdx_array::pointers(
+            memory,
+            list,
+            "mission accessible region pointer unreadable or null",
+            |index, region| {
+                if region == 0 {
+                    return Err("mission accessible region pointer unreadable or null");
+                }
+                arena[start + index as usize] = mission_region_id(memory, regions, held, region)?;
+                Ok(())
+            },
+        )?;
         self.rows[self.len] = MissionRow {
             id,
             owner,

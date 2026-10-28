@@ -1665,6 +1665,14 @@ impl OrdinaryPart {
                         game_state,
                         hour,
                         fresh_modifier_guard,
+                        naval_counters::Holds {
+                            world: crate::world_lifetime::token()
+                                .filter(|_| crate::world_input_changes::map_content_stable()),
+                            fleets: |fleet| {
+                                use crate::ship_model_changes::Changes;
+                                crate::ship_model_changes::Observer.sequence(fleet)
+                            },
+                        },
                     ),
                     &mut ticks,
                 );

@@ -14,8 +14,8 @@
 //! commander references, the naval tree family's certificates of its accumulator and its fleet
 //! leaders' ([`crate::naval_tree_changes`]), its navy's stored hubs and its headquarters
 //! commanders' skill objects. A country whose certificate moved is read within the hour, so its
-//! rows equal the game's every hour; the daily slice reads every other country. A navy whose
-//! registered-mission set is empty has empty ledgers, so its region headers are not read
+//! rows equal the game's every hour; no rotating slice reads the others. A navy's ledger
+//! registrations are read only after a registration, removal or reset moved its certificate
 //! ([`crate::navy_ledger_changes`]).
 use crate::{
     navy_ledger_changes::{Counts as LedgerCounts, Skip as LedgerSkip},
@@ -198,6 +198,26 @@ struct Member {
     range_failure: Option<&'static str>,
 }
 
+/// One navy's ledger registrations in ledger order, held under the ledger certificate taken
+/// before their read ([`crate::naval_map_changes::ledger_token`]).
+#[derive(Default)]
+struct HeldNavy {
+    navy: usize,
+    certificate: (u64, u64),
+    /// Region and entry count; `entries` holds the task forces in turn.
+    regions: Vec<(u32, usize)>,
+    entries: Vec<u64>,
+    /// This hour's read reached the navy.
+    seen: bool,
+}
+
+impl HeldNavy {
+    fn allocated_bytes(&self) -> usize {
+        self.regions.capacity() * size_of::<(u32, usize)>()
+            + self.entries.capacity() * size_of::<u64>()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct LedgerRow {
     owner: u32,
@@ -255,12 +275,20 @@ pub struct Captured {
     task_index: Vec<(u64, usize)>,
     escort_owners: Vec<u32>,
     escort_trees: super::naval_escort_trees::Trees,
+    /// Countries whose demanded escort tree this hour refused: read again next hour.
+    escort_retries: Vec<u32>,
+    /// A refusal did not fit `escort_retries`: every country is read next hour.
+    escort_retries_full: bool,
     convoy_designs: inputs::ConvoyDesigns,
     dominance_fleets: Vec<u64>,
     weather_len: usize,
     headquarters: Arena<u64>,
     census: Arena<Member>,
     ledgers: CaptureRows<LedgerRow>,
+    /// Navies' ledger registrations by navy address, kept across hours.
+    ledger_hold: Vec<HeldNavy>,
+    /// The fingerprint's resolved fleet leaders, kept across hours.
+    leaders: Leaders,
     mines: Vec<replay_data::rows::NavalRegionalMineRow>,
     mines_outcome: Outcome,
     mine_cache: crate::naval_mines::Captured,
@@ -288,6 +316,8 @@ pub struct Captured {
     ledger_counts: LedgerCounts,
     /// A CCountry's or CUnitLeader's certificate ([`crate::naval_tree_changes::sequence`]).
     sequence: fn(usize) -> Option<(u64, u64)>,
+    /// A navy's ledger certificate ([`crate::naval_map_changes::ledger_token`]).
+    ledger_sequence: fn(usize) -> Option<(u64, u64)>,
 }
 
 #[cfg(not(test))]
@@ -299,6 +329,17 @@ fn default_sequence() -> fn(usize) -> Option<(u64, u64)> {
 #[cfg(test)]
 fn default_sequence() -> fn(usize) -> Option<(u64, u64)> {
     |_| Some((1, 0))
+}
+
+#[cfg(not(test))]
+fn default_ledger_sequence() -> fn(usize) -> Option<(u64, u64)> {
+    crate::naval_map_changes::ledger_token
+}
+
+/// Tests: no navy is observed, so every ledger is read, unless a test says otherwise.
+#[cfg(test)]
+fn default_ledger_sequence() -> fn(usize) -> Option<(u64, u64)> {
+    |_| None
 }
 
 fn elapsed(started: i64) -> u64 {
@@ -335,6 +376,86 @@ fn fingerprint(task_forces: &[TaskForce], headquarters: &[u64]) -> u64 {
         }
     }
     hash
+}
+
+/// Fleet-leader references resolved to their navy leader under its naval tree certificate,
+/// kept across hours by reference; construction, copy and destruction move it.
+#[derive(Default)]
+struct Leaders {
+    held: Vec<(u64, usize, (u64, u64))>,
+    next: Vec<(u64, usize, (u64, u64))>,
+    carried: u64,
+    resolved: u64,
+}
+
+impl Leaders {
+    /// `reference`'s navy leader and certificate: the held one while its certificate holds,
+    /// else resolved, certified and authenticated in that order. `None` when unreadable or
+    /// unobserved; `Some(None)` when the reference resolves to nothing.
+    fn leader(
+        &mut self,
+        reference: u64,
+        sequence: fn(usize) -> Option<(u64, u64)>,
+        resolve: inputs::Resolve<'_>,
+        authenticate: impl FnOnce(usize) -> Result<(), &'static str>,
+    ) -> Option<Option<(usize, (u64, u64))>> {
+        if let Ok(at) = self.held.binary_search_by_key(&reference, |held| held.0) {
+            let (_, leader, certificate) = self.held[at];
+            if sequence(leader) == Some(certificate) {
+                self.carried += 1;
+                self.keep((reference, leader, certificate));
+                return Some(Some((leader, certificate)));
+            }
+        }
+        self.resolved += 1;
+        let Some(leader) = resolve(reference).ok()? else {
+            return Some(None);
+        };
+        let certificate = sequence(leader)?;
+        authenticate(leader).ok()?;
+        self.keep((reference, leader, certificate));
+        Some(Some((leader, certificate)))
+    }
+
+    fn keep(&mut self, entry: (u64, usize, (u64, u64))) {
+        if reserve(&mut self.next, 1).is_ok() {
+            self.next.push(entry);
+        }
+    }
+
+    /// After a scan: hold exactly the leaders it used. Returns the scan's carried and resolved
+    /// references.
+    fn finish(&mut self) -> [u64; 2] {
+        self.next.sort_unstable_by_key(|entry| entry.0);
+        self.next.dedup_by_key(|entry| entry.0);
+        std::mem::swap(&mut self.held, &mut self.next);
+        self.next.clear();
+        [
+            std::mem::take(&mut self.carried),
+            std::mem::take(&mut self.resolved),
+        ]
+    }
+
+    fn forget(&mut self) {
+        self.held.clear();
+        self.next.clear();
+    }
+
+    fn allocated_bytes(&self) -> usize {
+        (self.held.capacity() + self.next.capacity()) * size_of::<(u64, usize, (u64, u64))>()
+    }
+}
+
+/// Hold `navy` in `hold`, sorted by navy address; an allocation failure holds nothing.
+fn hold_navy(hold: &mut Vec<HeldNavy>, navy: HeldNavy) {
+    match hold.binary_search_by_key(&navy.navy, |held| held.navy) {
+        Ok(at) => hold[at] = navy,
+        Err(at) => {
+            if reserve(hold, 1).is_ok() {
+                hold.insert(at, navy);
+            }
+        }
+    }
 }
 
 /// Sorts and deduplicates `keys` in place; returns the distinct count.
@@ -383,12 +504,16 @@ impl Captured {
             task_index: Vec::new(),
             escort_owners: Vec::new(),
             escort_trees: Default::default(),
+            escort_retries: Vec::new(),
+            escort_retries_full: false,
             convoy_designs: Default::default(),
             dominance_fleets: Vec::new(),
             weather_len: 0,
             headquarters: Arena::new(size(capacity.headquarters)),
             census: Arena::new(size(capacity.census)),
             ledgers: CaptureRows::new(size(capacity.ledgers)),
+            ledger_hold: Vec::new(),
+            leaders: Leaders::default(),
             mines: Vec::new(),
             mines_outcome: Outcome::Rows { len: 0 },
             mine_cache: Default::default(),
@@ -418,6 +543,7 @@ impl Captured {
             selection: SliceSelection::new(storage),
             ledger_counts: LedgerCounts::default(),
             sequence: default_sequence(),
+            ledger_sequence: default_ledger_sequence(),
         }
     }
 
@@ -444,6 +570,8 @@ impl Captured {
         self.task_index.clear();
         self.escort_owners.clear();
         self.escort_trees.reset();
+        self.escort_retries.clear();
+        self.escort_retries_full = false;
         self.convoy_designs.clear();
         self.dominance_fleets.clear();
         self.weather_len = 0;
@@ -469,6 +597,13 @@ impl Captured {
             + self.headquarters.allocated_bytes()
             + self.census.allocated_bytes()
             + self.ledgers.allocated_bytes()
+            + self.ledger_hold.capacity() * size_of::<HeldNavy>()
+            + self
+                .ledger_hold
+                .iter()
+                .map(HeldNavy::allocated_bytes)
+                .sum::<usize>()
+            + self.leaders.allocated_bytes()
             + self.mines.capacity() * size_of::<replay_data::rows::NavalRegionalMineRow>()
             + self.accidents.capacity() * size_of::<replay_data::rows::NavalAccidentReportRow>()
             + self.entries.allocated_bytes()
@@ -483,7 +618,7 @@ impl Captured {
             + self.patrol.capacity() * size_of::<PatrolMember>()
             + (self.member_index.capacity() + self.task_index.capacity())
                 * size_of::<(u64, usize)>()
-            + self.escort_owners.capacity() * size_of::<u32>()
+            + (self.escort_owners.capacity() + self.escort_retries.capacity()) * size_of::<u32>()
             + self.escort_trees.allocated_bytes()
             + self.convoy_designs.allocated_bytes()
             + self.patrol_headquarters.capacity() * size_of::<(u64, Arc<Vec<u64>>)>()
@@ -554,7 +689,7 @@ impl Captured {
 
     /// Start a frame's family read at its hour; the capture resets it again.
     pub(crate) fn reset_selection(&mut self, hour: i32, force_full: bool) {
-        self.selection.reset(hour, force_full);
+        self.selection.reset_hooked(hour, force_full);
     }
 
     /// Terminal completion after an accepted worker failure: nothing is read or published.
@@ -568,7 +703,9 @@ impl Captured {
         self.accidents_outcome = outcome(5);
         self.ranges_outcome = outcome(6);
         self.patrol_outcome = outcome(7);
-        self.selection.reset(hour, force_full);
+        self.selection.reset_hooked(hour, force_full);
+        self.ledger_hold.clear();
+        self.leaders.forget();
         self.census.first.fill(Member::default());
         self.scratch.fill(0);
     }
@@ -717,7 +854,9 @@ impl Captured {
         self.empty_headquarters
             .get_or_insert_with(|| Arc::new(Vec::new()));
         self.ledger_counts = LedgerCounts::default();
-        self.selection.reset(hour, force_full);
+        // Without a store no print is held: every country is read.
+        self.selection
+            .reset_hooked(hour, force_full || fingerprints.is_none());
         let mut ticks = [0; N];
         let started = qpc();
         let mut census_complete = false;
@@ -749,8 +888,25 @@ impl Captured {
         let started = qpc();
         self.ledgers.outcome = {
             let _reads = crate::read_accounting::table(TABLES[1]);
-            self.read_ledgers(memory, base, &countries, holder, skip, census_complete)
-                .unwrap_or_else(|reason| Outcome::Unavailable { reason })
+            let mut hold = std::mem::take(&mut self.ledger_hold);
+            for held in &mut hold {
+                held.seen = false;
+            }
+            let read = self.read_ledgers(
+                memory,
+                base,
+                &countries,
+                holder,
+                (skip, force_full, &mut hold),
+                census_complete,
+            );
+            // A failed read holds nothing; a navy the read did not reach leaves the hold.
+            match read {
+                Ok(_) => hold.retain(|held| held.seen),
+                Err(_) => hold.clear(),
+            }
+            self.ledger_hold = hold;
+            read.unwrap_or_else(|reason| Outcome::Unavailable { reason })
         };
         ticks[1] = elapsed(started)
             .saturating_sub(self.map_ticks[0])
@@ -844,12 +1000,41 @@ impl Captured {
             self.read_family(memory, base, game_state);
         self.countries.outcome = countries_outcome;
         self.commanders.outcome = commanders_outcome;
+        if let Some(fingerprints) = fingerprints.as_deref_mut() {
+            self.retry_refused_escort_trees(fingerprints);
+        }
         if let Some(receivers) = receivers {
             crate::naval_tree_changes::missions(receivers);
         }
         ticks[2] = elapsed(started).saturating_sub(commander_ticks);
         ticks[3] = commander_ticks;
         ticks
+    }
+
+    /// `country`'s demanded escort tree refused this hour. Fixed storage never allocates: a
+    /// refusal that does not fit reads every country next hour.
+    fn retry_escort_tree(&mut self, country: u32) -> Result<(), &'static str> {
+        if self.growing {
+            reserve(&mut self.escort_retries, 1)
+                .map_err(|_| "escort tree retry allocation failed")?;
+        }
+        if self.escort_retries.len() < self.escort_retries.capacity() {
+            self.escort_retries.push(country);
+        } else {
+            self.escort_retries_full = true;
+        }
+        Ok(())
+    }
+
+    /// An unchanged print would keep a refused escort tree missing: each country whose demanded
+    /// tree this hour refused is a change at the next scan, every country when they did not fit.
+    fn retry_refused_escort_trees(&self, fingerprints: &mut SliceFingerprints) {
+        if self.escort_retries_full {
+            fingerprints.forget();
+        }
+        for &country in &self.escort_retries {
+            fingerprints.invalidate(country);
+        }
     }
 
     fn fail_all(&mut self, reason: &'static str) {
@@ -1614,14 +1799,16 @@ impl Captured {
     /// pass requires a navy for every positive canonical country. A navy
     /// whose registered-mission set is empty
     /// ([`cstrategic_navy::REGISTERED_MISSIONS`]) has every ledger empty: as
-    /// `skip` allows, its region headers are not read.
+    /// `skip` allows, its region headers are not read. Outside a full hour, a
+    /// navy whose ledger certificate is the one `hold` keeps for it republishes
+    /// its held registrations; only its presence counts are read.
     fn read_ledgers<M: Memory>(
         &mut self,
         memory: &M,
         base: usize,
         countries: &ccountry::Reader<'_, M>,
         holder: &mut super::country_naval_movement_inputs::Captured,
-        skip: LedgerSkip,
+        (skip, force_full, hold): (LedgerSkip, bool, &mut Vec<HeldNavy>),
         census_complete: bool,
     ) -> Result<Outcome, &'static str> {
         let count = holder.physical_count()?;
@@ -1706,14 +1893,80 @@ impl Captured {
                 continue;
             }
             let outer = navy.take_ledger_regions()?;
+            let certificate = (self.ledger_sequence)(pointer);
+            let held = hold.binary_search_by_key(&pointer, |held| held.navy);
+            let mut presence = None;
+            if let (Ok(at), Some(certificate), false) = (held, certificate, force_full)
+                && hold[at].certificate == certificate
+            {
+                // No registration, removal, reset or lifecycle writer touched this navy.
+                self.ledger_counts.carried += 1;
+                hold[at].seen = true;
+                let held = &hold[at];
+                let mut first = 0;
+                for &(region, count) in &held.regions {
+                    let entries = &held.entries[first..first + count];
+                    first += count;
+                    if self.growing {
+                        engine_native::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
+                            len.checked_add(1)
+                                .ok_or("naval mission ledger row demand overflow")?,
+                        )?;
+                        engine_native::walk::Buffer::Growing(&mut self.entries.first).ensure(
+                            self.entries
+                                .len
+                                .checked_add(count)
+                                .ok_or("naval mission ledger demand overflow")?,
+                        )?;
+                    }
+                    self.entries.required = self.entries.required.saturating_add(count);
+                    if len == self.ledgers.rows.len()
+                        || count > self.entries.first.len().saturating_sub(self.entries.len)
+                    {
+                        unread = unread.saturating_add(1);
+                        continue;
+                    }
+                    self.entries.first[self.entries.len..self.entries.len + count]
+                        .copy_from_slice(entries);
+                    let map = match presence {
+                        Some(map) => map,
+                        None => {
+                            let read = inputs::PresenceMap::read(memory, pointer)?;
+                            presence = Some(read);
+                            read
+                        }
+                    };
+                    let counted = map.presence(memory, region)?;
+                    self.ledgers.rows[len] = LedgerRow {
+                        owner: owner.id,
+                        region,
+                        first: self.entries.len,
+                        count,
+                        ring: counted.is_some(),
+                        counted: counted.unwrap_or_default(),
+                    };
+                    self.entries.len += count;
+                    len += 1;
+                }
+                continue;
+            }
+            let mut fresh = HeldNavy {
+                navy: pointer,
+                certificate: certificate.unwrap_or_default(),
+                seen: true,
+                ..HeldNavy::default()
+            };
+            let mut holdable = certificate.is_some();
             // Append, remove and reset write a
             // ledger and the set together: no registered mission, no entry.
             if skip.enabled && cstrategic_navy::registered_missions(memory, pointer) == Ok(0) {
                 self.ledger_counts.skipped += 1;
+                if holdable {
+                    hold_navy(hold, fresh);
+                }
                 continue;
             }
             self.ledger_counts.read += 1;
-            let mut presence = None;
             inputs::ledger_regions_in(memory, outer, |region, ledger| {
                 if self.growing {
                     engine_native::walk::Buffer::Growing(&mut self.scratch)
@@ -1735,6 +1988,7 @@ impl Captured {
                     || count > self.entries.first.len().saturating_sub(self.entries.len)
                 {
                     unread = unread.saturating_add(1);
+                    holdable = false;
                     return Ok(());
                 }
                 for (at, &mission) in self.scratch[..count].iter().enumerate() {
@@ -1748,6 +2002,14 @@ impl Captured {
                         .map(|index| census[index])
                         .ok_or("navy ledger names a task force outside the fleet census")?;
                     self.entries.first[self.entries.len + at] = member.id;
+                }
+                let entries = &self.entries.first[self.entries.len..self.entries.len + count];
+                holdable = holdable
+                    && reserve(&mut fresh.regions, 1).is_ok()
+                    && reserve(&mut fresh.entries, count).is_ok();
+                if holdable {
+                    fresh.regions.push((region, count));
+                    fresh.entries.extend_from_slice(entries);
                 }
                 // The naval mission updater updates every record, including an unlisted escort
                 // animating out. Its alert still reads this region's presence.
@@ -1772,6 +2034,9 @@ impl Captured {
                 len += 1;
                 Ok(())
             })?;
+            if holdable {
+                hold_navy(hold, fresh);
+            }
         }
         // The original icon pass required a navy for every positive
         // canonical country beyond the manager's physical slots too.
@@ -1818,13 +2083,22 @@ impl Captured {
     ) -> usize {
         let resolve = |handle| creference_registry::resolve(memory, base, handle);
         let mut receivers = 0;
+        let mut leaders = std::mem::take(&mut self.leaders);
         for index in 0..self.named.len {
             let country = self.named.first[index];
-            let certificate =
-                self.certificate(memory, base, game_state, country, &resolve, &mut receivers);
+            let certificate = self.certificate(
+                memory,
+                base,
+                game_state,
+                country,
+                (&resolve, &mut leaders),
+                &mut receivers,
+            );
             self.selection
                 .scan_marking(fingerprints, country.id, certificate);
         }
+        crate::navy_ledger_changes::record_leaders(leaders.finish());
+        self.leaders = leaders;
         fingerprints.finish_scan();
         self.selection.finish_census(fingerprints);
         receivers
@@ -1837,14 +2111,14 @@ impl Captured {
     /// scaling, construction and destruction rebuild the leader's accumulator); and each HQ
     /// commander's unit leader and four skill objects, selected by four component setters. Their
     /// source accumulators are content. An unreadable or unobserved part returns `None`, so the
-    /// country is read every hour.
+    /// country is read every hour. A fleet leader's reference resolves through `leaders`.
     fn certificate(
         &self,
         memory: &impl Memory,
         base: usize,
         game_state: usize,
         country: ccountry::Country,
-        resolve: inputs::Resolve<'_>,
+        (resolve, leaders): (inputs::Resolve<'_>, &mut Leaders),
         receivers: &mut usize,
     ) -> Option<u64> {
         let owned = Self::owned(Self::task_forces(&self.task_forces), country.canonical_slot);
@@ -1876,9 +2150,16 @@ impl Captured {
             done += len;
         }
         for task_force in owned {
-            if task_force.row.leader != 0 {
-                match inputs::fleet_leader(memory, base, task_force.row.leader, resolve).ok()? {
-                    Some(leader) => certify(&mut digest, leader)?,
+            let reference = task_force.row.leader;
+            if reference != 0 {
+                let leader = leaders.leader(reference, self.sequence, resolve, |leader| {
+                    inputs::fleet_leader(memory, base, reference, &|_| Ok(Some(leader))).map(drop)
+                })?;
+                match leader {
+                    Some((leader, (epoch, sequence))) => {
+                        *receivers += 1;
+                        digest.u64(leader as u64).u64(epoch).u64(sequence);
+                    }
                     None => {
                         digest.u64(0);
                     }
@@ -1996,14 +2277,19 @@ impl Captured {
         row.hub_count = count;
         self.hubs.len += count;
         row.country = country.id;
+        let demanded = self.escort_owners.binary_search(&country.id).is_ok();
         row.escort_tree = self.escort_trees.read(
             memory,
             base,
             country,
-            self.escort_owners.binary_search(&country.id).is_ok(),
+            demanded,
             (self.sequence)(country.pointer),
         );
+        let refused = demanded && row.escort_tree.is_none();
         accumulator::lookup_many(memory, country.pointer, &COUNTRY_KEYS, &mut row.values)?;
+        if refused {
+            self.retry_escort_tree(country.id)?;
+        }
         *len += 1;
         Ok(())
     }
