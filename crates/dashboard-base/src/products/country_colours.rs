@@ -16,7 +16,7 @@ use dashboard_core::transport::json_len;
 use dashboard_text::metadata::check_cancel;
 use replay::container::SeekResult;
 use serde::{Deserialize, Serialize};
-use std::{io, sync::atomic::AtomicBool};
+use std::{collections::HashMap, io, sync::atomic::AtomicBool};
 use ts_rs::TS;
 
 pub struct CountryColours;
@@ -117,61 +117,135 @@ fn load_within(
     hours.sort_unstable();
     hours.dedup();
     let mut reply = Reply::new(params, budget)?;
+    // One block's hours at a time, so a block the pass cannot read is sought hour by hour.
+    let mut groups: Vec<(Option<&replay::container::BlockIndex>, &[i32])> = Vec::new();
     let mut rest = &hours[..];
     while let Some(&first) = rest.first() {
-        check_cancel(cancelled)?;
-        // One block's hours at a time, so a block the pass cannot read is sought hour by hour.
-        let count = source
-            .replay_ref()
-            .index
-            .iter()
-            .find(|block| {
-                block.branch == branch && block.first_hour <= first && first <= block.last_hour
-            })
-            .map_or(1, |block| {
-                rest.partition_point(|hour| *hour <= block.last_hour)
-            });
+        let block = source.replay_ref().index.iter().find(|block| {
+            block.branch == branch && block.first_hour <= first && first <= block.last_hour
+        });
+        let count = block.map_or(1, |block| {
+            rest.partition_point(|hour| *hour <= block.last_hour)
+        });
         let (now, later) = rest.split_at(count);
+        groups.push((block, now));
         rest = later;
-        let mut visited = 0;
-        let mut stop = None;
-        let pass = frames::hours(
-            source,
-            branch,
-            now,
-            STYLE_TABLES,
-            cancelled,
-            |hour, result| {
-                visited += 1;
-                // The pass names each gap as a seek of its hour would.
-                reply.read(hour, Ok(result), cancelled).map_err(|error| {
-                    let signal = io::Error::new(error.kind(), error.to_string());
-                    stop = Some(error);
-                    signal
-                })
-            },
-        );
-        if let Some(error) = stop {
-            return Err(error);
+    }
+    // A request refusing block decodes reads as it always has: no reader decodes for it.
+    if crate::prepared::query::progressive::block_decodes_disabled() {
+        return read_groups(source, branch, &groups, reply, cancelled);
+    }
+    check_cancel(cancelled)?;
+    // Readers warm the frame cache for later blocks; this thread reads and admits each hour in order.
+    let blocks: Vec<_> = groups.iter().filter_map(|(block, _)| *block).collect();
+    let hours_of: HashMap<u64, &[i32]> = groups
+        .iter()
+        .filter_map(|(block, now)| block.map(|block| (block.offset, *now)))
+        .collect();
+    let reader = std::thread::current().id();
+    let prefetch = |block: &replay::container::BlockIndex| {
+        if std::thread::current().id() != reader {
+            let _ = frames::hours(
+                source,
+                branch,
+                hours_of[&block.offset],
+                STYLE_TABLES,
+                cancelled,
+                |_, _| Ok(()),
+            );
         }
-        match pass {
-            Ok(()) => {}
-            Err(error) if fatal(&error) => return Err(error),
-            // Damage later in the block can fail the pass where a seek of an earlier hour reads.
-            Err(_) => {
-                for &hour in &now[visited..] {
-                    let result = seek_styles(source, branch, hour, cancelled);
-                    if let Err(error) = &result
-                        && fatal(error)
-                    {
-                        return Err(result.unwrap_err());
-                    }
-                    reply.read(hour, result, cancelled)?;
+        Ok(())
+    };
+    let mut consumed = false;
+    let scanned = dashboard_core::blocks::scan_blocks_by(
+        blocks,
+        PREFETCH,
+        cancelled,
+        &prefetch,
+        |prefetched| {
+            consumed = true;
+            for (block, now) in &groups {
+                check_cancel(cancelled)?;
+                if block.is_some() {
+                    prefetched.next();
                 }
+                read_group(source, branch, now, &mut reply, cancelled)?;
+            }
+            Ok(())
+        },
+    );
+    match scanned {
+        Ok(()) => Ok(reply.reply),
+        // The read-ahead could not start: read as a request without it would.
+        Err(_) if !consumed => read_groups(source, branch, &groups, reply, cancelled),
+        Err(error) => Err(error),
+    }
+}
+
+/// Every group in order, on this thread alone.
+fn read_groups(
+    source: &Source,
+    branch: u64,
+    groups: &[(Option<&replay::container::BlockIndex>, &[i32])],
+    mut reply: Reply,
+    cancelled: &AtomicBool,
+) -> io::Result<CountryColourReply> {
+    for (_, now) in groups {
+        check_cancel(cancelled)?;
+        read_group(source, branch, now, &mut reply, cancelled)?;
+    }
+    Ok(reply.reply)
+}
+
+/// Blocks the readers may decode ahead of the one this request reads.
+const PREFETCH: usize = 4;
+
+/// One block's hours (or one hour outside any block) read into the reply.
+fn read_group(
+    source: &Source,
+    branch: u64,
+    now: &[i32],
+    reply: &mut Reply,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    let mut visited = 0;
+    let mut stop = None;
+    let pass = frames::hours(
+        source,
+        branch,
+        now,
+        STYLE_TABLES,
+        cancelled,
+        |hour, result| {
+            visited += 1;
+            // The pass names each gap as a seek of its hour would.
+            reply.read(hour, Ok(result), cancelled).map_err(|error| {
+                let signal = io::Error::new(error.kind(), error.to_string());
+                stop = Some(error);
+                signal
+            })
+        },
+    );
+    if let Some(error) = stop {
+        return Err(error);
+    }
+    match pass {
+        Ok(()) => {}
+        Err(error) if fatal(&error) => return Err(error),
+        // Damage later in the block can fail the pass where a seek of an earlier hour reads.
+        Err(_) => {
+            for &hour in &now[visited..] {
+                let result = seek_styles(source, branch, hour, cancelled);
+                if let Err(error) = &result
+                    && fatal(error)
+                {
+                    return Err(result.unwrap_err());
+                }
+                reply.read(hour, result, cancelled)?;
             }
         }
     }
-    Ok(reply.reply)
+    Ok(())
 }
 
 /// What ends the whole reply rather than one hour: cancellation, a refused

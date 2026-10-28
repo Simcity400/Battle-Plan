@@ -267,6 +267,35 @@ fn hours_across_blocks_and_outside_the_recording() {
     assert_eq!(unread, [50, 150, 300]);
 }
 
+#[test]
+fn blocks_read_ahead_answer_as_each_hour_seeks_in_hour_order() {
+    let mut joined = replay(vec![frame(100, RED), frame(101, None)]);
+    for (start, colour) in [
+        (200, Some([0.4, 0.5, 1.5])),
+        (300, RED),
+        (400, None),
+        (500, Some([0.9, 0.1, 0.2])),
+    ] {
+        joined = joined
+            .append(&[continuation_records(
+                &joined,
+                1,
+                vec![frame(start, colour), frame(start + 1, RED)],
+            )])
+            .unwrap();
+    }
+    assert!(joined.index.len() >= 5);
+    let hours = [100, 101, 150, 200, 201, 300, 301, 400, 401, 500, 501, 600];
+    let reply = assert_seek_parity(&joined, &hours);
+    assert_parity(&memory(fresh(&joined)), &hours);
+    assert!(
+        reply
+            .runs
+            .windows(2)
+            .all(|pair| pair[0].hour <= pair[1].hour)
+    );
+}
+
 /// `replay` with the last byte of `section` of its first block flipped.
 fn damaged_section(replay: &Replay, section: Section) -> Replay {
     let block = &replay.index[0];
