@@ -436,6 +436,8 @@ impl Forwarder {
 pub struct Domain {
     sharing: WatchRegistry,
     accumulator: WatchRegistry,
+    /// Country name rebuilding and the forwarded country reset ([`names_quiet`]).
+    names: WatchRegistry,
     sets: [DirtySet; SETS],
     calls: [AtomicU64; SITES],
     /// Forwarded calls per [`Forward`].
@@ -476,6 +478,7 @@ pub struct Marks<'a> {
     _wargoals: Option<crate::wargoal_changes::Guard>,
     _project_reset: Option<crate::project_variable_changes::Reset>,
     _accumulator: Option<crate::watch_registry::Notification<'a>>,
+    _names: Option<crate::watch_registry::Notification<'a>>,
     _market: Option<crate::market_changes::CountryReset>,
 }
 
@@ -504,6 +507,7 @@ impl<'a> Marks<'a> {
             _wargoals: None,
             _project_reset: None,
             _accumulator: None,
+            _names: None,
             _market: None,
         }
     }
@@ -565,6 +569,7 @@ impl Domain {
         Self {
             sharing: WatchRegistry::retaining(),
             accumulator: WatchRegistry::retaining(),
+            names: WatchRegistry::new(),
             sets: [const { DirtySet::new() }; SETS],
             calls: [const { AtomicU64::new(0) }; SITES],
             forwarded: [const { AtomicU64::new(0) }; Forward::ALL.len()],
@@ -621,6 +626,7 @@ impl Domain {
             _wargoals: None,
             _project_reset: None,
             _accumulator: None,
+            _names: None,
             _market: None,
         }
     }
@@ -670,6 +676,7 @@ impl Domain {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         let mut marks = self.mark(MUTATIONS[site].2, MUTATIONS[site].1, first, second);
         marks._accumulator = (site == 0).then(|| self.accumulator.notify(first));
+        marks._names = (site == sites::REBUILD_LOCALIZED_NAME).then(|| self.names.notify(0));
         marks
     }
 
@@ -778,6 +785,7 @@ impl Domain {
         }
         marks._accumulator =
             (site == Forward::ResetCountry).then(|| self.accumulator.notify(first));
+        marks._names = (site == Forward::ResetCountry).then(|| self.names.notify(0));
         marks
     }
 
@@ -842,10 +850,10 @@ impl Domain {
     /// epoch.
     fn apply(&self) {
         self.sharing.set_enabled(self.hooks.load(Ordering::SeqCst));
-        self.accumulator.set_enabled(
-            self.hooks.load(Ordering::SeqCst)
-                && self.forwarders[Forwarder::Politics as usize].load(Ordering::SeqCst),
-        );
+        let reset = self.hooks.load(Ordering::SeqCst)
+            && self.forwarders[Forwarder::Politics as usize].load(Ordering::SeqCst);
+        self.accumulator.set_enabled(reset);
+        self.names.set_enabled(reset);
         let hooks = self.hooks.load(Ordering::SeqCst);
         for (index, set) in self.sets.iter().enumerate() {
             let forwarded = Forwarder::ALL.iter().all(|&forwarder| {
@@ -985,6 +993,7 @@ pub fn weather_writes() -> Option<u64> {
 pub fn active() -> usize {
     DOMAIN.accumulator.active()
         + DOMAIN.sharing.active()
+        + DOMAIN.names.active()
         + DOMAIN.sets.iter().map(|set| set.active()).sum::<usize>()
         + crate::crew_changes::active()
         + crate::wargoal_changes::active()
@@ -1069,6 +1078,7 @@ pub fn project_variables_written(owner: Option<u32>) -> Marks<'static> {
         _occupation: None,
         _wargoals: None,
         _accumulator: None,
+        _names: None,
         _market: None,
     }
 }
@@ -1226,6 +1236,18 @@ pub fn accumulator_quiet() -> Option<(u64, u64)> {
 }
 pub fn accumulator_sequence(country: usize) -> Option<(u64, u64)> {
     DOMAIN.accumulator.sequence(country)
+}
+/// Equal tokens around a read prove no country name was rebuilt during it.
+pub fn names_quiet() -> Option<(u64, u64)> {
+    DOMAIN.names.quiet()
+}
+#[cfg(test)]
+pub(crate) fn observe_names() {
+    DOMAIN.names.set_enabled(true);
+}
+#[cfg(test)]
+pub(crate) fn rebuilding_name() -> crate::watch_registry::Notification<'static> {
+    DOMAIN.names.notify(0)
 }
 /// Off-thread registry demand, available before the first hourly census.
 pub fn presize_countries(ids: usize) {

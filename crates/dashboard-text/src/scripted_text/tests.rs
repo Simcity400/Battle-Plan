@@ -543,7 +543,7 @@ fn names_only_expansion_reads_country_names_through_scope_links() {
     let country = EventScopes::new(vec![EventScope::of(EventObject::Country(1))]);
     let state = EventScopes::new(vec![EventScope::of(EventObject::State(64))]);
     assert_eq!(
-        text.expand_names_in("[ROOT.GetNameDefCap] ([THIS.GetTag])", &country)
+        text.expand_names_in("[ROOT.GetNameDefCap] ([THIS.GetTag])", &country, &[])
             .as_deref(),
         Ok("The German Reich (GER)")
     );
@@ -555,12 +555,54 @@ fn names_only_expansion_reads_country_names_through_scope_links() {
         ("[ROOT.GetRulingParty]", &country),
         ("[(ROOT.GetName?a:b)]", &country),
     ] {
-        let error = text.expand_names_in(expression, scopes).unwrap_err();
+        let error = text.expand_names_in(expression, scopes, &[]).unwrap_err();
         assert!(
             error.contains("reads more than an event scope's country name"),
             "{expression}: {error}"
         );
     }
+    // An unproven scope's links still lead on; only its own name is refused.
+    let linked = EventScopes::new(vec![
+        EventScope {
+            from: Link::Scope(1),
+            ..EventScope::of(EventObject::Country(1))
+        },
+        EventScope {
+            root: Link::Scope(0),
+            ..EventScope::of(EventObject::Country(0))
+        },
+    ]);
+    let names = [
+        ScopeName::Hour,
+        ScopeName::Unproven("it carries a character".to_owned()),
+    ];
+    assert_eq!(
+        text.expand_names_in("[From.Root.GetTag]", &linked, &names)
+            .as_deref(),
+        Ok("GER")
+    );
+    let error = text
+        .expand_names_in("[From.GetTag]", &linked, &names)
+        .unwrap_err();
+    assert!(
+        error.contains("event scope 1: it carries a character"),
+        "{error}"
+    );
+    // Names the occurrence recorded replace the hour's; the tag is the country's own.
+    let recorded = [ScopeName::Recorded([
+        b"Old Reich".to_vec(),
+        b"the Old Reich".to_vec(),
+        b"Old German".to_vec(),
+    ])];
+    assert_eq!(
+        text.expand_names_in(
+            "[ROOT.GetName] / [ROOT.GetNameDefCap] / [THIS.GetAdjectiveCap] / [ROOT.GetNameWithFlag]",
+            &country,
+            &recorded
+        )
+        .as_deref(),
+        Ok("Old Reich / The Old Reich / Old German / \u{12}GER The Old Reich")
+    );
 }
 
 #[test]

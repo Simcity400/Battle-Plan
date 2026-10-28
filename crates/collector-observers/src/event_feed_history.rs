@@ -1131,12 +1131,28 @@ impl Store {
                 graph_len = 0;
                 scope_end = self.scopes_used;
             }
+            // Names copied while no rebuild ran are whole; any overlap refuses them all.
+            let quiet = crate::country_input_changes::names_quiet();
+            let mut world = None;
             for (output, node) in self.script_scopes[self.scopes_used..scope_end]
                 .iter_mut()
                 .zip(&self.scope_nodes[..graph_len])
             {
                 let value = node.operands;
+                let country = if value.country as i32 > 0 {
+                    world
+                        .get_or_insert_with(|| native::provenance::World::new(memory, base).ok())
+                        .as_ref()
+                        .and_then(|world| world.country_and_object(value.country).ok())
+                } else {
+                    None
+                };
                 *output = EventFeedScope {
+                    country_attempted: true,
+                    country_id: country.map(|(identity, _)| identity.id),
+                    country_names: quiet
+                        .and(country)
+                        .and_then(|(_, object)| country_names(memory, object)),
                     country: value.country,
                     random: value.random,
                     bindings: value.bindings,
@@ -1147,6 +1163,11 @@ impl Store {
                     target_storage_unrecorded: value.target_storage_unrecorded,
                     tooltip_storage_unrecorded: value.tooltip_storage_unrecorded,
                 };
+            }
+            if quiet.is_none() || crate::country_input_changes::names_quiet() != quiet {
+                for output in &mut self.script_scopes[self.scopes_used..scope_end] {
+                    output.country_names = None;
+                }
             }
             let word =
                 |value| u32::try_from(value).map_err(|_| "event feed script arena ID overflow");
@@ -1908,6 +1929,23 @@ impl Entry {
         self.state == State::Known
             || self.state == State::Pending && matches!(self.proof.as_ref(), Some(Proof::Annex))
     }
+}
+
+/// The name, definite name and adjective a country holds, as its name text reads them.
+fn country_names(
+    memory: &impl Memory,
+    country: usize,
+) -> Option<[replay_data::event_feed_rows::EventFeedText; 3]> {
+    use engine_native::ccountry::{ADJECTIVE, DEFINITE_NAME, NAME};
+    let text = |offset: usize| {
+        let descriptor =
+            engine_native::msvc_string::Descriptor::read(memory, country.checked_add(offset)?)
+                .ok()?;
+        replay_data::event_feed_rows::EventFeedText::filled(descriptor.len, |output| {
+            descriptor.copy(memory, output).is_ok()
+        })
+    };
+    Some([text(NAME)?, text(DEFINITE_NAME)?, text(ADJECTIVE)?])
 }
 
 fn country(identity: native::CountryIdentity) -> EventFeedCountry {

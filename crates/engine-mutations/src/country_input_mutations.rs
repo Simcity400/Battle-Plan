@@ -1949,6 +1949,12 @@ pub const COUNTER_SITES: std::ops::Range<usize> = 64..70;
 /// detour compares the two leader roster counts ([`unit_leader_counts`])
 /// before and after the original.
 pub const REMOVE_UNIT_LEADER: usize = 67;
+/// Index of country name rebuilding in [`MUTATIONS`], the writer of the current names.
+pub const REBUILD_LOCALIZED_NAME: usize = 62;
+const _: () = assert!(matches!(
+    MUTATIONS[REBUILD_LOCALIZED_NAME].0.name.as_bytes(),
+    b"rebuild_localized_name"
+));
 /// Index of slot synchronization in [`MUTATIONS`], whose detour compares the
 /// slot roster header ([`slot_roster`]) before and after the original.
 pub const SYNC_RESEARCH_SLOTS: usize = 15;

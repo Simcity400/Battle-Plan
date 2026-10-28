@@ -296,6 +296,15 @@ impl<'a, M: Memory> World<'a, M> {
         Ok(identity(self.memory, self.base, &self.countries, reference)?.1)
     }
 
+    /// [`Self::country`] with the address of the native country object it resolved to.
+    pub fn country_and_object(
+        &self,
+        reference: u32,
+    ) -> Result<(CountryIdentity, usize), &'static str> {
+        let (country, identity) = identity(self.memory, self.base, &self.countries, reference)?;
+        Ok((identity, country.pointer))
+    }
+
     /// The country a `u32` reference pointer names.
     pub fn country_at(&self, reference: usize) -> Result<CountryIdentity, &'static str> {
         self.country(value(self.memory, reference, 0)?)

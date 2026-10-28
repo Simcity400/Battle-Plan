@@ -893,7 +893,66 @@ pub struct EventFeedScope {
     pub combat_context_unrecorded: bool,
     pub target_storage_unrecorded: bool,
     pub tooltip_storage_unrecorded: bool,
+    /// Set by collectors that record the two fields below, even when they could not.
+    pub country_attempted: bool,
+    /// The full native ID a positive `country` resolved to when the scope was copied.
+    pub country_id: Option<u32>,
+    /// That country's name, definite name and adjective then, in the recording client's language.
+    pub country_names: Option<[EventFeedText; 3]>,
 }
+
+/// Exact bytes of a native string, held inline so a scope stays `Copy`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct EventFeedText {
+    len: u16,
+    bytes: [u8; Self::CAPACITY],
+}
+impl EventFeedText {
+    pub const CAPACITY: usize = 256;
+    pub fn new(bytes: &[u8]) -> Option<Self> {
+        Self::filled(bytes.len(), |output| {
+            output.copy_from_slice(bytes);
+            true
+        })
+    }
+    /// `len` bytes `fill` writes in place; `None` beyond the capacity or when it fails.
+    pub fn filled(len: usize, fill: impl FnOnce(&mut [u8]) -> bool) -> Option<Self> {
+        let mut text = Self::default();
+        let output = text.bytes.get_mut(..len)?;
+        fill(output).then_some(())?;
+        text.len = len as u16;
+        Some(text)
+    }
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+}
+impl Default for EventFeedText {
+    fn default() -> Self {
+        Self {
+            len: 0,
+            bytes: [0; Self::CAPACITY],
+        }
+    }
+}
+impl std::fmt::Debug for EventFeedText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", String::from_utf8_lossy(self.as_bytes()))
+    }
+}
+impl serde::Serialize for EventFeedText {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(self.as_bytes(), serializer)
+    }
+}
+impl<'de> serde::Deserialize<'de> for EventFeedText {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let bytes = <Vec<u8> as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(&bytes)
+            .ok_or_else(|| serde::de::Error::custom("Event feed text exceeds its capacity"))
+    }
+}
+
 fn compact_len(value: u32) -> usize {
     ((32 - value.leading_zeros()).max(1) as usize).div_ceil(7)
 }
@@ -939,7 +998,14 @@ impl Value for EventFeedScope {
                 .filter(|reference| **reference != 0)
                 .count()
                 * 8
-            + self.strategic_region.map(compact_len).unwrap_or(0))
+            + self.strategic_region.map(compact_len).unwrap_or(0)
+            + self.country_id.map(compact_len).unwrap_or(0)
+            + self
+                .country_names
+                .iter()
+                .flatten()
+                .map(|text| compact_len(text.len.into()) + text.as_bytes().len())
+                .sum::<usize>())
     }
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         compact_write(self.country, output);
@@ -964,10 +1030,17 @@ impl Value for EventFeedScope {
         let flags = u8::from(self.strategic_region.is_some())
             | (u8::from(self.combat_context_unrecorded) << 1)
             | (u8::from(self.target_storage_unrecorded) << 2)
-            | (u8::from(self.tooltip_storage_unrecorded) << 3);
+            | (u8::from(self.tooltip_storage_unrecorded) << 3)
+            | (u8::from(self.country_id.is_some()) << 4)
+            | (u8::from(self.country_names.is_some()) << 5)
+            | (u8::from(self.country_attempted) << 6);
         flags.encode_reserved(output)?;
-        if let Some(region) = self.strategic_region {
-            compact_write(region, output);
+        for value in [self.strategic_region, self.country_id].into_iter().flatten() {
+            compact_write(value, output);
+        }
+        for text in self.country_names.iter().flatten() {
+            compact_write(text.len.into(), output);
+            output.extend_from_slice(text.as_bytes());
         }
         Ok(())
     }
@@ -991,7 +1064,7 @@ impl Value for EventFeedScope {
             }
         }
         let flags = u8::decode(input)?;
-        if flags >> 4 != 0 {
+        if flags >> 7 != 0 {
             return Err(invalid("Event feed scope flags differ"));
         }
         let strategic_region = if flags & 1 != 0 {
@@ -999,7 +1072,26 @@ impl Value for EventFeedScope {
         } else {
             None
         };
+        let country_id = if flags & 0x10 != 0 {
+            Some(compact_read(input)?)
+        } else {
+            None
+        };
+        let country_names = if flags & 0x20 != 0 {
+            let mut texts = [EventFeedText::default(); 3];
+            for text in &mut texts {
+                let len = compact_read(input)? as usize;
+                *text = EventFeedText::new(input.take(len)?)
+                    .ok_or_else(|| invalid("Event feed scope name exceeds its capacity"))?;
+            }
+            Some(texts)
+        } else {
+            None
+        };
         Ok(Self {
+            country_attempted: flags & 0x40 != 0,
+            country_id,
+            country_names,
             country,
             random,
             bindings,
@@ -1296,6 +1388,12 @@ impl EventFeedHistoryRow {
                         return Err(invalid(
                             "Event feed scope binding is outside its occurrence",
                         ));
+                    }
+                    if scope.country_id.is_some() && scope.country as i32 <= 0
+                        || scope.country_names.is_some() && scope.country_id.is_none()
+                        || scope.country_id.is_some() && !scope.country_attempted
+                    {
+                        return Err(invalid("Event feed scope identity has no country"));
                     }
                 }
                 if (event.source == EventFeedSource::EventOption) != script.option.is_some() {
@@ -1763,6 +1861,12 @@ pub mod tests {
             EventFeedScope {
                 bindings: [1, 1, 0],
                 country: 5_000,
+                country_attempted: true,
+                country_id: Some(u32::MAX),
+                country_names: Some(
+                    [b"Reich".as_slice(), b"the Reich", b""]
+                        .map(|text| EventFeedText::new(text).unwrap()),
+                ),
                 ..Default::default()
             },
         ];
@@ -1797,6 +1901,15 @@ pub mod tests {
         row.script_scopes[0].bindings[1] = 2;
         assert!(row.validate().is_err());
         row.script_scopes[0].bindings[1] = 1;
+        row.script_scopes[0].country_id = Some(1);
+        assert!(row.validate().is_err());
+        row.script_scopes[0].country_id = None;
+        row.script_scopes[1].country_id = None;
+        assert!(row.validate().is_err());
+        row.script_scopes[1].country_id = Some(u32::MAX);
+        row.script_scopes[1].country_attempted = false;
+        assert!(row.validate().is_err());
+        row.script_scopes[1].country_attempted = true;
         row.events[0].script.as_mut().unwrap().token_len += 1;
         assert!(row.validate().is_err());
     }
@@ -1816,6 +1929,41 @@ pub mod tests {
         // three bindings and signed state. Higher bits have no native operand.
         bytes[14] = 2;
         assert!(EventFeedScope::decode(&mut Decoder::new(&bytes)).is_err());
+        bytes[14] = 0;
+        bytes[15] = 0x80;
+        assert!(EventFeedScope::decode(&mut Decoder::new(&bytes)).is_err());
+        // A failed attempt still marks the scope as from a recording that tries.
+        let attempted = EventFeedScope {
+            country: 7,
+            country_attempted: true,
+            ..Default::default()
+        };
+        let mut bytes = Vec::new();
+        attempted.encode(&mut bytes).unwrap();
+        assert_eq!(
+            EventFeedScope::decode(&mut Decoder::new(&bytes)).unwrap(),
+            attempted
+        );
+        let long = [b'x'; EventFeedText::CAPACITY + 1];
+        assert!(EventFeedText::new(&long).is_none());
+        assert!(EventFeedText::new(&long[1..]).is_some());
+        let identified = EventFeedScope {
+            country: 7,
+            country_attempted: true,
+            country_id: Some(9_000),
+            country_names: Some(
+                [b"Name".as_slice(), b"the Name", b"Named"]
+                    .map(|text| EventFeedText::new(text).unwrap()),
+            ),
+            ..Default::default()
+        };
+        let mut bytes = Vec::new();
+        identified.encode(&mut bytes).unwrap();
+        assert_eq!(identified.encoded_bytes().unwrap(), bytes.len());
+        assert_eq!(
+            EventFeedScope::decode(&mut Decoder::new(&bytes)).unwrap(),
+            identified
+        );
         let mut bytes = Vec::new();
         crate::codec::put_varint(&mut bytes, u32::MAX as u128 + 1);
         assert!(EventFeedScope::decode(&mut Decoder::new(&bytes)).is_err());

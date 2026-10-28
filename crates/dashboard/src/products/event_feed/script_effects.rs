@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     effect_description,
-    scripted_text::{EventObject, EventScope, EventScopes, Link, ScriptedText},
+    scripted_text::{EventObject, EventScope, EventScopes, Link, ScopeName, ScriptedText},
 };
 use replay_data::event_feed_rows::{EventFeedEvent, EventFeedHistoryRow};
 
@@ -29,11 +29,19 @@ struct DecisionTarget {
 #[derive(Clone, Serialize, Deserialize)]
 struct ScopeInput {
     reference: u32,
+    /// The collector tried to record `id` and `names`.
+    attempted: bool,
+    /// The native ID `reference` resolved to at the occurrence, when recorded.
+    id: Option<u32>,
     slot: Option<u32>,
     state: i32,
     bindings: [u32; 3],
     random: [u32; 2],
     unsupported: bool,
+    /// The objects, region or combat the scope carries, which text may read instead of its country.
+    opaque: Option<String>,
+    /// The country's name, definite name and adjective at the occurrence, when recorded.
+    names: Option<[Vec<u8>; 3]>,
 }
 impl Inputs {
     pub(super) fn captured(pack: &EventFeedHistoryRow, event: &EventFeedEvent) -> Self {
@@ -58,17 +66,31 @@ impl Inputs {
             scopes: pack.script_scopes[script.scope_start as usize
                 ..script.scope_start as usize + script.scope_len as usize]
                 .iter()
-                .map(|scope| ScopeInput {
-                    reference: scope.country,
-                    slot: None,
-                    state: scope.state,
-                    bindings: scope.bindings,
-                    random: scope.random,
-                    unsupported: scope.references.iter().any(|value| *value != 0)
-                        || scope.strategic_region.is_some()
-                        || scope.combat_context_unrecorded
-                        || scope.target_storage_unrecorded
-                        || scope.tooltip_storage_unrecorded,
+                .map(|scope| {
+                    let opaque = OBJECTS
+                        .iter()
+                        .zip(scope.references)
+                        .filter(|(_, reference)| *reference != 0)
+                        .map(|(kind, _)| *kind)
+                        .chain(scope.strategic_region.map(|_| "a strategic region"))
+                        .chain(scope.combat_context_unrecorded.then_some("a combat"))
+                        .collect::<Vec<_>>();
+                    ScopeInput {
+                        reference: scope.country,
+                        attempted: scope.country_attempted,
+                        id: scope.country_id,
+                        slot: None,
+                        state: scope.state,
+                        bindings: scope.bindings,
+                        random: scope.random,
+                        unsupported: !opaque.is_empty()
+                            || scope.target_storage_unrecorded
+                            || scope.tooltip_storage_unrecorded,
+                        opaque: (!opaque.is_empty()).then(|| opaque.join(" and ")),
+                        names: scope
+                            .country_names
+                            .map(|texts| texts.map(|text| text.as_bytes().to_vec())),
+                    }
                 })
                 .collect(),
         }
@@ -79,35 +101,39 @@ impl Inputs {
     ) {
         let identities = self.identities;
         let resolve = |reference: u32,
+                       recorded: Option<u32>,
                        slot: &mut dyn FnMut(
             replay_data::event_feed_rows::EventFeedCountry,
         ) -> Option<u32>| {
             if reference as i32 <= 0 {
                 return Some(0);
             }
-            // Other bound countries have raw scope references only. A later
-            // alias cannot authenticate their occurrence-time object identity.
-            let [reference, id, instance] = identities
-                .iter()
-                .copied()
-                .find(|country| country[0] == reference)?;
+            // A later alias may give a raw reference to another country.
+            let [reference, id, instance] = recorded
+                .map(|id| [reference, id, 0])
+                .or_else(|| {
+                    identities
+                        .iter()
+                        .copied()
+                        .find(|country| country[0] == reference)
+                })?;
             slot(replay_data::event_feed_rows::EventFeedCountry {
                 reference,
                 id,
                 instance,
             })
         };
-        self.actor_slot = resolve(self.actor, &mut slot);
+        self.actor_slot = resolve(self.actor, None, &mut slot);
         if let Some(target) = &mut self.target
             && let Some(country) = target.country.filter(|country| *country as i32 > 0)
         {
-            target.slot = resolve(country, &mut slot);
+            target.slot = resolve(country, None, &mut slot);
         }
         if let Some(roster) = &mut self.roster {
             roster.resolve(&mut slot);
         }
         for scope in &mut self.scopes {
-            scope.slot = resolve(scope.reference, &mut slot);
+            scope.slot = resolve(scope.reference, scope.id, &mut slot);
         }
     }
     fn graph(&self, decision: bool) -> Result<EventScopes, String> {
@@ -147,19 +173,27 @@ impl Inputs {
         if self.missing || self.scopes.is_empty() {
             return Err("event execution scope graph was not recorded".into());
         }
-        let mut scopes = Vec::with_capacity(self.scopes.len());
         for (id, scope) in self.scopes.iter().enumerate() {
             if scope.unsupported {
                 return Err(format!(
                     "scope {id} carries unsupported object, region, combat or saved/tooltip-target operands"
                 ));
             }
-            let country = scope.slot.ok_or_else(|| {
-                format!(
+            if scope.slot.is_none() {
+                return Err(format!(
                     "scope {id} country reference {} has no exact occurrence-hour canonical slot",
                     scope.reference
-                )
-            })?;
+                ));
+            }
+        }
+        Ok(self.scope_graph())
+    }
+
+    /// The recorded scopes, an unproven country as none: callers decide what may be read.
+    fn scope_graph(&self) -> EventScopes {
+        let mut scopes = Vec::with_capacity(self.scopes.len());
+        for scope in &self.scopes {
+            let country = scope.slot.unwrap_or(0);
             let object = if scope.state > 0 {
                 if country == 0 {
                     EventObject::State(scope.state as u32)
@@ -182,19 +216,59 @@ impl Inputs {
             resolved.random_counter = scope.random[1];
             scopes.push(resolved);
         }
-        Ok(EventScopes::new(scopes))
+        EventScopes::new(scopes)
+    }
+
+    /// The scopes a title reads and where each one's country names come from.
+    fn title_graph(&self) -> Result<(EventScopes, Vec<ScopeName>), String> {
+        if !self.scopes.iter().any(|scope| scope.attempted) {
+            return Ok((self.graph(false)?, Vec::new()));
+        }
+        let names = self
+            .scopes
+            .iter()
+            .map(|scope| match (&scope.opaque, scope.slot, &scope.names) {
+                (Some(kinds), ..) => ScopeName::Unproven(format!("it carries {kinds}")),
+                (None, None, _) => ScopeName::Unproven(format!(
+                    "its country reference {} has no exact occurrence-hour canonical slot",
+                    scope.reference
+                )),
+                (None, Some(_), Some(names)) => ScopeName::Recorded(names.clone()),
+                (None, Some(_), None) if scope.reference as i32 <= 0 => {
+                    ScopeName::Unproven("it holds no country".into())
+                }
+                (None, Some(_), None) => ScopeName::Unproven(
+                    "its country's names were not recorded: unreadable, too long or possibly mid-rename"
+                        .into(),
+                ),
+            })
+            .collect();
+        Ok((self.scope_graph(), names))
     }
 }
 
-/// An event text key expanded in the occurrence's recorded scopes, countries as `frame` holds them.
-/// Only their names expand: the hour's end does not prove what else the occurrence read.
+
+/// The objects a scope's references name, in native field order.
+const OBJECTS: [&str; 9] = [
+    "a character",
+    "an operation",
+    "an ace",
+    "a unit",
+    "an industrial organisation",
+    "a purchase contract",
+    "a raid",
+    "a project",
+    "a faction",
+];
+
+/// An event text key expanded in the occurrence's recorded scopes, country names only.
 pub(super) fn scoped_text(
     catalogue: &Catalogue,
     inputs: &Inputs,
     frame: &dyn replay_frame::frame::DecodedSource,
     key: &str,
 ) -> Result<String, String> {
-    let scopes = inputs.graph(false)?;
+    let (scopes, names) = inputs.title_graph()?;
     let scripted = catalogue.scripted_content()?;
     let text = catalogue
         .localisation
@@ -206,7 +280,7 @@ pub(super) fn scoped_text(
         scripted,
         inputs.actor_slot.unwrap_or(0),
     );
-    catalogue::plain_text(&expander.expand_names_in(&text, &scopes)?)
+    catalogue::plain_text(&expander.expand_names_in(&text, &scopes, &names)?)
 }
 
 /// A decision's title key and text for its owner, and whether the recorded title scope can expand it.
@@ -274,7 +348,7 @@ pub(super) fn decision_title_text(
         catalogue.scripted_content()?,
         owner,
     );
-    catalogue::plain_text(&expander.expand_names_in(&text, &scopes)?)
+    catalogue::plain_text(&expander.expand_names_in(&text, &scopes, &[])?)
 }
 
 fn render(
@@ -499,25 +573,34 @@ mod tests {
             scopes: vec![
                 ScopeInput {
                     reference: 90,
+                    attempted: false,
+                    id: None,
                     slot: None,
                     state: 0,
                     bindings: [0, 1, 0],
                     random: [17, 23],
                     unsupported: false,
+                    opaque: None,
+                    names: None,
                 },
                 ScopeInput {
                     reference: 91,
+                    attempted: false,
+                    id: None,
                     slot: None,
                     state: 4,
                     bindings: [1, 0, 1],
                     random: [31, 37],
                     unsupported: false,
+                    opaque: None,
+                    names: None,
                 },
             ],
         };
-        input.resolve(|country| match country.reference {
-            90 => Some(2),
-            91 => Some(3),
+        input.resolve(|country| match (country.reference, country.id) {
+            (90, 100) => Some(2),
+            (91, 101) => Some(3),
+            (92, 102) => Some(4),
             _ => None,
         });
         let graph = input.graph(false).unwrap();
@@ -539,6 +622,82 @@ mod tests {
         input.targeted = true;
         assert!(input.graph(true).unwrap_err().contains("targeted decision"));
     }
+
+    #[test]
+    fn titles_name_scopes_by_their_occurrence_names_and_old_recordings_keep_the_hours() {
+        let scope = |reference, id: Option<u32>, name: Option<&str>, bindings| ScopeInput {
+            reference,
+            attempted: id.is_some() || name.is_some(),
+            id,
+            slot: None,
+            state: 0,
+            bindings,
+            random: [1, 2],
+            unsupported: false,
+            opaque: None,
+            names: name.map(|name| [name; 3].map(|text| text.as_bytes().to_vec())),
+        };
+        let slots = |country: replay_data::event_feed_rows::EventFeedCountry| {
+            match (country.reference, country.id) {
+                (90, 100) => Some(2),
+                (92, 102) => Some(4),
+                _ => None,
+            }
+        };
+        let mut input = Inputs {
+            roster: None,
+            hour: 10,
+            option: None,
+            actor: 90,
+            identities: [[90, 100, 8], [0; 3]],
+            actor_slot: None,
+            targeted: false,
+            target: None,
+            missing: false,
+            scopes: vec![
+                scope(90, Some(100), Some("Reich"), [0, 1, 0]),
+                // FROM: neither actor nor target; its own recorded ID proves it.
+                scope(92, Some(102), Some("Italy"), [0, 2, 1]),
+                // A later alias of the same reference to another ID proves nothing.
+                scope(92, Some(103), Some("Other"), [0, 0, 2]),
+            ],
+        };
+        input.scopes[2].opaque = Some("a character".into());
+        input.scopes[2].unsupported = true;
+        input.resolve(slots);
+        let (graph, names) = input.title_graph().unwrap();
+        assert_eq!(graph.scopes[1].this, EventObject::Country(4));
+        assert_eq!(graph.scopes[1].from, Link::Scope(2));
+        assert!(matches!(&names[1], ScopeName::Recorded(texts) if texts[0] == b"Italy"));
+        assert!(matches!(&names[2], ScopeName::Unproven(why) if why.contains("a character")));
+        // Effects may read any scope, so they still refuse the whole graph.
+        assert!(input.graph(false).unwrap_err().contains("scope 2"));
+        input.scopes[2].opaque = None;
+        input.scopes[2].unsupported = false;
+        let (_, names) = input.title_graph().unwrap();
+        assert!(matches!(&names[2], ScopeName::Unproven(why) if why.contains("reference 92")));
+        // A proven country whose names were not recorded is not named from the hour.
+        input.scopes[1].names = None;
+        let (_, names) = input.title_graph().unwrap();
+        assert!(matches!(&names[1], ScopeName::Unproven(why) if why.contains("not recorded")));
+        // A failed attempt is still not an old recording: no scope falls back to the hour.
+        for scope in &mut input.scopes {
+            scope.id = None;
+            scope.names = None;
+        }
+        input.resolve(slots);
+        let (_, names) = input.title_graph().unwrap();
+        assert!(matches!(&names[0], ScopeName::Unproven(why) if why.contains("not recorded")));
+        // Older recordings, as before: the hour's names where every scope is proven.
+        input.scopes.truncate(1);
+        input.scopes[0] = scope(90, None, None, [0; 3]);
+        input.resolve(slots);
+        assert!(input.title_graph().unwrap().1.is_empty());
+        input.scopes.push(scope(92, None, None, [0, 0, 1]));
+        input.resolve(slots);
+        assert!(input.title_graph().unwrap_err().contains("scope 1"));
+    }
+
     #[test]
     fn selected_authored_effects_are_formatted_and_unsupported_children_are_named_counted() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -574,11 +733,15 @@ mod tests {
             missing: false,
             scopes: vec![ScopeInput {
                 reference: 1,
+                attempted: true,
+                id: Some(1),
                 slot: Some(1),
                 state: 0,
                 bindings: [0; 3],
                 random: [1, 2],
                 unsupported: false,
+                opaque: None,
+                names: None,
             }],
         };
         let mut builder = Builder::new(10, 10);

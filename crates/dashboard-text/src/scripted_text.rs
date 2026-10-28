@@ -267,6 +267,17 @@ pub struct EventScopes {
     pub global_tooltip_targets: Vec<(Vec<u8>, EventObject)>,
 }
 
+/// Where [`ScriptedText::expand_names_in`] reads one event scope's country names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScopeName {
+    /// The hour's names.
+    Hour,
+    /// The name, definite name and adjective the country held at the occurrence.
+    Recorded([Vec<u8>; 3]),
+    /// Why its names are unproven; its links are still followed.
+    Unproven(String),
+}
+
 /// Thread-local script variables a caller has set.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ScopeVariables {
@@ -933,13 +944,17 @@ impl<'a> ScriptedText<'a> {
         self.process(text, 0, &expanded, at, Object::Event)
     }
 
-    /// [`Self::expand_in`] admitting only country names read through the event scopes' links.
-    /// Anything else (a variable, scripted text, another object or property) is refused.
-    pub fn expand_names_in(&self, text: &str, scopes: &EventScopes) -> Result<String, String> {
+    /// [`Self::expand_in`] admitting only scope-linked country names, read where `names` says.
+    pub fn expand_names_in(
+        &self,
+        text: &str,
+        scopes: &EventScopes,
+        names: &[ScopeName],
+    ) -> Result<String, String> {
         if scopes.scopes.is_empty() {
             return Err("scripted text needs an event scope".into());
         }
-        self.names_only(text, 0, &ExpansionScopes::new(scopes))
+        self.names_only(text, 0, &ExpansionScopes::new(scopes), names)
     }
 
     /// [`Self::process`] for [`Self::expand_names_in`]: a name's own brackets pass the same gate.
@@ -948,6 +963,7 @@ impl<'a> ScriptedText<'a> {
         text: &str,
         depth: i32,
         scopes: &ExpansionScopes<'_, 'a>,
+        names: &[ScopeName],
     ) -> Result<String, String> {
         if depth >= self.content.recursion {
             return Ok(text.to_owned());
@@ -982,16 +998,56 @@ impl<'a> ScriptedText<'a> {
                     .promote(object, segment, scopes, &mut active, &mut event_active)
                     .map_err(|reason| format!("[{inner}]: {reason}"))?;
             }
+            if let Some(ScopeName::Unproven(reason)) = names.get(active) {
+                return Err(format!("[{inner}]: event scope {active}: {reason}"));
+            }
             let Object::Country(slot) = object else {
                 return Err(refused());
             };
-            let name = self
-                .country_property(slot, property, scopes)
-                .map_err(|reason| format!("[{inner}]: {reason}"))?
-                .ok_or_else(refused)?;
-            out.push_str(&self.names_only(&name, depth + 1, scopes)?);
+            let name = match names.get(active) {
+                Some(ScopeName::Recorded(recorded)) => {
+                    self.recorded_country_property(slot, property, recorded)
+                }
+                _ => self.country_property(slot, property, scopes),
+            }
+            .map_err(|reason| format!("[{inner}]: {reason}"))?
+            .ok_or_else(refused)?;
+            out.push_str(&self.names_only(&name, depth + 1, scopes, names)?);
             rest = &rest[open + 1 + length + 1..];
         }
+    }
+
+    /// [`Self::country_property`]'s names from the text a country held at an occurrence.
+    fn recorded_country_property(
+        &self,
+        slot: u32,
+        name: &str,
+        [full, definite, adjective]: &[Vec<u8>; 3],
+    ) -> Result<Option<String>, String> {
+        let is = |entry: &str| named(name, entry);
+        let upper_first = |text: String| crt_case_text(&text, true, true);
+        let text =
+            |bytes: &[u8], what: &str| self.stored_text(bytes, &format!("the occurrence's {what}"));
+        Ok(Some(if is("GetName") {
+            text(full, "country name")?
+        } else if is("GetNameDef") {
+            text(definite, "definite country name")?
+        } else if is("GetNameDefCap") {
+            upper_first(text(definite, "definite country name")?)
+        } else if is("GetAdjective") {
+            text(adjective, "country adjective")?
+        } else if is("GetAdjectiveCap") {
+            upper_first(text(adjective, "country adjective")?)
+        } else if is("GetTag") {
+            self.country_tag(slot)?.to_owned()
+        } else if is("GetFlag") {
+            format!("\u{12}{}", self.country_tag(slot)?)
+        } else if is("GetNameWithFlag") {
+            let name = upper_first(text(definite, "definite country name")?);
+            format!("\u{12}{} {name}", self.country_tag(slot)?)
+        } else {
+            return Ok(None);
+        }))
     }
 
     /// Scripted entries inside effect descriptions share their active variable context.

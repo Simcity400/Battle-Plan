@@ -154,6 +154,85 @@ fn script_reentrant_instances_and_options_share_receipts_without_losing_repeats(
 }
 
 #[test]
+fn script_scopes_record_the_native_country_and_names_each_reference_resolved_to() {
+    use engine_events::cevent_scope::{COUNTRY_TAG, FROM, PREV, ROOT, SIZE, VTABLE_RVA};
+    crate::country_input_changes::observe_names();
+    let mut store = ready(4);
+    store.prepare_scripts(64, 6, 2).unwrap();
+    let mut image = WarImage::new();
+    // Inline MSVC strings: bytes, then length and the inline capacity.
+    for (offset, text) in [
+        (ccountry::NAME, "Reich"),
+        (ccountry::DEFINITE_NAME, "the Reich"),
+        (ccountry::ADJECTIVE, "German"),
+    ] {
+        image.bytes(ACTOR + offset, &[0; 32]);
+        image.bytes(ACTOR + offset, text.as_bytes());
+        image.q(ACTOR + offset + 16, text.len());
+        image.q(ACTOR + offset + 24, 15);
+    }
+    let (this, from) = (0x80000, 0x81000);
+    for (scope, country, links) in [(this, 3, [this, from, this]), (from, 1, [from; 3])] {
+        image.bytes(scope, &[0; SIZE]);
+        image.q(scope, BASE + VTABLE_RVA);
+        image.d(scope + COUNTRY_TAG, country);
+        for (offset, link) in [ROOT, FROM, PREV].into_iter().zip(links) {
+            image.q(scope + offset, link);
+        }
+    }
+    store
+        .script_known(&image, BASE, 7, 1, script_fact(100, this, None))
+        .unwrap();
+    // A reference no country holds records no ID, and the occurrence keeps its scopes.
+    image.d(this + COUNTRY_TAG, 9);
+    store
+        .script_known(&image, BASE, 7, 1, script_fact(200, this, None))
+        .unwrap();
+    // A rebuild running across the copy refuses every name; identities stay.
+    image.d(this + COUNTRY_TAG, 1);
+    let rebuild = crate::country_input_changes::rebuilding_name();
+    store
+        .script_known(&image, BASE, 7, 1, script_fact(300, this, None))
+        .unwrap();
+    drop(rebuild);
+    let mut snapshot = Snapshot::new(0);
+    store
+        .snapshot_growing(&mut snapshot, boundary(7, 2))
+        .unwrap();
+    let packed = snapshot.prepare_pack().unwrap();
+    // Reference 3 is an alias of the country with ID 2, whose names are unreadable here.
+    let names = |scope: &EventFeedScope| {
+        scope.country_names.map(|texts| {
+            texts.map(|text| String::from_utf8(text.as_bytes().to_vec()).unwrap())
+        })
+    };
+    let reich = Some(["Reich", "the Reich", "German"].map(String::from));
+    assert_eq!(
+        packed
+            .row()
+            .script_scopes
+            .iter()
+            .map(|scope| (scope.country, scope.country_id, names(scope)))
+            .collect::<Vec<_>>(),
+        [
+            (3, Some(2), None),
+            (1, Some(1), reich.clone()),
+            (9, None, None),
+            (1, Some(1), reich),
+            (1, Some(1), None),
+            (1, Some(1), None)
+        ]
+    );
+    assert!(
+        packed
+            .row()
+            .script_scopes
+            .iter()
+            .all(|scope| scope.country_attempted)
+    );
+}
+
+#[test]
 fn script_pressure_refuses_once_and_reports_exact_reached_demand() {
     let mut store = ready(1);
     store.prepare_scripts(0, 0, 0).unwrap();
