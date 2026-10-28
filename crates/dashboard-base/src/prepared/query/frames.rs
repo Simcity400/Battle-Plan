@@ -114,6 +114,9 @@ thread_local! {
     /// Tables whose block decodes on this thread fail as damaged, the first selected one named.
     pub(crate) static DAMAGED: std::cell::RefCell<Vec<TableId>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// The hour whose next block decoder advance on this thread fails once, its frame consumed.
+    pub(crate) static FAIL_ADVANCE: std::cell::Cell<Option<i32>> =
+        const { std::cell::Cell::new(None) };
     /// Tables whose block reads on this thread cannot be kept, as an unreadable block's.
     pub(crate) static UNCACHEABLE: std::cell::RefCell<Vec<TableId>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -298,6 +301,104 @@ pub fn hours(
     Ok(())
 }
 
+/// [`hours`] sought one at a time: each block's selections walk forward
+/// while one branch's hours are sought in rising order. An hour before the
+/// last one sought walks its block again.
+pub struct Walk<'a> {
+    source: &'a Source,
+    branch: u64,
+    active: Option<u64>,
+    last: Option<i32>,
+    decoders: BTreeMap<Vec<TableId>, BlockDecoder<'a>>,
+}
+
+impl<'a> Walk<'a> {
+    pub fn new(source: &'a Source, branch: u64) -> Self {
+        Self {
+            source,
+            branch,
+            active: None,
+            last: None,
+            decoders: BTreeMap::new(),
+        }
+    }
+
+    pub fn source(&self) -> &'a Source {
+        self.source
+    }
+
+    pub fn branch(&self) -> u64 {
+        self.branch
+    }
+
+    /// [`seek`]'s frame of `tables` at `hour`.
+    pub fn seek(
+        &mut self,
+        hour: i32,
+        tables: &[TableId],
+        cancelled: &AtomicBool,
+    ) -> io::Result<SeekResult> {
+        check_cancel(cancelled)?;
+        let (source, branch) = (self.source, self.branch);
+        let Some(block) = source.replay_ref().index.iter().find(|block| {
+            block.branch == branch && block.first_hour <= hour && hour <= block.last_hour
+        }) else {
+            return seek(source, branch, hour, tables, cancelled);
+        };
+        if self.active != Some(block.offset) || self.last.is_some_and(|last| hour < last) {
+            self.decoders.clear();
+            self.active = Some(block.offset);
+        }
+        self.last = Some(hour);
+        let found = seek_with(
+            source,
+            branch,
+            hour,
+            tables,
+            cancelled,
+            &mut Decoders::new(source, block, hour, &mut self.decoders, cancelled),
+        );
+        // A failed advance can leave a decoder without its baseline: walk the block afresh.
+        if found.is_err() {
+            self.decoders.clear();
+            self.active = None;
+            self.last = None;
+        }
+        found
+    }
+
+    /// [`window`]'s frames, through this walk.
+    pub fn window(
+        &mut self,
+        first: i32,
+        last: i32,
+        tables: &[TableId],
+        cancelled: &AtomicBool,
+    ) -> io::Result<Vec<DecodedFrame>> {
+        let (source, branch) = (self.source, self.branch);
+        let mut result = Vec::new();
+        for block in source.replay_ref().index.iter().filter(|block| {
+            block.branch == branch && block.last_hour >= first && block.first_hour <= last
+        }) {
+            for hour in block.first_hour.max(first)..=block.last_hour.min(last) {
+                check_cancel(cancelled)?;
+                if source
+                    .replay_ref()
+                    .gaps
+                    .iter()
+                    .any(|gap| gap.branch == branch && gap.first_hour <= hour && hour <= gap.last_hour)
+                {
+                    continue;
+                }
+                if let SeekResult::Frame(frame) = self.seek(hour, tables, cancelled)? {
+                    result.push(*frame);
+                }
+            }
+        }
+        Ok(result)
+    }
+}
+
 /// A bounded chronological read, sharing hour slots and table joins with `seek`.
 /// Each selection's decoder advances once through the intersecting block.
 pub fn window(
@@ -377,23 +478,23 @@ impl HourRead for Direct<'_> {
 }
 
 /// A walk's decoders of one block, one per selection; making one waits on the block's entry.
-struct Decoders<'a, 'd> {
+struct Decoders<'a, 'd, 'c> {
     source: &'a Source,
     block: &'a BlockIndex,
     hour: i32,
     decoders: &'d mut BTreeMap<Vec<TableId>, BlockDecoder<'a>>,
     /// Preparations that failed, each answered where its read would have been made.
     failed: BTreeMap<Vec<TableId>, io::Error>,
-    cancelled: &'a AtomicBool,
+    cancelled: &'c AtomicBool,
 }
 
-impl<'a, 'd> Decoders<'a, 'd> {
+impl<'a, 'd, 'c> Decoders<'a, 'd, 'c> {
     fn new(
         source: &'a Source,
         block: &'a BlockIndex,
         hour: i32,
         decoders: &'d mut BTreeMap<Vec<TableId>, BlockDecoder<'a>>,
-        cancelled: &'a AtomicBool,
+        cancelled: &'c AtomicBool,
     ) -> Self {
         Self {
             source,
@@ -406,7 +507,7 @@ impl<'a, 'd> Decoders<'a, 'd> {
     }
 }
 
-impl HourRead for Decoders<'_, '_> {
+impl HourRead for Decoders<'_, '_, '_> {
     fn ready(&self, tables: &[TableId]) -> bool {
         let tables = sorted(&[tables, &[TableId::Campaign]].concat());
         self.decoders.contains_key(&tables) || self.failed.contains_key(&tables)
@@ -436,10 +537,16 @@ impl HourRead for Decoders<'_, '_> {
             let decoder = BlockDecoder::new(self.source, self.block, &tables, self.cancelled)?;
             self.decoders.insert(tables.clone(), decoder);
         }
-        self.decoders
+        let found = self
+            .decoders
             .get_mut(&tables)
             .expect("selected decoder")
-            .at(self.source, self.hour, self.cancelled)
+            .at(self.source, self.hour, self.cancelled);
+        // A failed advance can leave the decoder without its baseline: a retry starts afresh.
+        if found.is_err() {
+            self.decoders.remove(&tables);
+        }
+        found
     }
 }
 
@@ -550,6 +657,14 @@ impl<'a> BlockDecoder<'a> {
                 } else {
                     frame = Some(decoded.clone());
                 }
+            }
+            #[cfg(test)]
+            if FAIL_ADVANCE.get() == Some(self.reads[0].frames[self.position].hour) {
+                FAIL_ADVANCE.set(None);
+                return Err(io::Error::new(
+                    io::ErrorKind::OutOfMemory,
+                    "injected advance failure",
+                ));
             }
             self.frame = frame;
             self.position += 1;

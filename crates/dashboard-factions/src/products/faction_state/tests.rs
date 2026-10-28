@@ -993,6 +993,84 @@ fn programme_references_use_only_their_existing_daily_supplier_and_match_the_det
 }
 
 #[test]
+fn programme_hours_walk_each_supplying_read_once_and_publish_as_read_alone_every_hour() {
+    let reference =
+        |id| ((id as u64) << 32) | u64::from(engine_projects::nproject_cprogram::REFERENCE_TYPE);
+    let frames: Vec<_> = (100..=160)
+        .map(|hour| {
+            let mut f = frame(hour);
+            *f.tables[TableId::FactionPrograms.index()] =
+                TableView::Complete(TableRows::FactionPrograms(vec![FactionProgramRow {
+                    faction: 9,
+                    ordinal: 0,
+                    reference: reference(if hour < 130 { 17 } else { 18 }),
+                }]));
+            let held: &[u32] = match hour {
+                ..=123 => &[17],
+                124..=147 => &[17, 18],
+                _ => &[18],
+            };
+            *f.tables[TableId::ProjectPrograms.index()] = TableView::Complete(
+                TableRows::ProjectPrograms(
+                    held.iter()
+                        .map(|&id| ProjectProgramRow {
+                            id,
+                            owner: 11,
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
+            );
+            *f.tables[TableId::Projects.index()] =
+                TableView::Complete(TableRows::Projects(Vec::new()));
+            f.metrics.table_ns[TableId::ProjectPrograms.index()] =
+                u64::from(matches!(hour, 100 | 124 | 148));
+            f
+        })
+        .collect();
+    // Each hour alone seeks its supplying read, as before; a block's hours walk each read once.
+    let prepare = |alone: bool| {
+        // A source each, so neither finds the other's reads in its frame cache.
+        let source = source(frames.clone());
+        let mut state = Prepared::default();
+        state.point_seeks = alone;
+        let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+        let mut supplying = super::prepared::Supplying::new(&source, 1);
+        let seeks = dashboard_base::prepared::query::frames::reads(&source).1;
+        for frame in &frames {
+            let changes = tracker.observe(frame, replay_data::format::FormatVersion::CURRENT);
+            let context = LoadContext { content: None };
+            let flag = AtomicBool::new(false);
+            state
+                .observe_supplied(&source, &context, frame, &changes, &mut supplying, &flag)
+                .unwrap();
+        }
+        let seeks = dashboard_base::prepared::query::frames::reads(&source).1 - seeks;
+        drop(supplying);
+        let files = Fixture::new();
+        publish(&mut state, &files);
+        (state.supplying_reads, seeks, files)
+    };
+    let source = source(frames.clone());
+    let (walked_reads, walked_seeks, kept) = prepare(false);
+    let (every_reads, every_seeks, every) = prepare(true);
+    assert_eq!(every_reads, frames.len());
+    assert_eq!(walked_reads, 3, "one reconstruction for each supplying read");
+    assert_eq!(walked_seeks, 0, "walked supplying reads seek no hour on its own");
+    assert!(every_seeks > 0, "point reads seek their hours");
+    dashboard_base::prepared::series::tests::assert_payloads_equal(
+        &kept.payloads(),
+        &every.payloads(),
+        "faction-state",
+    );
+    for last in [101, 123, 124, 135, 147, 148, 160] {
+        assert_eq!(
+            serde_json::to_value(rules(&source, &kept, "9", last)).unwrap(),
+            serde_json::to_value(rules(&source, &every, "9", last)).unwrap(),
+        );
+    }
+}
+#[test]
 fn an_oversized_faction_reply_refuses_instead_of_truncating_lanes() {
     let mut f = frame(100);
     *f.tables[TableId::FactionRules.index()] =

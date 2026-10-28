@@ -7,6 +7,7 @@ use dashboard_base::{
         facts::{Credit, MemoryBudget},
         frame_changes::FrameChanges,
         prefix::Prefix,
+        query::{frames::Walk, progressive},
         series::{self, Accumulator, CatalogueWriter, Reader},
     },
     products::{
@@ -21,7 +22,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, btree_map},
     hash::{DefaultHasher, Hash, Hasher},
     io,
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
 };
 const NULL: i128 = i64::MIN as i128 - 1;
 pub const CHANNELS: [(&str, TableId); 8] = [
@@ -170,33 +171,86 @@ impl Changed {
                 .as_ref()
                 .is_none_or(|keys| keys.contains(&faction))
     }
+}
+/// One branch's programme supplying reads, each sought in rising hours.
+pub struct Supplying<'a> {
+    hours: Walk<'a>,
+    frames: Walk<'a>,
+}
+impl<'a> Supplying<'a> {
+    pub fn new(source: &'a Source, branch: u64) -> Self {
+        Self {
+            hours: Walk::new(source, branch),
+            frames: Walk::new(source, branch),
+        }
+    }
+}
+impl Prepared {
+    /// The programmes' supplying read, kept while later hours read the same one.
     fn supplying(
-        &self,
-        source: &Source,
+        &mut self,
+        dirty: &Changed,
         frame: &DecodedFrame,
+        walks: &mut Supplying<'_>,
         cancelled: &AtomicBool,
-    ) -> io::Result<Option<Box<DecodedFrame>>> {
-        let changed = self.programme_operands
-            || self.owners[&Kind::Programme]
+    ) -> io::Result<Option<Arc<DecodedFrame>>> {
+        let changed = dirty.programme_operands
+            || dirty.owners[&Kind::Programme]
                 .as_ref()
                 .is_none_or(|keys| !keys.is_empty());
-        if changed
-            && frame
+        if !changed
+            || !frame
                 .complete::<tables::FactionPrograms>()
                 .is_ok_and(|rows| !rows.is_empty())
         {
-            dashboard_base::prepared::query::progressive::latest_read(
-                source,
+            return Ok(None);
+        }
+        if walks.hours.branch() != frame.branch {
+            *walks = Supplying::new(walks.hours.source(), frame.branch);
+        }
+        #[cfg(test)]
+        if self.point_seeks {
+            self.supplying_reads += 1;
+            return Ok(progressive::latest_read(
+                walks.hours.source(),
                 frame.branch,
                 frame.hour,
                 TableId::ProjectPrograms,
                 replay_data::cadence::STAGGER_PERIOD,
                 selectors::PROGRAMME_TABLES,
                 cancelled,
-            )
-        } else {
-            Ok(None)
+            )?
+            .map(Arc::from));
         }
+        let Some(hour) = progressive::walked_read_hour(
+            &mut walks.hours,
+            frame.hour,
+            TableId::ProjectPrograms,
+            replay_data::cadence::STAGGER_PERIOD,
+            cancelled,
+        )?
+        else {
+            return Ok(None);
+        };
+        if let Some((branch, at, held)) = &self.supplying
+            && (*branch, *at) == (frame.branch, hour)
+        {
+            return Ok(Some(Arc::clone(held)));
+        }
+        #[cfg(test)]
+        {
+            self.supplying_reads += 1;
+        }
+        let read = progressive::walked_supplying_frame(
+            &mut walks.frames,
+            hour,
+            TableId::ProjectPrograms,
+            selectors::PROGRAMME_TABLES,
+            cancelled,
+        )?
+        .map(Arc::from);
+        self.supplying = read.as_ref().map(|read| (frame.branch, hour, Arc::clone(read)));
+        Ok(read)
     }
 }
 struct Joins {
@@ -344,6 +398,16 @@ pub struct Prepared {
     goal_inputs: BTreeMap<u64, reuse::Inputs>,
     #[serde(skip)]
     index: Index,
+    /// The last supplying read of programme operands: its branch, hour and frame.
+    #[serde(skip)]
+    supplying: Option<(u64, i32, Arc<DecodedFrame>)>,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) supplying_reads: usize,
+    /// Tests: each hour reads its supplying read on its own, as before reads were walked.
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) point_seeks: bool,
 }
 
 fn digest(value: &impl Hash) -> u64 {
@@ -824,6 +888,19 @@ impl Prepared {
         changes: &FrameChanges,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        let mut supplying = Supplying::new(source, frame.branch);
+        self.observe_supplied(source, context, frame, changes, &mut supplying, cancelled)
+    }
+    /// [`Self::observe`] of one of the rising hours `supplying` reads programme operands for.
+    pub fn observe_supplied(
+        &mut self,
+        source: &Source,
+        context: &LoadContext,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        supplying: &mut Supplying<'_>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
         check_cancel(cancelled)?;
         let continues = self.last.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
         self.series.advance(frame.hour)?;
@@ -857,7 +934,7 @@ impl Prepared {
         let roster = self.lane(0, Kind::Roster, "", "", None, (0, 0));
         let complete = frame.complete::<tables::Factions>().is_ok();
         self.value(roster, frame.hour, i128::from(complete), !continues);
-        let supplying = dirty.supplying(source, frame, cancelled)?;
+        let supplying = self.supplying(&dirty, frame, supplying, cancelled)?;
         let accounts = self.changed_accounts(frame, &dirty, &joins);
         self.accounts(frame, accounts, joins.joined, !continues, cat.as_deref());
         // Dynamic names use the viewing country; changing its identity or link invalidates them.

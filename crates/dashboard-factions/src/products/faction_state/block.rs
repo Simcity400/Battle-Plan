@@ -1,5 +1,5 @@
 //! The shared pre-pass retains only changed faction inputs and country keys.
-use super::prepared::Prepared;
+use super::prepared::{Prepared, Supplying};
 use dashboard_base::{
     Source,
     prepared::{
@@ -218,6 +218,7 @@ pub fn fold(
     let Facts { hours, kept } = *facts;
     let mut kept = kept.into_frames();
     let mut reached = None;
+    let mut supplying = Supplying::new(source, index.branch);
     for hour in hours {
         check()?;
         match hour {
@@ -243,7 +244,14 @@ pub fn fold(
                 reached = Some(frame.hour);
                 if !observed(
                     frame.hour,
-                    state.observe(source, context, &frame, &changes, cancelled),
+                    state.observe_supplied(
+                        source,
+                        context,
+                        &frame,
+                        &changes,
+                        &mut supplying,
+                        cancelled,
+                    ),
                 )? {
                     break;
                 }
@@ -281,6 +289,7 @@ pub fn observe_block(
     check: &mut dyn FnMut() -> io::Result<()>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<i32>> {
+    let mut supplying = Supplying::new(source, index.branch);
     dashboard_base::prepared::kept::observe_hours(
         replay,
         index,
@@ -288,6 +297,8 @@ pub fn observe_block(
         from,
         observed,
         check,
-        |frame, changes| state.observe(source, context, frame, changes, cancelled),
+        |frame, changes| {
+            state.observe_supplied(source, context, frame, changes, &mut supplying, cancelled)
+        },
     )
 }

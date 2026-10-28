@@ -5,6 +5,7 @@ use crate::{
     prepared::{coverage::Coverage, series::Run},
     products::country_groups::HourSpan,
 };
+use super::frames::Walk;
 use replay::container::SeekResult;
 use replay_data::rows::TableId;
 use replay_frame::{
@@ -581,6 +582,37 @@ pub fn frame_at(
     tables: &[TableId],
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Box<DecodedFrame>>> {
+    seek_frame(source, branch, hour, cancelled, || {
+        super::frames::seek(source, branch, hour, tables, cancelled)
+    })
+}
+
+/// [`frame_at`] through `walk`.
+pub fn walked_frame_at(
+    walk: &mut Walk<'_>,
+    hour: i32,
+    tables: &[TableId],
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Box<DecodedFrame>>> {
+    let (source, branch) = (walk.source(), walk.branch());
+    seek_frame(source, branch, hour, cancelled, || {
+        match walk.seek(hour, tables, cancelled) {
+            // A block the walk cannot read whole may still answer this hour's own seek.
+            Err(error) if error.kind() != io::ErrorKind::Interrupted => {
+                super::frames::seek(source, branch, hour, tables, cancelled)
+            }
+            found => found,
+        }
+    })
+}
+
+fn seek_frame(
+    source: &Source,
+    branch: u64,
+    hour: i32,
+    cancelled: &AtomicBool,
+    seek: impl FnOnce() -> io::Result<SeekResult>,
+) -> io::Result<Option<Box<DecodedFrame>>> {
     check_cancel(cancelled)?;
     let replay = source.replay_ref();
     if replay
@@ -590,7 +622,7 @@ pub fn frame_at(
     {
         return Ok(None);
     }
-    let frame = match super::frames::seek(source, branch, hour, tables, cancelled)? {
+    let frame = match seek()? {
         SeekResult::Frame(frame) => Some(frame),
         SeekResult::Gap { .. } => None,
     };
@@ -627,6 +659,33 @@ pub fn latest_read(
     tables: &[TableId],
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Box<DecodedFrame>>> {
+    let Some(hour) = supplying_hour(source, branch, hour, table, cadence, None, cancelled)? else {
+        return Ok(None);
+    };
+    frame_at(source, branch, hour, &supplied(table, tables), cancelled)
+}
+
+/// The hour of [`latest_read`]'s supplying read, reading the carry it validates through `walk`.
+pub fn walked_read_hour(
+    walk: &mut Walk<'_>,
+    hour: i32,
+    table: TableId,
+    cadence: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<i32>> {
+    let (source, branch) = (walk.source(), walk.branch());
+    supplying_hour(source, branch, hour, table, cadence, Some(walk), cancelled)
+}
+
+fn supplying_hour(
+    source: &Source,
+    branch: u64,
+    hour: i32,
+    table: TableId,
+    cadence: i32,
+    walk: Option<&mut Walk<'_>>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<i32>> {
     if cadence <= 0 {
         return Err(crate::invalid("A supplying read needs a positive cadence"));
     }
@@ -642,16 +701,28 @@ pub fn latest_read(
         &(hour, table.index(), cadence),
         cancelled,
         |_: &Option<i32>| std::mem::size_of::<Option<i32>>(),
-        || supplying_read(source, branch, hour, table, cadence, cancelled),
+        || supplying_read(source, branch, hour, table, cadence, walk, cancelled),
     )?;
-    let Some(hour) = *supplying else {
-        return Ok(None);
-    };
+    Ok(*supplying)
+}
+
+/// [`latest_read`]'s frame of the supplying read at `hour` ([`walked_read_hour`]), through `walk`.
+pub fn walked_supplying_frame(
+    walk: &mut Walk<'_>,
+    hour: i32,
+    table: TableId,
+    tables: &[TableId],
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Box<DecodedFrame>>> {
+    walked_frame_at(walk, hour, &supplied(table, tables), cancelled)
+}
+
+fn supplied(table: TableId, tables: &[TableId]) -> Vec<TableId> {
     let mut wanted = tables.to_vec();
     wanted.push(table);
     wanted.sort_unstable();
     wanted.dedup();
-    frame_at(source, branch, hour, &wanted, cancelled)
+    wanted
 }
 
 fn supplying_read(
@@ -660,6 +731,7 @@ fn supplying_read(
     hour: i32,
     table: TableId,
     cadence: i32,
+    walk: Option<&mut Walk<'_>>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<i32>> {
     check_cancel(cancelled)?;
@@ -743,14 +815,14 @@ fn supplying_read(
     let Some(supplying) = supplying else {
         return Ok(None);
     };
-    let frames = read_window(
-        source,
-        branch,
-        supplying,
-        if validate_carry { hour } else { supplying },
-        &[table],
-        cancelled,
-    )?;
+    let last = if validate_carry { hour } else { supplying };
+    let frames = match walk {
+        Some(walk) => {
+            check_cancel(cancelled)?;
+            walk.window(supplying, last, &[table], cancelled)?
+        }
+        None => read_window(source, branch, supplying, last, &[table], cancelled)?,
+    };
     let mut expected = if validate_carry { hour } else { supplying };
     for frame in frames.into_iter().rev() {
         if frame.hour != expected
@@ -2586,6 +2658,138 @@ mod tests {
         assert_eq!(super::super::frames::reads(&source), before);
         drop(source);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn walked_supplying_reads_find_the_hour_and_frame_latest_read_finds() {
+        use super::super::frames;
+        use crate::test_fixtures::file_source;
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
+        let table = TableId::CountryIntel;
+        let make = |hour| {
+            let mut frame = frame(1, hour, None);
+            *frame.tables[table.index()] = TableView::Complete(TableRows::CountryIntel(Vec::new()));
+            frame.metrics.table_ns[table.index()] = u64::from(matches!(hour, 20 | 25 | 33));
+            frame
+        };
+        let recording = || {
+            let recording = crate::test_fixtures::replay((0..24).map(make).collect());
+            recording
+                .append(&[continuation_records(
+                    &recording,
+                    1,
+                    (24..40).map(make).collect(),
+                )])
+                .unwrap()
+        };
+        // Apart, so neither finds the other's reads in its caches.
+        let (walked, walked_root) = file_source(recording());
+        let (alone, alone_root) = file_source(recording());
+        let flag = AtomicBool::new(false);
+        let tables = [TableId::Countries];
+        let mut hours = frames::Walk::new(&walked, 1);
+        let mut reads = frames::Walk::new(&walked, 1);
+        let mut found = 0;
+        for hour in 0..40 {
+            let expected = latest_read(&alone, 1, hour, table, 24, &tables, &flag).unwrap();
+            let frame = match walked_read_hour(&mut hours, hour, table, 24, &flag).unwrap() {
+                Some(at) => {
+                    found += 1;
+                    walked_supplying_frame(&mut reads, at, table, &tables, &flag).unwrap()
+                }
+                None => None,
+            };
+            assert_eq!(frame, expected, "hour {hour}");
+        }
+        assert_eq!(found, 20);
+        assert_eq!(frames::reads(&walked).1, 0, "walks seek no hour on their own");
+        drop((hours, reads));
+        drop((walked, alone));
+        let _ = std::fs::remove_dir_all(walked_root);
+        let _ = std::fs::remove_dir_all(alone_root);
+    }
+
+    #[test]
+    fn walked_seeks_answer_each_hour_as_its_own_seek_across_blocks_gaps_and_returns() {
+        use super::super::frames;
+        let source = varied_source();
+        // Nothing held: every walked hour is reconstructed by the walk.
+        frames::set_budget(&source, 0);
+        let flag = AtomicBool::new(false);
+        let tables = [TableId::Countries, TableId::CountryLinks];
+        let expected = |hour| match source.replay_ref().seek_selected(1, hour, Some(&tables)) {
+            Ok(SeekResult::Frame(frame)) => Some(frame),
+            _ => None,
+        };
+        let mut walk = frames::Walk::new(&source, 1);
+        // Repeats, a block's last and next first hours, a return, the gap and past the end.
+        for hour in [0, 1, 1, 3, 4, 6, 6, 7, 2, 9, 12, 13, 14, 19, 25] {
+            let walked = walked_frame_at(&mut walk, hour, &tables, &flag).unwrap();
+            assert_eq!(walked, expected(hour).filter(|_| hour != 13), "hour {hour}");
+        }
+        let mut walk = frames::Walk::new(&source, 1);
+        let walked = walk.window(2, 15, &tables, &flag).unwrap();
+        assert_eq!(
+            walked.iter().map(|frame| frame.hour).collect::<Vec<_>>(),
+            [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15]
+        );
+        for frame in walked {
+            assert_eq!(Some(Box::new(frame.clone())), expected(frame.hour));
+        }
+        // Only the hour past every block is sought on its own.
+        assert_eq!(frames::reads(&source).1, 1);
+    }
+
+    #[test]
+    fn a_walk_its_block_refuses_seeks_the_hour_alone_and_reads_the_next_block_afresh() {
+        use super::super::frames;
+        let source = varied_source();
+        frames::set_budget(&source, 0);
+        let flag = AtomicBool::new(false);
+        let tables = [TableId::Countries, TableId::CountryLinks];
+        let expected = |hour| match source.replay_ref().seek_selected(1, hour, Some(&tables)) {
+            Ok(SeekResult::Frame(frame)) => Some(frame),
+            _ => None,
+        };
+        let mut walk = frames::Walk::new(&source, 1);
+        assert_eq!(walked_frame_at(&mut walk, 4, &tables, &flag).unwrap(), expected(4));
+        let seeks = frames::reads(&source).1;
+        // The next block cannot be read whole: its hour is sought on its own.
+        frames::DAMAGED.set(vec![TableId::CountryLinks]);
+        let damaged = walked_frame_at(&mut walk, 9, &tables, &flag);
+        frames::DAMAGED.set(Vec::new());
+        assert_eq!(damaged.unwrap(), expected(9));
+        assert_eq!(frames::reads(&source).1, seeks + 1);
+        // The failed walk kept no decoder: the block is read afresh.
+        assert_eq!(walked_frame_at(&mut walk, 10, &tables, &flag).unwrap(), expected(10));
+        assert_eq!(frames::reads(&source).1, seeks + 1);
+    }
+
+    #[test]
+    fn a_failed_advance_is_retried_with_a_fresh_decoder() {
+        use super::super::frames;
+        let source = varied_source();
+        let flag = AtomicBool::new(false);
+        let tables = [TableId::Countries, TableId::CountryLinks];
+        let expected = |hour| match source.replay_ref().seek_selected(1, hour, Some(&tables)) {
+            Ok(SeekResult::Frame(frame)) => Some(frame),
+            _ => None,
+        };
+        // The hour holds only its campaign: the walk joins the rest, and reads it all again
+        // once that join fails.
+        frame_at(&source, 1, 6, &[], &flag).unwrap();
+        let seeks = frames::reads(&source).1;
+        let mut walk = frames::Walk::new(&source, 1);
+        frames::FAIL_ADVANCE.set(Some(6));
+        let walked = walked_frame_at(&mut walk, 6, &tables, &flag);
+        let failed = frames::FAIL_ADVANCE.get().is_none();
+        frames::FAIL_ADVANCE.set(None);
+        assert!(failed, "the join's advance failed");
+        assert_eq!(walked.unwrap(), expected(6));
+        assert_eq!(walked_frame_at(&mut walk, 7, &tables, &flag).unwrap(), expected(7));
+        // The walk's own retry answered both hours: no hour fell back to its own seek.
+        assert_eq!(frames::reads(&source).1, seeks);
     }
 
     #[test]
