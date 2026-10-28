@@ -544,13 +544,13 @@ pub(super) fn walk(
         return Err(invalid("Wars change inputs: invalid event page"));
     }
     // The recorded viewpoint's walk is published while preparing.
-    if params.viewpoint_tag.is_none()
-        && selected.is_none()
+    if selected.is_none()
         && let Some(reply) = published(
             store,
             key,
             branch,
             (first, last),
+            params.viewpoint_tag.as_deref(),
             cat.map(|cat| &**cat),
             hours,
             cancelled,
@@ -681,15 +681,18 @@ pub(super) fn walk(
 /// The recorded viewpoint's walk as preparation published it
 /// ([`super::published`]): the tail, with its closed wars back in place,
 /// finishes the reply, and each requested hour's input is hydrated from the
-/// nearest published point, walking fewer than its interval of inputs. None
-/// when no walk is published through the store's last input (prepared hour
-/// by hour, or the branch's first hour moved), so the query walks.
+/// nearest published point, walking fewer than its interval of inputs. It is
+/// also `view`'s walk when it refused no hour and every hour it read had `view`
+/// as its recorded viewpoint. None when no walk is published through the store's last input
+/// (prepared hour by hour, or the branch's first hour moved) or it is not
+/// `view`'s, so the query walks.
 #[allow(clippy::too_many_arguments)]
 fn published(
     store: &store::Store,
     key: &store::SourceKey,
     branch: u64,
     (first, last): (i32, i32),
+    view: Option<&str>,
     cat: Option<&Catalogue>,
     hours: &BTreeSet<i32>,
     cancelled: &AtomicBool,
@@ -699,6 +702,13 @@ fn published(
     let Some(mut tail) = Published::read(store, key, branch, cat)? else {
         return Ok(None);
     };
+    // An hour refused, or recorded from another viewpoint, may read differently from `view`.
+    if let Some(view) = view
+        && (tail.walk.warnings.iter().any(|warning| warning != super::CAPITULATIONS_UNOBSERVED)
+            || tail.walk.reply.viewpoints.iter().any(|run| run.tag != view))
+    {
+        return Ok(None);
+    }
     let mut topology = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
     let base = if first == i32::MIN {
         0

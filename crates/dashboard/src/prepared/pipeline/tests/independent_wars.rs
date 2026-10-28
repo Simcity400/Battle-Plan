@@ -613,9 +613,9 @@ fn the_recorded_viewpoints_walk_published_while_preparing_answers_from_its_point
     use crate::products::wars::walks_decoded_inputs as decoded;
     let replay = scenario(6, true);
     let mut fixture = Fixture::new(&replay);
-    let request = |hours: &[i32]| {
+    let request = |view: Option<&str>, hours: &[i32]| {
         let reads: Vec<Value> = hours.iter().map(|hour| json!({"hour": hour})).collect();
-        json!({"branchId": "1", "viewpointTag": null, "reads": reads})
+        json!({"branchId": "1", "viewpointTag": view, "reads": reads})
     };
     let sets: [&[i32]; 6] = [
         &[100],
@@ -625,42 +625,93 @@ fn the_recorded_viewpoints_walk_published_while_preparing_answers_from_its_point
         &[101, 116, 121],
         &BLOCKS.concat(),
     ];
+    // ONE is the recorded viewpoint at every hour; TWO never is.
+    let views = [None, Some("ONE"), Some("TWO")];
     // What walking every input answers.
-    let expected: Vec<Value> = independent::with_test_hourly(|| {
+    let expected: Vec<Vec<Value>> = independent::with_test_hourly(|| {
         let source = fixture.source("wars-walk");
         run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
-        let replies = sets
+        let replies = views
             .iter()
-            .map(|hours| query(&source, "wars", request(hours)).unwrap())
+            .map(|&view| {
+                sets.iter()
+                    .map(|hours| query(&source, "wars", request(view, hours)).unwrap())
+                    .collect()
+            })
             .collect();
         clear(source);
         replies
     });
+    assert_eq!(expected[1], expected[0], "the recorded viewpoint's own walk");
+    assert_ne!(expected[2], expected[0]);
     own(|| {
         let source = fixture.source("wars-walk");
         run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
         drop(source);
         // Each query on a source of its own: nothing it walked is kept.
-        for (hours, expected) in sets.iter().zip(&expected) {
-            let source = fixture.source("wars-walk");
-            let before = decoded();
-            assert_eq!(
-                &query(&source, "wars", request(hours)).unwrap(),
-                expected,
-                "hours {hours:?}"
-            );
-            let walked = decoded() - before;
-            // The last hour reads the published tail alone; any other hour
-            // walks fewer inputs than a point's interval from its point.
-            if hours.len() == 1 && hours[0] == 125 {
-                assert_eq!(walked, 0, "the last hour walks no input");
+        for (view, expected) in views.into_iter().zip(&expected) {
+            for (hours, expected) in sets.iter().zip(expected) {
+                let source = fixture.source("wars-walk");
+                let before = decoded();
+                assert_eq!(
+                    &query(&source, "wars", request(view, hours)).unwrap(),
+                    expected,
+                    "{view:?}, hours {hours:?}"
+                );
+                let walked = decoded() - before;
+                if view == Some("TWO") {
+                    // Another viewpoint walks its inputs.
+                    assert!(walked > 0, "{view:?}, hours {hours:?}");
+                    continue;
+                }
+                // The last hour reads the published tail alone; any other hour
+                // walks fewer inputs than a point's interval from its point.
+                if hours.len() == 1 && hours[0] == 125 {
+                    assert_eq!(walked, 0, "{view:?}: the last hour walks no input");
+                }
+                assert!(
+                    walked < hours.len() * crate::products::wars::POINT_INPUTS as usize,
+                    "{view:?}, hours {hours:?}: {walked} inputs walked"
+                );
             }
-            assert!(
-                walked < hours.len() * crate::products::wars::POINT_INPUTS as usize,
-                "hours {hours:?}: {walked} inputs walked"
-            );
         }
         let source = fixture.source("wars-walk");
+        clear(source);
+    });
+}
+
+/// An hour the published walk refused may refuse otherwise from a viewpoint, so
+/// a viewpoint walks its inputs and answers what walking them answers.
+#[test]
+fn a_viewpoint_walks_where_the_published_walk_refused_an_hour() {
+    use crate::products::wars::walks_decoded_inputs as decoded;
+    fn refusing(branch: u64, hour: i32) -> DecodedFrame {
+        let mut frame = war_frame(branch, hour);
+        if hour == 110 {
+            *frame.tables[TableId::WarOwnedRelations.index()] = TableView::Unavailable {
+                reason: "test refusal".into(),
+            };
+        }
+        frame
+    }
+    let replay = scenario_of(refusing, 6, true);
+    let mut fixture = Fixture::new(&replay);
+    let request = json!({"branchId": "1", "viewpointTag": "ONE", "reads": [{"hour": 125}]});
+    let expected = independent::with_test_hourly(|| {
+        let source = fixture.source("wars-refused");
+        run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
+        let reply = query(&source, "wars", request.clone()).unwrap();
+        clear(source);
+        reply
+    });
+    own(|| {
+        let source = fixture.source("wars-refused");
+        run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
+        drop(source);
+        let source = fixture.source("wars-refused");
+        let before = decoded();
+        assert_eq!(query(&source, "wars", request.clone()).unwrap(), expected);
+        assert!(decoded() > before, "the viewpoint walks its inputs");
         clear(source);
     });
 }

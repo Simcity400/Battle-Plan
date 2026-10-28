@@ -196,6 +196,9 @@ pub struct WarsAtHour {
     pub wars: Vec<WarTimeline>,
     pub warnings: Vec<String>,
 }
+/// A walk's only warning that is not an hour it refused.
+const CAPITULATIONS_UNOBSERVED: &str =
+    "Capitulations whose country identity at the event hour is unobserved are omitted.";
 /// Replies kept for the most recently requested viewpoints.
 #[cfg(any(test, feature = "test-support"))]
 const CACHED_REPLIES: usize = 4;
@@ -1331,7 +1334,7 @@ impl Walk {
                             continue;
                         };
                         if r.capitulated_hour < *since || r.capitulated_hour > hour {
-                            self.warnings.insert("Capitulations whose country identity at the event hour is unobserved are omitted.".into());
+                            self.warnings.insert(CAPITULATIONS_UNOBSERVED.into());
                             continue;
                         }
                         if !self.seen_caps.insert((tag.clone(), r.capitulated_hour)) {
