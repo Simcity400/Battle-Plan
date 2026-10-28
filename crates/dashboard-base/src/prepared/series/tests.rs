@@ -3552,14 +3552,14 @@ fn backdated_index_allocation_refusal_propagates_before_roots_change() {
         events: 1,
         ..Default::default()
     };
-    let events = [(24, vec![b'1'])];
+    let mut events = [(24, vec![b'1'])];
     engine_allocation::set_stop_hook(Some(|| true));
     let result = order::publish(
         &mut writer,
         "events",
         0,
         &mut bytes,
-        &mut [(9, &[], &events, &mut state)],
+        &mut [(9, &[], &mut events, &mut state)],
         &flag,
     );
     engine_allocation::set_stop_hook(None);
@@ -3647,4 +3647,151 @@ fn late_only_order_roots_refuse_the_full_history_format() {
         }))
         .is_err()
     );
+}
+
+/// A key's payload grown in one buffer in payload order, its events copied
+/// from their rows: the bytes every flush wrote before [`payload`].
+#[cfg(test)]
+fn payload_in_one_pass(
+    runs: &[Run],
+    events: &[EventRow],
+    state: &mut KeyState,
+    (first, last): (i32, i32),
+    decimals: u8,
+) -> Vec<u8> {
+    let cancelled = AtomicBool::new(false);
+    let mut raw = Vec::new();
+    let (mut hour, mut value) = (0_i128, 0_i128);
+    for run in runs {
+        var(&mut raw, zig(i128::from(run.first_hour) - hour));
+        var(
+            &mut raw,
+            (i64::from(run.last_hour) - i64::from(run.first_hour)) as u128,
+        );
+        var(&mut raw, zig(run.value.wrapping_sub(value)));
+        var(&mut raw, u128::from(run.break_before));
+        hour = i128::from(run.last_hour);
+        value = run.value;
+    }
+    hour = 0;
+    for (date, row) in events {
+        var(&mut raw, zig(i128::from(*date) - hour));
+        var(&mut raw, row.len() as u128);
+        raw.extend_from_slice(row);
+        hour = i128::from(*date);
+    }
+    for (level, size) in LEVELS.into_iter().enumerate() {
+        let buckets =
+            summary_buckets(runs, state.partial[level], size, decimals, &cancelled).unwrap();
+        var(&mut raw, buckets.len() as u128);
+        let mut pending =
+            state.partial[level].map(|partial| (partial.aligned(), partial.bucket(decimals)));
+        let mut previous = 0_i64;
+        for (aligned, mut bucket) in buckets {
+            if let Some(bucket) = &mut bucket {
+                bucket.has_break |= i64::from(bucket.first_hour) > aligned.max(i64::from(first))
+                    || i64::from(bucket.last_hour) < (aligned + size - 1).min(i64::from(last));
+            }
+            var(&mut raw, zig(i128::from(aligned - previous)));
+            previous = aligned;
+            encode_bucket(&mut raw, bucket, aligned);
+            let mut prefix = pending
+                .filter(|(previous, _)| *previous == aligned)
+                .map_or_else(
+                    || bucket.unwrap(),
+                    |(_, value)| merge(Some(value), bucket).unwrap(),
+                );
+            prefix.has_break |=
+                i64::from(prefix.last_hour) < (aligned + size - 1).min(i64::from(last));
+            encode_bucket(&mut raw, Some(prefix), aligned);
+            pending = Some((aligned, prefix));
+        }
+        let tail = i64::from(last).div_euclid(size) * size;
+        let held = state.last;
+        state.partial[level] = pending
+            .filter(|(aligned, _)| *aligned == tail && i64::from(last) < tail + size - 1)
+            .map(|(aligned, bucket)| Partial::of(aligned, bucket, held, decimals));
+        let aligned = |hour: i32| i64::from(hour).div_euclid(size) * size;
+        let counts = || events.chunk_by(|a, b| aligned(a.0) == aligned(b.0));
+        var(&mut raw, counts().count() as u128);
+        previous = 0;
+        for events in counts() {
+            let aligned = aligned(events[0].0);
+            var(&mut raw, zig(i128::from(aligned - previous)));
+            var(&mut raw, events.len() as u128);
+            previous = aligned;
+        }
+    }
+    raw
+}
+
+#[test]
+fn payload_writes_the_one_pass_bytes_and_releases_each_event_row() {
+    let row = |length: usize, seed: u8| -> Vec<u8> {
+        (0..length).map(|at| seed.wrapping_add(at as u8)).collect()
+    };
+    // Successive flushes of one key: runs with events and breaks, runs alone
+    // merging into the carried partial summaries, then events alone. Rows
+    // reach one-, two- and three-byte lengths; dates repeat and jump.
+    let batches: [(Vec<Run>, Vec<EventRow>, (i32, i32)); 3] = [
+        (
+            vec![
+                Run::new(60_000_000, 60_000_011, 7, true),
+                Run::new(60_000_012, 60_000_040, -3, false),
+                Run::new(60_000_045, 60_000_045, 1 << 40, true),
+            ],
+            vec![
+                (60_000_000, row(0, 1)),
+                (60_000_000, row(5, 2)),
+                (60_000_017, row(200, 3)),
+                (60_000_300, row(20_000, 4)),
+            ],
+            (60_000_000, 60_000_300),
+        ),
+        (
+            vec![Run::new(60_000_301, 60_000_900, -1, false)],
+            Vec::new(),
+            (60_000_301, 60_000_900),
+        ),
+        (
+            Vec::new(),
+            vec![
+                (60_000_901, row(3, 5)),
+                (60_005_000, row(130, 6)),
+                (60_005_000, row(1, 7)),
+            ],
+            (60_000_901, 60_005_000),
+        ),
+    ];
+    let (mut state, mut expected_state) = (KeyState::default(), KeyState::default());
+    for (runs, mut events, bounds) in batches {
+        for state in [&mut state, &mut expected_state] {
+            state.last = runs.last().copied().or(state.last);
+        }
+        let expected = payload_in_one_pass(&runs, &events, &mut expected_state, bounds, 2);
+        let dates: Vec<_> = events.iter().map(|(date, _)| *date).collect();
+        let raw = payload(
+            &runs,
+            &mut events,
+            &mut state,
+            bounds,
+            2,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(raw, expected);
+        assert_eq!(
+            events.iter().map(|(date, _)| *date).collect::<Vec<_>>(),
+            dates
+        );
+        assert!(
+            events
+                .iter()
+                .all(|(_, row)| row.is_empty() && row.capacity() == 0)
+        );
+        assert_eq!(
+            serde_json::to_vec(&state).unwrap(),
+            serde_json::to_vec(&expected_state).unwrap()
+        );
+    }
 }

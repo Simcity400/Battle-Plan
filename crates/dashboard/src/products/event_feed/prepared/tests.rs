@@ -670,6 +670,7 @@ fn prepared_feed_pages_reach_late_facts_past_their_read_and_keep_live_cutoffs() 
                     nuke_type: None,
                     script: None,
                     occurrence: None,
+                    sections: Vec::new(),
                 },
             )
             .unwrap();
@@ -1950,4 +1951,142 @@ fn mutable_surrender_targets_keep_event_and_decision_edges_and_their_exact_charg
         rows[0].country = 1501;
     }
     assert!(!charges(&current).contains_key(&key));
+}
+
+#[test]
+fn retained_observations_publish_each_part_once_and_read_back_whole() {
+    use super::super::native::{Projection, tests::retained_packs};
+    let flag = AtomicBool::new(false);
+    let frames: Vec<DecodedFrame> = retained_packs()
+        .into_iter()
+        .map(|pack| {
+            let mut frame = quiet_frame(pack.read_hour, 3);
+            *frame.tables[TableId::EventFeedHistory.index()] =
+                TableView::Complete(TableRows::EventFeedHistory(vec![pack]));
+            frame
+        })
+        .collect();
+    // Each read's observation made whole, named as the feed names it.
+    let mut names = HistoryScan::new(false, &[]);
+    let mut whole = Projection::default();
+    let mut builder = Builder::new(i32::MIN, i32::MAX);
+    for (frame, pack) in frames.iter().zip(retained_packs()) {
+        names.observe(frame);
+        whole
+            .append_named(
+                &mut builder,
+                &pack,
+                |hour, country| names.native_tag(hour, country),
+                &flag,
+            )
+            .unwrap();
+    }
+    let without_id = |row: &EventFeedRow| {
+        let mut value = serde_json::to_value(row).unwrap();
+        value.as_object_mut().unwrap().remove("id");
+        value
+    };
+    let expected: Vec<_> = builder.feed.rows.iter().map(without_id).collect();
+    assert_eq!(expected.len(), 4);
+    let mut fixture = Fixture::new();
+    let mut sources = None;
+    let mut seen = Vec::new();
+    for (batch, range) in [0..2, 2..3, 3..4].into_iter().enumerate() {
+        seen.extend(frames[range.clone()].iter().cloned());
+        let source = super::super::tests::opened(seen.clone());
+        let state = sources.get_or_insert_with(|| Sources::new(&source));
+        state.groups.begin_block();
+        for frame in &frames[range] {
+            state.observe(frame, &source, &flag).unwrap();
+        }
+        state.publish(&mut fixture, &source, batch == 2, &flag);
+    }
+    let source = super::super::tests::opened(seen);
+    let page = query(
+        &source,
+        query::Params {
+            branch_id: "1".into(),
+            first_hour: None,
+            last_hour: 123,
+            cursor: None,
+            page_size: 100,
+            categories: BTreeSet::from([
+                EventFeedCategory::WarsPeace,
+                EventFeedCategory::Diplomacy,
+                EventFeedCategory::Politics,
+                EventFeedCategory::Milestones,
+            ]),
+            observations: true,
+        },
+        &LoadContext { content: None },
+        &fixture.store,
+        &fixture.key,
+        &flag,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(page.next_cursor.is_none());
+    let mut served: Vec<_> = page
+        .reply
+        .rows
+        .iter()
+        .filter(|row| row.kind == EventFeedKind::ScriptStateObserved)
+        .collect();
+    served.sort_by_key(|row| row.hour);
+    assert_eq!(
+        served.into_iter().map(without_id).collect::<Vec<_>>(),
+        expected
+    );
+    // Each part is published once per version: four at the first read, then
+    // the timer, the fired set and the timer, and the timer.
+    let parts: Vec<Vec<String>> = rows(&fixture, "event-feed-facts-1", &[SECTIONS], &flag);
+    assert_eq!(parts.len(), 8);
+    let facts: Vec<Fact> = rows(
+        &fixture,
+        "event-feed-facts-1",
+        &[EventFeedKind::ScriptStateObserved as u64],
+        &flag,
+    );
+    assert_eq!(facts.len(), 4);
+    assert!(facts.iter().all(|fact| fact.sections.len() == 4));
+}
+
+#[test]
+fn kept_feed_catalogue_writer_publishes_the_pages_a_cold_flush_publishes() {
+    use super::super::native::tests::retained_packs;
+    let flag = AtomicBool::new(false);
+    let frames: Vec<DecodedFrame> = retained_packs()
+        .into_iter()
+        .map(|pack| {
+            let mut frame = quiet_frame(pack.read_hour, 3);
+            *frame.tables[TableId::EventFeedHistory.index()] =
+                TableView::Complete(TableRows::EventFeedHistory(vec![pack]));
+            frame
+        })
+        .collect();
+    let source = super::super::tests::opened(frames.clone());
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut observers = [Observer::default(), Observer::default()];
+    let mut names = HistoryScan::new(false, &[]);
+    for frame in &frames {
+        names.observe(frame);
+        for (index, (observer, fixture)) in observers.iter_mut().zip(&fixtures).enumerate() {
+            observer
+                .observe(source.replay_ref(), frame, &names, &flag)
+                .unwrap();
+            if index == 1 {
+                // Read its chain back, as every flush did before the writer was kept.
+                observer.catalogue = Default::default();
+            }
+            let mut writer = fixture.writer();
+            observer.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+        }
+        assert_eq!(
+            fixtures[0].payloads(),
+            fixtures[1].payloads(),
+            "hour {}",
+            frame.hour
+        );
+    }
 }

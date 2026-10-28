@@ -33,6 +33,8 @@ pub struct Prepared {
     recurring: Accumulator,
     keys: keys::Keys,
     metadata: Catalogue,
+    #[serde(skip)]
+    catalogue_writer: series::CatalogueWriter,
     /// Only the newest native day remains mutable. Delayed settlements behind
     /// the published frontier use a sparse publication-hour event instead.
     tail: BTreeMap<i32, OpenDay>,
@@ -2329,7 +2331,7 @@ impl Prepared {
                 &tail,
             )?;
         }
-        series::write_catalogue(
+        self.catalogue_writer.write(
             writer,
             "politics-ledger",
             branch,
@@ -2338,9 +2340,16 @@ impl Prepared {
         )?;
         Ok(())
     }
+    /// The state's JSON, compressed as it is written: never held whole.
     pub fn saved_bytes(&mut self) -> io::Result<Vec<u8>> {
         self.scan.materialize_clock()?;
-        dashboard_base::prepared::series::compress(serde_json::to_vec(self)?.as_slice(), 1)
+        let mut encoded =
+            io::BufWriter::with_capacity(1 << 20, zstd::stream::Encoder::new(Vec::new(), 1)?);
+        serde_json::to_writer(&mut encoded, self)?;
+        encoded
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)?
+            .finish()
     }
     pub fn read(reader: impl io::Read) -> io::Result<Self> {
         Ok(serde_json::from_reader(zstd::stream::read::Decoder::new(

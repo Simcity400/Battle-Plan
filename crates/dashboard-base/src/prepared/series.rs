@@ -1303,7 +1303,7 @@ pub struct Payloads {
     encoded: HashMap<PayloadIdentity, (Vec<u8>, [Option<Partial>; 4])>,
 }
 
-type KeyRows<'a> = (u64, &'a [Run], &'a [(i32, Vec<u8>)], &'a mut KeyState);
+type KeyRows<'a> = (u64, &'a [Run], &'a mut [EventRow], &'a mut KeyState);
 
 #[derive(Default)]
 struct Encoding<'a> {
@@ -1418,17 +1418,14 @@ impl Batch {
         if let Some(idle) = &mut encoding.idle {
             idle.begin();
         }
-        let mut changed = self.keys.iter().peekable();
+        let mut rows = self.keys;
+        let mut changed = rows.iter_mut().peekable();
         let keys = states.iter_mut().map(|(&key, state)| {
-            let rows = changed
-                .next_if(|(changed, _)| **changed == key)
-                .map(|(_, rows)| rows);
-            (
-                key,
-                rows.map_or(&[][..], |rows| rows.runs.as_slice()),
-                rows.map_or(&[][..], |rows| rows.events.as_slice()),
-                state,
-            )
+            let (runs, events) = match changed.next_if(|(changed, _)| **changed == key) {
+                Some((_, Rows { runs, events, .. })) => (runs.as_slice(), events.as_mut_slice()),
+                None => (&[][..], Default::default()),
+            };
+            (key, runs, events, state)
         });
         Self::write_keys(
             first, self.last, keys, writer, section, decimals, cancelled, encoding,
@@ -1459,7 +1456,7 @@ impl Batch {
             (
                 key,
                 rows.runs.as_slice(),
-                rows.events.as_slice(),
+                rows.events.as_mut_slice(),
                 &mut rows.state,
             )
         });
@@ -1507,7 +1504,8 @@ impl Batch {
         let mut payloads = HashMap::<[u8; 32], (usize, usize, [Option<Partial>; 4])>::new();
         let mut identity = Vec::new();
         let mut empty: Option<(usize, usize)> = None;
-        for (index, &mut (key, runs, events, ref mut state)) in keys.iter_mut().enumerate() {
+        for (index, &mut (key, runs, ref mut events, ref mut state)) in keys.iter_mut().enumerate()
+        {
             check_cancel(cancelled)?;
             let at = HEADER as usize + index * DIRECTORY as usize;
             put(&mut bytes, at, &key.to_le_bytes());
@@ -1621,70 +1619,7 @@ impl Batch {
             }
             #[cfg(test)]
             PAYLOAD_WORK.with(|work| work.set(work.get() + 1));
-            let mut raw = Vec::new();
-            let (mut hour, mut value) = (0_i128, 0_i128);
-            for run in runs {
-                var(&mut raw, zig(i128::from(run.first_hour) - hour));
-                var(
-                    &mut raw,
-                    (i64::from(run.last_hour) - i64::from(run.first_hour)) as u128,
-                );
-                var(&mut raw, zig(run.value.wrapping_sub(value)));
-                var(&mut raw, u128::from(run.break_before));
-                hour = i128::from(run.last_hour);
-                value = run.value;
-            }
-            hour = 0;
-            for (date, row) in events {
-                var(&mut raw, zig(i128::from(*date) - hour));
-                var(&mut raw, row.len() as u128);
-                raw.extend_from_slice(row);
-                hour = i128::from(*date);
-            }
-            for (level, size) in LEVELS.into_iter().enumerate() {
-                let buckets =
-                    summary_buckets(runs, state.partial[level], size, decimals, cancelled)?;
-                var(&mut raw, buckets.len() as u128);
-                let mut pending = state.partial[level]
-                    .map(|partial| (partial.aligned(), partial.bucket(decimals)));
-                let mut previous = 0_i64;
-                for (aligned, mut bucket) in buckets {
-                    if let Some(bucket) = &mut bucket {
-                        bucket.has_break |= i64::from(bucket.first_hour)
-                            > aligned.max(i64::from(first))
-                            || i64::from(bucket.last_hour)
-                                < (aligned + size - 1).min(i64::from(last));
-                    }
-                    var(&mut raw, zig(i128::from(aligned - previous)));
-                    previous = aligned;
-                    encode_bucket(&mut raw, bucket, aligned);
-                    let mut prefix = pending
-                        .filter(|(previous, _)| *previous == aligned)
-                        .map_or_else(
-                            || bucket.unwrap(),
-                            |(_, value)| merge(Some(value), bucket).unwrap(),
-                        );
-                    prefix.has_break |=
-                        i64::from(prefix.last_hour) < (aligned + size - 1).min(i64::from(last));
-                    encode_bucket(&mut raw, Some(prefix), aligned);
-                    pending = Some((aligned, prefix));
-                }
-                let tail = i64::from(last).div_euclid(size) * size;
-                let held = state.last;
-                state.partial[level] = pending
-                    .filter(|(aligned, _)| *aligned == tail && i64::from(last) < tail + size - 1)
-                    .map(|(aligned, bucket)| Partial::of(aligned, bucket, held, decimals));
-                let aligned = |hour: i32| i64::from(hour).div_euclid(size) * size;
-                let counts = || events.chunk_by(|a, b| aligned(a.0) == aligned(b.0));
-                var(&mut raw, counts().count() as u128);
-                previous = 0;
-                for events in counts() {
-                    let aligned = aligned(events[0].0);
-                    var(&mut raw, zig(i128::from(aligned - previous)));
-                    var(&mut raw, events.len() as u128);
-                    previous = aligned;
-                }
-            }
+            let raw = payload(runs, events, state, (first, last), decimals, cancelled)?;
             let offset = bytes.len();
             blob(&mut bytes, at + 8, raw, &mut blobs)?;
             #[cfg(any(test, feature = "test-support"))]
@@ -1732,6 +1667,98 @@ impl Batch {
         }
         Ok(())
     }
+}
+
+/// A key's payload before compression: its runs, then its events, then each
+/// summary level's buckets and event counts. The summaries read only the
+/// events' dates, so they are encoded first and the events are copied once,
+/// into an allocation of the payload's exact size, each row's bytes released
+/// as they are copied: a flush holds its events once, not twice.
+fn payload(
+    runs: &[Run],
+    events: &mut [EventRow],
+    state: &mut KeyState,
+    (first, last): (i32, i32),
+    decimals: u8,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<u8>> {
+    let mut raw = Vec::new();
+    let (mut hour, mut value) = (0_i128, 0_i128);
+    for run in runs {
+        var(&mut raw, zig(i128::from(run.first_hour) - hour));
+        var(
+            &mut raw,
+            (i64::from(run.last_hour) - i64::from(run.first_hour)) as u128,
+        );
+        var(&mut raw, zig(run.value.wrapping_sub(value)));
+        var(&mut raw, u128::from(run.break_before));
+        hour = i128::from(run.last_hour);
+        value = run.value;
+    }
+    let mut summaries = Vec::new();
+    for (level, size) in LEVELS.into_iter().enumerate() {
+        let buckets = summary_buckets(runs, state.partial[level], size, decimals, cancelled)?;
+        var(&mut summaries, buckets.len() as u128);
+        let mut pending =
+            state.partial[level].map(|partial| (partial.aligned(), partial.bucket(decimals)));
+        let mut previous = 0_i64;
+        for (aligned, mut bucket) in buckets {
+            if let Some(bucket) = &mut bucket {
+                bucket.has_break |= i64::from(bucket.first_hour) > aligned.max(i64::from(first))
+                    || i64::from(bucket.last_hour) < (aligned + size - 1).min(i64::from(last));
+            }
+            var(&mut summaries, zig(i128::from(aligned - previous)));
+            previous = aligned;
+            encode_bucket(&mut summaries, bucket, aligned);
+            let mut prefix = pending
+                .filter(|(previous, _)| *previous == aligned)
+                .map_or_else(
+                    || bucket.unwrap(),
+                    |(_, value)| merge(Some(value), bucket).unwrap(),
+                );
+            prefix.has_break |=
+                i64::from(prefix.last_hour) < (aligned + size - 1).min(i64::from(last));
+            encode_bucket(&mut summaries, Some(prefix), aligned);
+            pending = Some((aligned, prefix));
+        }
+        let tail = i64::from(last).div_euclid(size) * size;
+        let held = state.last;
+        state.partial[level] = pending
+            .filter(|(aligned, _)| *aligned == tail && i64::from(last) < tail + size - 1)
+            .map(|(aligned, bucket)| Partial::of(aligned, bucket, held, decimals));
+        let aligned = |hour: i32| i64::from(hour).div_euclid(size) * size;
+        let counts = || events.chunk_by(|a, b| aligned(a.0) == aligned(b.0));
+        var(&mut summaries, counts().count() as u128);
+        previous = 0;
+        for events in counts() {
+            let aligned = aligned(events[0].0);
+            var(&mut summaries, zig(i128::from(aligned - previous)));
+            var(&mut summaries, events.len() as u128);
+            previous = aligned;
+        }
+    }
+    let mut length = summaries.len();
+    hour = 0;
+    for (date, row) in events.iter() {
+        length += var_len(zig(i128::from(*date) - hour)) + var_len(row.len() as u128) + row.len();
+        hour = i128::from(*date);
+    }
+    raw.reserve_exact(length);
+    hour = 0;
+    for (date, row) in events.iter_mut() {
+        var(&mut raw, zig(i128::from(*date) - hour));
+        var(&mut raw, row.len() as u128);
+        // The event order reads only the date from here on.
+        raw.extend_from_slice(&std::mem::take(row));
+        hour = i128::from(*date);
+    }
+    raw.extend_from_slice(&summaries);
+    Ok(raw)
+}
+
+/// The bytes [`var`] writes for `value`.
+fn var_len(value: u128) -> usize {
+    (128 - value.leading_zeros() as usize).max(1).div_ceil(7)
 }
 
 /// Ordered, disjoint runs merge into the last bucket directly, in their

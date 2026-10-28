@@ -67,6 +67,10 @@ pub(crate) const FACT_KEYS: [u64; 56] = [
     (1 << 63) | 39,
 ];
 
+/// The stream of retained state parts ([`Fact::sections`]), apart from every
+/// fact kind and its late references.
+pub(crate) const SECTIONS: u64 = 1 << 62;
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Fact {
     pub row: EventFeedRow,
@@ -76,6 +80,11 @@ pub(crate) struct Fact {
     /// A native occurrence's typed operands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occurrence: Option<Occurrence>,
+    /// A retained state observation's parts, as ordinals of [`SECTIONS`]
+    /// events whose notes follow the row's own, in order. A part is published
+    /// once while its notes stay the same.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<u64>,
 }
 
 /// A prepared fact's address: its stream key and ordinal.
@@ -406,6 +415,8 @@ pub(crate) struct Observer {
     observed: BTreeSet<String>,
     #[serde(default)]
     links: Links,
+    #[serde(skip)]
+    catalogue: crate::prepared::series::CatalogueWriter,
 }
 impl Default for Observer {
     fn default() -> Self {
@@ -417,6 +428,7 @@ impl Default for Observer {
             diagnostics: Builder::new(0, 0),
             observed: BTreeSet::new(),
             links: Links::default(),
+            catalogue: Default::default(),
         }
     }
 }
@@ -440,6 +452,7 @@ impl Observer {
         self.native.losses(replay, frame.branch);
         self.events.through(frame.hour);
         let tag_at = |hour, country| identities.native_tag(hour, country);
+        self.native.defer_sections();
         let pack = frame.complete::<tables::EventFeedHistory>();
         let mut complete = false;
         let read = match pack {
@@ -523,10 +536,16 @@ impl Observer {
         }
         for ((row, occurrence), (key, ordinal)) in rows.into_iter().zip(occurrences).zip(at) {
             self.late.insert(row.hour, row.read_hour, key, ordinal);
+            let sections = self.native.sections(&row.id, |notes| {
+                let ordinal = self.events.state(SECTIONS).map_or(0, |state| state.events);
+                self.events.event(SECTIONS, row.read_hour, &notes)?;
+                Ok(ordinal)
+            })?;
             self.events.event(
                 key,
                 row.read_hour,
                 &Fact {
+                    sections,
                     occurrence,
                     script: self
                         .diagnostics
@@ -583,6 +602,7 @@ impl Observer {
                     nuke_type: None,
                     script: None,
                     occurrence: None,
+                    sections: Vec::new(),
                 },
             )?;
         }
@@ -608,6 +628,7 @@ impl Observer {
                     nuke_type: Some(strike.nuke_type),
                     script: None,
                     occurrence: None,
+                    sections: Vec::new(),
                 });
             }
         }
@@ -633,7 +654,7 @@ impl Observer {
     ) -> io::Result<()> {
         self.events
             .flush(writer, &format!("event-feed-facts-{branch}"), 0, cancelled)?;
-        crate::prepared::series::write_catalogue(
+        self.catalogue.write(
             writer,
             "event-feed-facts",
             branch,

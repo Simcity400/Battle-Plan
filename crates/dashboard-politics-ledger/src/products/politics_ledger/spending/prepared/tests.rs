@@ -4252,3 +4252,58 @@ fn modifier_refresh_prepared_keeps_all_section_bytes_across_both_accounting_path
         }
     }
 }
+
+#[test]
+fn saved_state_is_the_state_json_compressed_as_it_is_written() {
+    let mut prepared = Prepared::default();
+    let first = engine_native::cdate::HOUR_EPOCH;
+    for day in [first, first + 24] {
+        let mut current = daily(day, day, true);
+        let mut payment = event(
+            day as u64 + 3,
+            PowerCause::Decision,
+            PowerOperation::Subtract,
+            Some(-19),
+        );
+        payment.hour = day;
+        put(&mut current, TableRows::CountryPowerChanges(vec![payment]));
+        prepared
+            .observe_frame(&current, None, &AtomicBool::new(false))
+            .unwrap();
+    }
+    let saved = prepared.saved_bytes().unwrap();
+    let json = serde_json::to_vec(&prepared).unwrap();
+    assert!(json.len() > 1_000);
+    assert_eq!(zstd::stream::decode_all(saved.as_slice()).unwrap(), json);
+    Prepared::read(saved.as_slice()).unwrap();
+}
+
+#[test]
+fn kept_catalogue_writer_publishes_the_pages_a_cold_flush_publishes() {
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut prepared = [Prepared::default(), Prepared::default()];
+    let first = engine_native::cdate::HOUR_EPOCH;
+    for day in 0..4 {
+        let hour = first + day * 24;
+        for (index, (prepared, fixture)) in prepared.iter_mut().zip(&fixtures).enumerate() {
+            let mut current = daily(hour, hour, true);
+            let mut payment = event(
+                hour as u64 + 3,
+                PowerCause::Decision,
+                PowerOperation::Subtract,
+                Some(-19),
+            );
+            payment.hour = hour;
+            put(&mut current, TableRows::CountryPowerChanges(vec![payment]));
+            prepared
+                .observe_frame(&current, None, &AtomicBool::new(false))
+                .unwrap();
+            if index == 1 {
+                // Read its chain back, as every flush did before the writer was kept.
+                prepared.catalogue_writer = Default::default();
+            }
+            publish(prepared, fixture);
+        }
+        assert_eq!(fixtures[0].payloads(), fixtures[1].payloads(), "day {day}");
+    }
+}

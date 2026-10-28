@@ -842,6 +842,27 @@ pub(crate) fn query(
         }
         _ => true,
     });
+    // A retained state observation's parts follow its own notes.
+    let mut sections = BTreeMap::<u64, Vec<String>>::new();
+    for row in rows.values_mut() {
+        let SourceRow::Fact(fact) = row else {
+            continue;
+        };
+        for ordinal in std::mem::take(&mut fact.sections) {
+            check_cancel(cancelled)?;
+            if let std::collections::btree_map::Entry::Vacant(entry) = sections.entry(ordinal) {
+                entry.insert(serde_json::from_value(
+                    event(&mut readers[4], super::SECTIONS, ordinal)?.row,
+                )?);
+            }
+            fact.row
+                .cause
+                .as_mut()
+                .ok_or_else(|| crate::invalid("Retained state observation has no notes"))?
+                .notes
+                .extend(sections[&ordinal].iter().cloned());
+        }
+    }
     let mut builder = Builder::new(first, live);
     let texts = ScopedTexts::new(source, branch, cancelled);
     diagnostics(&mut builder, &metadata, live)?;

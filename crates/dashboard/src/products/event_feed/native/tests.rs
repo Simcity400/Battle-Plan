@@ -1178,3 +1178,122 @@ fn preparation_resume_preserves_an_open_native_timer_pass() {
     assert_eq!(inputs["roster"]["complete"], true);
     assert_eq!(inputs["roster"]["members"][0]["days"], 9);
 }
+
+/// Reads 120 to 123: a pending instance, a fired member, a delayed timer and
+/// a decision owner observed at 120; then the timer advancing alone, a fired
+/// member added with the timer advancing, and the timer advancing alone.
+pub(in crate::products::event_feed) fn retained_packs() -> Vec<EventFeedHistoryRow> {
+    use replay_data::event_feed_rows::{
+        EventFeedEventIdentity, EventFeedScope, EventFeedScript, EventFeedScriptChange as C,
+        decisions::Operation,
+    };
+    fn script(sequence: u64, hour: i32, change: C) -> EventFeedEvent {
+        let mut value = event(sequence, EventFeedSource::ScriptState, hour);
+        let stored = matches!(change, C::PendingStored { .. } | C::DelayedStored { .. });
+        let named = stored || change == C::FiredMember;
+        value.script = Some(EventFeedScript {
+            change: Some(change),
+            native_event: named.then_some(EventFeedEventIdentity { kind: 7, id: 9 }),
+            token_len: if named { 3 } else { 0 },
+            instance: stored.then_some(17),
+            scope_len: u32::from(stored),
+            ..Default::default()
+        });
+        value
+    }
+    let advance = |sequence, hour| {
+        script(
+            sequence,
+            hour,
+            C::DelayedAdvance {
+                count: 1,
+                finished: true,
+            },
+        )
+    };
+    let mut baseline: Vec<_> = [
+        C::PendingBaseline,
+        C::PendingStored { due_hour: 999 },
+        C::PendingReady,
+        C::FiredBaseline,
+        C::FiredMember,
+        C::FiredReady,
+        C::DelayedBaseline,
+        C::DelayedStored { remaining: 500 },
+        C::DelayedReady,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, change)| script(index as u64 + 1, 120, change))
+    .collect();
+    baseline.push(decision_boundary(10, Operation::Baseline, 0));
+    baseline.push(decision_boundary(11, Operation::Ready, 0));
+    [
+        (120, baseline),
+        (121, vec![advance(12, 121)]),
+        (122, vec![script(13, 122, C::FiredMember), advance(14, 122)]),
+        (123, vec![advance(15, 123)]),
+    ]
+    .into_iter()
+    .map(|(hour, events)| {
+        let mut row = pack(events);
+        row.read_hour = hour;
+        row.script_tokens = b"mod".to_vec();
+        row.script_scopes = vec![EventFeedScope {
+            country: 100_000,
+            random: [12, 13],
+            ..Default::default()
+        }];
+        row
+    })
+    .collect()
+}
+
+#[test]
+fn retained_parts_publish_once_and_with_the_own_notes_make_the_whole_observation() {
+    let flag = AtomicBool::new(false);
+    let mut whole = Projection::default();
+    let mut parts = Projection::default();
+    let mut published: Vec<Vec<String>> = Vec::new();
+    let mut counts = Vec::new();
+    for (index, pack) in retained_packs().iter().enumerate() {
+        if index == 2 {
+            // A resumed projection keeps each part's digest and ordinal only.
+            parts = serde_json::from_slice(&serde_json::to_vec(&parts).unwrap()).unwrap();
+        }
+        parts.defer_sections();
+        let mut expected = Builder::new(100, 130);
+        whole
+            .append_named(&mut expected, pack, |_, _| Some("SYN".into()), &flag)
+            .unwrap();
+        let mut actual = Builder::new(100, 130);
+        parts
+            .append_named(&mut actual, pack, |_, _| Some("SYN".into()), &flag)
+            .unwrap();
+        let before = published.len();
+        for row in &mut actual.feed.rows {
+            let ordinals = parts
+                .sections(&row.id, |notes| {
+                    published.push(notes.to_vec());
+                    Ok(published.len() as u64 - 1)
+                })
+                .unwrap();
+            let notes = &mut row.cause.as_mut().unwrap().notes;
+            for ordinal in ordinals {
+                notes.extend(published[ordinal as usize].iter().cloned());
+            }
+        }
+        counts.push(published.len() - before);
+        assert_eq!(expected.feed.rows.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&actual.feed.rows).unwrap(),
+            serde_json::to_value(&expected.feed.rows).unwrap()
+        );
+    }
+    // Every part at the first read; then the timer, the fired set and the
+    // timer, and the timer: the pending instances and the decision owner once.
+    assert_eq!(counts, [4, 1, 2, 1]);
+    let notes = published.concat().join("\n");
+    assert!(notes.contains("remaining 497 hours"));
+    assert!(notes.contains("fired_event_names membership: 2"));
+}
