@@ -79,8 +79,8 @@ const MAX_CANCELLED: usize = MAX_PENDING * 2;
 const MIN_LOADER_THREADS: usize = 3;
 /// Threads for `Product::INTERACTIVE` reads, apart from the scans.
 const INTERACTIVE_THREADS: usize = 2;
-/// Threads answering prepared queries from prepared pages alone.
-const PREPARED_THREADS: usize = 2;
+/// The fewest threads answering prepared queries from prepared pages alone.
+const MIN_PREPARED_THREADS: usize = 2;
 
 /// Where a job waits. Each lane has its own threads and its own bound of
 /// [`MAX_PENDING`] queued jobs.
@@ -116,7 +116,9 @@ impl Lane {
 
     /// Threads serving this lane on a machine with `parallelism` hardware
     /// threads. Sampled reads take half of them, whole-recording loads a
-    /// quarter, each at least [`MIN_LOADER_THREADS`]; the short lanes are fixed.
+    /// quarter, each at least [`MIN_LOADER_THREADS`]; prepared queries take half,
+    /// at least [`MIN_PREPARED_THREADS`], so one slow product doesn't hold up a
+    /// page's other reads; hovers keep a fixed two.
     /// A sampled read holds one block's selected frames and the few read ahead
     /// of it, so memory grows with this count, not with the recording.
     pub(super) fn threads(self, parallelism: usize) -> usize {
@@ -124,7 +126,7 @@ impl Lane {
             Self::History => (parallelism / 4).max(MIN_LOADER_THREADS),
             Self::Sampled => (parallelism / 2).max(MIN_LOADER_THREADS),
             Self::Interactive => INTERACTIVE_THREADS,
-            Self::Prepared => PREPARED_THREADS,
+            Self::Prepared => (parallelism / 2).max(MIN_PREPARED_THREADS),
         }
     }
 }

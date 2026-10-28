@@ -1591,13 +1591,17 @@ fn preparation_refresh_coalescing_retires_when_loader_receives_the_job() {
 
 #[test]
 fn lanes_are_sized_from_the_machine_with_at_least_three_loaders() {
-    for (parallelism, history, sampled) in
-        [(1, 3, 3), (4, 3, 3), (8, 3, 4), (16, 4, 8), (64, 16, 32)]
-    {
+    for (parallelism, history, sampled, prepared) in [
+        (1, 3, 3, 2),
+        (4, 3, 3, 2),
+        (8, 3, 4, 4),
+        (16, 4, 8, 8),
+        (64, 16, 32, 32),
+    ] {
         assert_eq!(Lane::History.threads(parallelism), history);
         assert_eq!(Lane::Sampled.threads(parallelism), sampled);
         assert_eq!(Lane::Interactive.threads(parallelism), INTERACTIVE_THREADS);
-        assert_eq!(Lane::Prepared.threads(parallelism), PREPARED_THREADS);
+        assert_eq!(Lane::Prepared.threads(parallelism), prepared);
     }
     // Every lane's loaders and the response pump.
     let service = Service::new(Arc::new(|_| true)).unwrap();
