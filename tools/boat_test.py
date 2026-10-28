@@ -29,6 +29,7 @@ class FakeBoat:
         self.acquire_status = {}
         self.acquire_output = {}
         self.sync_status = 0
+        self.synced = []
         self.fail_downloads = False
         self.cargo_exit = 0
         self.renewed = threading.Event()
@@ -54,9 +55,9 @@ class FakeBoat:
         if command == "push":
             files = [path for path in Path(args[2]).rglob("*") if path.is_file() and ".git" not in path.parts]
             return OK, [{"files": len(files)}]
-        if command == "scp":
-            if self.fail_downloads and "artifacts-" in args[1]:
-                raise bt.Failure("Boat scp failed")
+        if command == "exec" and "--timeout" in args:
+            if self.fail_downloads and any("dd if=" in arg for arg in args):
+                raise bt.Failure("Boat exec failed")
             return OK, []
         raise AssertionError(f"unexpected boat call {args}")
 
@@ -65,15 +66,18 @@ class FakeBoat:
         mode = args[0]
         if mode == "acquire":
             return self.acquire_status.get(vmid, 0), self.acquire_output.get(vmid, "{}")
-        if mode == "sync":
-            return self.sync_status, ""
         if mode == "release":
             return 0, ""
+        if mode in {"check", "build"} and args[2] == "--sync":
+            self.synced.append(args[3])
+            if self.sync_status:
+                return self.sync_status, ""
         if mode == "check":
             return self.cargo_exit, ""
         if mode == "build":
             artifact = {"path": f"{bt.REMOTE}/target/{bt.TARGET}/release/viewer.exe", "sha256": "0" * 64}
-            return 0, "BOAT_ARTIFACTS=" + json.dumps([artifact]) + "\nBOAT_PARTS=" + json.dumps([f"{bt.REMOTE}/artifacts-x.part-0"]) + "\n"
+            bundle = {"path": f"{bt.REMOTE}/artifacts-x.tar.xz", "size": 10, "sha256": "0" * 64}
+            return 0, "BOAT_ARTIFACTS=" + json.dumps([artifact]) + "\nBOAT_BUNDLE=" + json.dumps(bundle) + "\n"
         raise AssertionError(f"unexpected remote call {args}")
 
     def ttl_calls(self, vmid):
@@ -89,7 +93,7 @@ class Harness(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.state = bt.State(self.root / "state")
-        self.saved = {name: getattr(bt, name) for name in ("boat", "remote", "RENEW_SECONDS", "HYDRATION_SECONDS")}
+        self.saved = {name: getattr(bt, name) for name in ("boat", "remote", "quick", "RENEW_SECONDS", "HYDRATION_SECONDS", "UPLOAD_CHUNKS")}
 
     def tearDown(self):
         for name, value in self.saved.items():
@@ -99,6 +103,7 @@ class Harness(unittest.TestCase):
     def use(self, fake):
         bt.boat = fake.boat
         bt.remote = fake.remote
+        bt.quick = fake.remote
         for vmid in fake.vms:
             bt.atomic_json(self.state.pool / (vmid + ".json"), {"id": vmid, "snapshot": bt.SNAPSHOT})
         return fake
@@ -161,14 +166,14 @@ class Acquire(Harness):
         fake = self.use(FakeBoat([vm("a", "stopped", hydrated=False)]))
         bt.HYDRATION_SECONDS = 0
         with self.assertRaises(bt.Failure):
-            bt.acquire(self.state, "lane", "large", "t", {}, self.root)
+            bt.acquire(self.state, "lane", "large", "t", {})
         self.assertEqual(fake.ttl_calls("a")[-1], bt.IDLE_SECONDS)
         self.assertTrue(self.state.cooling("a", 0))
         self.state.lock("a").close()
 
     def test_resume_never_shrinks_a_large_vm(self):
         fake = self.use(FakeBoat([vm("a", "stopped", "large")]))
-        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "default", "t", {}, self.root)
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "default", "t", {})
         lease.end()
         lock.close()
         resume = next(call for call in fake.calls if call[0] == "resume")
@@ -179,12 +184,12 @@ class Acquire(Harness):
         fake = self.use(FakeBoat([vm("a")]))
         installed = []
 
-        def remote(vmid, *args, stream=False):
-            installed.append(any(call[0] == "scp" and call[2].endswith("/remote.py") for call in fake.calls))
-            return fake.remote(vmid, *args, stream=stream)
+        def quick(vmid, *args):
+            installed.append(any(call[0] == "exec" and "runner-remote.py.b64-000" in " ".join(call) for call in fake.calls))
+            return fake.remote(vmid, *args)
 
-        bt.remote = remote
-        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", {}, self.root)
+        bt.quick = quick
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", {})
         lease.end()
         lock.close()
         self.assertEqual((fake.remote_calls, installed), ([("a", "acquire", "t")], [True]))
@@ -193,7 +198,7 @@ class Acquire(Harness):
         fake = self.use(FakeBoat([vm("a"), vm("b")]))
         fake.acquire_status["a"] = bt.REMOTE_CLAIMED
         record = {}
-        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record, self.root)
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
         lease.end()
         lock.close()
         self.assertEqual(vmid, "b")
@@ -206,7 +211,7 @@ class Acquire(Harness):
         fake = self.use(FakeBoat([vm("a"), vm("b")]))
         fake.acquire_status["a"] = bt.REMOTE_CLAIMED
         fake.acquire_output["a"] = "busy\n"
-        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", {}, self.root)
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", {})
         lease.end()
         lock.close()
         self.assertEqual(vmid, "b")
@@ -256,13 +261,25 @@ class Run(Harness):
         self.assertEqual(fake.ttl_calls("a")[-1], bt.IDLE_SECONDS)
         self.state.lock("a").close()
 
-    def test_a_failed_sync_releases_the_claim_and_marks_the_vm_used(self):
+    def test_a_failed_sync_is_a_boat_failure_whose_job_released_the_claim(self):
         fake = self.use(FakeBoat([vm("a")]))
-        fake.sync_status = 1
+        fake.sync_status = bt.SYNC_FAILED
         self.assertEqual(bt.main(["check", "-p", "x"]), bt.UNAVAILABLE)
-        self.assertEqual(self.last_record()["failure_phase"], "sync")
-        self.assertEqual(fake.remote_calls[-1][:2], ("a", "release"))
+        record = self.last_record()
+        self.assertIn("synchronization", record["failure"])
+        self.assertIsNone(record["cargo_exit"])
+        self.assertNotIn("release", [call[1] for call in fake.remote_calls])
         self.assertGreater(self.state.entry("a")["used"], 0)
+
+    def test_a_small_source_goes_up_in_commands_and_a_large_one_in_one_push(self):
+        fake = self.use(FakeBoat([vm("a")]))
+        self.assertEqual(bt.main(["check", "-p", "x"]), 0)
+        self.assertTrue(fake.synced[-1].startswith("parts:"))
+        self.assertNotIn("push", [call[0] for call in fake.calls])
+        bt.UPLOAD_CHUNKS = 0
+        self.assertEqual(bt.main(["check", "-p", "x"]), 0)
+        self.assertTrue(fake.synced[-1].startswith("file:"))
+        self.assertIn("push", [call[0] for call in fake.calls])
 
     def test_failed_download_is_not_a_success(self):
         fake = self.use(FakeBoat([vm("a")]))

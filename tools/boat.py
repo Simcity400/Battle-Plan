@@ -23,8 +23,10 @@ for minutes, not hours.
 `reconcile`, which every run also does, ends long lifetimes on VMs no run holds.
 """
 
+import base64
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import io
 import json
 import msvcrt
 import os
@@ -61,6 +63,16 @@ RETRY_SECONDS = (2, 5, 10, 20, 40, 60)
 # STATUS_DLL_INIT_FAILED: Windows could not start boat.exe under load, so nothing reached Boat.
 LAUNCH_FAILED = 0xC0000142
 IDEMPOTENT = {"list", "info", "extend", "scp", "push"}
+# Uploads go as base64 command arguments, inside Windows' 32 767-character command line.
+CHUNK_CHARS = 24000
+# Up to about 560 KB compressed goes up in commands; more goes up with one `boat push`.
+UPLOAD_CHUNKS = 32
+UPLOAD_WORKERS = 8
+# 4 MiB parts download as base64 command output; a `boat scp` part cost about 13 s before moving a byte.
+DOWNLOAD_BYTES = 4 * 1024 * 1024
+DOWNLOAD_WORKERS = 8
+# The remote job's exit when the source could not be synchronized.
+SYNC_FAILED = 79
 
 
 class Failure(Exception):
@@ -279,6 +291,20 @@ def remote(vmid, *args, stream=False):
     return exit_code, stdout
 
 
+def quick(vmid, *args):
+    """A short runner step in the foreground, about a second against four detached; returns (exit code, stdout).
+
+    Only steps safe to repeat use it: a repeated acquire takes over the claim its lost reply left.
+    """
+    result, events = boat("exec", vmid, "--timeout", "120", "--", "bash", "-c", 'cd "$0" && exec bash run.sh "$@"', REMOTE, *args, check=False, idempotent=True)
+    event = next((event for event in events if "exitCode" in event), None)
+    if event is None or event["exitCode"] is None:
+        raise Failure(f"Boat exec on {vmid} returned no exit code ({result.returncode}): {(result.stderr or result.stdout).strip()[:300]}")
+    if event["exitCode"] and event.get("stderr"):
+        say(event["stderr"].rstrip())
+    return event["exitCode"], event.get("stdout", "")
+
+
 def git(worktree, *args):
     return subprocess.run(["git", "-C", str(worktree), *args], check=True, capture_output=True, text=True).stdout.strip()
 
@@ -457,7 +483,7 @@ def wait_hydrated(vmid):
         time.sleep(3)
 
 
-def acquire(state, lane, size, token, record, stage):
+def acquire(state, lane, size, token, record):
     """Claims a VM locally and remotely; returns (vmid, lock, lease, remote source manifest)."""
     passed = set()
     for _ in range(3):
@@ -474,19 +500,21 @@ def acquire(state, lane, size, token, record, stage):
             elif not created:
                 boat("extend", vmid, "--ttl", str(LEASE_SECONDS))
             lease = Lease(vmid)
-            try:
-                wait_hydrated(vmid)
-            except Failure:
-                state.cool(vmid, "hydration")
-                raise
+            # A running VM the listing shows hydrated stays so; a resumed or cloned one hydrates again.
+            if vm["state"] == "stopped" or created or vm.get("hydrated") is False:
+                try:
+                    wait_hydrated(vmid)
+                except Failure:
+                    state.cool(vmid, "hydration")
+                    raise
             record["ready_seconds"] = round(time.monotonic() - started, 2)
             # Before the claim, so every VM decides claims by this runner's rules.
-            install_runner(state, vmid, stage)
-            status, manifest = remote(vmid, "acquire", token)
+            install_runner(state, vmid)
+            status, manifest = quick(vmid, "acquire", token)
             if status == 0:
                 return vmid, lock, lease, json.loads(manifest)
             if status != REMOTE_CLAIMED:
-                remote(vmid, "release", token)
+                quick(vmid, "release", token)
                 raise Failure(f"{vmid}: initialization failed ({status}); see the remote output above")
             if manifest.strip() == "busy":
                 passed.add(vmid)
@@ -504,9 +532,16 @@ def acquire(state, lane, size, token, record, stage):
     raise Failure("Could not claim a VM after three attempts")
 
 
-def source_manifest(worktree):
+def source_manifest(worktree, cache=None):
+    """Hashes of the files Git would send; `cache` keeps them for files whose size and mtime stay put."""
     names = subprocess.run(["git", "-C", str(worktree), "ls-files", "-z", "--cached", "--others", "--exclude-standard"], capture_output=True, check=True).stdout
-    files = {}
+    try:
+        known = json.loads(cache.read_text()) if cache else {}
+    except (FileNotFoundError, ValueError):
+        known = {}
+    # As Git does, a hash is kept only for a file last written well before it was hashed, so a rewrite within one timestamp tick is seen.
+    settled = time.time_ns() - 2_000_000_000
+    files, kept = {}, {}
     safe_dirs = {worktree}
     for raw in set(names.split(b"\0")) - {b""}:
         name = os.fsdecode(raw).replace("\\", "/")
@@ -523,9 +558,14 @@ def source_manifest(worktree):
                 raise Failure(f"Unsupported linked source directory: {parent}")
             safe_dirs.add(parent)
             parent = parent.parent
-        files[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-    if "__boat_manifest__.json" in files:
-        raise Failure("Reserved upload manifest filename is present in source")
+        stamp = [status.st_size, status.st_mtime_ns]
+        previous = known.get(name)
+        files[name] = previous[2] if previous and previous[:2] == stamp else hashlib.sha256(path.read_bytes()).hexdigest()
+        if status.st_mtime_ns < settled:
+            kept[name] = [*stamp, files[name]]
+    if cache:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json(cache, kept)
     return files
 
 
@@ -550,68 +590,97 @@ def runner_files():
     return {"remote.py": (TOOLS / "boat_remote.py").read_bytes().replace(b"\r\n", b"\n"), "run.sh": RUN_SH}
 
 
-def install_runner(state, vmid, stage):
+def upload(vmid, name, data):
+    """Writes base64 parts of data to REMOTE/<name>.b64-NNN, several commands at a time."""
+    text = base64.b64encode(data).decode()
+    chunks = [text[start:start + CHUNK_CHARS] for start in range(0, len(text), CHUNK_CHARS)] or [""]
+
+    def put(item):
+        index, chunk = item
+        boat("exec", vmid, "--timeout", "60", "--", "sh", "-c", 'printf %s "$1" > "$0"', f"{REMOTE}/{name}.b64-{index:03d}", chunk, idempotent=True)
+
+    with ThreadPoolExecutor(max_workers=UPLOAD_WORKERS) as uploads:
+        list(uploads.map(put, enumerate(chunks)))
+
+
+def install_runner(state, vmid):
     files = runner_files()
     digest = hashlib.sha256(files["remote.py"] + files["run.sh"]).hexdigest()
-    path = state.pool / (vmid + ".json")
-    entry = json.loads(path.read_text())
-    if entry.get("runner_hash") == digest:
+    if state.entry(vmid).get("runner_hash") == digest:
         return
+    steps = []
     for name, data in files.items():
-        local = stage / ("runner-" + name)
-        local.write_bytes(data)
-        boat("scp", str(local), f"{vmid}:{REMOTE}/{name}")
-    entry["runner_hash"] = digest
-    atomic_json(path, entry)
+        upload(vmid, "runner-" + name, data)
+        steps.append(f'cat runner-{name}.b64-* | base64 -d > {name}.new && echo "{hashlib.sha256(data).hexdigest()}  {name}.new" | sha256sum -c --quiet && mv {name}.new {name} && rm runner-{name}.b64-*')
+    boat("exec", vmid, "--timeout", "60", "--", "sh", "-c", f"cd {REMOTE} && " + " && ".join(steps), idempotent=True)
+    state.update(vmid, runner_hash=digest)
 
 
-def push_source(vmid, worktree, manifest, old, stage, token):
+def send_source(vmid, worktree, manifest, old, stage, token):
+    """Sends the files that differ from the VM's tree; returns how the remote job finds them."""
     changed = [name for name, digest in manifest.items() if old.get(name) != digest]
-    say(f"Source: {len(manifest)} files; uploading {len(changed)} changed, removing {len(old.keys() - manifest.keys())}")
-    upload = stage / "upload"
-    upload.mkdir()
-    for name in changed:
-        destination = upload / name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(worktree / name, destination)
-        # A file edited since it was hashed is sent as copied, so the remote checksums always match.
-        manifest[name] = hashlib.sha256(destination.read_bytes()).hexdigest()
-    (upload / "__boat_manifest__.json").write_text(json.dumps(manifest), encoding="utf-8")
+    deleted = sorted(old.keys() - manifest.keys())
+    say(f"Source: {len(manifest)} files; uploading {len(changed)} changed, removing {len(deleted)}")
+    bundle = io.BytesIO()
+    with tarfile.open(fileobj=bundle, mode="w:xz", preset=2) as archive:
+        for name in changed:
+            data = (worktree / name).read_bytes()
+            # A file edited since it was hashed is sent as read, so the remote checksums always match.
+            manifest[name] = hashlib.sha256(data).hexdigest()
+            entry = tarfile.TarInfo("files/" + name)
+            entry.size = len(data)
+            archive.addfile(entry, io.BytesIO(data))
+        delta = json.dumps({"changed": {name: manifest[name] for name in changed}, "deleted": deleted, "digest": manifest_digest(manifest)}).encode()
+        entry = tarfile.TarInfo("delta.json")
+        entry.size = len(delta)
+        archive.addfile(entry, io.BytesIO(delta))
+    data = bundle.getvalue()
+    digest = hashlib.sha256(data).hexdigest()
+    name = f"incoming-{token}.tar.xz"
+    # Each `boat push` or `scp` costs 13-17 s however small; a few kilobytes per exec go up in parallel in about two.
+    if len(data) * 4 // 3 <= UPLOAD_CHUNKS * CHUNK_CHARS:
+        upload(vmid, name, data)
+        return f"parts:{name}:{digest}"
+    folder = stage / "upload"
+    folder.mkdir()
+    (folder / name).write_bytes(data)
     # captures/ is ignored, and boat push sends only what Git would; give the upload its own index.
-    subprocess.run(["git", "-c", "core.hideDotFiles=false", "init", "--quiet", str(upload)], check=True)
-    names = [*changed, "__boat_manifest__.json"]
-    index = b"".join(b"100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\t" + os.fsencode(name) + b"\0" for name in names)
-    subprocess.run(["git", "-C", str(upload), "update-index", "--add", "--info-only", "-z", "--index-info"], input=index, check=True)
-    incoming = f"{REMOTE}/incoming-{token}"
-    _, pushed = boat("push", vmid, str(upload), "--to", incoming)
-    if not any(event.get("files") == len(names) for event in pushed):
-        raise Failure(f"Boat push did not confirm all {len(names)} files: {pushed}")
-    return incoming
+    subprocess.run(["git", "-c", "core.hideDotFiles=false", "init", "--quiet", str(folder)], check=True)
+    index = b"100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\t" + os.fsencode(name) + b"\0"
+    subprocess.run(["git", "-C", str(folder), "update-index", "--add", "--info-only", "-z", "--index-info"], input=index, check=True)
+    _, pushed = boat("push", vmid, str(folder), "--to", f"{REMOTE}/incoming-{token}")
+    if not any(event.get("files") == 1 for event in pushed):
+        raise Failure(f"Boat push did not confirm the source bundle: {pushed}")
+    return f"file:incoming-{token}/{name}:{digest}"
 
 
-def deliver(vmid, output, outdir, stage):
-    lines = {key: value for key, _, value in (line.partition("=") for line in output.splitlines()) if key in {"BOAT_ARTIFACTS", "BOAT_PARTS"}}
+def manifest_digest(manifest):
+    return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+
+
+def deliver(vmid, output, outdir):
+    lines = {key: value for key, _, value in (line.partition("=") for line in output.splitlines()) if key in {"BOAT_ARTIFACTS", "BOAT_BUNDLE"}}
     if len(lines) != 2:
         raise Failure("The build returned no artifact manifest")
     artifacts = json.loads(lines["BOAT_ARTIFACTS"])
     if not artifacts:
         raise Failure("The build produced no exe, dll or pdb")
+    bundle = json.loads(lines["BOAT_BUNDLE"])
 
-    def fetch(item):
-        index, source = item
-        destination = stage / f"artifact-part-{index}"
-        boat("scp", f"{vmid}:{source}", str(destination))
-        return destination
+    def fetch(index):
+        # An exec returns at most 8 MiB of output: a part's base64 stays under it.
+        _, events = boat("exec", vmid, "--timeout", "120", "--", "sh", "-c", 'dd if="$0" bs="$1" skip="$2" count=1 status=none | base64 -w0', bundle["path"], str(DOWNLOAD_BYTES), str(index), idempotent=True)
+        data = base64.b64decode("".join(event.get("stdout", "") for event in events))
+        if len(data) != min(DOWNLOAD_BYTES, bundle["size"] - index * DOWNLOAD_BYTES):
+            raise Failure(f"Artifact bundle part {index} arrived with {len(data)} bytes")
+        return data
 
-    with ThreadPoolExecutor(max_workers=4) as downloads:
-        parts = list(downloads.map(fetch, enumerate(json.loads(lines["BOAT_PARTS"]))))
-    bundle = stage / "artifacts.tar.xz"
-    with bundle.open("wb") as assembled:
-        for part in parts:
-            with part.open("rb") as source:
-                shutil.copyfileobj(source, assembled)
+    with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as downloads:
+        data = b"".join(downloads.map(fetch, range(max(1, -(-bundle["size"] // DOWNLOAD_BYTES)))))
+    if hashlib.sha256(data).hexdigest() != bundle["sha256"]:
+        raise Failure("Artifact bundle checksum mismatch")
     expected = {Path(artifact["path"]).name for artifact in artifacts}
-    with tarfile.open(bundle, "r:xz") as archive:
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:xz") as archive:
         members = archive.getmembers()
         if {member.name for member in members} != expected or len(members) != len(expected) or any(not member.isfile() or Path(member.name).name != member.name for member in members):
             raise Failure("The artifact bundle holds unexpected names or entry types")
@@ -642,7 +711,7 @@ def refresh_image(vmid, token, worktree, revision):
     if git(worktree, "status", "--porcelain"):
         raise Failure("Refusing to save the shared image from a dirty worktree")
     for step in (["check", "check", "--workspace", "--all-targets"], ["ui"]):
-        status, _ = remote(vmid, "acquire", token)
+        status, _ = quick(vmid, "acquire", token)
         if status:
             raise Failure("Could not reclaim the VM before saving the image")
         status, _ = remote(vmid, step[0], token, *step[1:], stream=True)
@@ -708,9 +777,9 @@ def run(argv):
         outdir = outdir.resolve()
         outdir.mkdir(parents=True, exist_ok=True)
     revision = git(worktree, "rev-parse", "HEAD")
-    manifest = source_manifest(worktree)
-    source_digest = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
     lane = hashlib.sha256(os.path.normcase(str(worktree)).encode()).hexdigest()
+    manifest = source_manifest(worktree, state.root / "hashes" / (lane + ".json"))
+    source_digest = manifest_digest(manifest)
     token = uuid.uuid4().hex
     record = {"helper": "tools/boat.py", "mode": mode, "worktree": str(worktree), "revision": revision, "source_sha256": source_digest, "args": cargo, "vm": None, "phases": {}}
     phase = "allocate"
@@ -722,30 +791,29 @@ def run(argv):
         phase, mark = name, time.monotonic()
 
     lock = lease = stage = vmid = None
-    claimed = syncing = running = False
+    claimed = running = False
     cargo_exit = None
     failure = None
     try:
         stage = state.jobs / token
         stage.mkdir()
-        vmid, lock, lease, old = acquire(state, lane, machine_size(mode, cargo), token, record, stage)
+        vmid, lock, lease, old = acquire(state, lane, machine_size(mode, cargo), token, record)
         claimed = True
         enter("sync")
-        incoming = push_source(vmid, worktree, manifest, old, stage, token)
-        source_digest = record["source_sha256"] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
-        syncing = True
-        status, _ = remote(vmid, "sync", token, incoming, stream=True)
-        syncing = False
-        if status:
-            raise Failure(f"Remote source synchronization failed ({status})")
-        atomic_json(state.lanes / (lane + ".json"), {"id": vmid, "worktree": str(worktree)})
+        source = send_source(vmid, worktree, manifest, old, stage, token)
+        source_digest = record["source_sha256"] = manifest_digest(manifest)
         enter("run")
         running = True
-        cargo_exit, output = remote(vmid, "ui" if mode == "ui" else mode, token, *([] if mode == "ui" else cargo), stream=True)
+        # The job synchronizes the tree first; it releases its claim whether that or Cargo fails.
+        status, output = remote(vmid, "ui" if mode == "ui" else mode, token, "--sync", source, *([] if mode == "ui" else cargo), stream=True)
         claimed = False
+        if status == SYNC_FAILED:
+            raise Failure("Remote source synchronization failed; see the remote output above")
+        cargo_exit = status
+        atomic_json(state.lanes / (lane + ".json"), {"id": vmid, "worktree": str(worktree)})
         if mode == "build" and cargo_exit == 0:
             enter("deliver")
-            artifacts = deliver(vmid, output, outdir, stage)
+            artifacts = deliver(vmid, output, outdir)
             record["artifacts_verified"] = True
             record_artifacts(outdir, artifacts, cargo, vmid, worktree, revision, source_digest)
             if refresh:
@@ -756,10 +824,10 @@ def run(argv):
         failure = (phase, "interrupted" if isinstance(error, KeyboardInterrupt) else str(error))
         raise
     finally:
-        # A failed sync leaves a tree the next sync repairs; one whose result was lost may still run, so it keeps the claim.
-        if vmid and claimed and not running and not syncing:
+        # A job whose result was lost may still run, so it keeps the claim.
+        if vmid and claimed and not running:
             try:
-                remote(vmid, "release", token)
+                quick(vmid, "release", token)
             except Failure as error:
                 say(f"Remote claim kept: {error}")
         if lease:

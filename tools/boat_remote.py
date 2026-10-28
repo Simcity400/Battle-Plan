@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import base64
 import fcntl
 import gzip
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -108,21 +110,6 @@ def manifest():
 def owned(token):
     return (CLAIM / 'token').read_text() == token
 
-def split(bundle):
-    """Cuts the bundle into up to four parts for parallel downloads; returns their paths."""
-    chunk = max(1, (bundle.stat().st_size + 3) // 4)
-    parts = []
-    with bundle.open('rb') as source:
-        for index in range(4):
-            data = source.read(chunk)
-            if not data:
-                break
-            part = bundle.with_name(bundle.name.removesuffix('.tar.xz') + '.part-' + str(index))
-            part.write_bytes(data)
-            parts.append(str(part))
-    bundle.unlink()
-    return parts
-
 def boot_id():
     return Path('/proc/sys/kernel/random/boot_id').read_text()
 
@@ -140,6 +127,67 @@ def busy():
         except OSError:
             pass
     return False
+
+def receive(spec, token):
+    """The uploaded source bundle, verified and unpacked; returns its directory."""
+    kind, name, digest = spec.split(':')
+    if kind == 'parts':
+        parts = sorted(ROOT.glob(name + '.b64-*'))
+        data = base64.b64decode(''.join(part.read_text() for part in parts))
+    else:
+        parts = [ROOT / name]
+        data = parts[0].read_bytes()
+    for part in parts:
+        part.unlink()
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise RuntimeError('Source bundle checksum mismatch')
+    incoming = ROOT / ('incoming-' + token)
+    incoming.mkdir(exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(data), mode='r:xz') as archive:
+        for member in archive.getmembers():
+            path = Path(member.name)
+            if not member.isfile() or path.is_absolute() or '..' in path.parts or path.parts[0] not in {'files', 'delta.json'}:
+                raise RuntimeError(f'Unexpected source bundle entry: {member.name}')
+            destination = incoming / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.extractfile(member) as source, destination.open('wb') as output:
+                shutil.copyfileobj(source, output)
+    return incoming
+
+def apply(incoming):
+    """Brings the tree to the uploaded manifest; the caller holds the claim and the running lock."""
+    delta = json.loads((incoming / 'delta.json').read_text())
+    old = manifest()
+    new = {name: digest for name, digest in old.items() if name not in set(delta['deleted'])}
+    new.update(delta['changed'])
+    if hashlib.sha256(json.dumps(new, sort_keys=True).encode()).hexdigest() != delta['digest']:
+        raise RuntimeError('The tree and the uploaded changes do not add up to the worktree')
+    changed = [name for name, digest in delta['changed'].items() if old.get(name) != digest]
+    for name in changed:
+        if hashlib.sha256((incoming / 'files' / name).read_bytes()).hexdigest() != new[name]:
+            raise RuntimeError(f'Upload checksum mismatch: {name}')
+    for name in new:
+        safe_path(name)
+    # Nothing has changed yet; from here an interrupted sync leaves no manifest, so the next run rehashes the tree.
+    MANIFEST.unlink(missing_ok=True)
+    for name in old.keys() - new.keys():
+        path = safe_path(name)
+        if path.exists():
+            path.unlink()
+    old_dirs = {parent.as_posix() for name in old for parent in Path(name).parents if parent != Path('.')}
+    new_dirs = {parent.as_posix() for name in new for parent in Path(name).parents if parent != Path('.')}
+    for name in sorted(old_dirs - new_dirs, key=lambda name: name.count('/'), reverse=True):
+        path = safe_path(name)
+        if path.is_dir():
+            shutil.rmtree(path)
+    for name in changed:
+        path = safe_path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(incoming / 'files' / name, path)
+    temporary = MANIFEST.with_suffix('.tmp')
+    temporary.write_text(json.dumps(new))
+    temporary.replace(MANIFEST)
+    print(f'Source synchronized: {len(changed)} changed, {len(old.keys() - new.keys())} deleted, {len(new)} total', file=sys.stderr, flush=True)
 
 def safe_path(name):
     p = SRC / name
@@ -188,7 +236,7 @@ elif mode == 'acquire':
     STRANDED.unlink(missing_ok=True)
     (CLAIM / 'token').write_text(token)
     # Earlier runs' downloads and uploads are done with by now.
-    for leftover in [*ROOT.glob('artifacts-*'), *ROOT.glob('incoming-*')]:
+    for leftover in [*ROOT.glob('artifacts-*'), *ROOT.glob('incoming-*'), *ROOT.glob('runner-*.b64-*')]:
         if leftover.is_dir() and not leftover.is_symlink():
             shutil.rmtree(leftover)
         else:
@@ -204,57 +252,33 @@ elif mode == 'release':
             except BlockingIOError:
                 sys.exit(73)
             shutil.rmtree(CLAIM)
-elif mode == 'sync':
-    token, incoming = sys.argv[2:4]
-    assert owned(token)
-    incoming = Path(incoming)
-    # Held so that a run taking over this claim sees an unfinished sync as busy.
-    with (ROOT / 'running.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        try:
-            new = json.loads((incoming / '__boat_manifest__.json').read_text())
-            old = manifest()
-            changed = [name for name, digest in new.items() if old.get(name) != digest]
-            for name in changed:
-                path = incoming / name
-                if hashlib.sha256(path.read_bytes()).hexdigest() != new[name]:
-                    raise RuntimeError(f'Upload checksum mismatch: {name}')
-            for name in new:
-                safe_path(name)
-            # Nothing has changed yet; from here an interrupted sync leaves no manifest, so the next run rehashes the tree.
-            MANIFEST.unlink(missing_ok=True)
-            for name in old.keys() - new.keys():
-                path = safe_path(name)
-                if path.exists():
-                    path.unlink()
-            old_dirs = {parent.as_posix() for name in old for parent in Path(name).parents if parent != Path('.')}
-            new_dirs = {parent.as_posix() for name in new for parent in Path(name).parents if parent != Path('.')}
-            for name in sorted(old_dirs - new_dirs, key=lambda name: name.count('/'), reverse=True):
-                path = safe_path(name)
-                if path.is_dir():
-                    shutil.rmtree(path)
-            for name in changed:
-                path = safe_path(name)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(incoming / name, path)
-            temporary = MANIFEST.with_suffix('.tmp')
-            temporary.write_text(json.dumps(new))
-            temporary.replace(MANIFEST)
-        finally:
-            shutil.rmtree(incoming, ignore_errors=True)
-    print(f'Source synchronized: {len(changed)} changed, {len(old.keys() - new.keys())} deleted, {len(new)} total')
 elif mode in {'check', 'build', 'ui'}:
     token = sys.argv[2]
     assert owned(token)
     args = sys.argv[3:]
+    source = None
+    if args[:1] == ['--sync']:
+        source, args = args[1], args[2:]
     memory_gib = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / (1024 ** 3)
-    # Releasing recorder, collector and viewer with 8 jobs left 1.2 of 15.6 GiB free on a large VM (28 Oct); 7 leave room.
-    os.environ['CARGO_BUILD_JOBS'] = str(max(1, min(os.cpu_count() or 1, int(memory_gib / 2.2))))
+    # Releasing recorder, collector and viewer with 8 jobs left 1.2 of 15.6 GiB free on a large VM, so builds run 7;
+    # a workspace check with 7 left 8.3 GiB free (28 Oct), so checks run one per vCPU.
+    os.environ['CARGO_BUILD_JOBS'] = str(max(1, min(os.cpu_count() or 1, int(memory_gib / (2.2 if mode == 'build' else 1.2)))))
     with (ROOT / 'running.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = None
         launched = False
         try:
+            if source:
+                incoming = None
+                try:
+                    incoming = receive(source, token)
+                    apply(incoming)
+                except Exception as error:
+                    print(f'Source synchronization failed: {error!r}', file=sys.stderr, flush=True)
+                    sys.exit(79)
+                finally:
+                    if incoming:
+                        shutil.rmtree(incoming, ignore_errors=True)
             if mode == 'ui' or (mode == 'build' and any('custom-protocol' in arg for arg in args)):
                 package_hash = hashlib.sha256((SRC / 'package-lock.json').read_bytes()).hexdigest()
                 stamp = ROOT / 'node-lock.sha256'
@@ -333,7 +357,7 @@ elif mode in {'check', 'build', 'ui'}:
                         if packer.wait():
                             raise RuntimeError('Artifact compression failed')
                     print('BOAT_ARTIFACTS=' + json.dumps(out), flush=True)
-                    print('BOAT_PARTS=' + json.dumps(split(bundle)), flush=True)
+                    print('BOAT_BUNDLE=' + json.dumps({'path': str(bundle), 'size': bundle.stat().st_size, 'sha256': hashlib.sha256(bundle.read_bytes()).hexdigest()}), flush=True)
             sys.exit(result.returncode)
         finally:
             # The job's command group (Cargo, npm check) must not outlive its claim: the next job prunes incremental files under it.
