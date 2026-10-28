@@ -4674,7 +4674,9 @@ fn spool_loop(
             .map_err(|_| "clock preparation allocation failed")?;
         span.finish();
         priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
+        let mut received = false;
         while let Some(index) = shared.ready.pop() {
+            received = true;
             if crate::allocation::failed() {
                 return Err("collector allocation failed");
             }
@@ -4886,7 +4888,7 @@ fn spool_loop(
         if crate::allocation::failed() {
             return Err("collector allocation failed");
         }
-        sizing.spool_pass(shared, &mut processor, &mut work)?;
+        sizing.spool_pass(shared, &mut processor, &mut work, received)?;
         let span = phases.span(Phase::Flush);
         if crate::allocation::failed() {
             return Err("collector allocation failed");
@@ -5365,13 +5367,15 @@ impl SizingThread {
     }
 
     /// Called by the spool thread once per pass: record what the sizing
-    /// thread observed, hand it the current allocation context and run the
-    /// pass here when the thread could not start.
+    /// thread observed, hand it the current allocation context and, after a
+    /// pass that `received` an hour or while a world loads, ask the sizing
+    /// thread for a pass; without the thread, run every pass here.
     fn spool_pass(
         &self,
         shared: &Shared,
         processor: &mut Processor,
         work: &mut WorkerWork,
+        received: bool,
     ) -> Result<(), &'static str> {
         let span = crate::spool_phases::SPOOL.span(Phase::Sizing);
         if let Some(&failure) = self.sizing.failure.get() {
@@ -5392,10 +5396,12 @@ impl SizingThread {
         *lock(&self.sizing.context) = crate::allocation::context();
         span.finish();
         match &self.thread {
-            Some(thread) => {
+            // An idle spool wakes every SPOOL_IDLE_WAIT; the sizing thread's own timer covers it.
+            Some(thread) if received || crate::world_lifetime::invalidating() => {
                 self.sizing.pass_requested.store(true, Ordering::Release);
                 thread.thread().unpark();
             }
+            Some(_) => {}
             None => {
                 if let Some(state) = lock(&self.sizing.state).as_mut() {
                     sizing_pass(
@@ -5472,14 +5478,24 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
             let _span = phases.span(Phase::Retire);
             drop(retired);
         }
-        if sizing.pass_requested.swap(false, Ordering::AcqRel) || Instant::now() >= next_pass {
+        let due = Instant::now() >= next_pass;
+        if sizing.pass_requested.swap(false, Ordering::AcqRel) || due {
             crate::allocation::set_context(*lock(&sizing.context));
             if let Err(failure) = sizing_pass(shared, sizing, &mut state, phases, true) {
                 let _ = sizing.failure.set(failure);
                 shared.wake_spool();
                 return;
             }
-            next_pass = Instant::now() + SPOOL_IDLE_WAIT;
+        }
+        // Only the periodic pass moves its deadline, so an hour's pass cannot postpone the
+        // registry poll. A loading world rebuilds its registries before the first hour.
+        if due {
+            next_pass = Instant::now()
+                + if crate::world_lifetime::invalidating() {
+                    SPOOL_IDLE_WAIT
+                } else {
+                    SIZING_IDLE_WAIT
+                };
         }
         let _span = phases.span(Phase::Wait);
         std::thread::park_timeout(next_pass.saturating_duration_since(Instant::now()));
@@ -5984,6 +6000,8 @@ fn sizing_pass(
 
 // Ready buffers, clock preparation and stop requests interrupt this idle wait.
 const SPOOL_IDLE_WAIT: Duration = Duration::from_millis(10);
+/// Between the passes the spool requests after each hour: the registry's growth cadence.
+const SIZING_IDLE_WAIT: Duration = RegistryWatch::INTERVAL;
 
 /// `recorder refresh` asks for one full-refresh hour: every scheduled table,
 /// including daily, static and sliced ones, is read at the next hourly sample.
@@ -7464,7 +7482,7 @@ mod tests {
         sizing.sizing.with_capacities(&shared, |_| {});
         for _ in 0..2 {
             sizing
-                .spool_pass(&shared, &mut processor, &mut work)
+                .spool_pass(&shared, &mut processor, &mut work, true)
                 .unwrap();
             let status = serde_json::to_value(
                 processor
@@ -7499,7 +7517,7 @@ mod tests {
         };
         crate::allocation::set_context(context);
         sizing
-            .spool_pass(&shared, &mut processor, &mut work)
+            .spool_pass(&shared, &mut processor, &mut work, true)
             .unwrap();
         // A terminal allocation failure on the sizing thread names the
         // spool thread's latest campaign context.
@@ -7508,7 +7526,7 @@ mod tests {
         for pass in 0..2 {
             if pass != 0 {
                 sizing
-                    .spool_pass(&shared, &mut processor, &mut work)
+                    .spool_pass(&shared, &mut processor, &mut work, true)
                     .unwrap();
             }
             let status = serde_json::to_value(processor.status().unwrap()).unwrap();
@@ -7518,9 +7536,32 @@ mod tests {
         }
         let _ = sizing.sizing.failure.set("synthetic sizing failure");
         assert_eq!(
-            sizing.spool_pass(&shared, &mut processor, &mut work).err(),
+            sizing
+                .spool_pass(&shared, &mut processor, &mut work, true)
+                .err(),
             Some("synthetic sizing failure")
         );
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    /// An idle spool pass asks the sizing thread for nothing; a pass that received an hour does.
+    #[test]
+    fn only_a_spool_pass_that_received_an_hour_requests_sizing() {
+        let directory =
+            std::env::temp_dir().join(format!("hoi4-sizing-request-{}", std::process::id()));
+        let mut processor = crate::spooling::spool_failure_fixture(&directory).unwrap();
+        let (shared, mut sizing) = sizing_fixture();
+        let mut work = WorkerWork::new();
+        sizing.thread = Some(std::thread::spawn(std::thread::park));
+        sizing
+            .spool_pass(&shared, &mut processor, &mut work, false)
+            .unwrap();
+        assert!(!sizing.sizing.pass_requested.load(Ordering::Acquire));
+        sizing
+            .spool_pass(&shared, &mut processor, &mut work, true)
+            .unwrap();
+        assert!(sizing.sizing.pass_requested.load(Ordering::Acquire));
+        drop(sizing);
         let _ = fs::remove_dir_all(&directory);
     }
 
