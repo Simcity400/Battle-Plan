@@ -805,31 +805,15 @@ fn query_within(
     reply_bytes_within(&reply, budget)?;
     Ok(Some(reply))
 }
+/// A key's events in order, each parsed from its stored row straight into an [`Event`].
 fn events(reader: &mut Reader<'_>, key: u64, cancelled: &AtomicBool) -> io::Result<Vec<Event>> {
-    let mut result = Vec::new();
-    let mut cursor = 0;
-    loop {
-        check_cancel(cancelled)?;
-        // This bounds one disk read, never the complete reachable history.
-        let page = reader.events(&[key], i32::MIN, i32::MAX, cursor, 256)?;
-        if page
-            .cursor
-            .is_some_and(|next| next <= cursor || page.rows.is_empty())
-        {
-            return Err(dashboard_core::invalid(
-                "Leader career event page made no progress",
-            ));
-        }
-        for row in page.rows {
-            result.push(serde_json::from_value(row.row)?);
-        }
-        if let Some(next) = page.cursor {
-            cursor = next;
-        } else {
-            break;
-        }
-    }
-    Ok(result)
+    (0..reader.event_count_through(key, i32::MAX)?)
+        .map(|ordinal| {
+            check_cancel(cancelled)?;
+            let (_, row) = reader.event_raw(key, ordinal)?;
+            Ok(serde_json::from_slice(&row)?)
+        })
+        .collect()
 }
 fn merge_command(commands: &mut BTreeMap<(i32, u64), LeaderCommand>, mut command: LeaderCommand) {
     let key = (

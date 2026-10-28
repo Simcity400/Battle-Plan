@@ -1426,3 +1426,47 @@ fn a_leaderboard_at_an_hour_is_held_to_the_budget_only_once_projected() {
         serde_json::to_value(&projected).unwrap()
     );
 }
+
+#[test]
+fn leader_events_parse_from_their_rows_as_their_pages_return_them() {
+    // Skill changes each hour, so every leader's career has an event per frame.
+    let mut frames: Vec<_> = (100..=400).map(|hour| frame(hour, 2)).collect();
+    for (index, frame) in frames.iter_mut().enumerate() {
+        if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+            &mut *frame.tables[TableId::UnitLeaders.index()]
+        {
+            for row in rows {
+                row.components[0] = index as i32;
+            }
+        }
+    }
+    let replay = replay(&frames);
+    let fixture = Fixture::new();
+    let cancelled = AtomicBool::new(false);
+    let mut state = Prepared::new(&replay, 1);
+    observe(&mut state, &replay, &frames);
+    publish(&mut state, &fixture, &cancelled);
+    let (keys, _) =
+        series::read_catalogue::<Metadata>(&fixture.store, &fixture.key, "unit-leaders", 1)
+            .unwrap()
+            .unwrap();
+    let mut reader = Reader::new(&fixture.store, &fixture.key, section(1), &cancelled).unwrap();
+    let mut compared = 0;
+    for &key in keys.values() {
+        let paged = reader
+            .events(&[key], i32::MIN, i32::MAX, 0, u32::MAX)
+            .unwrap()
+            .rows
+            .into_iter()
+            .map(|row| row.row)
+            .collect::<Vec<_>>();
+        let parsed = events(&mut reader, key, &cancelled)
+            .unwrap()
+            .iter()
+            .map(|event| serde_json::to_value(event).unwrap())
+            .collect::<Vec<_>>();
+        compared += parsed.len();
+        assert_eq!(parsed, paged, "key {key}");
+    }
+    assert!(compared > 256, "{compared} events cross a page");
+}
