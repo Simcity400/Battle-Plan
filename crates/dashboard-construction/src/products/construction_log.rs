@@ -1972,250 +1972,328 @@ pub fn named(
     states: &BTreeSet<u32>,
     cancelled: &AtomicBool,
 ) -> io::Result<Named> {
-    named_inventory(content, Some((types, states)), cancelled)
+    Naming::read(content).named(content, types, states, cancelled)
 }
 
 pub fn named_all(content: &ContentView<'_>, cancelled: &AtomicBool) -> io::Result<Named> {
-    named_inventory(content, None, cancelled)
+    let mut naming = Naming::read(content);
+    let declared_types = naming
+        .buildings
+        .as_ref()
+        .map(|buildings| buildings.declaration_order.clone())
+        .unwrap_or_default();
+    let authored_types: Vec<_> = declared_types
+        .iter()
+        .enumerate()
+        .map(|(id, token)| (id as u32, Some(token.clone())))
+        .collect();
+    let authored_states = naming
+        .state_keys
+        .as_ref()
+        .map(|keys| keys.keys().copied().collect())
+        .unwrap_or_default();
+    let mut named = naming.named(content, &authored_types, &authored_states, cancelled)?;
+    named.declared_types = declared_types;
+    Ok(named)
 }
 
-/// The building types and states a recording names.
-type Inventory<'a> = (&'a [(u32, Option<String>)], &'a BTreeSet<u32>);
+/// The counted warnings that list building types, in the order they are given.
+#[derive(Clone, Copy)]
+enum Listing {
+    Undictionaried,
+    Undeclared,
+    Unnamed,
+    Frameless,
+    Unusable,
+    Ambiguous,
+    Unreadable,
+}
 
-fn named_inventory(
-    content: &ContentView<'_>,
-    inventory: Option<Inventory<'_>>,
-    cancelled: &AtomicBool,
-) -> io::Result<Named> {
-    use installed_content_core::{
-        DiagnosticKind::Ambiguous, DiagnosticKind::Fallback, DiagnosticKind::Refused,
-    };
-    let mut warnings = Vec::new();
-    let layers = content.layers;
-    let buildings = match installed_content_core::buildings::read(layers) {
-        Ok(buildings) => Some(buildings),
-        Err(error) => {
-            warnings.push((
-                Refused,
-                format!("Building types are unavailable in the recorded content: {error}"),
-            ));
-            None
-        }
-    };
-    let mut state_diagnostics = Vec::new();
-    let mut state_read_error = None;
-    let definitions = match dashboard_text::scripted_text::read_state_content(layers) {
-        Ok(content) => {
-            state_diagnostics = content.warnings;
-            Some(content.states)
-        }
-        Err(error) => {
-            state_read_error = Some(format!("State names are unavailable: {error}"));
-            None
-        }
-    };
-    let (declared_types, authored_types, authored_states) = if inventory.is_none() {
-        let declared_types = buildings
-            .as_ref()
-            .map(|buildings| buildings.declaration_order.clone())
-            .unwrap_or_default();
-        let authored_types: Vec<_> = declared_types
-            .iter()
-            .enumerate()
-            .map(|(id, token)| (id as u32, Some(token.clone())))
-            .collect();
-        let authored_states = definitions
-            .as_ref()
-            .map(|states| states.definitions().keys().copied().collect())
-            .unwrap_or_default();
-        (declared_types, authored_types, authored_states)
-    } else {
-        (Vec::new(), Vec::new(), BTreeSet::new())
-    };
-    let (types, states) = inventory.unwrap_or((&authored_types, &authored_states));
-    let sprite = |element| line_sprite(content, element);
-    let strip = match sprite(LINE_PICTURE) {
-        Ok(strip) => Some(strip),
-        Err(error) => {
-            warnings.push((Refused, format!("Building icons are unavailable: {error}")));
-            None
-        }
-    };
-    let (mut undictionaried, mut undeclared, mut unnamed) = (Vec::new(), Vec::new(), Vec::new());
-    let (mut frameless, mut unusable, mut ambiguous, mut unreadable) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let mut named_types = BTreeMap::new();
-    for (id, token) in types {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Construction request cancelled",
-            ));
-        }
-        let Some(token) = token else {
-            undictionaried.push(id.to_string());
-            named_types.insert(*id, (None, None));
-            continue;
-        };
-        let declaration =
-            buildings
-                .as_ref()
-                .and_then(|buildings| match buildings.by_token(token) {
-                    Ok(Some(building)) => Some(building),
-                    Ok(None) => {
-                        undeclared.push(token.clone());
-                        None
-                    }
-                    Err(_) => {
-                        ambiguous.push(token.clone());
-                        None
-                    }
+/// Each [`Listing`]'s kind and wording.
+const LISTINGS: [(installed_content_core::DiagnosticKind, &str); 7] = {
+    use installed_content_core::DiagnosticKind::{Ambiguous, Fallback, Refused};
+    [
+        (
+            Fallback,
+            "building types are not in the recorded lexical dictionary; their titles are unavailable",
+        ),
+        (
+            Fallback,
+            "building types are not declared in the recorded content's buildings; their icons are unavailable",
+        ),
+        (
+            Fallback,
+            "building types have no name in the recorded localisation; their titles are unavailable",
+        ),
+        (
+            Fallback,
+            "building types have icon_frame 0 (none declared), whose picture is not verified, so they show a placeholder",
+        ),
+        (
+            Refused,
+            "building types give a negative icon_frame; it is refused and they show a placeholder",
+        ),
+        (
+            Ambiguous,
+            "building types are declared more than once with differing fields; which declaration the game shows is not verified, so they show a placeholder",
+        ),
+        (
+            Refused,
+            "building icons could not be read from the queue's building strip and show a placeholder",
+        ),
+    ]
+};
+
+/// One building type as the content names and pictures it, the counted warnings
+/// that list it, and what drawing it fell back on.
+struct NamedType {
+    name: Option<String>,
+    icon: Option<String>,
+    listed: Vec<(Listing, String)>,
+    fallbacks: BTreeSet<String>,
+}
+
+/// What naming reads of the content, read once, and every building type it has
+/// named, so a grown scan names only the types it gained.
+struct Naming {
+    /// The recorded building declarations, or why they are unavailable.
+    buildings: Result<installed_content_core::buildings::Buildings, String>,
+    /// Each defined state's name key; `None` when states are unavailable.
+    state_keys: Option<BTreeMap<u32, Result<String, String>>>,
+    state_read_error: Option<String>,
+    state_diagnostics: Vec<installed_content_states::states::Diagnostic>,
+    /// The queue's building strip, or why building icons are unavailable.
+    strip: Result<LineSprite, String>,
+    /// The repair marker, or why it is unavailable.
+    repair_icon: Result<String, String>,
+    /// What these reads fell back on.
+    fallbacks: BTreeSet<String>,
+    types: BTreeMap<(u32, Option<String>), NamedType>,
+}
+
+impl Naming {
+    fn read(content: &ContentView<'_>) -> Self {
+        let layers = content.layers;
+        let (read, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+            let buildings = installed_content_core::buildings::read(layers).map_err(|error| {
+                format!("Building types are unavailable in the recorded content: {error}")
+            });
+            let (state_keys, state_read_error, state_diagnostics) =
+                match dashboard_text::scripted_text::read_state_content(layers) {
+                    Ok(states) => (Some(states.names), None, states.warnings),
+                    Err(error) => (
+                        None,
+                        Some(format!("State names are unavailable: {error}")),
+                        Vec::new(),
+                    ),
+                };
+            let strip = line_sprite(content, LINE_PICTURE)
+                .map_err(|error| format!("Building icons are unavailable: {error}"));
+            // The marker draws its authored frame as the building icons draw theirs:
+            // every strip direction, frame animation and the resolved program, with
+            // a frame past the strip sampled where the program's sampler reads it.
+            let repair_icon = line_sprite(content, LINE_REPAIR)
+                .and_then(|line| {
+                    let decode = *content
+                        .gui_decode
+                        .as_ref()
+                        .map_err(dashboard_core::invalid)?;
+                    catalogue::sprite_frame_png(
+                        layers,
+                        &line.sprite,
+                        decode,
+                        catalogue::authored_frame(line.frame),
+                        ICON_EDGE,
+                    )
+                    .map_err(|error| {
+                        dashboard_core::invalid(format!("{LINE_ENTRY}.{LINE_REPAIR}: {error}"))
+                    })
+                })
+                .map_err(|error| {
+                    format!(
+                        "The repair marker is unavailable, so repairs are marked in words only: {error}"
+                    )
                 });
-        // A building's name is its own key in the localisation.
-        let key = declaration.map_or(token.as_str(), |building| building.name.as_str());
-        let name = (content.localise)(key);
-        if name.is_none() {
-            unnamed.push(token.clone());
+            (
+                buildings,
+                state_keys,
+                state_read_error,
+                state_diagnostics,
+                strip,
+                repair_icon,
+            )
+        });
+        let (buildings, state_keys, state_read_error, state_diagnostics, strip, repair_icon) = read;
+        Self {
+            buildings,
+            state_keys,
+            state_read_error,
+            state_diagnostics,
+            strip,
+            repair_icon,
+            fallbacks,
+            types: BTreeMap::new(),
         }
-        let frame = match declaration {
-            Some(building) => {
-                let frame = building.icon_frame;
-                if frame < 0 {
-                    unusable.push(token.clone());
-                    None
-                } else if frame == 0 {
-                    frameless.push(token.clone());
-                    None
-                } else {
-                    u32::try_from(frame).ok()
-                }
+    }
+
+    /// `types` and `states` named as a fresh read of the content names them,
+    /// naming only the types not named before.
+    fn named(
+        &mut self,
+        content: &ContentView<'_>,
+        types: &[(u32, Option<String>)],
+        states: &BTreeSet<u32>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Named> {
+        use installed_content_core::{DiagnosticKind::Fallback, DiagnosticKind::Refused};
+        // Kept reads replay what they fell back on, as `catalogue::Drawn` does.
+        installed_content_core::content::credit_overlay_refusals(&self.fallbacks);
+        let mut warnings = Vec::new();
+        warnings.extend(self.buildings.as_ref().err().map(|why| (Refused, why.clone())));
+        warnings.extend(self.strip.as_ref().err().map(|why| (Refused, why.clone())));
+        let mut listed = LISTINGS.map(|_| Vec::new());
+        let mut named_types = BTreeMap::new();
+        for (id, token) in types {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Construction request cancelled",
+                ));
             }
-            _ => None,
+            let key = (*id, token.clone());
+            if !self.types.contains_key(&key) {
+                let named = self.name_type(content, *id, token.as_deref());
+                self.types.insert(key.clone(), named);
+            }
+            let named = &self.types[&key];
+            installed_content_core::content::credit_overlay_refusals(&named.fallbacks);
+            for (listing, entry) in &named.listed {
+                listed[*listing as usize].push(entry.clone());
+            }
+            named_types.insert(*id, (named.name.clone(), named.icon.clone()));
+        }
+        for ((kind, what), names) in LISTINGS.iter().zip(&listed) {
+            counted(&mut warnings, *kind, what, names);
+        }
+        let repair_icon = match &self.repair_icon {
+            Ok(icon) => Some(icon.clone()),
+            Err(why) => {
+                warnings.push((Refused, why.clone()));
+                None
+            }
         };
-        let icon = match (&strip, frame) {
-            (Some(strip), Some(frame)) => {
-                let icon = content
-                    .gui_decode
+        let mut named_states = BTreeMap::new();
+        let mut unnamed_states = Vec::new();
+        for &id in states {
+            let name = self
+                .state_keys
+                .as_ref()
+                .and_then(|keys| keys.get(&id))
+                // A key whose reading cannot be followed names nothing.
+                .and_then(|key| key.as_deref().ok())
+                .and_then(|key| (content.localise)(key));
+            if self.state_keys.is_some() && name.is_none() {
+                unnamed_states.push(id.to_string());
+            }
+            named_states.insert(id, name);
+        }
+        counted(
+            &mut warnings,
+            Fallback,
+            "states have no name in the recorded content; their titles are unavailable",
+            &unnamed_states,
+        );
+        Ok(Named {
+            types: named_types,
+            repair_icon,
+            states: named_states,
+            warnings,
+            state_diagnostics: self.state_diagnostics.clone(),
+            state_read_error: self.state_read_error.clone(),
+            declared_types: Vec::new(),
+        })
+    }
+
+    fn name_type(&self, content: &ContentView<'_>, id: u32, token: Option<&str>) -> NamedType {
+        let mut listed = Vec::new();
+        let ((name, icon), fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+            let Some(token) = token else {
+                listed.push((Listing::Undictionaried, id.to_string()));
+                return (None, None);
+            };
+            let declaration =
+                self.buildings
                     .as_ref()
-                    .map_err(dashboard_core::invalid)
-                    .and_then(|decode| {
-                        catalogue::sprite_frame_png(
-                            layers,
-                            &strip.sprite,
-                            *decode,
-                            frame - 1,
-                            ICON_EDGE,
-                        )
+                    .ok()
+                    .and_then(|buildings| match buildings.by_token(token) {
+                        Ok(Some(building)) => Some(building),
+                        Ok(None) => {
+                            listed.push((Listing::Undeclared, token.to_owned()));
+                            None
+                        }
+                        Err(_) => {
+                            listed.push((Listing::Ambiguous, token.to_owned()));
+                            None
+                        }
                     });
-                match icon {
-                    Ok(icon) => Some(icon),
-                    Err(error) => {
-                        unreadable.push(format!("{token} (frame {frame}: {error})"));
+            // A building's name is its own key in the localisation.
+            let key = declaration.map_or(token, |building| building.name.as_str());
+            let name = (content.localise)(key);
+            if name.is_none() {
+                listed.push((Listing::Unnamed, token.to_owned()));
+            }
+            let frame = match declaration {
+                Some(building) => {
+                    let frame = building.icon_frame;
+                    if frame < 0 {
+                        listed.push((Listing::Unusable, token.to_owned()));
                         None
+                    } else if frame == 0 {
+                        listed.push((Listing::Frameless, token.to_owned()));
+                        None
+                    } else {
+                        u32::try_from(frame).ok()
                     }
                 }
-            }
-            _ => None,
-        };
-        named_types.insert(*id, (name, icon));
-    }
-    counted(
-        &mut warnings,
-        Fallback,
-        "building types are not in the recorded lexical dictionary; their titles are unavailable",
-        &undictionaried,
-    );
-    counted(
-        &mut warnings,
-        Fallback,
-        "building types are not declared in the recorded content's buildings; their icons are unavailable",
-        &undeclared,
-    );
-    counted(
-        &mut warnings,
-        Fallback,
-        "building types have no name in the recorded localisation; their titles are unavailable",
-        &unnamed,
-    );
-    counted(
-        &mut warnings,
-        Fallback,
-        "building types have icon_frame 0 (none declared), whose picture is not verified, so they show a placeholder",
-        &frameless,
-    );
-    counted(
-        &mut warnings,
-        Refused,
-        "building types give a negative icon_frame; it is refused and they show a placeholder",
-        &unusable,
-    );
-    counted(
-        &mut warnings,
-        Ambiguous,
-        "building types are declared more than once with differing fields; which declaration the game shows is not verified, so they show a placeholder",
-        &ambiguous,
-    );
-    counted(
-        &mut warnings,
-        Refused,
-        "building icons could not be read from the queue's building strip and show a placeholder",
-        &unreadable,
-    );
-    // The marker draws its authored frame as the building icons draw theirs:
-    // every strip direction, frame animation and the resolved program, with
-    // a frame past the strip sampled where the program's sampler reads it.
-    let repair_icon = match sprite(LINE_REPAIR).and_then(|line| {
-        let decode = *content
-            .gui_decode
-            .as_ref()
-            .map_err(dashboard_core::invalid)?;
-        catalogue::sprite_frame_png(
-            layers,
-            &line.sprite,
-            decode,
-            catalogue::authored_frame(line.frame),
-            ICON_EDGE,
-        )
-        .map_err(|error| dashboard_core::invalid(format!("{LINE_ENTRY}.{LINE_REPAIR}: {error}")))
-    }) {
-        Ok(icon) => Some(icon),
-        Err(error) => {
-            let why = format!(
-                "The repair marker is unavailable, so repairs are marked in words only: {error}"
-            );
-            warnings.push((Refused, why));
-            None
+                _ => None,
+            };
+            let icon = match (&self.strip, frame) {
+                (Ok(strip), Some(frame)) => {
+                    let icon = content
+                        .gui_decode
+                        .as_ref()
+                        .map_err(dashboard_core::invalid)
+                        .and_then(|decode| {
+                            catalogue::sprite_frame_png(
+                                content.layers,
+                                &strip.sprite,
+                                *decode,
+                                frame - 1,
+                                ICON_EDGE,
+                            )
+                        });
+                    match icon {
+                        Ok(icon) => Some(icon),
+                        Err(error) => {
+                            listed.push((
+                                Listing::Unreadable,
+                                format!("{token} (frame {frame}: {error})"),
+                            ));
+                            None
+                        }
+                    }
+                }
+                _ => None,
+            };
+            (name, icon)
+        });
+        NamedType {
+            name,
+            icon,
+            listed,
+            fallbacks,
         }
-    };
-    let mut named_states = BTreeMap::new();
-    let mut unnamed_states = Vec::new();
-    for &id in states {
-        let name = definitions
-            .as_ref()
-            .and_then(|definitions| definitions.get(id))
-            // A key whose reading cannot be followed names nothing.
-            .and_then(|state| state.name_key.as_deref().ok())
-            .and_then(|key| (content.localise)(key));
-        if definitions.is_some() && name.is_none() {
-            unnamed_states.push(id.to_string());
-        }
-        named_states.insert(id, name);
     }
-    counted(
-        &mut warnings,
-        Fallback,
-        "states have no name in the recorded content; their titles are unavailable",
-        &unnamed_states,
-    );
-    Ok(Named {
-        types: named_types,
-        repair_icon,
-        states: named_states,
-        warnings,
-        state_diagnostics,
-        state_read_error,
-        declared_types,
-    })
 }
 
 /// The recorded building declarations, and the building icons and repair marker drawn for one
@@ -2354,6 +2432,8 @@ fn repair_marker(catalogue: &Catalogue) -> Result<String, String> {
 struct Cache {
     /// Names for the catalogue they were read from, per branch.
     named: Vec<(u64, Arc<Catalogue>, catalogue::Drawn<Arc<Named>>)>,
+    /// What naming read of a catalogue; out while a request names with it.
+    naming: Option<(Arc<Catalogue>, Naming)>,
 }
 
 /// The branches' scans. Its lock is held through a cold scan, so concurrent
@@ -2545,11 +2625,26 @@ impl NameSource {
                             gui_decode: &catalogue.gui_decode,
                             localise: &localise,
                         };
+                        let kept = {
+                            let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+                            cache
+                                .naming
+                                .take()
+                                .filter(|(from, _)| Arc::ptr_eq(from, catalogue))
+                        };
+                        let mut naming = match kept {
+                            Some((_, naming)) => naming,
+                            None => Naming::read(&view),
+                        };
                         let drawn = catalogue::Drawn::try_new(|| {
-                            named(&view, &log.types, &states, cancelled).map(Arc::new)
-                        })?;
-                        let named = Arc::clone(drawn.get());
+                            naming
+                                .named(&view, &log.types, &states, cancelled)
+                                .map(Arc::new)
+                        });
                         let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+                        cache.naming = Some((Arc::clone(catalogue), naming));
+                        let drawn = drawn?;
+                        let named = Arc::clone(drawn.get());
                         cache.named.retain(|(cached, _, _)| *cached != branch);
                         cache.named.push((branch, Arc::clone(catalogue), drawn));
                         if cache.named.len() > CACHED_BRANCHES {

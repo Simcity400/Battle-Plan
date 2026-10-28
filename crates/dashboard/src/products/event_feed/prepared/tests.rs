@@ -671,6 +671,7 @@ fn prepared_feed_pages_reach_late_facts_past_their_read_and_keep_live_cutoffs() 
                     script: None,
                     occurrence: None,
                     sections: Vec::new(),
+                    item: None,
                 },
             )
             .unwrap();
@@ -1582,6 +1583,24 @@ fn event_choice_and_decision_pages_join_their_own_occurrences_and_prove_charges(
         state.observe(frame, &source, &flag).unwrap();
     }
     state.publish(&mut fixture, &source, false, &flag);
+    // The facts keep their items and the catalogue none; each edge is an entry.
+    let (_, (diagnostics, _, _)) =
+        crate::prepared::series::read_catalogue::<query::FactsCatalogue>(
+            &fixture.store,
+            &fixture.key,
+            "event-feed-facts",
+            1,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(diagnostics.feed.items.is_empty() && diagnostics.item_keys.is_empty());
+    let section = super::entries_section(1);
+    let edges = entries::read(&fixture.store, &fixture.key, &section)
+        .unwrap()
+        .unwrap()
+        .prefix(b"edge")
+        .unwrap();
+    assert!(!edges.is_empty());
 
     let page = script_page(script::Adapter::EventChoices, &source, &fixture, 104, BTreeSet::new());
     let cards = &page.reply.occurrences;
@@ -1675,6 +1694,77 @@ fn event_choice_and_decision_pages_join_their_own_occurrences_and_prove_charges(
         )
         .is_err()
     );
+}
+
+#[test]
+fn a_choice_published_while_its_list_is_read_joins_its_card() {
+    use std::{cell::Cell, cell::RefCell, rc::Rc};
+    /// The feed's facts and entries as a flush publishes them.
+    fn publish(state: &mut Sources, fixture: &Fixture, cancelled: &AtomicBool) {
+        let mut writer = fixture.writer();
+        state.facts.flush(&mut writer, 1, cancelled).unwrap();
+        writer.commit().unwrap();
+    }
+    let tokens = b"mod.evt";
+    let event = (Some((1, 9)), (0, 7));
+    let choice = scripted(2, EventFeedSource::EventOption, 102, (1, 1), event.0, Some(7), event.1);
+    let frames = vec![
+        script_frame(100, Vec::new(), b"", Vec::new()),
+        script_frame(
+            101,
+            vec![scripted(1, EventFeedSource::ScriptEvent, 101, (0, 1), event.0, Some(7), event.1)],
+            tokens,
+            Vec::new(),
+        ),
+        script_frame(
+            102,
+            vec![EventFeedEvent {
+                script: Some(replay_data::event_feed_rows::EventFeedScript {
+                    option: Some(1),
+                    ..choice.script.clone().unwrap()
+                }),
+                ..choice
+            }],
+            tokens,
+            Vec::new(),
+        ),
+    ];
+    let source = Rc::new(super::super::tests::opened(frames.clone()));
+    let fixture = Rc::new(Fixture::new());
+    let state = Rc::new(RefCell::new(Sources::new(&source)));
+    let flag = AtomicBool::new(false);
+    for frame in &frames[..2] {
+        state.borrow_mut().observe(frame, &source, &flag).unwrap();
+    }
+    publish(&mut state.borrow_mut(), &fixture, &flag);
+    // The choice is published once the list has read its page of the
+    // dispatch alone, and the list is read again over that publication.
+    let overtook = Rc::new(Cell::new(false));
+    {
+        let (source, fixture, state, overtook) = (
+            Rc::clone(&source),
+            Rc::clone(&fixture),
+            Rc::clone(&state),
+            Rc::clone(&overtook),
+        );
+        let frame = frames[2].clone();
+        entries::overtake_next_composition(move || {
+            let flag = AtomicBool::new(false);
+            let mut state = state.borrow_mut();
+            state.observe(&frame, &source, &flag).unwrap();
+            publish(&mut state, &fixture, &flag);
+            overtook.set(true);
+        });
+    }
+    let page = script_page(script::Adapter::EventChoices, &source, &fixture, 102, BTreeSet::new());
+    assert!(overtook.get());
+    let cards = &page.reply.occurrences;
+    assert_eq!(cards.len(), 1, "{cards:#?}");
+    assert_eq!(
+        kinds_of(&cards[0]),
+        [EventFeedKind::ScriptEventFired, EventFeedKind::EventOptionSelected]
+    );
+    assert_eq!(cards[0].edges[1].option, Some(1));
 }
 
 #[test]
@@ -2049,44 +2139,4 @@ fn retained_observations_publish_each_part_once_and_read_back_whole() {
     );
     assert_eq!(facts.len(), 4);
     assert!(facts.iter().all(|fact| fact.sections.len() == 4));
-}
-
-#[test]
-fn kept_feed_catalogue_writer_publishes_the_pages_a_cold_flush_publishes() {
-    use super::super::native::tests::retained_packs;
-    let flag = AtomicBool::new(false);
-    let frames: Vec<DecodedFrame> = retained_packs()
-        .into_iter()
-        .map(|pack| {
-            let mut frame = quiet_frame(pack.read_hour, 3);
-            *frame.tables[TableId::EventFeedHistory.index()] =
-                TableView::Complete(TableRows::EventFeedHistory(vec![pack]));
-            frame
-        })
-        .collect();
-    let source = super::super::tests::opened(frames.clone());
-    let fixtures = [Fixture::new(), Fixture::new()];
-    let mut observers = [Observer::default(), Observer::default()];
-    let mut names = HistoryScan::new(false, &[]);
-    for frame in &frames {
-        names.observe(frame);
-        for (index, (observer, fixture)) in observers.iter_mut().zip(&fixtures).enumerate() {
-            observer
-                .observe(source.replay_ref(), frame, &names, &flag)
-                .unwrap();
-            if index == 1 {
-                // Read its chain back, as every flush did before the writer was kept.
-                observer.catalogue = Default::default();
-            }
-            let mut writer = fixture.writer();
-            observer.flush(&mut writer, 1, &flag).unwrap();
-            writer.commit().unwrap();
-        }
-        assert_eq!(
-            fixtures[0].payloads(),
-            fixtures[1].payloads(),
-            "hour {}",
-            frame.hour
-        );
-    }
 }

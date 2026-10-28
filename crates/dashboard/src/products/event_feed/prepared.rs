@@ -1,6 +1,7 @@
 //! Feed-only witnessed facts. Topic changes remain in their owning families.
 use super::*;
 use crate::prepared::series::Accumulator;
+use dashboard_base::prepared::entries::{self, Entries};
 use dashboard_base::prepared::kept::Reduced;
 use replay_data::{
     rows::CountryCounterInputRow, rows::CountryExperienceGainRow, rows::RelationTupleRow,
@@ -85,6 +86,9 @@ pub(crate) struct Fact {
     /// once while its notes stay the same.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<u64>,
+    /// The item `row.item` names, kept with the fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<EventFeedItem>,
 }
 
 /// A prepared fact's address: its stream key and ordinal.
@@ -112,11 +116,60 @@ enum Opening {
     },
 }
 
-/// Each opener's continuing facts, in stream order.
+/// The item `row` names among the hour's `items`.
+fn item_of(items: &[EventFeedItem], row: &EventFeedRow) -> io::Result<Option<EventFeedItem>> {
+    row.item
+        .map(|index| {
+            items
+                .get(index as usize)
+                .cloned()
+                .ok_or_else(|| crate::invalid("Event feed fact item is not the hour's"))
+        })
+        .transpose()
+}
+
+/// The section of a branch's facts catalogue entries ([`entries`]).
+fn entries_section(branch: u64) -> String {
+    format!("event-feed-entries-{branch}")
+}
+
+/// Where `opener`'s continuing facts are published, in the order they joined it.
+pub(crate) fn edges_prefix((key, ordinal): FactRef) -> Vec<u8> {
+    [
+        b"edge".as_slice(),
+        &key.to_be_bytes(),
+        &ordinal.to_be_bytes(),
+    ]
+    .concat()
+}
+
+/// The edges joined since the last flush, in the order they joined, and how
+/// many joined before them.
 #[derive(Default, Serialize, Deserialize)]
-pub(crate) struct Edges(
-    #[serde(with = "crate::prepared_production::map_pairs")] pub BTreeMap<FactRef, Vec<FactRef>>,
-);
+pub(crate) struct Edges {
+    pending: Vec<(FactRef, FactRef)>,
+    published: u64,
+}
+
+impl Edges {
+    fn push(&mut self, opener: FactRef, next: FactRef) {
+        self.pending.push((opener, next));
+    }
+
+    /// Each pending edge under its opener, ordered by when it joined.
+    fn publish(&mut self, catalogue: &mut Entries) -> io::Result<()> {
+        for (opener, next) in std::mem::take(&mut self.pending) {
+            let key = [
+                edges_prefix(opener).as_slice(),
+                &self.published.to_be_bytes(),
+            ]
+            .concat();
+            catalogue.put(key, &next)?;
+            self.published += 1;
+        }
+        Ok(())
+    }
+}
 
 /// Opened occurrences and the edges continuing them.
 #[derive(Default, Serialize, Deserialize)]
@@ -190,7 +243,7 @@ impl Links {
                 });
                 if let Some(opener) = opener {
                     occurrence.opener = Some(opener);
-                    self.edges.0.entry(opener).or_default().push(at);
+                    self.edges.push(opener, at);
                 }
             }
             DecisionSelected => {
@@ -214,7 +267,7 @@ impl Links {
                 match self.open.get(&opening).copied() {
                     Some(opener) => {
                         occurrence.opener = Some(opener);
-                        self.edges.0.entry(opener).or_default().push(at);
+                        self.edges.push(opener, at);
                         if matches!(
                             kind,
                             DecisionCompleted
@@ -415,8 +468,6 @@ pub(crate) struct Observer {
     observed: BTreeSet<String>,
     #[serde(default)]
     links: Links,
-    #[serde(skip)]
-    catalogue: crate::prepared::series::CatalogueWriter,
 }
 impl Default for Observer {
     fn default() -> Self {
@@ -428,7 +479,6 @@ impl Default for Observer {
             diagnostics: Builder::new(0, 0),
             observed: BTreeSet::new(),
             links: Links::default(),
-            catalogue: Default::default(),
         }
     }
 }
@@ -541,10 +591,12 @@ impl Observer {
                 self.events.event(SECTIONS, row.read_hour, &notes)?;
                 Ok(ordinal)
             })?;
+            let item = item_of(&self.diagnostics.feed.items, &row)?;
             self.events.event(
                 key,
                 row.read_hour,
                 &Fact {
+                    item,
                     sections,
                     occurrence,
                     script: self
@@ -594,6 +646,7 @@ impl Observer {
             let key = (row.kind as u64) | (u64::from(row.read_hour > row.hour) << 63);
             let ordinal = self.events.state(key).map_or(0, |state| state.events);
             self.late.insert(row.hour, row.read_hour, key, ordinal);
+            let item = item_of(&self.diagnostics.feed.items, &row)?;
             self.events.event(
                 key,
                 row.read_hour,
@@ -603,6 +656,7 @@ impl Observer {
                     script: None,
                     occurrence: None,
                     sections: Vec::new(),
+                    item,
                 },
             )?;
         }
@@ -629,6 +683,7 @@ impl Observer {
                     script: None,
                     occurrence: None,
                     sections: Vec::new(),
+                    item: None,
                 });
             }
         }
@@ -641,6 +696,9 @@ impl Observer {
                 .insert(strike.row.hour, strike.row.read_hour, key, ordinal);
             self.events.event(key, strike.row.read_hour, &strike)?;
         }
+        // Every row of the hour keeps its item: none is named again.
+        self.diagnostics.feed.items.clear();
+        self.diagnostics.item_keys.clear();
         Ok(())
     }
     pub(crate) fn bytes(&self) -> usize {
@@ -654,17 +712,15 @@ impl Observer {
     ) -> io::Result<()> {
         self.events
             .flush(writer, &format!("event-feed-facts-{branch}"), 0, cancelled)?;
-        self.catalogue.write(
+        let mut catalogue = Entries::default();
+        self.links.edges.publish(&mut catalogue)?;
+        catalogue.flush(writer, &entries_section(branch))?;
+        crate::prepared::series::write_catalogue(
             writer,
             "event-feed-facts",
             branch,
             &BTreeMap::new(),
-            &(
-                &self.diagnostics,
-                &self.observed,
-                &self.late,
-                &self.links.edges,
-            ),
+            &(&self.diagnostics, &self.observed, &self.late),
         )
     }
 }

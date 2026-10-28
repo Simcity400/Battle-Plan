@@ -1,5 +1,6 @@
 //! Prepared ledger observations use the production accounting and shared series.
 use super::*;
+use dashboard_base::prepared::entries::{self, Entries};
 use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_base::prepared::prepass::Extract;
 use dashboard_base::prepared::priority::{JobPriority, Level};
@@ -33,8 +34,10 @@ pub struct Prepared {
     recurring: Accumulator,
     keys: keys::Keys,
     metadata: Catalogue,
+    /// The countries whose part of the catalogue may have changed since the
+    /// last flush.
     #[serde(skip)]
-    catalogue_writer: series::CatalogueWriter,
+    touched: BTreeSet<String>,
     /// Only the newest native day remains mutable. Delayed settlements behind
     /// the published frontier use a sparse publication-hour event instead.
     tail: BTreeMap<i32, OpenDay>,
@@ -126,6 +129,144 @@ struct Catalogue {
     pending_presentation: BTreeMap<String, BTreeMap<String, u64>>,
     formats: BTreeMap<String, BTreeSet<String>>,
     warnings: Vec<(Option<String>, BTreeMap<String, u64>)>,
+}
+
+/// The section of a branch's published catalogue ([`entries`]).
+fn entries_section(branch: u64) -> String {
+    format!("politics-ledger-entries-{branch}")
+}
+
+const BRANCH: &[u8] = b"branch";
+
+fn country_entry(tag: &str) -> Vec<u8> {
+    [b"country\0".as_slice(), tag.as_bytes()].concat()
+}
+
+/// The catalogue apart from its countries' parts.
+#[derive(Serialize, Deserialize)]
+struct BranchCatalogue {
+    first: Option<i32>,
+    last: Option<i32>,
+    native_through: Option<i32>,
+    largest_lag: i32,
+    command_lag: i32,
+    government_lag: i32,
+    warnings: Vec<(Option<String>, BTreeMap<String, u64>)>,
+}
+
+/// One country's part of the catalogue: its series keys by field, and what
+/// each of the catalogue's maps holds for it.
+#[derive(Default, Serialize, Deserialize)]
+struct CountryCatalogue {
+    keys: BTreeMap<String, u64>,
+    tail_range: Option<u64>,
+    items: BTreeMap<String, Item>,
+    tooltips: BTreeMap<String, [Option<(i32, u64)>; 2]>,
+    costs: BTreeMap<String, LedgerDailyCost>,
+    categories: Option<BTreeMap<String, String>>,
+    category_first: BTreeMap<String, i32>,
+    actors: Option<BTreeSet<(u32, String)>>,
+    daily_lags: BTreeMap<String, [i32; 2]>,
+    presentation: Option<BTreeMap<String, u64>>,
+    pending_presentation: Option<BTreeMap<String, u64>>,
+    formats: Option<BTreeSet<String>>,
+}
+
+/// The entries of `map` whose field keys name `tag`.
+fn of_country<T: Clone>(map: &BTreeMap<String, T>, tag: &str) -> BTreeMap<String, T> {
+    let mut prefix = series::field_key(tag, "");
+    prefix.truncate(prefix.len() - 2);
+    map.range(prefix.clone()..)
+        .take_while(|(key, _)| key.starts_with(&prefix))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+impl Catalogue {
+    fn branch(&self) -> BranchCatalogue {
+        BranchCatalogue {
+            first: self.first,
+            last: self.last,
+            native_through: self.native_through,
+            largest_lag: self.largest_lag,
+            command_lag: self.command_lag,
+            government_lag: self.government_lag,
+            warnings: self.warnings.clone(),
+        }
+    }
+
+    fn country(&self, tag: &str, keys: Option<&BTreeMap<String, u64>>) -> CountryCatalogue {
+        CountryCatalogue {
+            keys: keys.cloned().unwrap_or_default(),
+            tail_range: self.tail_ranges.get(tag).copied(),
+            items: of_country(&self.items, tag),
+            tooltips: of_country(&self.tooltips, tag),
+            costs: of_country(&self.costs, tag),
+            categories: self.categories.get(tag).cloned(),
+            category_first: of_country(&self.category_first, tag),
+            actors: self.actors.get(tag).cloned(),
+            daily_lags: of_country(&self.daily_lags, tag),
+            presentation: self.presentation.get(tag).cloned(),
+            pending_presentation: self.pending_presentation.get(tag).cloned(),
+            formats: self.formats.get(tag).cloned(),
+        }
+    }
+
+    /// The catalogue of `countries` alone, and their series keys by field
+    /// key, as the whole catalogue holds them.
+    fn of(
+        branch: BranchCatalogue,
+        countries: impl IntoIterator<Item = (String, CountryCatalogue)>,
+    ) -> (BTreeMap<String, u64>, Self) {
+        let mut keys = BTreeMap::new();
+        let mut catalogue = Self {
+            first: branch.first,
+            last: branch.last,
+            native_through: branch.native_through,
+            largest_lag: branch.largest_lag,
+            command_lag: branch.command_lag,
+            government_lag: branch.government_lag,
+            warnings: branch.warnings,
+            ..Self::default()
+        };
+        for (tag, country) in countries {
+            keys.extend(
+                country
+                    .keys
+                    .into_iter()
+                    .map(|(field, key)| (series::field_key(&tag, &field), key)),
+            );
+            if let Some(range) = country.tail_range {
+                catalogue.tail_ranges.insert(tag.clone(), range);
+            }
+            catalogue.items.extend(country.items);
+            catalogue.tooltips.extend(country.tooltips);
+            catalogue.costs.extend(country.costs);
+            catalogue.category_first.extend(country.category_first);
+            catalogue.daily_lags.extend(country.daily_lags);
+            for (map, value) in [
+                (&mut catalogue.presentation, country.presentation),
+                (
+                    &mut catalogue.pending_presentation,
+                    country.pending_presentation,
+                ),
+            ] {
+                if let Some(value) = value {
+                    map.insert(tag.clone(), value);
+                }
+            }
+            if let Some(value) = country.categories {
+                catalogue.categories.insert(tag.clone(), value);
+            }
+            if let Some(value) = country.actors {
+                catalogue.actors.insert(tag.clone(), value);
+            }
+            if let Some(value) = country.formats {
+                catalogue.formats.insert(tag, value);
+            }
+        }
+        (keys, catalogue)
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -786,6 +927,7 @@ impl Prepared {
     ) -> io::Result<String> {
         let field = item_field(projected)?;
         let id = series::field_key(tag, &field);
+        self.touched.insert(tag.to_owned());
         let kind = usize::from(cost);
         let mut identity = projected.item.clone();
         identity.id.clear();
@@ -1544,6 +1686,8 @@ impl Prepared {
         let cpu =
             ::replay_frame::cpu::scope_phase("politics_ledger:presentation_projection_series");
         let tags = std::mem::take(&mut self.scan.dirty);
+        // Each catalogue entry a country gains here is made below, for these countries.
+        self.touched.extend(tags.iter().cloned());
         let mut presented = Presentations::new(&tags);
         for tag in &tags {
             #[cfg(any(test, feature = "test-support"))]
@@ -2316,7 +2460,10 @@ impl Prepared {
         for tag in self.scan.countries.keys() {
             let next = u64::try_from(self.metadata.tail_ranges.len())
                 .map_err(|_| dashboard_core::invalid("Politics tail range count overflow"))?;
-            self.metadata.tail_ranges.entry(tag.clone()).or_insert(next);
+            if !self.metadata.tail_ranges.contains_key(tag) {
+                self.metadata.tail_ranges.insert(tag.clone(), next);
+                self.touched.insert(tag.clone());
+            }
         }
         // Tail file ordinals belong to their own section, not the scalar key
         // space. Write every country's range, even empty, in append order.
@@ -2331,14 +2478,17 @@ impl Prepared {
                 &tail,
             )?;
         }
-        self.catalogue_writer.write(
-            writer,
-            "politics-ledger",
-            branch,
-            &self.keys.flat(),
-            &self.metadata,
-        )?;
-        Ok(())
+        let mut catalogue = Entries::default();
+        catalogue.put(BRANCH, &self.metadata.branch())?;
+        let mut touched = std::mem::take(&mut self.touched);
+        touched.extend(self.keys.take_touched());
+        for tag in touched {
+            catalogue.put(
+                country_entry(&tag),
+                &self.metadata.country(&tag, self.keys.country(&tag)),
+            )?;
+        }
+        catalogue.flush(writer, &entries_section(branch))
     }
     /// The state's JSON, compressed as it is written: never held whole.
     pub fn saved_bytes(&mut self) -> io::Result<Vec<u8>> {

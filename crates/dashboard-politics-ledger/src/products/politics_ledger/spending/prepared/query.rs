@@ -49,6 +49,40 @@ struct PartView {
     mode: String,
 }
 
+/// The published catalogue of the countries a query reads: its own, those it
+/// binds, and the branch's census (`*`), all from one publication; None
+/// before a flush.
+fn published(
+    store: &store::Store,
+    source: &store::SourceKey,
+    branch: u64,
+    params: &Params,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<(BTreeMap<String, u64>, Catalogue)>> {
+    let section = entries_section(branch);
+    let mut tags = BTreeSet::from([params.tag.as_str(), "*"]);
+    tags.extend(
+        params
+            .bindings
+            .iter()
+            .flat_map(|bindings| bindings.keys().map(String::as_str)),
+    );
+    let published = entries::compose(store, source, &section, cancelled, |entries| {
+        let Some(branch) = entries.get_json::<BranchCatalogue>(BRANCH)? else {
+            return Ok(None);
+        };
+        let countries = tags
+            .iter()
+            .map(|&tag| {
+                let country = entries.get_json::<CountryCatalogue>(&country_entry(tag))?;
+                Ok((tag.to_owned(), country.unwrap_or_default()))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        Ok(Some(Catalogue::of(branch, countries)))
+    })?;
+    Ok(published.flatten())
+}
+
 pub fn query(
     params: &Value,
     store: &store::Store,
@@ -61,9 +95,7 @@ pub fn query(
         .branch_id
         .parse()
         .map_err(|_| dashboard_core::invalid("Invalid politics ledger branch"))?;
-    let Some((keys, catalogue)) =
-        series::read_catalogue::<Catalogue>(store, source, "politics-ledger", branch)?
-    else {
+    let Some((keys, catalogue)) = published(store, source, branch, &params, cancelled)? else {
         return if params.view == LedgerView::Spending {
             Ok(serde_json::to_value(PoliticsLedgerReply {
                 branch_id: params.branch_id,

@@ -5,6 +5,7 @@ use crate::products::construction_spending::{
     SpentStep,
 };
 use dashboard_base::prepared::{
+    entries::{self, Entries},
     prefix::Prefix,
     series::{self, Accumulator, Reader},
 };
@@ -27,17 +28,14 @@ enum Fact {
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
-    #[serde(skip)]
-    catalogue_writer: series::CatalogueWriter,
-    #[serde(skip)]
-    spending_catalogue_writer: series::CatalogueWriter,
     scan: Scan,
     facts: Accumulator,
     queues: Accumulator,
     members: Accumulator,
     reads: Accumulator,
     spending: Accumulator,
-    project_keys: BTreeMap<String, u64>,
+    /// The key the next new project takes: one per project, in order.
+    next_project: u64,
     slots: Vec<u64>,
     spending_keys: BTreeMap<String, u64>,
     last_end: Vec<Option<ProjectEnd>>,
@@ -45,14 +43,139 @@ pub struct Prepared {
     first_repair: Vec<Option<i32>>,
     last_output: Vec<Option<ConstructionOutputRead>>,
     leaf_totals: BTreeMap<String, i128>,
-    leaf_metadata: BTreeMap<String, LeafMetadata>,
+    /// Each leaf's merges and resolutions since the last flush, made then on
+    /// the leaf's published metadata in the same order.
+    leaf_changes: BTreeMap<String, Vec<LeafChange>>,
+    /// Every state a leaf names, each with its published name.
+    named_states: BTreeSet<u32>,
     before_first: BTreeMap<String, u32>,
     output_seen: BTreeSet<usize>,
     #[serde(skip)]
     touched: BTreeSet<u64>,
+    /// Each country's reply made whole at the last flush, as flushes made
+    /// every reply before the catalogue held its leaves apart.
+    #[cfg(test)]
+    #[serde(skip)]
+    whole_replies: BTreeMap<String, ConstructionSpendingReply>,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
+}
+
+/// The section of a branch's construction catalogue ([`entries`]).
+fn entries_section(branch: u64) -> String {
+    format!("construction-entries-{branch}")
+}
+
+const MANIFEST: &[u8] = b"manifest";
+const SPENDING: &[u8] = b"spending";
+
+/// Where `tag`'s leaves are published, in key order.
+fn leaf_prefix(tag: &str) -> Vec<u8> {
+    [b"leaf\0".as_slice(), tag.as_bytes(), b"\0"].concat()
+}
+
+fn leaf_entry(tag: &str, name: &str) -> Vec<u8> {
+    [leaf_prefix(tag).as_slice(), name.as_bytes()].concat()
+}
+
+fn before_first_entry(tag: &str) -> Vec<u8> {
+    [b"tag\0".as_slice(), tag.as_bytes()].concat()
+}
+
+fn state_entry(state: u32) -> Vec<u8> {
+    [b"state\0".as_slice(), &state.to_be_bytes()].concat()
+}
+
+/// What every country's spending reply shares, as the flush read it.
+#[derive(Serialize, Deserialize)]
+struct SharedSpending {
+    reads: Vec<i32>,
+    railway_reads: Vec<i32>,
+    types: Vec<BuildingInfo>,
+    repair_icon: Option<String>,
+    unattributed: Vec<SpendingUnknown>,
+    warnings: Vec<String>,
+}
+
+/// A leaf's metadata and the spending series key of its totals.
+#[derive(Serialize, Deserialize)]
+struct LeafEntry {
+    metadata: LeafMetadata,
+    key: u64,
+}
+
+/// A change to a leaf's metadata, kept until the flush makes it.
+#[derive(Serialize, Deserialize)]
+enum LeafChange {
+    Merge(SpendingLeaf),
+    Resolve(String, i32),
+}
+
+/// `tag`'s spending reply as the published catalogue holds it, without its
+/// spent totals, and each leaf's spending series key; None before a flush.
+/// A country with no leaf has the reply of one with no project.
+fn spending_reply(
+    catalogue: &mut entries::Reader<impl entries::PageSource>,
+    branch: u64,
+    tag: &str,
+) -> io::Result<Option<(ConstructionSpendingReply, BTreeMap<String, u64>)>> {
+    let Some(shared) = catalogue.get_json::<SharedSpending>(SPENDING)? else {
+        return Ok(None);
+    };
+    let prefix = leaf_prefix(tag);
+    let mut leaves = Vec::new();
+    let mut keys = BTreeMap::new();
+    for (entry, value) in catalogue.prefix(&prefix)? {
+        let name = std::str::from_utf8(&entry[prefix.len()..])
+            .map_err(|_| dashboard_core::invalid("Construction leaf name is not UTF-8"))?;
+        let leaf: LeafEntry = serde_json::from_slice(&value)?;
+        leaves.push(leaf.metadata.materialize(name)?);
+        keys.insert(name.to_owned(), leaf.key);
+    }
+    leaves.sort_by_key(|leaf| {
+        (
+            leaf.repair,
+            leaf.kind == ProjectKind::Railway,
+            leaf.building,
+            leaf.state,
+            leaf.to_state,
+        )
+    });
+    let states: BTreeSet<u32> = leaves
+        .iter()
+        .flat_map(|leaf| [leaf.state, leaf.to_state])
+        .flatten()
+        .collect();
+    let states = states
+        .into_iter()
+        .map(|state| {
+            catalogue
+                .get_json::<StateName>(&state_entry(state))?
+                .ok_or_else(|| dashboard_core::invalid("Construction state name is not published"))
+        })
+        .collect::<io::Result<_>>()?;
+    let mut warnings = shared.warnings;
+    if leaves.is_empty() && !(shared.reads.is_empty() && shared.railway_reads.is_empty()) {
+        warnings.push(format!("{tag}: no recorded construction in this branch"));
+    }
+    let reply = ConstructionSpendingReply {
+        branch_id: branch.to_string(),
+        tag: tag.to_owned(),
+        cost_scale: COST_SCALE,
+        reads: shared.reads,
+        railway_reads: shared.railway_reads,
+        states,
+        types: shared.types,
+        repair_icon: shared.repair_icon,
+        leaves,
+        before_first_read: catalogue
+            .get_json::<u32>(&before_first_entry(tag))?
+            .unwrap_or(0),
+        unattributed: shared.unattributed,
+        warnings,
+    };
+    Ok(Some((reply, keys)))
 }
 
 fn leaf_key(tag: &str, leaf: &SpendingLeaf) -> io::Result<String> {
@@ -181,10 +304,8 @@ impl Prepared {
         }
         for &index in &dirty {
             if index >= self.slots.len() {
-                let key = self.project_keys.len() as u64;
-                let project = &self.scan.log.projects[index];
-                self.project_keys
-                    .insert(serde_json::to_string(&(project.tag.as_str(), key))?, key);
+                let key = self.next_project;
+                self.next_project += 1;
                 self.slots.push(key);
                 self.last_run.push(None);
                 self.last_end.push(None);
@@ -268,7 +389,10 @@ impl Prepared {
                     }
                 }
                 leaf.spent.clear();
-                merge_leaf(self.leaf_metadata.entry(name).or_default(), leaf);
+                self.leaf_changes
+                    .entry(name)
+                    .or_default()
+                    .push(LeafChange::Merge(leaf));
             }
         }
         // Only this project's two leaves can have an unresolved output interval.
@@ -289,8 +413,12 @@ impl Prepared {
                             .to_state
                             .filter(|_| project.kind == ProjectKind::Railway),
                     ))?;
-                    if let Some(leaf) = self.leaf_metadata.get_mut(&name) {
-                        leaf.resolve(&project.id, hour);
+                    // A leaf has metadata once it has a spending key.
+                    if self.spending_keys.contains_key(&name) {
+                        self.leaf_changes
+                            .entry(name)
+                            .or_default()
+                            .push(LeafChange::Resolve(project.id.clone(), hour));
                     }
                 }
             }
@@ -549,75 +677,125 @@ impl Prepared {
             repair_icon: names.repair_icon.clone(),
             warnings: warnings.clone(),
         };
-        self.catalogue_writer.write(
-            writer,
-            "construction",
-            branch,
-            &self.project_keys,
-            &(manifest, self.scan.last),
-        )?;
-        let params = dashboard_base::products::CountryParams {
-            branch_id: branch.to_string(),
-            tag: String::new(),
-        };
-        let mut template = ConstructionSpending::reply_from_parts(
-            &params,
+        let section = entries_section(branch);
+        let mut catalogue = Entries::default();
+        catalogue.put(MANIFEST, &(manifest, self.scan.last))?;
+        let template = ConstructionSpending::reply_from_parts(
+            &dashboard_base::products::CountryParams {
+                branch_id: branch.to_string(),
+                tag: String::new(),
+            },
             &self.scan.log,
             &names,
             Vec::new(),
             0,
-            warnings.clone(),
+            Vec::new(),
         );
-        template
-            .warnings
-            .retain(|warning| !warning.starts_with(": no recorded construction"));
-        let mut countries: BTreeMap<String, Vec<SpendingLeaf>> = BTreeMap::new();
-        for (name, leaf) in &self.leaf_metadata {
-            let (tag, _, _, _, _, _): (String, bool, ProjectKind, u32, Option<u32>, Option<u32>) =
-                serde_json::from_str(name)?;
-            countries
-                .entry(tag)
-                .or_default()
-                .push(leaf.materialize(name)?);
-        }
-        let tags: BTreeSet<_> = self
-            .project_keys
-            .keys()
-            .map(|key| serde_json::from_str::<(String, u64)>(key).map(|(tag, _)| tag))
-            .collect::<Result<_, _>>()?;
-        let mut replies = BTreeMap::new();
-        for tag in tags {
-            let mut leaves = countries.remove(&tag).unwrap_or_default();
-            leaves.sort_by_key(|leaf| {
-                (
-                    leaf.repair,
-                    leaf.kind == ProjectKind::Railway,
-                    leaf.building,
-                    leaf.state,
-                    leaf.to_state,
-                )
-            });
-            let params = dashboard_base::products::CountryParams {
-                branch_id: branch.to_string(),
-                tag: tag.clone(),
-            };
-            let reply = ConstructionSpending::reply_from_parts(
-                &params,
-                &self.scan.log,
-                &names,
-                leaves,
-                self.before_first.get(&tag).copied().unwrap_or(0),
-                warnings.clone(),
-            );
-            replies.insert(tag, reply);
-        }
-        self.spending_catalogue_writer.write(
-            writer,
-            "construction-spending",
-            branch,
-            &self.spending_keys,
-            &(template, replies),
+        #[cfg(test)]
+        let whole_warnings = warnings.clone();
+        catalogue.put(
+            SPENDING,
+            &SharedSpending {
+                reads: template.reads,
+                railway_reads: template.railway_reads,
+                types: template.types,
+                repair_icon: template.repair_icon,
+                unattributed: template.unattributed,
+                warnings,
+            },
         )?;
+        // Only the leaves changed since the last flush are read and written.
+        {
+            let mut stored = entries::read_written(writer, &section);
+            for (name, changes) in std::mem::take(&mut self.leaf_changes) {
+                let (tag, _, _, _, state, to_state): (
+                    String,
+                    bool,
+                    ProjectKind,
+                    u32,
+                    Option<u32>,
+                    Option<u32>,
+                ) = serde_json::from_str(&name)?;
+                let entry = leaf_entry(&tag, &name);
+                let mut metadata = stored
+                    .get_json::<LeafEntry>(&entry)?
+                    .map(|leaf| leaf.metadata);
+                for change in changes {
+                    match change {
+                        LeafChange::Merge(leaf) => {
+                            merge_leaf(metadata.get_or_insert_with(Default::default), leaf)
+                        }
+                        LeafChange::Resolve(project, hour) => {
+                            if let Some(metadata) = &mut metadata {
+                                metadata.resolve(&project, hour);
+                            }
+                        }
+                    }
+                }
+                if let Some(metadata) = metadata {
+                    self.named_states.extend(state.into_iter().chain(to_state));
+                    catalogue.put(
+                        entry,
+                        &LeafEntry {
+                            metadata,
+                            key: self.spending_keys[&name],
+                        },
+                    )?;
+                }
+            }
+        }
+        for (tag, count) in &self.before_first {
+            catalogue.put(before_first_entry(tag), count)?;
+        }
+        for state in names.states(&self.named_states) {
+            catalogue.put(state_entry(state.id), &state)?;
+        }
+        catalogue.flush(writer, &section)?;
+        #[cfg(test)]
+        {
+            let mut countries = BTreeMap::<String, Vec<SpendingLeaf>>::new();
+            for (entry, value) in entries::read_written(writer, &section).prefix(b"leaf\0")? {
+                let entry = std::str::from_utf8(&entry[b"leaf\0".len()..]).unwrap();
+                let (tag, name) = entry.split_once('\0').unwrap();
+                let leaf: LeafEntry = serde_json::from_slice(&value)?;
+                countries
+                    .entry(tag.to_owned())
+                    .or_default()
+                    .push(leaf.metadata.materialize(name)?);
+            }
+            let tags: BTreeSet<String> = countries
+                .keys()
+                .chain(self.before_first.keys())
+                .cloned()
+                .chain(["ZZZ".to_owned()])
+                .collect();
+            self.whole_replies.clear();
+            for tag in tags {
+                let mut leaves = countries.remove(&tag).unwrap_or_default();
+                leaves.sort_by_key(|leaf| {
+                    (
+                        leaf.repair,
+                        leaf.kind == ProjectKind::Railway,
+                        leaf.building,
+                        leaf.state,
+                        leaf.to_state,
+                    )
+                });
+                let params = dashboard_base::products::CountryParams {
+                    branch_id: branch.to_string(),
+                    tag: tag.clone(),
+                };
+                let reply = ConstructionSpending::reply_from_parts(
+                    &params,
+                    &self.scan.log,
+                    &names,
+                    leaves,
+                    self.before_first.get(&tag).copied().unwrap_or(0),
+                    whole_warnings.clone(),
+                );
+                self.whole_replies.insert(tag, reply);
+            }
+        }
         let remap = self.scan.compact_projects();
         self.slots = retain_slots(std::mem::take(&mut self.slots), &remap);
         self.last_run = retain_slots(std::mem::take(&mut self.last_run), &remap);
@@ -854,25 +1032,34 @@ pub fn query(
         source, content, product, branch, None, cancelled,
     )?
     .coverage;
-    let (_, (mut manifest, last)) = series::read_catalogue::<(
-        ConstructionLogManifestReply,
-        Option<i32>,
-    )>(&store, &key, "construction", branch)?
-    .unwrap_or_else(|| {
+    let section = entries_section(branch);
+    let spending_tag = (product == "construction-spending")
+        .then(|| params["tag"].as_str())
+        .flatten()
+        .filter(|tag| dashboard_core::protocol::validate_tag(tag).is_ok());
+    // A spending reply is composed from the publication its manifest comes from.
+    let (published, spending) = entries::compose(&store, &key, &section, cancelled, |catalogue| {
+        let manifest =
+            catalogue.get_json::<(ConstructionLogManifestReply, Option<i32>)>(MANIFEST)?;
+        let spending = match spending_tag {
+            Some(tag) => spending_reply(catalogue, branch, tag)?,
+            None => None,
+        };
+        Ok((manifest, spending))
+    })?
+    .unwrap_or((None, None));
+    let (mut manifest, last) = published.unwrap_or_else(|| {
         (
-            BTreeMap::new(),
-            (
-                ConstructionLogManifestReply {
-                    cost_scale: COST_SCALE,
-                    windows: windows(source.replay_ref(), branch),
-                    newest: None,
-                    recorded: false,
-                    types: Vec::new(),
-                    repair_icon: None,
-                    warnings: Vec::new(),
-                },
-                None,
-            ),
+            ConstructionLogManifestReply {
+                cost_scale: COST_SCALE,
+                windows: windows(source.replay_ref(), branch),
+                newest: None,
+                recorded: false,
+                types: Vec::new(),
+                repair_icon: None,
+                warnings: Vec::new(),
+            },
+            None,
         )
     });
     // Before coverage completes, the log answers its prepared prefix: the
@@ -1014,41 +1201,24 @@ pub fn query(
             .into_iter()
             .map(|hour| prefix.through(Some(hour)).unwrap_or(hour))
             .collect();
-        let (keys, (mut template, mut replies)) =
-            series::read_catalogue::<(
-                ConstructionSpendingReply,
-                BTreeMap<String, ConstructionSpendingReply>,
-            )>(&store, &key, "construction-spending", branch)?
-            .unwrap_or_else(|| {
-                (
-                    BTreeMap::new(),
-                    (
-                        ConstructionSpendingReply {
-                            branch_id: branch.to_string(),
-                            tag: tag.to_owned(),
-                            cost_scale: COST_SCALE,
-                            reads: Vec::new(),
-                            railway_reads: Vec::new(),
-                            types: Vec::new(),
-                            repair_icon: None,
-                            states: Vec::new(),
-                            leaves: Vec::new(),
-                            before_first_read: 0,
-                            unattributed: Vec::new(),
-                            warnings: Vec::new(),
-                        },
-                        BTreeMap::new(),
-                    ),
-                )
-            });
-        template.tag = tag.to_owned();
-        let mut reply = replies.remove(tag).unwrap_or_else(|| {
-            if manifest.recorded {
-                template
-                    .warnings
-                    .push(format!("{tag}: no recorded construction in this branch"));
-            }
-            template
+        let (mut reply, keys) = spending.unwrap_or_else(|| {
+            (
+                ConstructionSpendingReply {
+                    branch_id: branch.to_string(),
+                    tag: tag.to_owned(),
+                    cost_scale: COST_SCALE,
+                    reads: Vec::new(),
+                    railway_reads: Vec::new(),
+                    types: Vec::new(),
+                    repair_icon: None,
+                    states: Vec::new(),
+                    leaves: Vec::new(),
+                    before_first_read: 0,
+                    unattributed: Vec::new(),
+                    warnings: Vec::new(),
+                },
+                BTreeMap::new(),
+            )
         });
         if let Some(missing) = last.and_then(|last| last.checked_add(1))
             && missing <= coverage.last_hour
@@ -1114,6 +1284,25 @@ mod tests {
     use dashboard_core::test_fixtures::{CAMPAIGN, records};
     use replay_data::{rows::ConstructionLineOutputRow, rows::TableRows};
     use replay_frame::frame::TableView;
+
+    /// `name`'s leaf of `tag` as branch 1's catalogue publishes it.
+    fn published_leaf(
+        store: &store::Store,
+        key: &store::SourceKey,
+        tag: &str,
+        name: &str,
+    ) -> SpendingLeaf {
+        let section = entries_section(1);
+        entries::read(store, key, &section)
+            .unwrap()
+            .unwrap()
+            .get_json::<LeafEntry>(&leaf_entry(tag, name))
+            .unwrap()
+            .unwrap()
+            .metadata
+            .materialize(name)
+            .unwrap()
+    }
 
     fn source_for(frames: &[DecodedFrame]) -> Source {
         let replay = Arc::new(
@@ -1216,7 +1405,7 @@ mod tests {
                         &tracker.observe(frame, format),
                     )?;
                 }
-                assert_eq!(prepared.project_keys.len(), history);
+                assert_eq!(prepared.next_project, history as u64);
                 let before = prepared.work();
                 let mut changed = frames.last().unwrap().clone();
                 changed.hour += 1;
@@ -1306,14 +1495,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(
-            prepared
-                .project_keys
-                .values()
-                .copied()
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from([0, 1])
-        );
+        assert_eq!(prepared.next_project, 2);
         assert_eq!(
             prepared.scan.log.unowned_lines, 0,
             "a closed known handle became an unknown owner"
@@ -1325,7 +1507,7 @@ mod tests {
                 let name = leaf_key(&tag, &leaf).unwrap();
                 leaf.spent.clear();
                 observer_tests::assert_reply_parity(
-                    &prepared.leaf_metadata[&name].materialize(&name).unwrap(),
+                    &published_leaf(&fixture.store, &fixture.key, &tag, &name),
                     &leaf,
                 )
                 .unwrap();
@@ -1486,6 +1668,71 @@ mod tests {
                 .unwrap()
             },
         );
+    }
+
+    /// Each country's spending reply composed from the catalogue's shared
+    /// parts and its own leaves is the reply each flush made whole before,
+    /// for countries with leaves, with only uncaptured work, and with no
+    /// project, across two flushes and a resume between them.
+    #[test]
+    fn composed_spending_replies_are_the_replies_flushes_made_whole() {
+        use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+        let flag = AtomicBool::new(false);
+        let frames = frames();
+        let source = source_for(&frames);
+        let format = source.replay_ref().format;
+        let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+        let mut prepared = Prepared::default();
+        let mut tracker = FrameChangeTracker::new();
+        let split = frames.iter().position(|frame| frame.hour == 126).unwrap();
+        for (index, block) in [&frames[..split], &frames[split..]].into_iter().enumerate() {
+            if index == 1 {
+                prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+                prepared.restore_frame(&frames[split - 1]);
+                tracker.invalidate();
+            }
+            for frame in block {
+                prepared
+                    .observe_changed(frame, format, &source, &tracker.observe(frame, format))
+                    .unwrap();
+            }
+            prepared
+                .end_block(1, block.last().unwrap().hour, &source)
+                .unwrap();
+            let mut writer = fixture.writer();
+            prepared
+                .flush(
+                    &mut writer,
+                    &source,
+                    &LoadContext { content: None },
+                    1,
+                    &flag,
+                )
+                .unwrap();
+            writer.commit().unwrap();
+            assert!(
+                prepared
+                    .whole_replies
+                    .values()
+                    .any(|reply| !reply.leaves.is_empty())
+            );
+            let section = entries_section(1);
+            let mut catalogue = entries::read(&fixture.store, &fixture.key, &section)
+                .unwrap()
+                .unwrap();
+            for (tag, whole) in &prepared.whole_replies {
+                let (reply, keys) = spending_reply(&mut catalogue, 1, tag).unwrap().unwrap();
+                assert_eq!(
+                    serde_json::to_value(&reply).unwrap(),
+                    serde_json::to_value(whole).unwrap(),
+                    "block {index} {tag}"
+                );
+                for leaf in &reply.leaves {
+                    let name = leaf_key(tag, leaf).unwrap();
+                    assert_eq!(keys[&name], prepared.spending_keys[&name]);
+                }
+            }
+        }
     }
 
     /// Before construction's coverage completes, spending answers the
@@ -1753,7 +2000,7 @@ mod tests {
                 tracker.invalidate();
             }
         }
-        let selected: Vec<_> = prepared.project_keys.values().copied().collect();
+        let selected: Vec<_> = (0..prepared.next_project).collect();
         let mut actual = project_log(&fixture.store, &fixture.key, 1, &selected, &flag).unwrap();
         let mut reads = Reader::new(
             &fixture.store,
@@ -1800,7 +2047,7 @@ mod tests {
                 );
                 leaf.spent.clear();
                 assert_eq!(
-                    prepared.leaf_metadata[&name].materialize(&name).unwrap(),
+                    published_leaf(&fixture.store, &fixture.key, &tag, &name),
                     leaf
                 );
             }

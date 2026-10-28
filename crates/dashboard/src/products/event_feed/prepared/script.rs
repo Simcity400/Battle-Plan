@@ -376,18 +376,54 @@ pub(crate) fn query(
             "Prepared occurrence cursor belongs to another view",
         ));
     }
-    let Some(catalogue_facts) = catalogue_of(source, store, key, branch)? else {
-        return Ok(None);
-    };
-    let (diagnostics, _, late, links) = &*catalogue_facts;
-    let mut reader = Reader::new(store, key, format!("event-feed-facts-{branch}"), cancelled)?;
     let kinds: Vec<EventFeedKind> = openers
         .iter()
         .chain(adapter.continuing())
         .copied()
         .collect();
     let before = cursor.as_ref().map(|cursor| cursor.before);
-    let held = newest(&mut reader, late, &kinds, (first, live), before, params.page_size, cancelled)?;
+    let facts_section = format!("event-feed-facts-{branch}");
+    let edges_section = super::entries_section(branch);
+    // The page and every card's joined facts, from one publication of the
+    // feed's facts and entries.
+    let composed = entries::compose(store, key, &edges_section, cancelled, |links| {
+        let Some(catalogue_facts) = catalogue_of(source, store, key, branch)? else {
+            return Ok(None);
+        };
+        let mut reader = Reader::new(store, key, facts_section.clone(), cancelled)?;
+        let held = newest(
+            &mut reader,
+            &catalogue_facts.2,
+            &kinds,
+            (first, live),
+            before,
+            params.page_size,
+            cancelled,
+        )?;
+        let mut joined = BTreeMap::new();
+        for (placed, fact) in &held {
+            let joins = fact
+                .occurrence
+                .as_ref()
+                .is_some_and(|occurrence| occurrence.opener.is_some());
+            if !openers.contains(&fact.row.kind) || joins {
+                continue;
+            }
+            let at = (placed.key, placed.ordinal);
+            let facts = links
+                .prefix(&super::edges_prefix(at))?
+                .into_iter()
+                .map(|(_, next)| fact_at(&mut reader, serde_json::from_slice(&next)?))
+                .collect::<io::Result<Vec<_>>>()?;
+            joined.insert(at, facts);
+        }
+        links.agrees(&facts_section)?;
+        Ok(Some((catalogue_facts, held, joined)))
+    })?;
+    let Some((catalogue_facts, held, mut joined)) = composed.flatten() else {
+        return Ok(None);
+    };
+    let (diagnostics, _, _) = &*catalogue_facts;
     let next_cursor = (held.len() == params.page_size as usize)
         .then(|| {
             serde_json::to_string(&Cursor {
@@ -427,13 +463,10 @@ pub(crate) fn query(
     let present = |builder: &mut Builder, fact: Fact| -> io::Result<ScriptEdge> {
         let (option, lifecycle, days, costs) = edge(&fact);
         let mut row = fact.row;
-        if let Some(index) = row.item {
-            let mut item = diagnostics
-                .feed
-                .items
-                .get(index as usize)
-                .ok_or_else(|| crate::invalid("Event feed script item identity differs"))?
-                .clone();
+        if row.item.is_some() {
+            let mut item = fact
+                .item
+                .ok_or_else(|| crate::invalid("Event feed script item identity differs"))?;
             if let Some(catalogue) = catalogue.as_deref() {
                 super::super::script_presentation(
                     builder,
@@ -474,8 +507,7 @@ pub(crate) fn query(
         let id = fact.row.id.clone();
         let mut edges = vec![present(&mut builder, fact)?];
         if opens {
-            for &next in links.0.get(&at).into_iter().flatten() {
-                let fact = fact_at(&mut reader, next)?;
+            for fact in joined.remove(&at).unwrap_or_default() {
                 if fact.row.read_hour <= live {
                     edges.push(present(&mut builder, fact)?);
                 }

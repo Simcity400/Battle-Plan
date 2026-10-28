@@ -5,6 +5,8 @@ use super::*;
 pub(super) struct Keys {
     tags: BTreeMap<String, BTreeMap<String, u64>>,
     len: usize,
+    /// The countries given a key since [`Self::take_touched`].
+    touched: BTreeSet<String>,
     #[cfg(test)]
     encodings: std::cell::Cell<usize>,
 }
@@ -21,7 +23,20 @@ impl Keys {
             .or_default()
             .insert(field.into(), next);
         self.len += 1;
+        if !self.touched.contains(tag) {
+            self.touched.insert(tag.into());
+        }
         Ok(next)
+    }
+
+    /// `tag`'s keys by field.
+    pub(super) fn country(&self, tag: &str) -> Option<&BTreeMap<String, u64>> {
+        self.tags.get(tag)
+    }
+
+    /// The countries given a key since the last call.
+    pub(super) fn take_touched(&mut self) -> BTreeSet<String> {
+        std::mem::take(&mut self.touched)
     }
 
     pub(super) fn flat(&self) -> BTreeMap<String, u64> {

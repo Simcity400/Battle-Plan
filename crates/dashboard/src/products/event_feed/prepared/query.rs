@@ -81,14 +81,9 @@ const FAMILIES: [&str; 7] = [
     country_nukes::prepared::INCREASES,
     completion_stream::FAMILY,
 ];
-/// The feed facts' catalogue: diagnostics, observed tables, late references
-/// and each opener's continuing facts.
-pub(in crate::products::event_feed) type FactsCatalogue = (
-    Builder,
-    BTreeSet<String>,
-    LateIndex,
-    super::Edges,
-);
+/// The feed facts' catalogue: diagnostics, observed tables and late
+/// references. Each opener's continuing facts are entries apart.
+pub(in crate::products::event_feed) type FactsCatalogue = (Builder, BTreeSet<String>, LateIndex);
 /// Whether any country's focus was observed, the completions and countries
 /// without an event date by reason, and the late references.
 type FocusMetadata = (bool, BTreeMap<String, u64>, LateIndex);
@@ -630,15 +625,11 @@ fn project(
             }
         }
         SourceRow::Fact(mut fact) => {
-            if let Some(index) = fact.row.item {
-                let mut item = metadata
-                    .facts
-                    .0
-                    .feed
-                    .items
-                    .get(index as usize)
-                    .ok_or_else(|| crate::invalid("Event feed script item identity differs"))?
-                    .clone();
+            if fact.row.item.is_some() {
+                let mut item = fact
+                    .item
+                    .take()
+                    .ok_or_else(|| crate::invalid("Event feed script item identity differs"))?;
                 if let Some(catalogue) = catalogue {
                     super::super::script_presentation(
                         builder,

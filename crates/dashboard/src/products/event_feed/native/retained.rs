@@ -160,7 +160,8 @@ impl Sections {
     }
 
     /// The ordinal `slot`'s section is published under, publishing it with
-    /// `publish` when its notes have not been.
+    /// `publish` when its notes have not been. Published notes are not held:
+    /// the section is reused by its ordinal until what it reads changes.
     pub(super) fn ordinal(
         &mut self,
         slot: &Slot,
@@ -170,11 +171,12 @@ impl Sections {
             .0
             .get_mut(slot)
             .ok_or_else(|| io::Error::other("Retained state section was not observed"))?;
-        if let Some(ordinal) = section.ordinal {
-            return Ok(ordinal);
-        }
-        let ordinal = publish(&section.notes)?;
+        let ordinal = match section.ordinal {
+            Some(ordinal) => ordinal,
+            None => publish(&section.notes)?,
+        };
         section.ordinal = Some(ordinal);
+        section.notes = Vec::new();
         Ok(ordinal)
     }
 }

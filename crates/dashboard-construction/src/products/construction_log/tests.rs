@@ -1485,6 +1485,92 @@ fn construction_titles_preserve_empty_and_key_equal_localisations() {
 }
 
 #[test]
+fn a_kept_naming_names_each_grown_scan_as_a_fresh_read_does() {
+    use super::{ContentView, Naming, named};
+    use std::collections::BTreeSet;
+
+    let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/defines.lua",
+            "NDefines={NBuildings={MAX_BUILDING_LEVELS=15}}",
+        ),
+        (
+            "common/buildings/buildings.txt",
+            "buildings={mod_named={icon_frame=2} mod_frameless={icon_frame=0} mod_negative={icon_frame=-1}}",
+        ),
+        (
+            "map/default.map",
+            "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp",
+        ),
+        ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
+        ("history/states/1-named.txt", "state={id=1 name=STATE_NAMED}"),
+        ("history/states/2-unnamed.txt", "state={id=2 name=STATE_UNNAMED}"),
+        (
+            "localisation/english/construction_l_english.yml",
+            "\u{feff}l_english:\n mod_named:0 \"Named works\"\n mod_frameless:0 \"Frameless works\"\n STATE_NAMED:0 \"Named state\"\n",
+        ),
+    ]);
+    let localise = |key: &str| catalogue.localised(key, dashboard_text::catalogue::View::Plain);
+    let view = ContentView {
+        layers: &catalogue.content.layers,
+        sprites: &catalogue.sprites,
+        guis: catalogue.guis().map_err(|error| error.to_string()),
+        gui_decode: &catalogue.gui_decode,
+        localise: &localise,
+    };
+    let token = |token: &str| Some(token.to_owned());
+    let scans = [
+        (vec![(101, token("mod_named"))], BTreeSet::from([1])),
+        (
+            vec![
+                (101, token("mod_named")),
+                (102, token("mod_frameless")),
+                (7, None),
+            ],
+            BTreeSet::from([1, 2, 9]),
+        ),
+        (
+            vec![
+                (101, token("mod_named")),
+                (102, token("mod_frameless")),
+                (7, None),
+                (103, token("mod_negative")),
+                (104, token("mod_undeclared")),
+            ],
+            BTreeSet::from([1, 2, 3, 9]),
+        ),
+    ];
+    let cancelled = AtomicBool::new(false);
+    let mut kept = Naming::read(&view);
+    for (types, states) in &scans {
+        let warm = kept.named(&view, types, states, &cancelled).unwrap();
+        let fresh = named(&view, types, states, &cancelled).unwrap();
+        assert_eq!(warm.types, fresh.types);
+        assert_eq!(warm.states, fresh.states);
+        assert_eq!(warm.repair_icon, fresh.repair_icon);
+        assert_eq!(warm.warnings, fresh.warnings);
+        assert_eq!(
+            warm.live_warnings().collect::<Vec<_>>(),
+            fresh.live_warnings().collect::<Vec<_>>()
+        );
+        assert_eq!(kept.types.len(), types.len());
+    }
+    let last = kept.named(&view, &scans[2].0, &scans[2].1, &cancelled).unwrap();
+    for listed in [
+        "2 building types have no name",
+        "1 building types have icon_frame 0",
+        "1 building types give a negative",
+        "3 states have no name",
+    ] {
+        assert!(
+            last.warnings.iter().any(|(_, message)| message.starts_with(listed)),
+            "{listed}: {:?}",
+            last.warnings
+        );
+    }
+}
+
+#[test]
 fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_it_cannot() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

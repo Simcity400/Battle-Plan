@@ -4279,31 +4279,103 @@ fn saved_state_is_the_state_json_compressed_as_it_is_written() {
 }
 
 #[test]
-fn kept_catalogue_writer_publishes_the_pages_a_cold_flush_publishes() {
-    let fixtures = [Fixture::new(), Fixture::new()];
-    let mut prepared = [Prepared::default(), Prepared::default()];
+fn each_countrys_published_catalogue_is_its_part_of_the_held_catalogue() {
+    let fixture = Fixture::new();
+    let mut prepared = Prepared::default();
     let first = engine_native::cdate::HOUR_EPOCH;
-    for day in 0..4 {
-        let hour = first + day * 24;
-        for (index, (prepared, fixture)) in prepared.iter_mut().zip(&fixtures).enumerate() {
-            let mut current = daily(hour, hour, true);
+    let countries = |hour: i32| {
+        let day = hour.div_euclid(24) * 24;
+        let mut current = frame(hour, 3);
+        put(
+            &mut current,
+            TableRows::CountryPowerDaily(
+                (1..=3)
+                    .map(|country| CountryPowerDailyRow {
+                        country,
+                        instance: 1,
+                        epoch: 1,
+                        day_hour: day,
+                        pp_gross_gain_raw: Some(100),
+                        pp_cost_raw: Some(7),
+                        pp_net_gain_raw: Some(93),
+                        pp_realized_delta_raw: Some(80),
+                        pp_sequence: Some(day as u64),
+                        cp_gain_raw: Some(30),
+                        cp_realized_delta_raw: Some(30),
+                        cp_sequence: Some(day as u64 + 1),
+                    })
+                    .collect(),
+            ),
+        );
+        put(
+            &mut current,
+            TableRows::CountryPowerDailyCosts(
+                (1..=3)
+                    .map(|country| CountryPowerDailyCostRow {
+                        country,
+                        instance: 1,
+                        epoch: 1,
+                        day_hour: day,
+                        pp_sequence: day as u64,
+                        cost_raw: 7,
+                        cause: PowerCause::DailyGain,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        // Only the second country spends, on the second and fourth days.
+        if [1, 3].contains(&(hour - first).div_euclid(24)) && hour == day + 5 {
             let mut payment = event(
-                hour as u64 + 3,
+                hour as u64,
                 PowerCause::Decision,
                 PowerOperation::Subtract,
                 Some(-19),
             );
+            payment.country = 2;
             payment.hour = hour;
             put(&mut current, TableRows::CountryPowerChanges(vec![payment]));
-            prepared
-                .observe_frame(&current, None, &AtomicBool::new(false))
-                .unwrap();
-            if index == 1 {
-                // Read its chain back, as every flush did before the writer was kept.
-                prepared.catalogue_writer = Default::default();
-            }
-            publish(prepared, fixture);
         }
-        assert_eq!(fixtures[0].payloads(), fixtures[1].payloads(), "day {day}");
+        current
+    };
+    for day in 0..4 {
+        for hour in first + day * 24..first + day * 24 + 24 {
+            prepared
+                .observe_frame(&countries(hour), None, &AtomicBool::new(false))
+                .unwrap();
+        }
+        publish(&mut prepared, &fixture);
+        if day == 1 {
+            prepared = Prepared::read(prepared.saved_bytes().unwrap().as_slice()).unwrap();
+            prepared.resume(&countries(first + 47));
+        }
+        let section = entries_section(1);
+        let mut entries = entries::read(&fixture.store, &fixture.key, &section)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(entries.get_json::<BranchCatalogue>(BRANCH).unwrap()).unwrap(),
+            serde_json::to_value(Some(prepared.metadata.branch())).unwrap()
+        );
+        let tags: BTreeSet<String> = prepared
+            .keys
+            .flat()
+            .keys()
+            .map(|key| serde_json::from_str::<(String, String)>(key).unwrap().0)
+            .chain(prepared.metadata.tail_ranges.keys().cloned())
+            .collect();
+        assert!(tags.len() >= 4, "{tags:?}");
+        for tag in tags {
+            let published = entries
+                .get_json::<CountryCatalogue>(&country_entry(&tag))
+                .unwrap()
+                .unwrap_or_default();
+            assert_eq!(
+                serde_json::to_value(published).unwrap(),
+                serde_json::to_value(prepared.metadata.country(&tag, prepared.keys.country(&tag)))
+                    .unwrap(),
+                "day {day} {tag}"
+            );
+        }
     }
 }
