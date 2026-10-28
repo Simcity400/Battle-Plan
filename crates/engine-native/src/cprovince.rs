@@ -2254,6 +2254,13 @@ pub struct GeometryCounters {
     pub misses: u64,
 }
 
+/// Province ids by object from earlier passes of `world`; a province and its id live as long as it.
+#[derive(Default)]
+struct HeldIdentities {
+    world: u64,
+    ids: std::collections::HashMap<usize, u32, std::hash::BuildHasherDefault<ProvincePairHasher>>,
+}
+
 /// Read a lazily acquired observation once, counting the hit or the miss.
 fn geometry_memo<T: Copy>(
     counters: &mut GeometryCounters,
@@ -2292,6 +2299,10 @@ pub struct GeometryPacket {
     neighbours: Vec<crate::province_neighbour::GeometryFields>,
     counters: GeometryCounters,
     growing: bool,
+    held: HeldIdentities,
+    holding: bool,
+    /// This pass's ids answered from the held ones and authenticated afresh.
+    held_counts: [u64; 2],
 }
 
 impl Default for GeometryPacket {
@@ -2330,12 +2341,28 @@ impl GeometryPacket {
             neighbours: Vec::new(),
             counters: GeometryCounters::default(),
             growing: false,
+            held: HeldIdentities::default(),
+            holding: false,
+            held_counts: [0; 2],
         }
     }
 
     /// Enable allocating acquisition on the worker that owns this packet.
     pub fn enable_growth(&mut self) {
         self.growing = true;
+    }
+
+    /// For this pass, answer ids held for `world` without a read and hold the ones it reads.
+    pub fn hold_identities(&mut self, world: u64) {
+        if self.held.world != world {
+            self.held.ids.clear();
+            self.held.world = world;
+        }
+        self.holding = true;
+    }
+
+    pub fn held_counts(&self) -> [u64; 2] {
+        self.held_counts
     }
 
     /// Allocation is permitted off the hourly callback.
@@ -2392,8 +2419,10 @@ impl GeometryPacket {
             + self.slots.capacity()
                 * (std::mem::size_of::<(u32, Result<usize, &'static str>)>() + 1)
             + self.indices.capacity() * (std::mem::size_of::<(usize, usize)>() + 1)
+            + self.held.ids.capacity() * (std::mem::size_of::<(usize, u32)>() + 1)
     }
 
+    /// Held identities stay for a later pass that holds them.
     pub fn clear(&mut self) {
         self.base = 0;
         self.root = Err("unit geometry is not initialized");
@@ -2401,6 +2430,8 @@ impl GeometryPacket {
         self.indices.clear();
         self.provinces.clear();
         self.neighbours.clear();
+        self.holding = false;
+        self.held_counts = [0; 2];
         self.counters = GeometryCounters::default();
         self.required = GeometryCapacities {
             provinces: 0,
@@ -2531,6 +2562,13 @@ impl GeometryPacket {
             }
             return Ok((id, index));
         }
+        if self.holding
+            && let Some(&id) = self.held.ids.get(&pointer)
+        {
+            self.held_counts[0] = self.held_counts[0].saturating_add(1);
+            self.provinces[index].authenticated_id = Some(id);
+            return Ok((id, index));
+        }
         let province = &mut self.provinces[index];
         let (vtable, gathered) = if province.vtable.is_none() && province.id.is_none() {
             // A new province's vtable and id are one guarded call. The id is
@@ -2593,6 +2631,15 @@ impl GeometryPacket {
             return Err("unit geometry province differs from census");
         }
         self.provinces[index].authenticated_id = Some(id);
+        // Only nonzero ids are held: a held id then passes every caller's zero rule.
+        if self.holding && id != 0 {
+            self.held_counts[1] = self.held_counts[1].saturating_add(1);
+            let ids = &mut self.held.ids;
+            if crate::allocation::advisory(|| crate::allocation::reserve_map(&mut *ids, 1)).is_ok()
+            {
+                ids.insert(pointer, id);
+            }
+        }
         Ok((id, index))
     }
 
@@ -2623,9 +2670,12 @@ impl GeometryPacket {
         for &pointer in selected {
             if pointer != 0
                 && !pointers[..len].contains(&pointer)
+                && !(self.holding && self.held.ids.contains_key(&pointer))
                 && self.indices.get(&pointer).is_none_or(|&index| {
                     let province = &self.provinces[index];
-                    province.vtable.is_none() && province.id.is_none()
+                    province.vtable.is_none()
+                        && province.id.is_none()
+                        && province.authenticated_id.is_none()
                 })
             {
                 pointers[len] = pointer;

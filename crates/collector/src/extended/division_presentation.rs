@@ -31,6 +31,7 @@ use std::sync::{
 
 mod daily_status;
 pub(crate) mod held_store;
+mod movement_carry;
 mod speed_terms;
 mod status_work;
 pub(crate) use status_work::StatusWork;
@@ -132,6 +133,11 @@ static TRANSPORT_SPEED_REFUSALS: std::sync::atomic::AtomicU64 =
 /// refusals per family ([`speed_terms`]).
 pub(crate) fn speed_term_data() -> impl serde::Serialize {
     speed_terms::status_data()
+}
+
+/// The movement pass's cumulative reads and carried inputs ([`movement_carry`]).
+pub(crate) fn movement_read_data() -> impl serde::Serialize {
+    movement_carry::status_data()
 }
 
 pub(crate) fn movement_arrow_data() -> impl serde::Serialize {
@@ -614,7 +620,7 @@ pub(crate) struct MovementPass {
     movement: CaptureRows<carmy::MovementRow>,
     paths: Arena<u32>,
     movement_packet: carmy::MovementPacket,
-    transport: std::collections::HashMap<(u32, u32), Result<TransportInputs, &'static str>>,
+    transport: movement_carry::Transport,
     transport_inputs: Vec<(usize, Option<TransportInputs>)>,
     geometry: cprovince::GeometryPacket,
     dig_in: super::dig_in::Captured,
@@ -635,8 +641,7 @@ impl MovementPass {
         self.land.allocated_bytes()
             + self.movement.allocated_bytes()
             + self.paths.allocated_bytes()
-            + self.transport.capacity()
-                * (std::mem::size_of::<((u32, u32), Result<TransportInputs, &'static str>)>() + 1)
+            + self.transport.allocated_bytes()
             + self.transport_inputs.capacity() * size_of::<(usize, Option<TransportInputs>)>()
             + self.movement_packet.allocated_bytes()
             + self.geometry.allocated_bytes()
@@ -665,7 +670,10 @@ impl MovementPass {
         self.movement_packet.defer_route_decode();
         let outcome = source_outcome(&sources);
         let rows = &sources.rows[..outcome.len()];
-        if engine_allocation::reserve(&mut self.transport_inputs, rows.len()).is_err() {
+        let world = collector_observers::division_panel_changes::world_epoch();
+        if engine_allocation::reserve(&mut self.transport_inputs, rows.len()).is_err()
+            || self.transport.begin(rows.len()).is_err()
+        {
             let reason = "division transport observation allocation failed";
             self.movement.outcome = Outcome::Unavailable { reason };
             self.paths.len = 0;
@@ -692,10 +700,12 @@ impl MovementPass {
         let start = qpc();
         // A failed geometry root stays the movement rows' own refusal.
         let _ = self.geometry.begin(memory, base, state);
-        self.transport.clear();
+        if hour.is_some() {
+            self.geometry.hold_identities(world);
+        }
         let transport = &mut self.transport;
-        let transport_inputs = &mut self.transport_inputs;
         let mut ordinal = 0;
+        let mut stationary = 0;
         let movement = carmy::capture_movement_inputs_with_extra(
             memory,
             base,
@@ -710,39 +720,21 @@ impl MovementPass {
             |seed, row| {
                 let index = ordinal;
                 ordinal += 1;
-                if row.naval_transfer == 0 {
-                    return;
+                if row.naval_transfer != 0 {
+                    transport.push(memory, base, index, seed);
+                } else if row.path_total == 0 && row.alternate_total == 0 && row.combat_count == 0 {
+                    stationary += 1;
                 }
-                let acquired = (|| {
-                    let owner = seed
-                        .logical_owner
-                        .ok_or("division transport owner unavailable")?;
-                    let location = seed
-                        .location
-                        .ok_or("division transport location unavailable")?;
-                    let pointer = location
-                        .checked_add(cprovince::STRATEGIC_REGION)
-                        .and_then(|at| engine_native::read::<u64>(memory, at))
-                        .ok_or("division transport region pointer unavailable")?
-                        as usize;
-                    let region = engine_native::cstrategic_region::id(memory, base, pointer)?
-                        .ok_or("division transport source region absent")?;
-                    if !transport.contains_key(&(owner, region)) {
-                        engine_allocation::reserve_map(transport, 1)
-                            .map_err(|_| "division transport cache allocation failed")?;
-                    }
-                    *transport.entry((owner, region)).or_insert_with(|| {
-                        engine_naval_history::cnaval_unit_transfer::movement_speed_inputs(
-                            memory, base, state, owner, pointer,
-                        )
-                    })
-                })();
-                if acquired.is_err() {
-                    TRANSPORT_SPEED_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                transport_inputs.push((index, acquired.ok()));
             },
         );
+        let transport_inputs = &mut self.transport_inputs;
+        self.transport
+            .acquire(memory, base, state, |index, inputs| {
+                if inputs.is_err() {
+                    TRANSPORT_SPEED_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                transport_inputs.push((index, inputs.ok()));
+            });
         self.movement.outcome = movement.outcome;
         self.owned_pending = true;
         self.paths.len = movement.paths_len;
@@ -756,6 +748,21 @@ impl MovementPass {
                 .capture(memory, base, rows, Outcome::Rows { len: rows.len() });
             self.dig_in_ticks = qpc().saturating_sub(start).max(0) as u64;
         }
+        let [provinces_carried, provinces_read] = self.geometry.held_counts();
+        let [regions_carried, regions_read, owners, queries] = self.transport.counts();
+        movement_carry::record(&[
+            1,
+            ordinal as u64,
+            stationary,
+            provinces_carried,
+            provinces_read,
+            self.transport_inputs.len() as u64,
+            regions_carried,
+            regions_read,
+            owners,
+            queries,
+            if self.status { rows.len() as u64 } else { 0 },
+        ]);
         report.ticks[0] = movement_ticks;
         report.ticks[1] = self.dig_in_ticks;
         report.ticks[3] = self.land_ticks;
@@ -775,7 +782,7 @@ pub struct Captured {
     cached_names: Arena<u8>,
     name_groups: cname_group_member::GroupKeys,
     movement_packet: carmy::MovementPacket,
-    transport: std::collections::HashMap<(u32, u32), Result<TransportInputs, &'static str>>,
+    transport: movement_carry::Transport,
     transport_inputs: Vec<(usize, Option<TransportInputs>)>,
     /// Sparse execution output from the same held pass, installed only after
     /// both Presentation and Late have joined. Never reads native memory.
@@ -1094,8 +1101,7 @@ impl Captured {
             + self.names.allocated_bytes()
             + self.cached_names.allocated_bytes()
             + self.name_groups.allocated_bytes()
-            + self.transport.capacity()
-                * (std::mem::size_of::<((u32, u32), Result<TransportInputs, &'static str>)>() + 1)
+            + self.transport.allocated_bytes()
             + self.transport_inputs.capacity() * size_of::<(usize, Option<TransportInputs>)>()
             + self.movement_packet.allocated_bytes()
             + self.order_transport.allocated_bytes()

@@ -7,10 +7,16 @@
 //! ([`carmy::DigInMemo`]): the group's leader and HQ selection inputs and each
 //! commander block's term, so a division under an already read commander
 //! costs no native read unless its own primary root decides the block. Spool
-//! projection reads only owned rows.
+//! projection reads only owned rows. A block's term is carried under its commander's
+//! retreat-ban certificate: that family's writers are the blocks' only runtime writers.
 
 use crate::table_capture::{Arena, grow_vec};
+use collector_observers::retreat_ban_changes;
 use engine_native::{Memory, carmy, walk::Outcome};
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 #[derive(Clone, Copy, Default)]
 struct Row {
@@ -20,11 +26,26 @@ struct Row {
     factor: Option<Result<(i64, u8), &'static str>>,
 }
 
+/// Each block's term by leader and accumulator, with the certificate taken before its read; a
+/// freed leader's address can later hold another leader's accumulator.
+type Terms = HashMap<(usize, usize), ((u64, u64), i64)>;
+
+static BLOCKS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+/// Cumulative commander blocks carried, read under a certificate, and read without one.
+pub fn carry_counts() -> [u64; 3] {
+    BLOCKS.each_ref().map(|count| count.load(Ordering::Relaxed))
+}
+
 pub struct Captured {
     rows: Arena<Row>,
     /// Sized off the hourly path for the census's divisions; a smaller memo
     /// only reads afresh what it cannot keep.
     memo: carmy::DigInMemo,
+    /// The terms the latest complete capture read or carried.
+    held: Terms,
+    next: Terms,
+    blocks: [u64; 3],
 }
 
 fn memo(divisions: usize) -> Option<carmy::DigInMemo> {
@@ -38,11 +59,17 @@ impl Captured {
         Self {
             rows: Arena::new(rows),
             memo: memo(rows).unwrap_or_else(carmy::DigInMemo::vacant),
+            held: Terms::new(),
+            next: Terms::new(),
+            blocks: [0; 3],
         }
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.allocated_bytes() + self.memo.allocated_bytes()
+        self.rows.allocated_bytes()
+            + self.memo.allocated_bytes()
+            + (self.held.capacity() + self.next.capacity())
+                * (size_of::<((usize, usize), ((u64, u64), i64))>() + 1)
     }
 
     pub fn reserve_rows(&mut self, count: usize) {
@@ -78,8 +105,20 @@ impl Captured {
         seeds: &[carmy::DivisionSeed],
         outcome: Outcome,
     ) {
+        self.capture_with(memory, base, seeds, outcome, &retreat_ban_changes::Observer);
+    }
+
+    fn capture_with(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        seeds: &[carmy::DivisionSeed],
+        outcome: Outcome,
+        changes: &dyn retreat_ban_changes::Changes,
+    ) {
         self.reset();
         self.memo.clear();
+        self.blocks = [0; 3];
         self.rows.required = outcome.len();
         if !grow_vec(&mut self.rows.first, outcome.len())
             || !matches!(outcome, Outcome::Rows { .. })
@@ -87,18 +126,58 @@ impl Captured {
         {
             return;
         }
+        self.next.clear();
+        let (held, next, blocks) = (&self.held, &mut self.next, &mut self.blocks);
         for (index, seed) in seeds[..outcome.len()].iter().enumerate() {
+            // A block's accumulator lies in the leader the census selected it from.
+            let leader = seed
+                .selected
+                .and_then(|selected| selected.leader)
+                .and_then(Result::ok)
+                .filter(|&leader| leader != 0);
+            let factor =
+                carmy::counter_dig_in_selection_with(memory, base, seed, &mut self.memo, |root| {
+                    let Some((leader, certificate)) =
+                        leader.and_then(|leader| Some((leader, changes.sequence(leader)?)))
+                    else {
+                        blocks[2] += 1;
+                        return carmy::commander_entrenchment(memory, base, root);
+                    };
+                    let term = match held.get(&(leader, root)) {
+                        Some(&(read_under, term)) if read_under == certificate => {
+                            blocks[0] += 1;
+                            Ok(term)
+                        }
+                        _ => {
+                            blocks[1] += 1;
+                            carmy::commander_entrenchment(memory, base, root)
+                        }
+                    };
+                    if let Ok(term) = term
+                        && engine_allocation::advisory(|| {
+                            engine_allocation::reserve_map(&mut *next, 1)
+                        })
+                        .is_ok()
+                    {
+                        next.insert((leader, root), (certificate, term));
+                    }
+                    term
+                });
             self.rows.first[index] = Row {
                 division: seed.division,
-                factor: Some(carmy::counter_dig_in_selection_memoized(
-                    memory,
-                    base,
-                    seed,
-                    &mut self.memo,
-                )),
+                factor: Some(factor),
             };
             self.rows.len += 1;
         }
+        std::mem::swap(&mut self.held, &mut self.next);
+        for (total, count) in BLOCKS.iter().zip(self.blocks) {
+            total.fetch_add(count, Ordering::Relaxed);
+        }
+    }
+
+    /// The latest capture's [`carry_counts`].
+    pub fn blocks(&self) -> [u64; 3] {
+        self.blocks
     }
 
     /// Cut a capture over the whole census to what a capture over the
@@ -444,6 +523,111 @@ mod tests {
             assert_eq!(settled_work.captured, expected_work.captured);
             assert_eq!(settled_work.refusals, expected_work.refusals);
         }
+    }
+
+    /// Commander certificates the test sets: `(1, sequence)` for a listed commander.
+    struct Certificates(std::cell::RefCell<HashMap<usize, u64>>);
+    impl retreat_ban_changes::Changes for Certificates {
+        fn sequence(&self, leader: usize) -> Option<(u64, u64)> {
+            self.0.borrow().get(&leader).map(|&sequence| (1, sequence))
+        }
+    }
+
+    /// A division under commander `index`, whose ordinary block the census selected.
+    fn commanded(division: u64, index: usize) -> carmy::DivisionSeed {
+        use engine_native::carmy_leader;
+        let leader = LEADERS[index];
+        carmy::DivisionSeed {
+            division,
+            pointer: 0x8000,
+            orders_group: Some(GROUPS[index]),
+            class: Some(0),
+            selected: Some(carmy_leader::Selected {
+                leader: Some(Ok(leader)),
+                handle: None,
+                group_identity: true,
+                block: Ok(Some((
+                    leader + carmy_leader::MOVEMENT_MODIFIER + carmy_leader::MODIFIER_ACCUMULATOR,
+                    false,
+                ))),
+                training: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// A quiet hour reads no block, even after memory changed; touched or uncertified ones are read.
+    #[test]
+    fn a_quiet_commander_block_is_carried_and_a_touched_one_read() {
+        let seeds = [commanded(1, 0), commanded(2, 0), commanded(3, 1)];
+        let outcome = Outcome::Rows { len: seeds.len() };
+        let certificates = Certificates(std::cell::RefCell::new(HashMap::from([
+            (LEADERS[0], 1),
+            (LEADERS[1], 1),
+        ])));
+        let factors = |captured: &Captured| {
+            [0, 1, 2].map(|index| captured.factor(seeds[index].division, index))
+        };
+        let mut captured = Captured::new(seeds.len());
+        let memory = Commanders::new([-150_000, 2_500]);
+        captured.capture_with(&memory, 0, &seeds, outcome, &certificates);
+        assert_eq!(captured.blocks(), [0, 2, 0]);
+        assert_eq!(
+            factors(&captured),
+            [Some(-50_000), Some(-50_000), Some(102_500)]
+        );
+
+        let memory = Commanders::new([-10_000, 7_000]);
+        captured.capture_with(&memory, 0, &seeds, outcome, &certificates);
+        assert_eq!(captured.blocks(), [2, 0, 0]);
+        assert!(memory.reads.borrow().is_empty());
+        assert_eq!(
+            factors(&captured),
+            [Some(-50_000), Some(-50_000), Some(102_500)]
+        );
+        assert_eq!(
+            captured.commander_block(seeds[2].division, 2),
+            Some(carmy::COMMANDER_BLOCK_ORDINARY)
+        );
+
+        certificates.0.borrow_mut().insert(LEADERS[0], 2);
+        captured.capture_with(&memory, 0, &seeds, outcome, &certificates);
+        assert_eq!(captured.blocks(), [1, 1, 0]);
+        assert_eq!(
+            factors(&captured),
+            [Some(90_000), Some(90_000), Some(102_500)]
+        );
+
+        // Nothing read without a certificate is held.
+        let uncertified = Certificates(Default::default());
+        captured.capture_with(&memory, 0, &seeds, outcome, &uncertified);
+        assert_eq!(captured.blocks(), [0, 0, 2]);
+        assert_eq!(
+            factors(&captured),
+            [Some(90_000), Some(90_000), Some(107_000)]
+        );
+        captured.capture_with(&memory, 0, &seeds, outcome, &certificates);
+        assert_eq!(captured.blocks(), [0, 2, 0]);
+    }
+
+    /// A held term serves only its own leader: another leader whose block lies at the same address
+    /// (a freed leader's memory reused) is read.
+    #[test]
+    fn a_held_term_serves_only_its_own_leader() {
+        let certificates = Certificates(std::cell::RefCell::new(HashMap::from([
+            (LEADERS[0], 1),
+            (LEADERS[1], 1),
+        ])));
+        let outcome = Outcome::Rows { len: 1 };
+        let first = [commanded(1, 0)];
+        let mut captured = Captured::new(1);
+        let memory = Commanders::new([-150_000, 2_500]);
+        captured.capture_with(&memory, 0, &first, outcome, &certificates);
+        assert_eq!(captured.blocks(), [0, 1, 0]);
+        let mut reused = commanded(1, 1);
+        reused.selected.as_mut().unwrap().block = first[0].selected.unwrap().block;
+        captured.capture_with(&memory, 0, &[reused], outcome, &certificates);
+        assert_eq!(captured.blocks(), [0, 1, 0]);
     }
 
     #[test]

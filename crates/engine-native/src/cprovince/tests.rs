@@ -1623,6 +1623,49 @@ fn geometry_owned_index_preserves_reads_and_mismatched_id_backlink_faults() {
     assert_eq!(memory.reads.borrow().len(), reads);
 }
 
+/// A later pass of the world answers a held id unread, even after memory changed; others read it.
+#[test]
+fn held_province_ids_answer_a_later_pass_of_their_world_without_a_read() {
+    let mut packet = GeometryPacket::with_capacities(GeometryCapacities {
+        provinces: 2,
+        neighbour_entries: 0,
+    });
+    let bytes = many_provinces(2);
+    let memory = dense_trace(&bytes, None);
+    packet.begin(&memory, 0, 0x1000).unwrap();
+    packet.hold_identities(1);
+    assert_eq!(packet.acquire_province_id(&memory, 0x2000), Ok(1));
+    assert_eq!(packet.held_counts(), [0, 1]);
+
+    // The province now claims id 2, whose census slot names another province.
+    let mut bytes = many_provinces(2);
+    put(&mut bytes, 0x1000 + ID, &2_u32.to_le_bytes());
+    let memory = dense_trace(&bytes, None);
+    packet.begin(&memory, 0, 0x1000).unwrap();
+    packet.hold_identities(1);
+    assert_eq!(packet.acquire_province_id(&memory, 0x2000), Ok(1));
+    assert_eq!(packet.acquire_province_id(&memory, 0x2000), Ok(1));
+    assert_eq!(packet.held_counts(), [1, 0]);
+    assert_eq!(
+        *memory.reads.borrow(),
+        [(0x1000 + cgame_state::PROVINCES, 16)]
+    );
+
+    for world in [None, Some(2)] {
+        let memory = dense_trace(&bytes, None);
+        packet.begin(&memory, 0, 0x1000).unwrap();
+        if let Some(world) = world {
+            packet.hold_identities(world);
+        }
+        assert_eq!(
+            packet.acquire_province_id(&memory, 0x2000),
+            Err("unit geometry province differs from census")
+        );
+        assert_eq!(packet.held_counts(), [0, 0]);
+        assert!(memory.reads.borrow().contains(&(0x2000 + ID, 4)));
+    }
+}
+
 fn compare_dense_walk(bytes: &[u8], blocked: Option<usize>, capacity: usize) {
     let current = dense_trace(bytes, blocked);
     let reference = dense_trace(bytes, blocked);

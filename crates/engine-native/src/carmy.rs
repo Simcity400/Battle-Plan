@@ -3669,6 +3669,8 @@ pub fn counter_dig_in_factor(
 /// every division under the same commander block reads it once.
 pub struct DigInMemo {
     leaders: crate::carmy_leader::LeaderMemo,
+    /// `leaders` holds an earlier pass's reads, cleared on first use: census selections skip it.
+    leaders_stale: bool,
     values: crate::carmy_leader::PassTable<Result<i64, &'static str>>,
 }
 
@@ -3678,6 +3680,7 @@ impl DigInMemo {
     pub fn try_with_capacity(divisions: usize) -> std::io::Result<Self> {
         Ok(Self {
             leaders: crate::carmy_leader::LeaderMemo::try_with_capacity(divisions)?,
+            leaders_stale: false,
             values: crate::carmy_leader::PassTable::try_with_capacity(divisions)?,
         })
     }
@@ -3686,6 +3689,7 @@ impl DigInMemo {
     pub fn vacant() -> Self {
         Self {
             leaders: crate::carmy_leader::LeaderMemo::vacant(),
+            leaders_stale: false,
             values: crate::carmy_leader::PassTable::vacant(),
         }
     }
@@ -3700,7 +3704,7 @@ impl DigInMemo {
 
     /// Starts a pass: nothing a previous pass read is used again.
     pub fn clear(&mut self) {
-        self.leaders.clear();
+        self.leaders_stale = true;
         self.values.clear();
     }
 }
@@ -3732,10 +3736,27 @@ pub fn counter_dig_in_selection_memoized(
     seed: &DivisionSeed,
     memo: &mut DigInMemo,
 ) -> Result<(i64, u8), &'static str> {
+    counter_dig_in_selection_with(memory, base, seed, memo, |root| {
+        commander_entrenchment(memory, base, root)
+    })
+}
+
+/// [`counter_dig_in_selection_memoized`] taking each selected block's entrenchment
+/// term from `entrenchment`, given the block's accumulator, once a pass per block.
+pub fn counter_dig_in_selection_with(
+    memory: &impl Memory,
+    base: usize,
+    seed: &DivisionSeed,
+    memo: &mut DigInMemo,
+    entrenchment: impl FnOnce(usize) -> Result<i64, &'static str>,
+) -> Result<(i64, u8), &'static str> {
     // The census selected the block once for every consumer.
     let block = match seed.selected {
         Some(selected) => selected.block,
         None => {
+            if std::mem::take(&mut memo.leaders_stale) {
+                memo.leaders.clear();
+            }
             crate::carmy_leader::movement_block_memoized(memory, base, seed, &mut memo.leaders)
         }
     };
@@ -3748,15 +3769,23 @@ pub fn counter_dig_in_selection_memoized(
         COMMANDER_BLOCK_ORDINARY
     };
     memo.values
-        .get_or(root, || {
-            crate::modifier_accumulator::requested_effective_at(
-                memory,
-                base,
-                root,
-                crate::modifier_keys::COMBAT_ENTRENCHMENT,
-            )
-        })
+        .get_or(root, || entrenchment(root))
         .map(|value| (100_000_i64.wrapping_add(value), block))
+}
+
+/// The entrenchment term of the commander modifier block whose accumulator is
+/// `root`, which the dig-in factor adds to one.
+pub fn commander_entrenchment(
+    memory: &impl Memory,
+    base: usize,
+    root: usize,
+) -> Result<i64, &'static str> {
+    crate::modifier_accumulator::requested_effective_at(
+        memory,
+        base,
+        root,
+        crate::modifier_keys::COMBAT_ENTRENCHMENT,
+    )
 }
 
 #[cfg(test)]

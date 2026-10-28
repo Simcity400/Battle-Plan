@@ -3126,6 +3126,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "input_consumers_scope": "callback wall after collecting DivisionInputs through restoring the ordered census and installing UnitInputs, before Divisions submission, excluding part join spans; input_restore_ns is its nested fan-in lock/restore wall; input_publish_hold_ns sums publisher holds from successful lock acquisition to release, including early returns/unwind and excluding successor wake",
                 "source_admission": crate::extended::division_presentation::source_admission_data(),
                 "shared_sources": crate::division_census::shared_source_data(),
+                "movement_reads": crate::extended::division_presentation::movement_read_data(),
                 "phase_ns": crate::status::map(
                     crate::extended::division_presentation::PHASE_NAMES
                         .into_iter()
