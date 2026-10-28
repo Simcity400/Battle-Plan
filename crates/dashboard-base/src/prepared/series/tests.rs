@@ -3795,3 +3795,21 @@ fn payload_writes_the_one_pass_bytes_and_releases_each_event_row() {
         );
     }
 }
+
+#[test]
+fn a_blob_reads_its_runs_without_its_summaries_and_a_summary_read_checks_them() {
+    // One run over hours 5..=7 of value 7, then a damaged summary tail.
+    let mut raw = Vec::new();
+    for value in [zig(5), 2, zig(7), 0] {
+        var(&mut raw, value);
+    }
+    raw.push(0xff);
+    let directory = Directory {
+        run_rows: 1,
+        ..Directory::default()
+    };
+    let cancelled = AtomicBool::new(false);
+    let cached = decode(&raw, directory, &cancelled).unwrap();
+    assert_eq!(cached.runs, [Run::new(5, 7, 7, false)]);
+    assert!(cached.decode_summaries(&cancelled).is_err());
+}

@@ -329,3 +329,30 @@ fn catalogue_and_reply_text_reuse_their_complete_page_identities() {
     );
     assert_eq!(read(), replaced);
 }
+
+#[test]
+fn a_summary_read_holds_the_summaries_it_decodes_in_its_own_scope() {
+    let fixture = Fixture::new();
+    let mut values = Accumulator::default();
+    for first in [0, 32, 64, 96] {
+        append(&fixture, &mut values, first);
+    }
+    let flag = AtomicBool::new(false);
+    let scope = cache_scope(None);
+    Reader::new(&fixture.store, &fixture.key, "test".into(), &flag)
+        .unwrap()
+        .runs(0, 0, 127)
+        .unwrap();
+    let runs = scope.finish();
+    assert!(!runs.blobs.is_empty());
+    assert!(
+        runs.summaries.is_empty(),
+        "a runs read decodes no summaries"
+    );
+    let charged = runs.bytes();
+    // Reusing those blobs, a summary read keeps what it decodes with its own reply.
+    let scope = cache_scope(Some(&runs));
+    summary(&fixture, (0.0, 127.0, 4), &[], None);
+    assert!(!scope.finish().summaries.is_empty());
+    assert_eq!(runs.bytes(), charged);
+}

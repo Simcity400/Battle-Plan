@@ -28,6 +28,7 @@ pub fn text_reads() -> usize {
 pub struct SummaryCache {
     folds: BTreeMap<Vec<u8>, Arc<Fold>>,
     blobs: BTreeMap<([u64; 3], u64), Arc<Cached>>,
+    summaries: BTreeMap<([u64; 3], u64), Arc<Summaries>>,
     tables: BTreeMap<[u64; 3], Arc<Option<Table>>>,
     // Each text binds its kind and ordered page identities to the retained bytes.
     texts: BTreeMap<TextKey, Arc<Vec<u8>>>,
@@ -85,6 +86,15 @@ impl SummaryCache {
                     2 * std::mem::size_of::<(([u64; 3], u64), Arc<Cached>)>()
                         + 2 * std::mem::size_of::<usize>()
                         + blob.bytes()
+                })
+                .sum::<usize>()
+            + self
+                .summaries
+                .values()
+                .map(|summaries| {
+                    2 * std::mem::size_of::<(([u64; 3], u64), Arc<Summaries>)>()
+                        + 2 * std::mem::size_of::<usize>()
+                        + summaries_bytes(summaries)
                 })
                 .sum::<usize>()
             + self
@@ -233,6 +243,12 @@ pub(super) fn blob(
     read: impl FnOnce() -> io::Result<Cached>,
 ) -> io::Result<Arc<Cached>> {
     reuse(current(), id, |cache| &mut cache.blobs, read)
+}
+pub(super) fn summaries(
+    id: ([u64; 3], u64),
+    read: impl FnOnce() -> io::Result<Summaries>,
+) -> io::Result<Arc<Summaries>> {
+    reuse(current(), id, |cache| &mut cache.summaries, read)
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum TextKind {

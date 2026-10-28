@@ -2380,18 +2380,24 @@ pub(crate) mod directory_tests;
 
 struct Cached {
     runs: Vec<Run>,
-    buckets: [Vec<(i64, ChartBucket)>; 4],
     events: Vec<(i32, Vec<u8>)>,
+    /// The summary levels as stored; only a summary read decodes them ([`Reader::buckets`]).
+    summaries: Vec<u8>,
+}
+/// Each summary level's buckets by alignment.
+type Summaries = [Vec<(i64, ChartBucket)>; 4];
+fn summaries_bytes(summaries: &Summaries) -> usize {
+    std::mem::size_of::<Summaries>()
+        + summaries
+            .iter()
+            .map(|rows| rows.capacity() * std::mem::size_of::<(i64, ChartBucket)>())
+            .sum::<usize>()
 }
 impl Cached {
     fn bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.runs.capacity() * std::mem::size_of::<Run>()
-            + self
-                .buckets
-                .iter()
-                .map(|rows| rows.capacity() * std::mem::size_of::<(i64, ChartBucket)>())
-                .sum::<usize>()
+            + self.summaries.capacity()
             + self.events.capacity() * std::mem::size_of::<(i32, Vec<u8>)>()
             + self
                 .events
@@ -2423,8 +2429,8 @@ fn decode(raw: &[u8], dir: Directory, cancelled: &AtomicBool) -> io::Result<Cach
     let mut bytes = raw;
     let mut cached = Cached {
         runs: Vec::new(),
-        buckets: Default::default(),
         events: Vec::new(),
+        summaries: Vec::new(),
     };
     let (mut hour, mut value) = (0_i128, 0_i128);
     for _ in 0..dir.run_rows {
@@ -2453,30 +2459,38 @@ fn decode(raw: &[u8], dir: Directory, cancelled: &AtomicBool) -> io::Result<Cach
         cached.events.push((date, row.to_vec()));
         bytes = &bytes[length..];
     }
-    if !bytes.is_empty() {
-        for rows in &mut cached.buckets {
-            let count = take(&mut bytes)?;
-            let mut aligned = 0_i64;
-            for _ in 0..count {
-                check_cancel(cancelled)?;
-                aligned += i64::try_from(signed(&mut bytes)?)
-                    .map_err(|_| invalid("bucket alignment overflow"))?;
-                decode_bucket(&mut bytes, aligned)?;
-                let bucket = decode_bucket(&mut bytes, aligned)?
-                    .ok_or_else(|| invalid("missing summary snapshot"))?;
-                rows.push((aligned, bucket));
-            }
-            let count = take(&mut bytes)?;
-            for _ in 0..count {
-                signed(&mut bytes)?;
-                take(&mut bytes)?;
+    cached.summaries = bytes.to_vec();
+    Ok(cached)
+}
+impl Cached {
+    fn decode_summaries(&self, cancelled: &AtomicBool) -> io::Result<Summaries> {
+        let mut buckets = Summaries::default();
+        let mut bytes = &self.summaries[..];
+        if !bytes.is_empty() {
+            for rows in &mut buckets {
+                let count = take(&mut bytes)?;
+                let mut aligned = 0_i64;
+                for _ in 0..count {
+                    check_cancel(cancelled)?;
+                    aligned += i64::try_from(signed(&mut bytes)?)
+                        .map_err(|_| invalid("bucket alignment overflow"))?;
+                    decode_bucket(&mut bytes, aligned)?;
+                    let bucket = decode_bucket(&mut bytes, aligned)?
+                        .ok_or_else(|| invalid("missing summary snapshot"))?;
+                    rows.push((aligned, bucket));
+                }
+                let count = take(&mut bytes)?;
+                for _ in 0..count {
+                    signed(&mut bytes)?;
+                    take(&mut bytes)?;
+                }
             }
         }
+        if !bytes.is_empty() {
+            return Err(invalid("trailing series bytes"));
+        }
+        Ok(buckets)
     }
-    if !bytes.is_empty() {
-        return Err(invalid("trailing series bytes"));
-    }
-    Ok(cached)
 }
 /// Decoded blobs a reader keeps before it starts again.
 const DECODED_BLOBS: usize = 256;
@@ -2499,6 +2513,7 @@ pub struct Reader<'a> {
     hours: HashMap<u64, (i32, i32)>,
     directories: HashMap<(u64, u64), Directory>,
     cached: HashMap<(u64, u64), Arc<Cached>>,
+    buckets: HashMap<(u64, u64), Arc<Summaries>>,
     /// Each batch's single-key directory searches so far, and the entry count
     /// its header claims once read.
     searches: HashMap<u64, (u64, Option<u64>)>,
@@ -2544,6 +2559,7 @@ impl<'a> Reader<'a> {
             hours: HashMap::new(),
             directories: HashMap::new(),
             cached: HashMap::new(),
+            buckets: HashMap::new(),
             searches: HashMap::new(),
             tables: HashMap::new(),
             table_bytes: 0,
@@ -2576,6 +2592,7 @@ impl<'a> Reader<'a> {
             hours: HashMap::new(),
             directories: HashMap::new(),
             cached: HashMap::new(),
+            buckets: HashMap::new(),
             searches: HashMap::new(),
             tables: HashMap::new(),
             table_bytes: 0,
@@ -2708,6 +2725,22 @@ impl<'a> Reader<'a> {
             self.cached.insert((batch, key), decoded);
         }
         Ok(&self.cached[&(batch, key)])
+    }
+    /// The blob's summary levels, decoded once and held by this request's scope
+    /// rather than the blob, which other replies may hold too.
+    fn buckets(&mut self, batch: u64, key: u64) -> io::Result<&Summaries> {
+        if !self.buckets.contains_key(&(batch, key)) {
+            let id = self.file(batch)?.id().cache_key();
+            self.data(batch, key)?;
+            let blob = Arc::clone(&self.cached[&(batch, key)]);
+            let cancelled = self.cancelled;
+            let decoded = query::summaries((id, key), || blob.decode_summaries(cancelled))?;
+            if self.buckets.len() >= DECODED_BLOBS {
+                self.buckets.clear();
+            }
+            self.buckets.insert((batch, key), decoded);
+        }
+        Ok(&self.buckets[&(batch, key)])
     }
     /// Read only the batches committed by `hour` (those ending by then): the
     /// section as a preparation that had accepted no later hour published it,
@@ -3216,7 +3249,7 @@ impl<'a> Reader<'a> {
                 let batch = lower(self.count, |batch| Ok(self.hours(batch)?.1 < end))?;
                 let mut value = None;
                 if batch < self.count {
-                    let values = &self.data(batch, key)?.buckets[level];
+                    let values = &self.buckets(batch, key)?[level];
                     let index = values.partition_point(|(aligned, _)| *aligned < hour);
                     if let Some((_, bucket)) =
                         values.get(index).filter(|(aligned, _)| *aligned == hour)
