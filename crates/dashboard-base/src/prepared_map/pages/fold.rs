@@ -80,6 +80,7 @@ impl PageFold {
     }
 
     pub fn save_states(&self, writer: &mut store::Writer) -> io::Result<()> {
+        let mut previous: Option<(&DecodedFrame, Vec<u8>)> = None;
         for (chain, last) in self.pages.chains.iter().zip(&self.lasts) {
             let Some(state) = last.as_ref() else {
                 continue;
@@ -87,15 +88,24 @@ impl PageFold {
             if chain.last != Some(state.hour) {
                 return Err(invalid("map page chain state differs from its chain"));
             }
-            let mut root = Vec::new();
-            EndpointWriter::root(state, &self.selected, &mut root)?;
-            let mut bytes = Vec::new();
-            compress(&root, &mut bytes)?;
+            let bytes = match previous.take() {
+                Some((saved, bytes)) if EndpointWriter::same_root(&self.selected, saved, state) => {
+                    bytes
+                }
+                _ => {
+                    let mut root = Vec::new();
+                    EndpointWriter::root(state, &self.selected, &mut root)?;
+                    let mut bytes = Vec::new();
+                    compress(&root, &mut bytes)?;
+                    bytes
+                }
+            };
             writer.write_at(
                 &state_section(self.branch, chain.stride),
                 0,
                 bytes.as_slice(),
             )?;
+            previous = Some((state, bytes));
         }
         Ok(())
     }

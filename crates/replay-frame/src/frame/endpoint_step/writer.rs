@@ -1,6 +1,29 @@
 use super::*;
 
-#[derive(Default)]
+#[cfg(test)]
+mod tests;
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static KEY_BY_KEY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `run` with this thread's writers applying every delta key by key, for
+/// tests comparing that with the walk of ascending deltas.
+#[cfg(any(test, feature = "test-support"))]
+pub fn key_by_key<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            KEY_BY_KEY.with(|flag| flag.set(false));
+        }
+    }
+    KEY_BY_KEY.with(|flag| flag.set(true));
+    let _restore = Restore;
+    run()
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Pending {
     reset: bool,
     known: bool,
@@ -18,6 +41,8 @@ pub struct EndpointWriter {
     observed: Option<Point>,
     emitted: Option<Point>,
     poisoned: bool,
+    /// Each complete table's allocation as an emitted step validated it.
+    validated: [Option<Weak<TableView>>; TABLE_COUNT],
 }
 impl EndpointWriter {
     pub fn for_tables(tables: &[TableId]) -> Self {
@@ -34,6 +59,7 @@ impl EndpointWriter {
             observed: None,
             emitted: None,
             poisoned: false,
+            validated: std::array::from_fn(|_| None),
         }
     }
 
@@ -164,56 +190,15 @@ impl EndpointWriter {
                     } = source.update(table.index())
                     {
                         state.rebuilt = true;
-                        for &key in deleted {
-                            if let Ok(at) = state.members.binary_search(&key) {
-                                state.members.remove(at);
-                                push(&mut boundary.deleted, key)?;
-                            }
-                            if !state.reset {
-                                if let Ok(at) =
-                                    state.edits.binary_search_by_key(&key, |edit| edit.0)
-                                {
-                                    state.edits.remove(at);
-                                }
-                                if let Ok(at) = state.introduced.binary_search(&key) {
-                                    state.introduced.remove(at);
-                                } else {
-                                    insert_key(&mut state.deleted, key)?;
-                                }
-                            }
-                        }
-                        for row in changed {
-                            let inserted = match state.members.binary_search(&row.key) {
-                                Ok(_) => false,
-                                Err(at) => {
-                                    allocation::reserve(&mut state.members, 1)?;
-                                    state.members.insert(at, row.key);
-                                    push(&mut boundary.inserted, row.key)?;
-                                    true
-                                }
-                            };
-                            if !state.reset {
-                                if let Ok(at) = state.deleted.binary_search(&row.key) {
-                                    state.deleted.remove(at);
-                                } else if inserted {
-                                    insert_key(&mut state.introduced, row.key)?;
-                                }
-                                let mask = if inserted {
-                                    full_mask(table.schema().len())
-                                } else {
-                                    row.mask
-                                };
-                                match state.edits.binary_search_by_key(&row.key, |edit| edit.0) {
-                                    Ok(at) => {
-                                        state.edits[at].1 |= mask;
-                                        state.edits[at].2 |= inserted;
-                                    }
-                                    Err(at) => {
-                                        allocation::reserve(&mut state.edits, 1)?;
-                                        state.edits.insert(at, (row.key, mask, inserted));
-                                    }
-                                }
-                            }
+                        let full = full_mask(table.schema().len());
+                        let walk = ascending(changed.iter().map(|row| row.key))
+                            && ascending(deleted.iter().copied());
+                        #[cfg(any(test, feature = "test-support"))]
+                        let walk = walk && !KEY_BY_KEY.with(std::cell::Cell::get);
+                        if walk {
+                            state.apply_ascending(changed, deleted, full, &mut boundary)?;
+                        } else {
+                            state.apply_each(changed, deleted, full, &mut boundary)?;
                         }
                     }
                 }
@@ -251,6 +236,15 @@ impl EndpointWriter {
             return result;
         }
         self.emitted = self.observed;
+        for ((validated, view), &selected) in self
+            .validated
+            .iter_mut()
+            .zip(&frame.tables)
+            .zip(&self.selected)
+        {
+            *validated = (selected && matches!(&**view, TableView::Complete(_)))
+                .then(|| Arc::downgrade(&view.0));
+        }
         for state in &mut self.pending {
             state.reset = false;
             state.rebuilt = false;
@@ -274,6 +268,18 @@ impl EndpointWriter {
             out.truncate(start);
         }
         result
+    }
+
+    /// Whether [`Self::root`] of `tables` writes one output for both frames,
+    /// as `encode` reads only their point, metrics, and each table's view and
+    /// sample hour.
+    pub fn same_root(tables: &[TableId], a: &DecodedFrame, b: &DecodedFrame) -> bool {
+        Point::of(a) == Point::of(b)
+            && a.metrics == b.metrics
+            && tables.iter().all(|table| {
+                let (a, b) = (&a.tables[table.index()], &b.tables[table.index()]);
+                SharedView::ptr_eq(a, b) && a.sampled_at() == b.sampled_at()
+            })
     }
 
     fn encode(&self, frame: &DecodedFrame, out: &mut Vec<u8>) -> io::Result<EndpointStats> {
@@ -313,7 +319,14 @@ impl EndpointWriter {
             put(&sample, &mut payload)?;
             match &**view {
                 TableView::Complete(rows) => {
-                    validate_complete(table, rows, frame.hour)?;
+                    // A named allocation cannot change; only the clock's check reads the hour.
+                    if table == TableId::Clock
+                        || self.validated[table.index()]
+                            .as_ref()
+                            .is_none_or(|validated| validated.as_ptr() != Arc::as_ptr(&view.0))
+                    {
+                        validate_complete(table, rows, frame.hour)?;
+                    }
                     if state.reset
                         || (state.rebuilt && state.edits.is_empty() && state.deleted.is_empty())
                     {
@@ -375,6 +388,135 @@ impl Pending {
         self.deleted.clear();
         self.introduced.clear();
     }
+
+    /// A delta's deletions, then its changes, key by key.
+    fn apply_each(
+        &mut self,
+        changed: &[DeltaRow],
+        deleted: &[u128],
+        full: u64,
+        boundary: &mut MembershipBoundary,
+    ) -> io::Result<()> {
+        for &key in deleted {
+            if let Ok(at) = self.members.binary_search(&key) {
+                self.members.remove(at);
+                push(&mut boundary.deleted, key)?;
+            }
+            if !self.reset {
+                if let Ok(at) = self.edits.binary_search_by_key(&key, |edit| edit.0) {
+                    self.edits.remove(at);
+                }
+                if let Ok(at) = self.introduced.binary_search(&key) {
+                    self.introduced.remove(at);
+                } else {
+                    insert_key(&mut self.deleted, key)?;
+                }
+            }
+        }
+        for row in changed {
+            let inserted = match self.members.binary_search(&row.key) {
+                Ok(_) => false,
+                Err(at) => {
+                    allocation::reserve(&mut self.members, 1)?;
+                    self.members.insert(at, row.key);
+                    push(&mut boundary.inserted, row.key)?;
+                    true
+                }
+            };
+            if !self.reset {
+                if let Ok(at) = self.deleted.binary_search(&row.key) {
+                    self.deleted.remove(at);
+                } else if inserted {
+                    insert_key(&mut self.introduced, row.key)?;
+                }
+                let mask = if inserted { full } else { row.mask };
+                match self.edits.binary_search_by_key(&row.key, |edit| edit.0) {
+                    Ok(at) => {
+                        self.edits[at].1 |= mask;
+                        self.edits[at].2 |= inserted;
+                    }
+                    Err(at) => {
+                        allocation::reserve(&mut self.edits, 1)?;
+                        self.edits.insert(at, (row.key, mask, inserted));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// [`Self::apply_each`] of a delta whose deleted and changed keys each
+    /// ascend, as every validated delta's do. Each key touches only its own
+    /// entries, so every set is searched forward once against its state
+    /// before the pass and then changed in one pass, never shifted per key.
+    fn apply_ascending(
+        &mut self,
+        changed: &[DeltaRow],
+        deleted: &[u128],
+        full: u64,
+        boundary: &mut MembershipBoundary,
+    ) -> io::Result<()> {
+        let mut found = [0; 4];
+        let (mut members, mut edits, mut introduced) = (Vec::new(), Vec::new(), Vec::new());
+        let mut gone = Vec::new();
+        for &key in deleted {
+            if let Ok(at) = gallop(&self.members, &mut found[0], key, |&key| key) {
+                push(&mut members, at)?;
+                push(&mut boundary.deleted, key)?;
+            }
+            if self.reset {
+                continue;
+            }
+            if let Ok(at) = gallop(&self.edits, &mut found[1], key, |edit| edit.0) {
+                push(&mut edits, at)?;
+            }
+            match gallop(&self.introduced, &mut found[2], key, |&key| key) {
+                Ok(at) => push(&mut introduced, at)?,
+                Err(_) => {
+                    if gallop(&self.deleted, &mut found[3], key, |&key| key).is_err() {
+                        push(&mut gone, key)?;
+                    }
+                }
+            }
+        }
+        remove_at(&mut self.members, &members);
+        remove_at(&mut self.edits, &edits);
+        remove_at(&mut self.introduced, &introduced);
+        insert_ascending(&mut self.deleted, &gone, |&key| key)?;
+        let mut found = [0; 4];
+        let (mut returned, mut introduced, mut added) = (Vec::new(), Vec::new(), Vec::new());
+        for row in changed {
+            let inserted = gallop(&self.members, &mut found[0], row.key, |&key| key).is_err();
+            if inserted {
+                push(&mut boundary.inserted, row.key)?;
+            }
+            if self.reset {
+                continue;
+            }
+            match gallop(&self.deleted, &mut found[1], row.key, |&key| key) {
+                Ok(at) => push(&mut returned, at)?,
+                Err(_) => {
+                    if inserted
+                        && gallop(&self.introduced, &mut found[2], row.key, |&key| key).is_err()
+                    {
+                        push(&mut introduced, row.key)?;
+                    }
+                }
+            }
+            let mask = if inserted { full } else { row.mask };
+            match gallop(&self.edits, &mut found[3], row.key, |edit| edit.0) {
+                Ok(at) => {
+                    self.edits[at].1 |= mask;
+                    self.edits[at].2 |= inserted;
+                }
+                Err(_) => push(&mut added, (row.key, mask, inserted))?,
+            }
+        }
+        insert_ascending(&mut self.members, &boundary.inserted, |&key| key)?;
+        remove_at(&mut self.deleted, &returned);
+        insert_ascending(&mut self.introduced, &introduced, |&key| key)?;
+        insert_ascending(&mut self.edits, &added, |edit| edit.0)
+    }
 }
 fn push<T>(out: &mut Vec<T>, value: T) -> io::Result<()> {
     allocation::reserve(out, 1)?;
@@ -385,6 +527,68 @@ fn insert_key(keys: &mut Vec<u128>, key: u128) -> io::Result<()> {
     if let Err(at) = keys.binary_search(&key) {
         allocation::reserve(keys, 1)?;
         keys.insert(at, key);
+    }
+    Ok(())
+}
+fn ascending(mut keys: impl Iterator<Item = u128>) -> bool {
+    let Some(mut previous) = keys.next() else {
+        return true;
+    };
+    keys.all(|key| std::mem::replace(&mut previous, key) < key)
+}
+/// The binary search of `key` among the ascending `items` from `*from`, no
+/// further than any later key's; `*from` becomes where it was found or goes.
+fn gallop<T>(
+    items: &[T],
+    from: &mut usize,
+    key: u128,
+    key_of: impl Fn(&T) -> u128,
+) -> Result<usize, usize> {
+    let mut reach = 1;
+    while *from + reach <= items.len() && key_of(&items[*from + reach - 1]) < key {
+        reach *= 2;
+    }
+    let start = *from + reach / 2;
+    let end = (*from + reach).min(items.len());
+    let found = items[start..end]
+        .binary_search_by_key(&key, key_of)
+        .map(|at| start + at)
+        .map_err(|at| start + at);
+    *from = found.unwrap_or_else(|at| at);
+    found
+}
+/// Removes the items at the ascending `positions`.
+fn remove_at<T: Copy>(items: &mut Vec<T>, positions: &[usize]) {
+    let Some(&first) = positions.first() else {
+        return;
+    };
+    let mut to = first;
+    for (index, &at) in positions.iter().enumerate() {
+        let end = positions.get(index + 1).copied().unwrap_or(items.len());
+        items.copy_within(at + 1..end, to);
+        to += end - at - 1;
+    }
+    items.truncate(to);
+}
+/// Inserts the ascending `added`, none of them present, into the ascending `items`.
+fn insert_ascending<T: Copy>(
+    items: &mut Vec<T>,
+    added: &[T],
+    key_of: impl Fn(&T) -> u128,
+) -> io::Result<()> {
+    let Some(&last) = added.last() else {
+        return Ok(());
+    };
+    allocation::reserve(items, added.len())?;
+    let mut end = items.len();
+    items.resize(end + added.len(), last);
+    let mut to = items.len();
+    for item in added.iter().rev() {
+        let at = items[..end].partition_point(|old| key_of(old) < key_of(item));
+        items.copy_within(at..end, to - (end - at));
+        to -= end - at + 1;
+        items[to] = *item;
+        end = at;
     }
     Ok(())
 }

@@ -8,6 +8,8 @@ use crate::{
 
 mod writer;
 pub use writer::EndpointWriter;
+#[cfg(any(test, feature = "test-support"))]
+pub use writer::key_by_key;
 
 const MAGIC: &[u8; 4] = b"H4ES";
 const VERSION: u16 = 2;

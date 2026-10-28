@@ -734,6 +734,54 @@ fn a_restart_recovers_each_live_chains_last_state_and_writes_the_uninterrupted_p
     fold.resume(read).unwrap();
 }
 
+#[test]
+fn pages_and_chain_states_of_walked_deltas_are_those_of_deltas_applied_key_by_key() {
+    let replay = recording();
+    for strides in [STRIDES, &PRODUCTION_STRIDES[..], &[5, 10][..]] {
+        let fold = || {
+            fold_all_at(&replay, strides, |block| {
+                produced_at(&replay, block, strides)
+            })
+        };
+        let (chains, walked) = fold();
+        let (expected, by_key) = replay_frame::frame::endpoint_step::key_by_key(fold);
+        assert_eq!(chains, expected, "strides {strides:?}");
+        assert_eq!(walked.payloads(), by_key.payloads(), "strides {strides:?}");
+        assert_native_chains(&replay, &chains, &walked);
+    }
+}
+
+#[test]
+fn chain_states_saved_at_one_hour_are_each_chains_state_saved_alone() {
+    let replay = recording();
+    let strides = &[5, 10];
+    let (chains, together) = fold_all_at(&replay, strides, |block| {
+        produced_at(&replay, block, strides)
+    });
+    for (branch, pages) in &chains {
+        assert!(
+            pages.chains[0].last.is_some() && pages.chains[0].last == pages.chains[1].last,
+            "branch {branch} ends both chains at one hour"
+        );
+    }
+    let states = |fixture: &Fixture| {
+        fixture
+            .payloads()
+            .into_iter()
+            .filter(|((name, _), _)| name.starts_with("map-pages.state."))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let mut alone = BTreeMap::new();
+    for &stride in strides {
+        let (_, fixture) = fold_all_at(&replay, &[stride], |block| {
+            produced_at(&replay, block, &[stride])
+        });
+        alone.extend(states(&fixture));
+    }
+    assert_eq!(alone.len(), 2 * chains.len());
+    assert_eq!(states(&together), alone);
+}
+
 /// The reconstructed hour, from a reader without pages.
 fn frame_at(prepared: &Prepared, branch: BranchId, hour: Hour) -> DecodedFrame {
     match prepared
