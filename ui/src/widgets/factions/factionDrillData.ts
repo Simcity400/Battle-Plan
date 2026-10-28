@@ -83,10 +83,9 @@ export function goalGroups(reply: FactionDetailReply, manifest: FactionGoalDetai
   return [...groups.values()].sort((a, b) => rank(a.key) - rank(b.key));
 }
 
-/** Resources the faction extracts, largest first; the engine's empty slot is not one. */
+/** Resources the faction extracts, largest first, an amount kept when its name is unavailable. */
 export function extracted(resources: readonly FactionResourceDetail[] | null): { resource: FactionResourceDetail; value: number }[] {
-  return (resources ?? []).filter(resource => resource.token != null)
-    .map(resource => ({ resource, value: Number(BigInt(resource.raw)) / 100_000 }))
+  return (resources ?? []).map(resource => ({ resource, value: Number(BigInt(resource.raw)) / 100_000 }))
     .sort((a, b) => b.value - a.value);
 }
 

@@ -65,6 +65,18 @@ fn frame(hour: i32, divisions: u32) -> DecodedFrame {
                 })
                 .collect(),
         ));
+    // Each template's current display name equals its dictionary row.
+    *frame.tables[TableId::DivisionTemplateIcons.index()] =
+        TableView::Complete(TableRows::DivisionTemplateIcons(
+            (1..=divisions)
+                .map(|id| replay_data::rows::DivisionTemplateIconRow {
+                    template: u64::from(id) << 32 | 4714,
+                    country: id as i32,
+                    display_name: Recorded::Value(Some(Default::default())),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
     *frame.tables[TableId::DivisionEquipmentDeletions.index()] =
         TableView::Complete(TableRows::DivisionEquipmentDeletions(vec![]));
     *frame.tables[TableId::DestroyedDivisions.index()] =
@@ -123,8 +135,8 @@ fn initial_census_is_not_creation_and_every_new_country_is_retained() {
             .template
             .as_ref()
             .unwrap()
-            .literal,
-        b"Template 12"
+            .0,
+        Ok(TemplateNaming::Text("Template 12".into()))
     );
 }
 

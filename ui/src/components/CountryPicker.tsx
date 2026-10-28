@@ -226,8 +226,8 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
           const { scrollTop, clientHeight } = event.currentTarget;
           setView(listView(scrollTop, clientHeight || LIST_HEIGHT));
         }}>
-          <div ref={listbox} id={listId} role="listbox" aria-label="Countries" tabIndex={filtered.length ? 0 : -1} className="country-picker-options"
-            aria-activedescendant={active >= 0 && active < filtered.length ? optionId(active) : undefined}
+          <div ref={listbox} id={listId} role="listbox" aria-label="Countries" aria-multiselectable={chosen !== undefined} tabIndex={filtered.length ? 0 : -1} className="country-picker-options"
+            aria-activedescendant={active >= range.start && active < range.end ? optionId(active) : undefined}
             style={{ height: filtered.length * COUNTRY_ROW_HEIGHT }}
             // Mark the first row in view without scrolling: a click focuses the
             // list before its own row receives the click.

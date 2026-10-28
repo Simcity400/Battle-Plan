@@ -88,8 +88,10 @@ fn total(program: &ProjectProgramRow, sources: &[ProjectFacilityOperand]) -> Res
         scalar(kinds::BUILDING)?,
     ))
 }
+/// `frame` is the program's supplying read; `text` the hour's frame for scoped names.
 pub(super) fn present(
     frame: &DecodedFrame,
+    text: &DecodedFrame,
     program: &ProjectProgramRow,
     content: Option<&Content>,
     slot: u32,
@@ -120,7 +122,7 @@ pub(super) fn present(
                 .then(|| {
                     token(frame, value.token)
                         .ok()
-                        .map(|token| super::label(content, frame, slot, token))
+                        .map(|token| super::label(content, text, slot, token))
                 })
                 .flatten();
             let modifier = (value.key != 0).then(|| {
@@ -135,7 +137,7 @@ pub(super) fn present(
                 let key = definition
                     .map(|row| String::from_utf8_lossy(&row.name_key).into_owned())
                     .unwrap_or_else(|| value.key.to_string());
-                super::label(content, frame, slot, key)
+                super::label(content, text, slot, key)
             });
             let raw = if value.kind == kinds::BREAKTHROUGH {
                 value.raw.wrapping_mul(100_000) / 10_000_000

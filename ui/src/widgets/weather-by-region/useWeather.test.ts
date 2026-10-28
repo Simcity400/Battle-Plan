@@ -91,12 +91,16 @@ test('a folded day is read through the transient route after its dwell, supersed
     await flush();
     assert.ok(days().get(7)?.data);
     days().want(7);
-    mock.timers.tick(hooks.DWELL_MS);
-    assert.equal(fixture.loads.length, 3);
-    mock.timers.tick(hooks.PREPARING_REREAD_MS);
+    mock.timers.tick(hooks.PREPARING_REREAD_MS - 1);
+    assert.equal(fixture.loads.length, 3, 'not read again at once');
+    mock.timers.tick(1);
+    assert.equal(fixture.loads.length, 4, 'read again while the pointer stays, once preparation has had time to move');
+    fixture.loads[3].resolve(reply(168, 191, { coverage: { firstHour: 0, lastHour: 180, complete: false }, pending: [{ firstHour: 181, lastHour: 191 }] }));
+    await flush();
     days().want(7);
-    mock.timers.tick(hooks.DWELL_MS);
-    assert.equal(fixture.loads.length, 4, 'read again once preparation has had time to move');
+    days().hover(null);
+    mock.timers.tick(hooks.PREPARING_REREAD_MS);
+    assert.equal(fixture.loads.length, 4, 'not read again once the pointer has left');
     // A failed read is not kept: it is tried again when the pointer comes back.
     days().want(8);
     mock.timers.tick(hooks.DWELL_MS);

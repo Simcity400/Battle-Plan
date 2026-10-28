@@ -4,7 +4,8 @@ import { validateProductReply } from '../dashboard/client';
 import type { DashboardClient, ProductRequest } from '../dashboard/client';
 import { useContentRevision } from '../dashboard/contentRevision';
 import WidgetState from './WidgetState';
-import { WHEEL_LINE_PIXELS, described, fitZoom, keyedOffset, listAt, revealedOffset, scrolledOffset, wheelPixels } from './gameWindowScene';
+import { WHEEL_LINE_PIXELS, described, fitZoom, keyedOffset, listAt, listKey, revealedOffset, scrolledOffset, wheelPixels } from './gameWindowScene';
+import type { ScrolledList } from './gameWindowScene';
 import type { GameWindowParams, GameWindowReply, GameWindowTarget, ListScroll, Scene, SceneHover } from '../generated/dashboard';
 import './GameWindow.css';
 
@@ -97,18 +98,17 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
   useEffect(() => () => onDiagnostics?.(NO_LINES), [onDiagnostics]);
 
   // The offsets the wheel has reached, ahead of the scene drawn at the last settled ones.
-  const pending = useRef<{ identity: string; offsets: Map<string, number> }>({ identity, offsets: new Map() });
+  const pending = useRef<{ identity: string; offsets: Map<string, ListScroll> }>({ identity, offsets: new Map() });
   if (pending.current.identity !== identity) pending.current = { identity, offsets: new Map() };
   const settle = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(settle.current), [identity, active]);
-  const onScroll = useCallback((path: string, offset: number) => {
+  const onScroll = useCallback((list: ScrolledList, offset: number) => {
     const owner = pending.current;
-    owner.offsets.set(path, offset);
+    owner.offsets.set(listKey(list), { path: list.path, horizontal: list.horizontal, offset });
     clearTimeout(settle.current);
-    settle.current = setTimeout(() => setScroll({ identity: owner.identity,
-      lists: [...owner.offsets].map(([path, offset]) => ({ path, offset })) }), SCROLL_SETTLE_MS);
+    settle.current = setTimeout(() => setScroll({ identity: owner.identity, lists: [...owner.offsets.values()] }), SCROLL_SETTLE_MS);
   }, []);
-  const offsetOf = useCallback((path: string, drawn: number) => pending.current.offsets.get(path) ?? drawn, []);
+  const offsetOf = useCallback((list: ScrolledList, drawn: number) => pending.current.offsets.get(listKey(list))?.offset ?? drawn, []);
 
   const fit = useRef<HTMLDivElement>(null);
   const available = useAvailable(fit);
@@ -171,7 +171,7 @@ function hoverRuns(hovers: readonly SceneHover[]) {
  * a description for assistive technology, never drawn. */
 export const SceneView = memo(function SceneView({ scene, title, zoom, offsetOf, onScroll }: {
   scene: Scene; title: string | null; zoom: number;
-  offsetOf: (path: string, drawn: number) => number; onScroll: (path: string, offset: number) => void;
+  offsetOf: (list: ScrolledList, drawn: number) => number; onScroll: (list: ScrolledList, offset: number) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const hovers = useMemo(() => hoverRuns(scene.hovers), [scene]);
@@ -189,42 +189,49 @@ export const SceneView = memo(function SceneView({ scene, title, zoom, offsetOf,
       // Drawn size over interface size: the zoom as the pointer sees it.
       const scale = bounds.width / scene.size[0];
       if (!(scale > 0)) return;
-      const list = listAt(scene, (event.clientX - bounds.left) / scale, (event.clientY - bounds.top) / scale);
+      // A wheel moving across, or turned with Shift, scrolls a list across where one is.
+      const across = event.deltaX !== 0 ? Math.abs(event.deltaX) >= Math.abs(event.deltaY) : event.shiftKey;
+      const list = listAt(scene, (event.clientX - bounds.left) / scale, (event.clientY - bounds.top) / scale, across);
       if (!list || list.max <= 0) return;
       const delta = list.horizontal && event.deltaX !== 0 ? event.deltaX : event.deltaY;
       if (delta === 0) return;
       event.preventDefault();
-      const offset = offsetOf(list.path, list.offset);
+      const offset = offsetOf(list, list.offset);
       // CSS pixels over the window's zoom are window pixels, over the list's scale offset units.
       const next = scrolledOffset(offset, wheelPixels(delta, event.deltaMode, list.rect[list.horizontal ? 2 : 3] * scale), scale * (list.scale > 0 ? list.scale : 1),
         list.max);
-      if (next !== offset) onScroll(list.path, next);
+      if (next !== offset) onScroll(list, next);
     };
     element.addEventListener('wheel', wheel, { passive: false });
     return () => element.removeEventListener('wheel', wheel);
   }, []);
 
-  // A row focused outside its list's box scrolls its own list to it, along that list's axis.
+  // A row focused outside its list's box scrolls its own list to it, along each axis it scrolls.
   const reveal = (hover: SceneHover) => {
-    const list = scene.lists.find(list => list.path === hover.list);
-    if (!list || list.max <= 0) return;
-    const next = revealedOffset(list.offset, list, hover.rect);
-    if (next !== offsetOf(list.path, list.offset)) onScroll(list.path, next);
+    for (const list of scene.lists) {
+      if (list.path !== hover.list || list.max <= 0) continue;
+      const next = revealedOffset(list.offset, list, hover.rect);
+      if (next !== offsetOf(list, list.offset)) onScroll(list, next);
+    }
   };
 
   // Keys scroll the list a focused row sits in, or the first that scrolls when the window itself
-  // is focused: a line by the row's height, a page by the list's, or to either end.
+  // is focused, along the axis the key moves: a line by the row's extent, a page by the list's,
+  // or to either end.
   const scrollable = scene.lists.some(list => list.max > 0);
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
-    const path = target.dataset.list;
-    const list = path === undefined ? scene.lists.find(list => list.max > 0) : scene.lists.find(list => list.path === path);
-    if (!list || list.max <= 0) return;
-    const offset = offsetOf(list.path, list.offset);
-    const next = keyedOffset(event.key, offset, list, Number(target.dataset.line) || WHEEL_LINE_PIXELS);
-    if (next === null) return;
-    event.preventDefault();
-    if (next !== offset) onScroll(list.path, next);
+    const path = target.dataset.list ?? scene.lists.find(list => list.max > 0)?.path;
+    for (const list of scene.lists) {
+      if (list.path !== path || list.max <= 0) continue;
+      const offset = offsetOf(list, list.offset);
+      const line = Number(list.horizontal ? target.dataset.width : target.dataset.height) || WHEEL_LINE_PIXELS;
+      const next = keyedOffset(event.key, offset, list, line);
+      if (next === null) continue;
+      event.preventDefault();
+      if (next !== offset) onScroll(list, next);
+      return;
+    }
   };
 
   return <div className="game-window-view">
@@ -235,7 +242,7 @@ export const SceneView = memo(function SceneView({ scene, title, zoom, offsetOf,
       {hovers.map(run => <Clipped key={run.start} clip={run.clip}>
         {run.hovers.map((hover, index) => <span key={run.start + index} className="game-window-hover" role="listitem" tabIndex={0} onFocus={() => reveal(hover)}
           aria-label={described(hover)} data-list={hover.list}
-          data-line={Math.round(hover.rect[scene.lists.find(list => list.path === hover.list)?.horizontal ? 2 : 3])}
+          data-width={Math.round(hover.rect[2])} data-height={Math.round(hover.rect[3])}
           style={{ left: hover.rect[0], top: hover.rect[1], width: hover.rect[2], height: hover.rect[3] }}
           data-tooltip={[hover.title, ...hover.details].join('\n')} />)}
       </Clipped>)}

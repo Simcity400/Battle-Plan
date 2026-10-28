@@ -53,7 +53,7 @@ const LEND_LEASE: u8 = 4;
 pub enum Field {
     /// A country's efficiency in a sea region.
     Regional(u32, u32),
-    /// An importer's deal: its exporter's holder.
+    /// An importer's deal: its exporter's holder, absent while unidentified.
     DealExporter(u32, u64),
     DealResource(u32, u64),
     /// The efficiency product and its two factors.
@@ -61,13 +61,14 @@ pub enum Field {
     DealFactor(u32, u64, u8),
     /// The deal's convoys assigned (0) and required (1).
     DealConvoys(u32, u64, u8),
-    /// A receiver's lend-lease client: the giver's holder.
+    /// A receiver's lend-lease client: the giver's holder, absent while unidentified.
     LeaseGiver(u32, u32),
     /// 1 while the client's route draws as bad.
     LeaseBad(u32, u32),
     LeaseConvoys(u32, u32, u8),
     /// 1 while a table (0 regional efficiency, 1 resource deals, 2 convoy
-    /// clients) was read complete: without it absence proves nothing.
+    /// clients) was read complete with every row's holder identified: without
+    /// it absence proves nothing.
     Known(u8),
 }
 
@@ -139,12 +140,15 @@ impl Prepared {
             }
         };
         let keyed = &mut self.keyed;
+        // A row without a holder identity leaves its table unknown that hour, never empty.
         match frame.complete::<tables::RegionalConvoyEfficiency>() {
             Ok(rows) => {
-                observed.insert(keyed.key(Field::Known(0)), 1);
+                let known = keyed.key(Field::Known(0));
+                let mut complete = true;
                 for row in rows {
                     let Some(slot) = tags.slot(row.country) else {
                         keyed.refuse("a regional efficiency's country has no identity");
+                        complete = false;
                         continue;
                     };
                     keyed.tag(&tags, slot, hour);
@@ -153,24 +157,36 @@ impl Prepared {
                         i128::from(row.efficiency),
                     );
                 }
+                if complete {
+                    observed.insert(known, 1);
+                }
             }
             Err(error) => keyed.refuse(format!("regional convoy efficiency unavailable: {error}")),
         }
         match frame.complete::<tables::ResourceExchanges>() {
             Ok(rows) => {
-                observed.insert(keyed.key(Field::Known(1)), 1);
+                let known = keyed.key(Field::Known(1));
+                let mut complete = true;
                 for row in rows {
-                    let (Some(importer), Some(exporter)) =
-                        (tags.slot(row.importer), tags.slot(row.exporter))
-                    else {
+                    let Some(importer) = tags.slot(row.importer) else {
                         keyed.refuse("a resource deal names a country with no identity");
+                        complete = false;
                         continue;
                     };
                     keyed.tag(&tags, importer, hour);
-                    keyed.tag(&tags, exporter, hour);
                     let id = row.id;
+                    // The importer's deal keeps its numbers; only its exporter is unknown.
+                    match tags.slot(row.exporter) {
+                        Some(exporter) => {
+                            keyed.tag(&tags, exporter, hour);
+                            observed.insert(
+                                keyed.key(Field::DealExporter(importer, id)),
+                                i128::from(exporter),
+                            );
+                        }
+                        None => keyed.refuse("a resource deal names a country with no identity"),
+                    }
                     for (field, value) in [
-                        (Field::DealExporter(importer, id), i128::from(exporter)),
                         (Field::DealResource(importer, id), i128::from(row.resource)),
                         (
                             Field::DealEfficiency(importer, id),
@@ -187,29 +203,45 @@ impl Prepared {
                         observed.insert(keyed.key(field), value);
                     }
                 }
+                if complete {
+                    observed.insert(known, 1);
+                }
             }
             Err(error) => keyed.refuse(format!("resource deals unavailable: {error}")),
         }
         match frame.complete::<tables::ConvoyClients>() {
             Ok(rows) => {
-                observed.insert(keyed.key(Field::Known(2)), 1);
+                let known = keyed.key(Field::Known(2));
+                let mut complete = true;
                 for row in rows.iter().filter(|row| row.category == LEND_LEASE) {
-                    let (Some(giver), Some(receiver)) = (tags.slot(row.owner), tags.slot(row.other))
-                    else {
+                    let Some(receiver) = tags.slot(row.other) else {
                         keyed.refuse("a lend-lease convoy client names a country with no identity");
+                        complete = false;
                         continue;
                     };
-                    keyed.tag(&tags, giver, hour);
+                    let giver = tags.slot(row.owner);
+                    match giver {
+                        Some(giver) => keyed.tag(&tags, giver, hour),
+                        None => keyed.refuse("a lend-lease convoy client names a country with no identity"),
+                    }
                     keyed.tag(&tags, receiver, hour);
                     let handle = row.handle;
+                    if let Some(giver) = giver {
+                        observed.insert(
+                            keyed.key(Field::LeaseGiver(receiver, handle)),
+                            i128::from(giver),
+                        );
+                    }
                     for (field, value) in [
-                        (Field::LeaseGiver(receiver, handle), i128::from(giver)),
                         (Field::LeaseBad(receiver, handle), i128::from(row.bad)),
                         (Field::LeaseConvoys(receiver, handle, 0), i128::from(row.convoys_assigned)),
                         (Field::LeaseConvoys(receiver, handle, 1), i128::from(row.convoys_required)),
                     ] {
                         observed.insert(keyed.key(field), value);
                     }
+                }
+                if complete {
+                    observed.insert(known, 1);
                 }
             }
             Err(error) => keyed.refuse(format!("convoy clients unavailable: {error}")),
@@ -484,7 +516,8 @@ pub fn query(
                 holders.extend(deal.exporter.iter().filter_map(|run| run.2.parse::<u32>().ok()));
                 reply.deals.push(deal);
             }
-            2 if !lease.giver.is_empty() => {
+            // Every recorded client has a route flag; its giver may be unidentified.
+            2 if !lease.bad.is_empty() => {
                 holders.extend(lease.giver.iter().filter_map(|run| run.2.parse::<u32>().ok()));
                 reply.leases.push(lease);
             }

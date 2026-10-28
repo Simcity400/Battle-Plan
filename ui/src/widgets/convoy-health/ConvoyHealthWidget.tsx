@@ -5,12 +5,15 @@ import HeatChart from '../../charts/heat/HeatChart';
 import type { HeatPeriod, HeatRow } from '../../charts/heat/layout';
 import { hatchStyle } from '../../charts/hatch';
 import { jumpItem } from '../../charts/jump';
-import { dayLabel, drawEndLabels, drawLine } from '../../charts/draw';
+import { dayLabel, drawLine, placeEndLabels } from '../../charts/draw';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import type { PlotFrame } from '../../charts/frame';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
+import { extentOf, lineEndHour, runAt } from '../../charts/series';
 import type { Run } from '../../charts/series';
+import type { ChartTokens } from '../../charts/tokens';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import Legend from '../../charts/Legend';
@@ -146,13 +149,28 @@ function ConvoyDrill({ row, runtime, track, hour, extent, active, scale, onPick 
   const lines = useMemo(() => row.lines.map((line, index) => ({ ...line, color: tokens.categories[index % tokens.categories.length],
     plotted: line.runs.map((run): Run => ({ firstHour: run[0], lastHour: run[1], value: percent ? Number(BigInt(run[2]) * 10000n / BigInt(scale)) / 100 : Number(run[2]) })) })),
   [row, tokens.categories, percent, scale]);
-  const layers = useMemo<ChartLayer[]>(() => [{ draw: (ctx, frame, chartTokens, state) => {
-    drawEndLabels(ctx, frame, chartTokens, lines.flatMap(line => {
-      const end = drawLine(ctx, frame, chartTokens, line.plotted, line.color, { until: state.playhead ?? undefined, held: true });
-      const last = line.plotted.filter(run => run.firstHour <= (state.playhead ?? Infinity)).at(-1);
-      return end && last ? [{ text: percent ? `${last.value}%` : String(last.value), y: end.y, from: end.y, color: line.color }] : [];
+  const layers = useMemo<ChartLayer[]>(() => [{
+    draw: (ctx, frame, chartTokens, state) => {
+      for (const line of lines) drawLine(ctx, frame, chartTokens, line.plotted, line.color, { until: state.playhead ?? undefined, held: true });
+    },
+    extent: x => {
+      let range: [number, number] | null = null;
+      for (const line of lines) {
+        const shown = extentOf(line.plotted, x[0], x[1]);
+        if (shown) range = range ? [Math.min(range[0], shown[0]), Math.max(range[1], shown[1])] : shown;
+      }
+      return range;
+    },
+  }], [lines]);
+  // End labels sit in the right gutter, outside the plot's clip, so they are drawn after it.
+  const overlay = useCallback((ctx: CanvasRenderingContext2D, frame: PlotFrame, chartTokens: ChartTokens) => {
+    const at = Math.min(frame.x[1], extent[1]);
+    placeEndLabels(ctx, frame, chartTokens, lines.flatMap(line => {
+      const end = lineEndHour(line.plotted, frame.x[0], at);
+      const run = end === null ? null : runAt(line.plotted, end);
+      return run ? [{ id: line.label, y: frame.toY(run.value), text: percent ? `${run.value}%` : String(run.value), color: line.color }] : [];
     }));
-  } }], [lines, percent]);
+  }, [lines, percent, extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const facts = row.detail(hour);
   return <div className="convoy-health-drill">
     {facts.length ? <dl className="convoy-health-facts">{facts.map(fact => <div key={fact.label}><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}</dl>
@@ -162,7 +180,7 @@ function ConvoyDrill({ row, runtime, track, hour, extent, active, scale, onPick 
       <TimeChart label={`${row.label} over time`} extent={extent} playhead={hour} playback="cursor" afterPlayhead hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
         branchStart={track.branch.firstHour} axes={{ xFrom: null, xTo: null, yMin: percent ? 0 : null, yMax: percent ? 100 : null, log: false }}
         valueTicks={percent ? [0, 25, 50, 75, 100] : undefined} formatValue={percent ? value => `${value}%` : undefined} padding={{ right: 64 }}
-        layers={layers} active={active} pickOwner={row.id} revision={`${row.id}:${lines.length}`}
+        layers={layers} overlay={overlay} active={active} pickOwner={row.id} revision={`${row.id}:${lines.length}`}
         tooltip={at => fitTooltip([{ title: dayLabel(Math.floor(at)), rows: row.detail(Math.floor(at)) }], viewport)}
         onPick={at => onPick(Math.floor(at))} />
     </div>

@@ -73,6 +73,16 @@ test('a run is held, ended, ended by a day or unknown, honestly about unrecorded
   assert.equal(describeRun(runs, 55, words, gap), 'last 49');
 });
 
+test('a recorded gap touching hours still being prepared is one unknown stretch, never an end', () => {
+  const runs = [{ firstHour: 10, lastHour: 19 }];
+  const spans = [{ firstHour: 20, lastHour: 29 }, { firstHour: 30, lastHour: 100 }];
+  assert.deepEqual(runState(runs, 50, spans), { kind: 'unknown', lastSeen: 19 });
+  assert.deepEqual(runState(runs, 50, [...spans].reverse()), { kind: 'unknown', lastSeen: 19 });
+  assert.deepEqual(runState(runs, 101, spans), { kind: 'ended', at: 101, lastSeen: 19 });
+  // A recorded hour between them still shows it gone.
+  assert.deepEqual(runState(runs, 50, [{ firstHour: 20, lastHour: 29 }, { firstHour: 31, lastHour: 100 }]), { kind: 'ended', at: 30, lastSeen: 19 });
+});
+
 test('cover counts step with the runs covering each hour, in any order and overlapping', () => {
   const runs = [{ firstHour: 5, lastHour: 9 }, { firstHour: 0, lastHour: 9 }, { firstHour: 12, lastHour: 14 }, { firstHour: 7, lastHour: 7 }];
   assert.deepEqual(coverCounts(runs), [

@@ -19,7 +19,7 @@ import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { currentWarsAt, observationAt, validateWarsReply, warContributions } from '../wars/warsData';
 import { OPTIONS, SHOW_CHOICES } from './definition';
-import { SCALE, chosenWar, contributionRows, readHourFor, rowLengths, shareText, sideAmount, toNumber, warName } from './warContributionData';
+import { SCALE, chosenWar, contributionRows, readHourFor, rowLengths, shareText, sideAmount, sideMagnitude, toNumber, warName } from './warContributionData';
 import type { ContributionRow, SideTotal } from './warContributionData';
 import './warContribution.css';
 
@@ -30,7 +30,7 @@ const VALUES_WIDTH = 420;
 
 const amount = (raw: bigint, digits = 2) => formatAmount(raw, SCALE, digits);
 const sideText = (side: SideTotal, participation: boolean) => !side.members.length ? 'Not recorded'
-  : participation ? `${amount(side.total * 100n)}%` : sideAmount(side) === 0n ? 'None yet' : amount(sideAmount(side));
+  : participation ? `${amount(side.total * 100n)}%` : sideMagnitude(side) === 0n ? 'None yet' : amount(sideAmount(side));
 
 export default function WarContributionWidget({ widget, runtime, active, headerSlot, setOption, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
@@ -88,9 +88,11 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   useDiagnostics(onDiagnostics, diagnostics);
   const items = useMemo<Item[]>(() => rows.map(row => {
     const lengths = rowLengths(row, show), participation = row.key === 'participation';
+    // A negative score, such as lend-lease received, keeps its length and is outlined as negative.
     const parts = (side: SideTotal) => side.members.flatMap(member => [
-      { id: member.tag, value: Math.max(0, toNumber(member.value)), color: looks.colour(member.tag) },
-      ...(member.unknown != null && member.unknown > 0n ? [{ id: `${member.tag}:unknown`, value: toNumber(member.unknown), color: looks.colour(member.tag), hatched: true }] : []),
+      { id: member.tag, value: Math.abs(toNumber(member.value)), color: looks.colour(member.tag), negative: member.value < 0n },
+      ...(member.unknown != null && member.unknown !== 0n ? [{ id: `${member.tag}:unknown`, value: Math.abs(toNumber(member.unknown)), color: looks.colour(member.tag), hatched: true,
+        negative: member.unknown < 0n }] : []),
     ]);
     return { id: row.key, label: row.label, color: tokens.muted, row, segment: 'war',
       left: lengths.left, right: lengths.right, leftParts: parts(row.left), rightParts: parts(row.right),
@@ -101,7 +103,7 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
     for (const member of side.members) {
       if (at === index) return { member, unknown: false };
       at++;
-      if (member.unknown != null && member.unknown > 0n) { if (at === index) return { member, unknown: true }; at++; }
+      if (member.unknown != null && member.unknown !== 0n) { if (at === index) return { member, unknown: true }; at++; }
     }
     return null;
   }, []);

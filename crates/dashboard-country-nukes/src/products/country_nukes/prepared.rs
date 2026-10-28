@@ -451,6 +451,52 @@ impl Prepared {
         series::write_catalogue(writer, "nukes", branch, &self.keys, &self.scan.scanned)
     }
 }
+
+/// One key's spans inside `first..=last`, in hour order, overlapping or touching spans joined.
+fn joined_spans(mut spans: Vec<HourSpan>, first: i32, last: i32) -> Vec<HourSpan> {
+    spans.sort_unstable_by_key(|span| (span.first_hour, span.last_hour));
+    let mut joined: Vec<HourSpan> = Vec::new();
+    for span in spans {
+        let (first_hour, last_hour) = (span.first_hour.max(first), span.last_hour.min(last));
+        if first_hour > last_hour {
+            continue;
+        }
+        match joined.last_mut() {
+            Some(held) if i64::from(first_hour) <= i64::from(held.last_hour) + 1 => {
+                held.last_hour = held.last_hour.max(last_hour);
+            }
+            _ => joined.push(HourSpan {
+                first_hour,
+                last_hour,
+            }),
+        }
+    }
+    joined
+}
+
+/// The hours of `spans` inside `within`.
+fn within_spans(
+    spans: &[HourSpan],
+    within: &[HourSpan],
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<HourSpan>> {
+    let mut clipped = Vec::new();
+    dashboard_base::ranking::for_each_piece(
+        spans,
+        within,
+        |span| (span.first_hour, span.last_hour),
+        cancelled,
+        |_, first_hour, last_hour| {
+            clipped.push(HourSpan {
+                first_hour,
+                last_hour,
+            });
+            Ok(())
+        },
+    )?;
+    Ok(clipped)
+}
+
 pub fn query(
     source: &Source,
     product: &str,
@@ -728,48 +774,62 @@ pub fn query(
                 .as_u64()
                 .and_then(|size| u32::try_from(size).ok()),
         )?;
-        let page = if let Some(top) = selection.top {
+        // A tag's changes count only while it is a member: ranked in the Top N,
+        // or holding the selected native country, inside its requested `within`.
+        let mut members = BTreeMap::<u64, Vec<HourSpan>>::new();
+        if let Some(top) = selection.top {
             // No stockpile runs are prepared; Top N membership comes from prepared ranks.
-            let mut spans = BTreeMap::<u64, Vec<(i32, i32)>>::new();
             for position in 0..(top as usize).min(inverse.len()) {
                 for run in ranks.runs(position as u64 * 2, first, last)? {
                     let key = run.value as u64;
                     if !inverse.contains_key(&key) {
                         return Err(dashboard_core::invalid("Unknown nuclear rank key"));
                     }
-                    spans
-                        .entry(key)
-                        .or_default()
-                        .push((run.first_hour, run.last_hour));
+                    members.entry(key).or_default().push(HourSpan {
+                        first_hour: run.first_hour,
+                        last_hour: run.last_hour,
+                    });
                 }
             }
-            let mut within = Vec::new();
-            for (key, mut runs) in spans {
-                runs.sort_unstable();
-                let mut joined: Vec<(i32, i32)> = Vec::new();
-                for (from, to) in runs {
-                    match joined.last_mut() {
-                        Some(held) if i64::from(from) <= i64::from(held.1) + 1 => {
-                            held.1 = held.1.max(to);
-                        }
-                        _ => joined.push((from, to)),
-                    }
-                }
-                within.extend(joined.into_iter().map(|(from, to)| (key, from, to)));
-            }
-            mixes.events_within(&within, cursor, size)?
         } else {
-            let selected: Vec<_> = membership(&scanned, &selection, Some(&history), cancelled)?
-                .unwrap_or_default()
-                .into_keys()
-                .filter_map(|tag| keys.get(&series::field_key(&tag, "")).copied())
-                .collect();
-            mixes.events(&selected, first, last, cursor, size)?
-        };
-        return Ok(
-            json!({"firstOrdinal":page.first.to_string(),"total":page.total.to_string(),"cursor":page.cursor.map(|cursor|cursor.to_string()),
-            "rows":page.rows.into_iter().map(|row|json!({"tag":inverse.get(&row.key),"hour":row.hour,"ordinal":row.ordinal.to_string(),"row":row.row})).collect::<Vec<_>>(),"warnings":[]}),
-        );
+            for (tag, spans) in navigation_membership
+                .as_ref()
+                .into_iter()
+                .flat_map(|aliases| aliases.iter())
+            {
+                if let Some(&key) = keys.get(&series::field_key(tag, "")) {
+                    members.entry(key).or_default().extend(spans.iter().copied());
+                }
+            }
+        }
+        let mut spans = Vec::new();
+        for (key, held) in members {
+            let mut held = joined_spans(held, first, last);
+            if selection.top.is_some()
+                && let Some(within) = within.get(&inverse[&key])
+            {
+                held = within_spans(&held, within, cancelled)?;
+            }
+            spans.extend(
+                held.into_iter()
+                    .map(|span| (key, span.first_hour, span.last_hour)),
+            );
+        }
+        let page = mixes.events_within(&spans, cursor, size)?;
+        let mut data = json!({"firstOrdinal":page.first.to_string(),"total":page.total.to_string(),"cursor":page.cursor.map(|cursor|cursor.to_string()),
+            "rows":page.rows.into_iter().map(|row|json!({"tag":inverse.get(&row.key),"hour":row.hour,"ordinal":row.ordinal.to_string(),"row":row.row})).collect::<Vec<_>>(),"warnings":[]});
+        let requested = params
+            .get("to")
+            .filter(|to| !to.is_null())
+            .map(|_| last);
+        dashboard_base::prepared::prefix::Prefix::new(
+            source,
+            branch,
+            dashboard_base::prepared::prefix::extent(source, branch, accepted.clone())?,
+            requested,
+        )
+        .mark(&mut data)?;
+        return Ok(data);
     }
     let (from, to, width) = if product == "series-state" {
         (
@@ -793,7 +853,40 @@ pub fn query(
             .ok_or_else(|| dashboard_core::invalid("Missing nuclear event tag"))?;
         validate_tag(tag).map_err(dashboard_core::invalid)?;
         let summary = if let Some(&key) = keys.get(&series::field_key(tag, "")) {
-            mixes.event_clusters(key, from, to, width)?
+            // Counted only while the tag is a member, as the event page counts.
+            let spans = if let Some(top) = selection.top {
+                let mut held = Vec::new();
+                for position in 0..(top as usize).min(inverse.len()) {
+                    for run in ranks.runs(position as u64 * 2, first, last)? {
+                        if run.value as u64 == key {
+                            held.push(HourSpan {
+                                first_hour: run.first_hour,
+                                last_hour: run.last_hour,
+                            });
+                        }
+                    }
+                }
+                let held = joined_spans(held, first, last);
+                match within.get(tag) {
+                    Some(within) => within_spans(&held, within, cancelled)?,
+                    None => held,
+                }
+            } else if selection.tags.is_empty() {
+                // No selected country restricts the tag's own changes.
+                within.get(tag).cloned().unwrap_or_else(|| {
+                    vec![HourSpan {
+                        first_hour: i32::MIN,
+                        last_hour: i32::MAX,
+                    }]
+                })
+            } else {
+                navigation_membership
+                    .as_ref()
+                    .and_then(|aliases| aliases.get(tag))
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            mixes.event_clusters_within(key, from, to, width, &spans)?
         } else {
             dashboard_base::prepared_chart::MarkSummary {
                 from,
@@ -802,9 +895,16 @@ pub fn query(
                 clusters: Vec::new(),
             }
         };
-        return Ok(
-            json!({"branchId":selection.branch_id,"tag":tag,"summary":summary,"warnings":[]}),
-        );
+        let mut data =
+            json!({"branchId":selection.branch_id,"tag":tag,"summary":summary,"warnings":[]});
+        dashboard_base::prepared::prefix::Prefix::new(
+            source,
+            branch,
+            dashboard_base::prepared::prefix::extent(source, branch, accepted.clone())?,
+            Some(last),
+        )
+        .mark(&mut data)?;
+        return Ok(data);
     }
     let mut membership = if selection.top.is_some() {
         Some(BTreeMap::new())

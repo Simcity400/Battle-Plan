@@ -527,9 +527,12 @@ fn weapon_description(
     // Only light and heavy guns include the piercing explanation.
     // Its arrays come from the resolved NNavy defines.
     if weapon <= 1 {
-        let defines = piercing.ok_or("the matching NNavy piercing defines are unavailable")?;
-        if defines.piercing_thresholds.len() < 2
-            || defines.piercing_thresholds.len() != defines.piercing_critical_values.len()
+        let defines = piercing
+            .ok_or("the matching NNavy piercing defines are unavailable")?
+            .piercing
+            .as_ref()
+            .map_err(|why| format!("the matching NNavy piercing defines are unavailable: {why}"))?;
+        if defines.thresholds.len() < 2 || defines.thresholds.len() != defines.critical_values.len()
         {
             return Err(
                 "NNavy piercing threshold arrays differ or have fewer than two entries".into(),
@@ -537,12 +540,12 @@ fn weapon_description(
         }
         ensure_newlines(&mut text, 2);
         text.push_str(&builtin(icons, loc, NAVY_PIERCING_TOOLTIP_INFO, &[])?);
-        for (index, &critical) in defines.piercing_critical_values.iter().enumerate() {
+        for (index, &critical) in defines.critical_values.iter().enumerate() {
             if !text.ends_with('\n') {
                 text.push('\n');
             }
-            let last = index + 1 == defines.piercing_critical_values.len();
-            let threshold = defines.piercing_thresholds[index - usize::from(last)];
+            let last = index + 1 == defines.critical_values.len();
+            let threshold = defines.thresholds[index - usize::from(last)];
             text.push_str(&builtin(
                 icons,
                 loc,

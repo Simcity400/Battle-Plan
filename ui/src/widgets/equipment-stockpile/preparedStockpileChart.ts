@@ -35,26 +35,10 @@ export function stockpileAmountSummary(reply: PreparedStockpileReply, group: Sto
     ...(row.values.runs ? { runs: row.values.runs.map(run => ({ ...run, value: run.value / scale })) } : {}) };
 }
 
+/** The group's share of need as the backend paired it from same-hour balance and need. */
 function groupShareSummary(reply: PreparedStockpileReply, group: StockGroup): ChartSummary | undefined {
-  const operands = reply.prepared?.groups?.find(row => row.key === stockpileGroupKey(group))?.operands;
-  const balance = operands?.find(row => row.field === 'balance'), need = operands?.find(row => row.field === 'need');
-  if (!balance || !need) return undefined;
-  return { ...balance.values, runs: undefined, buckets: balance.values.buckets.map((bucket, index): ChartBucket | null => {
-    const denominator = need.values.buckets[index];
-    if (!bucket || !denominator) return null;
-    const hours = [Math.max(bucket.firstHour, denominator.firstHour), Math.min(bucket.lastHour, denominator.lastHour),
-      Math.max(bucket.minHour, denominator.minHour), Math.max(bucket.maxHour, denominator.maxHour)];
-    const values = [0, 1, 2, 3].map(sample => {
-      const b = balance.samples[index]?.[sample], n = need.samples[index]?.[sample];
-      return b == null || n == null || BigInt(n) <= 0n ? null : Number(b) / Number(n) * 100;
-    });
-    const known = values.flatMap((value, index) => value == null ? [] : [{ value, hour: hours[index] }]);
-    if (!known.length) return null;
-    const min = known.reduce((a, b) => a.value <= b.value ? a : b), max = known.reduce((a, b) => a.value >= b.value ? a : b);
-    return { firstHour: known[0].hour, lastHour: known.at(-1)!.hour, firstValue: known[0].value, lastValue: values[1] ?? known.at(-1)!.value,
-      minHour: min.hour, minValue: min.value, maxHour: max.hour, maxValue: max.value, lastValueHour: Math.max(bucket.lastValueHour, denominator.lastValueHour),
-      firstBreak: bucket.firstBreak || denominator.firstBreak, hasBreak: bucket.hasBreak || denominator.hasBreak || known.length !== 4 };
-  }) };
+  const share = reply.prepared?.groups?.find(row => row.key === stockpileGroupKey(group))?.operands.find(row => row.field === 'share');
+  return share && { ...share.values, runs: undefined };
 }
 
 export function groupIn(reply: EquipmentStockpileReply, group: StockGroup): StockGroup {

@@ -1909,6 +1909,52 @@ fn unavailable_power_certificate_preserves_core_carry_without_suffix_polling() {
     );
 }
 
+/// Held rows keep their naval-power packets only under the certificate they were read with,
+/// whichever frame buffer read them: without one now, they are read again.
+#[test]
+fn held_naval_power_from_another_certificate_is_read_again() {
+    use crate::ship_model_changes::Watches;
+    assert!(naval_power_certificate().is_none());
+    let watches = Watches::enabled(64);
+    let world = Fleet::new();
+    let mut capture = Captured::with_capacities(&Capacities {
+        rows: fleet::SHIPS,
+        modifiers: SnapshotCapacity {
+            nodes: 64,
+            entries: 64,
+        },
+    });
+    let hour = |capture: &mut Captured| {
+        capture.begin_sources();
+        for index in 0..fleet::SHIPS {
+            capture.visit_source_growing(fleet::ship(index), &fleet::census(index));
+        }
+        capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
+        capture.capture_carrying(&world, CaptureContext::new(fleet::IMAGE), &watches);
+        assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
+    };
+    hour(&mut capture);
+    const MARK: i32 = 0x5eed;
+    // As if another buffer's capture had held these rows under an available certificate.
+    capture.store.naval_power = Some((1, 2, 3));
+    for held in capture.store.held.iter_mut().flatten() {
+        if let Some((row, _)) = held.row.as_mut() {
+            row.naval_power = Some([1; 5]);
+        }
+    }
+    for row in &mut capture.rows.rows[..fleet::SHIPS] {
+        row.naval_power = Some([1; 5]);
+    }
+    capture.rows.rows[0].model_number = MARK;
+    hour(&mut capture);
+    assert!(
+        capture.rows.rows[..fleet::SHIPS]
+            .iter()
+            .all(|row| row.naval_power.is_none())
+    );
+    assert_ne!(capture.rows.rows[0].model_number, MARK, "read afresh");
+}
+
 /// A task force's country terms (its modifier tree) are served from the held hour while the
 /// country's naval tree certificate holds: a quiet hour reads no country accumulator, and an hour
 /// after a tree writer touched the country reads it again.

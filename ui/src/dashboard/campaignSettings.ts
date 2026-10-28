@@ -42,7 +42,6 @@ export function factionIdentity(recordedName: string | null, founder: string | n
 const KEY = 'hoi4-replay.campaign-settings.v1';
 // Use the same byte budget for reads and writes so saved campaigns cannot vanish on reload.
 export const MAX_CAMPAIGN_SETTINGS_STORAGE = 2_000_000;
-export const MAX_FACTIONS = 256;
 export const MAX_SETS = 64;
 const MAX_TEXT = 160;
 const MAX_IDENTITY = 400;
@@ -72,21 +71,21 @@ export function parseCampaignSettings(input: unknown): CampaignSettings {
   for (const [key, value] of Object.entries(object(input.campaigns) ? input.campaigns : {})) {
     if (!safeKey(key, /^[0-9a-f]{1,128}$/) || !object(value) || !object(value.factions)) continue;
     const factions: Record<string, FactionStyle> = {};
-    for (const [id, entry] of Object.entries(value.factions).slice(0, MAX_FACTIONS)) {
+    for (const [id, entry] of Object.entries(value.factions)) {
       const parsed = safeKey(id, /^\d{1,20}$/) ? style(entry) : null;
       if (parsed && (parsed.colour || parsed.name)) factions[id] = parsed;
     }
     campaigns[key] = { factions, ...(opaqueTag(value.flag) ? { flag: value.flag } : {}) };
   }
   const shared: CampaignSettings['shared'] = {};
-  for (const [key, value] of Object.entries(object(input.shared) ? input.shared : {}).slice(0, MAX_FACTIONS * 4)) {
+  for (const [key, value] of Object.entries(object(input.shared) ? input.shared : {})) {
     const hex = object(value) ? colour(value.colour) : undefined;
     if (hex && key.length <= MAX_IDENTITY && !['__proto__', 'constructor', 'prototype'].includes(key)) shared[key] = { colour: hex };
   }
   const sets: FactionColourSet[] = [];
   for (const value of Array.isArray(input.sets) ? input.sets.slice(0, MAX_SETS) : []) {
     if (!object(value) || !safeKey(String(value.id), /^[a-zA-Z0-9_-]{1,64}$/) || !text(value.name) || !Array.isArray(value.entries)) continue;
-    const entries = value.entries.slice(0, MAX_FACTIONS).flatMap(entry => {
+    const entries = value.entries.flatMap(entry => {
       if (!object(entry) || !text(entry.faction)) return [];
       const hex = colour(entry.colour);
       if (!hex) return [];
@@ -108,10 +107,8 @@ export function setFactionColour(settings: CampaignSettings, scope: ColourScope,
   const value = hex == null ? null : colour(hex);
   if (hex != null && !value) return settings;
   const shared = { ...settings.shared };
-  if (value) {
-    if (!(identity in shared) && Object.keys(shared).length >= MAX_FACTIONS * 4) return settings;
-    shared[identity] = { colour: value };
-  } else delete shared[identity];
+  if (value) shared[identity] = { colour: value };
+  else delete shared[identity];
   const next = { ...settings, shared };
   return settings.campaigns[campaign]?.factions[faction]?.colour ? setFactionStyle(next, campaign, faction, { colour: undefined }) : next;
 }
@@ -124,8 +121,6 @@ export function chosenColour(settings: CampaignSettings, campaign: string, facti
 /** Sets or clears one faction's colour or display name. */
 export function setFactionStyle(settings: CampaignSettings, campaign: string, faction: string, patch: FactionStyle | null): CampaignSettings {
   const factions = { ...settings.campaigns[campaign]?.factions };
-  // A new faction past the limit is refused here, rather than dropped when saved.
-  if (patch !== null && !(faction in factions) && Object.keys(factions).length >= MAX_FACTIONS) return settings;
   const next: FactionStyle = patch === null ? {} : { ...factions[faction], ...patch };
   if (next.colour === undefined) delete next.colour;
   if (next.colour !== undefined) {

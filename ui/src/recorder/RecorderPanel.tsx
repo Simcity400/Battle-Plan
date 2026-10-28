@@ -10,7 +10,7 @@ import { errorMessage } from '../shell/errors';
 import { newId } from '../shell/ids';
 import * as api from './api';
 import type { SettingsPatch } from './api';
-import { captureModeFixed, dateText, discardConsequence, discardDetail, head, nextLoad, promptTitle, recordingName, recordsAutomatically, sessionLength,
+import { captureModeFixed, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, promptTitle, recordingName, recordsAutomatically, sessionLength,
   settingsQueue, sizeText, spanText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status';
 import type { CaptureMode, FlagImage, Head, NextLoad, RecorderSettings, Recordings, SavedRecording, Snapshot, UnsavedRecording } from './status';
 import type { Compression } from './compression';
@@ -338,8 +338,9 @@ export default function RecorderPanel() {
     const loadSettings = () => {
       void queue.refresh().catch(cause => { if (active) setError(errorMessage(cause)); });
     };
+    const status = followStatus(api.onStatus, api.recorderStatus, value => { if (active) setSnapshot(value); });
     const listeners = [
-      api.onStatus(value => { if (active) setSnapshot(value); }),
+      status.listening,
       api.onAskStop(ask => {
         if (!active) return;
         setView('main');
@@ -349,7 +350,7 @@ export default function RecorderPanel() {
       }),
       api.onSettings(() => { if (active) loadSettings(); }),
     ];
-    void api.recorderStatus().then(value => { if (active) setSnapshot(value); }, cause => { if (active) setError(errorMessage(cause)); });
+    void status.first.catch(cause => { if (active) setError(errorMessage(cause)); });
     loadSettings();
     void (opened.current ??= api.panelOpened(panel)).then(({ askStop, compact: alone, quitting: quit, discarding: discard }) => {
       if (!active) return;

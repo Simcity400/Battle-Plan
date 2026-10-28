@@ -101,8 +101,9 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     if (!data) return [];
     const native = visibleGovernmentChanges(governments.enabled && !governments.exact ? [] : governmentReply.data?.governments ?? [], detailsThrough);
     const source = party.enabled ? party.summary?.reply : data;
-    const denseFields = new Set(party.summary?.marks.filter(mark=>!mark.exact).map(mark=>mark.field));
-    const all = source ? partyBadges(source, token => names.get(token) ?? 'Ideology name unavailable', options.leaders === true, native).filter(badge=>!party.enabled || !denseFields.has(badge.glyph==='\u2713' ? 'election' : badge.glyph==='\u2654' ? 'leader' : 'ruling')) : [];
+    // Fields the chart's mark summaries already show (`markSummaries`) are not badges too.
+    const summarized = new Set(party.summary?.marks.filter(mark=>!mark.exact || governments.enabled && !governments.exact).map(mark=>mark.field));
+    const all = source ? partyBadges(source, token => names.get(token) ?? 'Ideology name unavailable', options.leaders === true, native).filter(badge=>!party.enabled || !summarized.has(badge.glyph==='\u2713' ? 'election' : badge.glyph==='\u2654' ? 'leader' : 'ruling')) : [];
     return options.changes ? [...all, ...governmentBadges(native, token => names.get(token) ?? 'Ideology name unavailable', detailsThrough)].sort((a, b) => a.hour - b.hour)
       : all.filter(badge => badge.glyph === '♔');
   }, [data, party.enabled, party.summary, names, options.changes, options.leaders, governmentReply.data, detailsThrough, governments.enabled, governments.exact]);
@@ -114,8 +115,6 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const markSummaries = useMemo<MarkSummary[] | undefined>(() => {
     if (!party.enabled) return undefined;
     const summaries = partyMarkSummaries(party.summary, censusBadges, governments.enabled && !governments.exact) ?? [];
-    // An empty prepared mark list suppresses TimeChart's exact badge drawing.
-    // Exact views therefore hand the joined census/native badges to the chart.
     if (!governments.enabled || governments.exact) return summaries.length ? summaries : undefined;
     const native = governments.data?.governmentMarks;
     if (native) summaries.push({ ...native, clusters: native.clusters.map(cluster => ({ ...cluster, tag: 'native',

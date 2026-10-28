@@ -1,3 +1,4 @@
+import { usNumber } from '../../charts/numberFormat.ts';
 import type { FactionDetailReply } from '../../generated/dashboard';
 
 export type Pool = 'resources' | 'manpower' | 'research' | 'doctrine';
@@ -14,6 +15,14 @@ export function poolsOffered(data: FactionDetailReply): Pool[] {
       : pool === 'manpower' ? data.manpowerUnlocked !== false && data.manpower != null
         : pool === 'research' ? data.researchUnlocked !== false && (data.researchBaseRaw != null || data.researchCountries != null)
           : data.doctrineFolders != null && data.doctrineFolders.length > 0);
+}
+
+/** The shown pool's total or count for the header; a list that was not read says so, never zero. */
+export function poolHeading(data: FactionDetailReply, pool: Pool): string {
+  return pool === 'manpower' ? (data.manpowerTotal == null ? 'Total not recorded' : `${usNumber.format(data.manpowerTotal)} manpower`)
+    : pool === 'resources' ? `${data.resources?.length ?? 0} resources`
+      : pool === 'research' ? (data.researchCountries == null ? 'Members not recorded' : `${data.researchCountries.length} sharing`)
+        : `${data.doctrineFolders?.length ?? 0} doctrines`;
 }
 
 /** The saved pool while the faction has it, else the first it has. */

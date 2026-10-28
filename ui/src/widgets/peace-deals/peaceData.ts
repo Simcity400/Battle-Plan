@@ -168,23 +168,24 @@ export function chipsByValue(chips: readonly PeaceChip[]): PeaceChip[] {
 /** A grouped war-end outcome at the hour of a recorded conference that names each
  * of its winners as a winner and each loser as a loser is that conference's
  * settlement: one card, never two. An outcome matching no conference, or more
- * than one, stays its own card. */
-export function joinWarEndOutcomes(deals: readonly PeaceDeal[]): { deal: PeaceDeal; warEnd: PeaceDeal | null }[] {
+ * than one, stays its own card, whatever other outcomes join; a conference
+ * takes every outcome matching it alone. */
+export function joinWarEndOutcomes(deals: readonly PeaceDeal[]): { deal: PeaceDeal; warEnds: PeaceDeal[] }[] {
   const conferences = deals.filter(deal => deal.observation === 'recordedConference' && deal.captured != null);
-  const joined = new Map<PeaceDeal, PeaceDeal>();
+  const joined = new Map<PeaceDeal, PeaceDeal[]>();
   const used = new Set<PeaceDeal>();
   for (const outcome of deals) {
     if (outcome.observation !== 'conferenceNotRecorded') continue;
     const hour = peaceDealHour(outcome);
-    const matches = conferences.filter(conference => peaceDealHour(conference) === hour && !joined.has(conference)
+    const matches = conferences.filter(conference => peaceDealHour(conference) === hour
       && outcome.winners.every(tag => conference.winners.includes(tag)) && outcome.losers.every(tag => conference.losers.includes(tag)));
     if (matches.length !== 1) continue;
-    joined.set(matches[0], outcome);
+    joined.set(matches[0], [...joined.get(matches[0]) ?? [], outcome]);
     used.add(outcome);
   }
   return deals.filter(deal => !used.has(deal)).map(deal => {
-    const warEnd = joined.get(deal);
-    return { deal: warEnd ? { ...deal, items: [...deal.items, ...warEnd.items] } : deal, warEnd: warEnd ?? null };
+    const warEnds = joined.get(deal) ?? [];
+    return { deal: warEnds.length ? { ...deal, items: [...deal.items, ...warEnds.flatMap(warEnd => warEnd.items)] } : deal, warEnds };
   });
 }
 
@@ -205,10 +206,10 @@ export function peaceGaps(reply: PeaceDealsReply): HourSpan[] {
   return spans;
 }
 export function preparePeaceLog(reply: PeaceDealsReply): PeaceLog {
-  const rows: PeaceRow[] = joinWarEndOutcomes(reply.deals).map(({ deal, warEnd }) => {
+  const rows: PeaceRow[] = joinWarEndOutcomes(reply.deals).map(({ deal, warEnds }) => {
     const card: PeaceCard = { deal, actions: peaceActions(deal), hour: peaceDealHour(deal),
-      knownAt: Math.max(peaceDealKnownAt(deal), warEnd ? peaceDealKnownAt(warEnd) : -Infinity), by: peaceDealIsBy(deal),
-      ...(warEnd ? { warEnd: true } : {}) };
+      knownAt: Math.max(peaceDealKnownAt(deal), ...warEnds.map(peaceDealKnownAt)), by: peaceDealIsBy(deal),
+      ...(warEnds.length ? { warEnd: true } : {}) };
     return { key: JSON.stringify(['conference', deal.id]), hour: card.hour, by: card.by, item: card };
   });
   rows.sort((a, b) => b.hour - a.hour);

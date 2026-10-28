@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { MIN_ZOOM, described, fitZoom, keyedOffset, listAt, revealedOffset, scrolledOffset, wheelPixels } from './gameWindowScene.ts';
+import { MIN_ZOOM, described, fitZoom, keyedOffset, listAt, listKey, revealedOffset, scrolledOffset, wheelPixels } from './gameWindowScene.ts';
 
 test('keys scroll a list by a line, a page or to either end, within its range', () => {
   const list = { rect: [0, 0, 100, 120] as [number, number, number, number], max: 300, horizontal: false, scale: 1 };
@@ -64,4 +64,16 @@ test('the topmost list under the pointer scrolls', () => {
   assert.equal(listAt({ lists }, 15, 15)?.path, 'a/b');
   assert.equal(listAt({ lists }, 50, 50)?.path, 'a');
   assert.equal(listAt({ lists }, 100, 50), null, 'the area ends before its width');
+});
+
+test('a container scrolling both ways is a list per axis, the wheel picking by its direction', () => {
+  const rect = [0, 0, 100, 100] as [number, number, number, number];
+  const lists = [{ path: 'c', rect, offset: 0, max: 50, horizontal: false, scale: 1 },
+    { path: 'c', rect, offset: 0, max: 40, horizontal: true, scale: 1 }];
+  assert.equal(listAt({ lists }, 50, 50, false)?.horizontal, false);
+  assert.equal(listAt({ lists }, 50, 50, true)?.horizontal, true);
+  assert.equal(listAt({ lists: [lists[0]] }, 50, 50, true)?.horizontal, false, 'a list scrolling one way takes either');
+  const across = { path: 'c/row', rect: [10, 10, 40, 20] as [number, number, number, number], offset: 0, max: 30, horizontal: true, scale: 1 };
+  assert.equal(listAt({ lists: [lists[0], across] }, 20, 20, false)?.path, 'c/row', 'the topmost list takes the wheel whichever way it turns');
+  assert.notEqual(listKey(lists[0]), listKey(lists[1]), 'each axis keeps its own offset');
 });

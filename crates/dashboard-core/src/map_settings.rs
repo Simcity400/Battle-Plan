@@ -117,8 +117,12 @@ impl Store {
         })
     }
     pub fn configure_game(&mut self, user: &std::path::Path) {
+        self.set_game(read_game(user));
+    }
+    /// Installs the game's settings as [`read_game`] read them.
+    pub fn set_game(&mut self, game: io::Result<Game>) {
         self.generation += 1;
-        match game_settings(user) {
+        match game {
             Ok(game) => {
                 self.game = game;
                 self.game_error = None;
@@ -330,7 +334,7 @@ pub fn game_dev_master(keys: &installed_content_settings::settings::SettingsKeys
 }
 
 /// Read the user's existing game preferences; never writes to settings.txt.
-fn game_settings(user: &std::path::Path) -> io::Result<Game> {
+pub fn read_game(user: &std::path::Path) -> io::Result<Game> {
     parse_game_keys(&installed_content_settings::settings::read_keys(user)?)
 }
 #[cfg(test)]

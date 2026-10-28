@@ -1746,16 +1746,16 @@ fn spending_native_content_corpus_audit() {
         );
         let (focuses, warnings) = installed_content_focus::focus::read(&layers).unwrap();
         let conditional = focuses
-            .values()
+            .known()
             .filter(|focus| focus.icons.cases.iter().any(|case| case.trigger.is_some()))
             .count();
         let alternate = focuses
-            .values()
+            .known()
             .filter(|focus| focus.alternate_icon_present)
             .count();
         eprintln!(
             "FOCUSES {root_name}: definitions={} conditional_icons={conditional} alternate_icons={alternate} warnings={}",
-            focuses.len(),
+            focuses.ids().count(),
             warnings.len()
         );
         for (kind, warning) in warnings {

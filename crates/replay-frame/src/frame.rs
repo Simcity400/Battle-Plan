@@ -360,6 +360,26 @@ pub mod view_reads {
         compute()
     }
 
+    /// Whether this thread records the views it reads.
+    pub fn recording() -> bool {
+        RECORDING.with(Cell::get)
+    }
+
+    /// Note `views`, read on a helper thread for this thread's recording.
+    pub fn credit(views: &[ViewIdentity]) {
+        if !recording() {
+            return;
+        }
+        READS.with(|reads| {
+            let mut reads = reads.borrow_mut();
+            for view in views {
+                if !reads.iter().any(|read| read.same(view)) {
+                    reads.push(view.clone());
+                }
+            }
+        });
+    }
+
     /// Run `compute`, returning the views it read, each once. Recording
     /// nests: an enclosing recording also holds the views read inside.
     pub fn record<T>(compute: impl FnOnce() -> T) -> (T, Vec<ViewIdentity>) {
@@ -432,6 +452,31 @@ pub mod view_reads {
             });
             assert_eq!(inner.len(), 1);
             assert_eq!(outer.len(), 2);
+            assert_eq!(held(), 0);
+        }
+
+        #[test]
+        fn views_a_helper_thread_read_are_credited_to_the_recording_caller() {
+            let (first, second) = (view(), view());
+            let ((), read) = record(|| {
+                let helper = std::thread::scope(|scope| {
+                    scope
+                        .spawn(|| {
+                            record(|| {
+                                let _ = &*second;
+                            })
+                            .1
+                        })
+                        .join()
+                        .unwrap()
+                });
+                assert!(recording());
+                credit(&helper);
+                credit(&helper);
+                let _ = &*first;
+            });
+            assert_eq!(read.len(), 2);
+            assert!(!recording());
             assert_eq!(held(), 0);
         }
     }

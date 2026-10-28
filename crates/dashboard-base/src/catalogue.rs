@@ -17,11 +17,13 @@ use std::{io, sync::Arc};
 fn load(
     source: &Source,
     options: &ContentOptions,
+    settings: &Settings,
     presented: Arc<Presented>,
 ) -> io::Result<Catalogue> {
     load_with(
         source,
         options,
+        settings,
         || source.content(&options.options),
         || Ok(presented),
     )
@@ -84,6 +86,7 @@ fn kept_in<S: Slot>(
     options: &ContentOptions,
     presented: impl FnOnce() -> io::Result<Arc<Presented>>,
 ) -> io::Result<Arc<Catalogue>> {
+    let settings = key.3.clone();
     let result = {
         let state = source.state::<S>();
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
@@ -97,7 +100,7 @@ fn kept_in<S: Slot>(
         return loaded;
     }
     let presented = presented();
-    result.get_or_init(|| load(source, options, presented?))
+    result.get_or_init(|| load(source, options, &settings, presented?))
 }
 
 /// The recording's own catalogue for these folders.
@@ -115,6 +118,7 @@ fn recorded_slot(source: &Source, options: &ContentOptions) -> io::Result<Arc<Ca
 fn load_with(
     source: &Source,
     options: &ContentOptions,
+    settings: &Settings,
     resolved: impl Fn() -> io::Result<Arc<installed_content_core::content::ResolvedContent>>,
     presented: impl FnOnce() -> io::Result<Arc<Presented>>,
 ) -> io::Result<Catalogue> {
@@ -125,9 +129,8 @@ fn load_with(
     let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
     let presented = presented()?;
     let mut warnings = Vec::new();
-    let settings = installed_content_settings::settings::read_keys(&options.options.user_dir);
-    let language = match &settings {
-        Ok(settings) => settings.language()?,
+    let language = match settings {
+        Ok((language, _)) => language.clone().map_err(io::Error::other)?,
         Err(why) => {
             warnings.push(format!(
                 "Localisation uses the recorded language {recorded_language}: settings.txt is unavailable: {why}"
@@ -146,7 +149,10 @@ fn load_with(
         &resolved,
     )?;
     let gui_decode = settings
-        .map(|settings| settings.texture_decode())
+        .as_ref()
+        .map(|&(_, force_pow2_textures)| installed_content_image::native::Decode {
+            force_pow2_textures,
+        })
         .map_err(|why| format!("settings.txt is unavailable: {why}"));
     Catalogue::from_content(
         Arc::clone(&presented.content),
@@ -160,10 +166,31 @@ fn load_with(
 }
 
 /// What a catalogue, and every cache derived from one, is bound to: the folders, the
-/// unverified-content choice, the cache folder and the presentation the request's artwork shows
-/// (`ContentOptions::presentation`).
-pub type Binding = (content::ContentKey, std::path::PathBuf, Presentation);
+/// unverified-content choice, the cache folder, the presentation the request's artwork shows
+/// (`ContentOptions::presentation`) and the game settings it reads ([`Settings`]).
+pub type Binding = (
+    content::ContentKey,
+    std::path::PathBuf,
+    Presentation,
+    Settings,
+);
 type Cached = Option<(Binding, Arc<CachedResult<Catalogue>>)>;
+
+/// What a catalogue reads from the user folder's `settings.txt`: the game language (or why it is
+/// unusable) and `force_pow2_textures`; or why the file cannot be read.
+pub type Settings = Result<(Result<String, String>, bool), String>;
+
+/// The [`Settings`] the user folder of `options` holds now.
+fn settings(options: &ContentOptions) -> Settings {
+    installed_content_settings::settings::read_keys(&options.options.user_dir)
+        .map(|keys| {
+            (
+                keys.language().map_err(|why| why.to_string()),
+                keys.force_pow2_textures(),
+            )
+        })
+        .map_err(|why| why.to_string())
+}
 
 /// The binding of the catalogue [`catalogue`] gives for these options.
 pub fn binding(options: &ContentOptions) -> Binding {
@@ -175,6 +202,7 @@ fn binding_with(options: &ContentOptions, presentation: Presentation) -> Binding
         content::content_key(Some(options)).expect("content options given"),
         options.options.cache_dir.clone(),
         presentation,
+        settings(options),
     )
 }
 
@@ -212,7 +240,12 @@ pub fn catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Ca
             source.presented_for(options)
         })?
     } else {
-        Arc::new(load(source, options, source.presented_for(options)?)?)
+        Arc::new(load(
+            source,
+            options,
+            &settings(options),
+            source.presented_for(options)?,
+        )?)
     };
     keeping_recorded(source, options, shown)
 }
@@ -558,6 +591,7 @@ pub(crate) fn bound_catalogue_with(
     // hold the source's binding.
     let presented = source.bound_presented_for(options)?;
     let key = binding(options);
+    let settings = key.3.clone();
     let result = with_slot(source, options, |slot| {
         // A catalogue a request bound to anything else is left alone.
         if slot.as_ref().is_some_and(|(cached, _)| *cached != key) {
@@ -577,6 +611,7 @@ pub(crate) fn bound_catalogue_with(
         load_with(
             source,
             options,
+            &settings,
             || Ok(Arc::clone(&content)),
             || Ok(Arc::clone(&presented)),
         )
@@ -674,13 +709,27 @@ mod loader_tests {
                     .iter()
                     .any(|why| why.contains("recorded language"))
             );
+            let cached = crate::catalogue::catalogue(&source, &options).unwrap();
+            assert!(Arc::ptr_eq(&catalogue, &cached));
             if unreadable {
                 std::fs::remove_dir(&settings).unwrap();
             }
+            // Settings that change since are read again, with the catalogue bound to them.
             std::fs::write(&settings, "language=l_english force_pow2_textures=yes").unwrap();
-            let cached = crate::catalogue::catalogue(&source, &options).unwrap();
-            assert!(Arc::ptr_eq(&catalogue, &cached));
-            assert!(cached.gui_decode.is_err());
+            let changed = crate::catalogue::catalogue(&source, &options).unwrap();
+            assert!(!Arc::ptr_eq(&catalogue, &changed));
+            assert!(
+                changed
+                    .gui_decode
+                    .as_ref()
+                    .is_ok_and(|decode| decode.force_pow2_textures)
+            );
+            assert!(
+                changed
+                    .warnings
+                    .iter()
+                    .all(|why| !why.contains("recorded language"))
+            );
             std::fs::remove_file(&settings).unwrap();
         }
     }

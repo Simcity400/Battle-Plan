@@ -1477,6 +1477,19 @@ pub fn next_change(
         format!("army-ranks-{branch}-{channel}"),
         cancelled,
     )?;
+    // An alias's changes are the selection's only while a selected native country holds it.
+    let selected = if selection.top.is_none() {
+        let within: BTreeMap<String, Vec<HourSpan>> =
+            serde_json::from_value(params.get("within").cloned().unwrap_or_else(|| json!({})))?;
+        dashboard_base::products::country_history::selected_spans(
+            &history,
+            &selection.tags,
+            &within,
+            cancelled,
+        )?
+    } else {
+        BTreeMap::new()
+    };
     let mut value_keys = Vec::new();
     let mut rank_keys = Vec::new();
     if let Some(top) = selection.top {
@@ -1491,12 +1504,9 @@ pub fn next_change(
             }
         }
     } else {
-        value_keys.extend(
-            dashboard_base::products::country_history::selected_aliases(&history, &selection.tags)
-                .iter()
-                .filter_map(|tag| actors.get(tag))
-                .map(|&key| (key, None)),
-        );
+        value_keys.extend(selected.iter().filter_map(|(tag, spans)| {
+            actors.get(tag).map(|&key| (key, Some(spans.as_slice())))
+        }));
     }
     let hour = series::navigate(
         &mut [(&mut values, value_keys), (&mut ranks, rank_keys)],

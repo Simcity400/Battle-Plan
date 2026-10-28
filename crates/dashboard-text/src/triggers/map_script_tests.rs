@@ -295,6 +295,18 @@ fn map_scripts_state_callbacks_keep_holes_fractional_population_and_recorded_val
             eval.encode(Scope::State(79))
         );
         assert_eq!(eval.scoped_value(b"global.states^79", scope), Ok(0));
+        // A hole is a known null state: converting or decoding it refuses nothing.
+        let hole = eval.encode(Scope::State(79)).unwrap();
+        let (states, failures) = crate::triggers::refusal::capture(|| {
+            (
+                eval.scoped_state(b"79", scope),
+                eval.scoped_state(b"global.states^78", scope),
+                eval.decoded(crate::triggers::variables::Value::Raw(hole), scope),
+                eval.decoded(crate::triggers::variables::Value::Raw(79 * ONE), scope),
+            )
+        });
+        assert_eq!(states, (Ok(NULL_STATE), Ok(NULL_STATE), Ok(None), Ok(None)));
+        assert!(failures.is_empty(), "{failures:?}");
         assert_eq!(
             eval.scoped_value(b"owner", scope),
             eval.encode(Scope::Country(1))

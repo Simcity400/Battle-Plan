@@ -1313,3 +1313,50 @@ fn changed_stock_projects_only_its_type_and_domain_and_keeps_all_group_bytes() {
         }
     }
 }
+
+#[test]
+fn dense_share_pairs_balance_and_need_at_the_same_hours() {
+    use dashboard_base::prepared_chart::ChartBucket;
+    let run = |first_hour, last_hour, value| series::Run {
+        first_hour,
+        last_hour,
+        value,
+        break_before: false,
+    };
+    let covered = [
+        Some(ChartBucket {
+            absolute_total: 0,
+            first_hour: 0,
+            last_hour: 3,
+            first_value: 1.0,
+            last_value: 1.0,
+            last_value_hour: 0,
+            min_hour: 0,
+            min_value: 1.0,
+            max_hour: 0,
+            max_value: 1.0,
+            first_break: true,
+            has_break: false,
+        }),
+        None,
+    ];
+    // Balance is least at hour 1 and need at hour 2: 50% and 400% occurred, 200% never did.
+    let balance = [run(0, 0, 100), run(1, 1, 50), run(2, 3, 100)];
+    let need = [run(0, 1, 100), run(2, 2, 25), run(3, 3, 100)];
+    let buckets = share_buckets(&covered, &balance, &need);
+    let bucket = buckets[0].unwrap();
+    assert_eq!((bucket.min_hour, bucket.min_value), (1, 50.0));
+    assert_eq!((bucket.max_hour, bucket.max_value), (2, 400.0));
+    assert_eq!((bucket.first_value, bucket.last_value), (100.0, 100.0));
+    assert!(!bucket.has_break);
+    assert_eq!(buckets[1], None);
+    // An hour without a positive need has no share: a break, never zero.
+    let gap = share_buckets(
+        &covered,
+        &balance,
+        &[run(0, 1, 100), run(2, 2, 0), run(3, 3, 100)],
+    )[0]
+    .unwrap();
+    assert!(gap.has_break);
+    assert_eq!((gap.min_value, gap.max_value), (50.0, 100.0));
+}

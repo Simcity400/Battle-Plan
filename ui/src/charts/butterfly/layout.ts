@@ -6,9 +6,10 @@ import { barThickness, MIN_SLOT, RACE_AXIS } from '../race/race.ts';
 import { linearTicks } from '../valueAxis.ts';
 
 export interface ButterflyValue { id: string; left: number | null; right: number | null }
-/** One part of a side's bar: its amount (its share of the bar's length), colour and
- * whether it is unknown, drawn hatched. */
-export interface ButterflyPart { id: string; value: number; color: string; hatched?: boolean }
+/** One part of a side's bar: its amount (its share of the bar's length), colour,
+ * whether it is unknown, drawn hatched, and whether the amount is a negative one's
+ * magnitude, outlined dashed as a negative bar is. */
+export interface ButterflyPart { id: string; value: number; color: string; hatched?: boolean; negative?: boolean }
 /** The part under the pointer: its side and its index in that side's parts. */
 export interface ButterflyPartHit { side: 'left' | 'right'; index: number }
 

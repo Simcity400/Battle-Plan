@@ -459,6 +459,8 @@ export function usePreparedRace<T extends { series: { tag: string; runs: { first
   const owner = useMemo(() => ({ client, key }), [client, key]);
   const alive = useRef(owner); alive.current = owner;
   const pending = useRef(new Set<AbortController>());
+  // Only the latest key's request may answer the chart's pending navigation.
+  const navigation = useRef<AbortController | null>(null);
   useEffect(() => () => { for (const controller of pending.current) controller.abort(); pending.current.clear(); }, [owner, active]);
   const [view, setView] = useState<{ key: string; from: number; to: number; width: number }>();
   const [hover, setHover] = useState<{ key: string; hour: number | null }>();
@@ -522,7 +524,8 @@ export function usePreparedRace<T extends { series: { tag: string; runs: { first
   const onNavigateHour = useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((action, from, x, until) => {
     if (!enabled || !track || !request || !active) return;
     setNavigationError(undefined);
-    const controller = new AbortController(); pending.current.add(controller);
+    navigation.current?.abort();
+    const controller = new AbortController(); pending.current.add(controller); navigation.current = controller;
     void preparedSeriesQuery(client, track.source, 'series-next-change', { branchId, tags, family, key: action, from,
       firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]), within: within && Object.fromEntries(within) }, controller.signal).then(reply => {
       if (controller.signal.aborted || alive.current !== owner) return;

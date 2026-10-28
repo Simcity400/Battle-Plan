@@ -111,19 +111,21 @@ test('reached reads preserve canonical bounds and saved design witnesses without
   assert.ok(shareOf({ balance: 1n, need: BigInt(original.needBoundRaw) - 1n })! > 0);
 });
 
-test('dense types use correlated aggregate operands and exact integer ratio samples', () => {
+test('dense types use correlated aggregate operands and the share paired at the same hours', () => {
   const data = prepared(0, 30_000, 1);
   const view = { from: 0, to: 30_000, width: 1 };
   data.prepared!.coverage.forEach(summary => Object.assign(summary, { ...view, runs: undefined, buckets: [bucket(0, 30_000, 0)] }));
   const value = (field: string, samples: (string | null)[]): StockpileOperand => ({ field, id: 'group', key: 'group',
     values: { ...view, buckets: [bucket(0, 30_000, Number(samples[0] ?? 0))] }, presence: { ...view, buckets: [] }, rowSamples: [], samples: [samples] });
+  // Balance is least (10) at one read and need least (10) at another: 10% and 1,000% occurred; dividing the minima would invent 100%.
+  const paired = { ...bucket(0, 30_000, 100), minHour: 10, minValue: 10, maxHour: 20, maxValue: 1000 };
   data.prepared!.groups = [{ key: '["type","rifle"]', operands: [value('stock', ['100', '100', '100', '100']),
-    value('balance', ['9007199254740993', '2', '-1', null]), value('need', ['9007199254740995', '3', '4', '1'])] }];
+    value('balance', ['100', '100', '10', '100']), value('need', ['100', '100', '10', '100']),
+    { ...value('share', [null, null, null, null]), values: { ...view, buckets: [paired] } }] }];
   const group = stockGroups(data, 'type', 30)[0];
   const share = stockpileSummaries(data, [group], 'type', view, false).get(group.key)!;
-  assert.equal(share.buckets[0]?.firstValue, Number('9007199254740993') / Number('9007199254740995') * 100);
-  assert.equal(share.buckets[0]?.minValue, -25);
-  assert.equal(share.buckets[0]?.hasBreak, true, 'unknown samples never become zero');
+  assert.deepEqual(share.buckets[0], paired, 'independent operand extrema are never divided');
+  assert.equal(exactRuns(share), null);
   const stock = stockpileSummaries(data, [group], 'variant', view, false).get(group.key)!;
   assert.equal(stock.buckets[0]?.maxValue, .001, 'the aggregate is used instead of summing separate model maxima');
 });

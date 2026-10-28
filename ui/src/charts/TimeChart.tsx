@@ -21,7 +21,7 @@ import type { FrameInfo, FrameTask } from './scheduler';
 import { toLocal, watchCanvasSize } from './surface';
 import { CHART_LAYOUT, readTokens, subscribeTokens } from './tokens';
 import type { ChartTokens } from './tokens';
-import { hideTooltip, showTooltip, tooltipText } from './tooltip';
+import { hideTooltip, showTooltip, tooltipStore, tooltipText } from './tooltip';
 import type { TooltipContent } from './tooltip';
 import { formatAxisValue } from './valueAxis';
 import { EMPTY_VIEW, playbackDomain, reduceView, resolveX, resolveY } from './view';
@@ -151,7 +151,7 @@ export default function TimeChart(props: TimeChartProps) {
   // which the keys act on; what the keyboard hover shows is read out as it changes.
   type Point = { x: number; y: number; clientX: number; clientY: number };
   const hover = useRef<HoverState<Point>>(NO_HOVER);
-  const pendingNavigation = useRef<{ hover: HoverState<Point>; owner: unknown } | null>(null);
+  const pendingNavigation = useRef<{ hover: HoverState<Point>; owner: unknown; tooltip: number } | null>(null);
   const shownHour = useRef<number | null>(null);
   // The last notified callback owns any outstanding hover facts, even after a render changes the owner.
   const hoverObserver = useRef<{ callback: NonNullable<TimeChartProps['onHover']>;
@@ -164,6 +164,9 @@ export default function TimeChart(props: TimeChartProps) {
   const [keySpoken, setKeySpoken] = useState('');
   // The text last read out, so an unchanged tooltip is not announced again.
   const keyText = useRef('');
+  // A fresh key action may take the shared tooltip; later redraws of a kept keyboard hour may not.
+  // A late reply to a key may, only if nothing was pointed at since that key (`since`, the layer's revision).
+  const keyIntent = useRef<boolean | { since: number }>(false);
   // The time range drawn and the last hour shown, for the keyboard hover.
   const shown = useRef<{ x: Range; until: number | null } | null>(null);
   const picks = useRef(new ChartPicks()).current;
@@ -179,7 +182,7 @@ export default function TimeChart(props: TimeChartProps) {
     let view: ViewState = EMPTY_VIEW;
     // The badges last described, compared one by one (a count and range could repeat after a pan).
     let spokenFor: readonly EventBadge[] = [];
-    let spokeSummary = false;
+    let spokenBadges = '', spokenText = '';
     // The view last reported: a handler hears only a new range (or, when it changes, the current one).
     let reported: { handler: (x: Range) => void; x: Range } | null = null;
     let eased: { x: [number, number]; y: [number, number] } | null = null;
@@ -284,10 +287,10 @@ export default function TimeChart(props: TimeChartProps) {
       }
 
       const until = shownUntil(p.playhead, p.playback, p.afterPlayhead === true);
-      const preparedMarks = p.markSummary !== undefined || p.markSummaries !== undefined;
+      // Callers pass each event category once, as summary or badge, so both are drawn, hit and spoken.
       const summaries = [...(p.markSummary ? [p.markSummary] : []), ...(p.markSummaries ?? [])].filter(summary => markSummaryMatches(summary, frame!, until));
       const baseKey = [size.width, size.height, frame.plotLeft, frame.plotTop, frame.plotWidth, frame.plotHeight, frame.x[0], frame.x[1], frame.y[0], frame.y[1],
-        frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, preparedMarks, p.overlay, p.rows, p.formatValue, p.valueTicks, ...summaries];
+        frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, p.overlay, p.rows, p.formatValue, p.valueTicks, ...summaries];
       const kept = base;
       pickFrame.current = { ...picks.drawn({ frame, until }, p.onPick), props: p };
       if (kept && kept.key.length === baseKey.length && kept.key.every((value, index) => Object.is(value, baseKey[index]))) {
@@ -306,7 +309,7 @@ export default function TimeChart(props: TimeChartProps) {
         if (p.strip && frame.strip) p.strip.draw(context, frame, tokens, { playhead: until });
         if (p.playhead != null && p.playback === 'cursor') drawPlayhead(context, frame, tokens, p.playhead);
         for (const summary of summaries) drawMarkSummary(context, frame, tokens, summary);
-        if (!preparedMarks && p.badges) drawBadges(context, frame, tokens, p.badges, until);
+        if (p.badges) drawBadges(context, frame, tokens, p.badges, until);
         p.overlay?.(context, frame, tokens);
         if (pointer) {
           const canvas = kept?.canvas ?? document.createElement('canvas');
@@ -336,18 +339,15 @@ export default function TimeChart(props: TimeChartProps) {
           || performance.now() - summaryAt >= SUMMARY_INTERVAL_MS) { if (summaryTimer) clearTimeout(summaryTimer); sendSummary(); }
         else summaryTimer ??= setTimeout(sendSummary, SUMMARY_INTERVAL_MS - (performance.now() - summaryAt));
       }
-      const drawn = !preparedMarks && p.badges ? visibleBadges(p.badges, frame.x, until) : [];
-      if (!preparedMarks && (spokeSummary || drawn.length !== spokenFor.length || drawn.some((badge, index) => badge !== spokenFor[index]))) {
-        spokeSummary = false;
+      const drawn = p.badges ? visibleBadges(p.badges, frame.x, until) : [];
+      if (drawn.length !== spokenFor.length || drawn.some((badge, index) => badge !== spokenFor[index])) {
         spokenFor = drawn;
-        setSpoken(drawn.map(badge => `${dayLabel(badge.hour)}, ${badge.label}`).join('; '));
+        spokenBadges = drawn.map(badge => `${dayLabel(badge.hour)}, ${badge.label}`).join('; ');
       }
-      if (preparedMarks) {
-        spokeSummary = true;
-        const text = summaries.flatMap(summary => summary.clusters.map(cluster => cluster.badge ? `${dayLabel(cluster.badge.hour)}, ${cluster.badge.label}`
-          : `${dayLabel(cluster.firstHour) === dayLabel(cluster.lastHour) ? dayLabel(cluster.firstHour) : `${dayLabel(cluster.firstHour)} to ${dayLabel(cluster.lastHour)}`}, ${eventCount(cluster.count)}`)).join('; ');
-        setSpoken(previous => previous === text ? previous : text);
-      }
+      const clusterText = summaries.flatMap(summary => summary.clusters.map(cluster => cluster.badge ? `${dayLabel(cluster.badge.hour)}, ${cluster.badge.label}`
+        : `${dayLabel(cluster.firstHour) === dayLabel(cluster.lastHour) ? dayLabel(cluster.firstHour) : `${dayLabel(cluster.firstHour)} to ${dayLabel(cluster.lastHour)}`}, ${eventCount(cluster.count)}`)).join('; ');
+      const eventText = spokenBadges && clusterText ? `${spokenBadges}; ${clusterText}` : spokenBadges || clusterText;
+      if (eventText !== spokenText) { spokenText = eventText; setSpoken(eventText); }
       if (drag?.mode === 'box') drawSelection(context, tokens, drag);
 
       // Live hover: re-resolved every frame, so a still pointer stays current during playback.
@@ -415,10 +415,15 @@ export default function TimeChart(props: TimeChartProps) {
           const rect = element.getBoundingClientRect();
           point = { clientX: rect.left + frame.toX(at.hour) * rect.width / layoutWidth, clientY: rect.top + (frame.plotTop + 8) * rect.height / layoutHeight };
         }
-        if (hovered.content) showTooltip(owner, hovered.content, point.clientX, point.clientY, hovered.key); else hideTooltip(owner);
-        const text = hit?.by === 'keyboard' && hovered.content ? tooltipText(hovered.content) : keyText.current;
-        if (text !== keyText.current) { keyText.current = text; setKeySpoken(text); }
+        const held = tooltipStore.get(), intent = keyIntent.current;
+        const fresh = intent === true || (intent !== false && tooltipStore.revision() === intent.since);
+        if (pointed || fresh || held == null || held.owner === owner) {
+          if (hovered.content) showTooltip(owner, hovered.content, point.clientX, point.clientY, hovered.key); else hideTooltip(owner);
+          const text = hit?.by === 'keyboard' && hovered.content ? tooltipText(hovered.content) : keyText.current;
+          if (text !== keyText.current) { keyText.current = text; setKeySpoken(text); }
+        }
       } else { hovered = null; hideTooltip(owner); }
+      keyIntent.current = false;
       element.style.cursor = drag?.mode === 'pan' ? 'grabbing' : pointed?.badges.length ? 'pointer' : zone === 'x-axis' ? 'ew-resize'
         : zone === 'y-axis' ? 'ns-resize' : zone === 'plot' || zone === 'strip' ? 'crosshair' : 'default';
 
@@ -439,9 +444,9 @@ export default function TimeChart(props: TimeChartProps) {
         const next = markClusterAt(point, plot, summary);
         if (next && (!cluster || Math.abs(plot.toX(clusterHour(next)) - point.x) < Math.abs(plot.toX(clusterHour(cluster)) - point.x))) cluster = next;
       }
-      if (cluster) return { hour: clusterHour(cluster), describes: cluster.firstHour,
-        badges: cluster.badge ? [cluster.badge] : [], cluster };
-      const badges = !p.markSummary && !p.markSummaries && p.badges ? badgesAt(point, plot, p.badges, until) : [];
+      const badges = p.badges ? badgesAt(point, plot, p.badges, until) : [];
+      if (cluster && (!badges.length || Math.abs(plot.toX(clusterHour(cluster)) - point.x) <= Math.abs(plot.toX(badges[0].hour) - point.x)))
+        return { hour: clusterHour(cluster), describes: cluster.firstHour, badges: cluster.badge ? [cluster.badge] : [], cluster };
       if (badges.length) return { hour: badges[0].hour, describes: badges[0].hour, badges };
       const zone = hitZone(point, plot);
       if (zone !== 'plot' && zone !== 'strip') return null;
@@ -611,6 +616,8 @@ export default function TimeChart(props: TimeChartProps) {
       if (props.onNavigateHour && (!pending || pending.hover !== hover.current || !Object.is(pending.owner, props.pickOwner))) return;
       pendingNavigation.current = null;
       keyedStopRef.current = null;
+      // Whether the reply may take the tooltip is decided when it is drawn.
+      keyIntent.current = pending ? { since: pending.tooltip } : true;
       hover.current = reduceHover(hover.current, { type: 'key', hour: props.keyboardHour });
       if (task.current) scheduler.wake(task.current);
     }
@@ -623,17 +630,22 @@ export default function TimeChart(props: TimeChartProps) {
     // The arrow keys, Home and End hover the chart as the pointer would, with its tooltip read out.
     if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && props.rows && shown.current) {
       event.preventDefault();
+      keyIntent.current = true;
       rowRef.current = keyTarget(event.key, rowRef.current, props.rows.labels.length, 1) ?? 0;
       send({ type: 'key', hour: hover.current.keyed ?? shownHour.current ?? props.playhead ?? props.extent[1] });
       return;
     }
     if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End') && shown.current && (props.tooltip || props.rows)) {
       event.preventDefault();
+      keyIntent.current = true;
       // The keyboard takes over from the pointer, stepping on from the hour shown.
       // The strip's bars in view are stops too, so the keys reach everything the pointer can.
       const { x, until } = shown.current;
       if (props.onNavigateHour) {
-        pendingNavigation.current = { hover: hover.current, owner: props.pickOwner };
+        const since = tooltipStore.revision();
+        pendingNavigation.current = { hover: hover.current, owner: props.pickOwner, tooltip: since };
+        // Until the reply arrives, a frame takes the tooltip only if nothing was pointed at since.
+        keyIntent.current = { since };
         props.onNavigateHour(event.key, hover.current.keyed ?? shownHour.current, x, until);
         return;
       }

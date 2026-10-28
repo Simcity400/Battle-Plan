@@ -1,8 +1,5 @@
 //! The panel's recordings, listed only while it asks, from directory listings and file metadata.
-use crate::{
-    flags::{BackgroundPriority, FlagImage},
-    targets,
-};
+use crate::flags::{BackgroundPriority, FlagImage};
 use recorder::controller::{self, Waiting, WaitingCampaign, WaitingName, WaitingNames};
 use replay::{container::Replay, recorder_settings::RecorderSettings, recording_files};
 use serde::Serialize;
@@ -365,7 +362,8 @@ impl Library {
             }
             None => unsaved.push((target.to_owned(), vec![session.to_owned()], row)),
         };
-        if let Some(session) = live.session {
+        // The running session saves into the folder it started with, whatever the settings say now.
+        if let (Some(session), Some(target)) = (live.session, live.target) {
             // Left for another campaign that has not written an hour yet, it waits rather than records.
             if let Some(campaign) = live.campaign
                 && !live
@@ -374,7 +372,7 @@ impl Library {
                     .any(|waiting| waiting.campaign == campaign)
             {
                 add(
-                    &targets::current_folder(settings, &root, campaign),
+                    target,
                     session,
                     Unsaved {
                         session: session.display().to_string(),
@@ -391,7 +389,7 @@ impl Library {
             }
             for waiting in live.set_aside {
                 add(
-                    &targets::current_folder(settings, &root, &waiting.campaign),
+                    target,
                     session,
                     Unsaved {
                         session: session.display().to_string(),
@@ -661,7 +659,7 @@ mod tests {
     /// A file of `bytes` whose header names `campaign`, cut short after it.
     fn recording(path: &Path, campaign: &str, bytes: u64) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        targets::tests::recording_file(path, campaign);
+        crate::targets::tests::recording_file(path, campaign);
         fs::OpenOptions::new()
             .write(true)
             .open(path)
@@ -808,6 +806,46 @@ mod tests {
         let view = library.view("panel", 1, true);
         let after = library.list(&settings, view, &live, &BTreeMap::new(), || {});
         assert_eq!(after.unsaved.len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_running_sessions_recordings_stay_in_its_folder_after_the_save_folder_changes() {
+        let root = scratch();
+        // The running session started saving into `root`; the save folder changed since.
+        let settings = RecorderSettings {
+            save_folder: Some(root.join("moved")),
+            ..RecorderSettings::default()
+        };
+        let germany = root.join("Germany 1936.battleplan");
+        recording(&germany, CAMPAIGN, 3000);
+        let running = root.join("sessions").join("2-2");
+        write(&running.join(CAMPAIGN).join("spool.0000.h4s"), 4000);
+        write(&running.join(OTHER).join("spool.0000.h4s"), 1000);
+        let names = BTreeMap::from([(CAMPAIGN.to_owned(), "Germany 1936–1943".to_owned())]);
+        let set_aside = [Waiting {
+            campaign: CAMPAIGN.into(),
+            unsaved: Default::default(),
+            saving: false,
+        }];
+        let live = Live {
+            session: Some(&running),
+            target: Some(&root),
+            campaign: Some(OTHER),
+            hour: Some(99),
+            set_aside: &set_aside,
+            names: &names,
+        };
+        let library = namer(BTreeMap::new(), Arc::default());
+        let view = library.view("panel", 1, true);
+        let listed = library.list(&settings, view, &live, &BTreeMap::new(), || {});
+        let waiting = listed
+            .unsaved
+            .iter()
+            .find(|row| row.campaign == CAMPAIGN)
+            .unwrap();
+        assert_eq!(waiting.recording, Some(germany.display().to_string()));
+        assert_eq!(waiting.name.as_deref(), Some("Germany 1936–1943"));
         fs::remove_dir_all(root).unwrap();
     }
 

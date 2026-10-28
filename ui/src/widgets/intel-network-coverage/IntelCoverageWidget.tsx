@@ -79,8 +79,12 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   const readDate = at?.readHour === undefined ? null : dayLabel(at.readHour);
   const tooltip = useCallback((row: number, column: number) => row === column ? null
     : at ? pairTooltip(axis[row].label, axis[column].label, cellState(at, countries[row].id, countries[column].id), readDate) : null, [axis, at, countries, readDate]);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const [pair, setPair] = useState<{ owner: string; target: string } | null>(null);
+  const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
+  // A pair's countries are one recording's TAG@slot identities in one branch: another one drops it.
+  const scope = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]);
+  const [choice, setPair] = useState<{ scope: object; owner: string; target: string } | null>(null);
+  const pair = choice?.scope === scope ? choice : null;
+  const drill = pair ? savedDrill : CLOSED;
   const drillAt = drillHour(drill, hour);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   const saved = options.show === 'pair';
@@ -106,7 +110,7 @@ export default function IntelCoverageWidget(props: WidgetProps) {
     : <HeatMatrix label="Intel network coverage" rows={axis} columns={axis} cell={cell} revision={`${hour}:${field}:${labels}:${highest}`} active={active} onVisible={onVisible}
       tooltip={tooltip} onSelect={(row, column) => {
         if (row === column) return;
-        setPair({ owner: countries[row].id, target: countries[column].id });
+        setPair({ scope, owner: countries[row].id, target: countries[column].id });
         dispatch({ type: 'open', breakdown: 'pair', hour, playing: widget.time.mode === 'follow', playhead: hour });
       }} menu={() => at.readHour === undefined ? [] : [jumpItem(runtime, track.id, at.readHour)]} />;
   const names = pair ? [countries.findIndex(country => country.id === pair.owner), countries.findIndex(country => country.id === pair.target)] : [];

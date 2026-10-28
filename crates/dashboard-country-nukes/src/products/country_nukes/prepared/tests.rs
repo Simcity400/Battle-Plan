@@ -744,3 +744,25 @@ fn phase_b_deferred_native_runs_match_eager_after_two_checkpoints_resume_append_
     }
     observer_tests::assert_reply_parity(&lazy.finish(), &oracle.finish()).unwrap();
 }
+
+#[test]
+fn event_membership_spans_join_clip_and_keep_only_hours_within() {
+    let span = |first_hour, last_hour| HourSpan {
+        first_hour,
+        last_hour,
+    };
+    // Unordered, overlapping, touching and out-of-window spans of one key.
+    assert_eq!(
+        joined_spans(
+            vec![span(8, 12), span(1, 3), span(4, 5), span(20, 30), span(-5, -1)],
+            0,
+            25,
+        ),
+        [span(1, 5), span(8, 12), span(20, 25)]
+    );
+    let flag = AtomicBool::new(false);
+    assert_eq!(
+        within_spans(&[span(1, 5), span(8, 12)], &[span(3, 9)], &flag).unwrap(),
+        [span(3, 5), span(8, 9)]
+    );
+}

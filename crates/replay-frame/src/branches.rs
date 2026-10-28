@@ -250,13 +250,13 @@ impl BranchTracker {
             if hour < start.first_hour {
                 return Err(invalid("recorded hour precedes branch start"));
             }
-            if recorded.contains(&hour) {
-                return Err(invalid("duplicate recorded hour in branch history"));
-            }
             engine_allocation::reserve(&mut recorded, 1)?;
             recorded.push(hour);
         }
         recorded.sort_unstable();
+        if recorded.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(invalid("duplicate recorded hour in branch history"));
+        }
         engine_allocation::reserve(&mut self.branches, 1)?;
         if !self.sessions.contains(&start.session) {
             engine_allocation::reserve(&mut self.sessions, 1)?;
@@ -917,6 +917,11 @@ mod tests {
         assert!(
             tracker
                 .seed_recorded_branch(start.clone(), [9, 10])
+                .is_err()
+        );
+        assert!(
+            tracker
+                .seed_recorded_branch(start.clone(), [12, 10, 12])
                 .is_err()
         );
         tracker

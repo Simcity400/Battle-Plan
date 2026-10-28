@@ -72,8 +72,10 @@ test('a folded column keeps the hovered day: its tooltip, menu and drill read th
     fixture.read.set(5, { data: { ...snowDay, coverage: { firstHour: 0, lastHour: 123, complete: false }, pending: [{ firstHour: 124, lastHour: 143 }] } as WeatherReply });
     assert.deepEqual(render().rows!.tooltip(0, 125)!.rows.at(-1), { label: dayLabel(125), value: 'Still being prepared', divider: true },
       'a day preparation has not reached is never shown as not recorded');
+    assert.deepEqual(fixture.wanted, [5, 5, 5], 'a day read while still being prepared is asked for again');
     fixture.read.set(5, { data: snowDay });
     const exact = render().rows!.tooltip(0, 125)!;
+    assert.deepEqual(fixture.wanted, [5, 5, 5], 'a finished day is not asked for again');
     const text = exact.rows.map(row => `${row.label}=${row.value ?? ''}`).join(';');
     assert.match(text, /Rain=1 day;Snow=1 day;No condition=3 days/);
     assert.match(text, /Conditions=Snow/);

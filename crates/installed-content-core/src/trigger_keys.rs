@@ -4,7 +4,7 @@
 //! executable, while authored names come from the resolved content stack.
 
 use engine_executable::executable_tables::RuntimeTable;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     buildings::Buildings,
@@ -478,6 +478,8 @@ pub enum CountKind {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CountTriggerNames {
     pub buildings: BTreeSet<Vec<u8>>,
+    /// Each building name's `provincial` class; `None` when declarations disagree.
+    pub provincial: BTreeMap<Vec<u8>, Option<bool>>,
     pub ideologies: BTreeSet<Vec<u8>>,
     pub ideology_types: BTreeSet<Vec<u8>>,
     pub ideologies_gap: Option<String>,
@@ -486,12 +488,30 @@ pub struct CountTriggerNames {
 
 impl CountTriggerNames {
     pub fn new(buildings: &Buildings, ideologies: &Ideologies, resources: &[Resource]) -> Self {
+        let mut provincial = BTreeMap::new();
+        for (name, building) in &buildings.types {
+            let class = building.provincial();
+            let agreed = buildings
+                .repeated_types
+                .get(name)
+                .is_none_or(|repeats| repeats.iter().all(|other| other.provincial() == class));
+            let class = agreed.then_some(class);
+            provincial
+                .entry(name.as_bytes().to_ascii_lowercase())
+                .and_modify(|known: &mut Option<bool>| {
+                    if *known != class {
+                        *known = None;
+                    }
+                })
+                .or_insert(class);
+        }
         Self {
             buildings: buildings
                 .types
                 .keys()
                 .map(|name| name.as_bytes().to_ascii_lowercase())
                 .collect(),
+            provincial,
             ideologies: ideologies
                 .groups()
                 .0
@@ -532,6 +552,13 @@ impl CountTriggerNames {
     }
     pub fn is_building(&self, text: &[u8]) -> bool {
         self.buildings.contains(&text.to_ascii_lowercase())
+    }
+    /// Whether a building type is provincial; `None` when unknown or ambiguous.
+    pub fn is_provincial(&self, text: &[u8]) -> Option<bool> {
+        self.provincial
+            .get(&text.to_ascii_lowercase())
+            .copied()
+            .flatten()
     }
     pub fn is_ideology_type(&self, text: &[u8]) -> Result<bool, String> {
         if self.ideology_types.contains(&text.to_ascii_lowercase()) {
@@ -814,5 +841,28 @@ mod tests {
             unknown.starts_with("whether technocracy names an ideology group is unknown: common/ideologies/b.txt is unknown from line 3"),
             "{unknown}"
         );
+    }
+
+    #[test]
+    fn building_classes_are_known_only_when_declarations_agree() {
+        use crate::buildings::BuildingType;
+        let provincial = BuildingType {
+            province_max: Some(1),
+            ..BuildingType::default()
+        };
+        let mut buildings = Buildings::default();
+        buildings.types.insert("Bunker".into(), provincial.clone());
+        buildings
+            .types
+            .insert("mill".into(), BuildingType::default());
+        buildings.types.insert("site".into(), provincial.clone());
+        buildings
+            .repeated_types
+            .insert("site".into(), vec![BuildingType::default(), provincial]);
+        let names = CountTriggerNames::new(&buildings, &Ideologies::default(), &[]);
+        assert_eq!(names.is_provincial(b"BUNKER"), Some(true));
+        assert_eq!(names.is_provincial(b"Mill"), Some(false));
+        assert_eq!(names.is_provincial(b"site"), None);
+        assert_eq!(names.is_provincial(b"absent"), None);
     }
 }

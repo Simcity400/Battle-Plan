@@ -49,13 +49,20 @@ export function contributionRows(group: WarContributionGroup): ContributionRow[]
 
 /** Geometry only: exact words keep their own text. */
 export const toNumber = (raw: bigint) => Number(raw) / UNIT;
-/** A side's drawn amount, its known part and unknown part together. */
+/** A side's signed amount, its known part and unknown part together. */
 export const sideAmount = (side: SideTotal) => side.total + (side.unknown ?? 0n);
 
-/** Bar lengths for a row. Share of side fills each side that has anything; Totals scales
- * the row to its own larger side, since the terms have different units. */
+const magnitude = (raw: bigint) => raw < 0n ? -raw : raw;
+/** A side's drawn length: every member's parts at their own size, negative ones too, so parts
+ * that cancel out still show. */
+export const sideMagnitude = (side: SideTotal) =>
+  side.members.reduce((sum, member) => sum + magnitude(member.value) + magnitude(member.unknown ?? 0n), 0n);
+
+/** Bar lengths for a row: every part at its own size, a negative one outlined, while the side's
+ * text keeps its signed total. Share of side fills each side that has anything; Totals scales the
+ * row to its own longer side, since the terms have different units. */
 export function rowLengths(row: ContributionRow, show: 'share' | 'totals'): { left: number; right: number } {
-  const left = Math.max(0, toNumber(sideAmount(row.left))), right = Math.max(0, toNumber(sideAmount(row.right)));
+  const left = toNumber(sideMagnitude(row.left)), right = toNumber(sideMagnitude(row.right));
   if (show === 'share') return { left: left > 0 ? 1 : 0, right: right > 0 ? 1 : 0 };
   const larger = Math.max(left, right);
   return larger > 0 ? { left: left / larger, right: right / larger } : { left: 0, right: 0 };
@@ -86,12 +93,13 @@ export function chosenWar(reply: WarsReply, saved: string | null, at: number): W
  * observed hour once it has ended. */
 export const readHourFor = (war: WarTimeline, at: number) => Math.min(Math.floor(at), war.lastHour);
 
-/** A share of a side's total in percent, with two decimals; none for an empty side. */
+/** A share of a side's signed total in percent, with two decimals: negative where the part
+ * and the total differ in sign. None for a side totalling zero. */
 export function shareText(value: bigint, total: bigint): string {
-  if (total <= 0n) return '—';
-  const magnitude = value < 0n ? -value : value;
-  const hundredths = (magnitude * 20000n + total) / (total * 2n);
-  return `${value < 0n && hundredths ? '-' : ''}${hundredths / 100n}.${String(hundredths % 100n).padStart(2, '0')}%`;
+  if (total === 0n) return '—';
+  const magnitude = value < 0n ? -value : value, whole = total < 0n ? -total : total;
+  const hundredths = (magnitude * 20000n + whole) / (whole * 2n);
+  return `${(value < 0n) !== (total < 0n) && hundredths ? '-' : ''}${hundredths / 100n}.${String(hundredths % 100n).padStart(2, '0')}%`;
 }
 
 /** The war's name as Wars names it, or its status word. */

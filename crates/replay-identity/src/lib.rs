@@ -19,7 +19,7 @@ fn invalid(message: &'static str) -> io::Error {
     }
 }
 
-pub const COVERAGE_POLICY_VERSION: u32 = 4;
+pub const COVERAGE_POLICY_VERSION: u32 = 5;
 
 /// Whether a campaign identity can be used unchanged as a UUID file name.
 pub fn is_campaign_uuid(bytes: &[u8]) -> bool {

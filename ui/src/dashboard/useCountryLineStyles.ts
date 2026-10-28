@@ -1,20 +1,23 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CountryStyle, CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient } from './client';
+import { lookHour } from './countryLooks.ts';
+import { useHeldFailure } from './heldFailures';
 import type { BoundTrack } from './model';
 import { useProducts } from './products';
 import { STYLES } from './useCountriesAt';
 
-/** Names and map colours at monthly playback steps, held while the next request
- * loads so lines do not flash to fallback colours. Hover labels use their exact hour. */
+/** Names and map colours at monthly playback steps within the recorded stretch shown
+ * (`lookHour`: never an hour of a gap), held while the stretch's next request loads so
+ * lines do not flash to fallback colours. Hover labels use their exact hour. */
 export function useCountryLineStyles(client: DashboardClient, track: BoundTrack | undefined, tags: string[], at: number, active: boolean) {
-  const step = 30 * 24;
-  const hour = track ? Math.min(track.branch.lastHour, track.branch.firstHour + Math.floor((at - track.branch.firstHour) / step) * step) : 0;
+  const sample = track ? lookHour(track.branch, Math.max(track.branch.firstHour, Math.min(track.branch.lastHour, at))) : null;
+  const hour = sample?.hour ?? null, stretch = sample?.stretch ?? null;
   // This is the native product's per-request scheduling unit, never a country
   // selection limit. Canonical chunks share cached replies when a list reorders.
   const wanted = [...new Set(tags)].sort();
   const requests = [];
-  if (track) for (let index = 0; index < wanted.length; index += STYLES.perRequest) {
+  if (track && hour !== null) for (let index = 0; index < wanted.length; index += STYLES.perRequest) {
     requests.push({ sourceId: track.source.id, revision: track.source.revision, product: STYLES.product,
       params: STYLES.params(track.branch.id, hour, wanted.slice(index, index + STYLES.perRequest)) });
   }
@@ -26,8 +29,12 @@ export function useCountryLineStyles(client: DashboardClient, track: BoundTrack 
   } : undefined, [styles.data]);
   const [known, setKnown] = useState<ReadonlyMap<string, CountryStyle>>(new Map());
   useEffect(() => setKnown(new Map()), [track?.source.id, track?.source.revision, track?.branch.id]);
+  // Another country may hold a tag after a gap: a new recorded stretch reads its colours afresh.
+  useEffect(() => { if (stretch !== null) setKnown(new Map()); }, [stretch]);
   useEffect(() => {
     if (data) setKnown(previous => new Map([...previous, ...data.styles.map(style => [style.tag, style] as const)]));
   }, [data]);
-  return { known, data };
+  // Held colours stay drawn while the frame reports a failed refresh with its retry.
+  const error = useHeldFailure(styles.error, known.size > 0, styles.retry);
+  return { known, data, error, retry: styles.retry };
 }

@@ -33,14 +33,14 @@ import { parseColor, toHex } from '../../shell/appearance/color';
 import { contributionPercent, countryKey, formatContribution, formatTension, formatTensionAxis, tensionModel, tensionReadPreparing } from './tensionData';
 import { mergePreparedTension, validatePreparedTension } from './preparedTension';
 import type { TensionModel } from './tensionData';
-import { tensionCauseAt, tensionDrillAt, tensionDrillHistory, tensionLookAt, tensionShareText, tensionVisibleParts } from './tensionDrill';
+import { tensionCauseAt, tensionDrillAt, tensionDrillHistory, tensionEventKeys, tensionLookAt, tensionShareText, tensionVisibleParts } from './tensionDrill';
 
 /** The full native country stack. Event final amounts stay separate because the
  * product does not record source current amounts or per-read source presence. */
 export default function TensionDrill({ model: reached, runtime, track, active, options, extent, playhead, hour, selectedCause, onCause, onPick }: {
   model: TensionModel; runtime: WidgetRuntime; track: BoundTrack; active: boolean;
   options: Readonly<Record<string, OptionValue>>; extent: [number, number]; playhead: number | null; hour: number;
-  selectedCause: number | null; onCause: (index: number | null) => void; onPick: (hour: number) => void;
+  selectedCause: string | null; onCause: (key: string | null) => void; onPick: (hour: number) => void;
 }) {
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
@@ -140,7 +140,9 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
     },
   }], [stack, history, layerColours, hour, until,prepared.data,prepared.geometryReady,denseStack]);
   const menu = useContextMenu('Country contribution actions');
-  const cause = selectedCause == null ? null : model.reply.events[selectedCause] ?? null;
+  const eventKeys = useMemo(() => tensionEventKeys(model.reply.events), [model.reply.events]);
+  const causeIndex = selectedCause == null ? -1 : eventKeys.indexOf(selectedCause);
+  const cause = causeIndex < 0 ? null : model.reply.events[causeIndex];
   const causeRead = cause ? tensionCauseAt(cause, hour) : null;
   const exact = (raw: string) => formatContribution(model, raw, true, model.contributionDecimals);
   const root = useRef<HTMLDivElement>(null);
@@ -163,8 +165,8 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
     {prepared.data?.preparing?.length ? <p className="chart-line-key">Contributor history and events are still being prepared.</p> : null}
     <PreparedKey approximate={prepared.data?.summaries.world?.approximate} pending={prepared.data?.pending} />
     <div className="world-tension-cause">Cause
-      <Select label="Cause" value={selectedCause == null ? '' : String(selectedCause)} onChange={value => onCause(value === '' ? null : Number(value))}
-        options={[{ value: '', label: 'Choose a cause' }, ...model.reply.events.map((event, index) => ({ value: String(index), label: `${dayLabel(event.hour)} · ${event.reason}` }))]} />
+      <Select label="Cause" value={causeIndex < 0 ? '' : eventKeys[causeIndex]} onChange={value => onCause(value === '' ? null : value)}
+        options={[{ value: '', label: 'Choose a cause' }, ...model.reply.events.map((event, index) => ({ value: eventKeys[index], label: `${dayLabel(event.hour)} · ${event.reason}` }))]} />
     </div>
     {cause && <div className="drill-empty" role="group" aria-label="Selected cause">
       <strong>{cause.reason}</strong><p>{formatDateTime(cause.hour)} · {cause.tag ?? 'Country not identified'}.</p>

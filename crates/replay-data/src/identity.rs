@@ -206,10 +206,10 @@ mod tests {
     use replay_identity::test_fixtures::identity as fixture;
 
     #[test]
-    fn coverage_policy_four_and_old_policies_three_and_two_round_trip_without_translation() {
-        assert_eq!(COVERAGE_POLICY_VERSION, 4);
+    fn coverage_policy_five_and_old_policies_four_to_two_round_trip_without_translation() {
+        assert_eq!(COVERAGE_POLICY_VERSION, 5);
         let mut lengths = Vec::new();
-        for policy in [COVERAGE_POLICY_VERSION, 3, 2] {
+        for policy in [COVERAGE_POLICY_VERSION, 4, 3, 2] {
             let mut identity = fixture();
             identity.coverage_policy = policy;
             let mut bytes = Vec::new();

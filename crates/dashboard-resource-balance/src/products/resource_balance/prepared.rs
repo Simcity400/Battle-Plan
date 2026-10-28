@@ -317,8 +317,11 @@ impl Prepared {
                         );
                     }
                     if run.is_some() {
+                        // The longest balance bar drawn: its parts' magnitudes (needs as one part).
+                        let supply = native[2].abs() + native[3].abs() + native[4].abs();
+                        let demand = (native[5] + native[6]).abs() + native[7].abs() + native[8].abs();
                         let maximum = self.maxima.entry(pool_name(tag, resource)).or_default();
-                        *maximum = (*maximum).max(native[0]).max(native[1]);
+                        *maximum = (*maximum).max(supply).max(demand);
                     }
                     if runs.len() > 1 {
                         runs.drain(..runs.len() - 1);

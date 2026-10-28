@@ -92,7 +92,7 @@ export const fixture = {
   async mountScene() {
     scrolls = [];
     flushSync(() => root.render(<SceneView scene={scene} title="Policies" zoom={1}
-      offsetOf={(_path, drawn) => drawn} onScroll={(path, offset) => { scrolls.push([path, offset]); }} />));
+      offsetOf={(_list, drawn) => drawn} onScroll={(list, offset) => { scrolls.push([list.path, offset]); }} />));
     await settle();
   },
   async mountWindow(which: keyof typeof clients) {

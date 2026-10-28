@@ -200,8 +200,9 @@ impl Prepared {
                 .cloned()
                 .collect();
             for read in &mut output {
-                if self.output_seen.insert(index)
-                    && read.since_hour.is_some()
+                // A read without a row cannot say whether earlier work went unobserved.
+                if read.since_hour.is_some()
+                    && self.output_seen.insert(index)
                     && !read.observed_since_creation
                 {
                     let tag = &self.scan.log.projects[index].tag;
@@ -1330,6 +1331,47 @@ mod tests {
                 .unwrap();
             }
         }
+    }
+
+    #[test]
+    fn a_failed_first_output_read_does_not_hide_the_projects_earlier_spending() {
+        let flag = AtomicBool::new(false);
+        let frames: Vec<_> = (100..=102)
+            .map(|hour| {
+                let mut frame = life_frame(hour, 1, true);
+                *frame.tables[TableId::ConstructionLineOutput.index()] = if hour == 100 {
+                    TableView::Unavailable {
+                        reason: "fixture".into(),
+                    }
+                } else {
+                    TableView::Complete(TableRows::ConstructionLineOutput(vec![
+                        ConstructionLineOutputRow {
+                            line: 1,
+                            since_hour: 101,
+                            construction_raw: 100,
+                            observed_since_creation: false,
+                            exact: true,
+                            completion: replay_data::rows::Recorded::Value(None),
+                            ..Default::default()
+                        },
+                    ]))
+                };
+                frame
+            })
+            .collect();
+        let source = source_for(&frames);
+        let format = source.replay_ref().format;
+        let mut prepared = Prepared::default();
+        for frame in &frames {
+            prepared.observe(frame, format, &source).unwrap();
+        }
+        assert_eq!(prepared.before_first.values().sum::<u32>(), 1);
+        let expected = scan(source.replay_ref(), 1, &flag).unwrap();
+        let reference: u32 = crate::products::construction_spending::all_leaves(&expected)
+            .into_values()
+            .map(|(_, before)| before)
+            .sum();
+        assert_eq!(reference, 1);
     }
 
     fn frames() -> Vec<DecodedFrame> {

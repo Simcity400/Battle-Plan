@@ -17,6 +17,8 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
   const fixture = {
     reducedMotion: true,
     shownTooltip: null as TooltipContent | null,
+    heldTooltip: null as { owner: string } | null,
+    tooltipRevision: 0,
     useId: () => 'time-chart-observer',
     useRef(initial: unknown) {
       const index = cursor++;
@@ -68,6 +70,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
       export const drawSelection = () => {}; export const VALUE_LABEL_GAP = 6; export const valueLabelWidth = () => 0;`,
     '/charts/tooltip.ts': `export const hideTooltip = () => { globalThis.__timeChartObserver.shownTooltip = null; };
       export const showTooltip = (_owner, content) => { globalThis.__timeChartObserver.shownTooltip = content; };
+      export const tooltipStore = { get: () => globalThis.__timeChartObserver.heldTooltip, revision: () => globalThis.__timeChartObserver.tooltipRevision };
       export const tooltipText = content => content.spoken ?? content.title;`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
@@ -133,6 +136,12 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     const spokenTree = Chart(props) as ReactElement<{ children: ReactElement<{ children: string }>[] }>;
     assert.match(spokenTree.props.children[2].props.children, /opaque actor 4999 capitulated/);
     fixture.commit();
+    fixture.heldTooltip = { owner: 'other chart' }; fixture.shownTooltip = null;
+    props.revision = 3; canvas = render(); draw();
+    assert.equal(fixture.shownTooltip, null, 'a kept keyboard hour redraws without taking another chart\'s tooltip');
+    key(canvas, 'End'); draw();
+    assert.equal((fixture.shownTooltip as TooltipContent | null)?.rows.length, 5000, 'a fresh key takes the tooltip back');
+    fixture.heldTooltip = null;
     props.revision = 2; canvas = render(); draw();
     assert.equal(badgeReads.at(-1)?.badges, reached.badges, 'redrawing the same source and hour reuses the indexed cohort');
     props.badges = [{ hour: 80, glyph: '\u00d7', label: 'replacement country capitulated' }, early, late];
@@ -200,6 +209,23 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     props.keyboardRevision = 2; canvas = render(); draw();
     assert.deepEqual(seen.at(-1), ['F', 80], 'a fresh key request still accepts the same returned hour');
     assert.deepEqual(navigation, ['ArrowRight', 'ArrowRight']);
+    fixture.shownTooltip = null;
+    key(canvas, 'End');
+    fixture.heldTooltip = { owner: 'other chart' }; fixture.tooltipRevision++;
+    props.keyboardRevision = 3; canvas = render(); draw();
+    assert.equal(fixture.shownTooltip, null, 'a reply cannot take a tooltip another chart showed after its key');
+    fixture.heldTooltip = null;
+    key(canvas, 'End');
+    props.keyboardRevision = 4; canvas = render();
+    fixture.heldTooltip = { owner: 'other chart' }; fixture.tooltipRevision++;
+    draw();
+    assert.equal(fixture.shownTooltip, null, 'nor one shown between its reply and its frame');
+    fixture.heldTooltip = null;
+    key(canvas, 'End');
+    fixture.heldTooltip = { owner: 'other chart' }; fixture.tooltipRevision++;
+    draw();
+    assert.equal(fixture.shownTooltip, null, 'nor, before its reply, one shown after its key');
+    fixture.heldTooltip = null;
     fixture.unmount(); assert.deepEqual(seen.at(-1), ['F', null]);
     // An asynchronous prepared extent must settle to the exact same scale as an immediate legacy extent.
     fixture.reducedMotion = false;

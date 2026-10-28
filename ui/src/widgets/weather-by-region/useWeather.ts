@@ -77,7 +77,8 @@ interface DayRead { data?: WeatherReply; error?: string; at: number }
 /** Folded columns' days read exactly, once the pointer rests on one: each read is
  * transient, outside the shared product cache. Only finished days are kept, the
  * most recent `RECENT_DAYS`; a day still being prepared is read again after a
- * while, and a failed read once the pointer comes back to it. */
+ * while for as long as the pointer stays on it, and a failed read once the pointer
+ * comes back to it. */
 export function useWeatherDays(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, dayHours: number) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, weatherShow(widget), dayHours]);
@@ -96,10 +97,11 @@ export function useWeatherDays(widget: WidgetSpec, runtime: WidgetRuntime, activ
     if (owner.last && owner.last.day !== day && owner.last.read.error !== undefined) owner.last = null;
     if (!active || !track || owner.days.has(day) || wanted.current?.day === day) return;
     const last = owner.last?.day === day ? owner.last.read : null;
-    if (last && (last.error !== undefined || Date.now() - last.at < PREPARING_REREAD_MS)) return;
+    if (last?.error !== undefined) return;
     forget();
     const entry: NonNullable<typeof wanted.current> = { day };
     wanted.current = entry;
+    // A day read while still being prepared is read again once that read is old enough.
     entry.timer = setTimeout(() => {
       const controller = new AbortController();
       entry.controller = controller;
@@ -116,7 +118,7 @@ export function useWeatherDays(widget: WidgetSpec, runtime: WidgetRuntime, activ
           if (wanted.current === entry) wanted.current = null;
           bump();
         });
-    }, DWELL_MS);
+    }, last ? Math.max(DWELL_MS, PREPARING_REREAD_MS - (Date.now() - last.at)) : DWELL_MS);
     // The widget and its track own the request; the scope key covers what it reads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, scope, runtime.client]);
@@ -124,12 +126,14 @@ export function useWeatherDays(widget: WidgetSpec, runtime: WidgetRuntime, activ
     const owner = cache.current;
     return owner.days.get(day) ?? (owner.last?.day === day ? owner.last.read : undefined);
   }, [scope, revision]); // eslint-disable-line react-hooks/exhaustive-deps
-  /** The pointer is on `day`, or off the chart (null): a failed read of any other day is forgotten. */
+  /** The pointer is on `day`, or off the chart (null): a failed read of any other day is
+   * forgotten, and a read of another day not yet started is dropped. */
   const hover = useCallback((day: number | null) => {
     const owner = cache.current;
     pointer.current = day;
     if (owner.last && owner.last.day !== day && owner.last.read.error !== undefined) owner.last = null;
-  }, []);
+    if (wanted.current && wanted.current.day !== day && !wanted.current.controller) forget();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return { get, want, hover };
 }
 

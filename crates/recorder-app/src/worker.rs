@@ -184,7 +184,7 @@ impl GameProbe {
 enum Hold {
     /// Its capture failed: until it restarts or Record is pressed.
     Game,
-    /// The user stopped it: with Auto record on, its next other load records.
+    /// The user stopped it: its next other load records if that campaign records automatically.
     Load,
 }
 
@@ -204,16 +204,16 @@ impl Held {
         }
     }
 
-    /// Auto record on, and the game names a load other than the one stopped.
-    fn released_by(&self, loaded: Option<&LoadedCampaign>, auto_record: bool) -> bool {
-        auto_record
-            && self.stopped.as_ref().is_some_and(|stopped| {
-                loaded.is_some_and(|loaded| {
-                    stopped.as_ref().is_none_or(|(campaign, load)| {
+    /// The game names a load other than the one stopped, of a campaign that records automatically.
+    fn released_by(&self, loaded: Option<&LoadedCampaign>, settings: &RecorderSettings) -> bool {
+        self.stopped.as_ref().is_some_and(|stopped| {
+            loaded.is_some_and(|loaded| {
+                settings.records_campaign(&loaded.campaign)
+                    && stopped.as_ref().is_none_or(|(campaign, load)| {
                         *campaign != loaded.campaign || *load != loaded.load
                     })
-                })
             })
+        })
     }
 }
 
@@ -664,9 +664,10 @@ impl Recorder {
                         if std::mem::take(&mut rerouted) && loaded.is_none() && !manual {
                             held = Some(Held::game(start));
                         }
-                        if held.as_ref().is_some_and(|held| {
-                            held.released_by(loaded.as_ref(), settings.record_every_campaign)
-                        }) {
+                        if held
+                            .as_ref()
+                            .is_some_and(|held| held.released_by(loaded.as_ref(), &settings))
+                        {
                             held = None;
                         }
                         let wanted = match &loaded {
@@ -1123,6 +1124,10 @@ impl Recorder {
             text: "Saved, but the file kept its old name. It's renamed at the next save.".into(),
             detail: outcome.unrenamed.join("\n"),
         });
+        let kept = outcome.undiscarded.then(|| Problem {
+            text: "Nothing was discarded: the campaign in progress couldn't be identified.".into(),
+            detail: "Stop couldn't read which campaign was loaded; every hour was kept.".into(),
+        });
         match saved {
             Some(path) => {
                 let span = Replay::read_hour_span(&path).ok().flatten();
@@ -1146,7 +1151,7 @@ impl Recorder {
                     snapshot.continued = true;
                     snapshot.stopping = false;
                     snapshot.progress = None;
-                    snapshot.problem = unrenamed;
+                    snapshot.problem = kept.or(unrenamed);
                 });
             }
             // Nothing was saved: nothing reached the spool (the game closed at
@@ -1167,6 +1172,10 @@ impl Recorder {
                     inner.result = true;
                     inner.snapshot.phase = Phase::NotRecording;
                     inner.snapshot.omitted = omitted;
+                }
+                if let Some(kept) = kept {
+                    inner.sticky = Some(kept.clone());
+                    inner.snapshot.problem = Some(kept);
                 }
             }),
         }
@@ -1486,23 +1495,43 @@ mod tests {
             start: 7,
             stopped: Some(Some((CAMPAIGN.to_owned(), 100))),
         };
+        let auto = |record_every_campaign| RecorderSettings {
+            record_every_campaign,
+            ..RecorderSettings::default()
+        };
+        let (on, off) = (auto(true), auto(false));
         // The stopped load itself, or the menu, never records again by itself.
-        assert!(!stopped.released_by(Some(&loaded(CAMPAIGN, 100)), true));
-        assert!(!stopped.released_by(None, true));
+        assert!(!stopped.released_by(Some(&loaded(CAMPAIGN, 100)), &on));
+        assert!(!stopped.released_by(None, &on));
         // Reloading the same campaign, or loading another, records again.
-        assert!(stopped.released_by(Some(&loaded(CAMPAIGN, 101)), true));
-        assert!(stopped.released_by(Some(&loaded(OTHER, 100)), true));
+        assert!(stopped.released_by(Some(&loaded(CAMPAIGN, 101)), &on));
+        assert!(stopped.released_by(Some(&loaded(OTHER, 100)), &on));
         // With Auto record off, only Record or a game restart does.
-        assert!(!stopped.released_by(Some(&loaded(CAMPAIGN, 101)), false));
-        assert!(!stopped.released_by(Some(&loaded(OTHER, 5)), false));
+        assert!(!stopped.released_by(Some(&loaded(CAMPAIGN, 101)), &off));
+        assert!(!stopped.released_by(Some(&loaded(OTHER, 5)), &off));
+        // Unless the loaded campaign's own choice records it automatically; its own choice not to
+        // holds it even with Auto record on.
+        let choose = |mut settings: RecorderSettings, record| {
+            settings.campaigns.insert(
+                OTHER.to_owned(),
+                replay::recorder_settings::CampaignChoice {
+                    record: Some(record),
+                    ..Default::default()
+                },
+            );
+            settings
+        };
+        assert!(stopped.released_by(Some(&loaded(OTHER, 5)), &choose(auto(false), true)));
+        assert!(!stopped.released_by(Some(&loaded(CAMPAIGN, 101)), &choose(auto(false), true)));
+        assert!(!stopped.released_by(Some(&loaded(OTHER, 5)), &choose(auto(true), false)));
         // Stopped before the game named a load: whatever it loads next records.
         let unnamed = Held {
             start: 7,
             stopped: Some(None),
         };
-        assert!(unnamed.released_by(Some(&loaded(CAMPAIGN, 100)), true));
+        assert!(unnamed.released_by(Some(&loaded(CAMPAIGN, 100)), &on));
         // A failed capture holds the game through every load.
-        assert!(!Held::game(7).released_by(Some(&loaded(OTHER, 5)), true));
+        assert!(!Held::game(7).released_by(Some(&loaded(OTHER, 5)), &on));
     }
 
     /// Record pressed at the menu with automatic recording off: campaign A

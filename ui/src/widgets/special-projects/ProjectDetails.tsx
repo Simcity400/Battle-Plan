@@ -39,7 +39,7 @@ export default function ProjectDetails({ details }: { details?: SpecialProjectDe
         <p>Traits: {scientist.traits === null ? 'Unavailable' : scientist.traits.length === 0 ? 'None' : scientist.traits.map((trait, index) => <span key={index}>{index > 0 && ', '}<Name label={trait} /></span>)}</p>
       </details>)}
     </details>
-    <details><summary>Specialization progress</summary>{details.breakthroughs.length === 0 ? <p>No specialization progress recorded.</p> : <ul>{details.breakthroughs.map((progress, index) => <li key={index}><Name label={progress.specialization} />: {progress.points / 10000} breakthrough progress · read {dayLabel(progress.readHour)}</li>)}</ul>}</details>
+    <details><summary>Specialization progress</summary>{details.breakthroughs === null ? <p>Specialization progress unavailable.</p> : details.breakthroughs.length === 0 ? <p>No specialization progress recorded.</p> : <ul>{details.breakthroughs.map((progress, index) => <li key={index}><Name label={progress.specialization} />: {progress.points / 10000} breakthrough progress · read {dayLabel(progress.readHour)}</li>)}</ul>}</details>
     <details open><summary>Facility assignments <span className="pill">{details.programs.length}</span></summary>
       {details.programs.length === 0 && <p>No facility assignments recorded.</p>}
       {details.programs.map(program => <details className="project-detail" key={program.id}>

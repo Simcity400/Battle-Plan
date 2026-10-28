@@ -585,7 +585,7 @@ pub fn bind(
     at: i32,
     template: u64,
     nato: bool,
-    scroll: &BTreeMap<String, i32>,
+    scroll: &crate::compose::Scroll,
     cancelled: &AtomicBool,
 ) -> io::Result<Bound> {
     let designer = match hour(source, catalogue, branch, at, template, nato, cancelled)? {

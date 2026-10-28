@@ -940,10 +940,10 @@ pub fn compare_camouflage(
             return;
         }
     };
-    let captured = match camouflage.category {
+    let captured: Option<&[u8]> = match camouflage.category {
         None => None,
         Some(token) => match tokens.get(&token) {
-            Some(name) => Some(String::from_utf8_lossy(name).into_owned()),
+            Some(name) => Some(*name),
             None => {
                 report.limitation(
                     "the camouflage category's token is absent from the captured lexical dictionary; it was not compared",
@@ -965,12 +965,21 @@ pub fn compare_camouflage(
             ),
             show_at,
         )
-        .map(|name| String::from_utf8_lossy(name).into_owned())
+        .map(Vec::as_slice)
     });
     report.scalar_checks += 1;
     if captured != expected {
-        report.difference(label, captured, expected);
+        let shown = |name: Option<&[u8]>| name.map(|name| name.escape_ascii().to_string());
+        report.difference(label, shown(captured), shown(expected));
     }
+}
+
+/// Category names as diagnostic text; distinct bytes never read alike.
+fn shown_entries(entries: &[(&[u8], i64)]) -> Vec<(String, i64)> {
+    entries
+        .iter()
+        .map(|(name, weight)| (name.escape_ascii().to_string(), *weight))
+        .collect()
 }
 
 /// An older recording's entries and maximum. The division writer emits the
@@ -1030,16 +1039,20 @@ pub fn compare_acclimatization(
             report.limitation("acclimatization categories include tokens absent from the captured lexical dictionary; entries were not compared", label);
             return;
         };
-        captured.push((String::from_utf8_lossy(name).into_owned(), entry.weight));
+        captured.push((*name, entry.weight));
     }
     let expected: Vec<_> = saved
         .entries
         .iter()
-        .map(|(name, weight)| (String::from_utf8_lossy(name).into_owned(), weight.raw))
+        .map(|(name, weight)| (name.as_slice(), weight.raw))
         .collect();
     report.scalar_checks += 1;
     if captured != expected {
-        report.difference(format!("{label}.entries"), captured, expected);
+        report.difference(
+            format!("{label}.entries"),
+            shown_entries(&captured),
+            shown_entries(&expected),
+        );
     }
 }
 

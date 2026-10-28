@@ -256,6 +256,33 @@ fn the_installed_designer_draws_its_composition() {
     );
 }
 
+/// Unread priority and equipment settings leave their controls undrawn, never in the state the
+/// template constructs them with.
+#[test]
+fn unread_priority_and_equipment_settings_are_not_drawn() {
+    tables();
+    let layers = installed(&[]);
+    let mut unread = designer("infantry", "engineer");
+    unread.priority = Err("the priority stage count is unread".to_owned());
+    unread.equipment_button = Err("the forbidden equipment types are not recorded".to_owned());
+    let bound = draw_on(&layers, &unread);
+    let scene = bound.scene.as_ref().unwrap();
+    for control in [
+        ".priority_button_1",
+        ".priority_button_2",
+        ".priority_button_3",
+        ".division_priority_icon",
+        ".division_equipment_btn",
+    ] {
+        assert!(
+            !scene.parts.iter().any(|part| part.path.ends_with(control)),
+            "{control}"
+        );
+    }
+    assert_eq!(slot(&bound, "priority").state, Slot::Refused);
+    assert_eq!(slot(&bound, "equipment settings").state, Slot::Refused);
+}
+
 /// A mod's own sub-unit draws its own glyph from the mod's texture, and a mod that replaces
 /// the designer's file draws its own designer; one that renames a grid the binding needs is
 /// refused that control by name while the rest still draws.

@@ -9,7 +9,7 @@ import { compactStack } from '../../charts/stack.ts';
 import { runAt } from '../../charts/series.ts';
 import { orderedDrillParts } from '../../charts/drill/parts.ts';
 import { tensionModel, tensionPlot } from './tensionData.ts';
-import { pinTensionDrill, tensionCauseAt, tensionDrillAt, tensionDrillHistory, tensionLookAt, tensionShareText, tensionVisibleParts } from './tensionDrill.ts';
+import { pinTensionDrill, tensionCauseAt, tensionDrillAt, tensionDrillHistory, tensionEventKeys, tensionLookAt, tensionShareText, tensionVisibleParts } from './tensionDrill.ts';
 import { createElement } from 'react';
 import type { ComponentProps } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -51,19 +51,21 @@ test('tension drill uses plain cause controls while retaining signed contributio
   try {
     const { default: Component } = await vite.ssrLoadModule('/ui/src/widgets/world-tension/TensionDrillView.tsx');
     const track = { id: 'main', source: { id: 'source', revision: '1' }, branch: { id: 'branch', firstHour: 99, lastHour: 150, gaps: [] } } as unknown as BoundTrack;
-    const picks: (number | null)[] = [];
+    const picks: (string | null)[] = [];
     const props = { model: tensionModel(reply()), runtime: { client: {}, tracks: [track], clock: { getSnapshot: () => ({ hoursPerSecond: 0 }) } }, track,
       active: true, options: { playback: 'cursor' }, extent: [99, 150], playhead: null, hour: 110, selectedCause: null,
-      onCause: (index: number | null) => picks.push(index), onPick() {} } as unknown as ComponentProps<typeof TensionDrill>;
+      onCause: (key: string | null) => picks.push(key), onPick() {} } as unknown as ComponentProps<typeof TensionDrill>;
     const render = () => renderToStaticMarkup(createElement(Component, props));
     assert.match(render(), /Total contributions/);
     assert.deepEqual(state.requests[0],{product:'world-tension',params:{branchId:'branch',share:false}});
     assert.equal(state.select!.label, 'Cause');
     assert.equal(state.select!.options[0].label, 'Choose a cause');
-    state.select!.onChange('0'); state.select!.onChange(''); assert.deepEqual(picks, [0, null]);
+    const [key] = tensionEventKeys(reply().events);
+    assert.equal(state.select!.options[1].value, key);
+    state.select!.onChange(key); state.select!.onChange(''); assert.deepEqual(picks, [key, null]);
     assert.equal(state.parts!.unattributed?.label, 'Other');
     assert.deepEqual(state.parts!.parts.map(part => part.raw), [13500000n, -200000n]);
-    props.selectedCause = 0;
+    props.selectedCause = key;
     const selected = render();
     assert.match(selected, /Final contribution/);
     assert.doesNotMatch(selected, /Selected recorded cause|Read |read once a day|Current contribution: not known/);
@@ -102,6 +104,17 @@ test('a selected cause never backfills a final amount or treats it as the curren
   assert.deepEqual(tensionCauseAt(event, 110), { hour: 100, addedRaw: '20000000' });
   assert.deepEqual(tensionCauseAt(event, 130), { hour: 120, addedRaw: '19000000' });
   assert.notEqual(tensionCauseAt(event, 110)?.addedRaw, tensionDrillAt(tensionModel(data), 110)!.parts[0].raw);
+});
+
+test('a chosen cause keeps its event when preparation adds an earlier one', () => {
+  const event = (hour: number, firstRead: number, reason: string, tag: string | null) => ({ hour, tag, reason, firstRead, lastRead: firstRead,
+    added: [{ hour: firstRead, addedRaw: '1' }] });
+  const before = tensionEventKeys([event(200, 210, 'Same text', null), event(200, 210, 'Same text', 'BBB'), event(200, 210, 'Other text', 'CCC')]);
+  // A source first read later but dated earlier sorts first; a source named later keeps its identity.
+  const after = tensionEventKeys([event(150, 300, 'Same text', 'DDD'), event(200, 210, 'Same text', 'AAA'), event(200, 210, 'Same text', 'BBB'),
+    event(200, 210, 'Other text', 'CCC')]);
+  assert.deepEqual(after.slice(1), before);
+  assert.equal(new Set(after).size, after.length);
 });
 
 test('tension drill is an ordinary saved view with inline defaults, full country choices and a held-day pin', () => {

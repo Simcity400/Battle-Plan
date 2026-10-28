@@ -45,6 +45,31 @@ fn evaluations_record_queries_and_whole_tables_read_outside_them() {
     assert_eq!(shared.reads.len(), 0);
 }
 
+#[test]
+fn a_helper_thread_credits_its_reads_to_the_recording_caller() {
+    let frame = crate::test_fixtures::source(1, 10, Some(7));
+    let ((), inputs) = capture(&frame, || {
+        let reads = handoff();
+        let ((), carried) = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    reads.run(|| {
+                        read(Key::ClockSeed, &7_u64);
+                        assert_eq!(frame.complete::<tables::Countries>().unwrap().len(), 1);
+                    })
+                })
+                .join()
+                .unwrap()
+        });
+        carried.credit();
+    });
+    assert!(inputs.keys().any(|key| *key == Key::ClockSeed));
+    assert_eq!(inputs.tables().collect::<Vec<_>>(), [TableId::Countries]);
+    // A caller outside any evaluation carries nothing to its helper.
+    let ((), carried) = handoff().run(|| read(Key::ClockSeed, &7_u64));
+    assert!(carried.inputs.is_none() && carried.views.is_empty());
+}
+
 /// The recorded values of one hour.
 #[derive(Clone, Copy)]
 struct State {

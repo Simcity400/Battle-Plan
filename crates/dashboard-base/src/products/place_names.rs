@@ -131,30 +131,19 @@ fn region_names(source: &Source, cat: &Arc<Catalogue>) -> Result<Arc<RegionNames
     }
     let names = installed_content_regions::regions::read(&cat.content.layers)
         .map(|regions| {
-            let mut provinces = BTreeMap::new();
-            for region in regions.regions.values() {
-                for &province in &region.provinces {
-                    let name = if !cat.has_presentation_key(&region.name_key) {
-                        Err(format!(
-                            "localisation {} is missing; region title is unavailable",
-                            region.name_key
-                        ))
-                    } else {
-                        cat.localisation
-                            .localise(region.name_key.as_bytes())
-                            .map_err(|error| error.to_string())
-                            .and_then(|name| catalogue::plain_text(&name))
-                    };
-                    if provinces.insert(province, name).is_some() {
-                        provinces.insert(
-                            province,
-                            Err(format!(
-                                "province {province}: multiple strategic-region memberships refused"
-                            )),
-                        );
-                    }
+            let provinces = region_provinces(&regions, |region| {
+                if !cat.has_presentation_key(&region.name_key) {
+                    Err(format!(
+                        "localisation {} is missing; region title is unavailable",
+                        region.name_key
+                    ))
+                } else {
+                    cat.localisation
+                        .localise(region.name_key.as_bytes())
+                        .map_err(|error| error.to_string())
+                        .and_then(|name| catalogue::plain_text(&name))
                 }
-            }
+            });
             Arc::new(RegionNames {
                 provinces,
                 warnings: regions.notes,
@@ -163,6 +152,29 @@ fn region_names(source: &Source, cat: &Arc<Catalogue>) -> Result<Arc<RegionNames
         .map_err(|error| format!("Strategic-region names unavailable: {error}"));
     state.content = Some((Arc::clone(cat), names.clone()));
     names
+}
+
+/// Each province's strategic-region name (`name`), refused for a province two regions list. A
+/// province one region lists more than once is in that region once, as the game builds it.
+fn region_provinces(
+    regions: &installed_content_regions::regions::StrategicRegions,
+    name: impl Fn(&installed_content_regions::regions::StrategicRegion) -> Result<String, String>,
+) -> BTreeMap<u32, Result<String, String>> {
+    let mut provinces = BTreeMap::new();
+    for region in regions.regions.values() {
+        let named = name(region);
+        for province in region.native_provinces(|_| true) {
+            if provinces.insert(province, named.clone()).is_some() {
+                provinces.insert(
+                    province,
+                    Err(format!(
+                        "province {province}: multiple strategic-region memberships refused"
+                    )),
+                );
+            }
+        }
+    }
+    provinces
 }
 
 fn name_at(
@@ -366,6 +378,16 @@ fn read_names(
                 .map(|(at, request)| (request.hour, RequestedName::State(at))),
         )
     {
+        // An hour a recorded gap covers is unobserved, even where its frame survived.
+        if replay.gaps.iter().any(|gap| {
+            gap.branch == branch && gap.first_hour <= hour && hour <= gap.last_hour
+        }) {
+            *request.missing(&mut places, &mut states) = Some(format!(
+                "Not in this recording: {}",
+                replay.gap_reason(branch, hour)?
+            ));
+            continue;
+        }
         if let Some(block) = replay.index.iter().position(|block| {
             block.branch == branch && block.first_hour <= hour && hour <= block.last_hour
         }) {

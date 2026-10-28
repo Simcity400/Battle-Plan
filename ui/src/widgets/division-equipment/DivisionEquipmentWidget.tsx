@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
@@ -47,7 +47,7 @@ function Missing({ raw }: { raw: string | null }) {
 
 export default function DivisionEquipmentWidget({ widget, runtime, active, setOption, onDiagnostics, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const [drill, setDrill] = useState<Drill | null>(null);
+  const [storedDrill, setStoredDrill] = useState<{ owner: object; drill: Drill } | null>(null);
   const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
@@ -75,13 +75,16 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const landed = state.current || state.data !== mine?.reached ? state.data : undefined;
   const data = held ?? landed ?? mine?.data;
   if (data) drawn.current = { client: runtime.client, owner, data, reached: state.data };
+  // A drill holds one recording's native template or division handle: another recording, subject or view closes it.
+  const drillOwner = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, subject, view]);
+  const drill = storedDrill?.owner === drillOwner ? storedDrill.drill : null;
+  const setDrill = (next: Drill | null) => setStoredDrill(next && { owner: drillOwner, drill: next });
   const drillParams = drill?.kind === 'template' ? { template: drill.template } : drill?.kind === 'division' ? { division: drill.division } : null;
   const detail = useReachedProduct(runtime.client, track?.source, base && drillParams && { ...base, params: { branchId: track!.branch.id, hour, tag, countFor, ...drillParams } },
     JSON.stringify([subject, drillParams]), active && drillParams !== null, validateDivisionEquipment);
   const viewportHeight = useViewportHeight();
   const anchor = useRef<HTMLDivElement>(null);
   useDiagnostics(onDiagnostics, data ? [...new Set([...data.warnings, ...detail.data?.warnings ?? []])] : null);
-  useEffect(() => setDrill(null), [subject, view]);
   const typeColumns = useMemo<readonly TableColumn<EquipmentType>[]>(() => [
     { key: 'type', header: 'Equipment', label: 'Equipment', width: 'minmax(var(--table-name-min), 2fr)', value: typeName,
       render: row => <span className="division-equipment-name" data-tooltip={contentTitleHint(row.archetype)}><ArtFallback icon="hammer" /><span>{typeName(row)}</span></span> },

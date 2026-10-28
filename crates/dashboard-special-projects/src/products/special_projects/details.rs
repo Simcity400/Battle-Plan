@@ -139,7 +139,8 @@ pub struct SpecialProjectDetails {
     pub hour: i32,
     pub scientists: Vec<ScientistDetails>,
     pub programs: Vec<ProgramDetails>,
-    pub breakthroughs: Vec<SpecializationProgress>,
+    /// `None` without a continuous supplying read for the country.
+    pub breakthroughs: Option<Vec<SpecializationProgress>>,
     pub projects: Vec<ProjectRuntimeDetails>,
     pub unavailable: Vec<String>,
 }
@@ -155,14 +156,10 @@ fn token(frame: &DecodedFrame, id: u32) -> Result<String, String> {
         .ok_or_else(|| format!("LexicalTokens lacks token {id}"))?;
     String::from_utf8(value.literal.clone()).map_err(|_| format!("Token {id} is not UTF-8"))
 }
-fn label(
-    content: Option<&Content>,
-    frame: &DecodedFrame,
-    slot: u32,
-    token: String,
-) -> ProjectLabel {
+/// `text` is the hour's frame with the trigger kit, which scoped names read.
+fn label(content: Option<&Content>, text: &DecodedFrame, slot: u32, token: String) -> ProjectLabel {
     ProjectLabel {
-        name: content.and_then(|content| content.name_for(&token, Some((slot, frame)))),
+        name: content.and_then(|content| content.name_for(&token, Some((slot, text)))),
         token,
     }
 }
@@ -322,7 +319,7 @@ pub fn details_at_hour(
         hour,
         scientists: Vec::new(),
         programs: Vec::new(),
-        breakthroughs: Vec::new(),
+        breakthroughs: None,
         projects: Vec::new(),
         unavailable: Vec::new(),
     };
@@ -384,6 +381,21 @@ pub fn details_at_hour(
             None
         }
     };
+    // Scoped names and effect descriptions read the trigger kit at the hour.
+    let mut effect_tables = dashboard_text::triggers::RECORDED_TABLES.to_vec();
+    effect_tables.extend([
+        TableId::RaidFacilities,
+        TableId::Provinces,
+        TableId::ProjectPrograms,
+    ]);
+    effect_tables.sort_unstable();
+    effect_tables.dedup();
+    let effect_frame = if content.is_some() {
+        progressive::frame_at(source, branch, hour, &effect_tables, cancelled)?
+    } else {
+        None
+    };
+    let text = effect_frame.as_deref().unwrap_or(frame);
     let links = frame
         .complete::<tables::CountryLinks>()
         .map_err(|why| dashboard_core::invalid(why.to_string()))?;
@@ -400,7 +412,7 @@ pub fn details_at_hour(
                         .filter(|row| row.character == scientist.character)
                         .map(|row| {
                             token(frame, row.token).map(|token| ScientistSkill {
-                                specialization: label(content.as_deref(), frame, slot, token),
+                                specialization: label(content.as_deref(), text, slot, token),
                                 level: row.level,
                                 experience_raw: row.experience_raw.to_string(),
                             })
@@ -418,7 +430,7 @@ pub fn details_at_hour(
                         .flat_map(|row| &row.tokens)
                         .map(|&id| {
                             token(frame, id)
-                                .map(|token| label(content.as_deref(), frame, slot, token))
+                                .map(|token| label(content.as_deref(), text, slot, token))
                         })
                         .collect::<Result<Vec<_>, _>>()
                 })
@@ -537,27 +549,37 @@ pub fn details_at_hour(
         ],
         cancelled,
     )?;
-    if let Some(sample) = breakthroughs
+    match breakthroughs
         .as_ref()
         .filter(|sample| identity(sample) == Some((country, slot)))
     {
-        let sample_links = sample
-            .complete::<tables::CountryLinks>()
-            .unwrap_or_default();
-        if let Ok(progress) = sample.complete::<tables::ProjectBreakthroughs>() {
-            for row in progress.iter().filter(|row| {
-                dashboard_text::metadata::link_slot(sample_links, row.owner) == Some(slot)
-            }) {
-                match token(sample, row.specialization) {
-                    Ok(token) => result.breakthroughs.push(SpecializationProgress {
-                        specialization: label(content.as_deref(), sample, slot, token),
-                        points: row.points,
-                        read_hour: sample.hour,
-                    }),
-                    Err(reason) => result.unavailable.push(reason),
+        Some(sample) => match sample.complete::<tables::ProjectBreakthroughs>() {
+            Ok(progress) => {
+                let sample_links = sample
+                    .complete::<tables::CountryLinks>()
+                    .unwrap_or_default();
+                let mut values = Vec::new();
+                for row in progress.iter().filter(|row| {
+                    dashboard_text::metadata::link_slot(sample_links, row.owner) == Some(slot)
+                }) {
+                    match token(sample, row.specialization) {
+                        Ok(token) => values.push(SpecializationProgress {
+                            specialization: label(content.as_deref(), text, slot, token),
+                            points: row.points,
+                            read_hour: sample.hour,
+                        }),
+                        Err(reason) => result.unavailable.push(reason),
+                    }
                 }
+                result.breakthroughs = Some(values);
             }
-        }
+            Err(why) => result
+                .unavailable
+                .push(format!("Specialization progress is unavailable: {why}")),
+        },
+        None => result
+            .unavailable
+            .push("Specialization progress has no continuous supplying daily read".into()),
     }
     let programs = progressive::latest_read(
         source,
@@ -613,7 +635,13 @@ pub fn details_at_hour(
                     province: program.province,
                     read_hour: program_frame.hour,
                     assignments,
-                    facility: facility::present(program_frame, program, content.as_deref(), slot),
+                    facility: facility::present(
+                        program_frame,
+                        text,
+                        program,
+                        content.as_deref(),
+                        slot,
+                    ),
                 });
             }
         }
@@ -673,19 +701,6 @@ pub fn details_at_hour(
             .push("Projects has no continuous supplying read".into());
         return Ok(result);
     }
-    let mut effect_tables = dashboard_text::triggers::RECORDED_TABLES.to_vec();
-    effect_tables.extend([
-        TableId::RaidFacilities,
-        TableId::Provinces,
-        TableId::ProjectPrograms,
-    ]);
-    effect_tables.sort_unstable();
-    effect_tables.dedup();
-    let effect_frame = if content.is_some() {
-        progressive::frame_at(source, branch, hour, &effect_tables, cancelled)?
-    } else {
-        None
-    };
     for project in frame
         .complete::<tables::Projects>()
         .unwrap_or_default()
@@ -764,14 +779,14 @@ pub fn details_at_hour(
                         label: ProjectLabel {
                             name: content.name_for(
                                 reward.name.as_deref().unwrap_or(&reward_token),
-                                Some((slot, frame)),
+                                Some((slot, text)),
                             ),
                             token: reward_token,
                         },
                         description: reward
                             .description
                             .as_ref()
-                            .and_then(|key| content.name_for(key, Some((slot, frame)))),
+                            .and_then(|key| content.name_for(key, Some((slot, text)))),
                         options: reward
                             .options
                             .iter()
@@ -780,7 +795,7 @@ pub fn details_at_hour(
                                     token: option.token.clone(),
                                     name: content.name_for(
                                         option.name.as_deref().unwrap_or(&option.token),
-                                        Some((slot, frame)),
+                                        Some((slot, text)),
                                     ),
                                 },
                                 effects: render(&option.output).unwrap_or_else(|| ProjectEffects {
@@ -820,7 +835,7 @@ pub fn details_at_hour(
                             &params.tag,
                             project_name_key(definition, &project_token),
                         );
-                        content.name_for(&selected, Some((slot, frame)))
+                        content.name_for(&selected, Some((slot, text)))
                     }),
                 token: project_token,
             },
@@ -844,7 +859,7 @@ pub fn details_at_hour(
                         let lexical_label = |id| {
                             label(
                                 content.as_deref(),
-                                frame,
+                                text,
                                 slot,
                                 token(frame, id).unwrap_or_else(|_| id.to_string()),
                             )
@@ -1072,8 +1087,9 @@ mod tests {
         assert_eq!(value.scientists[0].injury_hour, Some(24));
         assert_eq!(value.scientists[0].visible, Some(true));
         assert_eq!(value.scientists[0].visibility_hour, Some(24));
-        assert_eq!(value.breakthroughs[0].points, 777);
-        assert_eq!(value.breakthroughs[0].read_hour, 24);
+        let breakthroughs = value.breakthroughs.as_ref().unwrap();
+        assert_eq!(breakthroughs[0].points, 777);
+        assert_eq!(breakthroughs[0].read_hour, 24);
         // A witnessed failed native read is not an off-slice hour: it must
         // not borrow the older successful scientist operands.
         let refused = details_at_hour(

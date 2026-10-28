@@ -572,13 +572,24 @@ impl Hour {
     }
     fn losses(&self, pairs: &[(Pair, bool)]) -> [String; 4] {
         let mut sums = [0_i128; 4];
+        // A country's unknown loss is copied into each of its relations: the game
+        // adds its largest counter (at least zero) once per country.
+        let mut unknown = HashMap::<(u32, usize), i64>::new();
         for &(p, first) in pairs {
             let r = &self.world.relations[&p];
             let (a, b) = if first { (0, 2) } else { (2, 0) };
             sums[a] += i128::from(r.first_casualties);
-            sums[a + 1] += i128::from(r.first_unknown_casualties);
             sums[b] += i128::from(r.second_casualties);
-            sums[b + 1] += i128::from(r.second_unknown_casualties);
+            for (country, side, value) in [
+                (r.first_country, a + 1, r.first_unknown_casualties),
+                (r.second_country, b + 1, r.second_unknown_casualties),
+            ] {
+                let held = unknown.entry((country, side)).or_default();
+                *held = (*held).max(value);
+            }
+        }
+        for ((_, side), value) in unknown {
+            sums[side] += i128::from(value);
         }
         sums.map(|n| n.to_string())
     }
@@ -864,10 +875,11 @@ fn continue_wars(
 ) -> Vec<OpenWar> {
     // App rule: greedy one-to-one in native blob order. Choose the earlier
     // group's most continuing bilateral relations; tie: lowest app id.
-    let mut inverted: HashMap<&RelationRun, Vec<usize>> = HashMap::new();
+    // A relation continues by its native identities, so a renamed country keeps its war.
+    let mut inverted: HashMap<&WarRelationKey, Vec<usize>> = HashMap::new();
     for war in open {
         for relation in &war.relations {
-            inverted.entry(relation).or_default().push(war.id);
+            inverted.entry(&relation.identity).or_default().push(war.id);
         }
     }
     let mut used = HashSet::new();
@@ -876,7 +888,7 @@ fn continue_wars(
         .map(|observation| {
             let mut counts = HashMap::<usize, usize>::new();
             for relation in &observation.relations {
-                for &id in inverted.get(relation).into_iter().flatten() {
+                for &id in inverted.get(&relation.identity).into_iter().flatten() {
                     if !used.contains(&id) {
                         *counts.entry(id).or_default() += 1;
                     }

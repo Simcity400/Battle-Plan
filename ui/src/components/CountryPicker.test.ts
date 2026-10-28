@@ -141,3 +141,72 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     assert.doesNotMatch(html, /Couldn’t load countries|Synthetic ownership diagnostic|Flags unavailable|Some ownership history is unavailable|Synthetic decorative flag failure|class="pill"/);
   } finally { await vite.close(); delete globals.__pickerWitness; }
 });
+
+test('the listbox names its active option only while that row is drawn, and is multiselectable for a multi-country field', async () => {
+  const state = { hooks: [] as unknown[], cursor: 0, listbox: undefined as Record<string, any> | undefined,
+    scroll: undefined as ((event: { currentTarget: { scrollTop: number; clientHeight: number } }) => void) | undefined };
+  const globals = globalThis as typeof globalThis & { __pickerList?: typeof state };
+  globals.__pickerList = state;
+  const hooks = `const cell = init => { const s = globalThis.__pickerList, i = s.cursor++; return s.hooks[i] ??= init(); };
+    export const useId = () => cell(() => 'picker-list');
+    export const useRef = initial => cell(() => ({ current: initial }));
+    export const useState = initial => { const saved = cell(() => ({ value: typeof initial === 'function' ? initial() : initial }));
+      return [saved.value, next => { saved.value = typeof next === 'function' ? next(saved.value) : next; }]; };
+    export const useMemo = (make, deps) => { const saved = cell(() => ({ deps, value: make() }));
+      if (saved.deps.length !== deps.length || saved.deps.some((dep, i) => !Object.is(dep, deps[i]))) { saved.deps = deps; saved.value = make(); }
+      return saved.value; };
+    export const useLayoutEffect = () => {};
+    export const useEffect = () => {};`;
+  const replacements: Record<string, string> = {
+    '/components/Popover.tsx': `import { Children, createElement, isValidElement } from 'react';
+      export const usePopover = () => ({ open: true, trigger: { current: null }, close() {} });
+      export const Popover = props => { const s = globalThis.__pickerList;
+        const walk = nodes => Children.forEach(nodes, node => { if (!isValidElement(node)) return;
+          if (node.props.role === 'listbox') s.listbox = node.props;
+          if (node.props.className === 'country-picker-list') s.scroll = node.props.onScroll;
+          walk(node.props.children); }); walk(props.children); return createElement('div', null, props.children); };`,
+    '/components/CountryFlag.tsx': `import { createElement } from 'react'; export const CountryFlag = () => createElement('span');`,
+    '/components/Icons.tsx': `import { createElement } from 'react'; export const Icon = ({ name }) => createElement('i', { 'data-icon': name });`,
+    '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map();',
+    '/dashboard/products.ts': `export const forgetSettledProducts = () => {}; export const loadProduct = () => new Promise(() => {});
+      export const loadTransientProduct = loadProduct;`,
+    '/dashboard/flagCache.ts': `export class FlagStore { static key(...args) { return JSON.stringify(args); } }
+      export const flagStore = () => ({ get: () => undefined }); export const loadListFlags = () => new Promise(() => {});`,
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'picker-list-fixture', enforce: 'pre',
+      resolveId(id) { if (id === 'picker-list-hooks') return '\0picker-list-hooks'; },
+      load(id) { if (id === '\0picker-list-hooks') return hooks; },
+      transform(source, id) {
+        const path = id.replaceAll('\\', '/'), replacement = Object.entries(replacements).find(([suffix]) => path.endsWith(suffix));
+        if (replacement) return replacement[1];
+        if (path.endsWith('/components/CountryPicker.tsx')) return source.replace("from 'react'", "from 'picker-list-hooks'");
+      },
+    }] });
+  try {
+    const Picker = (await vite.ssrLoadModule('/ui/src/components/CountryPicker.tsx')).default as ComponentType<ComponentProps<typeof CountryPicker>>;
+    const tags = Array.from({ length: 200 }, (_, index) => `T${String(index).padStart(3, '0')}`);
+    const countries = tags.map((tag, index) => ({ id: index + 1, tag, name: `Country ${String(index).padStart(3, '0')}` }));
+    const props = { countries, allowedTags: tags, selectedTag: null, playerCountryId: null, field: true, chosen: [tags[0], tags[1]], addLabel: 'Add or remove a country',
+      source: { id: 'synthetic', revision: '1', metadata: { countries, branches: [{ id: '1', firstHour: 100, lastHour: 120 }] } },
+      client: {}, flagAt: null, onChange: () => {},
+    } as unknown as ComponentProps<typeof CountryPicker>;
+    const render = () => { state.cursor = 0; return renderToStaticMarkup(createElement(Picker, props)); };
+    const press = (key: string) => state.listbox!.onKeyDown({ key, preventDefault() {} });
+    render();
+    assert.equal(state.listbox!['aria-multiselectable'], true, 'chosen countries accumulate');
+    assert.equal(state.listbox!['aria-activedescendant'], undefined);
+    press('ArrowDown'); let html = render();
+    assert.equal(state.listbox!['aria-activedescendant'], 'picker-list-country-0');
+    assert.match(html, /id="picker-list-country-0"/);
+    state.scroll!({ currentTarget: { scrollTop: 100 * 36, clientHeight: 340 } }); html = render();
+    assert.doesNotMatch(html, /id="picker-list-country-0"/, 'the active row scrolled out of the drawn rows');
+    assert.equal(state.listbox!['aria-activedescendant'], undefined, 'no active option names a row that is not drawn');
+    press('ArrowDown'); html = render();
+    assert.equal(state.listbox!['aria-activedescendant'], 'picker-list-country-1', 'moving on brings the active row back into view');
+    assert.match(html, /id="picker-list-country-1"/);
+    props.chosen = undefined; props.addLabel = undefined; render();
+    assert.equal(state.listbox!['aria-multiselectable'], false, 'one country is chosen at a time');
+  } finally { await vite.close(); delete globals.__pickerList; }
+});

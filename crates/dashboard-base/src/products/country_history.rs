@@ -511,6 +511,54 @@ pub fn selected_aliases(history: &RecordedHistories, tags: &[String]) -> Vec<Str
         .collect()
 }
 
+/// Each of `tags`' aliases ([`selected_aliases`]) with the hours one of the selected native
+/// identities holds it, cut to the caller's `within` spans of that tag where it gives them: an
+/// alias's other holders are not the selection.
+pub fn selected_spans(
+    history: &RecordedHistories,
+    tags: &[String],
+    within: &BTreeMap<String, Vec<HourSpan>>,
+    cancelled: &AtomicBool,
+) -> io::Result<BTreeMap<String, Vec<HourSpan>>> {
+    let selected = selected_identities(history, tags);
+    let mut spans = BTreeMap::new();
+    for tag in selected_aliases(history, tags) {
+        let native: Vec<_> = history
+            .countries
+            .get(&tag)
+            .into_iter()
+            .flat_map(|country| country.identities.iter())
+            .filter(|identity| selected.contains(&(identity.slot, identity.country_id)))
+            .map(|identity| HourSpan {
+                first_hour: identity.first_hour,
+                last_hour: identity.last_hour,
+            })
+            .collect();
+        let scopes = match within.get(&tag) {
+            Some(bounds) => {
+                let mut scopes = Vec::new();
+                crate::ranking::for_each_piece(
+                    &native,
+                    bounds,
+                    |span| (span.first_hour, span.last_hour),
+                    cancelled,
+                    |_, first_hour, last_hour| {
+                        scopes.push(HourSpan {
+                            first_hour,
+                            last_hour,
+                        });
+                        Ok(())
+                    },
+                )?;
+                scopes
+            }
+            None => native,
+        };
+        spans.insert(tag, scopes);
+    }
+    Ok(spans)
+}
+
 pub fn scan_histories(
     replay: &Replay,
     branch: u64,
@@ -1369,6 +1417,50 @@ pub fn observe_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_spans_keep_an_alias_only_while_a_selected_country_holds_it() {
+        let held = |runs: &[(i32, i32, u32, u32)]| RecordedCountry {
+            identities: Arc::new(
+                runs.iter()
+                    .map(|&(first_hour, last_hour, slot, country_id)| CountryIdentityRun {
+                        first_hour,
+                        last_hour,
+                        slot,
+                        country_id,
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        let mut history = RecordedHistories::default();
+        // A renames to B at 10; another country takes tag B from 30.
+        history
+            .countries
+            .insert("A".into(), held(&[(0, 9, 7, 100)]));
+        history
+            .countries
+            .insert("B".into(), held(&[(10, 19, 7, 100), (30, 40, 8, 200)]));
+        let span = |first_hour, last_hour| HourSpan {
+            first_hour,
+            last_hour,
+        };
+        let never = AtomicBool::new(false);
+        let tags = ["A".to_owned()];
+        assert_eq!(
+            selected_spans(&history, &tags, &BTreeMap::new(), &never).unwrap(),
+            BTreeMap::from([
+                ("A".to_owned(), vec![span(0, 9)]),
+                ("B".to_owned(), vec![span(10, 19)]),
+            ])
+        );
+        // The caller's spans cut them further.
+        let within = BTreeMap::from([("B".to_owned(), vec![span(15, 35)])]);
+        assert_eq!(
+            selected_spans(&history, &tags, &within, &never).unwrap()["B"],
+            [span(15, 19)]
+        );
+    }
 
     #[test]
     fn published_identity_projection_reuses_the_full_page_across_clipping_bounds() {

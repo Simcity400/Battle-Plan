@@ -3548,3 +3548,143 @@ fn a_rebind_paused_across_shutdown_leaves_the_source_unbound() {
     assert!(service.inner.rebind(&source, &never).is_err());
     assert!(source.binding().is_none());
 }
+
+/// A map settings request admitted under earlier folders reads the game's settings of the folders
+/// configured when it runs: it never restores the earlier folders' defaults.
+#[test]
+fn a_stale_map_settings_request_keeps_the_configured_folders_game_settings() {
+    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "new/settings.txt",
+        "graphics={} mapRenderingOptions={}",
+    )]);
+    let root = folder.0.clone();
+    let folders = |user: &str| installed_content_core::ResolveOptions {
+        game_dir: root.clone(),
+        user_dir: root.join(user),
+        cache_dir: root.join("cache"),
+    };
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    service.inner.content.update(|content| {
+        *content = Some(ContentOptions {
+            options: folders("new"),
+            allow_unverified: true,
+            presentation: Default::default(),
+        })
+    });
+    // Admitted under a user folder without game settings, run after the change to "new".
+    let _ = service.inner.map_settings_job(super::jobs::MapSettingsJob {
+        target: Default::default(),
+        request: Request::new("settings".into()),
+        source_id: String::new(),
+        source: None,
+        settings: None,
+        flip: None,
+        options: folders("old"),
+    });
+    let store = service.inner.map_settings.lock().unwrap();
+    assert!(store.game().is_some(), "{:?}", store.game_error());
+    drop(store);
+    service.shutdown();
+}
+
+/// A restart a rebind could not queue behind a full history queue is kept, and queued as soon
+/// as a job leaves the queue, so it restarts as a queued refresh would.
+#[test]
+fn a_restart_deferred_by_a_full_history_queue_is_queued_once_it_has_room() {
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let hold = LoaderHold::new(&service, Lane::History);
+    let source = source();
+    service
+        .inner
+        .refresh_preparation(Arc::clone(&source), false)
+        .unwrap();
+    let mut retained = Vec::new();
+    for index in 0..MAX_PENDING * 2 {
+        let id = format!("refresh-deferred-{index}");
+        let request = service.inner.begin(id.clone()).unwrap();
+        retained.push(Arc::downgrade(&request));
+        service.inner.submit(
+            Arc::clone(&request),
+            LoadJob::Product {
+                request: Arc::clone(&request),
+                lease_id: "test-lease".into(),
+                source: Arc::clone(&source),
+                body: ProductRequest {
+                    source_id: "source-test".into(),
+                    revision: "revision-test".into(),
+                    product: "country-groups".into(),
+                    params: serde_json::json!({}),
+                },
+            },
+        );
+        drop(service.inner.pending.lock().unwrap().cancel(&id));
+        drop(request);
+    }
+    assert_eq!(
+        settled_live_requests(&service, &receive, &retained),
+        MAX_PENDING - 1
+    );
+    let other = source_with_id("deferred-refresh");
+    let deferred = |service: &Service| {
+        service
+            .inner
+            .loader
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .deferred
+            .contains_key(other.key())
+    };
+    service.inner.refresh_or_defer(Arc::clone(&other));
+    assert!(deferred(&service), "a full queue keeps the restart");
+    drop(hold);
+    let started = std::time::Instant::now();
+    while deferred(&service) {
+        assert!(started.elapsed() < HANG_GUARD, "the deferred restart was never queued");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    service.shutdown();
+}
+
+/// A restart that runs after the user's Cancel, while the job it stopped is still ending,
+/// leaves it cancelled rather than restarting it as the user's.
+#[test]
+fn a_restart_after_a_cancel_still_ending_leaves_it_cancelled() {
+    use crate::prepared::Action;
+    let fixture = LibraryFixture::new(&["cancel-then-restart"]);
+    let path = &fixture.paths[0];
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    let hold = PreparationHold::new(&service);
+    let source = service.open_map(path, None).unwrap();
+    library_action(
+        &service,
+        Arc::clone(&source),
+        Action::Start,
+        "prepare-then-cancel",
+        &receive,
+    );
+    assert_eq!(job(&source), (true, false, false));
+    {
+        let _admission = service.inner.preparation_actions.lock().unwrap();
+        service.inner.cancel_by_user(&source);
+    }
+    // The cancelled job is still running when the restart is decided.
+    assert!(job(&source).0);
+    service
+        .inner
+        .refresh_preparation(Arc::clone(&source), true)
+        .unwrap();
+    // Every history worker taken behind the restart proves it was decided.
+    drop(LoaderHold::new(&service, Lane::History));
+    drop(hold);
+    let started = std::time::Instant::now();
+    while job(&source).0 {
+        assert!(started.elapsed() < HANG_GUARD, "the cancelled job never ended");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(state(&source), crate::prepared::State::Cancelled);
+    service.shutdown();
+}

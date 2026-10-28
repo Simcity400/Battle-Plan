@@ -31,7 +31,7 @@ import { useCampaignSettings } from '../../dashboard/campaignSettings';
 import { factionNameAt } from '../../dashboard/factionNames';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { useFocusText } from '../national-focus/useFocusArtwork';
-import { FAILED_FACT } from '../../dashboard/countryFacts';
+import { FAILED_FACT, MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { isMember, MEMBERSHIP_PREPARING, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -44,6 +44,7 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { NumericReply } from '../../dashboard/numericReply';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { useCountryLooks } from '../../dashboard/countryLooks';
+import { nameReadText } from '../../dashboard/holderLooks';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryGroupReply, CountryStabilityReply } from '../../generated/dashboard';
 import { parseColor, toHex } from '../../shell/appearance/color';
@@ -227,24 +228,21 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
     groups: markerGroups.data, factionName: (faction: CountryGroupReply['factions'][number], hour: number) => factionNameAt(faction, hour, factionOverrides?.[faction.id]?.name), ideas: markerIdeas.data && markerIdeas.data.tag === markerTag ? markerIdeas.data : undefined,
     parties: preparedParties.enabled && preparedParties.summary?.marks.some(mark=>!mark.exact) ? undefined : markerParties.data, focus: markerFocus.data,
   }, [preparedParties.enabled, preparedParties.summary, track, factionOverrides, markerTag, extent[0], extent[1], resolved.membership, markerGroups.data, markerIdeas.data, markerParties.data, markerFocus.data]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Other countries are named as the game showed them at each event's hour; until
-  // (or where) that is not known, by their name in the recording's metadata.
+  // Other countries are named as the game showed them at each event's hour, never by
+  // the metadata's name from another date.
   const markerReads = useMemo(() => {
     const countries: NameAt[] = [], focuses: NameAt[] = [];
     if (markerSources) stabilityMarkers({ ...markerSources,
       countryName: (other, hour) => { countries.push({ hour, tag: other }); return ''; },
       focusName: (token, hour) => { focuses.push({ hour, tag: token }); return null; },
     }, kinds);
-    return { countries, focuses };
+    // Every marker date stays admitted, so a long history never leaves later names unread.
+    return { countries, focuses, nameHours: Math.max(MAX_NAME_HOURS, new Set(countries.map(item => item.hour)).size) };
   }, [markerSources, kinds]);
-  const namesAt = useCountryNamesRead(runtime.client, track, markerReads.countries, active);
+  const namesAt = useCountryNamesRead(runtime.client, track, markerReads.countries, active, markerReads.nameHours);
   const focusText = useFocusText(runtime.client, track, markerTag ?? undefined, markerReads.focuses, active);
   const badges = useMemo(() => !track || !markerSources ? [] : stabilityMarkers({ ...markerSources,
-    countryName: (other, hour) => {
-      const read = namesAt.get(nameKey(hour, other));
-      return typeof read === 'string' ? read : track.source.metadata.countries.find(country => country.tag === other)?.name
-        ?? (read === undefined ? 'Loading name…' : 'Country name unavailable');
-    },
+    countryName: (other, hour) => nameReadText(namesAt.get(nameKey(hour, other))),
     focusName: (token, hour) => {
       const item = focusText.read.get(nameKey(hour, token));
       return item === undefined ? undefined : item && item !== FAILED_FACT ? item.artwork.name ?? null : null;

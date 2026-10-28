@@ -387,11 +387,19 @@ class External(unittest.TestCase):
                              os.path.normcase(os.path.join(names["owned"], "debug")))
             self.assertIsNone(wt.junction_target(names["young"]))
 
-    def test_profile_directories_are_named_per_worktree_path(self):
+    def test_profile_directories_are_named_per_worktree_path_and_warm(self):
         a = wt.external_profile_dir("G:\\dev", "C:\\one\\t3-1234")
         b = wt.external_profile_dir("G:\\dev", "C:\\two\\t3-1234")
         self.assertNotEqual(a, b)
         self.assertTrue(a.startswith("G:\\dev\\t3-1234-") and a.endswith(wt.EXTERNAL_SUFFIX))
+        # A concurrent warm of the same worktree never shares, so never deletes, this one's.
+        other = subprocess.run(
+            [sys.executable, "-c", "import sys, warm_target as wt; "
+             "print(wt.external_profile_dir(sys.argv[1], sys.argv[2]))", "G:\\dev", "C:\\one\\t3-1234"],
+            cwd=os.path.dirname(os.path.abspath(__file__)), capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertTrue(other.startswith("G:\\dev\\t3-1234-") and other.endswith(wt.EXTERNAL_SUFFIX))
+        self.assertNotEqual(a, other)
 
 
 class Slots(unittest.TestCase):

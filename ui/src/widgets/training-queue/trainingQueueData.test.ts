@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { TrainingDivision, TrainingOrder } from '../../generated/dashboard';
-import { divisionTooltip, equipmentFill, lowestFill, queueRows, trainingRatio, validateTrainingQueue } from './trainingQueueData.ts';
+import { divisionTooltip, equipmentFill, lowestFill, orderTooltip, queueRows, trainingRatio, validateTrainingQueue } from './trainingQueueData.ts';
 
 const division = (line: string, extra: Partial<TrainingDivision> = {}): TrainingDivision => ({ line, ordinal: 0, name: `Division ${line}`, nameMissing: null,
   trainingRaw: '50000', maxTrainingRaw: '100000', manpower: 100, manpowerNeeded: 900, maxManpower: 1000, contributors: [], equipment: [],
@@ -40,4 +40,11 @@ test('a held design of unresolved type leaves the fill unknown, never 0%, and ke
   const rows = divisionTooltip(unresolved, 0).rows;
   assert.equal(rows.find(row => row.label === 'Rifles')?.value, '0 / 100');
   assert.equal(rows.find(row => row.label === 'Fill not recorded')?.value, 'A held design’s equipment type is unresolved');
+});
+
+test('an order with a division of unknown fill has no lowest fill, not the known divisions’ lowest', () => {
+  const mixed = order('a', [division('1'), division('2', { comparisonMissing: 'A held design’s equipment type is unresolved' })]);
+  assert.equal(lowestFill(mixed), null);
+  assert.equal(orderTooltip(mixed, 8).rows.find(row => row.label === 'Lowest equipment fill')?.value, 'Not recorded');
+  assert.ok(Math.abs(lowestFill(order('b', [division('1')]))! - 100 / 110) < 1e-5);
 });

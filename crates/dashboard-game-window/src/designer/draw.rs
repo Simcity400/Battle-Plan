@@ -147,7 +147,7 @@ pub fn draw(
     localisation: &Localisation,
     designer: &Designer,
     nato: bool,
-    scroll: &BTreeMap<String, i32>,
+    scroll: &crate::compose::Scroll,
 ) -> io::Result<Bound> {
     let refuse = |why: String| Bound {
         title: None,
@@ -370,7 +370,29 @@ pub fn draw(
                 );
             }
         }
-        Err(ref why) => priorities.note(why.clone()),
+        Err(ref why) => {
+            priorities.note(why.clone());
+            // Unread, no priority control keeps the frames it was constructed with, whatever
+            // numbers a mod gives them.
+            let numbered = |element: &&Element| {
+                let name = element.name_bytes();
+                let prefix = b"priority_button_";
+                name.len() > prefix.len()
+                    && name[..prefix.len()].eq_ignore_ascii_case(prefix)
+                    && name[prefix.len()..].iter().all(u8::is_ascii_digit)
+            };
+            for element in root
+                .path_named(header)
+                .into_iter()
+                .flat_map(|header| header.children.iter().filter(numbered))
+            {
+                apply(instance.hide(&root, element), &mut controls);
+            }
+            if let Some(element) = find(&format!("{header}/division_priority_icon"), &mut controls)
+            {
+                apply(instance.hide(&root, element), &mut controls);
+            }
+        }
     }
     slots.push(counted("priority", priorities, None));
     // Capability icons show only beside a real regiment.
@@ -409,16 +431,22 @@ pub fn draw(
     let mut equipment = Counted::default();
     if let Some(element) = find(&format!("{header}/division_equipment_btn"), &mut controls) {
         match designer.equipment_button {
-            Ok(sprite) => apply(
-                instance.set_sprite(&root, element, sprite, setter(element)),
-                &mut controls,
-            ),
-            Err(ref why) => equipment.note(why.clone()),
-        }
-        // The game enables it only while the regiment grid holds a real definition.
-        match instance.control(&root, element) {
-            Ok(control) => control.enabled = Some(designer.regiments),
-            Err(why) => controls.note(why),
+            Ok(sprite) => {
+                apply(
+                    instance.set_sprite(&root, element, sprite, setter(element)),
+                    &mut controls,
+                );
+                // The game enables it only while the regiment grid holds a real definition.
+                match instance.control(&root, element) {
+                    Ok(control) => control.enabled = Some(designer.regiments),
+                    Err(why) => controls.note(why),
+                }
+            }
+            Err(ref why) => {
+                equipment.note(why.clone());
+                // Its sprite tells whether the template restricts equipment.
+                apply(instance.hide(&root, element), &mut controls);
+            }
         }
     }
     slots.push(counted("equipment settings", equipment, None));

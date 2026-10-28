@@ -181,6 +181,28 @@ test('a war-end outcome joins the one recorded conference at its hour naming its
   const twin = { ...conference, id: 'twin' };
   assert.equal(preparePeaceLog(reply([conference, twin, outcome])).rows.length, 3);
 });
+test('an outcome fitting two conferences stays its own card whichever outcome joined first', () => {
+  const conference = (id: string, winners: string[], losers: string[]) => {
+    const card = deal(id, 20); card.derived = false; card.items = []; card.endIsBy = false; card.winners = winners; card.losers = losers;
+    card.captured = { hour: 20, publicationHour: 20, winners: [], losers: [], actions: [], subjects: [], transfers: [] };
+    return card;
+  };
+  const outcome = (id: string, winners: string[], losers: string[]) => {
+    const card = deal(id, 20); card.observation = 'conferenceNotRecorded'; card.conferenceId = null; card.winners = winners; card.losers = losers;
+    return card;
+  };
+  const a = conference('a', ['A', 'B'], ['X', 'Y']), b = conference('b', ['B'], ['Y']);
+  const first = outcome('first', ['A'], ['X']), second = outcome('second', ['B'], ['Y']);
+  for (const deals of [[a, b, first, second], [a, b, second, first]]) {
+    const rows = preparePeaceLog(reply(deals)).rows;
+    assert.deepEqual(rows.map(row => row.item.deal.id).sort(), ['a', 'b', 'second']);
+    assert.equal(rows.find(row => row.item.deal.id === 'a')?.item.warEnd, true);
+    assert.equal(rows.find(row => row.item.deal.id === 'b')?.item.warEnd, undefined);
+  }
+  // Every outcome fitting one conference alone joins it.
+  const third = outcome('third', ['B'], ['X']);
+  assert.deepEqual(preparePeaceLog(reply([a, b, first, third])).rows.map(row => row.item.deal.id).sort(), ['a', 'b']);
+});
 test('war score sums the captured actions; victory points total only when every state records them', () => {
   const card = deal(); card.derived = false; card.items = [item(4, 19)];
   card.captured = { hour: 19, publicationHour: 20, winners: [1], losers: [2], actions: [capturedAction(4), capturedAction(5)], transfers: [], subjects: [] };

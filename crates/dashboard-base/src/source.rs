@@ -13,7 +13,7 @@ use replay::container::Replay;
 
 use crate::{
     ReplayMetadata,
-    content::{ContentKey, content_key, name_localisation},
+    content::{ContentKey, content_key, language, name_localisation},
     metadata::{self, MetadataRefusals, ResidentMetadata, Warnings},
     presentation::{Admitted, Binding, Cancel, Presentation, Presented},
     products::ContentOptions,
@@ -64,12 +64,23 @@ pub struct Source {
     cached_named: Option<metadata_cache::CachedNames>,
     pub(crate) cached_inputs: Option<store::SourceKey>,
     /// The metadata with country names resolved for the last folders it was asked for.
-    named: Mutex<Option<(Option<ContentKey>, ResidentMetadata)>>,
+    named: Mutex<Option<(NamesKey, ResidentMetadata)>>,
     content: Mutex<ContentCache>,
     /// What work on this source is bound to now ([`Self::bind`]), swapped in whole, never
     /// changed in place; `None` until the service binds it.
     binding: Mutex<Option<Arc<Binding>>>,
     state: Mutex<HashMap<TypeId, StateEntry>>,
+}
+
+/// What country names are resolved for: the folders, and the user's game language they are in
+/// (or why it cannot be read).
+pub(crate) type NamesKey = (Option<ContentKey>, Option<Result<String, String>>);
+
+fn names_key(content: Option<&ContentOptions>) -> NamesKey {
+    (
+        content_key(content),
+        content.map(|content| language(&content.options).map_err(|error| error.to_string())),
+    )
 }
 
 fn country_observation(country: &crate::CountryMetadata) -> (&str, &str, &str, i32) {
@@ -277,7 +288,7 @@ impl Source {
     /// Resolves the catalogue's names in the user's game language at each
     /// country's observed hour; without content they stay tags, with a warning.
     pub fn name_countries(&self, content: Option<&ContentOptions>) -> io::Result<()> {
-        let key = content_key(content);
+        let key = names_key(content);
         let mut named = self.named.lock().unwrap_or_else(|error| error.into_inner());
         if named.as_ref().is_some_and(|(cached, _)| *cached == key) {
             return Ok(());

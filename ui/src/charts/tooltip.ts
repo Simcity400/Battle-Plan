@@ -141,6 +141,9 @@ type Listener = () => void;
 let state: TooltipState | null = null;
 let key = '';
 const listeners = new Set<Listener>();
+// Counts each time the layer is taken or moved, which only an interaction does (content refreshed in
+// place does not), so a late reply can tell whether anything was pointed at since its action.
+let revision = 0;
 
 const emit = () => { for (const listener of listeners) listener(); };
 
@@ -154,6 +157,7 @@ export function showTooltip(owner: string, content: TooltipContent, x: number, y
     && (content.scrollId != null ? content.scrollId === state.content.scrollId : nextKey === key);
   const scrollTop = sameScroll ? state?.scrollTop ?? 0 : 0;
   const scrollViewport = sameScroll ? state?.scrollViewport ?? 0 : 0;
+  if (state?.owner !== owner || state.x !== x || state.y !== y) revision++;
   key = nextKey;
   state = content.scrollable ? { owner, content, x, y, scrollTop, scrollViewport } : { owner, content, x, y };
   emit();
@@ -196,5 +200,6 @@ export function hideTooltip(owner: string): void {
 
 export const tooltipStore = {
   get: () => state,
+  revision: () => revision,
   subscribe(listener: Listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
 };

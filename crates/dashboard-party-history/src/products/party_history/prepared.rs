@@ -538,6 +538,94 @@ fn values_default() -> bool {
     true
 }
 
+/// One key's prepared stop as [`series::navigate`] finds it, minus its fallback hour,
+/// so a key without a stop never outbids the unprepared tail's stops.
+fn prepared_stop(
+    reader: &mut Reader<'_>,
+    key: u64,
+    within: Option<&[HourSpan]>,
+    navigation: &series::Navigation,
+) -> io::Result<Option<f64>> {
+    let origin = navigation.origin()?;
+    let forward = matches!(
+        navigation.key,
+        series::MeasureKey::Home | series::MeasureKey::ArrowRight
+    );
+    let (first, last) = (navigation.first_hour, navigation.last_hour);
+    let spans: Vec<_> = match within {
+        Some(spans) => spans
+            .iter()
+            .map(|span| {
+                (
+                    f64::from(span.first_hour).max(first),
+                    f64::from(span.last_hour).min(last),
+                )
+            })
+            .collect(),
+        None => vec![(first, last)],
+    };
+    let mut result: Option<f64> = None;
+    for (first, last) in spans.into_iter().filter(|(first, last)| first <= last) {
+        let at = if forward {
+            origin.max(first - 1.0)
+        } else {
+            origin.min(last + 1.0)
+        };
+        let candidate = reader
+            .next_change(key, at, forward)?
+            .map(f64::from)
+            .filter(|hour| *hour >= first && *hour <= last);
+        let carried = reader.next_change(key, first, false)?.is_some();
+        let edge = (carried && (forward && origin < first || !forward && origin > first))
+            .then_some(first);
+        for hour in [candidate, edge].into_iter().flatten() {
+            result = Some(result.map_or(hour, |previous| {
+                if forward {
+                    previous.min(hour)
+                } else {
+                    previous.max(hour)
+                }
+            }));
+        }
+    }
+    Ok(result)
+}
+
+/// One event page over `keys`; with membership spans only their hours count, so the
+/// total and the cursor (an index into those events) describe the filtered stream.
+fn event_page(
+    reader: &mut Reader<'_>,
+    keys: &[u64],
+    (from, to): (i32, i32),
+    within: Option<&[HourSpan]>,
+    cursor: u64,
+    size: u32,
+) -> io::Result<series::EventsPage> {
+    let Some(spans) = within else {
+        return reader.events(keys, from, to, cursor, size);
+    };
+    let mut hours: Vec<_> = spans
+        .iter()
+        .map(|span| (span.first_hour.max(from), span.last_hour.min(to)))
+        .filter(|(first, last)| first <= last)
+        .collect();
+    hours.sort_unstable();
+    let mut merged: Vec<(i32, i32)> = Vec::new();
+    for (first, last) in hours {
+        match merged.last_mut() {
+            Some(previous) if first <= previous.1.saturating_add(1) => {
+                previous.1 = previous.1.max(last);
+            }
+            _ => merged.push((first, last)),
+        }
+    }
+    let windows: Vec<_> = keys
+        .iter()
+        .flat_map(|&key| merged.iter().map(move |&(first, last)| (key, first, last)))
+        .collect();
+    reader.events_within(&windows, cursor, size)
+}
+
 fn field(keys: &BTreeMap<String, u64>, tag: &str, name: &str) -> Option<u64> {
     keys.get(&series::field_key(tag, name)).copied()
 }
@@ -808,25 +896,32 @@ pub fn query(
             let navigation = params
                 .navigation
                 .ok_or_else(|| dashboard_core::invalid("Missing party navigation"))?;
+            // Stops are only what the chart shows: popularity and its owner, and asked-for marks.
+            // A party's name draws no mark, so its changes are no stop.
+            let marked = |name: &str| {
+                params
+                    .fields
+                    .as_ref()
+                    .is_none_or(|fields| fields.iter().any(|field| field == name))
+            };
+            let shown = |name: &str| match name {
+                "ruling" => marked("ruling"),
+                "leader" => marked("leader"),
+                "owner" => params.values,
+                _ => params.values && name.starts_with("value:"),
+            };
+            let within = params.within.as_deref();
             if partial {
                 let mut prepared = BTreeMap::new();
                 let mut fields: BTreeSet<_> = sampled
                     .0
                     .keys()
-                    .filter(|(_, field)| !field.is_empty())
+                    .filter(|(_, field)| !field.is_empty() && shown(field.as_str()))
                     .cloned()
                     .collect();
-                let origin = navigation.origin()?;
-                let forward = matches!(
-                    navigation.key,
-                    series::MeasureKey::Home | series::MeasureKey::ArrowRight
-                );
                 for (name, &id) in &keys {
                     let tuple: (String, String) = serde_json::from_str(name)?;
-                    if tuple.0 != params.tag
-                        || tuple.1.ends_with("events")
-                        || tuple.1.ends_with("marks")
-                    {
+                    if tuple.0 != params.tag || !shown(tuple.1.as_str()) {
                         continue;
                     }
                     let preceding = sampled
@@ -839,10 +934,7 @@ pub fn query(
                         .flatten();
                     prepared.insert(
                         tuple.clone(),
-                        (
-                            reader.next_change(id, origin, forward)?.map(f64::from),
-                            preceding,
-                        ),
+                        (prepared_stop(&mut reader, id, within, &navigation)?, preceding),
                     );
                     fields.insert(tuple);
                 }
@@ -859,8 +951,7 @@ pub fn query(
                 .iter()
                 .filter_map(|(name, &id)| {
                     let (tag, name): (String, String) = serde_json::from_str(name).ok()?;
-                    (tag == params.tag && !name.ends_with("events") && !name.ends_with("marks"))
-                        .then_some((id, None))
+                    (tag == params.tag && shown(name.as_str())).then_some((id, within))
                 })
                 .collect();
             return Ok(
@@ -968,15 +1059,15 @@ pub fn query(
                     if exact {
                         let (first, last) = (from.ceil() as i32, to.floor() as i32);
                         if first <= last {
-                            rows = reader
-                                .events(
-                                    &[key],
-                                    first,
-                                    last,
-                                    0,
-                                    width.saturating_mul(2).saturating_add(2),
-                                )?
-                                .rows;
+                            rows = event_page(
+                                &mut reader,
+                                &[key],
+                                (first, last),
+                                params.within.as_deref(),
+                                0,
+                                width.saturating_mul(2).saturating_add(2),
+                            )?
+                            .rows;
                         }
                     } else {
                         for cluster in &summary.clusters {
@@ -1097,14 +1188,17 @@ pub fn query(
                 })
                 .filter_map(|name| field(&keys, &params.tag, &format!("{name}-marks")))
                 .collect::<Vec<_>>();
-            let page = reader.events(&selected, from, to, offset, size)?;
+            let page = event_page(
+                &mut reader,
+                &selected,
+                (from, to),
+                params.within.as_deref(),
+                offset,
+                size,
+            )?;
             total = page.total.to_string();
             cursor = page.cursor.map(|ordinal| ordinal.to_string());
-            for row in page
-                .rows
-                .into_iter()
-                .filter(|row| within(&params.within, row.hour))
-            {
+            for row in page.rows {
                 let event = serde_json::from_value(row.row)?;
                 if matches!(event, Event::Election) {
                     scanned.elections.push(row.hour);
@@ -1480,6 +1574,46 @@ mod tests {
                     .is_empty()
             );
         }
+    }
+
+    #[test]
+    fn membership_event_pages_count_and_page_only_member_hours() {
+        let fixture = Fixture::new();
+        let flag = AtomicBool::new(false);
+        let mut data = Accumulator::default();
+        for hour in 1..=6 {
+            data.event(0, hour, &json!({ "hour": hour })).unwrap();
+        }
+        let mut writer = fixture.writer();
+        data.flush(&mut writer, "party-series-1", POPULARITY_DECIMALS, &flag)
+            .unwrap();
+        writer.commit().unwrap();
+        let mut reader =
+            Reader::new(&fixture.store, &fixture.key, "party-series-1".into(), &flag).unwrap();
+        // Two membership episodes, unordered and overlapping, around excluded hours 3 and 4.
+        let spans = [
+            HourSpan {
+                first_hour: 5,
+                last_hour: 6,
+            },
+            HourSpan {
+                first_hour: 1,
+                last_hour: 2,
+            },
+            HourSpan {
+                first_hour: 2,
+                last_hour: 2,
+            },
+        ];
+        let hours = |page: &series::EventsPage| {
+            page.rows.iter().map(|row| row.hour).collect::<Vec<_>>()
+        };
+        let first = event_page(&mut reader, &[0], (1, 6), Some(&spans[..]), 0, 2).unwrap();
+        assert_eq!((first.total, first.cursor, hours(&first)), (4, Some(2), vec![1, 2]));
+        let next = event_page(&mut reader, &[0], (1, 6), Some(&spans[..]), 2, 2).unwrap();
+        assert_eq!((next.cursor, hours(&next)), (None, vec![5, 6]));
+        let all = event_page(&mut reader, &[0], (1, 6), None, 0, 2).unwrap();
+        assert_eq!((all.total, all.cursor, hours(&all)), (6, Some(2), vec![1, 2]));
     }
 
     #[test]

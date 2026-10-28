@@ -331,8 +331,7 @@ fn carrier_penalty_uses_opponent_silhouette_and_actual_multiplier() {
         sortie_stance_ratios: vec![ONE],
         base_carrier_sortie_efficiency: ONE,
         selected_sortie_initial_time: 0,
-        piercing_thresholds: Vec::new(),
-        piercing_critical_values: Vec::new(),
+        piercing: Ok(Default::default()),
         positioning_impacts: [0; 3],
     };
     let model = ShipModelRow {
@@ -443,8 +442,7 @@ fn opposing_silhouette_rounds_each_forward_group() {
         sortie_stance_ratios: vec![],
         base_carrier_sortie_efficiency: 0,
         selected_sortie_initial_time: 0,
-        piercing_thresholds: Vec::new(),
-        piercing_critical_values: Vec::new(),
+        piercing: Ok(Default::default()),
         positioning_impacts: [0; 3],
     };
     let capital = |group_index| NavalCombatShipRow {

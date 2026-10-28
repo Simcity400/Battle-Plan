@@ -998,6 +998,12 @@ fn prepared_query<F: Family>(
         serde_json::from_value(params.get("within").cloned().unwrap_or_else(|| json!({})))?;
     if product == "series-next-change" {
         let navigation: series::Navigation = serde_json::from_value(params.clone())?;
+        // An alias's changes are the selection's only while a selected native country holds it.
+        let selected = if selection.top.is_none() {
+            country_history::selected_spans(&history, &selection.tags, &within, cancelled)?
+        } else {
+            BTreeMap::new()
+        };
         let mut value_keys = Vec::new();
         let mut rank_keys = Vec::new();
         if let Some(top) = selection.top {
@@ -1012,9 +1018,9 @@ fn prepared_query<F: Family>(
                 }
             }
         } else {
-            for tag in country_history::selected_aliases(&history, &selection.tags) {
-                if let Some(&key) = keys.get(&series::field_key(&tag, "")) {
-                    value_keys.push((key, within.get(&tag).map(Vec::as_slice)));
+            for (tag, spans) in &selected {
+                if let Some(&key) = keys.get(&series::field_key(tag, "")) {
+                    value_keys.push((key, Some(spans.as_slice())));
                 }
             }
         }

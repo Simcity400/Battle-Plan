@@ -62,6 +62,23 @@ fn totals_sum_each_owners_own_records_and_never_both_sides_of_a_pair() {
 }
 
 #[test]
+fn a_partner_without_identity_still_counts_in_its_owners_total() {
+    // AAA's record of raw country 9 names no identity.
+    let prepared = || {
+        let mut state = Prepared::default();
+        state.step(&at(5, vec![history(1, 2, 300, 0), history(1, 9, 100, 0)]));
+        state
+    };
+    let reply = ask(&mut prepared(), None, 5);
+    let aaa = reply.histories.iter().find(|row| row.holder == "10").unwrap();
+    assert_eq!(aaa.values[0][0].2, "400");
+    assert!(reply.warnings.iter().any(|warning| warning.contains("partner with no identity")));
+    let partners = ask(&mut prepared(), Some("10"), 5);
+    assert_eq!(partners.histories.len(), 1);
+    assert_eq!(partners.histories[0].holder, "20");
+}
+
+#[test]
 fn a_holders_partners_and_a_country_leaving_the_rosters_becomes_unknown() {
     let mut state = Prepared::default();
     state.step(&at(5, vec![history(1, 2, 300, 0)]));

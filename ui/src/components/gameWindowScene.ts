@@ -25,14 +25,27 @@ export function fitZoom(size: readonly [number, number], available: readonly [nu
   return Math.max(MIN_ZOOM, Math.min(aw / w, ah / h));
 }
 
-/** The topmost list whose area (`x, y, width, height`) holds a window point. */
-export function listAt(scene: Pick<Scene, 'lists'>, x: number, y: number) {
+/** A scrolling list by its identity: its path and axis, one per axis a container scrolls. */
+export type ScrolledList = Pick<SceneList, 'path' | 'horizontal'>;
+
+/** The key a list's offset is kept by. */
+export const listKey = (list: ScrolledList) => JSON.stringify([list.path, list.horizontal]);
+
+/** The topmost list whose area (`x, y, width, height`) holds a window point; where that list's
+ * container scrolls both ways, its axis across or down as `across` asks, when it asks. */
+export function listAt(scene: Pick<Scene, 'lists'>, x: number, y: number, across?: boolean) {
+  const holds = (list: SceneList) => {
+    const [lx, ly, lw, lh] = list.rect;
+    return x >= lx && y >= ly && x < lx + lw && y < ly + lh;
+  };
+  let top: SceneList | null = null;
+  for (let index = scene.lists.length - 1; index >= 0 && !top; index--) if (holds(scene.lists[index])) top = scene.lists[index];
+  if (!top || across === undefined || top.horizontal === across) return top;
   for (let index = scene.lists.length - 1; index >= 0; index--) {
     const list = scene.lists[index];
-    const [lx, ly, lw, lh] = list.rect;
-    if (x >= lx && y >= ly && x < lx + lw && y < ly + lh) return list;
+    if (list.path === top.path && list.horizontal === across && holds(list)) return list;
   }
-  return null;
+  return top;
 }
 
 /** A list's offset after a key over it: a line of `line` window pixels (down and up, or right

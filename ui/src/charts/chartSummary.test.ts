@@ -98,6 +98,18 @@ test('exact summary extents use the same inclusive hour bounds as legacy runs', 
   assert.equal(exactRuns({ ...summary, runs: undefined }), null, 'dense summaries do not claim supplying runs');
 });
 
+test('dense summary extents keep only the buckets that reach the hours asked for', async () => {
+  const { extentOfSummary } = await import('./chartSummary.ts');
+  const dense = (firstHour: number, lastHour: number, low: number, high: number): ChartBucket => ({ firstHour, lastHour, firstValue: low, lastValue: low,
+    lastValueHour: firstHour, minHour: firstHour, minValue: low, maxHour: lastHour, maxValue: high, firstBreak: false, hasBreak: false });
+  const retained: ChartSummary = { from: 100, to: 2000, width: 2, buckets: [dense(100, 999, 5, 900), null, dense(1000, 2000, 8, 12)] };
+  assert.deepEqual(extentOfSummary(retained), [5, 900]);
+  assert.deepEqual(extentOfSummary(retained, 1000, 2200), [8, 12], 'a peak wholly before the view no longer fits its axis');
+  assert.deepEqual(extentOfSummary(retained, 999.5, 2200), [5, 900], 'a bucket partly in view keeps its whole envelope');
+  assert.deepEqual(extentOfSummary(retained, 50, 999), [5, 900]);
+  assert.equal(extentOfSummary(retained, 2001, 2200), null);
+});
+
 test('exact summary picks follow legacy curves and held paths with overlaps, gaps and clipping', () => {
   const frame = plotFrame(360, 200, { left: 10, right: 10, top: 10, bottom: 10 }, [1.25, 20.5], [-5, 30], false);
   for (const held of [false, true]) for (const until of [null, 5.5, 9.25, 18.5]) {

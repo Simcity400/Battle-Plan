@@ -1078,32 +1078,36 @@ mod tests {
 
     #[test]
     fn the_worker_accepts_refresh_requests_and_reports_their_failures() {
-        use super::super::{REFRESH_ACK, REFRESH_REQUEST};
+        use super::super::REFRESH_REQUESTS;
         let root = root();
-        fs::write(root.join(REFRESH_REQUEST), "token-9\n").unwrap();
+        let requests = root.join(REFRESH_REQUESTS);
+        // Requests the worker cannot read reach the spool's status warning.
+        fs::write(&requests, "not a folder").unwrap();
         let shared = Arc::new(crate::sampling::Shared::new(0, 0, 1));
         let (mut worker, handoff) =
             HistoryWorker::start(root.clone(), root.clone(), Some(Arc::clone(&shared))).unwrap();
-        let started = Instant::now();
-        // Removal is the last step of an accepted request.
-        while root.join(REFRESH_REQUEST).exists() {
-            assert!(started.elapsed() < crate::TEST_HANG_GUARD);
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
-        assert_eq!(
-            fs::read_to_string(root.join(REFRESH_ACK)).unwrap(),
-            "token-9"
-        );
-        assert!(!handoff.take_refresh_failure());
-        // A request the worker cannot read reaches the spool's status warning.
-        fs::create_dir(root.join(REFRESH_REQUEST)).unwrap();
         let started = Instant::now();
         while !handoff.take_refresh_failure() {
             assert!(started.elapsed() < crate::TEST_HANG_GUARD);
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(!shared.refresh_next.load(Ordering::Acquire));
+        fs::remove_file(&requests).unwrap();
+        fs::create_dir(&requests).unwrap();
+        let request = requests.join("token-9.request");
+        fs::write(requests.join("token-9.tmp"), "token-9").unwrap();
+        fs::rename(requests.join("token-9.tmp"), &request).unwrap();
+        let started = Instant::now();
+        // Removal is the last step of an accepted request.
+        while request.exists() {
+            assert!(started.elapsed() < crate::TEST_HANG_GUARD);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
+        assert_eq!(
+            fs::read_to_string(requests.join("token-9.ack")).unwrap(),
+            "token-9"
+        );
         worker.finish().unwrap();
         fs::remove_dir_all(root).unwrap();
     }

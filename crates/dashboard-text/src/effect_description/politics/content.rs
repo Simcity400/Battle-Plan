@@ -214,6 +214,7 @@ impl Renderer<'_, '_, '_> {
             .as_ref()
             .map_err(Clone::clone)?
             .get(id)
+            .map_err(|gap| format!("national focus {id}: {gap}"))?
             .ok_or_else(|| format!("national focus {id} is absent from recorded content"))?;
         let country = self.politics_focus_country(scopes)?;
         let name = self.politics_focus_name(id, definition, country)?;

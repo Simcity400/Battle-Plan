@@ -19,7 +19,10 @@ pub mod state_census;
 mod store;
 pub mod timing;
 
-pub use store::{files, recording_identity, recording_store, refresh_saved_binding};
+pub use store::{
+    SettingsStamp, files, rebind_settings, recording_identity, recording_store,
+    refresh_saved_binding, settings_stamp,
+};
 
 /// Query helpers shared by products whose reads join prepared pages with a
 /// recorded tail.

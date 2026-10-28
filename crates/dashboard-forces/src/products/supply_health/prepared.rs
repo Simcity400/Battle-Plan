@@ -631,12 +631,17 @@ pub fn next_change(
     else {
         return Ok(Value::Null);
     };
-    let keys =
-        dashboard_base::products::country_history::selected_aliases(&history, &selection.tags)
-            .iter()
-            .filter_map(|tag| actors.get(tag))
-            .map(|&key| (key, None))
-            .collect();
+    // An alias's changes are the selection's only while a selected native country holds it.
+    let selected = dashboard_base::products::country_history::selected_spans(
+        &history,
+        &selection.tags,
+        &BTreeMap::new(),
+        cancelled,
+    )?;
+    let keys = selected
+        .iter()
+        .filter_map(|(tag, spans)| actors.get(tag).map(|&key| (key, Some(spans.as_slice()))))
+        .collect();
     let mut reader = Reader::new(&store, &key, format!("supply-runs-{branch}"), cancelled)?;
     let hour = series::navigate(&mut [(&mut reader, keys)], &navigation)?;
     Ok(json!({"hour": hour}))

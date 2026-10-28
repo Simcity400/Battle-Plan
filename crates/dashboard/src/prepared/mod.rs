@@ -10,7 +10,9 @@ pub mod query;
 pub mod runner;
 
 pub use crate::transport::Action;
-pub use dashboard_base::prepared::{files, recording_store};
+pub use dashboard_base::prepared::{
+    SettingsStamp, files, rebind_settings, recording_store, settings_stamp,
+};
 pub use pipeline::unprepared_blocks;
 
 use crate::Source;

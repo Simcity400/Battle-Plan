@@ -171,6 +171,27 @@ fn construction_output_does_not_charge_a_lines_spending_for_external_building_gr
 }
 
 #[test]
+fn a_branch_whose_last_line_retired_still_checks_its_earlier_publications() {
+    let mut frames = [
+        frame(100, 0, 100, 1, false),
+        frame(124, 351, 450, 2, false),
+        frame(148, 0, 0, 2, false),
+    ];
+    let TableView::Complete(TableRows::BuildingConstruction(rows)) =
+        &mut *frames[1].tables[TableId::BuildingConstruction.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].amount = 2;
+    // The line completed and its final publication retired: the compared hour has no rows.
+    for table in [TableId::ConstructionLineOutput, TableId::BuildingConstruction] {
+        *frames[2].tables[table.index()] = TableView::Complete(TableRows::empty(table));
+    }
+    let report = checked(&frames);
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+}
+
+#[test]
 fn quantity_decreases_without_target_growth_or_ownership_transfer_fail() {
     let mut frames = [frame(100, 0, 0, 1, false), frame(124, 0, 0, 1, false)];
     let TableView::Complete(TableRows::BuildingConstruction(rows)) =

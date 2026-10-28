@@ -13,6 +13,8 @@ test('project details preserve duplicate traits, supporting assignments, pending
   assert.throws(() => validateProjectDetails({...reply,programs:[{...reply.programs[0],facility:{...reply.programs[0].facility,speedRaw:'9223372036854775808'}}]}),/Invalid/);
   assert.throws(() => validateProjectDetails({...reply,projects:[{...reply.projects[0],choices:[{...reply.projects[0].choices[0],characterReference:'18446744073709551616'}]}]}),/Invalid/);
   assert.throws(() => validateProjectDetails({...reply,breakthroughs:[{...reply.breakthroughs[0],readHour:25}]}),/Invalid/);
+  const unread = {...reply,breakthroughs:null};
+  assert.equal(validateProjectDetails(unread),unread);
   assert.throws(() => validateProjectDetails({...reply,scientists:[{...reply.scientists[0],visibilityHour:25}]}),/Invalid/);
   assert.throws(() => validateProjectDetails({...reply,programs:[{...reply.programs[0],readHour:25}]}),/Invalid/);
   assert.throws(() => validateProjectDetails({...reply,projects:[{...reply.projects[0],pendingKnown:false}]}),/Invalid/);

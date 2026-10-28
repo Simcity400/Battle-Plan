@@ -2246,6 +2246,55 @@ impl<'a> Query<'a> {
             row_samples,
         })
     }
+    /// The group's balance as a percentage of its need over the balance coverage grid,
+    /// from the balance and need runs paired hour by hour.
+    pub(super) fn share_summary(
+        &mut self,
+        group: &str,
+        view: (f64, f64, u32),
+        within: &[HourSpan],
+    ) -> io::Result<StockpileOperandSummary> {
+        let from = view.0.floor() as i32;
+        let to = view.1.floor() as i32;
+        let mut values = if let Some(actor) = self.actor("balance-hours") {
+            self.coverage
+                .summary_within(actor, (from, to), view, 0, Some(within))?
+        } else {
+            dashboard_base::prepared_chart::ChartSummary {
+                approximate: Vec::new(),
+                from: view.0,
+                to: view.1,
+                width: view.2,
+                buckets: Vec::new(),
+                runs: None,
+            }
+        };
+        let clipped: Vec<_> = within
+            .iter()
+            .filter_map(|span| {
+                let first_hour = span.first_hour.max(from);
+                let last_hour = span.last_hour.min(to);
+                (first_hour <= last_hour).then_some(HourSpan {
+                    first_hour,
+                    last_hour,
+                })
+            })
+            .collect();
+        let balance = self.runs(group, 1, &clipped)?;
+        let need = self.runs(group, 2, &clipped)?;
+        values.buckets = share_buckets(&values.buckets, &balance, &need);
+        values.runs = None;
+        let count = values.buckets.len();
+        Ok(StockpileOperandSummary {
+            field: "share".into(),
+            id: group.into(),
+            key: group.into(),
+            presence: values.clone(),
+            values,
+            samples: vec![Default::default(); count],
+            row_samples: vec![Default::default(); count],
+        })
+    }
     pub(super) fn peak(
         &mut self,
         group: &str,
@@ -2364,6 +2413,76 @@ impl<'a> Query<'a> {
         }
         Ok(result)
     }
+}
+
+/// Each covered bucket's balance as a percentage of need, from balance and need runs in
+/// hour order paired at the same hours, so separate extrema never divide. An hour
+/// without both, or without a positive need, has no share.
+fn share_buckets(
+    covered: &[Option<dashboard_base::prepared_chart::ChartBucket>],
+    balance: &[series::Run],
+    need: &[series::Run],
+) -> Vec<Option<dashboard_base::prepared_chart::ChartBucket>> {
+    use dashboard_base::prepared_chart::{ChartBucket, merge};
+    let (mut first_balance, mut first_need) = (0, 0);
+    covered
+        .iter()
+        .map(|covered| -> Option<ChartBucket> {
+            let covered = (*covered)?;
+            while balance
+                .get(first_balance)
+                .is_some_and(|run| run.last_hour < covered.first_hour)
+            {
+                first_balance += 1;
+            }
+            while need
+                .get(first_need)
+                .is_some_and(|run| run.last_hour < covered.first_hour)
+            {
+                first_need += 1;
+            }
+            let (mut b, mut n) = (first_balance, first_need);
+            let mut bucket: Option<ChartBucket> = None;
+            while let (Some(x), Some(y)) = (balance.get(b), need.get(n)) {
+                let first = x.first_hour.max(y.first_hour).max(covered.first_hour);
+                if first > covered.last_hour {
+                    break;
+                }
+                let last = x.last_hour.min(y.last_hour).min(covered.last_hour);
+                if first <= last && y.value > 0 {
+                    let value = x.value as f64 / y.value as f64 * 100.0;
+                    let piece = ChartBucket {
+                        absolute_total: 0,
+                        first_hour: first,
+                        last_hour: last,
+                        first_value: value,
+                        last_value: value,
+                        last_value_hour: first,
+                        min_hour: first,
+                        min_value: value,
+                        max_hour: first,
+                        max_value: value,
+                        first_break: (first == x.first_hour && x.break_before)
+                            || (first == y.first_hour && y.break_before),
+                        has_break: false,
+                    };
+                    // Merging into no bucket would mark a gap that is not there.
+                    bucket = if bucket.is_some() {
+                        merge(bucket, Some(piece))
+                    } else {
+                        Some(piece)
+                    };
+                }
+                if x.last_hour <= y.last_hour {
+                    b += 1;
+                }
+                if y.last_hour <= x.last_hour {
+                    n += 1;
+                }
+            }
+            bucket
+        })
+        .collect()
 }
 
 #[cfg(test)]

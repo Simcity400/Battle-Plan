@@ -37,7 +37,8 @@ impl TagIndex {
     }
 }
 
-/// `common/country_tags/*.txt`: declared tags and country files, with
+/// `common/country_tags/*.txt`, listed as the database loader lists them
+/// ([`script_files::paths`]): declared tags and country files, with
 /// `common/` prepended to each value. `dynamic_tags` marks where dynamic-country
 /// slots begin without declaring a tag; following tags still register.
 /// Keys must be exactly three bytes; others are counted in [`TagIndex::skipped`].
@@ -45,22 +46,10 @@ impl TagIndex {
 /// consumption is unsupported.
 pub fn country_tag_index(layers: &ResolvedLayers) -> io::Result<TagIndex> {
     let mut index = TagIndex::default();
-    for path in index_paths(layers) {
+    for path in script_files::paths(layers, "common/country_tags/", Some(".txt")) {
         add_tag_index(&path.text(), &path.read(layers)?, &mut index)?;
     }
     Ok(index)
-}
-
-/// The index files, each by its bytes: an archive may name a file in bytes that are not UTF-8.
-fn index_paths(layers: &ResolvedLayers) -> Vec<script_files::ScriptPath> {
-    layers
-        .paths()
-        .filter(|path| {
-            let lower = path.to_ascii_lowercase();
-            lower.starts_with(b"common/country_tags/") && lower.ends_with(b".txt")
-        })
-        .map(|path| script_files::ScriptPath::new(path.to_vec()))
-        .collect()
 }
 
 /// Corpus inventory of declarations, including opaque longer identities the
@@ -194,27 +183,29 @@ mod tests {
             std::fs::write(file, text).unwrap();
         }
         let layers = ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[][..])]).unwrap();
-        let files = country_tag_index(&layers).unwrap().files;
-        assert_eq!(
-            files,
-            BTreeMap::from([
-                ("ABC".into(), "common/countries/over.txt".into()),
-                ("DEF".into(), "common/countries/nested.txt".into()),
-                ("GHI".into(), "common/countries/later.txt".into()),
-                ("JKL".into(), "common/countries/over.txt".into()),
-            ])
-        );
+        let expected: BTreeMap<String, String> = BTreeMap::from([
+            ("GHI".into(), "common/countries/later.txt".into()),
+            ("JKL".into(), "common/countries/over.txt".into()),
+        ]);
+        // The index lists the files the database loader lists: nested and `.TXT` files are not.
+        assert_eq!(country_tag_index(&layers).unwrap().files, expected);
         assert_eq!(
             read_definitions(&layers)
                 .unwrap()
                 .into_iter()
                 .map(|(tag, definition)| (tag, definition.file))
                 .collect::<BTreeMap<_, _>>(),
-            BTreeMap::from([
-                ("GHI".into(), "common/countries/later.txt".into()),
-                ("JKL".into(), "common/countries/over.txt".into()),
-            ])
+            expected
         );
+        // A file the loader never lists does not stop the index, whatever it holds.
+        drop(layers);
+        std::fs::write(
+            base.join("common/country_tags/nested/z.txt"),
+            "SOV = { a = b }",
+        )
+        .unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[][..])]).unwrap();
+        assert_eq!(country_tag_index(&layers).unwrap().files, expected);
     }
 
     #[test]

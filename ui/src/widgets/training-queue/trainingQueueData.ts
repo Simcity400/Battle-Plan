@@ -48,10 +48,12 @@ export function equipmentFill(division: TrainingDivision): number | null {
   return needed > 0n ? Number(held * 1_000_000n / needed) / 1_000_000 : null;
 }
 
-/** The lowest equipment fill among an order's divisions, or null when none is known. */
+/** The lowest equipment fill among an order's divisions; null when none is known, or when
+ * any division's fill is unknown, since that one could be lower. */
 export function lowestFill(order: TrainingOrder): number | null {
   let lowest: number | null = null;
   for (const division of order.divisions) {
+    if (division.comparisonMissing !== null) return null;
     const fill = equipmentFill(division);
     if (fill !== null && (lowest === null || fill < lowest)) lowest = fill;
   }
@@ -69,6 +71,7 @@ export function orderTooltip(order: TrainingOrder, readHour: number): TooltipCon
   ];
   const lowest = lowestFill(order);
   if (lowest !== null) rows.push({ label: 'Lowest equipment fill', value: percent(lowest) });
+  else if (order.divisions.some(division => division.comparisonMissing !== null)) rows.push({ label: 'Lowest equipment fill', value: 'Not recorded', tone: 'muted' });
   rows.push({ label: 'Location', value: order.locationName ?? 'Not recorded' }, { label: 'Priority', value: order.priorityName ?? 'Not recorded' });
   if (order.closed) rows.push({ label: 'Closed', value: 'Yes' });
   if (order.exile) rows.push({ label: 'Government in exile', value: order.exile });

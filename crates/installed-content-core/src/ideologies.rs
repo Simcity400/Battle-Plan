@@ -227,44 +227,78 @@ fn read_file_in(
     (read, undecided, refusals)
 }
 
-/// One `color` read updates the state earlier reads left (initially all
-/// 1.0). After `{`, three components are scanned as floating-point text,
-/// whatever the token kind; a failed scan keeps the component. Each
-/// component, stored or not, is then divided by 255 when above 1.0.
-/// Alpha is set to 1.0; a fourth component is the alpha as read, not divided.
-/// A number token alone is a packed hexadecimal value, which the port
-/// refuses by name; any other token, a quoted one included, is reported
-/// and changes nothing.
-pub fn read_color(color: &mut [f32; 4], item: &Item) -> Result<(), String> {
-    let Some(components) = item.value.items() else {
-        if item.number() {
-            return Err(format!(
-                "the packed colour {} (read as hexadecimal) is not converted",
-                item.value.scalar().unwrap_or_default().escape_ascii()
-            ));
-        }
-        return Ok(());
-    };
-    for (index, component) in components.iter().enumerate().take(4) {
-        let text = component.value.scalar().unwrap_or_default();
-        let scanned = scan_f32(text);
-        if index == 3 {
-            if let Some(alpha) = scanned {
-                color[3] = alpha;
-            }
-            continue;
-        }
-        if let Some(value) = scanned {
-            color[index] = value;
-        }
-        if color[index] > 1.0 {
-            color[index] /= 255.0;
-        }
-        if index == 2 {
-            color[3] = 1.0;
+/// A colour object as its `color` reads leave it, starting white. A packed
+/// colour, which the port does not convert, leaves every component unknown
+/// until a later read stores it again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorReads {
+    color: [f32; 4],
+    unknown: [bool; 4],
+    /// The last packed colour's refusal, which the unknown components carry.
+    cause: String,
+}
+
+impl Default for ColorReads {
+    fn default() -> Self {
+        Self {
+            color: WHITE,
+            unknown: [false; 4],
+            cause: String::new(),
         }
     }
-    Ok(())
+}
+
+impl ColorReads {
+    /// One `color` read updates the state earlier reads left. After `{`,
+    /// three components are scanned as floating-point text, whatever the
+    /// token kind; a failed scan keeps the component. Each component, stored
+    /// or not, is then divided by 255 when above 1.0. Alpha is set to 1.0; a
+    /// fourth component is the alpha as read, not divided. A number token
+    /// alone is a packed hexadecimal value, which the port does not convert;
+    /// any other token, a quoted one included, is reported and changes nothing.
+    pub fn read(&mut self, item: &Item) {
+        let Some(components) = item.value.items() else {
+            if item.number() {
+                self.unknown = [true; 4];
+                self.cause = format!(
+                    "the packed colour {} (read as hexadecimal) is not converted",
+                    item.value.scalar().unwrap_or_default().escape_ascii()
+                );
+            }
+            return;
+        };
+        for (index, component) in components.iter().enumerate().take(4) {
+            let text = component.value.scalar().unwrap_or_default();
+            let scanned = scan_f32(text);
+            if index == 3 {
+                if let Some(alpha) = scanned {
+                    self.color[3] = alpha;
+                    self.unknown[3] = false;
+                }
+                continue;
+            }
+            if let Some(value) = scanned {
+                self.color[index] = value;
+                self.unknown[index] = false;
+            }
+            if self.color[index] > 1.0 {
+                self.color[index] /= 255.0;
+            }
+            if index == 2 {
+                self.color[3] = 1.0;
+                self.unknown[3] = false;
+            }
+        }
+    }
+
+    /// The colour, or the packed colour a component still comes from.
+    pub fn color(&self) -> Result<[f32; 4], String> {
+        if self.unknown.contains(&true) {
+            Err(self.cause.clone())
+        } else {
+            Ok(self.color)
+        }
+    }
 }
 
 /// The groups of one file's `ideologies` blocks, up to the first whose
@@ -276,16 +310,12 @@ fn groups(items: &[Item]) -> (Vec<Ideology>, Option<String>) {
     for item in roots.flat_map(|root| root.value.items().unwrap_or_default()) {
         let mut unheld = Unheld::default();
         let token = unheld.keep("an ideology group's token", item.key_str());
-        let mut color = Ok(WHITE);
+        let mut color = ColorReads::default();
         let mut types: Vec<String> = Vec::new();
         for field in item.value.items().unwrap_or_default() {
             if field.keyword_is("color") {
                 // Each read updates the same colour from where the last left it.
-                if let Ok(state) = &mut color
-                    && let Err(cause) = read_color(state, field)
-                {
-                    color = Err(cause);
-                }
+                color.read(field);
             } else if field.keyword_is("types") {
                 // Every `types` loop adds its keys.
                 for kind in field
@@ -304,7 +334,7 @@ fn groups(items: &[Item]) -> (Vec<Ideology>, Option<String>) {
         match (token, unheld.cause()) {
             (Some(token), None) => groups.push(Ideology {
                 token: token.to_owned(),
-                color,
+                color: color.color(),
                 types,
             }),
             (_, cause) => return (groups, cause.map(str::to_owned)),

@@ -634,7 +634,7 @@ pub fn bind(
     branch: u64,
     at: i32,
     organisation: u64,
-    scroll: &BTreeMap<String, i32>,
+    scroll: &compose::Scroll,
     cancelled: &AtomicBool,
 ) -> io::Result<Bound> {
     let key = (
@@ -706,7 +706,7 @@ pub fn draw(
     shown: &[Shown],
     withheld: &[(String, String)],
     gate: &Gate,
-    scroll: &BTreeMap<String, i32>,
+    scroll: &compose::Scroll,
 ) -> io::Result<Bound> {
     let refuse = |why: String| Bound {
         title: None,

@@ -110,11 +110,22 @@ pub struct ScopedVariable {
 /// The `var:` prefix.
 const VARIABLE: &str = "var:";
 
-/// Parse one operand text.
-pub fn parse(text: &str, content: &impl Content) -> ScopedVariable {
+/// Backstop for nested defaults, indices, targets and prefixes: parsing,
+/// evaluating and dropping an operand recurse once per level.
+pub const MAX_NESTING: usize = 64;
+
+/// Parse one operand text, or `None` when it nests deeper than [`MAX_NESTING`].
+pub fn parse(text: &str, content: &impl Content) -> Option<ScopedVariable> {
+    nested(text, content, 0)
+}
+
+fn nested(text: &str, content: &impl Content, depth: usize) -> Option<ScopedVariable> {
+    if depth > MAX_NESTING {
+        return None;
+    }
     let mut out = ScopedVariable::default();
     if text.is_empty() {
-        return out;
+        return Some(out);
     }
     out.parsed = true;
     // Step 2: compare prefixes at the text's start, with exact case.
@@ -125,23 +136,23 @@ pub fn parse(text: &str, content: &impl Content) -> ScopedVariable {
         rest
     } else if let Some(rest) = text.strip_prefix("token:") {
         out.token = Some(rest.to_owned());
-        return out;
+        return Some(out);
     } else if let Some(rest) = text.strip_prefix("mtth:") {
         out.mtth = Some(rest.to_owned());
-        return out;
+        return Some(out);
     } else if let Some(rest) = text.strip_prefix("mio:") {
         out.mio = Some(rest.to_owned());
-        return out;
+        return Some(out);
     } else if let Some(rest) = text.strip_prefix("sp:") {
         out.special_project = Some(rest.to_owned());
-        return out;
+        return Some(out);
     } else if let Some(rest) = text.strip_prefix("constant:") {
         let parts: Vec<&str> = rest.split('.').collect();
         match content.constant(&parts) {
             Constant::Value(value) => out.literal = Some(value),
             Constant::Unset(why) => out.unset = Some(why),
         }
-        return out;
+        return Some(out);
     } else {
         text
     };
@@ -149,22 +160,23 @@ pub fn parse(text: &str, content: &impl Content) -> ScopedVariable {
     // Step 4: text containing only `-+0123456789.` is a fixed5 constant.
     if w.bytes().all(|byte| b"-+0123456789.".contains(&byte)) {
         out.literal = Some(parse_fixed5_string(w.as_bytes()));
-        return out;
+        return Some(out);
     }
     // Steps 5-7: cut `?default`, `^index` and `@target` at each first occurrence and
     // parse them with a default scope.
     if let Some(at) = w.find('?').filter(|at| *at > 0) {
-        out.default = Some(Box::new(parse(&w[at + 1..], content)));
+        out.default = Some(Box::new(nested(&w[at + 1..], content, depth + 1)?));
         w = &w[..at];
     }
     if let Some(at) = w.find('^').filter(|at| *at > 0) {
         let index = w[at + 1..].to_ascii_lowercase();
-        out.index = Some(Box::new(parse(&index, content)));
+        out.index = Some(Box::new(nested(&index, content, depth + 1)?));
         w = &w[..at];
     }
     if let Some(at) = w.find('@') {
         let target = w[at + 1..].to_ascii_lowercase();
-        out.target = Some(Box::new(parse(&target_text(&target, content), content)));
+        let target = target_text(&target, content);
+        out.target = Some(Box::new(nested(&target, content, depth + 1)?));
         w = &w[..at];
     }
     // Step 8: `prefix:`, lower-cased.
@@ -174,12 +186,12 @@ pub fn parse(text: &str, content: &impl Content) -> ScopedVariable {
             "event_target" => out.event_target = Some(EventTargetKind::Scoped),
             "global_event_target" => out.event_target = Some(EventTargetKind::Global),
             // Parse the string target independently.
-            _ => out.prefix = Some(Box::new(parse(&prefix, content))),
+            _ => out.prefix = Some(Box::new(nested(&prefix, content, depth + 1)?)),
         }
         w = &w[at + 1..];
     }
     parts(&mut out, w, content);
-    out
+    Some(out)
 }
 
 /// Normalize an `@` target (step 7) to `T.id` for positive state-range integers, scope
@@ -350,7 +362,7 @@ mod tests {
     }
 
     fn p(text: &str) -> ScopedVariable {
-        parse(text, &Facts)
+        parse(text, &Facts).unwrap()
     }
 
     fn named(name: &str) -> ScopedVariable {
@@ -513,5 +525,19 @@ mod tests {
                 .and_then(|t| t.token.clone()),
             Some("communism".into())
         );
+    }
+
+    #[test]
+    fn nesting_beyond_the_backstop_is_refused() {
+        let chain = |links: usize| format!("{}1", "x?".repeat(links));
+        let deepest = p(&chain(MAX_NESTING));
+        let mut default = deepest.default.as_deref();
+        for _ in 1..MAX_NESTING {
+            default = default.and_then(|value| value.default.as_deref());
+        }
+        assert_eq!(default, Some(&ScopedVariable::literal(100_000)));
+        assert_eq!(parse(&chain(MAX_NESTING + 1), &Facts), None);
+        assert_eq!(parse(&chain(100_000), &Facts), None);
+        assert_eq!(parse(&"x^".repeat(1_000), &Facts), None);
     }
 }

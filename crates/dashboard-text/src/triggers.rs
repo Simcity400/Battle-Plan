@@ -308,7 +308,7 @@ pub enum Scope {
 /// has the raiding country as ROOT,
 /// the target country as FROM and the target's province, state and leader
 /// as variables.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Scopes {
     pub root: Scope,
     pub this: Scope,

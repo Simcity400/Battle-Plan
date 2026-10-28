@@ -6,6 +6,7 @@ use replay_data::rows::{
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Hull {
     pub current_raw: Option<i64>,
+    /// The game's maximum: the model's stored maximum, at least 100 (0.001 HP).
     pub maximum_raw: Option<i64>,
 }
 
@@ -15,7 +16,7 @@ pub fn hull(ship: Option<&ShipRow>, model: Option<&ShipModelRow>) -> Hull {
         current_raw: ship.map(|row| row.strength),
         maximum_raw: model
             .and_then(|row| row.counter.as_ref())
-            .map(|row| row.maximum_strength),
+            .map(|row| row.maximum_strength.max(100)),
     }
 }
 

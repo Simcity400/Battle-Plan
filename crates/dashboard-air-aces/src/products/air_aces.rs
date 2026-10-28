@@ -891,6 +891,7 @@ fn window_reply(
                     bytes,
                     "Air wing name",
                 )
+                .and_then(|name| catalogue::plain_text(&name))
                 .map_err(|why| wing_refusals.note(why, row.assigned_wing.to_string()))
                 .ok(),
                 None => text(bytes, &row.assigned_wing.to_string(), &mut wing_refusals),

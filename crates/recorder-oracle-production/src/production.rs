@@ -813,12 +813,15 @@ fn compare_deployment(
                 expected.priority,
             );
             match (tokens.get(&actual.role_token), expected.role.as_ref()) {
-                (Some(text), Some(role)) => equal(
-                    report,
-                    format!("{label}.role"),
-                    String::from_utf8_lossy(text).into_owned(),
-                    String::from_utf8_lossy(role).into_owned(),
-                ),
+                (Some(text), Some(role)) => {
+                    if *text != role.as_slice() {
+                        report.difference(
+                            format!("{label}.role"),
+                            text.escape_ascii().to_string(),
+                            role.escape_ascii().to_string(),
+                        );
+                    }
+                }
                 (None, _) => missing_role_tokens += 1,
                 (_, None) => report.difference(
                     format!("{label}.role"),

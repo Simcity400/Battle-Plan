@@ -268,8 +268,10 @@ fn weapon_damage_summary_includes_piercing_in_native_order() {
         sortie_stance_ratios: vec![100_000],
         base_carrier_sortie_efficiency: 0,
         selected_sortie_initial_time: 0,
-        piercing_thresholds: vec![40_000, 60_000],
-        piercing_critical_values: vec![10_000, 20_000],
+        piercing: Ok(installed_content_naval_combat_defines::naval_combat_defines::Piercing {
+            thresholds: vec![40_000, 60_000],
+            critical_values: vec![10_000, 20_000],
+        }),
         positioning_impacts: [0; 3],
     };
     assert_eq!(
@@ -277,11 +279,20 @@ fn weapon_damage_summary_includes_piercing_in_native_order() {
         "Total 1.00\nEnemy 0.25\nScreen 1.00 1.00\n\nInfo\nT0.40 D1.10;\nL0.40 D1.20;"
     );
     let mut invalid = defines.clone();
-    invalid.piercing_critical_values.truncate(1);
+    invalid.piercing.as_mut().unwrap().critical_values.truncate(1);
     assert_eq!(
         weapon_description(&side, &opponent, 0, Some(&invalid), &NoIcons, &loc),
         Err("NNavy piercing threshold arrays differ or have fewer than two entries".into())
     );
+    // Unreadable arrays refuse only this explanation, by name; torpedoes need none.
+    let mut unread = defines.clone();
+    unread.piercing = Err("missing NDefines.NNavy.NAVY_PIERCING_THRESHOLDS".into());
+    assert!(
+        weapon_description(&side, &opponent, 0, Some(&unread), &NoIcons, &loc)
+            .unwrap_err()
+            .contains("missing NDefines.NNavy.NAVY_PIERCING_THRESHOLDS")
+    );
+    assert!(weapon_description(&side, &opponent, 2, Some(&unread), &NoIcons, &loc).is_ok());
 }
 
 fn tree_row(
@@ -370,8 +381,7 @@ fn positioning_hovers_list_the_side_sources_and_refuse_without_trees() {
         sortie_stance_ratios: vec![],
         base_carrier_sortie_efficiency: 0,
         selected_sortie_initial_time: 0,
-        piercing_thresholds: vec![],
-        piercing_critical_values: vec![],
+        piercing: Ok(Default::default()),
         positioning_impacts: [0; 3],
     };
     let terms = crate::naval_positioning::Terms {
@@ -571,8 +581,7 @@ fn screen_box_prefixes_the_country_correction_only_on_its_correction_branch() {
         sortie_stance_ratios: vec![],
         base_carrier_sortie_efficiency: 0,
         selected_sortie_initial_time: 0,
-        piercing_thresholds: vec![],
-        piercing_critical_values: vec![],
+        piercing: Ok(Default::default()),
         positioning_impacts: [0; 3],
     };
     assert_eq!(
@@ -627,8 +636,7 @@ fn screening_hovers_keep_complete_submarine_counts_and_bonuses_without_unneeded_
         sortie_stance_ratios: vec![],
         base_carrier_sortie_efficiency: 0,
         selected_sortie_initial_time: 0,
-        piercing_thresholds: vec![],
-        piercing_critical_values: vec![],
+        piercing: Ok(Default::default()),
         positioning_impacts: [0; 3],
     };
     // submarine classification does not depend on the carrier

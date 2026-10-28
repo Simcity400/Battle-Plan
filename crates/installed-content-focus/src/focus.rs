@@ -10,14 +10,93 @@ use crate::{
     },
     scope::ScopeKind,
 };
-use installed_content_core::script_files::ScriptPath;
+use installed_content_core::{
+    coverage::{Coverage, Gap},
+    script_files::ScriptPath,
+};
 use std::{collections::BTreeMap, io};
 
 /// The default focus icon resolved through content.
 pub const UNKNOWN_ICON: &str = "GFX_goal_unknown";
 
-/// Focus definitions by id.
-pub type Focuses = BTreeMap<String, FocusDefinition>;
+/// One file's focus definitions by id.
+pub type Definitions = BTreeMap<String, FocusDefinition>;
+
+/// Every focus file's definitions by id, a later file's replacing an earlier
+/// one's, each with the database that defines it. A file the port refuses
+/// leaves whatever it could define or redefine in its own database unknown.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Focuses {
+    definitions: BTreeMap<String, (Database, FocusDefinition)>,
+    national: Coverage,
+    continuous: Coverage,
+}
+
+impl Focuses {
+    /// A focus by id: `None` when no file defines it; `Err` with the refused
+    /// file that could define or redefine it.
+    pub fn get(&self, id: &str) -> Result<Option<&FocusDefinition>, &Gap> {
+        match self.unknown(id) {
+            Some(gap) => Err(gap),
+            None => Ok(self.definitions.get(id).map(|(_, definition)| definition)),
+        }
+    }
+
+    /// Every id a read file defines, a refused file's redefinition aside.
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.definitions.keys().map(String::as_str)
+    }
+
+    /// The definitions no refused file could change.
+    pub fn known(&self) -> impl Iterator<Item = &FocusDefinition> {
+        self.definitions
+            .iter()
+            .filter(|(id, _)| self.unknown(id).is_none())
+            .map(|(_, (_, definition))| definition)
+    }
+
+    /// A defined focus is changed only by its own database's files; an
+    /// undefined one could be defined by either's.
+    fn unknown(&self, id: &str) -> Option<&Gap> {
+        match self.definitions.get(id) {
+            Some((database, _)) => self.coverage(*database).unknown(id),
+            None => self
+                .national
+                .unknown(id)
+                .or_else(|| self.continuous.unknown(id)),
+        }
+    }
+
+    fn coverage(&self, database: Database) -> &Coverage {
+        match database {
+            Database::National => &self.national,
+            Database::Continuous => &self.continuous,
+        }
+    }
+
+    fn coverage_mut(&mut self, database: Database) -> &mut Coverage {
+        match database {
+            Database::National => &mut self.national,
+            Database::Continuous => &mut self.continuous,
+        }
+    }
+
+    /// The next file's definitions, replacing earlier ones.
+    fn read_file(&mut self, database: Database, definitions: Definitions) {
+        self.coverage_mut(database).next_file();
+        for (id, definition) in definitions {
+            self.coverage_mut(database).replace(&id);
+            self.definitions.insert(id, (database, definition));
+        }
+    }
+
+    /// The next file, refused.
+    fn refuse_file(&mut self, database: Database, path: &str, cause: String) {
+        let coverage = self.coverage_mut(database);
+        coverage.next_file();
+        coverage.gap(path, cause);
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FocusDefinition {
@@ -135,7 +214,7 @@ pub fn parse(
     input: &[u8],
     database: Database,
     names: &KeyNames,
-) -> Result<(Focuses, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)> {
+) -> Result<(Definitions, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)> {
     use Node::*;
     let mut undecided = Vec::new();
     let mut refused = Vec::new();
@@ -518,7 +597,8 @@ fn read_databases(
     read_files(&paths, &names, workers, |path| path.read(layers), parse)
 }
 
-type ParsedFile = Result<(Focuses, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)>;
+type ParsedFile =
+    Result<(Definitions, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)>;
 
 fn read_files(
     paths: &[(usize, ScriptPath)],
@@ -527,7 +607,7 @@ fn read_files(
     mut read: impl FnMut(&ScriptPath) -> io::Result<Vec<u8>>,
     parser: impl Fn(&[u8], Database, &KeyNames) -> ParsedFile + Sync,
 ) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
-    let mut result = BTreeMap::new();
+    let mut result = Focuses::default();
     let mut warnings = Vec::new();
     // Verify reads in order: an I/O error must never reach a later path or
     // contribute its uncovered-read diagnostics. Only parsing is parallel.
@@ -537,9 +617,10 @@ fn read_files(
             .iter()
             .map(|(_, path)| read(path).map(|bytes| (path, bytes)))
             .collect::<io::Result<Vec<_>>>()?;
+        let database_of =
+            |path: &ScriptPath| focus_database(path.as_bytes()).unwrap_or(Database::Continuous);
         let parse_one = |(path, bytes): &(&ScriptPath, Vec<u8>)| {
-            let database = focus_database(path.as_bytes()).unwrap_or(Database::Continuous);
-            parser(bytes, database, names)
+            parser(bytes, database_of(path), names)
         };
         let parsed = if files.len() == 1 {
             vec![parse_one(&files[0])]
@@ -569,17 +650,22 @@ fn read_files(
         for ((path, _), parsed) in files.into_iter().zip(parsed) {
             match parsed {
                 Ok((definitions, notes)) => {
-                    result.extend(definitions);
+                    result.read_file(database_of(path), definitions);
                     warnings.extend(
                         notes
                             .into_iter()
                             .map(|(kind, note)| (kind, format!("{path}: {note}"))),
                     );
                 }
-                Err((kind, error)) => warnings.push((
-                    kind,
-                    format!("Focus definitions unavailable in {path}: {error}"),
-                )),
+                // What the refused file defines or redefines is unknown, never an earlier
+                // file's definition or an absence.
+                Err((kind, error)) => {
+                    warnings.push((
+                        kind,
+                        format!("Focus definitions unavailable in {path}: {error}"),
+                    ));
+                    result.refuse_file(database_of(path), &path.to_string(), error.to_string());
+                }
             }
         }
     }
@@ -623,7 +709,10 @@ mod tests {
         let layers = ResolvedLayers::from_folders(&[(&root, &[])])?;
         let (definitions, warnings) = read_national(&layers)?;
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(definitions["SYN_FOCUS"].localisation, "SYN_NATIONAL");
+        assert_eq!(
+            definitions.get("SYN_FOCUS").unwrap().unwrap().localisation,
+            "SYN_NATIONAL"
+        );
         std::fs::remove_dir_all(root)?;
         Ok(())
     }
@@ -643,7 +732,7 @@ free_operative = { operative = a } free_operative = { operative = b }
         )?;
         let layers = ResolvedLayers::from_folders(&[(&root, &[])])?;
         let (definitions, warnings) = read(&layers)?;
-        assert!(definitions.contains_key("test"));
+        assert!(definitions.get("test").unwrap().is_some());
         let warning = warnings
             .iter()
             .find(|(_, warning)| warning.contains("Deferred effect `free_operative`"))

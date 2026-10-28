@@ -70,7 +70,7 @@ pub struct TerrainCategory {
 
 impl TerrainCategory {
     /// The category's colour: white when it has no `color`, each read applied as the
-    /// colour reader does ([`crate::ideologies::read_color`]). `Err` names a form the
+    /// colour reader does ([`crate::ideologies::ColorReads`]). `Err` names a form the
     /// reader does not convert.
     pub fn color(&self) -> Result<[f32; 4], String> {
         self.color
@@ -303,16 +303,12 @@ impl TerrainDefinitions {
         let mut minimum_seazone_dominance = 0;
         let mut common_adjuster = TerrainAdjuster::default();
         let mut class_adjusters = Vec::new();
-        let mut color = Ok([1.0_f32; 4]);
+        let mut color = crate::ideologies::ColorReads::default();
         for field in entry.value.items().unwrap_or_default() {
             let keyword = field.keyword().map(|keyword| keyword.folded());
             if keyword.as_deref() == Some(b"color") {
                 // Each read updates the colour from where the last left it.
-                if let Ok(state) = &mut color
-                    && let Err(cause) = crate::ideologies::read_color(state, field)
-                {
-                    color = Err(format!("{what}: {cause}"));
-                }
+                color.read(field);
                 continue;
             }
             if keyword.as_deref() == Some(b"minimum_seazone_dominance") {
@@ -379,7 +375,10 @@ impl TerrainDefinitions {
             minimum_seazone_dominance,
             common_adjuster,
             class_adjusters,
-            color: color.map(|color| color.map(f32::to_bits)),
+            color: color
+                .color()
+                .map(|color| color.map(f32::to_bits))
+                .map_err(|cause| format!("{what}: {cause}")),
         });
     }
 

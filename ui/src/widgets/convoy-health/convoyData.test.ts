@@ -39,6 +39,15 @@ test('each deal is its own row and lend-lease is hatched as not recorded', () =>
   assert.equal(rows[1].detail(30)[0].value, 'Not recorded');
 });
 
+test('a lend-lease client whose giver has no identity keeps its route and convoys', () => {
+  const reply = validateConvoys('trade')({ ...base, view: 'trade', regions: [], resources: [], deals: [],
+    leases: [{ handle: '9', giver: [], bad: [[0, 95, '0']], convoys: [[[0, 95, '1']], [[0, 95, '4']]] }] });
+  const [row] = convoyRows(reply, names);
+  assert.equal(row.label, 'Lend-lease from ?');
+  assert.equal(row.unknownAt(10), true);
+  assert.equal(row.detail(10).at(-1)!.value, '1 of 4');
+});
+
 test('a region cell where the table was not read is unknown, never blank', () => {
   const reply = validateConvoys('regions')({ ...base, view: 'regions', deals: [], leases: [], resources: [],
     known: [[[0, 47, '1']], [], []], regions: [{ region: 7, name: 'Synthetic Sea', efficiency: [[0, 23, '40000']] }] });

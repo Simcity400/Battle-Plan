@@ -177,7 +177,13 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 String::from_utf8_lossy(text)
             )
         })?;
-        Ok(scoped_variable::parse(text, &Content { evaluator: self }))
+        scoped_variable::parse(text, &Content { evaluator: self }).ok_or_else(|| {
+            format!(
+                "an operand nests defaults, indices, targets and prefixes more than {} levels deep, which is not evaluated",
+                scoped_variable::MAX_NESTING
+            )
+            .into()
+        })
     }
 
     /// Evaluate an operand text in `scopes`,
@@ -1240,9 +1246,9 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 }
             }
             0xffff_ffff_c000_0000 => {
-                return Ok(
-                    (low != 0 && world.state_row(low).is_some()).then_some(Scope::State(low))
-                );
+                // A hole in the state list decodes to no state.
+                let state = world.state_of_value(raw)?;
+                return Ok((state != NULL_STATE).then_some(Scope::State(state)));
             }
             0x2000_0000 => {
                 return Ok(world
@@ -1265,11 +1271,9 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
         // A whole number whose state exists.
         if raw > 0 && raw % ONE == 0 {
-            let id = raw / ONE;
-            if let Ok(id) = u32::try_from(id)
-                && world.state_row(id).is_some()
-            {
-                return Ok(Some(Scope::State(id)));
+            let state = world.state_of_value(raw)?;
+            if state != NULL_STATE {
+                return Ok(Some(Scope::State(state)));
             }
         }
         Ok(None)

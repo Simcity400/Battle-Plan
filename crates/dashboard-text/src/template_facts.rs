@@ -88,11 +88,31 @@ pub fn display_naming(
             let countries = frame
                 .complete::<tables::Countries>()
                 .map_err(|e| e.to_string())?;
-            let country = countries
-                .binary_search_by_key(&(raw as u32), |r| r.id)
-                .ok()
-                .map(|at| &countries[at])
-                .ok_or_else(|| format!("template country {raw} missing"))?;
+            let missing = || format!("template country {raw} missing");
+            let country = match countries.binary_search_by_key(&(raw as u32), |r| r.id) {
+                Ok(at) => &countries[at],
+                // Another raw reference to a recorded country reaches its row
+                // through CountryLinks.
+                Err(_) => {
+                    let link = u32::try_from(raw)
+                        .ok()
+                        .filter(|link| *link > 0)
+                        .ok_or_else(missing)?;
+                    let links = frame
+                        .complete::<tables::CountryLinks>()
+                        .map_err(|e| e.to_string())?;
+                    let slot = links
+                        .binary_search_by_key(&link, |r| r.id)
+                        .map(|at| links[at].canonical_slot)
+                        .map_err(|_| missing())?;
+                    let mut found = countries.iter().filter(|r| r.canonical_slot == slot);
+                    let country = found.next().ok_or_else(missing)?;
+                    if found.next().is_some() {
+                        return Err(format!("Countries duplicates canonical slot {slot}"));
+                    }
+                    country
+                }
+            };
             let tag = std::str::from_utf8(&country.tag)
                 .map_err(|_| "template country tag is not UTF-8")?;
             let key = std::str::from_utf8(key).map_err(|_| "template name key is not UTF-8")?;

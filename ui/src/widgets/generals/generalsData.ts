@@ -295,9 +295,11 @@ export function careerLanes(reply: UnitLeadersData, leader: LeaderCareer, firstH
   const months = new Map<number, { first: number; last: number; count: number; unknown: number; won: number; lost: number }>();
   const unknown = new Set(leader.unknownBattleStarts); const startReads = leader.battleStartReadHours ?? [];
   for (const [i, first] of battleStarts(leader).entries()) {
-    if (first < firstHour || first > lastHour || startReads[i] > readHour) continue;
+    if (first > lastHour || startReads[i] > readHour) continue;
     const date = gameDate(first); const index = date ? monthIndex(date) : first;
     const start = date ? firstHourOfMonth(index) : first; const end = date ? firstHourOfMonth(index + 1) - 1 : first;
+    // A combat already under way when recording began keeps its month, drawn from the first hour.
+    if (end < firstHour) continue;
     const month = months.get(index) ?? { first: Math.max(firstHour, start), last: Math.min(lastHour, end), count: 0, unknown: 0, won: 0, lost: 0 };
     if (unknown.has(i)) month.unknown++;
     const won = leader.battleWon?.[i]; const resultHour = leader.battleResultHours?.[i]; const resultRead = leader.battleResultReadHours?.[i];

@@ -164,9 +164,21 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
       activate(nodes(cellTree).find(node => node.type === 'button')!, earlier.firstObservedHour);
       const slots = current.props.slots as ResearchReply['history']['slots'];
       const explanation = renderToStaticMarkup(createElement(Explanation, { history: ongoing.history, slots, slot: slots[1], entry: slots[1].entries[0] }));
-      assert.ok(explanation.includes(`<small>${startedAfterHour === null ? 'Started by' : 'Started'}</small>${formatDate(gameDate(earlier.firstObservedHour)!)}`),
+      // No opening progress is recorded, so even a witnessed assignment only bounds the start.
+      assert.ok(explanation.includes(`<small>Started by</small>${formatDate(gameDate(earlier.firstObservedHour)!)}`),
         'the current menu and explanation use the earlier joined assignment, not the current slot start');
       assert.notEqual(earlier.firstObservedHour, ongoing.history.slots[1].entries[0].firstObservedHour);
+    }
+    // A witnessed assignment is the start only when its opening progress is explained; parked progress only bounds it.
+    for (const [progressRaw, label] of [['0', 'Started'], ['9000000', 'Started by']] as const) {
+      const entry = { ...research.history.slots[0].entries[0], lastObservedHour: last, endedByHour: null, outcomeObservedHour: null, outcome: 'active' as const };
+      const slot = { index: 0, availability: [{ firstHour: first, lastHour: last }], entries: [entry],
+        states: [{ firstHour: entry.firstObservedHour, lastHour: last, token: entry.token, entryFirstObservedHour: entry.firstObservedHour,
+          speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0', details: null }],
+        progress: [{ firstHour: entry.firstObservedHour, lastHour: last, entryFirstObservedHour: entry.firstObservedHour, baseDaysRaw: '18000000', progressRaw }] };
+      const explanation = renderToStaticMarkup(createElement(Explanation, { history: { coverage: [{ firstHour: first, lastHour: last }], slots: [slot] },
+        slots: [slot], slot, entry }));
+      assert.ok(explanation.includes(`<small>${label}</small>${formatDate(gameDate(entry.firstObservedHour)!)}`));
     }
     const { rowJumpProps } = await vite.ssrLoadModule('/ui/src/charts/jump.ts') as typeof import('../charts/jump.ts');
     let lookedUp = 0, prevented = 0;

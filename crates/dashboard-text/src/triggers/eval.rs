@@ -49,8 +49,11 @@ pub trait Combat: Sync {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Count {
     /// A count of the building type with this
-    /// token.
-    Building(u32),
+    /// token; `provincial` is its content class, `None` when ambiguous.
+    Building {
+        token: u32,
+        provincial: Option<bool>,
+    },
     /// A count of the resource with this index,
     /// a country's pool slot, and this token, which keys a state's
     /// recorded operands.
@@ -69,7 +72,7 @@ impl Count {
     /// (combat) for the equipment ratio.
     fn scopes(&self) -> u32 {
         match self {
-            Self::Building(_) | Self::Resource { .. } => 6,
+            Self::Building { .. } | Self::Resource { .. } => 6,
             Self::Ideology(_) => 4,
             Self::Equipment(_) => 0x10,
         }
@@ -77,7 +80,7 @@ impl Count {
 
     fn describe(&self) -> &'static str {
         describe(match self {
-            Self::Building(_) => CountKind::Building,
+            Self::Building { .. } => CountKind::Building,
             Self::Resource { .. } => CountKind::Resource,
             Self::Ideology(_) => CountKind::Ideology,
             Self::Equipment(_) => CountKind::Equipment,
@@ -98,6 +101,8 @@ pub struct Evaluator<'e, 'a> {
     pub(super) diverged: RefCell<Option<Failure>>,
     /// How many evaluations ([`Self::evaluate`]) enclose the current one.
     pub(super) evaluations: Cell<usize>,
+    /// The tag aliases being resolved, outermost first.
+    pub(super) aliases: RefCell<Vec<super::aliases::Entry>>,
     /// What the thread-local variable store may hold besides the caller's
     /// temps.
     temps: Temps,
@@ -203,6 +208,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             stack: RefCell::default(),
             diverged: RefCell::default(),
             evaluations: Cell::new(0),
+            aliases: RefCell::default(),
             temps: Temps::Fresh,
             local_temps: RefCell::default(),
             checking: Cell::new(0),
@@ -907,7 +913,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let text = keyword;
         // In trigger-loading order.
         Ok(if counts.is_building(text) {
-            Some(Count::Building(id))
+            Some(Count::Building {
+                token: id,
+                provincial: counts.is_provincial(text),
+            })
         } else if let Some(index) = self.resource_index(id).map_err(|why| {
             why.context(|why| format!("whether trigger {name} names a resource is unknown: {why}"))
         })? {
@@ -1270,8 +1279,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             other => Err(format!("reads no {} scope", self.describe(other)).into()),
         };
         let (actual, fixed) = match count {
-            Count::Building(token) => {
-                match target().and_then(|target| self.building_level(*token, target)) {
+            Count::Building { token, provincial } => {
+                match target().and_then(|target| self.building_level(*token, *provincial, target)) {
                     Ok(level) => (i64::from(level) * ONE, false),
                     Err(why) => return fail(why),
                 }
@@ -1339,42 +1348,59 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// provinces (Provinces.owner), or
     /// over a state and its provinces (Provinces.state). A type
     /// is a state building or a province building, so its
-    /// rows are in StateBuildings or ProvinceBuildings, never both. The sum
+    /// rows are in StateBuildings or ProvinceBuildings, never both: a known
+    /// class reads only its own table, an ambiguous one both. The sum
     /// is a 32-bit int.
-    fn building_level(&self, token: u32, target: Target) -> Result<i32, Failure> {
+    fn building_level(
+        &self,
+        token: u32,
+        provincial: Option<bool>,
+        target: Target,
+    ) -> Result<i32, Failure> {
         let world = self.world;
-        let state_rows = counted::<tables::StateBuildings>(world, "StateBuildings")?;
-        let province_rows = counted::<tables::ProvinceBuildings>(world, "ProvinceBuildings")?;
-        let provinces = super::world::provinces(world.frame()).map_err(|error| {
-            error.context(|error| format!("Provinces is not complete this hour: {error}"))
-        })?;
+        let (in_states, in_provinces) = (provincial != Some(true), provincial != Some(false));
+        let province_rows = || {
+            super::world::provinces(world.frame()).map_err(|error| {
+                error.context(|error| format!("Provinces is not complete this hour: {error}"))
+            })
+        };
         let (states, provinces): (BTreeSet<u32>, BTreeSet<u32>) = match target {
             Target::Country(slot) => {
                 let mut states = BTreeSet::new();
-                for state in counted::<tables::States>(world, "States")? {
-                    if self.owned_by(state.owner, slot).map_err(|why| {
-                        why.context(|why| format!("the owner of state {}: {why}", state.id))
-                    })? {
-                        states.insert(state.id);
+                if in_states {
+                    for state in counted::<tables::States>(world, "States")? {
+                        if self.owned_by(state.owner, slot).map_err(|why| {
+                            why.context(|why| format!("the owner of state {}: {why}", state.id))
+                        })? {
+                            states.insert(state.id);
+                        }
                     }
                 }
                 let mut owned = BTreeSet::new();
-                for province in provinces {
-                    if self.owned_by(province.owner, slot).map_err(|why| {
-                        why.context(|why| format!("the owner of province {}: {why}", province.id))
-                    })? {
-                        owned.insert(province.id);
+                if in_provinces {
+                    for province in province_rows()? {
+                        if self.owned_by(province.owner, slot).map_err(|why| {
+                            why.context(|why| {
+                                format!("the owner of province {}: {why}", province.id)
+                            })
+                        })? {
+                            owned.insert(province.id);
+                        }
                     }
                 }
                 (states, owned)
             }
             Target::State(id) => (
                 BTreeSet::from([id]),
-                provinces
-                    .iter()
-                    .filter(|province| province.state == id)
-                    .map(|province| province.id)
-                    .collect(),
+                if in_provinces {
+                    province_rows()?
+                        .iter()
+                        .filter(|province| province.state == id)
+                        .map(|province| province.id)
+                        .collect()
+                } else {
+                    BTreeSet::new()
+                },
             ),
             Target::Character(_) => {
                 return Err("reads no character scope (mask 6: state, country)".into());
@@ -1385,7 +1411,16 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 .filter(|row| row.building_type == token && at.contains(&row.location))
                 .fold(0_i32, |sum, row| sum.wrapping_add(i32::from(row.level)))
         };
-        Ok(level(state_rows, &states).wrapping_add(level(province_rows, &provinces)))
+        let mut sum = 0_i32;
+        if in_states {
+            let rows = counted::<tables::StateBuildings>(world, "StateBuildings")?;
+            sum = sum.wrapping_add(level(rows, &states));
+        }
+        if in_provinces {
+            let rows = counted::<tables::ProvinceBuildings>(world, "ProvinceBuildings")?;
+            sum = sum.wrapping_add(level(rows, &provinces));
+        }
+        Ok(sum)
     }
 
     /// Resource count, fixed5 before its

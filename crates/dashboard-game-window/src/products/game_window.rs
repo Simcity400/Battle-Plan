@@ -7,7 +7,6 @@
 //! are hidden where the authored text is a placeholder, never filled with an invented value.
 
 use std::{
-    collections::BTreeMap,
     io,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -38,11 +37,14 @@ pub enum GameWindowTarget {
     DivisionDesigner { template: String },
 }
 
-/// A list's scroll offset in interface pixels, by its element path ([`crate::scene::SceneList`]).
+/// A list's scroll offset in its own units, by its element path and axis
+/// ([`crate::scene::SceneList`]).
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListScroll {
     pub path: String,
+    /// Whether it scrolls the list across; otherwise down.
+    pub horizontal: bool,
     pub offset: i32,
 }
 
@@ -172,11 +174,11 @@ impl Product for GameWindow {
         let (catalogue, shared) = open(source, options, session::Opener::Request, cancelled)?;
         let shared = shared.expect("a request always has its session");
         let branch = params.branch_id.parse().expect("validated branch");
-        let scroll: BTreeMap<String, i32> = params
+        let scroll: crate::compose::Scroll = params
             .scroll
             .iter()
             .flatten()
-            .map(|scroll| (scroll.path.clone(), scroll.offset))
+            .map(|scroll| ((scroll.path.clone(), scroll.horizontal), scroll.offset))
             .collect();
         let bound = match &params.window {
             GameWindowTarget::MioPolicies { organisation } => crate::mio::bind(

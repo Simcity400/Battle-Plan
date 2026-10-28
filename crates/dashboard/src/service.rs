@@ -143,6 +143,9 @@ struct Lanes {
     prepared: SyncSender<LoadJob>,
     sampled: SyncSender<LoadJob>,
     refreshes: std::collections::BTreeMap<crate::SourceKey, Arc<AtomicBool>>,
+    /// Restarts a rebind could not queue while the history queue was full, queued as soon as
+    /// it has room ([`Inner::queue_deferred`]).
+    deferred: std::collections::BTreeMap<crate::SourceKey, Arc<Source>>,
 }
 
 impl Lanes {
@@ -182,6 +185,9 @@ struct Inner {
     closed: AtomicBool,
     preparation: crate::prepared::runner::Runner,
     preparation_actions: Mutex<()>,
+    /// The user folder and the `settings.txt` stamp preparations were last bound to, so a
+    /// change reaches recordings no source holds open.
+    game_settings: Mutex<Option<(PathBuf, Option<crate::prepared::SettingsStamp>)>>,
     background_preparation: AtomicBool,
     /// The volume's room as the library scan last measured it.
     room: Mutex<jobs::Room>,
@@ -242,11 +248,13 @@ impl Service {
                 prepared,
                 sampled,
                 refreshes: std::collections::BTreeMap::new(),
+                deferred: std::collections::BTreeMap::new(),
             })),
             signal: Arc::new(Signal::default()),
             closed: AtomicBool::new(false),
             preparation: crate::prepared::runner::Runner::new()?,
             preparation_actions: Mutex::new(()),
+            game_settings: Mutex::new(None),
             background_preparation: AtomicBool::new(true),
             room: Mutex::new(jobs::Room::default()),
             #[cfg(test)]
@@ -328,17 +336,19 @@ impl Service {
                 format!("Game tables unavailable: {error}"),
             ));
         }
-        self.inner
-            .map_settings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .configure_game(&config.user_dir);
         self.replace_content(Some(ContentOptions {
             options,
             allow_unverified,
             presentation: Default::default(),
         }));
+        // After the folders are committed: work admitted under earlier ones cannot install theirs.
+        self.inner.configure_game();
         Ok(())
+    }
+
+    /// Whether products that read artwork or localisation have folders bound.
+    pub fn content_bound(&self) -> bool {
+        self.inner.content().is_some()
     }
 
     fn replace_content(&self, content: Option<ContentOptions>) {
@@ -369,47 +379,7 @@ impl Service {
         // whole; without folders the sources are unbound. Only the service closing stops the
         // catch-up: its rebinds retry only while the configuration keeps changing.
         let _ = self.inner.catch_up();
-        self.inner.invalidate_checks();
-        drop(admission);
-        self.inner.preparation.notify_change();
-        let sources: Vec<_> = self
-            .inner
-            .sources
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .entries
-            .values()
-            .filter_map(std::sync::Weak::upgrade)
-            .collect();
-        let mut latest = std::collections::BTreeMap::<PathBuf, Arc<Source>>::new();
-        let mut revisions = std::collections::BTreeMap::new();
-        for source in sources {
-            let path = source.path().to_owned();
-            let revision = revisions
-                .entry(path.clone())
-                .or_insert_with(|| self.inner.recording_revision(&path).ok());
-            if revision.as_deref() == Some(source.key().revision.as_str()) {
-                latest.insert(path, source);
-            }
-        }
-        for source in latest.into_values() {
-            // Manual Cancel and Clear remain effective until an explicit
-            // Start or reopen. Refresh active/completed preparation off-thread.
-            let progress = source.state::<crate::prepared::Progress>();
-            let state = progress
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .state;
-            if !matches!(
-                state,
-                crate::prepared::State::Idle
-                    | crate::prepared::State::Cancelled
-                    | crate::prepared::State::Paused
-            ) && let Err(error) = self.inner.refresh_preparation(source, true)
-            {
-                eprintln!("Preparation refresh: {error}");
-            }
-        }
+        self.inner.reprepare(admission);
     }
 
     pub fn preparation_preferences(&self) -> crate::prepared::Preferences {

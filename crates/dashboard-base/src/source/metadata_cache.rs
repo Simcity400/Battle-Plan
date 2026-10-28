@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 mod stream;
 
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
 const SECTION: &str = "source-metadata-v1";
 const REFUSAL_SCHEMA: &str = "source-metadata-refusals-v1";
 type IndexEntry = (u64, i32, i32, u64, u64, u64);
@@ -117,7 +117,7 @@ struct Cached<M = ReplayMetadata, R = MetadataRefusals> {
     schema: u32,
     inputs: Inputs,
     metadata: M,
-    named: Option<(Option<ContentKey>, M)>,
+    named: Option<(NamesKey, M)>,
     #[serde(skip_serializing_if = "Option::is_none")]
     refusals: Option<CachedRefusals<R>>,
 }
@@ -147,7 +147,7 @@ pub fn write(writer: &mut store::Writer, source: &Source) -> io::Result<()> {
     writer.write_at(REFUSAL_SCHEMA, 0, &[1u8][..])
 }
 /// Stale/corrupt derived metadata is a miss, never a refusal to open a recording.
-pub(super) type CachedNames = (store::SourceKey, Option<ContentKey>, ResidentMetadata);
+pub(super) type CachedNames = (store::SourceKey, NamesKey, ResidentMetadata);
 pub(super) struct Restored {
     pub metadata: ResidentMetadata,
     pub named: Option<CachedNames>,
@@ -307,13 +307,13 @@ mod tests {
         schema: u32,
         inputs: Inputs,
         metadata: ReplayMetadata,
-        named: Option<(Option<ContentKey>, ReplayMetadata)>,
+        named: Option<(NamesKey, ReplayMetadata)>,
     }
 
     fn main_serializer(source: &Source) -> Vec<u8> {
         let named = source.named.lock().unwrap();
         let owned = MainCache {
-            schema: 2,
+            schema: SCHEMA,
             inputs: Inputs::read(source.replay_ref()).unwrap(),
             metadata: source.metadata.value.clone(),
             named: named

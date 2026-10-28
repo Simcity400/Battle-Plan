@@ -33,6 +33,7 @@ import './factions.css';
 import FactionDrill from './FactionDrill';
 
 const NO_WARNINGS: string[] = [];
+const NO_SPANS: readonly HourSpan[] = [];
 
 /** Every recorded faction over time: a band per faction
  * whose thickness follows its member count, and a lane per member from join to
@@ -107,7 +108,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   const opened = drill == null ? null : views.find(view => view.id === drill);
   if (opened) return <div className="factions-widget">
     <FactionDrill runtime={runtime} track={track} view={opened} names={data.factions.find(faction => faction.id === opened.id)?.names ?? []}
-      at={at} active={active} gaps={gaps} onBack={() => setDrill(null)} /></div>;
+      at={at} active={active} gaps={gaps} pending={prefix?.pending ?? NO_SPANS} onBack={() => setDrill(null)} /></div>;
   if (filter.reason) return <>{failure}<WidgetState kind="unavailable" message={filter.reason} /></>;
   // Factions, and the countries chosen, at hours still being prepared are not known yet: none is not proof of none.
   const preparing = failure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;

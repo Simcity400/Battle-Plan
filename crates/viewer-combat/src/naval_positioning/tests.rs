@@ -16,8 +16,7 @@ fn defines() -> Defines {
         sortie_stance_ratios: vec![ONE],
         base_carrier_sortie_efficiency: ONE,
         selected_sortie_initial_time: 24,
-        piercing_thresholds: Vec::new(),
-        piercing_critical_values: Vec::new(),
+        piercing: Ok(Default::default()),
         positioning_impacts: [0; 3],
     }
 }

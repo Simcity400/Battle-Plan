@@ -587,6 +587,9 @@ struct ShipStore {
     next_variants: Vec<Variant>,
     next_variant_index: Vec<(usize, usize)>,
     quiet: Option<(u64, u64)>,
+    /// The naval-power certificate the held rows' packets were read under,
+    /// whichever capture buffer read them.
+    naval_power: Option<(u64, u64, u64)>,
     generation: u64,
     /// Names the rows the latest capture published, while every one is held
     /// ([`crate::projection::generation`]).
@@ -901,6 +904,7 @@ impl ShipStore {
         self.next_variants.clear();
         self.next_variant_index.clear();
         self.quiet = None;
+        self.naval_power = None;
         self.generation = 0;
         self.rows = None;
     }
@@ -2584,9 +2588,11 @@ impl Captured {
             self.air_capacity = held.air_capacity;
         }
         let power_certificate = self.worker_growth.then(naval_power_certificate).flatten();
-        if self.naval_power.prepare(power_certificate) {
+        self.naval_power.prepare(power_certificate);
+        if self.store.naval_power != power_certificate {
             self.store.forget();
         }
+        self.store.naval_power = power_certificate;
         self.witness = None;
         // The previous capture's rows, each held: their generation and count.
         let held_rows = self

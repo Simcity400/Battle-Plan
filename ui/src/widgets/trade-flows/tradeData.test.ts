@@ -180,6 +180,19 @@ test('one scale all campaign: the most traded at once, the final total, the larg
   assert.equal(campaignScale(peaked, 'average', 0, 71), 50.5);
 });
 
+test('a negative flow never lowers the campaign scale the positive ribbons are drawn on', () => {
+  // 10 then 5 a day beside a constant -9 a day: the diagram draws 10, then 5.
+  const signed = decodeTrade({ ...reply(), flows: [flow(0, 1, 1, [[0, 23, '1000000'], [24, 47, '500000']]), flow(1, 2, 2, [[0, 47, '-900000']])] }).flows;
+  assert.equal(buildDiagram(signed, 'current', 0, 0, 12).total, 10);
+  assert.equal(campaignScale(signed, 'current', 0, 47), 10);
+  assert.equal(campaignScale(signed, 'total', 0, 47), 15);
+  assert.equal(campaignScale(signed, 'average', 0, 47), 10);
+  // A correction lowering a flow's final total keeps the peak it was drawn at.
+  const corrected = decodeTrade({ ...reply(), flows: [flow(0, 1, 1, [[0, 23, '1000000'], [24, 35, '-1000000']])] }).flows;
+  assert.equal(flowValue(corrected[0], 'total', 0, 47), 5);
+  assert.equal(campaignScale(corrected, 'total', 0, 47), 10);
+});
+
 test('a campaign scale holds for its scope while another extent is read, and none is guessed before the first', () => {
   const unread = heldScale(undefined, 'scope', undefined);
   assert.equal(unread.scale, undefined);

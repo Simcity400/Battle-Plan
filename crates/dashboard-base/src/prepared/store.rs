@@ -5,10 +5,52 @@ use crate::Source;
 use std::{path::Path, sync::Arc};
 
 type Cached = Option<(
-    Option<(crate::content::ContentKey, std::path::PathBuf)>,
+    Option<(
+        crate::content::ContentKey,
+        std::path::PathBuf,
+        Option<SettingsStamp>,
+    )>,
     Arc<store::Store>,
     store::SourceKey,
 )>;
+
+pub type SettingsStamp = (u64, Option<std::time::SystemTime>);
+
+/// The user folder's `settings.txt` as the key stamps it: prepared text is made in the game
+/// language it names, so a changed file binds a new key.
+pub fn settings_stamp(user_dir: &Path) -> Option<SettingsStamp> {
+    let metadata = std::fs::metadata(user_dir.join("settings.txt")).ok()?;
+    Some((metadata.len(), metadata.modified().ok()))
+}
+
+/// The `settings.txt` a source's prepared key is bound to: taken when the key is first made, and
+/// moved on only by [`rebind_settings`], where the caller also restarts preparation.
+type BoundSettings = Option<(std::path::PathBuf, Option<SettingsStamp>)>;
+
+fn bound_settings(source: &Source, user_dir: &Path) -> Option<SettingsStamp> {
+    let bound = source.state::<BoundSettings>();
+    let mut bound = bound.lock().unwrap_or_else(|error| error.into_inner());
+    match bound.as_ref() {
+        Some((folder, stamp)) if folder == user_dir => *stamp,
+        _ => {
+            let stamp = settings_stamp(user_dir);
+            *bound = Some((user_dir.to_owned(), stamp));
+            stamp
+        }
+    }
+}
+
+/// Binds `source`'s prepared key to `settings.txt` in `user_dir` as it is now; whether that moved
+/// it, so preparations made in another game language are prepared again.
+pub fn rebind_settings(source: &Source, user_dir: &Path) -> bool {
+    let stamp = settings_stamp(user_dir);
+    let bound = source.state::<BoundSettings>();
+    let mut bound = bound.lock().unwrap_or_else(|error| error.into_inner());
+    let next = Some((user_dir.to_owned(), stamp));
+    let moved = bound.is_some() && *bound != next;
+    *bound = next;
+    moved
+}
 
 /// The cache belongs to this recording path, even when another recording shares
 /// its campaign identity. Every content input comes from the recorded stack.
@@ -22,6 +64,7 @@ pub fn files(
         (
             crate::content::content_key(Some(value)).unwrap(),
             value.options.cache_dir.clone(),
+            bound_settings(source, &value.options.user_dir),
         )
     });
     if let Some((saved, store, key)) = cache.as_ref()
@@ -158,5 +201,27 @@ mod tests {
             by_path
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_source_keeps_its_bound_settings_until_they_are_rebound() {
+        use crate::test_fixtures::{CAMPAIGN, records, source};
+        let input = records(1, vec![source(1, 100, Some(1))]);
+        let replay = replay::container::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
+        let (source, root) = crate::test_fixtures::file_source(replay);
+        let user = root.join("user");
+        std::fs::create_dir(&user).unwrap();
+        std::fs::write(user.join("settings.txt"), "language=\"l_english\"\n").unwrap();
+        // Nothing bound yet: binding moves no prepared key.
+        assert!(!rebind_settings(&source, &user));
+        let first = bound_settings(&source, &user);
+        assert!(first.is_some());
+        std::fs::write(user.join("settings.txt"), "language=\"l_german\"\n").unwrap();
+        // A changed file moves the key only where the caller rebinds and prepares again.
+        assert_eq!(bound_settings(&source, &user), first);
+        assert!(rebind_settings(&source, &user));
+        assert_ne!(bound_settings(&source, &user), first);
+        assert!(!rebind_settings(&source, &user));
+        let _ = std::fs::remove_dir_all(root);
     }
 }

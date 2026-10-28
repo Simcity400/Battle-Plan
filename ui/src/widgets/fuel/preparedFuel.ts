@@ -123,6 +123,8 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
   const [attempt,setAttempt]=useState(0);
   const [keyboard,setKeyboard]=useState<{owner:typeof owner;hour:number|null;revision:number}>();
   const requests=useRef(new Set<AbortController>());
+  // Only the latest key's request may answer the chart's pending navigation.
+  const navigation=useRef<AbortController|null>(null);
   const onSummaryView=useCallback<NonNullable<TimeChartProps['onSummaryView']>>(value=>setView(previous=>previous?.owner===owner
     && previous.from===value.from && previous.to===value.to && previous.width===value.width ? previous : {owner,...value}),[owner]);
   const currentView=view?.owner===owner ? view : undefined;
@@ -157,7 +159,8 @@ export function usePreparedFuel(client: DashboardClient, track: BoundTrack | und
   },[owner,enabled,active,attempt,content]);
   const onNavigateHour=useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((key,from,x,until)=>{
     if(!enabled || !active)return;
-    const controller=new AbortController();requests.current.add(controller);
+    navigation.current?.abort();
+    const controller=new AbortController();requests.current.add(controller);navigation.current=controller;
     void preparedSeriesQuery(client,track!.source,'series-next-change',{branchId:track!.branch.id,family:{kind:'country-fuel'},tags,
       key,from,firstHour:x[0],lastHour:Math.min(x[1],until??x[1]),within:within && Object.fromEntries(within)},controller.signal,attempt>0)
       .then(value=>{if(!object(value) || value.hour!==null && (typeof value.hour!=='number' || !Number.isFinite(value.hour)))throw new Error('Prepared fuel navigation is malformed.');

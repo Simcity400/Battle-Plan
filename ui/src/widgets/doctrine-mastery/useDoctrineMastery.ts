@@ -10,6 +10,7 @@ import { doctrineSprite, folderName, rewardDescriptions, validateDoctrineMastery
 import type { DoctrineMasteryReply } from './doctrineMasteryData';
 import { OPTIONS } from './definition';
 import { doctrineMasteryRequest } from '../../dashboard/widgetRequests';
+import { useContentRevision } from '../../dashboard/contentRevision';
 
 /** The country's prepared doctrine history over the branch, looked up locally at every hour. */
 export function useDoctrineMastery(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
@@ -29,22 +30,24 @@ export function useDoctrineChoices(widget: WidgetSpec, runtime: WidgetRuntime): 
 }
 
 /** Reward descriptions with the country's own values at `hour` (a recorded read), asked only
- * when `wanted`; undefined until they load or when the ask is refused. */
+ * when `wanted`; undefined until they load or when the ask fails, which the next ask retries. */
 export function useRewardDescriptions(runtime: WidgetRuntime, track: BoundTrack | undefined, tag: string | null, hour: number | undefined,
   wanted: boolean): ReadonlyMap<string, string | null> | undefined {
+  const content = useContentRevision(runtime.client);
   const request = track && tag && hour !== undefined ? { sourceId: track.source.id, revision: track.source.revision, product: 'doctrine-mastery',
     params: requests.doctrineMasteryAt(track.branch.id, tag, hour) } : null;
-  const key = JSON.stringify(request);
-  const [state, setState] = useState<{ key: string; descriptions?: ReadonlyMap<string, string | null> }>();
+  const key = JSON.stringify([request, content]);
+  const [state, setState] = useState<{ client: WidgetRuntime['client']; key: string; descriptions?: ReadonlyMap<string, string | null> }>();
+  const current = state?.client === runtime.client && state.key === key ? state : undefined;
   useEffect(() => {
-    if (!wanted || !request || state?.key === key) return;
+    if (!wanted || !request || current?.descriptions) return;
     const controller = new AbortController();
     void loadTransientProduct<unknown>(runtime.client, request, controller.signal, track?.source).then(reply => {
-      if (!controller.signal.aborted) setState({ key, descriptions: rewardDescriptions(validateDoctrineMastery(reply)) });
-    }).catch(() => { if (!controller.signal.aborted) setState({ key }); });
+      if (!controller.signal.aborted) setState({ client: runtime.client, key, descriptions: rewardDescriptions(validateDoctrineMastery(reply)) });
+    }).catch(() => { if (!controller.signal.aborted) setState(undefined); });
     return () => controller.abort();
-    // The key holds the source, country and hour.
+    // The key holds the source, country, hour and content.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime.client, key, wanted]);
-  return state?.key === key ? state.descriptions : undefined;
+  return current?.descriptions;
 }

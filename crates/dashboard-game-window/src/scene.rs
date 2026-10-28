@@ -24,7 +24,7 @@ pub struct Scene {
     pub image: String,
     /// Areas the pointer can rest on, in draw order, with what the app shows for them.
     pub hovers: Vec<SceneHover>,
-    /// Lists the pointer can scroll, by their element path.
+    /// Lists the pointer can scroll, by their element path and axis.
     pub lists: Vec<SceneList>,
     /// What the game draws nothing for in this window, or that is drawn incompletely, counted.
     pub notes: Vec<String>,
@@ -52,7 +52,7 @@ pub struct SceneHover {
 /// A list the browser scrolls: the pointer over `rect` moves its offset between 0 and `max`
 /// of the list's own content units, and the window is laid out again at that offset. `rect`
 /// and its rows' areas are window pixels: a distance there is `scale` times the same distance
-/// in offset units.
+/// in offset units. A container scrolling both ways is two lists of its path, one per axis.
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneList {

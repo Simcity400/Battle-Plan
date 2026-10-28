@@ -16,7 +16,7 @@ use dashboard_core::config::LoadContext;
 use dashboard_text::{
     catalogue::Catalogue,
     metadata::{LinkTags, check_cancel, slot_read},
-    scripted_text::stored_text,
+    template_facts::{TemplateNaming, display_naming},
 };
 use replay::container::Replay;
 use replay_data::{
@@ -241,11 +241,9 @@ impl ArmyName {
         }
     }
 }
+/// The shared template display naming at the observation, or why it was unavailable.
 #[derive(Clone, Serialize, Deserialize)]
-struct TemplateName {
-    literal: Vec<u8>,
-    key: Result<Vec<u8>, ()>,
-}
+struct TemplateName(Result<TemplateNaming, String>);
 #[derive(Clone, Serialize, Deserialize)]
 struct Presentation {
     hour: i32,
@@ -265,6 +263,7 @@ struct Event {
 // Rows hold unique ascending keys, so a large simultaneous deployment is looked
 // up without indexing every hour.
 struct Presentations<'a> {
+    frame: &'a DecodedFrame,
     hour: i32,
     divisions: &'a [DivisionRow],
     names: &'a [DivisionStatusRow],
@@ -278,6 +277,7 @@ fn keyed<T>(rows: &[T], key: u64, of: impl Fn(&T) -> u64) -> Option<&T> {
 impl<'a> Presentations<'a> {
     fn new(frame: &'a DecodedFrame, template_hour: Option<i32>) -> Self {
         Self {
+            frame,
             hour: frame.hour,
             template_hour,
             divisions: frame.complete::<tables::Divisions>().unwrap_or_default(),
@@ -298,14 +298,8 @@ impl<'a> Presentations<'a> {
             held.filter(|name| name.matches(row))
                 .unwrap_or_else(|| ArmyName::new(row))
         });
-        let template =
-            keyed(self.templates, division.template, |row| row.template).map(|row| TemplateName {
-                literal: row.name.clone(),
-                key: match &row.name_key {
-                    Recorded::Value(value) => Ok(value.clone()),
-                    Recorded::NotRecorded => Err(()),
-                },
-            });
+        let template = keyed(self.templates, division.template, |row| row.template)
+            .map(|_| TemplateName(display_naming(self.frame, division.template)));
         let icon = keyed(self.icons, division.template, |row| row.template).map(|row| {
             (
                 row.priority_unit,
@@ -495,11 +489,14 @@ impl Scan {
         let changed =
             |table: TableId| changes.is_none_or(|changes| changes.rows_changed[table.index()]);
         let divisions_changed = changed(TableId::Divisions);
+        // Template naming also reads the composition country's tag.
         let presentation_changed = [
             TableId::Divisions,
             TableId::DivisionStatus,
             TableId::DivisionTemplates,
             TableId::DivisionTemplateIcons,
+            TableId::Countries,
+            TableId::CountryLinks,
         ]
         .into_iter()
         .any(changed);
@@ -1211,30 +1208,12 @@ fn named(
             }
         }
     }
-    if let Some(template) = &presentation.template {
-        // An explicit display name precedes the localisation key.
-        let name = if !template.literal.is_empty() {
-            stored_text(
-                &cat.localisation,
-                &cat.recorded_language,
-                &template.literal,
-                "Division template name",
-            )
-        } else {
-            template
-                .key
-                .as_ref()
-                .map_err(|()| "Division template fallback key not recorded".to_owned())
-                .and_then(|key| {
-                    std::str::from_utf8(key)
-                        .map_err(|_| "Division template key is not UTF-8".into())
-                })
-                .and_then(|key| {
-                    cat.localised(key, catalogue::View::Plain)
-                        .ok_or_else(|| format!("Division template {key} localisation unavailable"))
-                })
-        }
-        .and_then(|name| catalogue::plain_text(&name));
+    if let Some(TemplateName(naming)) = &presentation.template {
+        let name = naming
+            .clone()
+            .and_then(|naming| naming.localise(&cat.localisation))
+            .and_then(|name| catalogue::plain_text(&name))
+            .map_err(|why| format!("Template name unavailable: {why}"));
         match name {
             Ok(name) => {
                 row.template_name = Some(name);

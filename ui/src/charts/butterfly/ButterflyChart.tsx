@@ -205,6 +205,11 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
               else { ctx.fillStyle = part.color; ctx.fillRect(x0, barTop, width, layout.barHeight); }
               if (span.from > 0.5) { ctx.fillStyle = t.surface; ctx.fillRect(layout.axis + side * span.from - 0.5, barTop, 1, layout.barHeight); }
             });
+            ctx.setLineDash([...SECONDARY_DASH]); ctx.strokeStyle = t.text; ctx.lineWidth = t.lineWidth.series;
+            spans.forEach((span, index) => {
+              const width = span.to - span.from;
+              if (parts[index].negative && width > 0) ctx.strokeRect(side > 0 ? layout.axis + span.from : layout.axis - span.to, barTop, width, layout.barHeight);
+            });
             ctx.restore();
             barPath(ctx, layout.axis, barTop, side * size, layout.barHeight);
           } else ctx.fill();

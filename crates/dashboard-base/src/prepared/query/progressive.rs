@@ -384,21 +384,31 @@ pub fn histories(
                 .is_none_or(|country| country.identities.is_empty())
         })
         .collect();
+    // An hour a recorded gap covers stays unobserved even where its frame survived.
     if !missing.is_empty()
         && let Some(first) = replay.index.iter().find(|block| block.branch == branch)
+        && !replay.gaps.iter().any(|gap| {
+            gap.branch == branch
+                && gap.first_hour <= first.first_hour
+                && first.first_hour <= gap.last_hour
+        })
     {
-        use crate::metadata::{TaggedCountry, tagged_countries};
+        use crate::metadata::{TaggedCountry, tagged_countries, validate_campaign};
         use replay_data::rows::tables;
         check_cancel(cancelled)?;
-        let selected = [TableId::Countries, TableId::CountryLinks];
+        decodes_allowed()?;
+        let selected = [TableId::Campaign, TableId::Countries, TableId::CountryLinks];
         let keyframe = replay.read_keyframe_recorded(first, &selected)?;
         let mut decoder = FrameDecoder::for_tables(&selected);
         let frame = decoder.advance(&keyframe)?;
         check_cancel(cancelled)?;
-        if let (Ok(countries), Ok(links)) = (
-            frame.complete::<tables::Countries>(),
-            frame.complete::<tables::CountryLinks>(),
-        ) {
+        // Another campaign's frame is no evidence, as the frame readers find.
+        if validate_campaign(frame, replay).is_ok()
+            && let (Ok(countries), Ok(links)) = (
+                frame.complete::<tables::Countries>(),
+                frame.complete::<tables::CountryLinks>(),
+            )
+        {
             let tagged = tagged_countries(countries, links);
             for tag in missing {
                 check_cancel(cancelled)?;
@@ -3535,6 +3545,60 @@ mod tests {
             .unwrap_err()
             .kind(),
             io::ErrorKind::Interrupted
+        );
+    }
+
+    #[test]
+    fn progressive_histories_seed_keeps_a_tag_unknown_when_a_gap_covers_the_branch_start() {
+        use crate::products::country_history::selected_identities;
+        use replay::spool::Record;
+        use replay_frame::branches::Gap;
+        let fixture = crate::prepared::series::tests::Fixture::new();
+        let recording = |gap: bool| {
+            let mut frames = vec![frame(1, 10, None), frame(1, 11, None)];
+            for each in &mut frames {
+                if let replay_frame::frame::TableView::Complete(
+                    replay_data::rows::TableRows::Countries(rows),
+                ) = &mut *each.tables[TableId::Countries.index()]
+                {
+                    rows[0].tag = b"mod/old".to_vec();
+                }
+            }
+            let mut recorded = records(1, frames);
+            if gap {
+                // The keyframe survived, but a loss gap covers its hour.
+                recorded.push(Record::Gap(Gap {
+                    branch: 1,
+                    first_hour: 10,
+                    last_hour: 10,
+                    reason: "uncertain flush loss".into(),
+                }));
+            }
+            Replay::from_records(CAMPAIGN.into(), &[recorded]).unwrap()
+        };
+        let requested = vec!["mod/old".to_owned()];
+        let seeded = |replay: &Replay| {
+            let history = histories(
+                &fixture.store,
+                &fixture.key,
+                1,
+                None,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                replay,
+                &requested,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            selected_identities(&history, &requested)
+        };
+        assert_eq!(
+            seeded(&recording(false)),
+            std::collections::BTreeSet::from([(7, 9001)])
+        );
+        assert!(
+            seeded(&recording(true)).is_empty(),
+            "a gap's hour is no identity evidence"
         );
     }
 

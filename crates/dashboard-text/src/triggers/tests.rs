@@ -725,6 +725,31 @@ fn a_fallback_cycle_is_refused_by_name() {
     }
 }
 
+/// A variable naming its own alias recurses as a fallback cycle does; a cycle
+/// the game never returns from is not masked by Boolean logic around it.
+#[test]
+fn an_endless_alias_cycle_refuses_every_enclosing_evaluation() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let frame = frame(&original_countries(), &[]);
+    for (aliases, trigger) in [
+        ("ALI = { variable = ALI.id }", "tag = ALI"),
+        (
+            "ALI = { variable = BLI.id } BLI = { variable = ALI.id }",
+            "tag = ALI",
+        ),
+        (
+            "ALI = { original_tag = GER always = no fallback = ALI }",
+            "OR = { tag = ALI always = yes }",
+        ),
+    ] {
+        let why = check(&frame, aliases, 1, trigger)
+            .decided()
+            .unwrap_err();
+        assert!(why.contains("evaluated inside itself"), "{aliases}: {why}");
+    }
+}
+
 /// Alias resolution returns as soon as an unscored candidate
 /// passes: the targets after the original-tag candidates are
 /// read only if it reaches them, so a target it never reaches cannot make

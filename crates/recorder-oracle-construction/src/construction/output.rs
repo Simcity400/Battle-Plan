@@ -21,9 +21,15 @@ pub fn compare_output(
     report.limitation("the save keeps no per-line construction spending; branch self-checks validate progress and repair cadence, not the exact repair rate", "ConstructionLineOutput");
     report.limitation("the save does not retain deleted lines or their daily completion events; completion timestamps require the native-hook smoke comparison", "ConstructionLineOutput.completion");
     let rows = super::complete::<tables::ConstructionLineOutput>(frame)?;
-    let Some(since) = rows.first().map(|row| row.since_hour) else {
+    // After the last line ended and its final rows retired, the table is empty,
+    // but the earlier publications still hold spending the history must match.
+    let since = match rows.first() {
+        Some(row) => Some(row.since_hour),
+        None => observation_start(replay, frame)?,
+    };
+    let Some(since) = since else {
         report.limitation(
-            "no construction output rows at the compared hour",
+            "no construction output was published on this branch up to this hour",
             "ConstructionLineOutput",
         );
         return Ok(());
@@ -60,6 +66,38 @@ pub fn compare_output(
     }
     check.finish(report, frame.hour);
     Ok(())
+}
+
+/// The observation start of the branch's latest publication with rows at or
+/// before the frame's hour, searching its blocks from the latest back; `None`
+/// when no publication up to that hour held a row.
+fn observation_start(replay: &Replay, frame: &DecodedFrame) -> io::Result<Option<Hour>> {
+    let mut blocks: Vec<_> = replay
+        .index
+        .iter()
+        .filter(|b| b.branch == frame.branch && b.first_hour <= frame.hour)
+        .collect();
+    blocks.sort_by_key(|b| std::cmp::Reverse(b.first_hour));
+    for block in blocks {
+        let mut decoder = FrameDecoder::for_tables(&OUTPUT_TABLES);
+        let mut since = None;
+        for encoded in replay.read_block_selected(block, &OUTPUT_TABLES)? {
+            if encoded.hour > frame.hour {
+                break;
+            }
+            let decoded = decoder.advance(&encoded)?;
+            if let Some(row) = super::complete::<tables::ConstructionLineOutput>(decoded)
+                .ok()
+                .and_then(|rows| rows.first())
+            {
+                since = Some(row.since_hour);
+            }
+        }
+        if since.is_some() {
+            return Ok(since);
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Clone)]

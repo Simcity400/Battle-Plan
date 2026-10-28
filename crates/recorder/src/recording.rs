@@ -275,6 +275,21 @@ fn with_history<T>(
     Some(result)
 }
 
+/// Save and Discard requests one look took; those it did not act on are asked again when it ends.
+struct Taken<'a> {
+    settling: &'a Settling,
+    requests: Vec<(String, bool)>,
+}
+
+impl Drop for Taken<'_> {
+    fn drop(&mut self) {
+        let mut queued = locked(&self.settling.requests);
+        // Ahead of those asked meanwhile, so a campaign's newest request still wins.
+        let newer = std::mem::replace(&mut *queued, std::mem::take(&mut self.requests));
+        queued.extend(newer);
+    }
+}
+
 /// Save, discard or list each campaign whose segments the collector closed.
 fn settle(
     session: &Path,
@@ -288,7 +303,11 @@ fn settle(
         .parent()
         .and_then(Path::parent)
         .ok_or_else(|| failure_text(session, "not in a capture root"))?;
-    let mut requests = std::mem::take(&mut *locked(&settling.requests));
+    let mut taken = Taken {
+        settling,
+        requests: std::mem::take(&mut *locked(&settling.requests)),
+    };
+    let requests = &mut taken.requests;
     let mut changed = false;
     let campaigns = replay_io::spooled_campaigns(session)?;
     let before = settled.len();
@@ -319,8 +338,8 @@ fn settle(
             }
             continue;
         }
-        let request = at.map(|at| requests.remove(at).1);
-        requests.retain(|(asked, _)| *asked != campaign);
+        // Taken off once acted on, so a look that fails before then keeps it.
+        let request = at.map(|at| requests[at].1);
         let segments: Vec<_> = unsaved
             .iter()
             .map(|(number, _, bytes)| (*number, *bytes))
@@ -342,6 +361,7 @@ fn settle(
         }
         changed = true;
         if request == Some(true) {
+            requests.retain(|(asked, _)| *asked != campaign);
             let discarded = with_history(settling, session, &campaign, || {
                 replay::recording_files::unsaved_recording(target, campaign.as_bytes())
                     .map_err(|error| failure_text(target, error))?;
@@ -362,6 +382,7 @@ fn settle(
             continue;
         }
         let summary = replay_io::unsaved(session, &campaign)?;
+        requests.retain(|(asked, _)| *asked != campaign);
         let save = request == Some(false) || settling.save.load(Ordering::Acquire);
         let waiting = summary.map(|unsaved| Waiting {
             campaign: campaign.clone(),
@@ -454,7 +475,7 @@ fn settle(
         }
     }
     // Recordings with nothing waiting in this session: their hours waiting from ended sessions.
-    for (campaign, discard) in requests {
+    for (campaign, discard) in std::mem::take(requests) {
         // Loaded again, even with no hour in this session yet, it is recorded.
         if locked(&settling.loaded).as_ref() == Some(&campaign) {
             locked(&settling.done).push(SetAside::Failed(
@@ -1016,6 +1037,8 @@ pub struct CaptureOutcome {
     pub replays: Vec<PathBuf>,
     /// The session was discarded at the user's request; nothing was published.
     pub discarded: bool,
+    /// Discard was chosen, but the campaign in progress was unknown, so its hours were kept.
+    pub undiscarded: bool,
     /// The session ended because the controller refused a load, not because
     /// of a stop or the game exiting.
     pub rerouted: bool,
@@ -2549,7 +2572,8 @@ pub(crate) fn capture(
             detach_requested: requested_detach,
             process_exited,
             replays: finalized,
-            discarded: discarding,
+            discarded: discarding && current.is_some(),
+            undiscarded: discarding && current.is_none(),
             rerouted,
             omitted,
             waiting: waiting.into_iter().map(|(campaign, _)| campaign).collect(),
@@ -3064,33 +3088,36 @@ fn request_refresh(output: &Path) -> Result<(), String> {
             .map_err(|e| e.to_string())?
             .as_nanos()
     );
-    let ack = session_dir.join("refresh.ack");
-    let request = session_dir.join("refresh.request");
-    let _ = fs::remove_file(&ack);
-    // Write, then rename: the collector never sees a partial token.
-    let temporary = session_dir.join(format!("refresh.request.{token}.tmp"));
+    // Each request and its answer are files of their own: none replaces or removes another's.
+    let folder = session_dir.join("refresh-requests");
+    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let ack = folder.join(format!("{token}.ack"));
+    let request = folder.join(format!("{token}.request"));
+    // Write, then rename: the collector never sees a partial request.
+    let temporary = folder.join(format!("{token}.tmp"));
     fs::write(&temporary, &token).map_err(|e| e.to_string())?;
     if let Err(error) = fs::rename(&temporary, &request) {
         let _ = fs::remove_file(&temporary);
         return Err(error.to_string());
     }
+    // Withdrawn once answered or given up on, so a later attach does not act on it.
+    let withdraw = || {
+        let _ = fs::remove_file(&request);
+        let _ = fs::remove_file(&ack);
+    };
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Err(error) = refuse_failed_refresh(&session_dir, &active) {
-            if fs::read_to_string(&request).is_ok_and(|text| text.trim() == token) {
-                let _ = fs::remove_file(&request);
-            }
+            withdraw();
             return Err(error);
         }
         if fs::read_to_string(&ack).is_ok_and(|text| text.trim() == token) {
+            withdraw();
             println!("Full refresh requested: the next hourly sample reads every scheduled table.");
             return Ok(());
         }
         if Instant::now() >= deadline {
-            // Withdraw our own request so a later attach does not act on it.
-            if fs::read_to_string(&request).is_ok_and(|text| text.trim() == token) {
-                let _ = fs::remove_file(&request);
-            }
+            withdraw();
             return Err("the collector did not acknowledge the refresh request".into());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -6153,6 +6180,27 @@ mod tests {
     }
 
     #[test]
+    fn a_look_that_fails_keeps_the_save_and_discard_requests_it_took() {
+        let directory = crate::test_support::allocation_test_directory("settle-unreadable");
+        // Its session folder was never made, so it cannot be listed.
+        let session = directory.join("sessions").join("1-1");
+        let settling = Settling::default();
+        locked(&settling.requests).push(("taken".to_owned(), true));
+        let looked = settle(
+            &session,
+            &directory.join("target"),
+            &mut replay_io::Ahead::default(),
+            &settling,
+            &mut Settled::new(),
+            unnamed(),
+        );
+        assert!(looked.is_err());
+        assert_eq!(*locked(&settling.requests), [("taken".to_owned(), true)]);
+        assert!(take_done(&settling).is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn finalization_progress_locked_reader_does_not_abort_publication() {
         use crate::test_support::{
             allocation_records, allocation_test_directory, write_campaign_spool,
@@ -7711,17 +7759,26 @@ mod tests {
             json!({"session_dir": session,"session_id":7,"process_start_time":13}).to_string(),
         )
         .unwrap();
-        // A collector stand-in acknowledges the whole token it finds.
+        // A collector stand-in acknowledges each whole request it finds, by its token.
+        let folder = session.join("refresh-requests");
         let watcher = {
-            let session = session.clone();
+            let folder = folder.clone();
             std::thread::spawn(move || {
                 // Only a hang guard: a busy machine can delay the request.
                 let deadline = Instant::now() + Duration::from_secs(120);
                 while Instant::now() < deadline {
-                    if let Ok(token) = fs::read_to_string(session.join("refresh.request")) {
-                        assert!(!token.trim().is_empty());
-                        fs::write(session.join("refresh.ack"), token.trim()).unwrap();
-                        fs::remove_file(session.join("refresh.request")).unwrap();
+                    let requests: Vec<_> = fs::read_dir(&folder)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|entry| entry.ok())
+                        .map(|entry| entry.path())
+                        .filter(|path| path.extension().is_some_and(|ext| ext == "request"))
+                        .collect();
+                    if let [request] = requests.as_slice() {
+                        let token = fs::read_to_string(request).unwrap();
+                        let stem = request.file_stem().unwrap().to_str().unwrap();
+                        assert_eq!(token, stem);
+                        fs::write(request.with_extension("ack"), &token).unwrap();
                         return;
                     }
                     std::thread::sleep(Duration::from_millis(10));
@@ -7731,13 +7788,8 @@ mod tests {
         };
         request_refresh(&root).unwrap();
         watcher.join().unwrap();
-        // No temporary file is left behind.
-        let leftovers: Vec<_> = fs::read_dir(&session)
-            .unwrap()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
-            .collect();
-        assert!(leftovers.is_empty());
+        // The requester withdraws its answered request; no temporary file is left behind.
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 0);
         // Without an active recorder the request is refused.
         assert!(request_refresh(&session).is_err());
         let _ = fs::remove_dir_all(&root);

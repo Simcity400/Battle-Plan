@@ -1417,8 +1417,8 @@ impl Replay {
     /// This recording's frames written again by the current block writer, in
     /// memory, keeping its sessions, branches, gaps, controls and recovery
     /// notes. Size attribution compares layouts with it; the frames, their
-    /// format and their meaning are unchanged, so only current-format
-    /// recordings can be written again.
+    /// format and their meaning are unchanged, so only current-format,
+    /// undamaged recordings can be written again.
     pub fn reencoded(
         &self,
         mut observe: impl FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()>,
@@ -1429,6 +1429,8 @@ impl Replay {
                 self.format.version()
             )));
         }
+        // Opening drops damaged blocks from the index; a rewrite would lose them for good.
+        self.require_undamaged()?;
         // One segment per session with frames: its start, then each branch's
         // start and frames in block order. The frames are metadata here and
         // are read back from this recording block by block; the trailer is

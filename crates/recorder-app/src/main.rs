@@ -27,8 +27,11 @@ fn main() {
         .setup(move |app| {
             let handle = app.handle().clone();
             tray::create(&handle, Arc::clone(&recorder))?;
-            let settings = RecorderSettings::load().unwrap_or_default();
-            if let Err(error) = startup::set_start_with_windows(settings.start_with_windows) {
+            // Unreadable settings leave the Run entry as it is; defaults would remove it.
+            let reconciled = RecorderSettings::load()
+                .map_err(|error| format!("Recorder settings could not be read: {error}"))
+                .and_then(|settings| startup::set_start_with_windows(settings.start_with_windows));
+            if let Err(error) = reconciled {
                 eprintln!("{error}");
             }
             recorder.start(handle)?;

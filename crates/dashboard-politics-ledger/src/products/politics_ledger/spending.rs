@@ -2419,6 +2419,7 @@ fn event_text<'a>(
             let focus = power
                 .focuses
                 .get(token)
+                .map_err(|gap| format!("focus {token}: {gap}"))?
                 .ok_or_else(|| format!("focus {token} is not defined in recorded content"))?;
             // The owner scope starts self-linked and receives a seed from campaign
             // and focus inputs. Those caller inputs are not recorded; only a

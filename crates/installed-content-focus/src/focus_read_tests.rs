@@ -13,7 +13,7 @@ fn serial(
     layers: &ResolvedLayers,
     names: &KeyNames,
 ) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
-    let mut definitions = Focuses::new();
+    let mut definitions = Focuses::default();
     let mut warnings = Vec::new();
     for (_, path) in paths(layers) {
         let database = if path.as_bytes().starts_with(b"common/national_focus/") {
@@ -23,17 +23,20 @@ fn serial(
         };
         match parse(&path.read(layers)?, database, names) {
             Ok((content, notes)) => {
-                definitions.extend(content);
+                definitions.read_file(database, content);
                 warnings.extend(
                     notes
                         .into_iter()
                         .map(|(kind, note)| (kind, format!("{path}: {note}"))),
                 );
             }
-            Err((kind, error)) => warnings.push((
-                kind,
-                format!("Focus definitions unavailable in {path}: {error}"),
-            )),
+            Err((kind, error)) => {
+                warnings.push((
+                    kind,
+                    format!("Focus definitions unavailable in {path}: {error}"),
+                ));
+                definitions.refuse_file(database, &path.to_string(), error.to_string());
+            }
         }
     }
     Ok((definitions, warnings))
@@ -91,7 +94,10 @@ fn ordered_parallel_focus_files_keep_layer_path_and_database_precedence() -> io:
     let names = layers.key_names()?;
     let expected = serial(&layers, &names)?;
     assert!(expected.1.is_empty(), "{:?}", expected.1);
-    assert_eq!(expected.0["SYN_DUPLICATE"].localisation, "MOD_LATE");
+    assert_eq!(
+        expected.0.get("SYN_DUPLICATE").unwrap().unwrap().localisation,
+        "MOD_LATE"
+    );
     for workers in [1, 2, 3, 8] {
         assert_eq!(
             read_files(
@@ -105,7 +111,8 @@ fn ordered_parallel_focus_files_keep_layer_path_and_database_precedence() -> io:
         );
     }
     assert_eq!(read(&layers)?, expected);
-    assert_eq!(read_national(&layers)?.0, expected.0);
+    // National lookup numbers fewer files, so only the definitions compare.
+    assert_eq!(read_national(&layers)?.0.definitions, expected.0.definitions);
     Ok(())
 }
 
@@ -146,7 +153,7 @@ fn parallel_focus_files_isolate_variables_and_share_complete_mod_names() -> io::
         ("C", "@title"),
         ("D", "FOURTH"),
     ] {
-        assert_eq!(expected.0[id].localisation, title);
+        assert_eq!(expected.0.get(id).unwrap().unwrap().localisation, title);
     }
     for workers in [1, 2, 3] {
         let actual = read_files(
@@ -200,17 +207,24 @@ fn parallel_focus_files_preserve_diagnostic_kind_message_count_order_and_prefix(
     let layers = stack.layers(&[]);
     let names = layers.key_names()?;
     let expected = serial(&layers, &names)?;
-    assert_eq!(expected.0["RECOVERED"].localisation, "RECOVERED_TITLE");
-    assert_eq!(expected.0["PREFIX"].localisation, "PREFIX_TITLE");
-    assert!(expected.0.contains_key("COUNTED"));
+    let defined = &expected.0.definitions;
+    assert_eq!(defined["RECOVERED"].1.localisation, "RECOVERED_TITLE");
+    assert_eq!(defined["PREFIX"].1.localisation, "PREFIX_TITLE");
+    assert!(defined.contains_key("COUNTED"));
     // Complete load-point names let the reader skip this invalid trigger.
     // The apparent variable is consumed as its missing operator, not defined.
-    assert!(expected.0.contains_key("NATIVE_RECOVERY"));
+    assert!(defined.contains_key("NATIVE_RECOVERY"));
     for absent in ["VECTOR", "UNSETTLED", "UNREACHED"] {
+        assert!(!defined.contains_key(absent), "{absent}: {defined:?}");
+    }
+    // The last file is refused, so what every earlier file defines is unknown.
+    for id in ["RECOVERED", "PREFIX", "VECTOR"] {
         assert!(
-            !expected.0.contains_key(absent),
-            "{absent}: {:?}",
-            expected.0
+            expected
+                .0
+                .get(id)
+                .is_err_and(|gap| gap.path == "common/national_focus/g.txt"),
+            "{id}"
         );
     }
     for kind in [
@@ -246,6 +260,56 @@ fn parallel_focus_files_preserve_diagnostic_kind_message_count_order_and_prefix(
         );
     }
     assert_eq!(read(&layers)?, expected);
+    Ok(())
+}
+
+/// A refused file could redefine any focus decided before it, so neither the
+/// earlier definition nor an absence stands; a later file's redefinition does.
+#[test]
+fn a_refused_file_leaves_what_it_could_redefine_unknown() -> io::Result<()> {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let stack = Stack::new("focus_refused_override");
+    for (file, text) in [
+        (
+            "a",
+            "shared_focus={id=SYN text=OLD} shared_focus={id=KEPT text=KEPT_OLD}",
+        ),
+        ("b", "shared_focus={id=SYN text=NEW} shared_focus={text=NO_ID}"),
+        ("c", "shared_focus={id=KEPT text=KEPT_NEW}"),
+    ] {
+        stack.write(
+            &stack.base(),
+            &format!("common/national_focus/{file}.txt"),
+            text,
+        );
+    }
+    let layers = stack.layers(&[]);
+    let (focuses, warnings) = read(&layers)?;
+    assert!(
+        warnings
+            .iter()
+            .any(|(_, warning)| warning.contains("common/national_focus/b.txt")),
+        "{warnings:?}"
+    );
+    for id in ["SYN", "ABSENT"] {
+        assert_eq!(
+            focuses.get(id).unwrap_err().path,
+            "common/national_focus/b.txt"
+        );
+    }
+    assert_eq!(
+        focuses.get("KEPT").unwrap().unwrap().localisation,
+        "KEPT_NEW"
+    );
+    assert_eq!(
+        focuses
+            .known()
+            .map(|definition| definition.localisation.as_str())
+            .collect::<Vec<_>>(),
+        ["KEPT_NEW"]
+    );
+    assert_eq!(focuses.ids().collect::<Vec<_>>(), ["KEPT", "SYN"]);
     Ok(())
 }
 
@@ -350,7 +414,10 @@ fn focus_wave_parsers_overlap_and_merge_after_reverse_completion() -> io::Result
         },
     )?;
     assert!(notes.is_empty(), "{notes:?}");
-    assert_eq!(definitions["DUPLICATE"].localisation, "TITLE_3");
+    assert_eq!(
+        definitions.get("DUPLICATE").unwrap().unwrap().localisation,
+        "TITLE_3"
+    );
     assert_eq!(peak.load(Ordering::SeqCst), 2);
     assert_eq!(completion_order.into_inner().unwrap(), [1, 0, 3, 2]);
     let threads = threads.into_inner().unwrap();
@@ -377,10 +444,33 @@ fn focus_folders_load_whatever_case_their_layer_spells() -> io::Result<()> {
     let layers = stack.layers(&[]);
     let (focuses, warnings) = read(&layers)?;
     assert!(warnings.is_empty(), "{warnings:?}");
-    assert_eq!(focuses["NATIONAL"].localisation, "NATIONAL_TITLE");
-    assert_eq!(focuses["CONTINUOUS"].localisation, "CONTINUOUS_TITLE");
+    assert_eq!(
+        focuses.get("NATIONAL").unwrap().unwrap().localisation,
+        "NATIONAL_TITLE"
+    );
+    assert_eq!(
+        focuses.get("CONTINUOUS").unwrap().unwrap().localisation,
+        "CONTINUOUS_TITLE"
+    );
     let (national, _) = read_national(&layers)?;
-    assert!(national.contains_key("NATIONAL"));
-    assert!(!national.contains_key("CONTINUOUS"));
+    assert!(national.get("NATIONAL").unwrap().is_some());
+    assert!(national.get("CONTINUOUS").unwrap().is_none());
     Ok(())
+}
+
+#[test]
+fn a_refused_file_hides_only_its_own_databases_focuses() {
+    let mut focuses = Focuses::default();
+    focuses.read_file(
+        Database::National,
+        Definitions::from([("NATIONAL".to_owned(), FocusDefinition::default())]),
+    );
+    let continuous = "common/continuous_focus/refused.txt";
+    focuses.refuse_file(Database::Continuous, continuous, "refused".to_owned());
+    assert!(focuses.get("NATIONAL").is_ok_and(|found| found.is_some()));
+    assert_eq!(focuses.known().count(), 1);
+    assert!(focuses.get("UNDEFINED").is_err_and(|gap| gap.path == continuous));
+    let national = "common/national_focus/refused.txt";
+    focuses.refuse_file(Database::National, national, "refused".to_owned());
+    assert!(focuses.get("NATIONAL").is_err_and(|gap| gap.path == national));
 }

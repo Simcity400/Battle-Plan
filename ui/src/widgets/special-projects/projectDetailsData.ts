@@ -17,7 +17,7 @@ const option = (value: unknown) => object(value) && label(value.label) && effect
 const reward = (value: unknown) => object(value) && label(value.label) && nullable(value.description) && nullable(value.unavailable) && Array.isArray(value.options) && value.options.every(option);
 export function validateProjectDetails(value: unknown): SpecialProjectDetails {
   const bad = () => { throw new Error('Invalid special-project details'); };
-  if (!object(value) || !integer(value.hour) || !Array.isArray(value.scientists) || !Array.isArray(value.programs) || !Array.isArray(value.projects) || !Array.isArray(value.breakthroughs)
+  if (!object(value) || !integer(value.hour) || !Array.isArray(value.scientists) || !Array.isArray(value.programs) || !Array.isArray(value.projects) || !(value.breakthroughs === null || Array.isArray(value.breakthroughs))
     || !Array.isArray(value.unavailable) || !value.unavailable.every(reason => typeof reason === 'string')) return bad();
   for (const scientist of value.scientists) if (!object(scientist) || !uint(scientist.character) || !person(scientist.person)
     || !(scientist.active === null || byte(scientist.active)) || !(scientist.injuryDays === null || signed(scientist.injuryDays))
@@ -26,7 +26,7 @@ export function validateProjectDetails(value: unknown): SpecialProjectDetails {
     || !(scientist.injuryHour === null || integer(scientist.injuryHour) && scientist.injuryHour <= value.hour)
     || !(scientist.skills === null || Array.isArray(scientist.skills) && scientist.skills.every(skill => object(skill) && label(skill.specialization) && signed(skill.level) && raw(skill.experienceRaw)))
     || !(scientist.traits === null || Array.isArray(scientist.traits) && scientist.traits.every(label))) return bad();
-  for (const progress of value.breakthroughs) if (!object(progress) || !label(progress.specialization) || !signed(progress.points) || !integer(progress.readHour) || progress.readHour > value.hour) return bad();
+  for (const progress of value.breakthroughs ?? []) if (!object(progress) || !label(progress.specialization) || !signed(progress.points) || !integer(progress.readHour) || progress.readHour > value.hour) return bad();
   for (const program of value.programs) if (!object(program) || !uint(program.id) || !uint(program.province) || !integer(program.readHour) || program.readHour > value.hour || !(program.facility === null || facility(program.facility))
     || !(program.assignments === null || Array.isArray(program.assignments) && program.assignments.every((assignment, ordinal) => object(assignment) && assignment.ordinal === ordinal
       && typeof assignment.reference === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(assignment.reference) && BigInt(assignment.reference) < 1n << 64n

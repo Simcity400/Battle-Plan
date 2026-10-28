@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyColourSet, chosenColour, factionIdentity, loadCampaignSettings, MAX_CAMPAIGN_SETTINGS_STORAGE, MAX_FACTIONS, parseCampaignSettings, saveCampaignSettings, saveColourSet,
+import { applyColourSet, chosenColour, factionIdentity, loadCampaignSettings, MAX_CAMPAIGN_SETTINGS_STORAGE, parseCampaignSettings, saveCampaignSettings, saveColourSet,
   setCampaignFlag, setFactionColour, setFactionStyle } from './campaignSettings.ts';
 import { FACTION_APART, factionColours } from '../charts/factionColours.ts';
 import { parseColor, rgbToOklch } from '../shell/appearance/color.ts';
@@ -165,9 +165,16 @@ test('every campaign keeps its faction settings through save and reload, however
   assert.deepEqual(loaded.campaigns.ffff.factions, { 1: { name: 'Late' } });
 });
 
-test('a new faction style past the limit is refused, not dropped on save', () => {
+test('every faction keeps its colour through save and reload, however many a campaign has', () => {
+  const factions = Array.from({ length: 1500 }, (_, id) => ({ id: String(id), name: `Faction ${id}` }));
   let settings = parseCampaignSettings(undefined);
-  for (let id = 0; id < MAX_FACTIONS; id++) settings = setFactionStyle(settings, 'aa', String(id), { colour: '#112233' });
-  assert.equal(setFactionStyle(settings, 'aa', '9999', { colour: '#112233' }), settings);
-  assert.notEqual(setFactionStyle(settings, 'aa', '5', { colour: '#445566' }), settings);
+  for (const faction of factions) settings = setFactionColour(settings, 'campaign', 'aa', faction.id, null, '#112233');
+  for (const faction of factions) settings = setFactionColour(settings, 'all', 'bb', faction.id, factionIdentity(faction.name, null), '#445566');
+  settings = saveColourSet(settings, 'mp', 'MP group', 'aa', factions, new Map());
+  const storage = memory();
+  assert.equal(saveCampaignSettings(settings, storage), null);
+  const loaded = loadCampaignSettings(storage);
+  assert.equal(Object.keys(loaded.campaigns.aa.factions).length, 1500);
+  assert.equal(Object.keys(loaded.shared).length, 1500);
+  assert.equal(loaded.sets[0].entries.length, 1500);
 });

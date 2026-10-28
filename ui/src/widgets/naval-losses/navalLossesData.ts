@@ -195,10 +195,10 @@ export function navalBands(model: NavalModel, tag: string, range: Span, membersh
   });
 }
 
+/** Signed corrections stay signed: the stack draws them below zero. */
 export function navalHolderBands(model: NavalModel, membership: ReadonlyMap<string, readonly Span[]>, range: Span) {
   const byTag = [...membership].map(([tag, spans]) => navalBands(model, tag, range, spans));
-  return NAVAL_PARTS.map((_, index) => byTag.flatMap(bands => bands[index]).sort((a, b) => a.firstHour - b.firstHour)
-    .map(run => ({ ...run, value: Math.max(0, run.value) })));
+  return NAVAL_PARTS.map((_, index) => byTag.flatMap(bands => bands[index]).sort((a, b) => a.firstHour - b.firstHour));
 }
 
 export interface NavalManifest extends NavalLossesReply { windows: { firstHour: number; lastHour: number }[] }

@@ -569,6 +569,24 @@ fn presence_follows_the_native_probe_and_counts_the_ring_window() {
             total: PRESENCE_WINDOW as i32
         }))
     );
+    // A short ring whose tail is never met wraps until the window: [2, -1, 0, 7] repeated.
+    let mut short = presence_map(&[(slot, first, 1, RING, 4, 1, -1)]);
+    for (index, value) in [7_i32, 2, -1, 0, 9].into_iter().enumerate() {
+        put_u32(&mut short, RING + index * 4, value as u32);
+    }
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &short,
+    };
+    assert_eq!(
+        PresenceMap::read(&memory, NAVY)
+            .unwrap()
+            .presence(&memory, first),
+        Ok(Some(Presence {
+            positive: PRESENCE_WINDOW as i32 / 4 * 2,
+            total: PRESENCE_WINDOW as i32 / 4 * 3
+        }))
+    );
 }
 
 #[test]

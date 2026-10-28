@@ -232,6 +232,17 @@ fn repairs_keep_building_limit_separate_native_queue_repeats_and_independent_hul
     let ship = format!("{COUNTRY}|9|ship|{SHIP}");
     assert_eq!(read[&format!("{ship}|hull")], 123_000);
     assert_eq!(read[&format!("{ship}|maximum")], 200_000);
+    // The game floors a model's maximum at 100 (0.001 HP).
+    let mut low = frame.clone();
+    if let TableView::Complete(TableRows::ShipModels(rows)) =
+        &mut *low.tables[TableId::ShipModels.index()]
+    {
+        rows[0].counter.as_mut().unwrap().maximum_strength = 0;
+    }
+    assert_eq!(
+        values::<RepairsObserver>(&low)[&format!("{ship}|maximum")],
+        100
+    );
     missing(&mut frame, TableId::ShipModels);
     missing(&mut frame, TableId::VariantDefinitions);
     let read = values::<RepairsObserver>(&frame);

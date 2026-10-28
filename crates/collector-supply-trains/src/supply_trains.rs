@@ -119,22 +119,15 @@ pub struct CaptureReport {
 }
 
 /// The supply walk's province checks since attach, for the status writer:
-/// allocation-free atomics written by the walk's worker after each read.
+/// allocation-free counters and last observation written by the walk's worker
+/// after each read.
 /// Ids the game holds as a null province are recorded as stored
 /// ([`supply_node::ProvinceCheck::is_null_province`]); every other failed
 /// check refuses the hour's SupplyNodes read.
 struct WalkObservations {
     by_check: [std::sync::atomic::AtomicU64; supply_node::ProvinceCheck::ALL.len()],
-    last: LastObservation,
-}
-
-/// The last observation, packed so a reader never mixes two of them:
-/// `country << 32 | index` and `province << 32 | role << 8 | check`, the
-/// role and check one-based so zero means none yet.
-struct LastObservation {
-    hour: std::sync::atomic::AtomicI32,
-    owner: std::sync::atomic::AtomicU64,
-    value: std::sync::atomic::AtomicU64,
+    /// The last observation with its hour, copied whole so a reader never mixes two.
+    last: std::sync::Mutex<Option<(i32, supply_node::ProvinceObservation)>>,
 }
 
 #[derive(serde::Serialize)]
@@ -148,45 +141,30 @@ struct ObservationStatus {
     check: &'static str,
 }
 
-const ROLES: [supply_node::ProvinceRole; 3] = [
-    supply_node::ProvinceRole::Node,
-    supply_node::ProvinceRole::Parent,
-    supply_node::ProvinceRole::Vertex,
-];
-
 impl WalkObservations {
     const fn new() -> Self {
         Self {
             by_check: [const { std::sync::atomic::AtomicU64::new(0) };
                 supply_node::ProvinceCheck::ALL.len()],
-            last: LastObservation {
-                hour: std::sync::atomic::AtomicI32::new(0),
-                owner: std::sync::atomic::AtomicU64::new(0),
-                value: std::sync::atomic::AtomicU64::new(0),
-            },
+            last: std::sync::Mutex::new(None),
         }
     }
 
+    fn last_observation(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Option<(i32, supply_node::ProvinceObservation)>> {
+        self.last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn record(&self, count: u64, hour: i32, observed: supply_node::ProvinceObservation) {
-        use std::sync::atomic::Ordering::Relaxed;
         let check = supply_node::ProvinceCheck::ALL
             .iter()
             .position(|check| *check == observed.check)
             .unwrap_or(0);
-        let role = ROLES
-            .iter()
-            .position(|role| *role == observed.role)
-            .unwrap_or(0);
-        self.by_check[check].fetch_add(count, Relaxed);
-        self.last.hour.store(hour, Relaxed);
-        self.last.owner.store(
-            u64::from(observed.country) << 32 | u64::from(observed.index),
-            Relaxed,
-        );
-        self.last.value.store(
-            u64::from(observed.province) << 32 | (role as u64 + 1) << 8 | (check as u64 + 1),
-            Relaxed,
-        );
+        self.by_check[check].fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+        *self.last_observation() = Some((hour, observed));
     }
 
     fn total(&self) -> u64 {
@@ -197,25 +175,15 @@ impl WalkObservations {
     }
 
     fn last(&self) -> Option<ObservationStatus> {
-        use std::sync::atomic::Ordering::Relaxed;
-        let value = self.last.value.load(Relaxed);
-        let role = ((value >> 8) & 0xff) as usize;
-        let check = (value & 0xff) as usize;
-        if role == 0 || check == 0 {
-            return None;
-        }
-        let owner = self.last.owner.load(Relaxed);
-        let index = owner as u32;
+        let (hour, observed) = (*self.last_observation())?;
         Some(ObservationStatus {
-            hour: self.last.hour.load(Relaxed),
-            country: (owner >> 32) as u32,
-            index: index & !supply_node::VERTEX,
-            vertex: index & supply_node::VERTEX != 0,
-            province: (value >> 32) as u32,
-            role: ROLES.get(role - 1).map_or("unknown", |role| role.name()),
-            check: supply_node::ProvinceCheck::ALL
-                .get(check - 1)
-                .map_or("unknown", |check| check.name()),
+            hour,
+            country: observed.country,
+            index: observed.index & !supply_node::VERTEX,
+            vertex: observed.index & supply_node::VERTEX != 0,
+            province: observed.province,
+            role: observed.role.name(),
+            check: observed.check.name(),
         })
     }
 
@@ -1351,5 +1319,26 @@ mod tests {
             );
             assert_eq!(allocations(&owned), before);
         }
+    }
+
+    #[test]
+    fn the_walk_status_names_one_whole_observation() {
+        let observations = WalkObservations::new();
+        assert!(observations.last().is_none());
+        let observed = |country, index, province| supply_node::ProvinceObservation {
+            country,
+            index,
+            province,
+            role: supply_node::ProvinceRole::Vertex,
+            check: supply_node::ProvinceCheck::ALL[0],
+        };
+        observations.record(2, 10, observed(1, 7, 100));
+        observations.record(1, 11, observed(2, supply_node::VERTEX | 9, 200));
+        let last = observations.last().unwrap();
+        assert_eq!(
+            (last.hour, last.country, last.index, last.vertex, last.province),
+            (11, 2, 9, true, 200)
+        );
+        assert_eq!(observations.total(), 3);
     }
 }

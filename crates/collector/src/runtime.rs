@@ -6005,48 +6005,67 @@ const SIZING_IDLE_WAIT: Duration = RegistryWatch::INTERVAL;
 
 /// `recorder refresh` asks for one full-refresh hour: every scheduled table,
 /// including daily, static and sliced ones, is read at the next hourly sample.
-/// The request is a file in the session directory; the history worker turns
-/// it into `refresh_next` and acknowledges it, so a stalled file system never
-/// holds the spool thread that returns capture buffers. Observation remains
-/// continuous; `force_next` is reserved for capture recovery. Nothing is sent
-/// to the game. Oracles use this to compare every table at a chosen hour.
+/// Each request is a `<token>.request` file of its own in the session's
+/// [`REFRESH_REQUESTS`] folder, answered by `<token>.ack`, so requests made at
+/// once never replace or remove one another. The history worker turns it into
+/// `refresh_next` and acknowledges it, so a stalled file system never holds the
+/// spool thread that returns capture buffers. Observation remains continuous;
+/// `force_next` is reserved for capture recovery. Nothing is sent to the game.
+/// Oracles use this to compare every table at a chosen hour.
 #[derive(Default)]
 struct RefreshRequests {
-    /// The last accepted token. A request whose acknowledgement or removal
-    /// failed is still on disk; it must not force every later hour full.
-    last: Option<String>,
-    /// Whether `last`'s acknowledgement was written; until it is, each poll retries it.
-    acknowledged: bool,
+    /// Accepted requests still on disk, and whether each was acknowledged. One whose
+    /// acknowledgement or removal failed must not force every later hour full.
+    accepted: Vec<(String, bool)>,
 }
 
-pub(crate) const REFRESH_REQUEST: &str = "refresh.request";
-pub(crate) const REFRESH_ACK: &str = "refresh.ack";
+pub(crate) const REFRESH_REQUESTS: &str = "refresh-requests";
 
 impl RefreshRequests {
     fn poll(&mut self, session: &Path, refresh_next: &AtomicBool) -> io::Result<()> {
-        let request = session.join(REFRESH_REQUEST);
-        let bytes = match fs::read(&request) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        let directory = session.join(REFRESH_REQUESTS);
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.accepted.clear();
+                return Ok(());
+            }
             Err(error) => return Err(error),
         };
-        let token = std::str::from_utf8(&bytes)
-            .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?
-            .trim();
-        if token.is_empty() {
-            return Ok(());
+        let mut tokens = Vec::new();
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension() == Some(std::ffi::OsStr::new("request")) {
+                let token = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+                tokens.push(token.to_owned());
+            }
         }
-        if self.last.as_deref() != Some(token) {
-            refresh_next.store(true, Ordering::Release);
-            REFRESH_ACCEPTED.fetch_add(1, Ordering::Relaxed);
-            self.last = Some(token.to_owned());
-            self.acknowledged = false;
-        } else if self.acknowledged {
-            return Ok(());
+        self.accepted.retain(|(token, _)| tokens.contains(token));
+        for token in tokens {
+            let at = match self.accepted.iter().position(|(known, _)| *known == token) {
+                Some(at) => at,
+                None => {
+                    refresh_next.store(true, Ordering::Release);
+                    REFRESH_ACCEPTED.fetch_add(1, Ordering::Relaxed);
+                    self.accepted.push((token.clone(), false));
+                    self.accepted.len() - 1
+                }
+            };
+            if self.accepted[at].1 {
+                continue;
+            }
+            fs::write(directory.join(format!("{token}.ack")), token.as_bytes())?;
+            self.accepted[at].1 = true;
+            // Its requester withdraws it once answered, perhaps before this removal.
+            match fs::remove_file(directory.join(format!("{token}.request"))) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
         }
-        fs::write(session.join(REFRESH_ACK), token.as_bytes())?;
-        self.acknowledged = true;
-        fs::remove_file(&request)
+        Ok(())
     }
 }
 
@@ -8007,39 +8026,56 @@ mod tests {
     fn a_refresh_request_preserves_observation_and_is_acknowledged_once() {
         let session = std::env::temp_dir().join(format!("hoi4-refresh-{}", std::process::id()));
         let _ = fs::remove_dir_all(&session);
-        fs::create_dir_all(&session).unwrap();
+        let folder = session.join(REFRESH_REQUESTS);
+        fs::create_dir_all(&folder).unwrap();
+        let request = |token: &str| folder.join(format!("{token}.request"));
+        let ack = |token: &str| fs::read_to_string(folder.join(format!("{token}.ack"))).unwrap();
         let shared = sampling::Shared::new(0, 0, 1);
         let mut requests = RefreshRequests::default();
         // No request: nothing forced.
         requests.poll(&session, &shared.refresh_next).unwrap();
         assert!(!shared.force_next.load(Ordering::Acquire));
         assert!(!shared.refresh_next.load(Ordering::Acquire));
-        fs::write(session.join(REFRESH_REQUEST), "token-7\n").unwrap();
+        fs::write(request("token-7"), "token-7").unwrap();
         requests.poll(&session, &shared.refresh_next).unwrap();
         assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
         assert!(!shared.force_next.load(Ordering::Acquire));
-        assert_eq!(
-            fs::read_to_string(session.join(REFRESH_ACK)).unwrap(),
-            "token-7"
-        );
-        assert!(!session.join(REFRESH_REQUEST).exists());
+        assert_eq!(ack("token-7"), "token-7");
+        assert!(!request("token-7").exists());
         // Consumed: a later poll forces nothing more.
         requests.poll(&session, &shared.refresh_next).unwrap();
         assert!(!shared.refresh_next.load(Ordering::Acquire));
         // A request that could not be removed is accepted once, not every hour.
-        fs::write(session.join(REFRESH_REQUEST), "token-7").unwrap();
+        fs::write(request("token-8"), "token-8").unwrap();
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(request("token-8"))
+            .unwrap();
+        assert!(requests.poll(&session, &shared.refresh_next).is_err());
+        assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
+        assert_eq!(ack("token-8"), "token-8");
         requests.poll(&session, &shared.refresh_next).unwrap();
         assert!(!shared.refresh_next.load(Ordering::Acquire));
-        // An empty token is not a request; a new token is.
-        fs::write(session.join(REFRESH_REQUEST), " \n").unwrap();
+        drop(held);
+        // Its requester withdraws it once answered.
+        fs::remove_file(request("token-8")).unwrap();
         requests.poll(&session, &shared.refresh_next).unwrap();
-        assert!(!shared.refresh_next.load(Ordering::Acquire));
-        fs::write(session.join(REFRESH_REQUEST), "token-8").unwrap();
+        assert!(requests.accepted.is_empty());
+        // Requests made at once are each acknowledged; none replaces or removes another.
+        fs::write(request("token-9"), "token-9").unwrap();
+        fs::write(request("token-10"), "token-10").unwrap();
+        fs::write(folder.join("token-11.tmp"), "token-11").unwrap();
         requests.poll(&session, &shared.refresh_next).unwrap();
         shared.force_next.store(true, Ordering::Release);
         assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
         assert!(shared.force_next.swap(false, Ordering::AcqRel));
-        assert_eq!(requests.last.as_deref(), Some("token-8"));
+        for token in ["token-9", "token-10"] {
+            assert_eq!(ack(token), token);
+            assert!(!request(token).exists());
+        }
+        // A file still being written is not a request.
+        assert!(!folder.join("token-11.ack").exists());
         let _ = fs::remove_dir_all(&session);
     }
 
@@ -8047,25 +8083,26 @@ mod tests {
     fn a_failed_refresh_acknowledgement_is_retried_without_another_refresh() {
         let session = std::env::temp_dir().join(format!("hoi4-refresh-ack-{}", std::process::id()));
         let _ = fs::remove_dir_all(&session);
-        fs::create_dir_all(&session).unwrap();
+        let folder = session.join(REFRESH_REQUESTS);
+        fs::create_dir_all(&folder).unwrap();
         let shared = sampling::Shared::new(0, 0, 1);
         let mut requests = RefreshRequests::default();
         // A folder in the acknowledgement's place: writing it fails.
-        fs::create_dir(session.join(REFRESH_ACK)).unwrap();
-        fs::write(session.join(REFRESH_REQUEST), "token-9").unwrap();
+        fs::create_dir(folder.join("token-9.ack")).unwrap();
+        fs::write(folder.join("token-9.request"), "token-9").unwrap();
         assert!(requests.poll(&session, &shared.refresh_next).is_err());
         assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
         assert!(requests.poll(&session, &shared.refresh_next).is_err());
         assert!(!shared.refresh_next.load(Ordering::Acquire));
         // Once the obstacle clears, the same request is acknowledged and not armed again.
-        fs::remove_dir(session.join(REFRESH_ACK)).unwrap();
+        fs::remove_dir(folder.join("token-9.ack")).unwrap();
         requests.poll(&session, &shared.refresh_next).unwrap();
         assert!(!shared.refresh_next.load(Ordering::Acquire));
         assert_eq!(
-            fs::read_to_string(session.join(REFRESH_ACK)).unwrap(),
+            fs::read_to_string(folder.join("token-9.ack")).unwrap(),
             "token-9"
         );
-        assert!(!session.join(REFRESH_REQUEST).exists());
+        assert!(!folder.join("token-9.request").exists());
         let _ = fs::remove_dir_all(&session);
     }
 

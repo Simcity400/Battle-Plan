@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { FactionDetailReply, FactionGoalDefinition } from '../../generated/dashboard';
-import { manpowerRows, poolsOffered, shareOf, shownPool } from './poolsData.ts';
+import { manpowerRows, poolHeading, poolsOffered, shareOf, shownPool } from './poolsData.ts';
 import { completedCount, filterGoals, goalRows, termOrder } from '../faction-goals/factionGoalsData.ts';
 
 const reply = (values: Partial<FactionDetailReply>): FactionDetailReply => ({ resources: null, manpower: null, manpowerUnlocked: null,
@@ -17,6 +17,13 @@ test('only the pools the recorded state supplies are offered, and a saved pool f
   assert.equal(shownPool(['manpower', 'doctrine'], 'doctrine'), 'doctrine');
   assert.equal(shownPool(['manpower'], 'resources'), 'manpower');
   assert.equal(shownPool([], 'resources'), null);
+});
+
+test('a research pool whose members were not read keeps its base and never says none share', () => {
+  const unread = reply({ researchUnlocked: true, researchBaseRaw: '100000', researchCountries: null });
+  assert.deepEqual(poolsOffered(unread), ['research']);
+  assert.equal(poolHeading(unread, 'research'), 'Members not recorded');
+  assert.equal(poolHeading(reply({ researchUnlocked: true, researchBaseRaw: '100000', researchCountries: [] }), 'research'), '0 sharing');
 });
 
 test('manpower keeps every native occurrence, largest first, with shares of the recorded total', () => {

@@ -542,7 +542,11 @@ export type DoctrineInventory = { kind: string, ordinal: number, fields: Array<D
 export type DoctrineReply = { branchId: string, hour: number, tag: string, folders: Array<DoctrineFolder>, inventory: Array<DoctrineInventory>, warnings: Array<string>, };
 export type GameWindowParams = { branchId: string, hour: number, window: GameWindowTarget, scroll?: Array<ListScroll>, };
 export type GameWindowTarget = { "kind": "mioPolicies", organisation: string, } | { "kind": "divisionDesigner", template: string, };
-export type ListScroll = { path: string, offset: number, };
+export type ListScroll = { path: string,
+/**
+ * Whether it scrolls the list across; otherwise down.
+ */
+horizontal: boolean, offset: number, };
 export type GameWindowReply = { warnings: Array<string>,
 /**
  * The window's title as plain text, for the app's own heading and accessibility.
@@ -584,7 +588,7 @@ image: string,
  */
 hovers: Array<SceneHover>,
 /**
- * Lists the pointer can scroll, by their element path.
+ * Lists the pointer can scroll, by their element path and axis.
  */
 lists: Array<SceneList>,
 /**
@@ -4216,7 +4220,11 @@ export type ProjectRewardOption = { label: ProjectLabel, effects: ProjectEffects
 export type PendingProjectReward = { label: ProjectLabel, description: string | null, options: Array<ProjectRewardOption>, unavailable: string | null, };
 export type ProjectVariableValue = { name: string, valueRaw: string, };
 export type ProjectRuntimeDetails = { owner: number, id: number, label: ProjectLabel, readHour: number, pendingKnown: boolean, pending: PendingProjectReward | null, seed: number | null, variables: Array<ProjectVariableValue> | null, output: ProjectEffects | null, choices: Array<ProjectChoice> | null, };
-export type SpecialProjectDetails = { hour: number, scientists: Array<ScientistDetails>, programs: Array<ProgramDetails>, breakthroughs: Array<SpecializationProgress>, projects: Array<ProjectRuntimeDetails>, unavailable: Array<string>, };
+export type SpecialProjectDetails = { hour: number, scientists: Array<ScientistDetails>, programs: Array<ProgramDetails>,
+/**
+ * `None` without a continuous supplying read for the country.
+ */
+breakthroughs: Array<SpecializationProgress> | null, projects: Array<ProjectRuntimeDetails>, unavailable: Array<string>, };
 export type SubjectParams = { branchId: string, };
 export type SubjectLevel = {
 /**

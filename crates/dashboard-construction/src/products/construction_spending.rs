@@ -255,8 +255,9 @@ pub(crate) fn all_leaves_for<'a>(
         let grouped = countries.entry(project.tag.clone()).or_default();
         *before.entry(project.tag.clone()).or_default() += u32::from(
             output
-                .first()
-                .is_some_and(|read| read.since_hour.is_some() && !read.observed_since_creation),
+                .iter()
+                .find(|read| read.since_hour.is_some())
+                .is_some_and(|read| !read.observed_since_creation),
         );
         let railway = project.kind == ProjectKind::Railway;
         for repair in [false, true] {

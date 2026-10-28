@@ -52,17 +52,20 @@ export function usePreparedNaval(client: DashboardClient, track: BoundTrack | un
     ...(keyboard?.owner === pickOwner && keyboard.hour !== null ? [keyboard.hour] : []),
     ...[...summaries.values()].flatMap(summary => { for (let index=summary.buckets.length-1;index>=0;index--) if(summary.buckets[index]) return [summary.buckets[index]!.lastHour]; return []; })])];
   const windows = manifest.data?.windows ?? [];
-  const wanted = new Set(reached.map(hour => battleWindowIndex(windows,hour)).filter(index => index >= 0));
+  // The windows shown or reached; the next one is only read ahead, so its failure waits until it is reached.
+  const required = new Set(reached.map(hour => battleWindowIndex(windows,hour)).filter(index => index >= 0));
+  if (parity || !dense && geometry && view !== 'race') windows.forEach((window,index) => {
+    if (window.firstHour <= (parity ? extent[1] : geometry!.to) && window.lastHour >= (parity ? extent[0] : geometry!.from)) required.add(index);
+  });
+  const wanted = new Set(required);
   const next = battleWindowIndex(windows,moment)+1;
   if (view === 'race' && next > 0 && next < windows.length) wanted.add(next);
-  if (parity || !dense && geometry && view !== 'race') windows.forEach((window,index) => {
-    if (window.firstHour <= (parity ? extent[1] : geometry!.to) && window.lastHour >= (parity ? extent[0] : geometry!.from)) wanted.add(index);
-  });
   const indices = [...wanted].sort((a,b)=>a-b);
   const history = useProductWindows<NavalLossesReply>(client,identity,index => ({ sourceId:track!.source.id,revision:track!.source.revision,product:'naval-losses',params:{...params!,window:index} }),
     indices,active && manifest.data?.available === true,validateNavalWindow,track?.source,true);
   const combined = useMemo(() => manifest.data ? mergeNavalWindows(manifest.data,history.data.values()) : undefined,[manifest.data,history.data]);
   const at = battleWindowIndex(windows,moment);
+  const failed = history.errors.get(at) ?? [...required].sort((a,b)=>a-b).map(index => history.errors.get(index)).find(error => error !== undefined);
   const display = useWindowDisplay(identity,manifest.data && (at < 0 || !manifest.data.available || history.data.has(at)) ? combined : undefined,moment,client);
   const onSummaryView = useCallback((next: {from:number;to:number;width:number},series: PreparedBinding[]) => setViewport(previous => previous?.owner===owner
     && previous.from===next.from&&previous.to===next.to&&previous.width===next.width&&JSON.stringify(previous.series)===JSON.stringify(series)?previous:{owner,...next,series}),[owner]);
@@ -95,6 +98,6 @@ export function usePreparedNaval(client: DashboardClient, track: BoundTrack | un
   return { data:display?.data,hour:display?.hour??moment,manifest:manifest.data,dense,summaries,sampled:incoming?.data?.sampled,
     onSummaryView,onReachHour,exactLineTags,onNavigateHour,keyboardHour:keyboard?.owner===pickOwner?keyboard.hour:undefined,
     keyboardRevision:keyboard?.owner===pickOwner?keyboard.revision:undefined,complete:indices.every(index=>history.data.has(index)),
-    error:manifest.error??history.errors.get(at)??incoming?.error??(navigationError?.owner===owner?navigationError.error:undefined),
+    error:manifest.error??failed??incoming?.error??(navigationError?.owner===owner?navigationError.error:undefined),
     retry:()=>{manifest.retry();history.retry();setAttempt(attempt=>attempt+1);incoming.retry();setNavigationError(undefined);} };
 }

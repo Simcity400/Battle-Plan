@@ -7,10 +7,19 @@
 use crate::triggers::Failure;
 
 use installed_content_core::{tag_aliases::TagAlias, tag_aliases::VariableKey};
+use std::{cell::RefCell, rc::Rc};
 
 use super::{Eval, Scope, Scopes, eval::Evaluator};
 
 type Candidates = Vec<Result<u32, Failure>>;
+
+/// A tag alias under resolution, with what a re-entry must repeat to never return.
+pub(super) struct Entry {
+    name: String,
+    caller: Scopes,
+    graph: Option<Rc<RefCell<crate::scripted_text::EventScopes>>>,
+    effects: u64,
+}
 
 impl Evaluator<'_, '_> {
     /// State-mode script targets use state array values and state specifiers, with the
@@ -102,6 +111,47 @@ impl Evaluator<'_, '_> {
         if let Some(why) = &alias.refused {
             return Err(within(why.clone().into()));
         }
+        // The frame holds through the variable and the fallback too, so a
+        // self or mutual cycle, which the game follows without a guard, is
+        // refused by name.
+        let graph = self.event_graph.borrow().clone();
+        let frame = format!("tag alias {name}").into_bytes();
+        if let Some(why) = self.enter_frame(frame) {
+            let why = Failure::from(why);
+            // The same caller with nothing written since resolves the same
+            // way again, so the game never returns.
+            let endless = self.aliases.borrow().iter().any(|entry| {
+                entry.name == name
+                    && entry.caller == caller
+                    && entry.effects == self.variable_effects()
+                    && match (&entry.graph, &graph) {
+                        (Some(entered), Some(graph)) => Rc::ptr_eq(entered, graph),
+                        (entered, graph) => entered.is_none() && graph.is_none(),
+                    }
+            });
+            if endless {
+                self.diverged.replace(Some(why.clone()));
+            }
+            return Err(why);
+        }
+        self.aliases.borrow_mut().push(Entry {
+            name: name.to_owned(),
+            caller,
+            graph,
+            effects: self.variable_effects(),
+        });
+        let resolved = self.resolve_entered(alias, caller, within);
+        self.aliases.borrow_mut().pop();
+        self.leave_frame();
+        resolved
+    }
+
+    fn resolve_entered(
+        &self,
+        alias: &TagAlias,
+        caller: Scopes,
+        within: impl Fn(Failure) -> Failure,
+    ) -> Result<Option<u32>, Failure> {
         // The variable, event target or global event target
         // decides alone, in the caller's
         // scope.
@@ -123,31 +173,18 @@ impl Evaluator<'_, '_> {
                 }
             };
         }
-        let frame = format!("tag alias {name}").into_bytes();
-        if let Some(why) = self.enter_frame(frame) {
-            return Err(why.into());
+        let found = self.choose(alias, caller).map_err(&within)?;
+        if found.is_some() {
+            return Ok(found);
         }
-        // The frame holds through the fallback too, so a self or mutual
-        // fallback cycle, which the game follows without a guard,
-        // is refused by name.
-        let resolved = self
-            .choose(alias, caller)
-            .map_err(within)
-            .and_then(|found| {
-                if found.is_some() {
-                    return Ok(found);
-                }
-                // Only when nothing won: neither checked nor tested for
-                // existence.
-                match &alias.fallback {
-                    Some(fallback) => self
-                        .operand_tag(fallback, caller)
-                        .map_err(|why| within(why.context(|why| format!("its fallback: {why}")))),
-                    None => Ok(None),
-                }
-            });
-        self.leave_frame();
-        resolved
+        // Only when nothing won: neither checked nor tested for
+        // existence.
+        match &alias.fallback {
+            Some(fallback) => self
+                .operand_tag(fallback, caller)
+                .map_err(|why| within(why.context(|why| format!("its fallback: {why}")))),
+            None => Ok(None),
+        }
     }
 
     /// A scoped operand's country text: a recorded tag or an alias,

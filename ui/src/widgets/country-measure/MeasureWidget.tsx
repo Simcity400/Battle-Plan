@@ -40,7 +40,7 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { useFollowedProducts, useProduct } from '../../dashboard/products';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
-import { FAILED_FACT } from '../../dashboard/countryFacts';
+import { FAILED_FACT, MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { powerBalanceIndex, powerBalanceKeyHours, powerBalanceRows, powerCoverageAt, powerSpendTicks, validatePowerBalance } from '../../dashboard/powerBalance';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -161,7 +161,9 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   const reference = useProduct<MeasureReply>(runtime.client, request, active && !prepared.enabled, validateMeasureReply);
   const { data, error, retry } = prepared.enabled ? prepared : reference;
   const [hoverCluster, setHoverCluster] = useState<{ owner: unknown; cluster: MarkCluster | null } | null>(null);
-  const [changeList, setChangeList] = useState<{ owner: unknown; tag: string; first: string; end: string } | null>(null);
+  // Each opening is its own list (`id`), so its country and page start afresh.
+  const [changeList, setChangeList] = useState<{ owner: unknown; id: number; tag: string; first: string; end?: string } | null>(null);
+  const changeLists = useRef(0);
   const onMarkHover = useCallback((cluster: MarkCluster | null) => setHoverCluster(previous => previous?.owner === prepared.owner && previous.cluster === cluster
     ? previous : { owner: prepared.owner, cluster }), [prepared.owner]);
   // The exact accounting/maxima oracle is reached on hover or opening a drill.
@@ -250,7 +252,8 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
 
   useEffect(() => {
     const uncoloured = uncolouredWarning((data?.series ?? []).map(item => item.tag), known, !!styles.data);
-    const warnings = [...(data?.warnings ?? []), ...(styles.data?.warnings ?? []), ...(groups.data?.warnings ?? []),
+    const warnings = [...(data?.warnings ?? []), ...(styles.data?.warnings ?? []),
+      ...(styles.error ? [`Map colours could not be loaded: ${styles.error}`] : []), ...(groups.data?.warnings ?? []),
       ...(widget.countries.kind === 'group' && groups.error ? [`Country membership labels could not be loaded: ${groups.error}`] : []),
       ...(ceilingRequest && ceiling.error ? [`The ${config.ceiling} could not be loaded: ${ceiling.error}`] : []),
       ...(ceilingRequest ? ceiling.data?.warnings ?? [] : []),
@@ -259,7 +262,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
       ...(uncoloured ? [uncoloured] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, styles.data, known, groups.data, groups.error, widget.countries.kind, onDiagnostics, ceilingRequest != null, ceiling.error, ceiling.data, config.ceiling, ledger.data, ledger.error]);
+  }, [data, styles.data, styles.error, known, groups.data, groups.error, widget.countries.kind, onDiagnostics, ceilingRequest != null, ceiling.error, ceiling.data, config.ceiling, ledger.data, ledger.error]);
 
   const series = useMemo(() => {
     if (!data) return [];
@@ -295,7 +298,9 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   [series, styleAt, hoverHour, endHours, extent[0], extent[1], resolved.unobserved]);
   // End labels and membership markers need names; artwork is read only for
   // mounted legend entries and the exact hovered country rows.
-  const names = useCountryNamesRead(runtime.client, track, wantedLabels, active);
+  // Every membership marker date stays admitted, so a long history never leaves later names unread.
+  const nameHours = useMemo(() => Math.max(MAX_NAME_HOURS, new Set(wantedLabels.map(item => item.hour)).size), [wantedLabels]);
+  const names = useCountryNamesRead(runtime.client, track, wantedLabels, active, nameHours);
   const hoverLabels = useCountryLabelsAt(runtime.client, track, hoverHour === null ? [] : series.map(item => ({ tag: item.tag, hour: hoverHour })), active);
   const labelAt = useCallback((hour: number) => (tag: string) => {
     const name = names.get(nameKey(hour, tag));
@@ -549,11 +554,12 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
           const marks = prepared.summaryByTag.get(tag)?.marks;
           const first = cluster?.firstOrdinal ?? marks?.clusters[0]?.firstOrdinal ?? '0';
           const last = cluster ?? marks?.clusters.at(-1);
-          const end = last ? (BigInt(last.firstOrdinal) + BigInt(last.count)).toString() : first;
-          setChangeList({ owner: prepared.owner, tag, first, end });
+          // Without a drawn cluster (markers off, or none in view) the list is every recorded change.
+          const end = last ? (BigInt(last.firstOrdinal) + BigInt(last.count)).toString() : undefined;
+          setChangeList({ owner: prepared.owner, id: ++changeLists.current, tag, first, end });
         } }] : [])])} />
     </div>
-    {prepared.enabled && changeList?.owner === prepared.owner && <PreparedDropList client={runtime.client} source={track.source} branchId={track.branch.id}
+    {prepared.enabled && changeList?.owner === prepared.owner && <PreparedDropList key={changeList.id} client={runtime.client} source={track.source} branchId={track.branch.id}
       measure={config.measure} tags={resolved.tags} initialTag={changeList.tag} firstOrdinal={changeList.first} endOrdinal={changeList.end}
       digits={digits} unit={config.unit} visibleThrough={until ?? extent[1]} label={tag => labels.labelAt(Math.floor(head))(tag).name}
       onClose={() => setChangeList(null)} onPick={(tag, hour) => {

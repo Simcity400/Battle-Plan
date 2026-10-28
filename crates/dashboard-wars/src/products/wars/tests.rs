@@ -669,8 +669,11 @@ fn branch_scan_preserves_exact_losses_capitulation_identity_and_gap_bounds() {
         war.casualties[0].2,
         (2_i128 * i128::from(i64::MAX)).to_string()
     );
-    assert_eq!(war.casualties[0].3, "-2");
+    // ONE's -1 in both relations is one country's counter, which the game floors at zero.
+    assert_eq!(war.casualties[0].3, "0");
     assert_eq!(war.casualties[0].4, "14");
+    // TWO and THREE each add their own unknown counter.
+    assert_eq!(war.casualties[0].5, "6");
     assert_eq!(
         war.capitulations,
         vec![WarCapitulation {
@@ -680,6 +683,28 @@ fn branch_scan_preserves_exact_losses_capitulation_identity_and_gap_bounds() {
     );
     assert!(reply.wars[1].capitulations.is_empty());
     assert!(reply.warnings.iter().any(|s| s.contains("identity")));
+}
+
+#[test]
+fn a_countrys_unknown_losses_count_once_on_its_side() {
+    let mut frame = recorded(100);
+    let TableView::Complete(rows::TableRows::WarRelations(relations)) =
+        &mut *frame.tables[TableId::WarRelations.index()]
+    else {
+        panic!()
+    };
+    // ONE's attackerless loss is copied into its relation with each opponent.
+    for relation in relations {
+        relation.first_unknown_casualties = 100;
+    }
+    let replay = Replay::from_records(
+        b"analytics-test".to_vec(),
+        &[dashboard_base::test_fixtures::records(1, vec![frame])],
+    )
+    .unwrap();
+    let reply = scan(&replay, 1, None, None, &AtomicBool::new(false)).unwrap();
+    let losses = &reply.wars[0].casualties[0];
+    assert_eq!((losses.3.as_str(), losses.5.as_str()), ("100", "6"));
 }
 
 #[test]
@@ -952,6 +977,32 @@ fn a_declaration_listed_beside_the_war_it_is_named_for_joins_that_war() {
     );
     assert_eq!(next.iter().map(|war| war.id).collect::<Vec<_>>(), [0, 1]);
     assert_eq!(wars.len(), 2);
+}
+#[test]
+fn a_renamed_opponent_keeps_its_war() {
+    let mut wars = Vec::new();
+    let open = continue_wars(
+        &mut wars,
+        &[],
+        vec![group(1, &["1"], &["2"], &[(1, 2, 0)])],
+        None,
+        &unmerged,
+    );
+    // The same native relation, its opponent now under another tag.
+    let mut renamed = group(2, &["1"], &["RENAMED"], &[(1, 2, 0)]);
+    for relation in &mut renamed.relations {
+        relation.second = "RENAMED".into();
+    }
+    let next = continue_wars(&mut wars, &open, vec![renamed], Some(1), &unmerged);
+    assert_eq!(next.iter().map(|war| war.id).collect::<Vec<_>>(), [0]);
+    assert_eq!(wars.len(), 1);
+    assert!(wars[0].ended_by);
+    assert!(
+        wars[0]
+            .participants
+            .iter()
+            .any(|p| p.tag == "RENAMED" && p.first_hour == 2)
+    );
 }
 #[test]
 fn continuity_split_merge_gaps_redeclarations_and_observation_bounds() {

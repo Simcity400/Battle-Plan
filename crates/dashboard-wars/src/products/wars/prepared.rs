@@ -773,6 +773,7 @@ pub(crate) fn projection(
                         (
                             index,
                             inputs.identities[&row.first_country] == identity.first,
+                            [identity.first.0, identity.second.0],
                         ),
                     ))
                 })
@@ -824,13 +825,33 @@ fn closed_counter(state: &QueryCounters, index: u64, key: u64, hour: i32) -> Opt
     }
 }
 
+/// Adds one counter's run to a group's hour: a known counter to its side's sum,
+/// an unknown one to its country's maximum, as the scan's losses count them.
+fn accumulate(
+    sums: &mut [Vec<(i32, i32, [i128; 4])>],
+    unknown: &mut BTreeMap<(usize, usize, usize, u32), i128>,
+    (group, output, country): (usize, usize, u32),
+    at: usize,
+    run: series::Run,
+) {
+    let (first, last, values) = &mut sums[group][at];
+    if output % 2 == 0 {
+        values[output] += run.value;
+    } else {
+        let held = unknown.entry((group, at, output, country)).or_default();
+        *held = (*held).max(run.value);
+    }
+    *first = (*first).max(run.first_hour);
+    *last = (*last).min(run.last_hour);
+}
+
 /// Open runs are already in state. Proven closed bounds need only amounts from
 /// one supplying-batch lookup per reached hour, across all groups. Other counter
 /// histories read contiguous requested windows once per key, retaining only sums.
 fn hydrate_losses(
     reader: &mut Reader<'_>,
     state: &QueryCounters,
-    counters: &HashMap<Pair, (u64, bool)>,
+    counters: &HashMap<Pair, (u64, bool, [u32; 2])>,
     open: &[OpenWar],
     span: series::Run,
     hours: &BTreeSet<i32>,
@@ -849,10 +870,11 @@ fn hydrate_losses(
             _ => windows.push((hour, hour)),
         }
     }
+    let mut unknown = BTreeMap::new();
     let mut targets = BTreeMap::new();
     for (group, war) in open.iter().enumerate() {
         for &(pair, first) in &war.loss_pairs {
-            let (index, canonical) = counters[&pair];
+            let (index, canonical, countries) = counters[&pair];
             let order = if first == canonical {
                 [0, 1, 2, 3]
             } else {
@@ -860,11 +882,12 @@ fn hydrate_losses(
             };
             for (output, field) in order.into_iter().enumerate() {
                 let key = 1 + index * 4 + field as u64;
+                // Counters follow the relation's identity order, two per endpoint.
                 targets
                     .entry(key)
                     .or_insert_with(|| (index, Vec::new()))
                     .1
-                    .push((group, output));
+                    .push((group, output, countries[field / 2]));
             }
         }
     }
@@ -880,11 +903,8 @@ fn hydrate_losses(
                 if let Some(run) =
                     held.filter(|run| run.first_hour <= hour && hour <= run.last_hour)
                 {
-                    for &(group, output) in &destinations {
-                        let (first, last, values) = &mut sums[group][at];
-                        values[output] += run.value;
-                        *first = (*first).max(run.first_hour);
-                        *last = (*last).min(run.last_hour);
+                    for &destination in &destinations {
+                        accumulate(&mut sums, &mut unknown, destination, at, run);
                     }
                 } else {
                     missing = true;
@@ -931,11 +951,8 @@ fn hydrate_losses(
                     .map(|at| runs[at])
                     .filter(|run| run.last_hour >= hour)
                     .ok_or_else(|| invalid("Missing prepared war casualty value"))?;
-                for &(group, output) in &destinations {
-                    let (first, last, values) = &mut sums[group][start + offset];
-                    values[output] += run.value;
-                    *first = (*first).max(run.first_hour);
-                    *last = (*last).min(run.last_hour);
+                for &destination in &destinations {
+                    accumulate(&mut sums, &mut unknown, destination, start + offset, run);
                 }
             }
         }
@@ -972,13 +989,13 @@ fn hydrate_losses(
             else {
                 continue;
             };
-            for &(group, output) in destinations {
-                let (first, last, values) = &mut sums[group][at];
-                values[output] += run.value;
-                *first = (*first).max(run.first_hour);
-                *last = (*last).min(run.last_hour);
+            for &destination in destinations {
+                accumulate(&mut sums, &mut unknown, destination, at, *run);
             }
         }
+    }
+    for ((group, at, output, _), value) in unknown {
+        sums[group][at].2[output] += value;
     }
     Ok(sums
         .into_iter()

@@ -666,6 +666,62 @@ pub fn capture<T>(frame: &DecodedFrame, evaluate: impl FnOnce() -> T) -> (T, Inp
     (value, inputs)
 }
 
+/// What this thread records, for a helper thread that continues the same
+/// evaluation: [`Handoff::run`] there, then [`Carried::credit`] here.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Handoff {
+    inputs: bool,
+    views: bool,
+}
+
+/// The reads a helper thread made for its caller's recordings.
+pub(crate) struct Carried {
+    inputs: Option<Inputs>,
+    views: Vec<ViewIdentity>,
+}
+
+/// This thread's recording state, for a helper thread.
+pub(crate) fn handoff() -> Handoff {
+    Handoff {
+        inputs: recording(),
+        views: view_reads::recording(),
+    }
+}
+
+impl Handoff {
+    /// Run `compute` on the helper thread, recording what the caller records.
+    pub(crate) fn run<T>(self, compute: impl FnOnce() -> T) -> (T, Carried) {
+        if self.inputs {
+            RECORDING.with(|recording| recording.borrow_mut().push(Inputs::default()));
+        }
+        let (value, views) = if self.views {
+            view_reads::record(compute)
+        } else {
+            (compute(), Vec::new())
+        };
+        let inputs = self
+            .inputs
+            .then(|| RECORDING.with(|recording| recording.borrow_mut().pop().unwrap_or_default()));
+        (value, Carried { inputs, views })
+    }
+}
+
+impl Carried {
+    /// Credit the helper thread's reads to this thread's recordings.
+    pub(crate) fn credit(self) {
+        if let Some(inputs) = self.inputs {
+            RECORDING.with(|recording| {
+                if let Some(outer) = recording.borrow_mut().last_mut() {
+                    for read in &inputs.reads {
+                        outer.note(&read.key, &read.value);
+                    }
+                }
+            });
+        }
+        view_reads::credit(&self.views);
+    }
+}
+
 /// Run a query of the hour's shared state, recording `key` and the digest of
 /// its result in the evaluations on this thread; what it reads inside is not
 /// recorded, since its result holds all of it.

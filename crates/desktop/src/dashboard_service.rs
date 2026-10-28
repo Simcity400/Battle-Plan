@@ -79,7 +79,25 @@ impl Requests {
 pub struct DashboardService {
     requests: Mutex<Requests>,
     runtime: Mutex<Option<Arc<dashboard::Service>>>,
-    configured: Mutex<Option<(std::path::PathBuf, std::path::PathBuf, bool)>>,
+    /// The folders and unverified-content choice content was last configured with, and what
+    /// would bind content that is still unbound.
+    configured: Mutex<Option<((std::path::PathBuf, std::path::PathBuf, bool), Option<Unbound>)>>,
+}
+
+/// Why configured content is unbound, and so what binds it again without a new Apply.
+#[derive(PartialEq)]
+enum Unbound {
+    /// The folders were unavailable: they bind once they are back.
+    Folders,
+    /// The game's executable could not be read: it binds once the executable changes, so a
+    /// broken installation is not read again on every request.
+    Executable(Option<(u64, std::time::SystemTime)>),
+}
+
+/// The size and modification time of the game's executable, if it can be read.
+fn executable_stamp(game_dir: &std::path::Path) -> Option<(u64, std::time::SystemTime)> {
+    let metadata = std::fs::metadata(game_dir.join("hoi4.exe")).ok()?;
+    Some((metadata.len(), metadata.modified().ok()?))
 }
 
 impl DashboardService {
@@ -121,12 +139,29 @@ impl DashboardService {
             allow_unverified,
         );
         let mut configured = self.configured.lock().map_err(|error| error.to_string())?;
-        if configured.as_ref() != Some(&key) {
+        let stale = configured.as_ref().is_none_or(|(saved, unbound)| {
+            saved != &key
+                || match unbound {
+                    None => false,
+                    Some(Unbound::Folders) => config.resolve_options().is_ok(),
+                    Some(Unbound::Executable(stamp)) => {
+                        executable_stamp(&config.game_dir) != *stamp
+                    }
+                }
+        });
+        if stale {
+            // Taken first, so an executable replaced while it is read is read again.
+            let stamp = executable_stamp(&config.game_dir);
             // Recording-only products remain available when content refuses.
-            if let Err(error) = runtime.configure_content(&config, allow_unverified) {
-                eprintln!("Dashboard content unavailable: {error}");
-            }
-            *configured = Some(key);
+            let unbound = match runtime.configure_content(&config, allow_unverified) {
+                Err(error) => {
+                    eprintln!("Dashboard content unavailable: {error}");
+                    Some(Unbound::Executable(stamp))
+                }
+                Ok(()) if !runtime.content_bound() => Some(Unbound::Folders),
+                Ok(()) => None,
+            };
+            *configured = Some((key, unbound));
         }
         Ok(runtime)
     }

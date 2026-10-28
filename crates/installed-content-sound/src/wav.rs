@@ -9,8 +9,15 @@
 //! encodings (64-bit float among them, which the loader rejects) and more
 //! than two channels are refused by name: [`Refusal`] names the form so
 //! consumers can count it.
+//!
+//! As the loader does, the first format chunk and the first data chunk are
+//! read and the scan stops once it has both; a format chunk first met after
+//! the data is refused. An extensible format needs its whole extension and a
+//! subtype GUID of one of the plain tags. PCM and float blocks must divide a
+//! frame and G.711 blocks hold one byte per channel; other block alignments
+//! are refused.
 
-use std::fmt;
+use std::{fmt, ops::Range};
 
 const FORMAT_PCM: u16 = 1;
 const FORMAT_FLOAT: u16 = 3;
@@ -19,6 +26,17 @@ const FORMAT_MULAW: u16 = 7;
 const FORMAT_EXTENSIBLE: u16 = 0xfffe;
 const FORMAT_MS_ADPCM: u16 = 2;
 const FORMAT_IMA_ADPCM: u16 = 0x11;
+/// The plain tags an extensible subtype GUID can name.
+const SUBTYPE_TAGS: [u16; 6] = [
+    FORMAT_PCM,
+    FORMAT_MS_ADPCM,
+    FORMAT_FLOAT,
+    FORMAT_ALAW,
+    FORMAT_MULAW,
+    FORMAT_IMA_ADPCM,
+];
+/// The bytes of a plain tag's subtype GUID after the tag itself.
+const SUBTYPE_TAIL: [u8; 14] = [0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71];
 
 /// SDL's float scale for 16-bit samples.
 pub const DIVBY32768: f32 = 1.0 / 32_768.0;
@@ -74,9 +92,22 @@ pub enum Refusal {
     Truncated,
     MissingFormat,
     MissingData,
+    /// A format chunk after the data chunk, with none before it.
+    FormatAfterData,
+    /// An extensible format chunk shorter than 40 bytes or declaring fewer
+    /// than 22 extension bytes.
+    ExtensibleHeader,
+    /// An extensible format whose subtype GUID is none of the plain tags'.
+    Subtype([u8; 16]),
     /// The format tag and bits per sample of an unsupported encoding.
     Encoding {
         tag: u16,
+        bits: u16,
+    },
+    /// A block alignment the loader does not take for the encoding.
+    BlockAlign {
+        block: u16,
+        channels: u16,
         bits: u16,
     },
     /// An ADPCM stream the decoder refuses.
@@ -92,9 +123,36 @@ impl fmt::Display for Refusal {
             Self::Truncated => write!(f, "truncated WAVE chunk"),
             Self::MissingFormat => write!(f, "WAVE file without a format chunk"),
             Self::MissingData => write!(f, "WAVE file without a data chunk"),
+            Self::FormatAfterData => write!(f, "WAVE format chunk after its data chunk"),
+            Self::ExtensibleHeader => write!(f, "extensible WAVE format chunk too short"),
+            Self::Subtype(guid) => {
+                let word = |at: usize| u16::from_le_bytes([guid[at], guid[at + 1]]);
+                write!(
+                    f,
+                    "unsupported WAVE extensible subtype {:08x}-{:04x}-{:04x}-",
+                    u32::from_le_bytes([guid[0], guid[1], guid[2], guid[3]]),
+                    word(4),
+                    word(6)
+                )?;
+                for (index, byte) in guid[8..].iter().enumerate() {
+                    if index == 2 {
+                        write!(f, "-")?;
+                    }
+                    write!(f, "{byte:02x}")?;
+                }
+                Ok(())
+            }
             Self::Encoding { tag, bits } => {
                 write!(f, "unsupported WAVE encoding {tag:#06x} at {bits} bits")
             }
+            Self::BlockAlign {
+                block,
+                channels,
+                bits,
+            } => write!(
+                f,
+                "unsupported WAVE block alignment {block} for {channels} channels at {bits} bits"
+            ),
             Self::Adpcm(why) => write!(f, "undecodable ADPCM WAVE ({why})"),
             Self::Channels(channels) => write!(f, "unsupported WAVE channel count {channels}"),
             Self::Rate(rate) => write!(f, "unsupported WAVE sample rate {rate}"),
@@ -110,12 +168,41 @@ struct FormatChunk {
     bits: u16,
 }
 
+impl FormatChunk {
+    fn read(body: &[u8]) -> Result<Self, Refusal> {
+        if body.len() < 16 {
+            return Err(Refusal::Truncated);
+        }
+        let word = |offset: usize| u16::from_le_bytes([body[offset], body[offset + 1]]);
+        let mut tag = word(0);
+        if tag == FORMAT_EXTENSIBLE {
+            if body.len() < 40 || word(16) < 22 {
+                return Err(Refusal::ExtensibleHeader);
+            }
+            let subtype: [u8; 16] = body[24..40].try_into().expect("sixteen bytes");
+            tag = SUBTYPE_TAGS
+                .into_iter()
+                .find(|plain| subtype[..2] == plain.to_le_bytes() && subtype[2..] == SUBTYPE_TAIL)
+                .ok_or(Refusal::Subtype(subtype))?;
+        }
+        Ok(Self {
+            tag,
+            channels: word(2),
+            rate: u32::from_le_bytes(body[4..8].try_into().expect("four bytes")),
+            block: word(12),
+            bits: word(14),
+        })
+    }
+}
+
 pub fn decode(bytes: &[u8]) -> Result<Pcm, Refusal> {
     if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return Err(Refusal::NotWave);
     }
     let mut format = None;
     let mut data = None;
+    // Later format chunks before the data, which the loader skips.
+    let mut skipped = Vec::new();
     let mut at = 12;
     while at + 8 <= bytes.len() {
         let id = &bytes[at..at + 4];
@@ -125,34 +212,24 @@ pub fn decode(bytes: &[u8]) -> Result<Pcm, Refusal> {
         // A data chunk whose declared size runs past the end keeps the bytes present.
         let end = start.saturating_add(size).min(bytes.len());
         let body = &bytes[start..end];
+        let next = start.saturating_add(size).saturating_add(size & 1);
         match id {
-            b"fmt " => {
-                if body.len() < 16 {
-                    return Err(Refusal::Truncated);
+            b"fmt " if format.is_some() => skipped.push(at..next.min(bytes.len())),
+            b"fmt " if data.is_some() => return Err(Refusal::FormatAfterData),
+            b"fmt " => format = Some(body),
+            b"data" if data.is_none() => {
+                data = Some(body);
+                if format.is_some() {
+                    break;
                 }
-                let word = |offset: usize| u16::from_le_bytes([body[offset], body[offset + 1]]);
-                let mut tag = word(0);
-                if tag == FORMAT_EXTENSIBLE {
-                    if body.len() < 26 {
-                        return Err(Refusal::Truncated);
-                    }
-                    tag = word(24);
-                }
-                format = Some(FormatChunk {
-                    tag,
-                    channels: word(2),
-                    rate: u32::from_le_bytes(body[4..8].try_into().expect("four bytes")),
-                    block: word(12),
-                    bits: word(14),
-                });
             }
-            b"data" => data = Some(body),
             _ => {}
         }
-        at = start.saturating_add(size).saturating_add(size & 1);
+        at = next;
     }
     let format = format.ok_or(Refusal::MissingFormat)?;
     let data = data.ok_or(Refusal::MissingData)?;
+    let format = FormatChunk::read(format)?;
     if !matches!(format.channels, 1 | 2) {
         return Err(Refusal::Channels(format.channels));
     }
@@ -160,7 +237,7 @@ pub fn decode(bytes: &[u8]) -> Result<Pcm, Refusal> {
         return Err(Refusal::Rate(format.rate));
     }
     if matches!(format.tag, FORMAT_MS_ADPCM | FORMAT_IMA_ADPCM) {
-        return crate::ogg::decode_wave(bytes.to_vec()).map_err(Refusal::Adpcm);
+        return crate::ogg::decode_wave(without(bytes, &skipped)).map_err(Refusal::Adpcm);
     }
     let width = match (format.tag, format.bits) {
         (FORMAT_PCM, 8 | 16 | 24 | 32) | (FORMAT_FLOAT, 32) | (FORMAT_ALAW | FORMAT_MULAW, 8) => {
@@ -175,10 +252,22 @@ pub fn decode(bytes: &[u8]) -> Result<Pcm, Refusal> {
         _ => Format::S16,
     };
     let channels = usize::from(format.channels);
-    let block = usize::from(format.block).max(width * channels);
-    let frames = data.len() / block;
+    let frame_bytes = width * channels;
+    let block = usize::from(format.block);
+    let aligned = match format.tag {
+        FORMAT_ALAW | FORMAT_MULAW => block == channels,
+        _ => block != 0 && frame_bytes.is_multiple_of(block),
+    };
+    if !aligned {
+        return Err(Refusal::BlockAlign {
+            block: format.block,
+            channels: format.channels,
+            bits: format.bits,
+        });
+    }
+    let frames = data.len() / frame_bytes;
     let mut samples = Vec::with_capacity(frames * channels);
-    for frame in data.chunks_exact(block) {
+    for frame in data.chunks_exact(frame_bytes) {
         for channel in 0..channels {
             let sample = &frame[channel * width..(channel + 1) * width];
             samples.push(match (format.tag, width) {
@@ -208,6 +297,25 @@ pub fn decode(bytes: &[u8]) -> Result<Pcm, Refusal> {
         format: sample_format,
         samples,
     })
+}
+
+/// The file without `chunks`, its RIFF size shortened by what they held, so
+/// the ADPCM reader sees only the format chunk the loader keeps.
+fn without(bytes: &[u8], chunks: &[Range<usize>]) -> Vec<u8> {
+    let mut kept = Vec::with_capacity(bytes.len());
+    let mut from = 0;
+    for chunk in chunks {
+        kept.extend_from_slice(&bytes[from..chunk.start]);
+        from = chunk.end;
+    }
+    kept.extend_from_slice(&bytes[from..]);
+    let size = u32::from_le_bytes(kept[4..8].try_into().expect("four bytes"));
+    // An all-ones size is an unknown length.
+    if !chunks.is_empty() && size != u32::MAX {
+        let removed = u32::try_from(bytes.len() - kept.len()).unwrap_or(u32::MAX);
+        kept[4..8].copy_from_slice(&size.saturating_sub(removed).to_le_bytes());
+    }
+    kept
 }
 
 /// The 16-bit value of a G.711 A-law byte.
@@ -340,6 +448,115 @@ mod tests {
         assert_eq!(decode(b"OggS"), Err(Refusal::NotWave));
     }
 
+    /// The first format and data chunks are kept and the scan stops at the
+    /// data; a format chunk first met after the data is refused.
+    #[test]
+    fn later_chunks_never_replace_the_first_format_and_data() {
+        let mut bytes = encode_pcm16(8_000, 1, &[8_192]);
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&(-8_192i16).to_le_bytes());
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        assert_eq!(decode(&bytes).unwrap().samples, [0.25]);
+        let mut bytes = encode_pcm16(8_000, 1, &[8_192, 8_192]);
+        let data = bytes.split_off(36);
+        bytes.extend_from_slice(&encode_pcm16(8_000, 2, &[])[12..36]);
+        bytes.extend_from_slice(&data);
+        let pcm = decode(&bytes).unwrap();
+        assert_eq!((pcm.channels, pcm.samples), (1, vec![0.25, 0.25]));
+        let pcm = encode_pcm16(8_000, 1, &[8_192]);
+        let mut bytes = pcm[..12].to_vec();
+        bytes.extend_from_slice(&pcm[36..]);
+        bytes.extend_from_slice(&pcm[12..36]);
+        assert_eq!(decode(&bytes), Err(Refusal::FormatAfterData));
+    }
+
+    /// A mono 16-bit file whose format chunk is extensible, cut to `length`
+    /// bytes.
+    fn extensible(extension: u16, subtype: [u8; 16], length: usize) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&FORMAT_EXTENSIBLE.to_le_bytes());
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&8_000u32.to_le_bytes());
+        body.extend_from_slice(&16_000u32.to_le_bytes());
+        body.extend_from_slice(&2u16.to_le_bytes());
+        body.extend_from_slice(&16u16.to_le_bytes());
+        body.extend_from_slice(&extension.to_le_bytes());
+        body.extend_from_slice(&16u16.to_le_bytes());
+        body.extend_from_slice(&4u32.to_le_bytes());
+        body.extend_from_slice(&subtype);
+        body.truncate(length);
+        let mut out = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&body);
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&2u32.to_le_bytes());
+        out.extend_from_slice(&8_192i16.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn extensible_formats_need_their_whole_extension_and_a_known_subtype() {
+        let mut pcm = [0u8; 16];
+        pcm[0] = 1;
+        pcm[2..].copy_from_slice(&SUBTYPE_TAIL);
+        let decoded = decode(&extensible(22, pcm, 40)).unwrap();
+        assert_eq!((decoded.format, decoded.samples), (Format::S16, vec![0.25]));
+        assert_eq!(
+            decode(&extensible(22, pcm, 26)),
+            Err(Refusal::ExtensibleHeader)
+        );
+        assert_eq!(
+            decode(&extensible(0, pcm, 40)),
+            Err(Refusal::ExtensibleHeader)
+        );
+        let mut unknown = pcm;
+        unknown[15] ^= 1;
+        let refusal = decode(&extensible(22, unknown, 40)).unwrap_err();
+        assert_eq!(refusal, Refusal::Subtype(unknown));
+        assert_eq!(
+            refusal.to_string(),
+            "unsupported WAVE extensible subtype 00000001-0000-0010-8000-00aa00389b70"
+        );
+    }
+
+    /// PCM blocks must divide a frame and G.711 blocks hold one byte per
+    /// channel; padding is refused, never skipped.
+    #[test]
+    fn block_alignments_the_loader_refuses_are_refused() {
+        let mut bytes = encode_pcm16(8_000, 1, &[8_192, 0]);
+        for block in [0u16, 4] {
+            bytes[32..34].copy_from_slice(&block.to_le_bytes());
+            assert_eq!(
+                decode(&bytes),
+                Err(Refusal::BlockAlign {
+                    block,
+                    channels: 1,
+                    bits: 16
+                })
+            );
+        }
+        let mut bytes = encode_pcm16(8_000, 2, &[8_192, -8_192]);
+        bytes[32..34].copy_from_slice(&2u16.to_le_bytes());
+        assert_eq!(decode(&bytes).unwrap().samples, [0.25, -0.25]);
+        let mut bytes = encode_pcm16(8_000, 1, &[]);
+        bytes[20..22].copy_from_slice(&FORMAT_ALAW.to_le_bytes());
+        bytes[32..34].copy_from_slice(&2u16.to_le_bytes());
+        bytes[34..36].copy_from_slice(&8u16.to_le_bytes());
+        bytes[40..44].copy_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&[0xd5, 0x55]);
+        assert_eq!(
+            decode(&bytes),
+            Err(Refusal::BlockAlign {
+                block: 2,
+                channels: 1,
+                bits: 8
+            })
+        );
+    }
+
     #[test]
     fn g711_bytes_decode_to_their_linear_values() {
         let mut bytes = encode_pcm16(8_000, 1, &[]);
@@ -399,6 +616,21 @@ mod tests {
         assert_eq!(pcm.samples[0], 0.0);
         assert!(pcm.samples.windows(2).all(|pair| pair[1] >= pair[0]));
         assert!(*pcm.samples.last().unwrap() > 0.0);
+    }
+
+    /// A second format chunk before the data never reaches the ADPCM reader.
+    #[test]
+    fn adpcm_reads_only_the_first_format_chunk() {
+        let (original, _) = ima_adpcm();
+        let second = &encode_pcm16(8_000, 2, &[])[12..36];
+        let mut doubled = original[..40].to_vec();
+        doubled.extend_from_slice(second);
+        doubled.extend_from_slice(&original[40..]);
+        let size = u32::from_le_bytes(original[4..8].try_into().unwrap()) + second.len() as u32;
+        doubled[4..8].copy_from_slice(&size.to_le_bytes());
+        assert_eq!(without(&doubled, &[40..64]), original);
+        assert_eq!(decode(&doubled), decode(&original));
+        assert!(decode(&doubled).is_ok());
     }
 
     /// Truncated and corrupted files are refused, never a panic, whether

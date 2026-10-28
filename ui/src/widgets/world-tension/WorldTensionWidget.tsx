@@ -40,7 +40,7 @@ import type { TensionEvent } from '../../generated/dashboard';
 import { mix, parseColor, toHex } from '../../shell/appearance/color';
 import { OPTIONS } from './definition';
 import TensionDrill from './TensionDrillView';
-import { pinTensionDrill, TENSION_BREAKDOWN } from './tensionDrill';
+import { pinTensionDrill, TENSION_BREAKDOWN, tensionEventKeys } from './tensionDrill';
 import { addedAt, contributionAt, contributionPercent, eventGroup, eventsOutsideReads, eventsWithin, formatContribution, formatTension, formatTensionAxis,
   countryKey, layerKeys, layerRaw, layerTagAt, otherRaw, rankedAt, readAt, selectedContributionSpans, tensionModel, tensionPercent, tensionPlot, tensionReadPreparing } from './tensionData';
 import { mergePreparedTension, validatePreparedTension } from './preparedTension';
@@ -63,7 +63,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   const options = resolveOptions(OPTIONS, widget.options);
   const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
   usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || (drill.breakdown != null && drill.follow)));
-  const [selectedCause, setSelectedCause] = useState<number | null>(null);
+  const [selectedCause, setSelectedCause] = useState<string | null>(null);
   const anchor = useRef<HTMLDivElement>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
@@ -79,7 +79,8 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const head = Math.floor(playhead ?? extent[1]);
   const pinnedDrill = options.show === 'breakdown';
-  const followHour = runtime.clock.getHour();
+  // Playback in this campaign's hours, as the overview's moment is.
+  const followHour = track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null;
   const drillAt = Math.floor((pinnedDrill && drill.breakdown == null ? head : drillHour(drill, followHour ?? extent[1])) ?? head);
   const share = options.values !== 'recorded';
   const [hoverHour, setHoverHour] = useState<number | null>(null);
@@ -293,7 +294,8 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
 
   const open = (hour: number) => {
     dispatchDrill({ type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: followHour });
-    const causes = model.reply.events.flatMap((event, index) => event.hour === hour ? [index] : []);
+    const keys = tensionEventKeys(model.reply.events);
+    const causes = model.reply.events.flatMap((event, index) => event.hour === hour ? [keys[index]] : []);
     setSelectedCause(causes.length === 1 ? causes[0] : null);
   };
   const breakdown = !data.exactHours.includes(drillAt) && !readAt(model,drillAt) ? <WidgetState kind="loading" label="Loading world tension…" /> : <TensionDrill model={model} runtime={runtime} track={track} active={active} options={options}
@@ -303,8 +305,8 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   if (pinnedDrill) return <div className="world-tension-pinned">
     <p className="drill-empty">{formatDateTime(drillAt)} {followHour != null && (drill.breakdown == null ? widget.time.mode !== 'follow' : !drill.follow)
       && <button type="button" className="button small" onClick={() => {
-        const hour = runtime.clock.getHour();
-        if (hour != null) dispatchDrill({ type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: true, playhead: hour });
+        const hour = Math.floor(runtime.clock.getHour()) + track.axisOffset;
+        dispatchDrill({ type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: true, playhead: hour });
       }}>Follow playback</button>}</p>{breakdown}</div>;
   const total = shownRead ? formatTension(model, shownRead.tensionRaw) : data.exactHours.includes(head) ? 'Not recorded' : 'Loading…';
   const layerName = (tag: string | null) => tag === OTHER ? 'Other' : tag === null ? 'Unknown country' : looks.name(tag);

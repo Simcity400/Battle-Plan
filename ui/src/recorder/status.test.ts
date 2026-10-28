@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../dashboard/calendar.ts';
-import { captureModeFixed, discardConsequence, discardDetail, head, nextLoad, promptTitle, recordingName, recordsAutomatically, savedText, sessionLength,
+import { captureModeFixed, discardConsequence, discardDetail, followStatus, head, nextLoad, promptTitle, recordingName, recordsAutomatically, savedText, sessionLength,
   settingsQueue, spanText, spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { RecorderSettings, Snapshot, UnsavedRecording } from './status.ts';
 
@@ -177,4 +177,28 @@ test('settings reads and saves run one at a time, and a failed save is followed 
   assert.deepEqual(shown.slice(-2), ['stored before the flush failed', 'stored before the flush failed']);
   await queue.save(async () => null);
   assert.equal(shown.length, 5);
+});
+
+test('the status is read once its listener is in place, and a status published during the read is newer than it', async () => {
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  for (const publishedDuringRead of [false, true]) {
+    let listening!: (stop: () => void) => void;
+    let publish!: (value: string) => void;
+    let answer!: (value: string) => void;
+    let reads = 0;
+    const shown: string[] = [];
+    const status = followStatus<string, () => void>(handler => { publish = handler; return new Promise(resolve => { listening = resolve; }); },
+      () => { reads += 1; return new Promise(resolve => { answer = resolve; }); }, value => { shown.push(value); });
+    await settle();
+    assert.equal(reads, 0, 'nothing is read before the listener is in place');
+    listening(() => {});
+    await settle();
+    assert.equal(reads, 1);
+    if (publishedDuringRead) publish('saving');
+    answer('recording');
+    await status.first;
+    assert.deepEqual(shown, publishedDuringRead ? ['saving'] : ['recording']);
+    publish('saved');
+    assert.equal(shown.at(-1), 'saved', 'later statuses keep coming');
+  }
 });

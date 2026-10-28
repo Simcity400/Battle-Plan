@@ -517,6 +517,9 @@ pub struct ListBoxRows {
     /// The scrollbar's parts in the list box's parent content, which a caller places with
     /// [`Holder::place_scrollbar`] after the rows; empty while it is hidden.
     pub scrollbar: Vec<Part>,
+    /// The far end of the scrollbar's range in the list's own units, pixels for a smooth list and
+    /// rows for a standard one: how far it scrolls, zero while its bar is absent or hidden.
+    pub range: i32,
     /// Retain the list's position-object clip and visible row geometry.
     clipped: bool,
     pub diagnostics: Vec<Diagnostic>,
@@ -538,7 +541,9 @@ pub fn smooth_list_step(current: f32) -> f32 {
 }
 
 /// List rows retain their own content-sized windows, ordered placement,
-/// scroll offset and clipping.
+/// scroll offset and clipping. `current` is the bar's value where a scroll came to rest, the rows
+/// placed and the slider drawn there: a smooth list's offset in pixels, a standard list's first
+/// row.
 pub fn list_box_rows(
     element: &Element,
     rows: &[[i32; 2]],
@@ -582,6 +587,7 @@ pub fn list_box_rows_as(
     let mut places = Vec::with_capacity(rows.len());
     // The scrollbar's node in the list box's position object, and whether it shows.
     let mut shown = false;
+    let mut range = 0;
     if smooth {
         let horizontal = list.horizontal != 0;
         let cur = current.unwrap_or(bar.as_ref().map_or(0.0, |bar| bar.value));
@@ -613,8 +619,11 @@ pub fn list_box_rows_as(
             let over = run.wrapping_sub(extent);
             if over >= 1 {
                 bar.set_range(Range::new(0, i64::from(over) * 100_000, bar.range.step));
+                // At rest the bar's value is the offset the rows are drawn at.
+                bar.value = cur.clamp(0.0, float(over));
                 bar.place_slider();
                 shown = true;
+                range = over;
             }
         }
     } else {
@@ -622,10 +631,16 @@ pub fn list_box_rows_as(
             None => 0,
             Some(last) => truncate_f32(float(list.size[1]) / float(last[1])),
         };
+        let over = (rows.len() as i32).wrapping_sub(fit).max(0);
+        // The rows from the bar's whole value on while it shows, as many as fit.
+        let first = match current {
+            Some(current) if bar.is_some() && over >= 1 => truncate_f32(current).clamp(0, over),
+            _ => 0,
+        };
         let mut y = border;
         for (index, row) in rows.iter().enumerate() {
             let index = index as f32;
-            if index < 0.0 || float(fit) <= index {
+            if index < float(first) || float(first) + float(fit) <= index {
                 places.push(None);
             } else {
                 places.push(Some([at[0].wrapping_add(border), at[1].wrapping_add(y)]));
@@ -635,12 +650,12 @@ pub fn list_box_rows_as(
         if let Some(bar) = &mut bar
             && !rows.is_empty()
         {
-            let count = rows.len() as i32;
-            let over = count.wrapping_sub(fit).max(0);
             bar.set_range(Range::new(0, i64::from(over) * 100_000, 100_000));
             if bar.range.max >= 100_000 {
+                bar.value = float(first);
                 bar.place_slider();
                 shown = true;
+                range = over;
             }
         }
     }
@@ -664,6 +679,7 @@ pub fn list_box_rows_as(
     Ok(ListBoxRows {
         places,
         scrollbar,
+        range,
         clipped: !smooth,
         diagnostics: walk.diagnostics,
     })

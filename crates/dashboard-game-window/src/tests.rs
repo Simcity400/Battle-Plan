@@ -23,7 +23,7 @@ fn composed(
     fixture: &Fixture,
     root: &str,
     list: Option<(&str, &str, usize)>,
-    scroll: &BTreeMap<String, i32>,
+    scroll: &compose::Scroll,
 ) -> Result<Laid, Vec<String>> {
     let resources: &dyn Resources = fixture;
     let template = resources.gui_type(root.as_bytes()).unwrap();
@@ -138,8 +138,8 @@ fn scrolled_grid(format: &str, grid_y: i32, offset: Option<i32>) -> (Laid, Strin
             })
             .collect(),
     }];
-    let scroll: BTreeMap<String, i32> = offset
-        .map(|offset| (container.clone(), offset))
+    let scroll: compose::Scroll = offset
+        .map(|offset| ((container.clone(), false), offset))
         .into_iter()
         .collect();
     let laid = compose::compose(
@@ -272,7 +272,7 @@ fn list_rows_scroll_within_their_run() {
         }"#,
     ));
     let at = |offset: i32| {
-        let scroll = BTreeMap::from([("w.l".to_owned(), offset)]);
+        let scroll = BTreeMap::from([(("w.l".to_owned(), false), offset)]);
         composed(&fixture, "w", Some(("l", "row", 4)), &scroll).unwrap()
     };
     let top = at(0);
@@ -295,6 +295,51 @@ fn list_rows_scroll_within_their_run() {
         .filter(|part| part.clip.is_some())
         .count();
     assert_eq!(clipped, 4);
+}
+
+/// A standard list box scrolls by whole rows: the scene scrolls it over the pixels down to the
+/// last row its bar reaches, and an offset shows the rows from the one it reaches, where the
+/// first rows were drawn.
+#[test]
+fn standard_list_rows_scroll_by_whole_rows() {
+    tables();
+    let fixture = fixture_with(read(
+        br#"guiTypes = {
+            scrollbarType = { name = "lsb" size = { x = 10 y = 60 } minValue = 0 maxValue = 1
+                slider = "s" track = "t" leftButton = "d" rightButton = "u"
+                buttonType = { name = "u" spriteType = "GFX_four" }
+                buttonType = { name = "d" spriteType = "GFX_four" }
+                guiButtonType = { name = "t" spriteType = "GFX_bar3x17" }
+                guiButtonType = { name = "s" spriteType = "GFX_bar3x17" } }
+            containerWindowType = { name = "w" size = { width = 200 height = 100 }
+                listBoxType = { name = "l" position = { x = 10 y = 10 } size = { x = 100 y = 50 }
+                    scrollbarType = "lsb" }
+            }
+            containerWindowType = { name = "row" size = { width = 100 height = 20 }
+                iconType = { name = "i" spriteType = "GFX_even" }
+            }
+        }"#,
+    ));
+    let at = |offset: i32| {
+        let scroll = BTreeMap::from([(("w.l".to_owned(), false), offset)]);
+        composed(&fixture, "w", Some(("l", "row", 5)), &scroll).unwrap()
+    };
+    let titles = |laid: &Laid| -> Vec<String> {
+        laid.hovers.iter().map(|hover| hover.title.clone()).collect()
+    };
+    // Five 20-pixel rows of which two fit in 50: the bar reaches the fourth, 60 pixels down.
+    let top = at(0);
+    assert_eq!(top.lists.len(), 1);
+    let list = &top.lists[0];
+    assert_eq!((list.offset, list.max, list.horizontal), (0, 60, false));
+    assert_eq!(titles(&top), ["row 0", "row 1"]);
+    let scrolled = at(45);
+    assert_eq!(scrolled.lists[0].offset, 45);
+    assert_eq!(titles(&scrolled), ["row 2", "row 3"]);
+    assert_eq!(scrolled.hovers[0].rect, top.hovers[0].rect);
+    let end = at(500);
+    assert_eq!(end.lists[0].offset, 60);
+    assert_eq!(titles(&end), ["row 3", "row 4"]);
 }
 
 /// A missing root is refused by the window's name, not drawn from another template.
@@ -548,7 +593,7 @@ type Drawn = (
 fn drawn(
     layers: &installed_content_core::ResolvedLayers,
     rows: &[mio::Shown],
-    scroll: &BTreeMap<String, i32>,
+    scroll: &compose::Scroll,
 ) -> Drawn {
     let localisation = installed_content_localisation::localisation::read(layers, "english").unwrap();
     let sessions = std::sync::Mutex::new(crate::session::Sessions::default());
@@ -692,7 +737,7 @@ fn the_installed_policy_window_draws_and_scrolls() {
     assert_eq!(slot("row state"), SlotState::Refused);
     // At the end of its run the first rows have left the list.
     let path = list.path.clone();
-    let (bound, _) = drawn(&layers, &rows, &BTreeMap::from([(path, i32::MAX)]));
+    let (bound, _) = drawn(&layers, &rows, &BTreeMap::from([((path, false), i32::MAX)]));
     let scrolled = bound.scene.unwrap();
     assert_eq!(scrolled.lists[0].offset, scrolled.lists[0].max);
     assert!(scrolled.hovers[0].rect[1] < laid.hovers[0].rect[1]);

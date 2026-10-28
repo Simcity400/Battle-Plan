@@ -263,6 +263,18 @@ export function settingsQueue<T>(read: () => Promise<T>, show: (value: T) => voi
   };
 }
 
+/** Shows each status from the current one on: read once listening, so none is lost, and dropped if a newer one came during the read. */
+export function followStatus<T, Stop>(listen: (show: (value: T) => void) => Promise<Stop>, read: () => Promise<T>, show: (value: T) => void) {
+  let published = 0;
+  const listening = listen(value => { published += 1; show(value); });
+  const first = listening.then(async () => {
+    const before = published;
+    const value = await read();
+    if (before === published) show(value);
+  });
+  return { listening, first };
+}
+
 export function recordsAutomatically(settings: RecorderSettings, campaign: string): boolean {
   return settings.campaigns[campaign]?.record ?? settings.recordEveryCampaign;
 }

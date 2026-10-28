@@ -829,3 +829,88 @@ fn selected_place_reads_keep_the_reserved_original_tag_operand() {
     assert_eq!(places[1].name.as_deref(), Some("Reserved town"));
     assert!(places.iter().all(|place| place.missing.is_none()));
 }
+
+#[test]
+fn a_province_one_region_lists_twice_keeps_that_regions_name() {
+    use installed_content_regions::regions::{StrategicRegion, StrategicRegions};
+    let region = |id: u32, provinces: Vec<u32>| StrategicRegion {
+        id,
+        name_key: format!("STRATEGICREGION_{id}"),
+        provinces,
+        ..Default::default()
+    };
+    let regions = StrategicRegions {
+        regions: BTreeMap::from([(3, region(3, vec![9, 4, 9])), (5, region(5, vec![4, 7]))]),
+        notes: Vec::new(),
+    };
+    let provinces = region_provinces(&regions, |region| Ok(region.name_key.clone()));
+    assert_eq!(provinces[&9], Ok::<_, String>("STRATEGICREGION_3".into()));
+    assert_eq!(provinces[&7], Ok::<_, String>("STRATEGICREGION_5".into()));
+    // Two regions listing one province still refuse it.
+    assert!(
+        provinces[&4]
+            .as_ref()
+            .unwrap_err()
+            .contains("multiple strategic-region memberships refused")
+    );
+}
+
+#[test]
+fn place_names_inside_a_recorded_gap_stay_unobserved_with_its_reason() {
+    use replay::spool::Record;
+    use replay_frame::branches::Gap;
+    let (cat, _folder) = catalogue();
+    let names = BTreeMap::from([(64, Ok("MOD_STATE".into()))]);
+    let mut first = frame(1);
+    set::<tables::Provinces>(
+        &mut first,
+        vec![ProvinceRow {
+            id: 60000,
+            state: 64,
+            ..Default::default()
+        }],
+    );
+    let mut second = first.clone();
+    second.hour = 2;
+    // The frame at hour 2 survived, but a loss gap covers it.
+    let mut records = crate::test_fixtures::records(1, vec![first, second]);
+    records.push(Record::Gap(Gap {
+        branch: 1,
+        first_hour: 2,
+        last_hour: 2,
+        reason: "uncertain flush loss".into(),
+    }));
+    let replay = Replay::from_records(b"analytics-test".to_vec(), &[records]).unwrap();
+    let params = PlaceNamesParams {
+        land: false,
+        branch_id: "1".into(),
+        places: [1, 2]
+            .map(|hour| PlaceNameRequest {
+                province_id: 60000,
+                hour,
+            })
+            .to_vec(),
+        states: vec![StateNameRequest {
+            state_id: 64,
+            hour: 2,
+        }],
+    };
+    let (places, states) = read_names(
+        &replay,
+        1,
+        &params,
+        &cat,
+        Ok(&names),
+        Ok(&BTreeMap::new()),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(places[0].name.as_deref(), Some("Mod state"));
+    assert!(places[1].name.is_none() && states[0].name.is_none());
+    for missing in [&places[1].missing, &states[0].missing] {
+        assert_eq!(
+            missing.as_deref(),
+            Some("Not in this recording: uncertain flush loss")
+        );
+    }
+}

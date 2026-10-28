@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { WarContributionCountry, WarContributionGroup, WarObservation, WarTimeline, WarsReply } from '../../generated/dashboard';
 import { warContributions } from '../wars/warsData.ts';
-import { CATEGORIES, chosenWar, contributionRows, readHourFor, rowLengths, shareText } from './warContributionData.ts';
+import { CATEGORIES, chosenWar, contributionRows, readHourFor, rowLengths, shareText, sideMagnitude } from './warContributionData.ts';
 
 const score = (tag: string, side: WarContributionCountry['side'], values: Partial<Record<keyof WarContributionCountry, string>> = {}): WarContributionCountry => ({
   tag, side, equipmentDamage: '0', occupation: '0', airDamage: '0', strategicBombing: '0', shipDamage: '0', convoyDamage: '0',
@@ -66,5 +66,27 @@ test('shares are exact hundredths of the side, signed, and none for an empty sid
   assert.equal(shareText(1n, 3n), '33.33%');
   assert.equal(shareText(2n, 3n), '66.67%');
   assert.equal(shareText(-1n, 4n), '-25.00%');
+  assert.equal(shareText(-1n, -4n), '25.00%', 'a part of a negative total shares it');
+  assert.equal(shareText(1n, -4n), '-25.00%');
   assert.equal(shareText(5n, 0n), '—');
+});
+
+test('a negative score keeps its bar, drawn by magnitude and outlined, never zero', () => {
+  const group: WarContributionGroup = { viewpointSide: ['A', 'B'], opposingSide: ['C'], reason: null, participants: [
+    score('A', 'viewpoint', { lendLeaseReceived: '-100000' }), score('B', 'viewpoint', { lendLeaseReceived: '-300000' }),
+    score('C', 'opponent', { lendLeaseReceived: '200000' }),
+  ] };
+  const received = contributionRows(group).find(row => row.key === 'lendLeaseReceived')!;
+  assert.equal(received.left.total, -400000n);
+  assert.deepEqual(rowLengths(received, 'share'), { left: 1, right: 1 });
+  assert.deepEqual(rowLengths(received, 'totals'), { left: 1, right: 0.5 });
+  assert.equal(shareText(received.left.members[1].value, received.left.total), '75.00%');
+  const cancelling = contributionRows({ ...group, participants: [
+    score('A', 'viewpoint', { lendLeaseReceived: '100000' }), score('B', 'viewpoint', { lendLeaseReceived: '-100000' }),
+    score('C', 'opponent', { lendLeaseReceived: '100000' }),
+  ] }).find(row => row.key === 'lendLeaseReceived')!;
+  assert.equal(cancelling.left.total, 0n);
+  assert.equal(sideMagnitude(cancelling.left), 200000n, 'parts that cancel out keep their length');
+  assert.deepEqual(rowLengths(cancelling, 'share'), { left: 1, right: 1 });
+  assert.deepEqual(rowLengths(cancelling, 'totals'), { left: 1, right: 0.5 });
 });

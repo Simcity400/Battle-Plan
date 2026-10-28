@@ -244,6 +244,9 @@ impl Store {
         if let Some(held) = held.as_ref().filter(|held| {
             held.history == history
                 && held.medals == medals
+                // Entry edits are known only for entries registered in the take's epoch.
+                && (!held.available
+                    || (held.edit_epoch.is_some() && held.edit_epoch == self.edit_epoch))
                 && !self.edits.iter().any(|address| {
                     self.bindings.get(&seed.division).is_some_and(|bindings| {
                         bindings
@@ -804,5 +807,77 @@ mod tests {
             changes::patched(false);
             changes::forwarder(false);
         }
+    }
+    #[test]
+    fn an_uncertified_entry_edit_rereads_every_history_holding_the_entry() {
+        let _serial = crate::army_stat_changes::HISTORY_TEST.lock().unwrap();
+        changes::patched(true);
+        changes::forwarder(true);
+        changes::demand(2);
+        changes::presize();
+        changes::boundary(false);
+        let mut world = World {
+            bytes: vec![0; 0x9000],
+            reads: Cell::new(0),
+            deny: Cell::new(false),
+            blocked: Cell::new(None),
+        };
+        root(&mut world.bytes, 0x1000, 0x4000, 0x6000);
+        root(&mut world.bytes, 0x2000, 0x5000, 0x6100);
+        let entry = 0x7000;
+        put(
+            &mut world.bytes,
+            entry,
+            (native::ENTRY_VTABLE_RVA as u64).to_le_bytes(),
+        );
+        for text in [8, 0x28] {
+            put(&mut world.bytes, entry + text + 24, 15_u64.to_le_bytes());
+        }
+        put(
+            &mut world.bytes,
+            entry + 0x50,
+            (cgame_date::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut world.bytes,
+            entry + 0x60,
+            (cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(&mut world.bytes, entry + 0x138, 100_000_i64.to_le_bytes());
+        let seeds = [seed(0x2000, 2), seed(0x1000, 1)];
+        let observe = |store: &mut Store, world: &World| {
+            for seed in &seeds {
+                store.observe(world, 0, seed).unwrap();
+            }
+            store.finish().unwrap()
+        };
+        let mut store = Store::default();
+        store.begin(2).unwrap();
+        observe(&mut store, &world);
+        // Division 1's medal store edits the shared entry while the hour's edit take is refused.
+        put(&mut world.bytes, entry + 0x138, 200_000_i64.to_le_bytes());
+        drop(changes::notify(0x4000));
+        drop(changes::notify_edit(entry));
+        let running = changes::notify_edit(0);
+        store.begin(2).unwrap();
+        drop(running);
+        let TableRows::DivisionHistory(rows) = observe(&mut store, &world)
+            .complete::<tables::DivisionHistory>()
+            .unwrap()
+        else {
+            panic!()
+        };
+        let careers: Vec<_> = rows
+            .iter()
+            .filter(|row| row.list == DivisionHistoryRow::CAREER)
+            .map(|row| (row.division, row.multiplier))
+            .collect();
+        assert_eq!(
+            careers,
+            [(1, 200_000), (1, 200_000), (2, 200_000), (2, 200_000)]
+        );
+        changes::take_edits(|_| {});
+        changes::patched(false);
+        changes::forwarder(false);
     }
 }

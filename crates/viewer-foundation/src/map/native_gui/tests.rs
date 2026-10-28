@@ -4608,6 +4608,12 @@ fn list_box_scrollbars_show_as_their_rows_leave_them() {
             [35.0, 18.0, 3.0, 17.0],
         ]
     );
+    assert_eq!(rows.range, 1);
+    // At the bar's value 1 the rows from the second show where the first did, and the slider
+    // is drawn at that value.
+    let (scrolled, moved) = run(standard, &[[10, 10]; 3], Some(1.0));
+    assert_eq!(scrolled.places, [None, Some([6, 8]), Some([6, 18])]);
+    assert_ne!(rects_of(&moved)[3], rects_of(&placed)[3]);
     // Two rows fit two: hidden.
     assert!(run(standard, &[[10, 10], [10, 10]], None).1.is_empty());
     let left = standard.replace("scrollbarType", "scrollbar_side = left scrollbarType");
@@ -4626,8 +4632,11 @@ fn list_box_scrollbars_show_as_their_rows_leave_them() {
     );
     assert_eq!(rects_of(&placed)[0], [234.0, 106.0, 10.0, 10.0]);
     assert!(placed.iter().all(|part| part.clip.is_none()));
-    let (rows, _) = run(smooth, &[[10, 10], [10, 10], [10, 12]], Some(5.0));
+    let (rows, moved) = run(smooth, &[[10, 10], [10, 10], [10, 12]], Some(5.0));
     assert_eq!(rows.places[0], Some([206, 103]));
+    // The slider is drawn where the rows came to rest.
+    assert_eq!(rows.range, 7);
+    assert_ne!(rects_of(&moved)[3], rects_of(&placed)[3]);
     assert_eq!(widgets::smooth_list_step(5.0), 4.0);
     // Rows that fit: hidden.
     assert!(run(smooth, &[[10, 10]], None).1.is_empty());

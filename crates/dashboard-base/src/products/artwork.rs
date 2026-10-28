@@ -207,7 +207,7 @@ struct PreparedContent {
 }
 
 struct Preparation {
-    definitions: Arc<BTreeMap<String, installed_content_focus::focus::FocusDefinition>>,
+    definitions: Arc<installed_content_focus::focus::Focuses>,
     point_days: Option<f64>,
     technology_names: Arc<TechnologyNames>,
     inventory: Vec<String>,
@@ -233,7 +233,7 @@ impl Preparation {
                             .iter()
                             .map(|(_, message)| message.clone()),
                     );
-                    let inventory = definitions.keys().cloned().collect();
+                    let inventory = definitions.ids().map(str::to_owned).collect();
                     (
                         definitions,
                         installed_content_focus::focus::point_days(layers)?,
@@ -270,7 +270,7 @@ impl Preparation {
                         );
                     }
                     (
-                        BTreeMap::new(),
+                        installed_content_focus::focus::Focuses::default(),
                         None,
                         TechnologyNames::read(read.definitions, read.unread),
                         read.tokens,
@@ -306,7 +306,7 @@ pub struct Context {
     /// sprite ([`IconKey`]), with the bytes they keep.
     icon_cache: std::cell::RefCell<BTreeMap<IconKey, catalogue::Drawn<Result<Option<String>, String>>>>,
     icon_bytes: std::cell::Cell<usize>,
-    definitions: Arc<BTreeMap<String, installed_content_focus::focus::FocusDefinition>>,
+    definitions: Arc<installed_content_focus::focus::Focuses>,
     focus_text_needs_frame: OnceLock<bool>,
     point_days: Option<f64>,
     warnings: Vec<String>,
@@ -687,6 +687,7 @@ impl Context {
             return Ok(self
                 .definitions
                 .get(token)
+                .map_err(|gap| format!("focus {token}: {gap}"))?
                 .map(|d| d.description.clone())
                 .unwrap_or_else(|| format!("{token}_desc")));
         }
@@ -753,7 +754,7 @@ impl Context {
     }
 
     fn base_duration_days(&self, token: &str) -> Option<f64> {
-        let days = self.definitions.get(token)?.cost? * self.point_days?;
+        let days = self.definitions.get(token).ok()??.cost? * self.point_days?;
         days.is_finite().then_some(days)
     }
 
@@ -862,14 +863,15 @@ impl Context {
             let key = self.technology_root_at(token, at).ok()?;
             return self.localise(&key);
         }
-        let definition = self.definitions.get(token);
+        let definition = self.definitions.get(token).ok()?;
         let key = definition.map(|d| d.localisation.as_str()).unwrap_or(token);
         self.localise(key)
     }
 
     /// The sprite a token's icon is drawn from, as recorded facts choose it: the technology's
     /// badge, or the focus definition's static icon. `Ok(None)` when the focus is not defined;
-    /// `Err` with the finding when the choice needs the recorded country and hour.
+    /// `Err` with the finding when the choice needs the recorded country and hour, or a refused
+    /// file leaves the definition unknown.
     fn selected_icon(
         &self,
         token: &str,
@@ -879,7 +881,13 @@ impl Context {
             // Technology badges use the _medium suffix.
             Kind::Technology => Ok(Some(format!("GFX_{token}_medium"))),
             Kind::Focus => match self.definitions.get(token) {
-                Some(definition) => definition
+                Err(gap) => Err(Finding::grouped(
+                    FindingKind::Refused,
+                    token,
+                    "focus definition is unknown",
+                    gap.to_string(),
+                )),
+                Ok(Some(definition)) => definition
                     .icon(None, |trigger| {
                         if trigger.is_empty() {
                             Ok(true)
@@ -896,7 +904,7 @@ impl Context {
                             reason,
                         )
                     }),
-                None => Ok(None),
+                Ok(None) => Ok(None),
             },
         }
     }
@@ -1030,6 +1038,14 @@ impl Context {
                 reason.clone(),
             ));
         }
+        if let Err(gap) = self.definitions.get(token) {
+            findings.push(Finding::grouped(
+                Kind::Refused,
+                token,
+                "focus name is unavailable",
+                gap.to_string(),
+            ));
+        }
         if let Err(reason) = self.description_key_at(token, None, at) {
             findings.push(Finding::grouped(
                 Kind::Refused,
@@ -1072,7 +1088,7 @@ impl Context {
     pub fn requested_focus_needs_frame(&self, tokens: &[String]) -> bool {
         tokens
             .iter()
-            .filter_map(|token| self.definitions.get(token))
+            .filter_map(|token| self.definitions.get(token).ok().flatten())
             .any(|definition| focus_needs_frame(&self.catalogue, definition, true))
     }
 
@@ -1081,7 +1097,7 @@ impl Context {
     /// Asked of every catalogue a tree icon can be drawn through: this context's and, while it
     /// shows visual mods, the recording's own its draw falls back to ([`Self::drawing_catalogues`]).
     pub fn focus_country_icon_override(&self, token: &str, tag: &str) -> bool {
-        self.definitions.get(token).is_some_and(|definition| {
+        self.definitions.get(token).ok().flatten().is_some_and(|definition| {
             let country = &definition.sprite_overrides(token, Some(tag))[0];
             self.drawing_catalogues()
                 .any(|catalogue| !matches!(catalogue.sprites.find(country), Ok(None)))
@@ -1099,7 +1115,7 @@ impl Context {
     pub fn requested_focus_display_needs_frame(&self, tokens: &[String]) -> bool {
         tokens
             .iter()
-            .filter_map(|token| self.definitions.get(token))
+            .filter_map(|token| self.definitions.get(token).ok().flatten())
             .any(|definition| focus_needs_frame(&self.catalogue, definition, false))
     }
 
@@ -1107,14 +1123,14 @@ impl Context {
     pub fn requested_focus_icons_need_frame(&self, tokens: &[String]) -> bool {
         tokens
             .iter()
-            .filter_map(|token| self.definitions.get(token))
+            .filter_map(|token| self.definitions.get(token).ok().flatten())
             .any(focus_icons_need_frame)
     }
 
     pub fn requested_focus_title_needs_frame(&self, tokens: &[String]) -> bool {
         tokens
             .iter()
-            .filter_map(|token| self.definitions.get(token))
+            .filter_map(|token| self.definitions.get(token).ok().flatten())
             .any(|definition| {
                 self.catalogue
                     .localisation
@@ -1126,7 +1142,7 @@ impl Context {
     pub fn requested_focus_text_needs_frame(&self, tokens: &[String]) -> bool {
         tokens
             .iter()
-            .filter_map(|token| self.definitions.get(token))
+            .filter_map(|token| self.definitions.get(token).ok().flatten())
             .any(|definition| {
                 [&definition.localisation, &definition.description]
                     .into_iter()
@@ -1151,7 +1167,7 @@ impl Context {
         // The definition's conditional icon is evaluated where a drawing catalogue declares no
         // override: this context's, or the recording's own its draw can fall back to.
         let icons = projection.icons()
-            && self.definitions.get(token).is_some_and(|definition| {
+            && self.definitions.get(token).ok().flatten().is_some_and(|definition| {
                 let overrides = definition.sprite_overrides(token, Some(tag));
                 focus_icons_need_frame(definition)
                     && self.drawing_catalogues().any(|catalogue| {
@@ -1177,7 +1193,7 @@ impl Context {
     pub fn focus_text_needs_frame(&self) -> bool {
         *self.focus_text_needs_frame.get_or_init(|| {
             self.definitions
-                .values()
+                .known()
                 .any(|definition| focus_needs_frame(&self.catalogue, definition, true))
         })
     }
@@ -1269,7 +1285,7 @@ impl Context {
             let sprites = requests
                 .iter()
                 .filter_map(|&(token, tag)| {
-                    let definition = self.definitions.get(token)?;
+                    let definition = self.definitions.get(token).ok()??;
                     let selected = if tree {
                         let mut selected = None;
                         for name in definition.sprite_overrides(token, Some(tag)) {
@@ -1325,11 +1341,12 @@ impl Context {
                 (None, None)
             } else {
                 match self.definitions.get(token) {
-                    None => (
+                    Err(gap) => (None, Some(format!("focus {token}: {gap}"))),
+                    Ok(None) => (
                         None,
                         Some(format!("focus {token}: definition absent from recorded content")),
                     ),
-                    Some(definition) => {
+                    Ok(Some(definition)) => {
                         // Focus-tree buttons probe authored country/id and id overrides before
                         // the definition's icon. Events use the definition.
                         let overrides = if tree {
@@ -1465,7 +1482,8 @@ impl Context {
                 }?;
                 catalogue::plain_text(&expanded)
             };
-            if let Some(definition) = self.definitions.get(token) {
+            let definition = self.definitions.get(token);
+            if let Ok(Some(definition)) = definition {
                 let description = projection.descriptions()
                     .then_some((&definition.description, &mut art.description));
                 for (key, target) in std::iter::once((&definition.localisation, &mut art.name))
@@ -1489,10 +1507,11 @@ impl Context {
                     }
                 }
             } else if refusal.is_none() {
-                // Text alone names the missing definition as an icon request does.
-                refusal = Some(format!(
-                    "focus {token}: definition absent from recorded content"
-                ));
+                // Text alone names the missing or unknown definition as an icon request does.
+                refusal = Some(match definition {
+                    Err(gap) => format!("focus {token}: {gap}"),
+                    _ => format!("focus {token}: definition absent from recorded content"),
+                });
             }
             (art, refusal)
         });
@@ -1608,15 +1627,21 @@ impl Context {
         for (token, at) in tokens {
             crate::metadata::check_cancel(cancelled)?;
             let (name, description) = if self.kind == Kind::Focus {
-                let definition = self.definitions.get(token);
-                let name_key = definition.map_or(token, |definition| &definition.localisation);
-                let description_key = self.description_key(token, None).ok();
-                (
-                    self.static_focus_text(name_key),
-                    description_key
-                        .as_deref()
-                        .and_then(|key| self.static_focus_text(key)),
-                )
+                match self.definitions.get(token) {
+                    // A refused file leaves the focus's text unknown.
+                    Err(_) => (None, None),
+                    Ok(definition) => {
+                        let name_key =
+                            definition.map_or(token, |definition| &definition.localisation);
+                        let description_key = self.description_key(token, None).ok();
+                        (
+                            self.static_focus_text(name_key),
+                            description_key
+                                .as_deref()
+                                .and_then(|key| self.static_focus_text(key)),
+                        )
+                    }
+                }
             } else {
                 (self.name_at(token, at), self.description_at(token, at))
             };

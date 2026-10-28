@@ -21,6 +21,9 @@ export interface LicenceAt {
   licence: LicenceHistory;
   licensor: string;
   licensee: string;
+  /** The licensor's and licensee's holders: their identity whatever tags they hold. */
+  licensorHolder: string;
+  licenseeHolder: string;
   /** Civilian factories lent and required; null where not recorded. */
   lent: bigint | null;
   required: bigint | null;
@@ -37,13 +40,25 @@ export function licencesAt(reply: ProductionCatalogueReply, hour: number, matche
     if (giver === null) continue;
     const licensor = tagAt(reply.holders[giver], hour), licensee = tagAt(reply.holders[licence.licensee], hour);
     if (licensor === null || licensee === null || !(matches(licensor, hour) || matches(licensee, hour))) continue;
-    rows.push({ key: `${licence.licensee}:${licence.ordinal}`, licence, licensor, licensee, lent: bigAt(licence.lent, hour), required: bigAt(licence.required, hour),
+    rows.push({ key: `${licence.licensee}:${licence.ordinal}`, licence, licensor, licensee, licensorHolder: giver, licenseeHolder: licence.licensee,
+      lent: bigAt(licence.lent, hour), required: bigAt(licence.required, hour),
       since: numberAt(licence.start, hour), designs: licence.variants.flatMap(runs => {
         const run = runAt(runs, hour);
         return run ? [{ variant: run[2], name: variantNameAt(reply.variants[run[2]], hour) }] : [];
       }) });
   }
   return rows;
+}
+
+/** The holders that held `tag` at `hour`: the countries a node of that tag then stands for. */
+export function holdersAt(reply: Pick<ProductionCatalogueReply, 'holders'>, tag: string, hour: number): string[] {
+  return Object.keys(reply.holders).filter(holder => tagAt(reply.holders[holder], hour) === tag);
+}
+
+/** Every licence standing at `hour` that one of `holders` grants or holds, by whatever tags they hold then. */
+export function holderLicencesAt(reply: ProductionCatalogueReply, holders: readonly string[], hour: number): LicenceAt[] {
+  const own = new Set(holders);
+  return licencesAt(reply, hour, () => true).filter(row => own.has(row.licensorHolder) || own.has(row.licenseeHolder));
 }
 
 /** A licensor → licensee pair: its licences and the ribbon's width in the measure. */

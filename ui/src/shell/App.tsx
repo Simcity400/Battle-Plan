@@ -47,15 +47,24 @@ const PAGE_KEY = 'hoi4-replay.analytics-page.v1';
 const SIDEBAR_KEY = 'hoi4-replay.sidebar.v1';
 const SIDEBAR_WIDTH_KEY = 'hoi4-replay.sidebar-width.v1';
 const SIDEBAR_WIDTH = { initial: 232, min: 200, max: 400, mainMin: 640 } as const;
-const clampWidth = (width: number) => Math.round(Math.min(SIDEBAR_WIDTH.max, window.innerWidth - SIDEBAR_WIDTH.mainMin, Math.max(SIDEBAR_WIDTH.min, width)));
+// A window too narrow to leave the workspace its minimum still keeps the sidebar at its own.
+const clampWidth = (width: number) => Math.round(Math.max(SIDEBAR_WIDTH.min, Math.min(SIDEBAR_WIDTH.max, window.innerWidth - SIDEBAR_WIDTH.mainMin, width)));
 
 /** The sidebar is shown or hidden (Ctrl+B) and resized by dragging its edge, as in T3 Code. */
 function useSidebarState() {
   const [hidden, setHidden] = useState(() => { try { return localStorage.getItem(SIDEBAR_KEY) === 'hidden'; } catch { return false; } });
-  const [width, setWidth] = useState(() => {
-    try { const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)); return Number.isFinite(saved) && saved > 0 ? clampWidth(saved) : SIDEBAR_WIDTH.initial; }
+  // The width chosen, shown as wide as the window allows; a window widened again shows it whole.
+  const [chosen, setChosen] = useState(() => {
+    try { const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)); return Number.isFinite(saved) && saved > 0 ? saved : SIDEBAR_WIDTH.initial; }
     catch { return SIDEBAR_WIDTH.initial; }
   });
+  const [, setWindowWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const resize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', resize);
+    return () => window.removeEventListener('resize', resize);
+  }, []);
+  const width = clampWidth(chosen);
   const [resizing, setResizing] = useState(false);
   const saveWidth = (next: number) => { try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next)); } catch { /* Session-only preference. */ } };
   const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -66,7 +75,7 @@ function useSidebarState() {
     const start = event.clientX, from = width;
     let latest = from;
     setResizing(true);
-    const move = (moved: PointerEvent) => { latest = clampWidth(from + moved.clientX - start); setWidth(latest); };
+    const move = (moved: PointerEvent) => { latest = clampWidth(from + moved.clientX - start); setChosen(latest); };
     const end = () => {
       handle.removeEventListener('pointermove', move);
       handle.removeEventListener('pointerup', end);
@@ -78,7 +87,7 @@ function useSidebarState() {
     handle.addEventListener('pointerup', end);
     handle.addEventListener('pointercancel', end);
   };
-  const resetWidth = () => { setWidth(SIDEBAR_WIDTH.initial); try { localStorage.removeItem(SIDEBAR_WIDTH_KEY); } catch { /* Session-only preference. */ } };
+  const resetWidth = () => { setChosen(SIDEBAR_WIDTH.initial); try { localStorage.removeItem(SIDEBAR_WIDTH_KEY); } catch { /* Session-only preference. */ } };
   /** Arrow keys step the width (Shift for larger steps); Home and End jump to its limits. */
   const resizeByKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const step = event.shiftKey ? 48 : 16;
@@ -87,7 +96,7 @@ function useSidebarState() {
     if (next === null) return;
     event.preventDefault();
     const clamped = clampWidth(next);
-    setWidth(clamped);
+    setChosen(clamped);
     saveWidth(clamped);
   };
   // A hidden sidebar slides over the workspace while the pointer is on it or a field in it is being typed in.

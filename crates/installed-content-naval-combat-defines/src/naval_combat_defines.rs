@@ -63,13 +63,20 @@ pub struct Defines {
     pub sortie_stance_ratios: Vec<i64>,
     pub base_carrier_sortie_efficiency: i64,
     pub selected_sortie_initial_time: i32,
-    /// Optional light/heavy-gun piercing explanations from the mutable
-    /// NNavy arrays loaded through the matching content stack.
-    pub piercing_thresholds: Vec<i64>,
-    pub piercing_critical_values: Vec<i64>,
+    /// The light/heavy-gun piercing explanation's mutable NNavy arrays, loaded
+    /// through the matching content stack, or why they are unavailable: only
+    /// that explanation reads them.
+    pub piercing: Result<Piercing, String>,
     /// Three consequences of low positioning, in attack, anti-air and
     /// submarine-reveal order.
     pub positioning_impacts: [i64; 3],
+}
+
+/// NNavy's piercing thresholds and their critical values, as authored.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Piercing {
+    pub thresholds: Vec<i64>,
+    pub critical_values: Vec<i64>,
 }
 
 impl Defines {
@@ -85,15 +92,14 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
 }
 
 pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
-    let piercing_thresholds = numbers.fixed5_array("NNavy", "NAVY_PIERCING_THRESHOLDS")?;
-    let piercing_critical_values =
-        numbers.fixed5_array("NNavy", "NAVY_PIERCING_THRESHOLD_CRITICAL_VALUES")?;
-    if piercing_thresholds.len() != piercing_critical_values.len() || piercing_thresholds.len() < 2
-    {
-        return Err(invalid(
-            "NNavy piercing threshold arrays differ or have fewer than two entries",
-        ));
-    }
+    let piercing = (|| -> io::Result<Piercing> {
+        Ok(Piercing {
+            thresholds: numbers.fixed5_array("NNavy", "NAVY_PIERCING_THRESHOLDS")?,
+            critical_values: numbers
+                .fixed5_array("NNavy", "NAVY_PIERCING_THRESHOLD_CRITICAL_VALUES")?,
+        })
+    })()
+    .map_err(|error| error.to_string());
     let mut summary_fixed = [0; 14];
     for (index, (out, (section, key))) in
         summary_fixed.iter_mut().zip(SUMMARY_FIXED_KEYS).enumerate()
@@ -135,8 +141,7 @@ pub fn from_numbers(numbers: &NumericDefines) -> io::Result<Defines> {
             .fixed5("NNavy", "BASE_CARRIER_SORTIE_EFFICIENCY")?,
         selected_sortie_initial_time: integer(numbers, "NNavy", "SELECTED_SORTIE_INITIAL_TIME")?
             .max(0),
-        piercing_thresholds,
-        piercing_critical_values,
+        piercing,
         positioning_impacts: [
             numbers.fixed5("NNavy", "DAMAGE_PENALTY_ON_MINIMUM_POSITIONING")?,
             numbers.fixed5("NNavy", "AA_EFFICIENCY_PENALTY_ON_MINIMUM_POSITIONING")?,
@@ -194,13 +199,62 @@ mod tests {
             sortie_stance_ratios: vec![0, 25_000],
             base_carrier_sortie_efficiency: 50_000,
             selected_sortie_initial_time: 24,
-            piercing_thresholds: vec![100_000, 50_000],
-            piercing_critical_values: vec![50_000, 0],
+            piercing: Ok(Piercing {
+                thresholds: vec![100_000, 50_000],
+                critical_values: vec![50_000, 0],
+            }),
             positioning_impacts: [0; 3],
         };
         assert_eq!(definitions.mission_factor(1), Some(25_000));
         assert_eq!(definitions.mission_factor(2), None);
         assert_eq!(definitions.mission_factor(-1), None);
+    }
+
+    /// Every define but the piercing arrays, each `1`.
+    fn without_piercing() -> String {
+        let mut script = String::from("NDefines = { NNavy = {}, NAir = {} }\n");
+        for &(section, key) in SUMMARY_FIXED_KEYS.iter().chain(&SUMMARY_INTEGER_KEYS) {
+            script.push_str(&format!("NDefines.{section}.{key} = 1\n"));
+        }
+        for key in SILHOUETTE_PLANE_KEYS {
+            script.push_str(&format!("NDefines.NNavy.{key} = 1\n"));
+        }
+        for key in [
+            "SCREEN_CAP_REDUCTION_FACTOR",
+            "NAVAL_COMBAT_PLANE_STACKING_PENALTY_EFFECT",
+            "BASE_CARRIER_SORTIE_EFFICIENCY",
+            "SELECTED_SORTIE_INITIAL_TIME",
+            "DAMAGE_PENALTY_ON_MINIMUM_POSITIONING",
+            "AA_EFFICIENCY_PENALTY_ON_MINIMUM_POSITIONING",
+            "SUBMARINE_REVEAL_ON_MINIMUM_POSITIONING",
+        ] {
+            script.push_str(&format!("NDefines.NNavy.{key} = 1\n"));
+        }
+        script.push_str("NDefines.NNavy.CARRIER_OFFENSIVE_STANCE_SORTIE_RATIO = { 1 }\n");
+        script
+    }
+
+    /// Piercing arrays that are missing or empty leave every other define read.
+    #[test]
+    fn piercing_arrays_are_needed_only_by_their_explanation() {
+        let numbers = NumericDefines::new().unwrap();
+        numbers
+            .load("common/defines/test.lua", without_piercing().as_bytes())
+            .unwrap();
+        let read = from_numbers(&numbers).unwrap();
+        assert!(read.piercing.is_err());
+        assert_eq!(read.summary_integer, [1; 3]);
+        let numbers = NumericDefines::new().unwrap();
+        let script = without_piercing()
+            + "NDefines.NNavy.NAVY_PIERCING_THRESHOLDS = {}\n\
+               NDefines.NNavy.NAVY_PIERCING_THRESHOLD_CRITICAL_VALUES = {}\n";
+        numbers
+            .load("common/defines/test.lua", script.as_bytes())
+            .unwrap();
+        assert_eq!(
+            from_numbers(&numbers).unwrap().piercing,
+            Ok(Piercing::default())
+        );
     }
 
     #[test]

@@ -7,8 +7,9 @@ import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { useCountryColours } from '../../charts/race/countryColours';
-import { useCountryLooks } from '../../dashboard/countryLooks';
+import { NAME_LOADING, useCountryLooks } from '../../dashboard/countryLooks';
 import type { WidgetProps } from '../../dashboard/definitions';
+import { useHoverLabels } from '../../dashboard/useHoverLabels';
 import { keyedDays } from '../../dashboard/keyedDays';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet } from '../../dashboard/options';
@@ -23,6 +24,7 @@ import { windowExtent } from '../../dashboard/widgetRequests';
 import '../air-superiority-timeline/airSuperiorityTimeline.css';
 
 const LABELS: Record<Control, string> = { friendly: 'Friendly control', enemy: 'Enemy control', neither: 'Contested' };
+const pendingCountry = () => ({ name: NAME_LOADING });
 
 /** Each sea region's naval control day by day from one country's point of view, in the
  * air superiority timeline's form, by the game's own control rule. */
@@ -34,27 +36,34 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const extent: [number, number] | null = track && window ? windowExtent(track, window) : null;
+  // The moment shown, in this campaign's hours: the viewer's name and colour are as then.
+  const moment = extent && extent[0] <= extent[1] ? extent[1] : null;
   const { tag, options, data, error, retry } = useNavalSupremacy(widget, runtime, active, extent);
   const chosen = contentSet(options.regions).map(contentKey);
   const regions = useMemo(() => data ? data.regions.filter(region => !chosen.length || chosen.includes(region.id)) : [], [data, JSON.stringify(chosen)]); // eslint-disable-line react-hooks/exhaustive-deps
   const days = useMemo(() => data && extent ? keyedDays(data.window, extent, data.dayHours) : [], [data, extent?.[0], extent?.[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  const looks = useCountryLooks(runtime.client, track, tag ? [tag] : [], playback, active);
+  const looks = useCountryLooks(runtime.client, track, tag && moment !== null ? [tag] : [], moment ?? 0, active);
   const colour = useCountryColours(tag ? [tag] : [], looks.color, tokens, looks);
-  const viewer = tag ? looks.name(tag, playback) : 'No country selected';
-  const colours = useMemo<Record<Control, string>>(() => ({ friendly: colour(tag ?? '', playback), enemy: tokens.error, neither: mix(tokens.surface, tokens.text, 0.2) }),
-    [colour, tag, playback, tokens.error, tokens.surface, tokens.text]);
+  const viewer = tag && moment !== null ? looks.name(tag, moment) : 'No country selected';
+  const colours = useMemo<Record<Control, string>>(() => ({ friendly: colour(tag ?? '', moment ?? undefined), enemy: tokens.error, neither: mix(tokens.surface, tokens.text, 0.2) }),
+    [colour, tag, moment, tokens.error, tokens.surface, tokens.text]);
+  // Each day's control is from whoever held the viewer's tag at its read: named as then.
+  const hover = useHoverLabels(runtime.client, track, active, pendingCountry);
   const rows = useMemo(() => data ? supremacyRows(data, regions, days, colours, LABELS) : [], [data, regions, days, colours]);
   const series = useMemo(() => data ? regionSeries(data.window) : new Map(), [data]);
   const legend = useMemo(() => [{ id: 'friendly', label: `${viewer} and friends`, color: colours.friendly }, { id: 'enemy', label: `Enemies of ${viewer}`, color: colours.enemy },
     { id: 'neither', label: LABELS.neither, color: colours.neither }], [viewer, colours]);
   const dayAt = useCallback((hour: number) => days.find(day => day.firstHour <= hour && hour <= day.lastHour) ?? null, [days]);
+  const { ask, labelAt } = hover;
   const tooltip = useCallback((row: { id: string }, _period: unknown, hour: number) => {
     const region = regions.find(item => item.id === row.id);
     if (!data || !region) return null;
     const day = dayAt(hour);
-    return supremacyTooltip(region, day?.readHour == null ? null : regionDay(series.get(region.id), day.at), viewer, LABELS, data.scale,
-      dayLabel(Math.floor(hour)), day?.readHour == null ? null : dayLabel(day.readHour));
-  }, [data, regions, dayAt, series, viewer]);
+    if (day?.readHour == null || !tag) return supremacyTooltip(region, null, viewer, LABELS, data.scale, dayLabel(Math.floor(hour)), null);
+    ask(day.readHour, [tag]);
+    return supremacyTooltip(region, regionDay(series.get(region.id), day.at), labelAt(day.readHour)(tag).name, LABELS, data.scale,
+      dayLabel(Math.floor(hour)), dayLabel(day.readHour));
+  }, [data, regions, dayAt, series, viewer, tag, ask, labelAt]);
   const onMenu = useCallback((hour: number, x: number, y: number) => {
     if (track) menu.open(x, y, [jumpItem(runtime, track.id, dayAt(hour)?.readHour ?? hour)]);
   }, [track, dayAt, menu.open, runtime]);
@@ -73,8 +82,8 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
       <span><i aria-hidden="true" style={hatchStyle(tokens)} />Unknown</span>
     </div>
     <div className="air-timeline-chart"><HeatChart label="Naval supremacy timeline" rows={rows} periods={days} labelCatalogue={regions.map(region => region.name)}
-      extent={extent} playhead={widget.time.mode === 'follow' ? Math.min(playback, extent[1]) : null} branchStart={track.branch.firstHour}
-      legend={legend} afterPlayhead={widget.time.mode !== 'follow'} look="split" active={active} revision={`${tag}:${data.window.lastHour}:${viewer}`}
+      extent={extent} playhead={widget.time.mode === 'follow' ? extent[1] : null} branchStart={track.branch.firstHour}
+      legend={legend} afterPlayhead={widget.time.mode !== 'follow'} look="split" active={active} revision={`${tag}:${data.window.lastHour}:${viewer}:${hover.revision}`}
       hoursPerSecond={hoursPerSecond} pending={prefix?.pending} tooltip={tooltip} onContextMenu={onMenu} /></div>
     {menu.menu}
   </div>;

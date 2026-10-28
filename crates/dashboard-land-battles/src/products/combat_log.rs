@@ -483,6 +483,7 @@ impl Product for CombatLog {
             TableId::LandCombatProgress,
             TableId::LandCombatResults,
             TableId::DivisionTemplates,
+            TableId::DivisionTemplateIcons,
             TableId::CombatLogEquipment,
         ];
         selected.extend([TableId::Countries, TableId::CountryLinks]);
@@ -629,7 +630,25 @@ impl Product for CombatLog {
                 losses: [r.losses_0, r.losses_1, r.losses_2],
             });
         }
+        // Each detail table is indexed once by its join key, in table order.
+        let mut enemy_equipment = BTreeMap::<_, Vec<_>>::new();
+        for e in rows!(CombatLogEnemyEquipment) {
+            check_cancel(cancelled)?;
+            enemy_equipment
+                .entry((e.country, e.group, e.month))
+                .or_default()
+                .push(e);
+        }
+        let mut own_equipment = BTreeMap::<_, Vec<_>>::new();
+        for e in rows!(CombatLogEquipment) {
+            check_cancel(cancelled)?;
+            own_equipment
+                .entry((e.country, e.group, e.kind, e.date))
+                .or_default()
+                .push(e);
+        }
         for m in rows!(CombatLogMonths).iter().filter(|r| owner(r.country)) {
+            check_cancel(cancelled)?;
             let before = reply.equipment.len();
             let missing_source = if m.kind == 5 {
                 reply.availability.enemy_equipment.clone()
@@ -653,22 +672,22 @@ impl Product for CombatLog {
                 })
             };
             if m.kind == 5 {
-                for e in rows!(CombatLogEnemyEquipment).iter().filter(|e| {
-                    e.country == m.country && e.group == m.group && e.month == m.ordinal
-                }) {
+                for e in enemy_equipment
+                    .get(&(m.country, m.group, m.ordinal))
+                    .into_iter()
+                    .flatten()
+                {
+                    check_cancel(cancelled)?;
                     add(Some(e.ordinal), Some(e.variant), Some(e.amount_raw));
                 }
             } else {
-                for (ordinal, e) in rows!(CombatLogEquipment)
-                    .iter()
-                    .filter(|e| {
-                        e.country == m.country
-                            && e.group == m.group
-                            && e.kind == m.kind
-                            && e.date == m.date
-                    })
+                for (ordinal, e) in own_equipment
+                    .get(&(m.country, m.group, m.kind, m.date))
+                    .into_iter()
+                    .flatten()
                     .enumerate()
                 {
+                    check_cancel(cancelled)?;
                     add(
                         Some(ordinal as u32),
                         Some((e.variant as u64) << 32 | u64::from(COMBAT_LOG_VARIANT_TYPE)),
@@ -693,30 +712,34 @@ impl Product for CombatLog {
                 });
             }
         }
-        let template_names: BTreeMap<_, _> = rows!(DivisionTemplates)
-            .iter()
-            .filter_map(|r| {
-                let stored = r.name.split(|&b| b == 0).next().unwrap_or_default();
-                let label = if !stored.is_empty() {
-                    std::str::from_utf8(stored).ok().map(str::to_owned)
-                } else {
-                    r.name_key
-                        .require("template name key")
-                        .ok()
-                        .and_then(|key| cat.as_ref()?.localisation.localise(key).ok())
-                };
-                label.map(|n| (r.template, n))
-            })
-            .collect();
+        // Templates are named as the template views name them at this hour:
+        // the current display name, localised for its composition country.
+        let mut template_names = BTreeMap::new();
         let mut missing_templates = BTreeSet::new();
+        let mut template_name = |id: u64| -> Option<String> {
+            let name = template_names
+                .entry(id)
+                .or_insert_with(|| {
+                    use dashboard_text::template_facts::{TemplateNaming, display_naming};
+                    let name = match (display_naming(&*frame, id).ok()?, cat.as_ref()) {
+                        (TemplateNaming::Text(text), _) => text,
+                        (naming, Some(cat)) => naming.localise(&cat.localisation).ok()?,
+                        (TemplateNaming::Localised { .. }, None) => return None,
+                    };
+                    catalogue::plain_text(&name).ok()
+                })
+                .clone();
+            if name.is_none() {
+                missing_templates.insert(id);
+            }
+            name
+        };
         for t in rows!(CombatLogTemplates)
             .iter()
             .filter(|r| owner(r.country))
         {
-            let label = template_names.get(&t.template).cloned();
-            if label.is_none() {
-                missing_templates.insert(t.template);
-            }
+            check_cancel(cancelled)?;
+            let label = template_name(t.template);
             reply.templates.push(LogTemplate {
                 tag: tag(t.country),
                 group: t.group.to_string(),
@@ -729,25 +752,45 @@ impl Product for CombatLog {
             });
         }
         let mut template = |id: u64| {
-            template_names.get(&id).map_or_else(
-                || {
-                    missing_templates.insert(id);
-                    format!("Name unavailable ({id})")
-                },
+            template_name(id).map_or_else(
+                || format!("Name unavailable ({id})"),
                 |n| format!("{n} ({id})"),
             )
         };
         if reply.availability.battles.is_none() {
+            let mut battles = BTreeMap::new();
+            for b in rows!(CombatLogBattles) {
+                check_cancel(cancelled)?;
+                battles.entry(b.id).or_insert(b);
+            }
+            let mut sides = BTreeMap::<_, Vec<_>>::new();
+            for s in rows!(CombatLogBattleSides) {
+                check_cancel(cancelled)?;
+                sides.entry(s.battle).or_default().push(s);
+            }
+            let mut battle_equipment = BTreeMap::<_, Vec<_>>::new();
+            for e in rows!(CombatLogBattleEquipment) {
+                check_cancel(cancelled)?;
+                battle_equipment.entry(e.battle).or_default().push(e);
+            }
+            let mut modifiers = BTreeMap::<_, Vec<_>>::new();
+            for m in rows!(CombatLogBattleModifiers) {
+                check_cancel(cancelled)?;
+                modifiers.entry(m.battle).or_default().push(m);
+            }
+            let mut countries = BTreeMap::<_, Vec<_>>::new();
+            for c in rows!(CombatLogBattleCountries) {
+                check_cancel(cancelled)?;
+                countries.entry(c.battle).or_default().push(c);
+            }
             for r in rows!(CombatLogReferences)
                 .iter()
                 .filter(|r| owner(r.country))
             {
-                let b = rows!(CombatLogBattles)
-                    .iter()
-                    .find(|b| b.id == r.battle as u32)
-                    .ok_or_else(|| {
-                        io::Error::other("CombatLogReferences: retained record missing")
-                    })?;
+                check_cancel(cancelled)?;
+                let b = battles.get(&(r.battle as u32)).copied().ok_or_else(|| {
+                    io::Error::other("CombatLogReferences: retained record missing")
+                })?;
                 let mut details = BTreeMap::new();
                 detail(
                     &mut details,
@@ -768,10 +811,7 @@ impl Product for CombatLog {
                     ],
                 );
                 let mut manpower = [0; 2];
-                for s in rows!(CombatLogBattleSides)
-                    .iter()
-                    .filter(|s| s.battle == b.id)
-                {
+                for s in sides.get(&b.id).into_iter().flatten() {
                     if s.side > 1 {
                         return Err(io::Error::other("CombatLogBattleSides: invalid side"));
                     }
@@ -809,10 +849,8 @@ impl Product for CombatLog {
                         );
                     }
                 }
-                for e in rows!(CombatLogBattleEquipment)
-                    .iter()
-                    .filter(|e| e.battle == b.id)
-                {
+                for e in battle_equipment.get(&b.id).into_iter().flatten() {
+                    check_cancel(cancelled)?;
                     detail(
                         &mut details,
                         "Equipment",
@@ -826,10 +864,7 @@ impl Product for CombatLog {
                         ],
                     );
                 }
-                for m in rows!(CombatLogBattleModifiers)
-                    .iter()
-                    .filter(|m| m.battle == b.id)
-                {
+                for m in modifiers.get(&b.id).into_iter().flatten() {
                     detail(
                         &mut details,
                         "Modifier hours",
@@ -842,10 +877,7 @@ impl Product for CombatLog {
                         ],
                     );
                 }
-                for c in rows!(CombatLogBattleCountries)
-                    .iter()
-                    .filter(|c| c.battle == b.id)
-                {
+                for c in countries.get(&b.id).into_iter().flatten() {
                     detail(
                         &mut details,
                         "Countries",
@@ -874,9 +906,21 @@ impl Product for CombatLog {
         }
         let mut active: BTreeMap<(u64, bool), Vec<_>> = BTreeMap::new();
         for r in rows!(CombatLogObservers) {
+            check_cancel(cancelled)?;
             active.entry((r.combat, r.attacker)).or_default().push(r);
         }
+        let progress = frame
+            .complete::<tables::LandCombatProgress>()
+            .map_err(|e| format!("LandCombatProgress: {e}"))
+            .map(|rows| {
+                let mut by_combat = BTreeMap::new();
+                for row in rows {
+                    by_combat.entry(row.combat).or_insert(row);
+                }
+                by_combat
+            });
         for ((combat, attacker), mut operands) in active {
+            check_cancel(cancelled)?;
             operands.sort_unstable_by_key(|row| row.logical_order());
             if !matches_observer(
                 operands
@@ -889,33 +933,30 @@ impl Product for CombatLog {
             ) {
                 continue;
             }
-            let losses = frame
-                .complete::<tables::LandCombatProgress>()
-                .map_err(|e| format!("LandCombatProgress: {e}"))
-                .and_then(|rows| {
-                    let progress = rows
-                        .iter()
-                        .find(|r| r.combat == combat)
-                        .ok_or_else(|| "LandCombatProgress: observer combat missing".to_string())?;
-                    let mp = if attacker {
-                        &progress.attacker_manpower_loss
-                    } else {
-                        &progress.defender_manpower_loss
-                    };
-                    let equipment = if attacker {
-                        &progress.attacker_equipment_losses
-                    } else {
-                        &progress.defender_equipment_losses
-                    };
-                    Ok((
-                        *mp.require("manpower")
-                            .map_err(|e| format!("LandCombatProgress: {e}"))?,
-                        equipment
-                            .require("equipment")
-                            .map_err(|e| format!("LandCombatProgress: {e}"))?
-                            .as_slice(),
-                    ))
-                });
+            let losses = progress.as_ref().map_err(Clone::clone).and_then(|rows| {
+                let progress = rows
+                    .get(&combat)
+                    .copied()
+                    .ok_or_else(|| "LandCombatProgress: observer combat missing".to_string())?;
+                let mp = if attacker {
+                    &progress.attacker_manpower_loss
+                } else {
+                    &progress.defender_manpower_loss
+                };
+                let equipment = if attacker {
+                    &progress.attacker_equipment_losses
+                } else {
+                    &progress.defender_equipment_losses
+                };
+                Ok((
+                    *mp.require("manpower")
+                        .map_err(|e| format!("LandCombatProgress: {e}"))?,
+                    equipment
+                        .require("equipment")
+                        .map_err(|e| format!("LandCombatProgress: {e}"))?
+                        .as_slice(),
+                ))
+            });
             reply.active.push(observer(
                 combat,
                 attacker,
@@ -930,6 +971,7 @@ impl Product for CombatLog {
             )?);
         }
         for result in rows!(LandCombatResults) {
+            check_cancel(cancelled)?;
             for attacker in [true, false] {
                 let operands: Vec<_> = result
                     .observers
@@ -1013,6 +1055,7 @@ mod tests {
             TableId::LandCombatProgress,
             TableId::LandCombatResults,
             TableId::DivisionTemplates,
+            TableId::DivisionTemplateIcons,
             TableId::CombatLogEquipment,
         ] {
             *f.tables[id.index()] = TableView::Complete(TableRows::empty(id));

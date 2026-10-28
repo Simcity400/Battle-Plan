@@ -464,8 +464,9 @@ impl Sample {
         }
     }
 }
-// The open metadata band's start/break accompanies the already retained sample.
-type LastAutonomy = Option<(i32, u32, Sample, (i32, bool))>;
+// The open metadata band's start/break accompanies the already retained sample, kept with the
+// native holder (slot, country id) it was read for.
+type LastAutonomy = Option<(i32, (u32, u32), Sample, (i32, bool))>;
 fn numeric_values(score: i128, lower: i128, upper: i128, ratio: Option<i128>) -> [Option<i128>; 5] {
     [
         Some(score),
@@ -656,8 +657,10 @@ impl ScannedAutonomy {
                     .insert(tag.clone());
             }
             let previous = self.last[at].take();
-            let continues = previous.as_ref().is_some_and(|(seen, seen_slot, _, _)| {
-                seen.checked_add(1) == Some(hour) && *seen_slot == slot
+            // Another native country holding the tag's slot is another history.
+            let holder = (slot, country.0);
+            let continues = previous.as_ref().is_some_and(|(seen, seen_holder, _, _)| {
+                seen.checked_add(1) == Some(hour) && *seen_holder == holder
             });
             let subject_runs = &mut self.subjects[at].1;
             let same = continues
@@ -699,7 +702,7 @@ impl ScannedAutonomy {
                     },
                 ));
             }
-            self.last[at] = Some((hour, slot, sample, band));
+            self.last[at] = Some((hour, holder, sample, band));
         }
         if unidentified {
             mark(&mut self.unidentified, hour);

@@ -42,14 +42,18 @@ const reportKey = (report: MineReport) => `${report.kind}:${report.ordinal}`;
 /** Who has mined which seas at the hour shown: per sea region, each owner's current mines as
  * segments on one shared scale, with the region's standing reports on demand. */
 export default function MinefieldsWidget({ widget, runtime, active, onDiagnostics, headerSlot }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  // A drill that follows playback follows it whatever the widget's own time.
+  const playback = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Minefields');
   const { track, options, data, error, retry } = useMinefields(widget, runtime, active);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
+  // Playback in this campaign's hours, not the comparison clock's, within its branch.
+  const clockHour = track ? Math.max(track.branch.firstHour, Math.min(Math.floor(playback) + track.axisOffset, track.branch.lastHour)) : null;
   const owners = useMemo(() => data ? ownerSeries(data.window) : new Map(), [data]);
   const at = useMemo(() => data ? minesAt(data, owners, hour) : null, [data, owners, hour]);
   const chosen = contentSet(options.regions).map(contentKey);
@@ -70,16 +74,15 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   }, [regions, data, looks, colour, readHour]);
   const tips = useRowTooltips<string>({ owner: `minefields:${widget.id}`, active, content: tooltip, revision: `${readHour}`,
     onMenu: (_, x, y) => { if (track) menu.open(x, y, [jumpItem(runtime, track.id, readHour)]); } });
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const [picked, setPicked] = useState<RegionMines | null>(null);
   useEffect(() => { dispatch({ type: 'close' }); setPicked(null); }, [track?.source.id, track?.branch.id]);
-  const drillAt = drillHour(drill, hour);
+  const drillAt = drillHour(drill, clockHour);
   const reports = useReports(runtime, track, drill.breakdown ? picked?.region ?? null : null, drillAt, active);
-  // Report victims need not own mines, so the reports name their own countries at their read.
-  const reportRead = reports.data ? reports.data.readHour ?? reports.data.hour : null;
-  const reportNames = useCountryNamesRead(runtime.client, track, useMemo(() => reportRead === null || !reports.data ? [] : [...new Set(reports.data.reports
+  // Report countries need not own mines; the reply resolves their tags at its asked hour, so they are named then.
+  const reportNamedAt = reports.data ? reports.data.hour : null;
+  const reportNames = useCountryNamesRead(runtime.client, track, useMemo(() => reportNamedAt === null || !reports.data ? [] : [...new Set(reports.data.reports
     .flatMap(report => [report.victim, report.mineOwner]).flatMap(part => part === null ? [] : [countryPart(part)?.tag ?? part]))]
-    .map(tag => ({ hour: reportRead, tag })), [reports.data, reportRead]), active);
+    .map(tag => ({ hour: reportNamedAt, tag })), [reports.data, reportNamedAt]), active);
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...reports.data?.warnings ?? []] : null);
   const pill = headerSlot && at && createPortal(<span className="pill">{regions.length} {regions.length === 1 ? 'region' : 'regions'} mined</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see minefields." />;
@@ -96,7 +99,8 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
       empty={at.refused ? <WidgetState kind="unavailable" message="Some countries' minefields were not recorded at this date." />
         : <WidgetState kind="empty" message="No minefields at this date." />}>
       {({ item: region }) => <div className="air-region-row" {...tips.rowProps(region.region)}
-        onClick={() => { setPicked(region); dispatch({ type: 'open', breakdown: 'region', hour, playing: widget.time.mode === 'follow', playhead: hour }); }}>
+        onClick={() => { setPicked(region); dispatch({ type: 'open', breakdown: 'region', hour, playing: widget.time.mode === 'follow',
+          playhead: widget.time.mode === 'follow' ? clockHour : null }); }}>
         {tips.hovered === region.region && <span id={tips.descriptionId(region.region)} className="sr-only">{tooltipText(tooltip(region.region)!)}</span>}
         <span className="air-region-name">{region.name}</span>
         <div className="air-region-bar minefields-bar">
@@ -121,7 +125,7 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
           revision={lines} hoursPerSecond={hoursPerSecond} formatValue={value => value.toLocaleString('en-US', { maximumFractionDigits: 2 })}
           empty="Mines not recorded" onPick={at => dispatch({ type: 'pick', hour: at })}
           onContextMenu={(at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, at)])} /></div>
-        <ReportTable reply={reports.data} error={reports.error} name={tag => nameReadText(reportRead === null ? null : reportNames.get(nameKey(reportRead, tag)))}
+        <ReportTable reply={reports.data} error={reports.error} name={tag => nameReadText(reportNamedAt === null ? null : reportNames.get(nameKey(reportNamedAt, tag)))}
           hoursPerSecond={hoursPerSecond} />
       </div>}
     </DrillHost>

@@ -1395,13 +1395,19 @@ fn continued_recording(
                 }),
             }
         }
-        Some(paths) => Err(failure(
-            replay_dir,
-            format!(
-                "{} recordings of this campaign were there when the session started; keep one and move the others",
-                paths.len()
-            ),
-        )),
+        // Several were there when it started: it continues the one of them still there alone.
+        Some(paths) => match look()? {
+            Some(kept) if paths.iter().any(|path| path.file_name() == kept.file_name()) => {
+                Ok(Some(kept))
+            }
+            _ => Err(failure(
+                replay_dir,
+                format!(
+                    "{} recordings of this campaign were there when the session started; keep one of them there under its name and move the others",
+                    paths.len()
+                ),
+            )),
+        },
     }
 }
 
@@ -6717,7 +6723,7 @@ fn print_identity(label: &str, identity: &Identity) {
     );
     if identity.coverage_policy == replay_data::identity::COVERAGE_POLICY_VERSION {
         println!(
-            "coverage: descriptor plus map, common, history, events, localisation, interface, gfx/flags, gfx/interface, gfx/texticons, gfx/leaders, gfx/fonts, gfx/FX, gfx/posteffect_volumes.txt and every .asset and .gfx descriptor below gfx; integrated DLC and Tweaker UI roots are included in the vanilla hash under their install-relative paths; music, sound, video, loading screens, launcher, crash reporter and logs excluded"
+            "coverage: descriptor (a mod's replace_path and dependencies only) plus map, common, history, events, localisation, interface, gfx/flags, gfx/interface, gfx/texticons, gfx/leaders, gfx/fonts, gfx/FX, gfx/posteffect_volumes.txt and every .asset and .gfx descriptor below gfx; integrated DLC and Tweaker UI roots are included in the vanilla hash under their install-relative paths; music, sound, video, loading screens, launcher, crash reporter and logs excluded"
         );
     } else {
         println!("coverage: this recorder does not recognize the policy; no coverage claim");
@@ -7579,6 +7585,36 @@ mod tests {
             published_frames(&replaced),
             [(9, 2), (9, 3), (9, 4), (11, 7), (11, 8)]
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_session_continues_the_one_recording_kept_of_several_it_started_with() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory,
+        };
+        let directory = allocation_test_directory("several-at-start");
+        let (session, target) = (directory.join("session"), directory.join("target"));
+        fs::create_dir_all(&session).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        let replay = Replay::from_records(
+            ALLOCATION_CAMPAIGN.to_vec(),
+            &[vec![allocation_records().remove(0)]],
+        )
+        .unwrap();
+        let kept = target.join("Kept.battleplan");
+        let moved = target.join("Moved.battleplan");
+        fs::write(&kept, replay.bytes()).unwrap();
+        fs::write(&moved, replay.bytes()).unwrap();
+        select_recordings(&session, &target).unwrap();
+        let continued = || continued_recording(&session, &target, ALLOCATION_CAMPAIGN, &[]);
+        assert!(continued().is_err());
+        // The others moved out since, it continues the one kept.
+        fs::rename(&moved, directory.join("Moved.battleplan")).unwrap();
+        assert_eq!(continued().unwrap(), Some(kept.clone()));
+        // Renamed, it can no longer be told from one that appeared since.
+        fs::rename(&kept, target.join("Renamed.battleplan")).unwrap();
+        assert!(continued().is_err());
         fs::remove_dir_all(directory).unwrap();
     }
 

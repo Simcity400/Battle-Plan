@@ -3388,8 +3388,9 @@ impl<'a> World<'a> {
         } else {
             fixed_round(raw)
         };
+        // Membership, not a reference: an id the list lacks may be a hole.
         match u32::try_from(id) {
-            Ok(id) if id > 0 && self.state_map().contains_key(&id) => Ok(id),
+            Ok(id) if id > 0 && self.state_map().rows.contains_key(&id) => Ok(id),
             Ok(id) if id > 0 && self.state_provinces.contains_key(&id) => {
                 Err(format!("state {id} is in the content but not recorded").into())
             }

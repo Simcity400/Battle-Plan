@@ -5,7 +5,7 @@ import { Icon } from '../../components/Icons';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../../charts/draw';
 import { usNumber } from '../../charts/numberFormat';
-import { startUnseen } from '../../charts/timeline/runState';
+import { bandMaxOf, coveredBy, runState, startUnseen } from '../../charts/timeline/runState';
 import { tooltipText } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useRowTooltips } from '../../charts/useRowTooltips';
@@ -13,6 +13,7 @@ import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { WidgetRuntime } from '../../dashboard/definitions';
+import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import type { BoundTrack } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
 import type { FactionDetailReply, FactionGoalDefinition, FactionNameRun, HourSpan } from '../../generated/dashboard';
@@ -25,12 +26,14 @@ const noMenu = () => {};
 
 /** One faction at the hour shown, opened from the timeline: who it is, how it grew,
  * what it is working towards and what it has done. Follows playback. */
-export default function FactionDrill({ runtime, track, view, names, at, active, gaps, onBack }: {
+export default function FactionDrill({ runtime, track, view, names, at, active, gaps, pending, onBack }: {
   runtime: WidgetRuntime; track: BoundTrack; view: FactionView; names: readonly FactionNameRun[]; at: number; active: boolean;
-  gaps: readonly HourSpan[]; onBack: () => void;
+  gaps: readonly HourSpan[]; pending: readonly HourSpan[]; onBack: () => void;
 }) {
   const life = view.lifetime;
-  const exists = life.some(span => span.firstHour <= at && at <= span.lastHour);
+  // Hours not recorded or still being prepared after it was last seen are not its end.
+  const lifeState = runState(life, at, gaps);
+  const exists = lifeState.kind === 'held';
   const product = useProduct<FactionDetailReply>(runtime.client, exists ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'faction-details', params: { branchId: track.branch.id, hour: at, faction: view.id } } : null, active);
   // The last reply stays shown while the next hour's loads, so playback never flickers;
@@ -92,20 +95,24 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
       const member = view.members.find(entry => entry.key === id);
       const tag = member && memberTag(member);
       const country = member && memberLabel(member);
-      if (!member || !tag || !country) return null;
-      const current = member.stretches.some(span => span.firstHour <= at && at <= span.lastHour);
-      const joined = member.stretches[0].firstHour;
-      const since = startUnseen(joined, track.branch.firstHour, gaps) ? `before ${dayLabel(joined)}` : dayLabel(joined);
+      // Only the membership at or last before the hour shown, as the timeline says it.
+      const stretch = member?.stretches.filter(span => span.firstHour <= at).at(-1);
+      if (!member || !tag || !country || !stretch) return null;
+      const state = runState([stretch], at, view.unknown);
+      const since = startUnseen(stretch.firstHour, track.branch.firstHour, view.unknown) ? `before ${dayLabel(stretch.firstHour)}` : dayLabel(stretch.firstHour);
       return { title: country.name, countryFlag: country, rows: [],
-        subtitle: current ? `${tag === leader ? 'Leader' : 'Member'} since ${since}` : `Member from ${since} to ${dayLabel(member.stretches.at(-1)!.lastHour)}` };
+        subtitle: state.kind === 'held' ? `${tag === leader ? 'Leader' : 'Member'} since ${since}`
+          : state.kind === 'unknown' ? `Member since ${since}, not recorded after ${dayLabel(state.lastSeen)}`
+            : state.kind === 'ended' && state.lastSeen != null ? `Member from ${since}, left by ${dayLabel(state.at)}`
+              : `Member from ${since} to ${dayLabel(stretch.lastHour)}` };
     }
     if (kind === 'resource') {
       const entry = resources.find(item => String(item.resource.ordinal) === id);
-      return entry ? { title: entry.resource.name ?? 'Resource name not recorded', icon: entry.resource.icon ?? undefined,
+      return entry ? { title: entry.resource.name ?? 'Resource name unavailable', icon: entry.resource.icon ?? undefined,
         subtitle: `${usNumber.format(entry.value)} extracted`, rows: [] } : null;
     }
     return null;
-  }, [data, goalTip, view.members, memberTag, memberLabel, at, leader, track.branch.firstHour, gaps, resources]);
+  }, [data, goalTip, view, memberTag, memberLabel, at, leader, track.branch.firstHour, resources]);
   const { rowProps, descriptionId } = useRowTooltips<string>({ owner: `faction-drill:${view.id}`, active, content, revision: `${at}:${data?.hour ?? ''}`, onMenu: noMenu });
   const hover = (key: string) => {
     const shown = content(key);
@@ -116,6 +123,11 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
   const leaderLabel = leader ? label(leader) : null;
   const projection = data ? fixedWhole(data.projectionRaw) : null;
   const count = membersAt(view, at);
+  const absence = lifeState.kind === 'held' ? null
+    : lifeState.kind === 'unknown' && pending.some(span => span.firstHour <= at && at <= span.lastHour) ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
+      : <WidgetState kind="unavailable" message={lifeState.kind === 'unknown' ? `This faction was not recorded after ${dayLabel(lifeState.lastSeen)}.`
+        : lifeState.kind === 'ended' ? `This faction was dissolved ${lifeState.lastSeen == null ? 'on' : 'by'} ${dayLabel(lifeState.at)}.`
+          : founded != null && coveredBy(at, founded - 1, gaps) ? 'This faction was not recorded at this time.' : 'This faction does not exist yet at this time.'} />;
   return <div className="faction-drill">
     <button type="button" className="faction-drill-back" onClick={onBack}><Icon name="chevron-left" />Factions</button>
     <div className="faction-hero">
@@ -133,7 +145,7 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
         {projection != null && <Stat value={projection} label="power projection" />}
       </div>
     </div>
-    {!exists ? <WidgetState kind="unavailable" message="This faction does not exist at this time." /> : <>
+    {absence ?? <>
       <Section title="Members" note="joined over time">
         <MemberChart view={view} from={from} at={at} events={events} memberLabel={memberLabel} rowProps={rowProps} hover={hover} leaders={leaders} />
       </Section>
@@ -158,7 +170,7 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
           </div>
           {resources.length > 0 && <Section title="Extracted resources">
             <div className="faction-resources">{resources.map(({ resource, value }) => <span key={resource.ordinal} className="faction-resource" {...rowProps(`resource:${resource.ordinal}`)}>
-              {resource.icon ? <img src={resource.icon} alt="" /> : <span>{resource.name}</span>}<b>{usNumber.format(value)}</b>{hover(`resource:${resource.ordinal}`)}</span>)}</div>
+              {resource.icon ? <img src={resource.icon} alt="" /> : <span>{resource.name ?? 'Resource name unavailable'}</span>}<b>{usNumber.format(value)}</b>{hover(`resource:${resource.ordinal}`)}</span>)}</div>
           </Section>}
         </>}
     </>}
@@ -210,7 +222,7 @@ function MemberChart({ view, from, at, events, memberLabel, rowProps, hover, lea
 }) {
   const span = Math.max(1, at - from);
   const steps = countSteps(view, from, at);
-  const most = Math.max(1, ...steps.map(step => step.value));
+  const most = bandMaxOf([steps]);
   const x = (hour: number) => (hour - from) / span * 1000;
   const y = (value: number) => CHART_HEIGHT - 6 - value / most * (CHART_HEIGHT - 16);
   // Unknown hours between steps break the line and its fill; nothing is drawn across them.

@@ -905,7 +905,14 @@ impl Assets {
         }
         let naval_defines = match installed_content_naval_combat_defines::naval_combat_defines::read(layers)
         {
-            Ok(defines) => Some(defines),
+            Ok(defines) => {
+                if let Err(why) = &defines.piercing {
+                    warnings.push(format!(
+                        "Naval piercing defines: {why}; the light and heavy gun piercing explanations are unavailable."
+                    ));
+                }
+                Some(defines)
+            }
             Err(error) => {
                 warnings.push(format!(
                     "Naval combat defines: {error}; positioning, screening and anti-air are unavailable."

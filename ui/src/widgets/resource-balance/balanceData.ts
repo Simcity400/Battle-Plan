@@ -147,16 +147,25 @@ export function changeHours(reply: ResourceBalanceReply, resources: readonly num
   return [...hours].sort((a, b) => a - b);
 }
 
-/** The largest supply or demand of any resource: over the whole branch, or at one
+/** The parts each balance bar draws, in order, signed as recorded: supply (produced,
+ * from subjects, imported) and demand (needed, to the overlord, export reserve). */
+export function barParts(balance: Balance): { supply: [string, bigint][]; demand: [string, bigint][] } {
+  return { supply: [['produced', balance.produced], ['subjects', balance.fromSubjects], ['imported', balance.imported]],
+    demand: [['needed', balance.projects + balance.production], ['overlord', balance.toOverlord], ['exported', balance.exportReserve]] };
+}
+
+/** A bar's drawn length: its parts' magnitudes, so a negative part never shortens it. */
+const barLength = (parts: readonly (readonly [string, bigint])[]) => parts.reduce((sum, [, raw]) => sum + (raw < 0n ? -raw : raw), 0n);
+
+/** The longest supply or demand bar of any resource: over the whole branch, or at one
  * hour. Bars share it, so a whole-campaign scale never rescales during playback. */
 export function barScale(series: readonly ResourceSeries[], hour: number | null): bigint {
   let largest = 0n;
   for (const item of series) {
     const runs = hour == null ? item.runs : [runAt(item.runs, hour)].filter((run): run is PoolRun => run != null);
     for (const run of runs) {
-      const balance = balanceOf(run);
-      if (balance.supply > largest) largest = balance.supply;
-      if (balance.demand > largest) largest = balance.demand;
+      const parts = barParts(balanceOf(run));
+      for (const length of [barLength(parts.supply), barLength(parts.demand)]) if (length > largest) largest = length;
     }
   }
   return largest;

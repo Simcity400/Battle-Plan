@@ -8,7 +8,7 @@
 //! needed here.
 //!
 //! A category's `color` uses the colour reader ideology groups share
-//! ([`installed_content_core::ideologies::read_color`]): each read updates the state
+//! ([`installed_content_core::ideologies::ColorReads`]): each read updates the state
 //! earlier reads of the same object left, starting from white. A category that
 //! reads none has no colour here; the states map mode refuses its states by name.
 
@@ -23,6 +23,7 @@ use crate::{
     },
     script_files,
 };
+use installed_content_core::ideologies::ColorReads;
 use std::io;
 
 /// Authored category names and their parsed cap for one building.
@@ -32,9 +33,9 @@ pub type BuildingCaps<'a> = Vec<(&'a [u8], Result<i32, String>)>;
 pub struct Database {
     /// First-declaration order and spelling; repeated bodies reuse the object.
     pub names: Vec<Vec<u8>>,
-    /// Each name's colour after every `color` read of its bodies, in [`Self::names`] order;
-    /// `Ok(None)` when no body reads one, `Err` when a read refused.
-    pub colors: Vec<Result<Option<[f32; 4]>, String>>,
+    /// Each name's colour state after every `color` read of its bodies, in [`Self::names`]
+    /// order; `None` when no body reads one.
+    pub colors: Vec<Option<ColorReads>>,
     /// Each category's `buildings_max_level` entries in [`Self::names`] order:
     /// the building name as authored and its integer maximum, `None` when the
     /// value does not scan as one.
@@ -70,7 +71,7 @@ impl Database {
                     String::from_utf8_lossy(name)
                 )
             })?;
-        self.colors[index].clone()
+        self.colors[index].as_ref().map(ColorReads::color).transpose()
     }
 
     /// Each category whose `buildings_max_level` names `building` under the
@@ -116,7 +117,7 @@ impl Database {
             Some(index) => index,
             None => {
                 self.names.push(name);
-                self.colors.push(Ok(None));
+                self.colors.push(None);
                 self.capped.push(Vec::new());
                 self.names.len() - 1
             }
@@ -126,12 +127,7 @@ impl Database {
     /// Applies one body's `color` reads to the named object.
     fn read_colors(&mut self, index: usize, body: &[crate::parser::Item]) {
         for field in body.iter().filter(|field| field.keyword_is("color")) {
-            let slot = &mut self.colors[index];
-            if let Ok(state) = slot {
-                let mut color = state.unwrap_or([1.0; 4]);
-                *slot =
-                    installed_content_core::ideologies::read_color(&mut color, field).map(|()| Some(color));
-            }
+            self.colors[index].get_or_insert_default().read(field);
         }
     }
 
@@ -356,6 +352,21 @@ mod tests {
             first.color(b"only").unwrap(),
             Some([2.0 / 255.0, 4.0 / 255.0, 6.0 / 255.0, 1.0])
         );
+        // A later read that stores every component replaces a packed colour, in the same
+        // body or a later one; a partial read leaves the packed refusal.
+        let packed = parse(
+            b"state_categories={isle={color=16711680 color={0 1 0}} part={color=16711680 color={0 1}} late={color=16711680} LATE={color={0 0 1 0.5}}}",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert_eq!(packed.color(b"isle").unwrap(), Some([0.0, 1.0, 0.0, 1.0]));
+        assert!(
+            packed
+                .color(b"part")
+                .unwrap_err()
+                .contains("the packed colour 16711680")
+        );
+        assert_eq!(packed.color(b"late").unwrap(), Some([0.0, 0.0, 1.0, 0.5]));
     }
 
     #[test]

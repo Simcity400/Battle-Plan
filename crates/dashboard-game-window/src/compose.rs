@@ -13,9 +13,9 @@
 //! A grid's enclosing container scrolls as the game's does once its code fills the grid: the
 //! grid's finalized extent is kept on the instance, the container's scrollbars are refreshed
 //! from its children ([`Instance::synchronize_scroll`]), and the content is moved to the
-//! container's offset in `scroll` as the wheel moves it ([`Instance::scroll_to`]). The
-//! container is then one of the scene's scrolling areas, its items' hovers placed and clipped
-//! where they are drawn.
+//! container's offset along each axis in `scroll` as the wheel moves it
+//! ([`Instance::scroll_to`]). Each of its shown bars is then one of the scene's scrolling areas,
+//! its items' hovers placed and clipped where they are drawn.
 
 use std::collections::BTreeMap;
 
@@ -78,6 +78,10 @@ pub struct Canvas<'a> {
     pub painter: &'a mut Option<crate::paint::Painter>,
 }
 
+/// Each scrolling area's offset, by its element path and whether it scrolls across
+/// ([`crate::scene::SceneList`]).
+pub type Scroll = BTreeMap<(String, bool), i32>;
+
 /// The path of the element `path` lies directly below.
 fn parent(path: &str) -> Option<&str> {
     path.rsplit_once(['.', '/']).map(|(parent, _)| parent)
@@ -87,7 +91,7 @@ fn parent(path: &str) -> Option<&str> {
 /// when absent).
 pub fn compose(
     window: &Window<'_>,
-    scroll: &BTreeMap<String, i32>,
+    scroll: &Scroll,
     resources: &dyn Resources,
 ) -> Result<Laid, Refused> {
     let Window {
@@ -160,22 +164,50 @@ pub fn compose(
             }
         }
         let sizes: Vec<[i32; 2]> = laid.iter().map(|(item, ..)| item.size).collect();
-        // A smooth list box scrolls by pixels over the rows' run beyond its own extent.
-        let horizontal = list.horizontal != 0;
-        let axis = usize::from(!horizontal);
-        let run: i32 = sizes
-            .iter()
-            .map(|size| size[axis])
-            .fold(0, i32::wrapping_add);
-        let max = run.wrapping_sub(list.size[axis]).max(0);
-        // A standard list box scrolls by whole rows, which the dashboard does not offer yet: it
-        // shows its rows from the first, as the game first shows them.
         let smooth = bound.list.kind == Kind::SmoothListBox;
-        let max = if smooth { max } else { 0 };
-        let offset = scroll.get(path).copied().unwrap_or(0).clamp(0, max);
-        let current = smooth.then_some(offset as f32);
-        let rows = widgets::list_box_rows(bound.list, &sizes, current, resources, &bindings)
+        // A standard list box stacks its rows down whatever its orientation.
+        let horizontal = smooth && list.horizontal != 0;
+        let axis = usize::from(!horizontal);
+        // Where each row starts along the axis, and where the last ends.
+        let starts: Vec<i32> = std::iter::once(0)
+            .chain(sizes.iter().scan(0i32, |run, size| {
+                *run = run.wrapping_add(size[axis]);
+                Some(*run)
+            }))
+            .collect();
+        let asked = scroll
+            .get(&(path.clone(), horizontal))
+            .copied()
+            .unwrap_or(0)
+            .max(0);
+        let (rows, offset, max) = if smooth {
+            // A smooth list box scrolls by pixels over the rows' run beyond its own extent.
+            let run = starts[sizes.len()];
+            let max = run.wrapping_sub(list.size[axis]).max(0);
+            let offset = asked.min(max);
+            let rows = widgets::list_box_rows(
+                bound.list,
+                &sizes,
+                Some(offset as f32),
+                resources,
+                &bindings,
+            )
             .map_err(refused)?;
+            (rows, offset, max)
+        } else {
+            // A standard list box scrolls by whole rows, up to the first its bar's far end shows.
+            let first = starts.iter().rposition(|start| *start <= asked).unwrap_or(0);
+            let rows = widgets::list_box_rows(
+                bound.list,
+                &sizes,
+                Some(first as f32),
+                resources,
+                &bindings,
+            )
+            .map_err(refused)?;
+            let max = starts[(rows.range as usize).min(sizes.len())].max(0);
+            (rows, asked.min(max), max)
+        };
         for diagnostic in &rows.diagnostics {
             notes.note(noted_cause(name, diagnostic));
         }
@@ -368,13 +400,13 @@ impl Laid {
 }
 
 /// The instance with each grid's items finalized into it and each grid's enclosing container
-/// refreshed and scrolled to its offset in `scroll`, and each container that scrolls: its path,
-/// axis, and the offset reached and the range's far end, both in pixels past the range's near
-/// end.
+/// refreshed and scrolled to its offsets in `scroll`, and each shown bar of a container: its
+/// path, axis, and the offset reached and the range's far end, both in pixels past the range's
+/// near end.
 #[allow(clippy::type_complexity)]
 fn scroll_grids(
     window: &Window<'_>,
-    scroll: &BTreeMap<String, i32>,
+    scroll: &Scroll,
     resources: &dyn Resources,
     refused: &dyn Fn(Refusals) -> Refused,
 ) -> Result<(Instance, Vec<(String, bool, [i32; 2])>), Refused> {
@@ -431,8 +463,8 @@ fn scroll_grids(
             // The scene's offsets run from the range's near end, which can lie below zero (a
             // grid growing up or left out of its container): an asked offset is past that end,
             // and absent asks for the content where construction leaves it.
-            let asked = scroll.get(parent).copied();
-            // One offset per scrolling area: its first shown bar, vertical before horizontal.
+            let asked = scroll.get(&(parent.to_owned(), !vertical)).copied();
+            // Each shown bar scrolls its own axis.
             if let Some(([near, far], reached)) = instance
                 .scroll_to(
                     root,
@@ -448,7 +480,6 @@ fn scroll_grids(
                     vertical,
                     [reached.wrapping_sub(near), far.wrapping_sub(near)],
                 ));
-                break;
             }
         }
     }

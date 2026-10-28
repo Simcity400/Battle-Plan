@@ -2429,6 +2429,15 @@ fn recovered_recordings_refuse_every_rewrite_and_append_without_touching_the_fil
             "{case}"
         );
         assert_eq!(
+            recovered
+                .reencoded(|_, _, _| panic!("must not observe frames"))
+                .err()
+                .unwrap()
+                .to_string(),
+            message,
+            "{case}"
+        );
+        assert_eq!(
             recovered.into_history().err().unwrap().to_string(),
             message,
             "{case}"

@@ -10,7 +10,7 @@ import { FLAG, NAME_PAD } from '../race/draw';
 import { scheduler } from '../scheduler';
 import type { FrameTask } from '../scheduler';
 import { toLocal, watchCanvasSize } from '../surface';
-import { fitTooltip, hideTooltip, showTooltip, tooltipText } from '../tooltip';
+import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { MATRIX_HEADER, MATRIX_NAMES_WIDTH, matrixCell, matrixCellAt, matrixGutter, matrixKey, matrixKeyed, matrixWindow, revealItem } from './matrix';
@@ -57,6 +57,8 @@ export default function HeatMatrix(props: HeatMatrixProps) {
   const geometry = useRef<Geometry>({ gutter: 0, header: MATRIX_HEADER, cell: 0, scrollLeft: 0, scrollTop: 0, width: 0, height: 0 });
   const pointer = useRef<{ x: number; y: number; clientX: number; clientY: number } | null>(null);
   const keyed = useRef<MatrixKeyed | null>(null);
+  // A fresh key may take the shared tooltip; redraws of a kept keyboard cell may not.
+  const keyIntent = useRef(false);
   const [extent, setExtent] = useState({ width: 0, height: 0 });
   const [client, setClient] = useState({ width: 0, height: 0 });
   useLayoutEffect(() => {
@@ -168,14 +170,16 @@ export default function HeatMatrix(props: HeatMatrixProps) {
       }
       const decoded = content ? countryFlagContent(fitTooltip([content], room, { keep: 1 }), undefined, loaded) : null;
       const fitted = decoded ? fitTooltip([decoded], room, { keep: 1 }) : null;
-      if (fitted) {
+      const held = tooltipStore.get();
+      if (fitted && (!keyed.current || keyIntent.current || held == null || held.owner === owner)) {
         const rect = element.getBoundingClientRect();
         const anchor = pointer.current ?? (focus ? {
           clientX: rect.left + (gutter + (focus.column + 0.5) * cell - scrollLeft) * rect.width / Math.max(1, width),
           clientY: rect.top + (MATRIX_HEADER + (focus.row + 0.5) * cell - scrollTop) * rect.height / Math.max(1, height) } : null);
         if (anchor) showTooltip(owner, fitted, anchor.clientX, anchor.clientY);
         if (keyed.current) setSpoken(tooltipText(fitted));
-      } else hideTooltip(owner);
+      } else if (!fitted) hideTooltip(owner);
+      keyIntent.current = false;
       return false;
     } };
     task.current = frameTask;
@@ -234,7 +238,7 @@ export default function HeatMatrix(props: HeatMatrixProps) {
             const next = matrixKey(event.key, current ?? { row: 0, column: 0 }, props.rows.length, props.columns.length, current ? page : 0);
             if (!next) return;
             event.preventDefault();
-            keyed.current = { ...next, rowId: props.rows[next.row].id, columnId: props.columns[next.column].id }; pointer.current = null;
+            keyed.current = { ...next, rowId: props.rows[next.row].id, columnId: props.columns[next.column].id }; pointer.current = null; keyIntent.current = true;
             scroller.scrollTop = revealItem(next.row, g.cell, scroller.scrollTop, g.height - g.header);
             scroller.scrollLeft = revealItem(next.column, g.cell, scroller.scrollLeft, g.width - g.gutter);
             wake();

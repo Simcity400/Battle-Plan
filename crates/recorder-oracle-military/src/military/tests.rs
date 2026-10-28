@@ -2114,3 +2114,27 @@ fn training_stop_oracle_rejects_unknown_and_mismatched_demanded_flags() {
         );
     }
 }
+
+#[test]
+fn acclimatization_categories_compare_their_exact_bytes() {
+    let weight = installed_content_save::Decimal::parse(b"0.5").unwrap();
+    let tokens = BTreeMap::from([(1, b"\x80".as_slice())]);
+    let row = replay_data::rows::DivisionStatusRow {
+        acclimatization_maximum: Some(installed_content_save::Acclimatization::OMITTED_MAXIMUM_RAW),
+        acclimatization: vec![replay_data::rows::DivisionAcclimatization {
+            category: 1,
+            weight: weight.raw,
+        }],
+        ..Default::default()
+    };
+    let saved = |name: u8| installed_content_save::Acclimatization {
+        entries: vec![(vec![name], weight.clone())],
+        maximum: None,
+    };
+    let mut report = Report::default();
+    compare_acclimatization("division", &row, Some(&saved(0x80)), &tokens, &mut report);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    // Both decode to the same replacement character, yet name different categories.
+    compare_acclimatization("division", &row, Some(&saved(0x81)), &tokens, &mut report);
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+}

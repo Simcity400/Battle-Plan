@@ -50,7 +50,8 @@ LAUNCHER = "warm_target.py"  # the tool at the seed's commit, for scheduled refr
 STAGING_RECORDS = "warming"  # one file per running warm, naming its staging copy
 STAGING_PREFIX = ".warming-"
 # `warm --target-roots` keeps a worktree's profile directory in
-# `<root>\<worktree name>-<path hash>-cargo-target\debug`, naming its junction in OWNER_FILE.
+# `<root>\<worktree name>-<path hash>-<warm pid>-cargo-target\debug`, naming its junction in
+# OWNER_FILE.
 EXTERNAL_SUFFIX = "-cargo-target"
 OWNER_FILE = "worktree.txt"
 SEED_FORMAT = 2
@@ -1142,10 +1143,12 @@ def free_bytes(path):
 
 
 def external_profile_dir(target_root, worktree):
-    """Where a worktree's profile directory lives on `target_root`: named after the worktree,
-    and after its full path, so two worktrees of one name never share it."""
+    """Where this warm puts a worktree's profile directory on `target_root`: named after the
+    worktree, after its full path and after this process, so no other warm, of this worktree
+    or another, ever fills, installs or deletes it. The junction decides which warm installs."""
     tag = hashlib.sha256(os.path.normcase(worktree).encode()).hexdigest()[:8]
-    return os.path.join(target_root, f"{os.path.basename(worktree)}-{tag}{EXTERNAL_SUFFIX}")
+    name = f"{os.path.basename(worktree)}-{tag}-{os.getpid()}{EXTERNAL_SUFFIX}"
+    return os.path.join(target_root, name)
 
 
 def sweep_external(target_roots):
@@ -1259,7 +1262,7 @@ def warm_worktree(args, root, worktree):
                   f"{args.min_free_gb} GiB floor; cargo will build from scratch")
             return 0
         external = external_profile_dir(chosen, worktree)
-        shutil.rmtree(external, ignore_errors=True)  # left by an earlier worktree of this path
+        shutil.rmtree(external, ignore_errors=True)  # left by an exited warm with this pid
     result = warm_into(root, seed, worktree, target, external, args.copy, args.threads)
     if result is None:
         print(f"warm: cargo started building in {target} first; left its build alone")

@@ -185,6 +185,27 @@ fn colours_follow_component_reads_in_order() {
     assert_eq!(color(&ideologies, "f"), Ok([12.0 / 255.0, 0.0, 0.0, 1.0]));
 }
 
+/// A later read storing every component replaces a packed colour the port
+/// does not convert; one leaving a component unstored keeps the refusal.
+#[test]
+fn a_later_complete_colour_replaces_a_packed_one() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let ideologies = parsed(
+        b"ideologies = { a = { color = 16711680 color = { 0 255 0 } } \
+              b = { color = 16711680 color = { 0 0 } } c = { color = { 0 0 0 } color = 16711680 } }",
+    );
+    assert_eq!(color(&ideologies, "a"), Ok([0.0, 1.0, 0.0, 1.0]));
+    for token in ["b", "c"] {
+        assert!(
+            color(&ideologies, token)
+                .unwrap_err()
+                .contains("the packed colour 16711680"),
+            "{token}"
+        );
+    }
+}
+
 /// A group whose token is not UTF-8 is a named gap, never dropped.
 #[test]
 fn a_group_that_is_not_text_stops_the_file() {

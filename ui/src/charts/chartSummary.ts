@@ -65,8 +65,12 @@ function approximateUnion(spans: ChartSummary['approximate']) {
 export function extentOfSummary(summary: ChartSummary, from = summary.from, to = summary.to): [number, number] | null {
   const runs = exactRuns(summary);
   if (runs) return extentOf(runs, from, to);
+  // The inclusive hours exact runs use; a bucket partly in them keeps its whole envelope.
+  const first = Math.floor(from);
   let low = Infinity, high = -Infinity;
-  for (const bucket of summary.buckets) if (bucket) { low = Math.min(low, bucket.minValue); high = Math.max(high, bucket.maxValue); }
+  for (const bucket of summary.buckets) {
+    if (bucket && bucket.lastHour >= first && bucket.firstHour <= to) { low = Math.min(low, bucket.minValue); high = Math.max(high, bucket.maxValue); }
+  }
   return low <= high ? [low, high] : null;
 }
 

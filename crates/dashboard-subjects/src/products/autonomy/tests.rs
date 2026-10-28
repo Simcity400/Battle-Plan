@@ -1333,3 +1333,50 @@ fn autonomy_accepts_country_selections_at_design_and_stress_scales() {
         );
     }
 }
+
+#[test]
+fn autonomy_runs_break_where_another_native_country_holds_the_subjects_slot() {
+    use crate::products::autonomy::scan;
+    use replay_data::rows::{CountryLinkRow, CountryRow};
+    let held = |subject: u32| -> Status {
+        (
+            subject,
+            Some(11),
+            b"autonomy_puppet",
+            250_000_000,
+            200_000_000,
+            300_000_000,
+            true,
+            true,
+        )
+    };
+    let first = autonomy_frame(100, &[held(31)]);
+    // At 101 another native country (41) holds `D01 mod`'s slot 9, with equal operands.
+    let mut replaced = autonomy_frame(101, &[held(41)]);
+    let country = |id, canonical_slot, tag: &[u8]| CountryRow {
+        id,
+        canonical_slot,
+        tag: tag.to_vec(),
+        ..Default::default()
+    };
+    *replaced.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
+        country(21, 8, b"ITA"),
+        country(41, 9, b"D01 mod"),
+        country(9001, 7, b"GER"),
+    ]));
+    let link = |id, canonical_slot| CountryLinkRow { id, canonical_slot };
+    *replaced.tables[TableId::CountryLinks.index()] = TableView::Complete(
+        TableRows::CountryLinks(vec![link(11, 7), link(21, 8), link(41, 9), link(9001, 7)]),
+    );
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first, replaced])]).unwrap();
+    let scanned = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let (tag, runs) = &scanned.subjects[0];
+    assert_eq!(tag, "D01 mod");
+    assert_eq!(
+        runs.iter()
+            .map(|run| (run.first_hour, run.last_hour, run.starts_segment))
+            .collect::<Vec<_>>(),
+        [(100, 100, true), (101, 101, true)],
+        "the replacement starts its own history"
+    );
+}

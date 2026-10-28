@@ -21,7 +21,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { groupReasonAt, preparedAt } from '../../dashboard/economyHistory';
+import { groupReasonAt, preparedAt, tagAt } from '../../dashboard/economyHistory';
 import { EQUIPMENT_UNNAMED } from '../../dashboard/EquipmentCell';
 import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -32,7 +32,7 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { ProductionCatalogueReply } from '../../generated/dashboard';
 import { COUNTRY, OPTIONS } from './definition';
-import { licencePairs, licencesAt, PRODUCTION_CATALOGUE, rosterKnown, validateLicences } from './licencesData';
+import { holderLicencesAt, holdersAt, licencePairs, licencesAt, PRODUCTION_CATALOGUE, rosterKnown, validateLicences } from './licencesData';
 import type { LicenceAt, LicenceWidth } from './licencesData';
 import '../trade-flows/tradeFlows.css';
 import './productionLicences.css';
@@ -55,8 +55,12 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Licence actions');
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const [picked, setPicked] = useState<string | null>(null);
+  const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
+  // A country is picked as its holders in one recording's branch, so a rename keeps it and another branch drops it.
+  const scope = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]);
+  const [choice, setChoice] = useState<{ scope: object; tag: string; hour: number; holders: readonly string[] } | null>(null);
+  const picked = choice?.scope === scope ? choice : null;
+  const drill = picked ? savedDrill : CLOSED;
   const [capacity, setCapacity] = useState(8);
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
@@ -112,8 +116,8 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   }, [rows, nodes, looks, hour, viewport]);
   const openCountry = (node: FlowNode) => {
     const tag = node.id.slice(node.id.indexOf(':') + 1);
-    if (tag === OTHER) return;
-    setPicked(tag);
+    if (tag === OTHER || !data) return;
+    setChoice({ scope, tag, hour, holders: holdersAt(data, tag, hour) });
     dispatch({ type: 'open', breakdown: COUNTRY.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
   const at = drillHour(drill, hour) ?? hour;
@@ -141,23 +145,26 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
       onContextMenu={(hit, x, y) => { if (hit?.kind === 'node') menu.open(x, y, [{ label: 'Show licences', run: () => openCountry(hit.node) }]); }} />
     {menu.menu}
   </div>;
+  const drillAt = drill.follow ? hour : at;
+  // The picked holders' tag at the drill's hour; null before any of them was read with one.
+  const drillTag = picked ? picked.holders.map(holder => tagAt(data.holders[holder], drillAt)).find(tag => tag !== null) ?? null : null;
   return <div ref={anchor} className="production-licences-host">{groupFailure}
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && picked !== null} anchor={anchor}
-      title={picked ? `${looks.name(picked, at)}: licences` : COUNTRY.label} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
+      title={picked ? `${drillTag === null ? looks.name(picked.tag, picked.hour) : looks.name(drillTag, drillAt)}: licences` : COUNTRY.label} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
-      {picked && <CountryLicences data={data} tag={picked} hour={drill.follow ? hour : at} runtime={runtime} track={track} active={active} narrow={narrowTableOf(options)} />}
+      {picked && <CountryLicences data={data} holders={picked.holders} tag={drillTag} hour={drillAt} runtime={runtime} track={track} active={active} narrow={narrowTableOf(options)} />}
     </DrillHost>
   </div>;
 }
 
-/** One country's licences granted and held at the drill's hour. */
-function CountryLicences({ data, tag, hour, runtime, track, active, narrow }: {
-  data: ProductionCatalogueReply; tag: string; hour: number; runtime: WidgetProps['runtime']; track: NonNullable<ReturnType<WidgetProps['runtime']['tracks']['find']>>;
+/** One country's licences granted and held at the drill's hour, by its holders' tags then. */
+function CountryLicences({ data, holders, tag, hour, runtime, track, active, narrow }: {
+  data: ProductionCatalogueReply; holders: readonly string[]; tag: string | null; hour: number; runtime: WidgetProps['runtime']; track: NonNullable<ReturnType<WidgetProps['runtime']['tracks']['find']>>;
   active: boolean; narrow: ReturnType<typeof narrowTableOf>;
 }) {
   const viewport = useViewportHeight();
-  const rows = useMemo(() => licencesAt(data, hour, candidate => candidate === tag).filter(row => row.licensor === tag || row.licensee === tag), [data, hour, tag]);
+  const rows = useMemo(() => holderLicencesAt(data, holders, hour), [data, holders, hour]);
   const wanted = useMemo(() => [...new Set(rows.flatMap(row => [row.licensor, row.licensee]))].map(country => ({ hour, tag: country })), [rows, hour]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const columns = useMemo<readonly TableColumn<LicenceAt>[]>(() => [
@@ -170,6 +177,7 @@ function CountryLicences({ data, tag, hour, runtime, track, active, narrow }: {
     { key: 'since', header: 'Since', label: 'Since', numeric: true, width: 'max-content', priority: 1, value: row => row.since,
       text: row => row.since === null ? '—' : dayLabel(row.since), render: row => row.since === null ? '—' : dayLabel(row.since) },
   ], [labelAt, hour]);
+  if (tag === null) return <p className="drill-empty">This country was not recorded at this date.</p>;
   if (!rows.length) return <p className="drill-empty">No licences at this date.</p>;
   return <div className="production-licences-table"><Table label={`Licences of ${tag}`} rows={rows} columns={columns} rowKey={row => row.key}
     sort={{ column: 'since', direction: 'descending' }} narrow={narrow}

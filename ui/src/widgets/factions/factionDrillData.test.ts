@@ -37,11 +37,11 @@ test('the manifest is the goal its definition names, with its bar only for a rea
     [['Short Term', [2]], ['Medium Term', [1]], ['modded term', [3]]]);
 });
 
-test('resources leave out the engine\'s empty slot and read their fixed-point amounts', () => {
-  const resources = [{ ordinal: 0, token: null, name: 'Null resource', icon: null, raw: '0', reason: null },
+test('resources keep amounts whose names are unavailable and read their fixed-point amounts', () => {
+  const resources = [{ ordinal: 3, token: null, name: null, icon: null, raw: '50000000', reason: 'Faction resource token spelling unavailable' },
     { ordinal: 1, token: 'oil', name: 'Oil', icon: null, raw: '17400000', reason: null },
     { ordinal: 2, token: 'steel', name: 'Steel', icon: null, raw: '113100000', reason: null }];
-  assert.deepEqual(extracted(resources).map(entry => [entry.resource.token, entry.value]), [['steel', 1131], ['oil', 174]]);
+  assert.deepEqual(extracted(resources).map(entry => [entry.resource.ordinal, entry.value]), [[2, 1131], [3, 500], [1, 174]]);
   assert.equal(fixedWhole('230698765'), 2306);
   assert.equal(fixedWhole(null), null);
 });

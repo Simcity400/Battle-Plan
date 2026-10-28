@@ -159,7 +159,7 @@ export function convoyRows(reply: ConvoyHealthReply, names: { country: (tag: str
         const value = big(deal.efficiency, hour);
         if (value === null) return [];
         const [a, b] = deal.factors.map(runs => big(runs, hour));
-        return [{ label: 'Exporter', value: exporterName },
+        return [{ label: 'Exporter', value: runAt(deal.exporter, hour) ? exporterName : 'Country name unavailable' },
           { label: 'Trade efficiency', value: percent(value, reply.scale) },
           ...a !== null && b !== null ? [{ label: 'Factors', value: `${percent(a, reply.scale)} × ${percent(b, reply.scale)}` }] : [],
           ...convoysText(deal.convoys, hour)];
@@ -169,9 +169,10 @@ export function convoyRows(reply: ConvoyHealthReply, names: { country: (tag: str
     const latest = lease.giver.at(-1);
     return { id: `lease:${lease.handle}`, kind: 'lease' as const,
       label: `Lend-lease from ${names.country(latest ? tagAt(reply.holders[latest[2]], latest[1]) : null, latest?.[1] ?? 0)}`,
-      valueAt: () => null, unknownAt: hour => runAt(lease.giver, hour) !== null || !tableKnown(reply, 2, hour),
+      // Every recorded client has a route flag, even while its giver is unidentified.
+      valueAt: () => null, unknownAt: hour => runAt(lease.bad, hour) !== null || !tableKnown(reply, 2, hour),
       lines: [{ label: 'Convoys assigned', runs: lease.convoys[0] ?? [] }, { label: 'Convoys required', runs: lease.convoys[1] ?? [] }], unit: 'count' as const,
-      detail: hour => runAt(lease.giver, hour) === null ? [] : [{ label: 'Efficiency', value: 'Not recorded' },
+      detail: hour => runAt(lease.bad, hour) === null ? [] : [{ label: 'Efficiency', value: 'Not recorded' },
         { label: 'Route', value: big(lease.bad, hour) === 1n ? 'Drawn as a bad route' : 'Not drawn as a bad route' },
         ...convoysText(lease.convoys, hour)] };
   });

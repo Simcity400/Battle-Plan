@@ -141,9 +141,22 @@ export function runState(runs: readonly HourRange[], hour: number, unobserved: r
   if (hour < last.lastHour + 1) return { kind: 'held', since: last.firstHour };
   // A holding whose next hours were not recorded may still be held: unknown, not an
   // end, until the first recorded hour after them shows it gone.
-  const gap = unobserved.find(span => span.firstHour <= last.lastHour + 1 && last.lastHour + 1 <= span.lastHour);
-  if (gap) return hour <= gap.lastHour ? { kind: 'unknown', lastSeen: last.lastHour } : { kind: 'ended', at: gap.lastHour + 1, lastSeen: last.lastHour };
+  const through = unrecordedThrough(unobserved, last.lastHour + 1);
+  if (through != null) return hour <= through ? { kind: 'unknown', lastSeen: last.lastHour } : { kind: 'ended', at: through + 1, lastSeen: last.lastHour };
   return { kind: 'ended', at: last.lastHour + 1 };
+}
+
+/** The last hour of the unrecorded stretch `spans` (in any order) cover from `from` on,
+ * touching and overlapping spans joined (a recorded gap, then hours still being
+ * prepared); null when `from` is recorded. */
+function unrecordedThrough(spans: readonly HourRange[], from: number): number | null {
+  const sorted = spans.every((span, index) => !index || spans[index - 1].firstHour <= span.firstHour) ? spans : [...spans].sort((a, b) => a.firstHour - b.firstHour);
+  let through = from - 1;
+  for (const span of sorted) {
+    if (span.firstHour > through + 1) break;
+    through = Math.max(through, span.lastHour);
+  }
+  return through >= from ? through : null;
 }
 
 /** Whether nothing was recorded the hour before a run starts (the branch start or

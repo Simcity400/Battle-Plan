@@ -24,7 +24,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { OPTIONS } from './definition';
-import { POOL_CHOICES, manpowerRows, poolsOffered, shareOf, shownPool } from './poolsData';
+import { POOL_CHOICES, manpowerRows, poolHeading, poolsOffered, shareOf, shownPool } from './poolsData';
 import type { MemberAmount } from './poolsData';
 import '../resource-balance/resourceBalance.css';
 import './factionPooledStrength.css';
@@ -58,7 +58,12 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   // Names for the selected pool's whole list; flags only for the rows a windowed list shows.
   const tags = useMemo(() => [...new Set(pool === 'manpower' ? members.flatMap(row => row.tag ? [row.tag] : [])
     : pool === 'research' ? data?.researchCountries ?? [] : [])], [pool, members, data]);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
+  // A drill belongs to the faction it was opened from; another source, branch or faction closes it.
+  const drillOwner = JSON.stringify([track?.source.id ?? null, track?.source.revision ?? null, track?.branch.id ?? null, faction?.id ?? null]);
+  const [openedFor, setOpenedFor] = useState<string | null>(null);
+  useEffect(() => { dispatch({ type: 'close' }); setOpenedFor(null); }, [drillOwner]);
+  const drill = openedFor === drillOwner ? savedDrill : CLOSED;
   // The drill keeps the member clicked as it was at the hour clicked (`drill.hour`).
   const picked = drill.breakdown;
   const pickedHour = drill.hour ?? dataHour;
@@ -94,6 +99,7 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
     }
     if (pool === 'research') {
       if (key === 'base') return { title: 'Scientist base', subtitle, rows: [{ label: 'Value', value: data.researchBaseRaw == null ? 'Not recorded' : formatAmount(data.researchBaseRaw, SCALE, 5) }] };
+      if (data.researchCountries == null) return { title: 'Countries sharing research', subtitle, rows: [{ label: 'Countries', value: 'Not recorded' }] };
       const country = label(key);
       return { title: country.name, countryFlag: country, subtitle, rows: [{ label: 'Research', value: 'Shares research with the faction' }] };
     }
@@ -102,7 +108,7 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   }, [data, pool, faction, dataHour, members, label]);
   const tips = useRowTooltips<string>({ owner, active, content, revision: `${dataHour}:${pool}`, onMenu: () => {} });
   const anchor = useRef<HTMLDivElement>(null);
-  const open = (tag: string | null) => { if (tag) dispatch({ type: 'open', breakdown: tag, hour: dataHour, playing: false, playhead: null }); };
+  const open = (tag: string | null) => { if (tag) { setOpenedFor(drillOwner); dispatch({ type: 'open', breakdown: tag, hour: dataHour, playing: false, playhead: null }); } };
   const manpowerColumns = useMemo<readonly TableColumn<MemberAmount>[]>(() => [
     { key: 'member', header: 'Member', label: 'Member', width: 'minmax(var(--table-name-min), 2fr)', value: entry => { const name = entry.tag ? names.get(nameKey(dataHour, entry.tag)) : null; return typeof name === 'string' ? name : null; },
       renderMissing: true, render: entry => entry.tag ? <CountryCell {...label(entry.tag)} /> : 'Country unavailable' },
@@ -112,11 +118,7 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
       value: entry => data?.manpowerTotal ? entry.value / data.manpowerTotal : null, render: entry => shareOf(entry.value, data?.manpowerTotal ?? null) },
   ], [names, label, dataHour, data?.manpowerTotal]);
   const memberTip = useCallback((entry: MemberAmount) => content(entry.key)!, [content]);
-  const header = headerSlot && data && pool && createPortal(<span className="pill">{
-    pool === 'manpower' ? (data.manpowerTotal == null ? 'Total not recorded' : `${usNumber.format(data.manpowerTotal)} manpower`)
-      : pool === 'resources' ? `${data.resources?.length ?? 0} resources`
-        : pool === 'research' ? `${data.researchCountries?.length ?? 0} sharing`
-          : `${data.doctrineFolders?.length ?? 0} doctrines`}</span>, headerSlot);
+  const header = headerSlot && data && pool && createPortal(<span className="pill">{poolHeading(data, pool)}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see faction pools." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
@@ -149,7 +151,8 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   } else if (pool === 'research') {
     body = <ol className="resource-bars" aria-label={`Research sharing on ${dayLabel(dataHour)}`}>
       {row('base', <span className="resource-name"><span>Scientist base</span></span>, <span />, <b>{data.researchBaseRaw == null ? 'Not recorded' : formatAmount(data.researchBaseRaw, SCALE)}</b>)}
-      {(data.researchCountries ?? []).map(tag => row(tag, <span className="resource-name"><span title={label(tag).name}>{label(tag).name}</span></span>, <span />, <span />))}
+      {data.researchCountries == null ? row('members', <span className="resource-name"><span>Countries sharing research</span></span>, <span />, <b>Not recorded</b>)
+        : data.researchCountries.map(tag => row(tag, <span className="resource-name"><span title={label(tag).name}>{label(tag).name}</span></span>, <span />, <span />))}
     </ol>;
   } else {
     body = <ol className="resource-bars" aria-label={`Shared doctrines on ${dayLabel(dataHour)}`}>{(data.doctrineFolders ?? []).map(folder => row(String(folder.ordinal),

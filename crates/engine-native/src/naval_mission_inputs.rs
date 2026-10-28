@@ -870,8 +870,10 @@ impl PresenceMap {
         }
         .min(PRESENCE_WINDOW);
         let mut values = [0; PRESENCE_WINDOW * 4];
-        let first = steps.min((capacity - head) as usize);
-        for (start, count, offset) in [(head as usize, first, 0), (0, steps - first, first)] {
+        // One pass covers the whole ring; a longer walk revisits it in the same order.
+        let read = steps.min(capacity as usize);
+        let first = read.min((capacity - head) as usize);
+        for (start, count, offset) in [(head as usize, first, 0), (0, read - first, first)] {
             if count == 0 {
                 continue;
             }
@@ -886,6 +888,9 @@ impl PresenceMap {
             ) {
                 return Err("presence ring unreadable");
             }
+        }
+        for at in read * 4..steps * 4 {
+            values[at] = values[at - read * 4];
         }
         let mut presence = Presence::default();
         for value in values[..steps * 4].chunks_exact(4) {

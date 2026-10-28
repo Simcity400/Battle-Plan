@@ -128,6 +128,18 @@ export function tensionCauseAt(event: TensionEvent, hour: number) {
   return found;
 }
 
+/** Each event's identity across replies and preparation updates, which insert events
+ * by date: events alike in date, first read and reason keep their order. */
+export function tensionEventKeys(events: readonly TensionEvent[]): string[] {
+  const seen = new Map<string, number>();
+  return events.map(event => {
+    const alike = JSON.stringify([event.hour, event.firstRead, event.reason]);
+    const place = seen.get(alike) ?? 0;
+    seen.set(alike, place + 1);
+    return `${alike}#${place}`;
+  });
+}
+
 export function pinTensionDrill(source: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, hour: number, follow: boolean): WidgetSpec {
   const pinned = pinnedBreakdown(source, TENSION_BREAKDOWN, track.id);
   const offset = Math.floor(hour) - track.branch.firstHour;

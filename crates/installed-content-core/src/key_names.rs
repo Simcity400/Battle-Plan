@@ -302,14 +302,9 @@ fn template_columns(layers: &ResolvedLayers) -> Result<[i32; 3], String> {
 /// neither read nor skipped, so block contents become keys.
 pub fn country_tags(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut tags = BTreeSet::new();
-    // Each file by its bytes: an archive may name a file in bytes that are not UTF-8.
-    let paths: Vec<Vec<u8>> = layers
-        .paths()
-        .filter(|path| path.starts_with(b"common/country_tags/") && path.ends_with(b".txt"))
-        .map(<[u8]>::to_vec)
-        .collect();
-    for path in paths {
-        tags.extend(file_tags(&layers.read_path(&path)?));
+    // The files the database loader lists, each by its bytes.
+    for path in crate::script_files::paths(layers, "common/country_tags/", Some(".txt")) {
+        tags.extend(file_tags(&path.read(layers)?));
     }
     Ok(tags)
 }

@@ -354,6 +354,24 @@ fn an_unread_market_ledger_has_no_known_hours() {
 }
 
 #[test]
+fn a_ledger_without_occurrences_names_why_they_are_unknown() {
+    let mut state = Prepared::default();
+    let mut at = base(5);
+    unavailable(&mut at, TableId::MarketEvents);
+    state.step(&at);
+    let published = publish(&mut state);
+    for tags in [Vec::new(), vec!["SEL"]] {
+        let page = published.ledger(&tags, None, 10);
+        assert!(page.rows.is_empty());
+        assert!(
+            page.warnings.iter().any(|line| line.contains("market occurrences unavailable")),
+            "{:?}",
+            page.warnings
+        );
+    }
+}
+
+#[test]
 fn a_ledger_of_both_parties_pages_each_occurrence_once() {
     let mut state = Prepared::default();
     for hour in 5..=7 {

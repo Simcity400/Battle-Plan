@@ -462,7 +462,7 @@ fn coverage_policy_four_hashes_and_verifies_event_tooltip_font_effect_and_volume
             [0; 32],
         )
         .unwrap();
-    assert_eq!(identity.coverage_policy, 4);
+    assert_eq!(identity.coverage_policy, 5);
     let options = ResolveOptions {
         game_dir: game.clone(),
         user_dir: user,
@@ -2769,6 +2769,80 @@ fn a_new_recording_takes_the_engine_mod_order_and_a_replay_keeps_it() {
         error.contains("Mod b_base.mod: content hash mismatch"),
         "{error}"
     );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_mod_installed_elsewhere_keeps_its_recorded_hash_and_a_changed_replace_path_does_not() {
+    let root = std::env::temp_dir().join(format!("hoi4_mod_moved_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let write = |path: &str, text: &str| {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    };
+    write("game/hoi4.exe", "synthetic executable");
+    write("game/common/file.txt", "vanilla");
+    fs::create_dir_all(root.join("game/dlc")).unwrap();
+    write("user/settings.txt", "language=l_english");
+    write(
+        "user/dlc_load.json",
+        r#"{"enabled_mods":["mod/ugc_42.mod"],"disabled_dlcs":[]}"#,
+    );
+    write(
+        "user/mod/ugc_42.mod",
+        r#"name="Moved" remote_file_id=42 path="first/42" replace_path="common/ideas" dependencies={"Base"}"#,
+    );
+    write("user/first/42/common/file.txt", "mod");
+    let (game_dir, user_dir, cache_dir) =
+        (root.join("game"), root.join("user"), root.join("cache"));
+    let identity = gather(&GatherOptions {
+        game_dir: game_dir.clone(),
+        user_dir: user_dir.clone(),
+        cache_dir: cache_dir.clone(),
+        dlc_order: None,
+    })
+    .unwrap()
+    .identity(
+        "build".into(),
+        Sha256::digest(b"synthetic executable").into(),
+        20,
+        "test".into(),
+        [0; 32],
+    )
+    .unwrap();
+    let options = ResolveOptions {
+        game_dir,
+        user_dir,
+        cache_dir,
+    };
+    // The same files elsewhere, under the descriptor another launcher wrote for that place.
+    fs::rename(root.join("user/first"), root.join("user/second")).unwrap();
+    fs::remove_file(root.join("user/mod/ugc_42.mod")).unwrap();
+    let moved = root.join("user/second/42");
+    let moved = moved.to_str().unwrap().replace('\\', "/");
+    write(
+        "user/mod/42.mod",
+        &format!(
+            "remote_file_id=\"42\"\npath=\"{moved}\"\nname=\"Moved\"\ndependencies={{ \"Base\" }}\nreplace_path=\"common/ideas/\"\n"
+        ),
+    );
+    let resolved = resolve(&identity, &options).unwrap();
+    assert!(resolved.changed.is_empty(), "{:?}", resolved.changed);
+    assert_eq!(resolved.layers.read("common/file.txt").unwrap(), b"mod");
+    write(
+        "user/mod/42.mod",
+        &format!(
+            "remote_file_id=\"42\"\npath=\"{moved}\"\nname=\"Moved\"\ndependencies={{ \"Base\" }}\nreplace_path=\"common/national_focus\"\n"
+        ),
+    );
+    let changed = resolve(&identity, &options).unwrap();
+    let names: Vec<_> = changed
+        .changed
+        .iter()
+        .map(|layer| format!("{} {}", layer.kind, layer.id))
+        .collect();
+    assert_eq!(names, ["Mod 42"]);
     fs::remove_dir_all(&root).unwrap();
 }
 

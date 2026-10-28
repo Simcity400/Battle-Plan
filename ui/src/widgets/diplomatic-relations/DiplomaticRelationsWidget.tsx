@@ -124,7 +124,10 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const data = opinions.data;
   const shown = data?.hour ?? hour;
   const [visibleTags, setVisibleTags] = useState<readonly string[]>([]);
-  const [picked, setPicked] = useState<ChosenPair | null>(null);
+  // A pair names its countries by tag and hour in one recording's branch: another one drops it.
+  const scope = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]);
+  const [choice, setChoice] = useState<{ scope: object; pair: ChosenPair } | null>(null);
+  const picked = choice?.scope === scope ? choice.pair : null;
   // The matrix names its countries at the hour shown; a chosen pair, for its pinned title,
   // at the hour it was chosen.
   const names = useCountryNamesRead(runtime.client, track, useMemo(() => [...tags.map(tag => ({ hour: shown, tag })),
@@ -183,13 +186,13 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const main = <HeatMatrix label="Opinions" rows={axis} columns={axis} cell={cell} revision={`${data.hour}:${ordered.join(',')}:${low}:${high}:${grey}`} active={active && (!picked || options.drill === 'popout')}
     tooltip={tooltip} onVisible={(rows, columns) => setVisibleTags(previous => { const next = [...new Set([...rows, ...columns])];
       return previous.length === next.length && previous.every((tag, index) => tag === next[index]) ? previous : next; })}
-    onSelect={(row, column) => { setPicked({ first: ordered[row], second: ordered[column], hour: shown }); dispatch({ type: 'open', breakdown: PAIR.id, hour: shown, playing: false, playhead: null }); }}
+    onSelect={(row, column) => { setChoice({ scope, pair: { first: ordered[row], second: ordered[column], hour: shown } }); dispatch({ type: 'open', breakdown: PAIR.id, hour: shown, playing: false, playhead: null }); }}
     menu={(row) => { const read = data.owners.find(owner => owner.tag === ordered[row])?.readHour; return read != null && read !== shown ? [jumpItem(runtime, track.id, read)] : []; }}
     legend={[{ id: 'low', label: low < 0 ? opinionText(low) : '0', color: low < 0 ? tokens.error : grey }, { id: 'zero', label: '0', color: grey },
       { id: 'high', label: high > 0 ? opinionText(high) : '0', color: high > 0 ? tokens.positive : grey }]} />;
   return <div ref={anchor} className="diplomatic-relations">{groupFailure}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null && picked != null} title="Pair history" day={dayLabel(hour)}
-      following={false} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setPicked(null); }} onFollow={() => {}}
+      following={false} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setChoice(null); }} onFollow={() => {}}
       onPin={picked ? () => { const pinned = pinnedBreakdown(widget, PAIR, track.id);
         runtime.addWidgetBelow(widget.id, { ...pinned, title: `${label(picked.first, picked.hour).name} and ${label(picked.second, picked.hour).name} opinions`, options: { ...pinned.options, pair: setToken(pairToken(picked)) } }); } : undefined}
       main={main}>

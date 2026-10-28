@@ -152,6 +152,8 @@ test('signed corrections stay in ranking, lines, parts and exact tooltip values'
   assert.ok(raceMin(items) < -7);
   assert.equal(navalLines(model, ['mod tag'], 'convoys', { firstHour: 107, lastHour: 109 }, null)[0].runs[0].value, -7);
   assert.equal(navalBands(model, 'mod tag', { firstHour: 107, lastHour: 109 }, null)[1][0].value, -7);
+  const holder = navalHolderBands(model, new Map([['mod tag', [{ firstHour: 107, lastHour: 109 }]]]), { firstHour: 107, lastHour: 109 });
+  assert.deepEqual(holder.map(band => band.map(run => run.value)), [[2], [-7]], 'the breakdown history keeps the signed correction');
   assert.equal(navalTooltip(model, 'mod tag', 109, 'Country', 'both', 'lost').rows?.find(row => row.label === 'Convoys')?.value, '-7');
 });
 

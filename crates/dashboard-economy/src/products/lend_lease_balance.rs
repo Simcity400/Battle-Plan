@@ -69,14 +69,12 @@ impl Prepared {
                 observed.insert(self.keyed.key(Field::Known), 1);
                 let mut totals = BTreeMap::<u32, [i128; MEASURES]>::new();
                 for row in rows {
-                    let (Some(owner), Some(target)) = (tags.slot(row.country), tags.slot(row.target))
-                    else {
+                    let Some(owner) = tags.slot(row.country) else {
                         self.keyed
                             .refuse("a lend-lease history names a country with no identity");
                         continue;
                     };
                     self.keyed.tag(&tags, owner, hour);
-                    self.keyed.tag(&tags, target, hour);
                     let values = [
                         row.industry_sent,
                         row.fuel_sent,
@@ -86,6 +84,15 @@ impl Prepared {
                     let total = totals.entry(owner).or_default();
                     for (measure, value) in values.into_iter().enumerate() {
                         total[measure] += i128::from(value);
+                    }
+                    // The owner's record still counts in its total when only the partner is unknown.
+                    let Some(target) = tags.slot(row.target) else {
+                        self.keyed
+                            .refuse("a lend-lease history names a partner with no identity");
+                        continue;
+                    };
+                    self.keyed.tag(&tags, target, hour);
+                    for (measure, value) in values.into_iter().enumerate() {
                         observed.insert(
                             self.keyed.key(Field::Pair(owner, target, measure as u8)),
                             i128::from(value),

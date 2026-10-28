@@ -75,12 +75,13 @@ export function usePreparedParty(client: DashboardClient, source: DashboardSourc
     value => validatePreparedParty(value, currentPage?.cursor), source);
   const reached = useProduct(client, hover == null ? null : request({mode:'events',field:'all',from:Math.floor(hover),to:Math.floor(hover),fields,pageSize:128}),active,validatePreparedParty,source);
   const currentKey = keyboard?.owner === owner && keyboard.view === viewKey ? keyboard : undefined;
-  const navigation = useProduct<{ hour: number | null }>(client, currentKey ? request({ mode: 'next', navigation: { key: currentKey.key, from: currentKey.from, firstHour: currentKey.x[0], lastHour: Math.min(currentKey.x[1], currentKey.until ?? currentKey.x[1]) } }) : null, active,
+  // Keys stop only where the chart shows a change: the same fields and values as the summary.
+  const navigation = useProduct<{ hour: number | null }>(client, currentKey ? request({ mode: 'next', fields, values: withValues, navigation: { key: currentKey.key, from: currentKey.from, firstHour: currentKey.x[0], lastHour: Math.min(currentKey.x[1], currentKey.until ?? currentKey.x[1]) } }) : null, active,
     validatePartyNavigation, source);
   // The ruling-party widget awaits both party and native-government candidates
   // before publishing one keyboard position. Other party consumers own theirs.
   const navigate = useCallback(async (key: 'ArrowLeft' | 'ArrowRight' | 'Home' | 'End', from: number | null, x: Range, until: number | null, signal: AbortSignal) => {
-    const next = request({ mode: 'next', navigation: { key, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) } });
+    const next = request({ mode: 'next', fields, values: withValues, navigation: { key, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) } });
     if (!next) return null;
     return (await loadProduct(client, next, signal, validatePartyNavigation, source)).hour;
   }, [owner]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -91,9 +92,11 @@ export function usePreparedParty(client: DashboardClient, source: DashboardSourc
     if (!cluster) return;
     const field = cluster.tag;
     if (!field) return;
+    // Membership pages count only member hours, so their cursor indexes those events from the cluster's first.
+    const start = within ? '0' : cluster.firstOrdinal;
     setPage(previous => previous?.owner === owner && previous.field === field && previous.from === cluster.firstHour && previous.to === cluster.lastHour ? previous
-      : { owner, field, from: cluster.firstHour, to: cluster.lastHour, cursor: cluster.firstOrdinal, start: cluster.firstOrdinal });
-  }, [owner]);
+      : { owner, field, from: cluster.firstHour, to: cluster.lastHour, cursor: start, start });
+  }, [owner]); // eslint-disable-line react-hooks/exhaustive-deps
   const onNavigateHour = useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((key, from, x, until) => setKeyboard({ owner, key, from, x, until, view: viewKey }), [owner,viewKey]);
   const answered = state?.moment ? (JSON.parse(state.moment) as [number[]])[0] : undefined;
   if (state?.data && answered) previous.current={owner,data:state.data,hour:answered[0]};

@@ -15,6 +15,7 @@ const scenarios = {
   storage: 'page-save warnings survive view changes and reset until saving succeeds',
   retry: 'Retry map sends each failed map operation again and shows its failure until that operation succeeds',
   switch: 'a switch to the map that cannot open its recording keeps the view shown, which offers the whole switch again',
+  narrow: 'a window too narrow for the workspace keeps the sidebar at its minimum width, and its chosen width once widened again',
 } as const;
 for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) test(scenarios[scenario], async () => {
   const slots: any[] = [];
@@ -157,6 +158,18 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
       await settle(); render();
       assert.deepEqual([views.slice(3), opened, shownTab()], [[false], ['elsewhere'], 'map'], 'the whole switch is made again: the map, then its recording');
       assert.equal(failure(), undefined);
+    } else if (scenario === 'narrow') {
+      const viewport = globalThis.window as unknown as { innerWidth: number };
+      const widths = () => find(node => node.props.className === 'app-shell').props.style;
+      const rail = () => find(node => node.props.className === 'sidebar-rail');
+      find(node => node.props['aria-label'] === 'Keep sidebar open').props.onClick(); render();
+      rail().props.onKeyDown({ key: 'ArrowRight', shiftKey: true, preventDefault() {} }); render();
+      assert.equal(widths()['--sidebar-width'], '280px');
+      viewport.innerWidth = 600; render();
+      assert.deepEqual([widths()['--sidebar-width'], widths()['--sidebar-peek-width']], ['200px', '200px'], 'the sidebar never narrows past its minimum');
+      assert.equal(rail().props['aria-valuemax'], 200);
+      viewport.innerWidth = 1200; render();
+      assert.equal(widths()['--sidebar-width'], '280px', 'a wider window shows the chosen width again');
     } else {
       navigation().props.onPages([...navigation().props.pages, { id: 'page-added', label: 'Added' }]); render();
       assert.equal(dashboard().props.pages, navigation().props.pages, 'the dashboard knows which pages exist, so a deleted page drops its kept draft');

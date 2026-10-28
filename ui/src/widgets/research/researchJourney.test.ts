@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ResearchEntry, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
 import { completedResearchJourney, researchJourney, researchTimeSplit, savedResearchCredit } from './researchJourney.ts';
+import type { ResearchTimeSplit } from './researchJourney';
 import { researchTimeRows } from './researchTimeBar.ts';
 import { researchAt } from './researchData.ts';
 
@@ -189,6 +190,27 @@ test('time out of a slot lengthens the Took row instead of replacing research ti
   assert.equal(saved?.effect, '−1 day');
   // Researched, paused and what came off still close exactly on Expected plus the pause.
   assert.equal(rows.took.reduce((sum, s) => sum + s.value, 0n), rows.expectedTotal + split.paused);
+});
+
+test('maluses adding more days than were researched keep every segment its own effect and both rows closing', () => {
+  const total = (segments: readonly { value: bigint }[]) => segments.reduce((sum, s) => sum + s.value, 0n);
+  const modifier = (key: string, days: bigint) => ({ key, kind: 'research speed', label: key, days });
+  // 100 days at a net +100%: +300% saved 150 days and −200% added 100 in the 50 days researched.
+  const mixed: ResearchTimeSplit = { base: 10000000n, penalty: 0n, bonus: 5000000n, juggle: 0n, earlier: 0n, remaining: 0n, paused: 0n, taken: 5000000n,
+    modifiers: [modifier('Bonus', 15000000n), modifier('Malus', -10000000n)], other: 0n, floored: false };
+  // A −150% malus held at a 10% minimum speed: 1000 days researched, the clamp saving 600.
+  const floored: ResearchTimeSplit = { base: 10000000n, penalty: 0n, bonus: -90000000n, juggle: 0n, earlier: 0n, remaining: 0n, paused: 0n, taken: 100000000n,
+    modifiers: [modifier('Malus', -150000000n)], other: 60000000n, floored: true };
+  for (const [split, row] of [[mixed, 20000000n], [floored, 160000000n]] as const) {
+    const rows = researchTimeRows(split, false)!;
+    assert.ok([...rows.expected, ...rows.took].every(s => s.value > 0n));
+    assert.equal(rows.took.find(s => s.key === 'core')?.value, split.taken, 'every researched day stays in the row');
+    for (const effect of split.modifiers)
+      assert.equal([...rows.expected, ...rows.took].find(s => s.key === effect.key)?.value, effect.days < 0n ? -effect.days : effect.days);
+    assert.equal(total(rows.expected), row);
+    assert.equal(total(rows.took), row);
+    assert.equal(rows.axis, row);
+  }
 });
 
 test('after a witnessed start an unexplained surplus shows no breakdown', () => {

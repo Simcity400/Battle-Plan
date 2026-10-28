@@ -39,7 +39,8 @@ export default function PreparedDropList({ client, source, branchId, measure, ta
     void preparedSeriesQuery(client, source, 'events-page', { branchId, family: { kind: 'country-measure', measure }, tags: [tag], cursor: first.toString(), pageSize: count, to: Math.floor(visibleThrough) }, controller.signal, attempt > 0, undefined, undefined,
       value => { if (!controller.signal.aborted) setReply({ owner, data: validateMeasureDrops(value) }); })
       .then(value => { if (!controller.signal.aborted) setReply({ owner, data: validateMeasureDrops(value) }); })
-      .catch(error => { if (!controller.signal.aborted) setReply(previous => ({ ...previous, owner, error: String(error) })); });
+      // Only this page's own earlier reply is kept beside its failure, never another page's rows.
+      .catch(error => { if (!controller.signal.aborted) setReply(previous => previous?.owner === owner ? { ...previous, error: String(error) } : { owner, error: String(error) }); });
     return () => controller.abort();
   }, [client, owner, attempt]);
   const data = reply?.owner === owner ? reply.data : undefined;

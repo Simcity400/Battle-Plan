@@ -327,6 +327,21 @@ test('monthly neutral fought bars preserve gaps and are prepared for won and los
   assert.equal(result[0].positiveCount, 1); assert.equal(result.at(-1)?.negativeCount, 1);
 });
 
+test('a combat dated before a mid-month recording start keeps its monthly bar from the first hour', () => {
+  const data = fixture(); const leader = data.leaders[0];
+  const jan = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
+  const start = jan + 10 * 24;
+  data.firstHour = start;
+  data.observed = [{ ...data.observed[0], firstHour: start, lastHour: start + 6 }];
+  leader.runs = [{ ...leader.runs[0], firstHour: start, lastHour: start + 6 }];
+  leader.battleStarts = [jan + 24]; leader.battleStartReadHours = [start + 2]; leader.unknownBattleStarts = [0];
+  assert.deepEqual(careerLanes(data, leader, start, start + 1)[3].spans, [], 'not before its first supplying read');
+  const spans = careerLanes(data, leader, start, start + 6)[3].spans;
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0].value, 1); assert.equal(spans[0].firstHour, start); assert.equal(spans[0].lastHour, start + 6);
+  assert.match(spans[0].label, /Fought 1 this month · 1 unknown combat start/);
+});
+
 test('skill dots, trait markers, defaults and pinning retain the shared kit behavior', () => {
   const data = fixture(); const leader = data.leaders[0]; leader.runs[0].lastHour = 102;
   leader.runs.push({ ...leader.runs[0], firstHour: 103, lastHour: 104, value: { ...leader.runs[0].value, skill: 4 } },

@@ -7,7 +7,7 @@ import { clipToSpans, runAt } from '../../charts/series.ts';
 import { tooltipHeight, tooltipRoom, tooltipText } from '../../charts/tooltip.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { HourStore, planRequests } from '../../dashboard/countryFacts.ts';
-import { automaticResource, balanceOf, barScale, breakdownRows, changeHours, chosenLines, chosenResources, dealsKnown, FULL_BREAKDOWN_MAX, MAX_DEALS, orderResources, overTimeTooltip,
+import { automaticResource, balanceOf, barParts, barScale, breakdownRows, changeHours, chosenLines, chosenResources, dealsKnown, FULL_BREAKDOWN_MAX, MAX_DEALS, orderResources, overTimeTooltip,
   resourceName, resourcePartGroups, resourceParts, resourceTooltip, supplyDemandRuns, toggleChosen, tooltipPartners, tradeIndex, tradesAt, validateResourceBalanceReply } from './balanceData.ts';
 import { visibleRange } from '../../components/countryList.ts';
 import { dealAccounting, dealWindow } from './resourceDeals.ts';
@@ -62,6 +62,14 @@ test('moment groups preserve negative supply and reversed demand operands', () =
   assert.equal(groups[1].values.find(part => part.id === 'production')!.raw, -200000n);
   assert.equal(groups[1].values.find(part => part.id === 'exported')!.raw, -400000n);
   for (const group of groups) assert.equal(group.values.reduce((sum, part) => sum + part.raw, 0n), group.total);
+});
+
+test('bars keep negative parts signed and scale by the magnitudes drawn', () => {
+  const run = pools(100, 123, { producedRaw: -2, importedRaw: 3, toExportRaw: -4, availableRaw: -1, afterProjectsRaw: 1, productionRaw: 2 });
+  const parts = barParts(balanceOf(run));
+  assert.deepEqual(parts.supply.map(([, raw]) => raw), [-200000n, 0n, 300000n]);
+  assert.deepEqual(parts.demand.map(([, raw]) => raw), [-400000n, 0n, -400000n]);
+  assert.equal(barScale([{ id: 1, runs: [run] }], 110), 800000n);
 });
 
 test('five thousand deals keep all exact accounting while only visible rows ask for partners', () => {

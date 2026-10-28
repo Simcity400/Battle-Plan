@@ -1053,6 +1053,7 @@ pub fn ledger(
     let to = params.last_hour.min(through);
     if streams.is_empty() {
         reply.total = spans.is_none().then(|| "0".to_owned());
+        warnings.extend(published.warnings("Market"));
         reply.warnings = warnings;
         return Ok(reply);
     }

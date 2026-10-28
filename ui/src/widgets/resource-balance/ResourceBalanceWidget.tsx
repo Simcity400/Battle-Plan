@@ -44,7 +44,7 @@ import type { BoundTrack, CountrySelection } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
-import { balanceOf, barScale, changeHours, chosenLines, chosenResources, dealsKnown, orderResources, overTimeTooltip, resourceName,
+import { balanceOf, barParts, barScale, changeHours, chosenLines, chosenResources, dealsKnown, orderResources, overTimeTooltip, resourceName,
   resourcePartGroups, resourceParts, RESOURCE_PARTS, resourceTooltip, supplyDemandRuns, toggleChosen, tooltipPartners, tradeIndex, tradesAt } from './balanceData';
 import type { Balance, RowOrder } from './balanceData';
 import { BREAKDOWN, OPTIONS } from './definition';
@@ -57,6 +57,13 @@ import './resourceBalance.css';
 const NO_WARNINGS: string[] = [];
 const ResourceGroup = createContext<CountrySelection | null>(null);
 type PartnerTargets = (hour: number | null, content?: TooltipContent | null) => void;
+type SummaryView = { from: number; to: number; width: number };
+
+/** A summary view clipped to the widget's hours: an axis dragged past them reads nothing beyond. */
+function viewWithin(view: SummaryView, extent: readonly [number, number]): SummaryView | null {
+  const from = Math.max(view.from, Math.ceil(extent[0])), to = Math.min(view.to, Math.floor(extent[1]));
+  return from <= to ? { from, to, width: view.width } : null;
+}
 
 /** One country's resources: per resource, supply (produced, then imported) against
  * demand (needed, then exported) with the game's surplus or deficit, or supply and
@@ -227,7 +234,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
     extent={extent} playhead={drill.breakdown !== null && drill.follow ? actualHour : playhead} playback={options.playback as PlaybackMode} afterPlayhead={options.afterPlayhead === true}
     windowHours={Number(options.windowDays ?? 365) * 24} branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
     active={active} runtime={runtime} track={track} pickOwner={detailPickOwner}
-    onSummaryView={incoming.onSummaryView && picked ? view => incoming.onSummaryView!(view, [picked.id]) : undefined} onHover={incoming.onHover}
+    onSummaryView={incoming.onSummaryView && picked ? view => { const shown = viewWithin(view, extent); if (shown) incoming.onSummaryView!(shown, [picked.id]); } : undefined} onHover={incoming.onHover}
     onNavigateHour={incoming.onNavigateHour && picked ? (action, from, x, until) => incoming.onNavigateHour!([picked.id], action, from, x, until) : undefined}
     keyboardHour={incoming.keyboardHour} keyboardRevision={incoming.keyboardRevision} onPick={hour => dispatch(saved
       ? { type: 'open', breakdown: BREAKDOWN.id, hour, playing: false, playhead: null } : { type: 'pick', hour })}
@@ -305,15 +312,18 @@ function BalanceBars({ data, tokens, hour, order, scale, hideEmpty, owner, break
   const colour = new Map(legend.map(item => [item.id, item.color]));
   // Bars glide over the app's motion time; numbers are exact at once.
   const glide = { '--resource-glide': `${Math.round(3 * easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion))}ms` } as CSSProperties;
-  const width = (raw: bigint) => largest > 0n ? `${Number(raw * 100000n / largest) / 1000}%` : '0%';
+  const width = (raw: bigint) => largest > 0n ? `${Number((raw < 0n ? -raw : raw) * 100000n / largest) / 1000}%` : '0%';
+  // A negative recorded part keeps its length and is drawn outlined, as the caption says.
+  const negative = rows.some(row => row.balance && [...barParts(row.balance).supply, ...barParts(row.balance).demand].some(([, raw]) => raw < 0n));
   // Every part stays mounted so it glides in and out; only a shown part is set apart by a hairline.
   const segments = (parts: readonly [string, bigint][]) => parts.map(([id, raw], index) =>
-    <i key={id} style={{ width: width(raw), background: colour.get(id), marginLeft: index > 0 && raw > 0n ? 1 : 0 }} />);
+    <i key={id} style={{ width: width(raw), marginLeft: index > 0 && raw !== 0n ? 1 : 0,
+      ...(raw < 0n ? { boxShadow: `inset 0 0 0 1.5px ${colour.get(id)}` } : { background: colour.get(id) }) }} />);
   const describe = (resource: ResourceInfo, balance: Balance | null) => balance
     ? `${resourceName(resource)}: supply ${formatAmount(balance.supply, data.decimals)}, demand ${formatAmount(balance.demand, data.decimals)}, ${balance.net < 0n ? 'deficit' : 'surplus'} ${formatSigned(balance.net, data.decimals)}`
     : `${resourceName(resource)}: not recorded at this time`;
   return <>
-    <p className="resource-caption">Per day</p>
+    <p className="resource-caption">Per day{negative ? ' · outlined parts are negative' : ''}</p>
     <Legend label="Bar parts" items={legend} />
     <ol className="resource-bars" style={glide} aria-label={`Resources on ${dayLabel(hour)}`}>
       {rows.map(({ resource, balance, glides }) => <li key={resource.id} role="button" aria-label={describe(resource, balance)} {...rowTips.rowProps(resource.id)}
@@ -329,8 +339,8 @@ function BalanceBars({ data, tokens, hour, order, scale, hideEmpty, owner, break
           <span>{resourceName(resource)}</span></span>
         {balance ? <>
           <span className="resource-track" aria-hidden="true">
-            <span className="resource-bar">{segments([['produced', balance.produced], ['subjects', balance.fromSubjects], ['imported', balance.imported]])}</span>
-            <span className="resource-bar">{segments([['needed', balance.projects + balance.production], ['overlord', balance.toOverlord], ['exported', balance.exportReserve]])}</span>
+            <span className="resource-bar">{segments(barParts(balance).supply)}</span>
+            <span className="resource-bar">{segments(barParts(balance).demand)}</span>
           </span>
           <b className={balance.net < 0n ? 'is-negative' : 'is-positive'}>{formatSigned(balance.net, data.decimals)}</b>
         </> : <span className="resource-missing">Not recorded</span>}
@@ -378,34 +388,37 @@ function OverTime({ data, numbers, within, incoming, tokens, viewport, options, 
   const shade = lines.length === 1 && options.gap !== false;
   const layers = useMemo<ChartLayer[]>(() => {
     const list: ChartLayer[] = [];
+    // Prepared summaries, like the exact runs, end where the widget's hours do.
+    const drawnUntil = (playhead: number | null) => Math.min(playhead ?? extent[1], extent[1]);
     if (shade) {
       // Bounded by the very curves the two lines are drawn with, green where supply is higher.
       const line = lines[0];
       list.push({ draw: (ctx, frame, chartTokens, state) => {
-        if (line.summary) drawGapSummary(ctx, frame, chartTokens, line.summary.supply, line.summary.demand, chartTokens.positive, chartTokens.error, state.playhead);
-        else drawGapFill(ctx, frame, line.supply, line.demand, chartTokens.positive, chartTokens.error, { until: state.playhead ?? undefined });
+        if (line.summary) drawGapSummary(ctx, frame, chartTokens, line.summary.supply, line.summary.demand, chartTokens.positive, chartTokens.error, drawnUntil(state.playhead));
+        else drawGapFill(ctx, frame, line.supply, line.demand, chartTokens.positive, chartTokens.error, { until: drawnUntil(state.playhead) });
       } });
     }
     for (const line of lines) {
       list.push({
         draw: (ctx, frame, chartTokens, state) => {
           if (line.summary) {
-            drawLineSummary(ctx, frame, chartTokens, line.summary.supply, line.color, false, state.playhead, { dash: line.dashes.primary });
-            drawLineSummary(ctx, frame, chartTokens, line.summary.demand, line.color, false, state.playhead, { dash: line.dashes.secondary, endDot: false });
+            drawLineSummary(ctx, frame, chartTokens, line.summary.supply, line.color, false, drawnUntil(state.playhead), { dash: line.dashes.primary });
+            drawLineSummary(ctx, frame, chartTokens, line.summary.demand, line.color, false, drawnUntil(state.playhead), { dash: line.dashes.secondary, endDot: false });
             return;
           }
-          drawLine(ctx, frame, chartTokens, line.supply, line.color, { until: state.playhead ?? undefined, dash: line.dashes.primary.length ? line.dashes.primary : undefined });
-          drawLine(ctx, frame, chartTokens, line.demand, line.color, { until: state.playhead ?? undefined, dash: line.dashes.secondary, endDot: false });
+          drawLine(ctx, frame, chartTokens, line.supply, line.color, { until: drawnUntil(state.playhead), dash: line.dashes.primary.length ? line.dashes.primary : undefined });
+          drawLine(ctx, frame, chartTokens, line.demand, line.color, { until: drawnUntil(state.playhead), dash: line.dashes.secondary, endDot: false });
         },
         extent: x => {
-          if (!line.summary) return extentOfAll([line.supply, line.demand], x[0], Math.min(x[1], until ?? x[1]));
-          const values = [line.summary.supply, line.summary.demand].map(summary => extentOfSummary(summary, x[0], Math.min(x[1], until ?? x[1]))).filter((value): value is [number, number] => value !== null);
+          const last = Math.min(x[1], drawnUntil(until));
+          if (!line.summary) return extentOfAll([line.supply, line.demand], x[0], last);
+          const values = [line.summary.supply, line.summary.demand].map(summary => extentOfSummary(summary, x[0], last)).filter((value): value is [number, number] => value !== null);
           return values.length ? [Math.min(...values.map(value => value[0])), Math.max(...values.map(value => value[1]))] : null;
         },
       });
     }
     return list;
-  }, [lines, shade, data.decimals, until]);
+  }, [lines, shade, data.decimals, until, extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   // Only the clicked resource changes: saved resources this campaign lacks are kept,
   // and one this campaign shows always stays chosen. A chip whose
   // click cannot act is disabled and says why, pressed or not.
@@ -452,7 +465,7 @@ function OverTime({ data, numbers, within, incoming, tokens, viewport, options, 
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
         layers={layers} active={active} revision={`${head}:${data.branchId}:${chosen.join(' ')}:${shade}:${partnersRevision}:${viewport}`}
-        onSummaryView={incoming?.onSummaryView ? view => incoming.onSummaryView!(view, chosenInfo.map(item => item.id)) : undefined} onHover={incoming?.onHover}
+        onSummaryView={incoming?.onSummaryView ? view => { const shown = viewWithin(view, extent); if (shown) incoming.onSummaryView!(shown, chosenInfo.map(item => item.id)); } : undefined} onHover={incoming?.onHover}
         onNavigateHour={incoming?.onNavigateHour ? (action, from, x, until) => incoming.onNavigateHour!(chosenInfo.map(item => item.id), action, from, x, until) : undefined}
         keyboardHour={incoming?.keyboardHour} keyboardRevision={incoming?.keyboardRevision}
         keyHours={keyHours} pickOwner={pickOwner} onPick={(hour, context) => {

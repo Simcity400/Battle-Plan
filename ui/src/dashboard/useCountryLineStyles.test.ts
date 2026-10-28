@@ -70,7 +70,7 @@ test('line styles read all 439 and 5,000 countries within native request admissi
           styles: input.params.tags.map(tag => ({ tag, name: `Name ${tag}`, color: [1, 2, 3] })),
           warnings: ['Shared content refusal', `${input.params.tags[0]}: independent refusal`] } }) });
       }) } as unknown as DashboardClient;
-      const track = { source: { id: `source-${count}`, revision: 'revision' }, branch: { id: 'branch', firstHour: 0, lastHour: 3000 } } as BoundTrack;
+      const track = { source: { id: `source-${count}`, revision: 'revision' }, branch: { id: 'branch', firstHour: 0, lastHour: 3000, gaps: [] } } as unknown as BoundTrack;
       const tags = Array.from({ length: count }, (_, index) => `Synthetic country ${String(index).padStart(5, '0')}`);
       const render = (hour = 1, selected = tags) => { cursor = 0; return useCountryLineStyles(client, track, selected, hour, true); };
       render(); fixture.commit(); await settle();
@@ -97,5 +97,16 @@ test('line styles read all 439 and 5,000 countries within native request admissi
       assert.equal(current.known.size, count);
       fixture.unmount();
     }
+    // A monthly step inside a gap is never asked for: the stretch after it reads its own first hour.
+    const asked: number[] = [];
+    const gapClient = { product: (input: ProductRequest<CountryStyleParams>) => {
+      asked.push(input.params.hour);
+      return Promise.resolve({ ...input, data: { branchId: input.params.branchId, hour: input.params.hour, styles: [], warnings: [] } });
+    } } as unknown as DashboardClient;
+    const gapped = { source: { id: 'gapped-source', revision: 'revision' },
+      branch: { id: 'branch', firstHour: 0, lastHour: 3000, gaps: [{ firstHour: 710, lastHour: 730 }] } } as unknown as BoundTrack;
+    cursor = 0; useCountryLineStyles(gapClient, gapped, ['Synthetic country'], 731, true); fixture.commit(); await settle();
+    assert.deepEqual(asked, [731]);
+    fixture.unmount();
   } finally { fixture.unmount(); delete host.__lineStylesFixture; await vite.close(); }
 });

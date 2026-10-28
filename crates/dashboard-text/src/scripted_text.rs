@@ -1232,7 +1232,8 @@ impl<'a> ScriptedText<'a> {
         let mut expanded = scopes.clone();
         expanded.on_large_stack = true;
         let caller = job_priority::Caller::current();
-        let ((result, session), noted) = std::thread::scope(|thread_scope| {
+        let reads = crate::triggers::inputs::handoff();
+        let (((result, session), noted), carried) = std::thread::scope(|thread_scope| {
             let cpu = replay_frame::cpu::Context::capture();
             std::thread::Builder::new()
                 .name("scripted-localisation".into())
@@ -1241,10 +1242,12 @@ impl<'a> ScriptedText<'a> {
                 .spawn_scoped(thread_scope, move || {
                     let _cpu = cpu.enter("scripted localisation");
                     caller.enter();
-                    // The expansion's catalogue notes belong to the calling consumer.
-                    crate::catalogue::capture(move || {
-                        let result = expand(&expanded);
-                        (result, expanded.session.into_inner())
+                    // The expansion's reads and catalogue notes belong to the calling consumer.
+                    reads.run(move || {
+                        crate::catalogue::capture(move || {
+                            let result = expand(&expanded);
+                            (result, expanded.session.into_inner())
+                        })
                     })
                 })
                 .map_err(|error| {
@@ -1254,6 +1257,7 @@ impl<'a> ScriptedText<'a> {
                 .map_err(|_| "scripted localisation expansion thread failed".to_owned())
         })?;
         crate::catalogue::credit(&noted);
+        carried.credit();
         scopes.session.replace(session);
         result
     }

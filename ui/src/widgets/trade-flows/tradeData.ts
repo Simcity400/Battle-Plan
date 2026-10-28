@@ -594,23 +594,23 @@ export function sideRanks(flows: readonly Flow[], from: number, to: number): { s
 }
 
 /** The value that fills the diagram's height for one scale all campaign, never below
- * what a side carries at any hour of [from, to]: the largest sum of daily amounts
- * at once (current), the total at the end, which only grows (total), or the sum of
- * each flow's highest running average (average). */
+ * what a side's drawn flows carry at any hour of [from, to]. Only positive amounts draw
+ * (`buildDiagram`), so a negative one never lowers it: the largest sum of positive daily
+ * amounts at once (current), or the sum of each flow's highest positive total (total) or
+ * running average (average). */
 export function campaignScale(flows: readonly Flow[], measure: Measure, from: number, to: number): number {
-  if (measure === 'total') return flows.reduce((sum, flow) => sum + flowValue(flow, 'total', from, to), 0);
   if (flows.some(flow => flow.prepared?.summary && (flow.prepared.summary.runs === undefined || !!flow.prepared.summary.approximate?.length))) {
-    if (measure === 'average') return flows.reduce((sum, flow) => sum + Math.max(0, ...(flow.prepared?.summary?.buckets.flatMap(bucket => bucket ? [bucket.maxValue] : []) ?? [])), 0);
+    if (measure !== 'current') return flows.reduce((sum, flow) => sum + Math.max(0, ...(flow.prepared?.summary?.buckets.flatMap(bucket => bucket ? [bucket.maxValue] : []) ?? [])), 0);
     const columns = Math.max(0, ...flows.map(flow => flow.prepared?.summary?.buckets.length ?? 0));
     let largest = 0;
     for (let column = 0; column < columns; column++) largest = Math.max(largest, flows.reduce((sum, flow) => sum + Math.max(0, flow.prepared?.summary?.buckets[column]?.maxValue ?? 0), 0));
     return largest;
   }
   if (measure === 'current') {
-    // The largest sum of daily amounts at any hour: a sweep over where runs start and end.
+    // The largest sum of positive daily amounts at any hour: a sweep over where runs start and end.
     const events: [number, number][] = [];
     for (const flow of flows) for (const run of flow.prepared?.summary?.runs?.map(run => ({ ...run, amount: run.value })) ?? flow.runs) {
-      if (run.lastHour < from || run.firstHour > to) continue;
+      if (run.lastHour < from || run.firstHour > to || !(run.amount > 0)) continue;
       events.push([Math.max(from, run.firstHour), run.amount], [Math.min(to, run.lastHour) + 1, -run.amount]);
     }
     events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -622,8 +622,8 @@ export function campaignScale(flows: readonly Flow[], measure: Measure, from: nu
     }
     return most;
   }
-  // A flow's running average moves only toward the amount of the run it is in, so it
-  // peaks at the end of a run (cut to the time shown): its exact peak. The sum of the
+  // A flow's running total or average moves only toward the amount of the run it is in, so
+  // it peaks at the end of a run (cut to the time shown): its exact peak. The sum of the
   // flows' peaks is never below what the diagram reaches at any hour.
   let most = 0;
   for (const flow of flows) {
@@ -636,7 +636,8 @@ export function campaignScale(flows: readonly Flow[], measure: Measure, from: nu
       if (first > last) continue;
       amount += run.amount * (last - first + 1);
       hours += last - first + 1;
-      peak = Math.max(peak, amount / hours);
+      // Amount × hours: a daily amount held 24 hours delivers it once.
+      peak = Math.max(peak, measure === 'total' ? amount / 24 : amount / hours);
     }
     most += peak;
   }

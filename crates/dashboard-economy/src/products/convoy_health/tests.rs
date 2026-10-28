@@ -145,6 +145,52 @@ fn each_deal_keeps_its_own_truncated_product_and_lend_lease_has_no_efficiency() 
 }
 
 #[test]
+fn a_row_without_its_holder_leaves_the_table_unknown_and_an_unknown_partner_keeps_the_row() {
+    let mut state = Prepared::default();
+    // Raw country 9 has no identity: the partner at hour 5, the deal's importer at hour 6.
+    for (hour, importer) in [(5, 1), (6, 9)] {
+        let mut at = base(hour);
+        set(
+            &mut at,
+            TableRows::ResourceExchanges(vec![ResourceExchangeRow {
+                id: 1,
+                exporter: 9,
+                importer,
+                efficiency_a: 100_000,
+                efficiency_b: 100_000,
+                convoys_assigned: 3,
+                convoys_required: 5,
+                ..Default::default()
+            }]),
+        );
+        set(
+            &mut at,
+            TableRows::ConvoyClients(vec![ConvoyClientRow {
+                handle: 4,
+                category: 4,
+                owner: 9,
+                other: 1,
+                bad: false,
+                ..Default::default()
+            }]),
+        );
+        state.step(&at);
+    }
+    let reply = ask(&mut state, ConvoyView::Trade, 6);
+    assert_eq!(reply.deals.len(), 1);
+    assert!(reply.deals[0].exporter.is_empty());
+    assert_eq!(reply.deals[0].efficiency, vec![EconomyRun(5, 5, "100000".into())]);
+    assert_eq!(reply.deals[0].convoys[1], vec![EconomyRun(5, 5, "5".into())]);
+    // Hour 6's deal belongs to no known country, so no deal at hour 6 is proven absent.
+    assert_eq!(reply.known[1], vec![EconomyRun(5, 5, "1".into())]);
+    assert_eq!(reply.leases.len(), 1);
+    assert!(reply.leases[0].giver.is_empty());
+    assert_eq!(reply.leases[0].bad, vec![EconomyRun(5, 6, "0".into())]);
+    assert_eq!(reply.known[2], vec![EconomyRun(5, 6, "1".into())]);
+    assert!(reply.warnings.iter().any(|line| line.contains("no identity")));
+}
+
+#[test]
 fn a_resource_spelled_only_by_a_later_dictionary_is_learned_by_changes() {
     let mut state = Prepared::default();
     for (hour, spelled) in [(5, false), (6, true)] {

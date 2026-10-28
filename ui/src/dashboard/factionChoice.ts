@@ -5,6 +5,7 @@ import type { OptionChoices, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
 import { contentKey, setToken } from './options.ts';
 import { selectedTags } from './countrySelection.ts';
+import { factionNameAt as recordedNameAt } from './factionNames.ts';
 import { useFollowedProduct } from './products';
 import { useCountryGroups } from './useCountryGroups';
 
@@ -33,10 +34,10 @@ export function chosenFaction(groups: CountryGroupReply, saved: string | null, t
   return { faction: null, reason: groups.factions.some(item => item.incomplete.some(span => covers(span, hour))) ? 'unknown' : 'none' };
 }
 
-/** The faction's name as the game showed it at `hour` (its latest outside its rows). */
-export function factionNameAt(faction: FactionGroup, hour: number): string {
-  const run = faction.names.find(item => covers(item, hour)) ?? faction.names.at(-1);
-  return run?.name ?? faction.name ?? 'Faction name unavailable';
+/** The faction's name as the game showed it at `hour`, never another hour's; without an
+ * hour, its latest. */
+export function factionNameAt(faction: FactionGroup, hour?: number): string {
+  return recordedNameAt(faction, hour).name ?? 'Faction name unavailable';
 }
 
 /** Whether the faction's roster lists the country at `hour`. */
@@ -63,7 +64,7 @@ export function useFactionChoices(widget: WidgetSpec, runtime: WidgetRuntime): O
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, true);
   return useMemo(() => ({ faction: (groups.data?.factions ?? []).map(faction => ({ value: setToken(faction.id),
-    label: factionNameAt(faction, faction.lastHour) })) }), [groups.data]);
+    label: factionNameAt(faction) })) }), [groups.data]);
 }
 
 /** The state words every faction widget uses when no faction is shown. */

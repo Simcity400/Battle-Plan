@@ -16,6 +16,8 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
   const owner = useMemo(() => ({ client, key }), [client, key]);
   const alive = useRef(owner); alive.current = owner;
   const pending = useRef(new Set<AbortController>());
+  // Only the latest key's request may answer the chart's pending navigation.
+  const navigation = useRef<AbortController | null>(null);
   const [keyboard, setKeyboard] = useState<{ owner: typeof owner; hour: number | null; revision: number }>();
   const [navigationError, setNavigationError] = useState<{ owner: typeof owner; error: string }>();
   useEffect(() => () => { for (const request of pending.current) request.abort(); pending.current.clear(); }, [owner, active]);
@@ -56,7 +58,8 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
   const onNavigateHour = useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((action, from, x, until) => {
     if (!track || !params || !active) return;
     setNavigationError(undefined);
-    const controller = new AbortController(); pending.current.add(controller);
+    navigation.current?.abort();
+    const controller = new AbortController(); pending.current.add(controller); navigation.current = controller;
     void preparedSeriesQuery(client, track.source, 'series-next-change', { branchId: params.branchId,
       family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: params.top }, tags: params.tags,
       key: action, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }, controller.signal).then(value => {

@@ -18,7 +18,7 @@ import { keyedDays } from '../../dashboard/keyedDays';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
-import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
+import { finalPreparedReply, pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { mix } from '../../shell/appearance/color';
 import { SHOWS } from './definition';
@@ -85,10 +85,9 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
     const summary = columnTooltip(data, region, shown.column, show, modifier, date, dayLabel);
     if (shown.exact !== false) return summary;
     const exact = exactDay(hour);
-    if (!exact) {
-      days.want(Math.floor(hour / dayHours));
-      return { ...summary, rows: [...summary.rows, { label: date, value: 'Loading…', divider: true }] };
-    }
+    // An unread day is read; one read before preparation finished is read again.
+    if (!exact || exact.reply && !finalPreparedReply(exact.reply)) days.want(Math.floor(hour / dayHours));
+    if (!exact) return { ...summary, rows: [...summary.rows, { label: date, value: 'Loading…', divider: true }] };
     if (!exact.reply) return { ...summary, rows: [...summary.rows, { label: date, value: `Unavailable: ${exact.error}`, divider: true, tone: 'muted' }] };
     if (pendingAt(preparedPrefix(exact.reply), hour)) return { ...summary, rows: [...summary.rows, { label: date, value: 'Still being prepared', divider: true }] };
     // The day reads its values; the shown history names its flags and modifiers.

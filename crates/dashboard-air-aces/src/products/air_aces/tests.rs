@@ -645,6 +645,40 @@ fn air_aces_recorded_wing_names_preserve_cached_text_and_capture_refusals() {
     );
 }
 
+#[test]
+fn air_aces_stored_wing_names_show_their_plain_display_text() {
+    let (cat, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
+        "localisation/test_l_english.yml",
+        "l_english:\n",
+    )]);
+    let mut row = ace(1, true);
+    row.assigned_wing = 70;
+    let mut sample = frame(100, vec![row]);
+    let TableView::Complete(TableRows::AirWings(wings)) =
+        &mut *sample.tables[TableId::AirWings.index()]
+    else {
+        unreachable!()
+    };
+    wings[0].name =
+        replay_data::rows::Recorded::Value(Some("\u{11}YFirst\u{11}! wing".as_bytes().to_vec()));
+    let mut scan = Scan {
+        first: 100,
+        last: 100,
+        ..Default::default()
+    };
+    scan.observe(&sample);
+    finish(&mut scan);
+    let reply = window_reply(
+        &scan,
+        &params(AirAcesView::Window, Some(0)),
+        Some(&cat),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let wing = reply.aces[0].runs[0].wing_name.unwrap();
+    assert_eq!(reply.texts[wing], "First wing");
+}
+
 fn fixture_source(frames: Vec<DecodedFrame>) -> Source {
     Source::from_replay(
         dashboard_base::source::SourceKey {

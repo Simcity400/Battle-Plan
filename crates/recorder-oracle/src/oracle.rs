@@ -178,36 +178,6 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         )));
     }
     let mut save = parse_country_emissions(&save_document, &frame)?;
-    if frame
-        .complete::<tables::NavalMissionTaskForces>()?
-        .iter()
-        .any(|row| row.raiding_spotting.is_some() || row.raiding_region.is_some())
-    {
-        let lexical = frame.complete::<tables::LexicalTokens>()?;
-        let mut keys = [b"".as_slice(); 2];
-        for (key, token) in keys.iter_mut().zip([
-            engine_native::naval_mission_inputs::RAID_SPOTTING_SAVE_TOKEN,
-            engine_native::naval_mission_inputs::RAID_REGION_SAVE_TOKEN,
-        ]) {
-            let mut rows = lexical.iter().filter(|row| row.token == token);
-            *key = rows
-                .next()
-                .map(|row| row.literal.as_slice())
-                .ok_or_else(|| invalid("retained raiding save token unavailable"))?;
-            if rows.next().is_some() {
-                return Err(invalid("retained raiding save token duplicated"));
-            }
-        }
-        save.naval_missions.raiding_grid = Some(match country_emission_layout(&frame) {
-            Ok(Some(layout)) => save_document.project(&layout)?.mission_raiding_grid(keys)?,
-            _ => save_document.mission_raiding_grid(keys)?,
-        });
-    }
-    recorder_oracle_naval_missions::naval_missions::bind_patrol_save_fields(
-        &frame,
-        &save_document,
-        &mut save,
-    )?;
     validate_identity(&frame, &save)?;
     let options = ResolveOptions {
         game_dir: game_dir
@@ -285,6 +255,17 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         Some(read_hours),
     )?;
     report.set_load_hour(branch);
+    // A naval binding refusal leaves only its own comparison group incomplete.
+    report.attempt_table(TableId::NavalMissionTaskForces, |_| {
+        bind_raiding_save_fields(&frame, &save_document, &mut save)
+    });
+    report.attempt_table(TableId::NavalPatrolMissionInputs, |_| {
+        recorder_oracle_naval_missions::naval_missions::bind_patrol_save_fields(
+            &frame,
+            &save_document,
+            &mut save,
+        )
+    });
     compare_extended(
         &frame,
         &save,
@@ -357,6 +338,41 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
     report.print(replay.format);
     println!("Oracle elapsed: {:.3} s", started.elapsed().as_secs_f64());
     report.outcome()
+}
+
+/// Bind the retained raiding-grid save fields through the recording's lexical tokens.
+fn bind_raiding_save_fields(
+    frame: &DecodedFrame,
+    save_document: &save::SaveDocument,
+    save: &mut Save,
+) -> io::Result<()> {
+    if !frame
+        .complete::<tables::NavalMissionTaskForces>()?
+        .iter()
+        .any(|row| row.raiding_spotting.is_some() || row.raiding_region.is_some())
+    {
+        return Ok(());
+    }
+    let lexical = frame.complete::<tables::LexicalTokens>()?;
+    let mut keys = [b"".as_slice(); 2];
+    for (key, token) in keys.iter_mut().zip([
+        engine_native::naval_mission_inputs::RAID_SPOTTING_SAVE_TOKEN,
+        engine_native::naval_mission_inputs::RAID_REGION_SAVE_TOKEN,
+    ]) {
+        let mut rows = lexical.iter().filter(|row| row.token == token);
+        *key = rows
+            .next()
+            .map(|row| row.literal.as_slice())
+            .ok_or_else(|| invalid("retained raiding save token unavailable"))?;
+        if rows.next().is_some() {
+            return Err(invalid("retained raiding save token duplicated"));
+        }
+    }
+    save.naval_missions.raiding_grid = Some(match country_emission_layout(frame) {
+        Ok(Some(layout)) => save_document.project(&layout)?.mission_raiding_grid(keys)?,
+        _ => save_document.mission_raiding_grid(keys)?,
+    });
+    Ok(())
 }
 
 fn matching_hour(saved: Hour, requested: Option<Hour>) -> io::Result<Hour> {

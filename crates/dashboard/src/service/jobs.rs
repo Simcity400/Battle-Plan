@@ -234,6 +234,17 @@ impl Inner {
         source: Arc<Source>,
         restart: bool,
     ) -> std::io::Result<()> {
+        self.queue_refresh(source, restart, false)
+    }
+
+    /// [`Self::refresh_preparation`]; with `defer`, a full history queue keeps the refresh in
+    /// `deferred` under the same lock, so the worker that next takes a job queues it.
+    fn queue_refresh(
+        &self,
+        source: Arc<Source>,
+        restart: bool,
+        defer: bool,
+    ) -> std::io::Result<()> {
         let mut loader = self.loader.lock().unwrap_or_else(|e| e.into_inner());
         let lanes = loader
             .as_mut()
@@ -247,12 +258,16 @@ impl Inner {
         }
         let restart = Arc::new(AtomicBool::new(restart));
         let job = LoadJob::PreparationRefresh {
-            source,
+            source: Arc::clone(&source),
             restart: Arc::clone(&restart),
         };
         match lanes.history.try_send(false, job) {
             Ok(()) => {
                 lanes.refreshes.insert(key, restart);
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) if defer => {
+                lanes.deferred.insert(key, source);
                 Ok(())
             }
             Err(TrySendError::Full(_)) => Err(std::io::Error::new(
@@ -1012,6 +1027,129 @@ impl Inner {
         }
     }
 
+    /// Reads the game's own settings from the user folder configured now into the map settings,
+    /// installed only while that folder is still the one configured
+    /// ([`crate::presentation::rebind`]): work admitted under other folders never restores theirs.
+    /// A changed `settings.txt`, whose game language prepared text is made in, moves every
+    /// source's prepared key and prepares it again, as a change of folders does.
+    pub(super) fn configure_game(&self) {
+        let _ = crate::presentation::rebind(
+            &self.content,
+            &self.closed,
+            |content| {
+                Ok(content
+                    .as_ref()
+                    .map(|content| map_settings::read_game(&content.options.user_dir)))
+            },
+            |_, game| {
+                if let Some(game) = game {
+                    self.map_settings
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .set_game(game);
+                }
+            },
+        );
+        // Folders are replaced under the admission lock, so these are the ones committed now.
+        let admission = self
+            .preparation_actions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(content) = self.content() else {
+            return;
+        };
+        let user_dir = &content.options.user_dir;
+        // Recordings no source holds open, completed ones included, are bound to the stamp
+        // seen last; new folders are rebound by `replace_content`.
+        let stamp = crate::prepared::settings_stamp(user_dir);
+        let mut moved = {
+            let mut bound = self
+                .game_settings
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let moved = bound
+                .as_ref()
+                .is_some_and(|(folder, seen)| folder == user_dir && *seen != stamp);
+            *bound = Some((user_dir.clone(), stamp));
+            moved
+        };
+        for source in self.bound_sources() {
+            moved |= crate::prepared::rebind_settings(&source, user_dir);
+        }
+        if moved {
+            self.reprepare(admission);
+        }
+    }
+
+    /// After every source's prepared binding moved on: the store checks taken so far are void,
+    /// and each open recording's running or finished preparation is refreshed off-thread against
+    /// the new binding. Takes the admission lock the caller rebound under.
+    pub(super) fn reprepare(&self, admission: std::sync::MutexGuard<'_, ()>) {
+        self.invalidate_checks();
+        drop(admission);
+        self.preparation.notify_change();
+        let sources: Vec<_> = self
+            .sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entries
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect();
+        let mut latest = BTreeMap::<PathBuf, Arc<Source>>::new();
+        let mut revisions = BTreeMap::new();
+        for source in sources {
+            let path = source.path().to_owned();
+            let revision = revisions
+                .entry(path.clone())
+                .or_insert_with(|| self.recording_revision(&path).ok());
+            if revision.as_deref() == Some(source.key().revision.as_str()) {
+                latest.insert(path, source);
+            }
+        }
+        for source in latest.into_values() {
+            // Manual Cancel and Clear remain effective until an explicit
+            // Start or reopen. Refresh active/completed preparation off-thread.
+            let progress = source.state::<crate::prepared::Progress>();
+            let state = progress
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .state;
+            if !matches!(
+                state,
+                crate::prepared::State::Idle
+                    | crate::prepared::State::Cancelled
+                    | crate::prepared::State::Paused
+            ) {
+                self.refresh_or_defer(source);
+            }
+        }
+    }
+
+    /// Queues a restart of `source`'s preparation, or keeps it until the history queue has
+    /// room, so a binding that moved on is always prepared again as its job would have been.
+    pub(super) fn refresh_or_defer(&self, source: Arc<Source>) {
+        if let Err(error) = self.queue_refresh(source, true, true) {
+            eprintln!("Preparation refresh: {error}");
+        }
+    }
+
+    /// Queues the restarts kept while the history queue was full, now that a job has left it.
+    fn queue_deferred(&self) {
+        let deferred = match self
+            .loader
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            Some(lanes) => std::mem::take(&mut lanes.deferred),
+            None => return,
+        };
+        for source in deferred.into_values() {
+            self.refresh_or_defer(source);
+        }
+    }
+
     /// Catches every source up to the configuration as committed now ([`Self::present`]). Once
     /// a change is committed the catch-up belongs to the service: only its closing stops it,
     /// never the request that made the change, so no source stays on a configuration that is
@@ -1207,10 +1345,7 @@ impl Inner {
             .map(|source| source.campaign_key())
             .unwrap_or_default();
         let key = target.key(campaign).map_err(str::to_owned)?;
-        self.map_settings
-            .lock()
-            .map_err(|e| e.to_string())?
-            .configure_game(&options.user_dir);
+        self.configure_game();
         let mods = {
             let mut catalogue = self
                 .visual_catalogue
@@ -1337,6 +1472,9 @@ impl Inner {
             if self.closed.load(Ordering::Acquire) {
                 return;
             }
+            if lane == Lane::History {
+                self.queue_deferred();
+            }
             let request = job.request().cloned();
             // Measurement only: the job's CPU by product, when enabled.
             let _cpu = match &job {
@@ -1379,6 +1517,17 @@ impl Inner {
                         .preparation_actions
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
+                    // A user's Cancel or Clear holds until their own Start, even while the job
+                    // it stopped is still ending.
+                    if self
+                        .sources
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .suppressed
+                        .contains(source.path())
+                    {
+                        return;
+                    }
                     // Whose job it is, read before cancelling clears `running`:
                     // a restart of the user's Prepare restarts as theirs.
                     let (state, manual, user_stops) = {
@@ -1643,12 +1792,7 @@ impl Inner {
                 self.complete(request, result);
             }
             LoadJob::Open(job) => {
-                if let Some(content) = self.content() {
-                    self.map_settings
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .configure_game(&content.options.user_dir);
-                }
+                self.configure_game();
                 self.open_job(job);
             }
             #[cfg(test)]

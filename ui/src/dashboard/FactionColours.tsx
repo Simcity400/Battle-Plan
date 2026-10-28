@@ -13,7 +13,6 @@ import { chosenColour, factionIdentity, saveCampaignSettings, setFactionColour, 
 import type { ColourScope } from './campaignSettings';
 import { Segmented } from '../components/Segmented';
 import type { CountryStyle, FactionGroup } from '../generated/dashboard';
-import { MAX_FACTIONS } from './campaignSettings';
 import { factionNameAt, latestFactionSummaries } from './factionNames';
 import './factionColours.css';
 
@@ -131,7 +130,6 @@ export function FactionColoursEditor({ client, source }: { client: DashboardClie
   const [message, setMessage] = useState<string | null>(null);
   /** Saves and returns whether it worked; a failure leaves its message showing. */
   const save = (next: typeof settings) => {
-    if (next === settings) { setMessage(`Up to ${MAX_FACTIONS} factions per campaign can have their own colour or name.`); return false; }
     const failure = saveCampaignSettings(next);
     setMessage(failure);
     return failure == null;

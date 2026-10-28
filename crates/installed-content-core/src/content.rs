@@ -74,6 +74,11 @@ impl CoveragePolicy {
             .filter_map(move |(root, since)| (*since <= self.0).then_some(*root))
     }
 
+    /// From policy 5 a mod descriptor adds only [`portable_descriptor`] to its layer hash.
+    fn portable_mod_descriptor(self) -> bool {
+        self.0 >= 5
+    }
+
     fn covered_path(self, path: &[u8]) -> bool {
         let lower = path.to_ascii_lowercase();
         (is_descriptor(&lower) || self.roots().any(|root| below(&lower, root.as_bytes())))
@@ -478,9 +483,17 @@ pub struct ResolvedLayer {
     lookup: std::sync::Arc<LookupIndex>,
     hashes: std::sync::Arc<BTreeMap<LayerPath, [u8; 32]>>,
     archive_stamp: Option<Stamp>,
-    descriptor_hash: Option<[u8; 32]>,
+    descriptor_hash: Option<DescriptorHash>,
     /// A visual mod mounted for presentation only ([`ResolvedLayers::presentation`]).
     overlay: Option<Overlay>,
+}
+
+/// A descriptor's digests: of its bytes, which show a change after it was parsed, and the
+/// portable one a mod's layer hash holds instead from policy 5.
+#[derive(Clone, Copy, Debug)]
+struct DescriptorHash {
+    bytes: [u8; 32],
+    portable: Option<[u8; 32]>,
 }
 
 /// A presentation mount: the mod's display name, and whether its covered bytes still verify
@@ -1125,6 +1138,9 @@ fn descriptor_layer(
             "DLC replace_path is not supported by this coverage policy",
         ));
     }
+    let portable = (is_mod && coverage.portable_mod_descriptor())
+        .then(|| portable_descriptor(&document, &replace_paths))
+        .transpose()?;
     Ok((
         ResolvedLayer {
             coverage,
@@ -1136,11 +1152,77 @@ fn descriptor_layer(
             lookup: Default::default(),
             hashes: Default::default(),
             archive_stamp: None,
-            descriptor_hash: Some(descriptor_hash),
+            descriptor_hash: Some(DescriptorHash {
+                bytes: descriptor_hash,
+                portable,
+            }),
             overlay: None,
         },
         document,
     ))
+}
+
+/// The layer-hash key of a portable mod descriptor; no layer path holds a NUL.
+const PORTABLE_DESCRIPTOR: &[u8] = b"\0descriptor";
+
+/// What a mod descriptor says about the content it mounts: its replaced paths and its
+/// `dependencies`, in descriptor order. Its location and file name are the launcher's, per machine.
+fn portable_descriptor(document: &Document, replace_paths: &[LayerPath]) -> io::Result<[u8; 32]> {
+    let mut hash = Sha256::new();
+    update_count(&mut hash, replace_paths.len())?;
+    for path in replace_paths {
+        update_framed(&mut hash, path)?;
+    }
+    let dependencies: Vec<_> = document.get_all(b"dependencies").collect();
+    update_count(&mut hash, dependencies.len())?;
+    for value in dependencies {
+        update_value(&mut hash, value)?;
+    }
+    Ok(hash.finalize().into())
+}
+
+fn update_count(hash: &mut Sha256, count: usize) -> io::Result<()> {
+    let count = u32::try_from(count).map_err(|_| invalid("descriptor value too large"))?;
+    hash.update(count.to_le_bytes());
+    Ok(())
+}
+
+fn update_framed(hash: &mut Sha256, bytes: &[u8]) -> io::Result<()> {
+    update_count(hash, bytes.len())?;
+    hash.update(bytes);
+    Ok(())
+}
+
+/// A descriptor value, framed so that distinct values never share an encoding.
+fn update_value(hash: &mut Sha256, value: &parser::Value) -> io::Result<()> {
+    let (tag, items) = match value {
+        parser::Value::Scalar(bytes) => {
+            hash.update([0u8]);
+            return update_framed(hash, bytes);
+        }
+        parser::Value::Block(items) => (None, items),
+        parser::Value::Tagged { tag, items } => (Some(tag), items),
+    };
+    match tag {
+        None => hash.update([1u8]),
+        Some(tag) => {
+            hash.update([2u8]);
+            update_framed(hash, tag)?;
+        }
+    }
+    update_count(hash, items.len())?;
+    for item in items {
+        match &item.key {
+            None => hash.update([0u8]),
+            Some(key) => {
+                hash.update([1u8]);
+                update_framed(hash, key)?;
+            }
+        }
+        hash.update(item.operator.text());
+        update_value(hash, &item.value)?;
+    }
+    Ok(())
 }
 
 fn directory_entries(path: &Path) -> io::Result<Vec<fs::DirEntry>> {
@@ -1346,11 +1428,15 @@ impl ResolvedLayer {
                     .file_name()
                     .ok_or_else(|| invalid("descriptor has no name"))?,
             ))?;
-            let key = normalize_path(name.as_bytes())?;
             let digest = cache.file(descriptor, stats)?;
-            if self.descriptor_hash != Some(digest) {
-                return Err(invalid("descriptor changed between parsing and hashing"));
-            }
+            let parsed = self
+                .descriptor_hash
+                .filter(|parsed| parsed.bytes == digest)
+                .ok_or_else(|| invalid("descriptor changed between parsing and hashing"))?;
+            let (key, digest) = match parsed.portable {
+                Some(portable) => (PORTABLE_DESCRIPTOR.to_vec(), portable),
+                None => (normalize_path(name.as_bytes())?, digest),
+            };
             if hashes.insert(key, digest).is_some() {
                 return Err(invalid(
                     "descriptor path collides with a covered layer file",
@@ -1933,7 +2019,7 @@ impl ResolvedLayers {
             };
             let bytes = fs::read(descriptor)?;
             let actual: [u8; 32] = Sha256::digest(&bytes).into();
-            if layer.descriptor_hash != Some(actual) {
+            if layer.descriptor_hash.map(|parsed| parsed.bytes) != Some(actual) {
                 return Err(invalid(format!(
                     "DLC descriptor {} changed after content verification",
                     descriptor.display()
@@ -3682,7 +3768,12 @@ fn builtin_layer(
 ) -> io::Result<ResolvedLayer> {
     let descriptor_hash = descriptor
         .as_ref()
-        .map(|path| fs::read(path).map(|bytes| Sha256::digest(bytes).into()))
+        .map(|path| {
+            fs::read(path).map(|bytes| DescriptorHash {
+                bytes: Sha256::digest(bytes).into(),
+                portable: None,
+            })
+        })
         .transpose()?;
     Ok(ResolvedLayer {
         coverage,
@@ -3721,7 +3812,7 @@ fn append_builtin(
             .ok_or_else(|| invalid("built-in descriptor has no Unicode name"))?;
         vanilla_files.insert(
             format!("{prefix}/{name}").into_bytes(),
-            layer.descriptor_hash.unwrap(),
+            layer.descriptor_hash.unwrap().bytes,
         );
     }
     layers.layers.push(layer);

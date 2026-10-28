@@ -142,7 +142,11 @@ impl Holds for ArmyName {
 
 impl Holds for TemplateName {
     fn held(&self, bytes: &mut HeldBytes) {
-        bytes.heap(&self.literal).heap(&self.key);
+        match &self.0 {
+            Ok(TemplateNaming::Text(text)) => bytes.heap(text),
+            Ok(TemplateNaming::Localised { tag, key }) => bytes.heap(tag).heap(key),
+            Err(why) => bytes.heap(why),
+        };
     }
 }
 
@@ -230,6 +234,8 @@ impl Extract for BlockExtract {
                 TableId::DivisionStatus,
                 TableId::DivisionTemplates,
                 TableId::DivisionTemplateIcons,
+                TableId::Countries,
+                TableId::CountryLinks,
             ]
             .iter()
             .any(|table| changes.rows_changed[table.index()]);

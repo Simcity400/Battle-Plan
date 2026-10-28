@@ -345,20 +345,32 @@ pub async fn recordings(
     .await
 }
 
-/// A session folder of this recorder's save folder, and a recorded campaign in it.
-fn waiting_part(session: &str, campaign: &str) -> Result<PathBuf, String> {
+/// The running session, or a session folder of this recorder's save folder, and a recorded
+/// campaign in it; with the folder the running session saves into.
+fn waiting_part(
+    recorder: &Recorder,
+    session: &str,
+    campaign: &str,
+) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let session = PathBuf::from(session)
+        .canonicalize()
+        .map_err(|error| format!("Unknown recording: {error}"))?;
+    if !is_campaign_uuid(campaign.as_bytes()) {
+        return Err("Unknown recording".into());
+    }
+    // The running session keeps the save folder it started with, even after it is changed.
+    if let Some(target) = recorder.live_target(&session) {
+        return Ok((session, Some(target)));
+    }
     let root = save_folder(&RecorderSettings::load().unwrap_or_default());
     let sessions = root
         .join("sessions")
         .canonicalize()
         .map_err(|error| format!("Unknown recording: {error}"))?;
-    let session = PathBuf::from(session)
-        .canonicalize()
-        .map_err(|error| format!("Unknown recording: {error}"))?;
-    if session.parent() != Some(sessions.as_path()) || !is_campaign_uuid(campaign.as_bytes()) {
+    if session.parent() != Some(sessions.as_path()) {
         return Err("Unknown recording".into());
     }
-    Ok(session)
+    Ok((session, None))
 }
 
 /// Through the running session when it saves into the same folder. Returns why a save named its
@@ -370,9 +382,9 @@ pub async fn act_on_waiting(
     campaign: String,
     discard: bool,
 ) -> Result<Option<String>, String> {
-    let session = waiting_part(&session, &campaign)?;
     let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
-    let target = match recorder.live_target(&session) {
+    let (session, live) = waiting_part(&recorder, &session, &campaign)?;
+    let target = match live {
         Some(target) => target,
         None => {
             let (session, campaign) = (session.clone(), campaign.clone());

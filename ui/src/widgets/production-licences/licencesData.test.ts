@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { licencePairs, licencesAt, rosterKnown, validateLicences } from './licencesData.ts';
+import { holderLicencesAt, holdersAt, licencePairs, licencesAt, rosterKnown, validateLicences } from './licencesData.ts';
 
 const reply = () => validateLicences({ branchId: '1', view: 'licences', lastHour: 50, known: [[0, 50, '1']], organisations: [], designs: [], designsFrom: null, texts: [], icons: {}, warnings: [],
   holders: { '1': [{ hour: 0, tag: 'LIC' }], '2': [{ hour: 0, tag: 'GIV' }], '3': [{ hour: 0, tag: 'OTH' }] },
@@ -27,6 +27,15 @@ test('ribbons count licences, or the factories lent where the measure asks', () 
   assert.deepEqual(licencePairs(rows, 'licences').map(pair => [pair.licensor, pair.licensee, pair.width]), [['GIV', 'LIC', 2], ['OTH', 'OTH', 1]]);
   // A licence lending no factories, or none recorded, adds no width.
   assert.deepEqual(licencePairs(rows, 'factories').map(pair => pair.width), [3, 0]);
+});
+
+test('a picked country keeps its holders through a rename, never the next holder of its tag', () => {
+  const renamed = reply();
+  renamed.holders['2'] = [{ hour: 0, tag: 'GIV' }, { hour: 20, tag: 'NEW' }];
+  renamed.holders['3'] = [{ hour: 0, tag: 'OTH' }, { hour: 22, tag: 'GIV' }];
+  const holders = holdersAt(renamed, 'GIV', 15);
+  assert.deepEqual(holders, ['2']);
+  assert.deepEqual(holderLicencesAt(renamed, holders, 25).map(row => [row.licensor, row.licensee]), [['NEW', 'LIC'], ['NEW', 'LIC']]);
 });
 
 test('a refused licence roster is unknown, not zero licences', () => {

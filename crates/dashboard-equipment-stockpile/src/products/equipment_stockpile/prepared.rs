@@ -2799,6 +2799,11 @@ fn read_window(
                     within,
                 )?);
             }
+            operands.push(choices.share_summary(
+                group,
+                (request.from, request.to, width),
+                within,
+            )?);
             display.groups.push(StockpileGroupSummary {
                 key: group.clone(),
                 operands,
