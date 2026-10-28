@@ -2236,6 +2236,7 @@ pub mod external;
 mod flush;
 pub(crate) mod independent;
 mod lanes;
+pub(crate) use lanes::parallelism;
 mod production_scans;
 mod side;
 /// Measurement only: the hourly walk's part of the state census.

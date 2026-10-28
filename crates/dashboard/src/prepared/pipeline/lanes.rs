@@ -130,7 +130,7 @@ pub(super) struct Lanes<'scope> {
 }
 
 #[cfg(not(test))]
-pub(super) fn parallelism() -> usize {
+pub(crate) fn parallelism() -> usize {
     #[cfg(windows)]
     if let Some(count) = process_affinity_parallelism() {
         return count;
@@ -142,7 +142,7 @@ pub(super) fn parallelism() -> usize {
 /// concurrent tests would otherwise each start a lane per CPU. Lane parity
 /// with serial observation is proven by the lane tests themselves.
 #[cfg(test)]
-pub(super) fn parallelism() -> usize {
+pub(crate) fn parallelism() -> usize {
     TEST_PARALLELISM.with(|value| value.get()).unwrap_or(1)
 }
 

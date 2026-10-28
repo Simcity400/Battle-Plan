@@ -829,6 +829,50 @@ fn moving_tables(count: u32, quiet: bool) -> Replay {
     Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()
 }
 
+static CAPTURE_EVERY: Family = Family {
+    name: "capture every",
+    extract: "capture-every.extract",
+    sequential: "capture-every.sequential",
+    fallback: "capture-every.fallback",
+    tables: &[TableId::Countries, TableId::States],
+    fields: None,
+    start: |_| Box::<Capture>::default(),
+};
+
+/// Families whose extracts run at once on a fanout's helpers are each handed
+/// every frame, quiet span, change fact and allocation relation they are
+/// handed one after another.
+#[test]
+fn families_visited_at_once_are_handed_what_they_are_one_after_another() {
+    static FANOUT: LazyLock<Fanout> =
+        LazyLock::new(|| Fanout::new("prepass test hour", 3).unwrap());
+    let replay = moving_tables(32, true);
+    let families: &[&'static Family] = &[&CAPTURE_POWER, &CAPTURE_ALL, &CAPTURE_EVERY];
+    let events = |fanout: Option<&'static Fanout>| -> Vec<Vec<Captured>> {
+        extract_block_measured(
+            &replay,
+            &replay.index[0],
+            families,
+            &AtomicBool::new(false),
+            &Knobs {
+                fanout,
+                ..Knobs::default()
+            },
+        )
+        .outcomes
+        .into_iter()
+        .map(|(outcome, ..)| match outcome {
+            Outcome::Facts(facts) => *facts.downcast::<Vec<Captured>>().unwrap(),
+            Outcome::Sequential => panic!("the block was observed hourly"),
+            Outcome::Declined(error) | Outcome::Failed(error) => panic!("extract failed: {error}"),
+        })
+        .collect()
+    };
+    let serial = events(None);
+    assert!(serial.iter().all(|events| !events.is_empty()));
+    assert_eq!(events(Some(&FANOUT)), serial);
+}
+
 /// Every frame, quiet span, change fact, sample hour and pairwise allocation
 /// relation stays equal when the framework releases replaced views.
 #[test]

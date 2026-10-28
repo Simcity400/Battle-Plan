@@ -112,11 +112,13 @@ enum Step {
     },
 }
 
-/// Each step, and each visited frame for the allocation relation.
+/// Each step, each visited frame for the allocation relation, and the tables each
+/// `Replacing` step named.
 #[derive(Default)]
 struct Log {
     steps: Vec<Step>,
     frames: Vec<DecodedFrame>,
+    replaced: Vec<Vec<TableId>>,
 }
 
 impl Log {
@@ -259,33 +261,63 @@ fn together_releasing(
     watchings: &[Watching<'_>],
     releasing: bool,
 ) -> Vec<Log> {
+    together_on(replay, index, watchings, releasing, None, |_| false).0
+}
+
+/// A watch's log of what it is handed, noting the threads that visit it.
+fn logging<'a>(
+    log: &'a mut Log,
+    own: &'a [TableId],
+    threads: &'a std::sync::Mutex<std::collections::HashSet<std::thread::ThreadId>>,
+) -> impl FnMut(Watched<'_>) -> io::Result<()> + Send + 'a {
+    move |step| {
+        threads.lock().unwrap().insert(std::thread::current().id());
+        match step {
+            Watched::Change(change) => log.change(change),
+            Watched::Hour { updates, frame } => log.hour(own, updates, frame),
+            Watched::Replacing(tables) => log.replaced.push(tables.to_vec()),
+        }
+        Ok(())
+    }
+}
+
+/// Every watch of one read of a block, those `sendable` picks by position
+/// [`BlockWatch::sendable`], with `fanout`; and how many threads visited.
+fn together_on(
+    replay: &Replay,
+    index: &BlockIndex,
+    watchings: &[Watching<'_>],
+    releasing: bool,
+    fanout: Option<&Fanout>,
+    sendable: fn(usize) -> bool,
+) -> (Vec<Log>, usize) {
     let mut logs: Vec<Log> = watchings.iter().map(|_| Log::default()).collect();
     let owns: Vec<Vec<TableId>> = watchings.iter().map(|&watching| own(watching)).collect();
+    let threads = std::sync::Mutex::new(std::collections::HashSet::new());
     {
         let mut watches: Vec<BlockWatch<'_>> = watchings
             .iter()
             .zip(logs.iter_mut())
             .zip(&owns)
-            .map(|((&watching, log), own)| {
-                let watch = BlockWatch::new(watching, move |step| {
-                    match step {
-                        Watched::Change(change) => log.change(change),
-                        Watched::Hour { updates, frame } => log.hour(own, updates, frame),
-                        Watched::Replacing(_) => {}
-                    }
-                    Ok(())
-                });
+            .enumerate()
+            .map(|(at, ((&watching, log), own))| {
+                let visit = logging(log, own, &threads);
+                let watch = if sendable(at) {
+                    BlockWatch::sendable(watching, visit)
+                } else {
+                    BlockWatch::new(watching, visit)
+                };
                 if releasing { watch.releasing() } else { watch }
             })
             .collect();
         replay
-            .read_block_watched(index, &mut watches, || Ok(()))
+            .read_block_watched_keeping(index, &mut watches, None, fanout, || Ok(()))
             .unwrap();
         for watch in watches {
             watch.finish().unwrap();
         }
     }
-    logs
+    (logs, threads.into_inner().unwrap().len())
 }
 
 fn replays() -> (Replay, Replay, std::path::PathBuf) {
@@ -345,6 +377,55 @@ fn watches_in_one_read_are_handed_what_their_own_reads_hand_them() {
                         expected.shared(),
                         "{label} block {block}: watch {at} with {set:?} shares allocations as alone"
                     );
+                }
+            }
+        }
+    }
+    drop(held);
+    std::fs::remove_file(path).unwrap();
+}
+
+/// Watches visited at once on a fanout's helpers, every one or every other,
+/// are handed exactly what they are handed one after another, releasing or
+/// not, and with no fanout every watch is visited on the reading thread.
+#[test]
+fn watches_visited_at_once_are_handed_what_they_are_one_after_another() {
+    let (memory, held, path) = replays();
+    let watchings = watchings();
+    let fanout = Fanout::new("watched test hour", 3).unwrap();
+    let every: fn(usize) -> bool = |_| true;
+    let alternate: fn(usize) -> bool = |at| at % 2 == 0;
+    for (label, replay) in [("memory", &memory), ("held", &held)] {
+        for (block, index) in replay.index.iter().enumerate() {
+            for releasing in [false, true] {
+                let (serial, threads) =
+                    together_on(replay, index, &watchings, releasing, None, every);
+                assert_eq!(threads, 1, "{label} block {block}: no fanout");
+                for sendable in [every, alternate] {
+                    let (parallel, threads) = together_on(
+                        replay,
+                        index,
+                        &watchings,
+                        releasing,
+                        Some(&fanout),
+                        sendable,
+                    );
+                    assert!(threads > 1, "{label} block {block}: helpers visit");
+                    for (at, (serial, parallel)) in serial.iter().zip(&parallel).enumerate() {
+                        assert_eq!(
+                            serial.steps, parallel.steps,
+                            "{label} block {block}: watch {at}"
+                        );
+                        assert_eq!(
+                            serial.replaced, parallel.replaced,
+                            "{label} block {block}: watch {at} replacing"
+                        );
+                        assert_eq!(
+                            serial.shared(),
+                            parallel.shared(),
+                            "{label} block {block}: watch {at} shares allocations as in order"
+                        );
+                    }
                 }
             }
         }
@@ -415,6 +496,51 @@ fn a_failed_visit_stops_only_its_watch() {
         ];
         replay
             .read_block_watched(index, &mut watches, || Ok(()))
+            .unwrap();
+        let [failed, other] = watches;
+        assert_eq!(
+            failed.finish().unwrap_err().to_string(),
+            "synthetic visit failure"
+        );
+        other.finish().unwrap();
+    }
+    assert_eq!(hours, [1, 2, 3]);
+    assert_eq!(log.steps, alone(&replay, index, every).steps);
+}
+
+/// On a fanout's helpers too, a watch whose visit fails stops with its error at that hour,
+/// and the other is handed every hour as alone.
+#[test]
+fn a_failed_visit_on_a_helper_stops_only_its_watch() {
+    let replay = fixture();
+    let index = &replay.index[0];
+    let fanout = Fanout::new("watched test hour", 3).unwrap();
+    let mut hours = Vec::new();
+    let mut log = Log::default();
+    let tables = [TableId::Clock];
+    let every = Watching::Every(&tables);
+    {
+        let mut watches = [
+            BlockWatch::sendable(every, |step| {
+                let Watched::Hour { frame, .. } = step else {
+                    unreachable!()
+                };
+                hours.push(frame.hour);
+                if frame.hour == 3 {
+                    return Err(io::Error::other("synthetic visit failure"));
+                }
+                Ok(())
+            }),
+            BlockWatch::sendable(every, |step| {
+                let Watched::Hour { updates, frame } = step else {
+                    unreachable!()
+                };
+                log.hour(&own(every), updates, frame);
+                Ok(())
+            }),
+        ];
+        replay
+            .read_block_watched_keeping(index, &mut watches, None, Some(&fanout), || Ok(()))
             .unwrap();
         let [failed, other] = watches;
         assert_eq!(
@@ -543,6 +669,7 @@ fn a_kept_block_holds_the_selected_reads_updates_and_its_watches_their_own_reads
                             tables: &extra,
                             frames: &mut keep,
                         }),
+                        None,
                         || Ok(()),
                     )
                     .unwrap();
@@ -615,8 +742,15 @@ fn kept_only_tables_have_no_reconstructed_views() {
                 log.hour(&own, updates, frame);
                 Ok(())
             })];
-            let mut reading =
-                Reading::new(CAMPAIGN, index.branch, replay.format, &mut watches, &extra).unwrap();
+            let mut reading = Reading::new(
+                CAMPAIGN,
+                index.branch,
+                replay.format,
+                &mut watches,
+                &extra,
+                None,
+            )
+            .unwrap();
             for frame in replay.read_block_selected(index, &selected).unwrap() {
                 assert!(
                     reading
@@ -632,7 +766,7 @@ fn kept_only_tables_have_no_reconstructed_views() {
                         .is_some()
                 );
             }
-            reading.flush();
+            reading.flush().unwrap();
             drop(reading);
             for watch in watches {
                 watch.finish().unwrap();

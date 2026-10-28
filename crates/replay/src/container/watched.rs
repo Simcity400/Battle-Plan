@@ -73,7 +73,22 @@ pub enum Watched<'a> {
     },
 }
 
-type Visit<'v> = Box<dyn FnMut(Watched<'_>) -> io::Result<()> + 'v>;
+type Step<'s> = dyn FnMut(Watched<'_>) -> io::Result<()> + 's;
+
+/// A watch's visit: on the reading thread, or on any.
+enum Visit<'v> {
+    Here(Box<Step<'v>>),
+    Anywhere(Box<dyn FnMut(Watched<'_>) -> io::Result<()> + Send + 'v>),
+}
+
+impl<'v> Visit<'v> {
+    fn step(&mut self) -> &mut Step<'v> {
+        match self {
+            Self::Here(visit) => &mut **visit,
+            Self::Anywhere(visit) => &mut **visit,
+        }
+    }
+}
 
 /// One consumer of [`Replay::read_block_watched`]: what it reads, the visit
 /// that is handed its steps, and once read its own outcome.
@@ -89,9 +104,22 @@ impl<'v> BlockWatch<'v> {
         watching: Watching<'v>,
         visit: impl FnMut(Watched<'_>) -> io::Result<()> + 'v,
     ) -> Self {
+        Self::with(watching, Visit::Here(Box::new(visit)))
+    }
+
+    /// A watch whose visits a read with a [`Fanout`] may make on its helpers,
+    /// at once with other watches' visits of the same hour.
+    pub fn sendable(
+        watching: Watching<'v>,
+        visit: impl FnMut(Watched<'_>) -> io::Result<()> + Send + 'v,
+    ) -> Self {
+        Self::with(watching, Visit::Anywhere(Box::new(visit)))
+    }
+
+    fn with(watching: Watching<'v>, visit: Visit<'v>) -> Self {
         Self {
             watching,
-            visit: Box::new(visit),
+            visit,
             outcome: None,
             releasing: false,
         }
@@ -131,6 +159,24 @@ pub struct Keep<'k> {
     pub frames: &'k mut dyn FnMut(&[Arc<RecordedFrame>]),
 }
 
+/// Helper threads on which a block's read hands the watches visited at one
+/// hour their steps at once ([`BlockWatch::sendable`]), each in hour order,
+/// while the reading thread visits one and waits for the rest before the
+/// next hour is reconstructed. Each helper runs as the reading thread does.
+pub struct Fanout(rayon::ThreadPool);
+
+impl Fanout {
+    /// `helpers` threads, named `name` and a number.
+    pub fn new(name: &'static str, helpers: usize) -> io::Result<Self> {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(helpers.max(1))
+            .thread_name(move |helper| format!("{name} {helper}"))
+            .build()
+            .map(Self)
+            .map_err(io::Error::other)
+    }
+}
+
 impl Replay {
     /// One read of a block for every one of `watches`: the tables any of
     /// them reads (and Campaign) decoded and reconstructed once, each watch
@@ -148,21 +194,30 @@ impl Replay {
         watches: &mut [BlockWatch<'_>],
         check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
-        self.read_block_watched_keeping(index, watches, None, check)
+        self.read_block_watched_keeping(index, watches, None, None, check)
     }
 
-    /// [`Replay::read_block_watched`], keeping the block's frames for another reader ([`Keep`]).
+    /// [`Replay::read_block_watched`], keeping the block's frames for another
+    /// reader ([`Keep`]), with the watches visited at each hour visited at
+    /// once on `fanout`'s helpers.
     pub fn read_block_watched_keeping(
         &self,
         index: &BlockIndex,
         watches: &mut [BlockWatch<'_>],
         keep: Option<Keep<'_>>,
+        fanout: Option<&Fanout>,
         mut check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
         check()?;
         let extra = keep.as_ref().map_or(&[][..], |keep| keep.tables);
-        let mut reading =
-            Reading::new(&self.campaign_id, index.branch, self.format, watches, extra)?;
+        let mut reading = Reading::new(
+            &self.campaign_id,
+            index.branch,
+            self.format,
+            watches,
+            extra,
+            fanout,
+        )?;
         let block = self.grouped_block(index)?;
         // Admission as `read_block_selected`: the selected tables
         // decoded, then every section's checksum on a first read.
@@ -215,7 +270,7 @@ impl Replay {
                     break;
                 }
             }
-            reading.flush();
+            reading.flush()?;
             return Ok(());
         }
         for (position, (hour, metrics)) in hours.into_iter().zip(metrics).enumerate() {
@@ -232,7 +287,7 @@ impl Replay {
                 break;
             }
         }
-        reading.flush();
+        reading.flush()?;
         Ok(())
     }
 }
@@ -583,6 +638,7 @@ struct Reading<'w, 'v, 'r> {
     kept: [bool; TABLE_COUNT],
     consumers: Vec<Consumer>,
     watches: &'w mut [BlockWatch<'v>],
+    fanout: Option<&'w Fanout>,
 }
 
 impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
@@ -592,6 +648,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
         format: crate::format::FormatVersion,
         watches: &'w mut [BlockWatch<'v>],
         extra: &[TableId],
+        fanout: Option<&'w Fanout>,
     ) -> io::Result<Self> {
         let mut chosen = [false; TABLE_COUNT];
         chosen[TableId::Campaign.index()] = true;
@@ -690,6 +747,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
             kept,
             consumers,
             watches,
+            fanout,
         })
     }
 
@@ -697,69 +755,27 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
         self.watches.iter().any(|watch| !watch.stopped())
     }
 
-    /// A visit witnessed without advancing rows: every-hour watches, read
-    /// hours, and a delta from a complete baseline deleting keys or naming
-    /// watched fields. A failed delta makes that complete view unavailable,
-    /// which also visits. Other cases keep their views until the normal
-    /// decision, including unwatched deltas in a quiet span.
-    fn visits_before(&self, consumer: &Consumer, frame: &RecordedFrame) -> bool {
-        let Some(changes) = &consumer.changes else {
-            return true;
-        };
-        consumer
-            .own
-            .iter()
-            .zip(&changes.fields)
-            .any(|(&position, &(fields, read))| {
-                let table = self.tables.tables[position];
-                fields.is_some()
-                    && ((read && frame.metrics.table_ns[table.index()] != 0)
-                        || match &frame.tables[table.index()] {
-                            TableUpdate::Delta {
-                                changed, deleted, ..
-                            } => match self.tables.views[position].as_deref() {
-                                Some(TableView::Complete(rows)) => {
-                                    !deleted.is_empty()
-                                        || changed.iter().any(|row| {
-                                            touches(table, fields, row)
-                                                || (row.mask == full_mask(row.recorded_fields)
-                                                    && !has_key(rows, row.key))
-                                        })
-                                }
-                                _ => false,
-                            },
-                            _ => false,
-                        })
-            })
-    }
-
-    fn release_visiting(&mut self, frame: &RecordedFrame) {
-        for index in 0..self.consumers.len() {
-            if self.watches[index].stopped()
-                || !self.watches[index].releasing
-                || !self.visits_before(&self.consumers[index], frame)
-            {
-                continue;
-            }
-            let consumer = &mut self.consumers[index];
-            let watch = &mut self.watches[index];
-            if let Some(changes) = &mut consumer.changes
-                && let Err(error) = changes.quiet.flush(&mut watch.visit)
-            {
-                watch.outcome = Some(Err(error));
-                continue;
-            }
-            consumer.replaced.clear();
-            for &position in &consumer.own {
-                let table = self.tables.tables[position];
-                if !matches!(frame.tables[table.index()], TableUpdate::Unchanged { .. }) {
-                    consumer.replaced.push(table);
+    fn release_visiting(&mut self, frame: &RecordedFrame) -> io::Result<()> {
+        let tables = &self.tables;
+        each_watch(
+            self.fanout,
+            &mut self.consumers,
+            &mut *self.watches,
+            |consumer, watch| watch.releasing && visits_before(tables, consumer, frame),
+            |consumer, visit| {
+                if let Some(changes) = &mut consumer.changes {
+                    changes.quiet.flush(&mut *visit)?;
                 }
-            }
-            if let Err(error) = (watch.visit)(Watched::Replacing(&consumer.replaced)) {
-                watch.outcome = Some(Err(error));
-            }
-        }
+                consumer.replaced.clear();
+                for &position in &consumer.own {
+                    let table = tables.tables[position];
+                    if !matches!(frame.tables[table.index()], TableUpdate::Unchanged { .. }) {
+                        consumer.replaced.push(table);
+                    }
+                }
+                visit(Watched::Replacing(&consumer.replaced))
+            },
+        )
     }
 
     /// Reconstruct one hour and hand it to every watch still reading;
@@ -782,7 +798,7 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
                 return Ok(false);
             }
         } else {
-            self.release_visiting(&frame);
+            self.release_visiting(&frame)?;
             // A table this hour replaces is released from the frames kept,
             // so its delta applies in place unless a visitor holds it.
             for consumer in &mut self.consumers {
@@ -844,62 +860,172 @@ impl<'w, 'v, 'r> Reading<'w, 'v, 'r> {
         if let Some(owned) = Arc::get_mut(&mut frame) {
             owned.retain_updates(&self.kept)?;
         }
-        for (consumer, watch) in self.consumers.iter_mut().zip(self.watches.iter_mut()) {
-            if watch.stopped() {
-                continue;
-            }
-            if consumer
-                .changes
-                .as_ref()
-                .is_some_and(|changes| !changes.visits)
-            {
-                continue;
-            }
-            if let Some(changes) = &mut consumer.changes
-                && let Err(error) = changes.quiet.flush(&mut watch.visit)
-            {
-                watch.outcome = Some(Err(error));
-                continue;
-            }
-            let decoded = project(
-                &mut consumer.frame,
-                &self.tables,
-                &consumer.own,
-                self.branch,
-                &frame,
-            );
-            let visited = match &consumer.changes {
-                Some(changes) => (watch.visit)(Watched::Change(BlockChange::Changed {
-                    frame: decoded,
-                    tables: &changes.changed,
-                    rebuilt: &changes.rebuilt,
-                })),
-                None => (watch.visit)(Watched::Hour {
-                    updates: &frame,
-                    frame: decoded,
-                }),
-            };
-            if let Err(error) = visited {
-                watch.outcome = Some(Err(error));
-            }
-        }
+        let (tables, branch, frame) = (&self.tables, self.branch, &frame);
+        each_watch(
+            self.fanout,
+            &mut self.consumers,
+            &mut *self.watches,
+            |consumer, _| {
+                consumer
+                    .changes
+                    .as_ref()
+                    .is_none_or(|changes| changes.visits)
+            },
+            |consumer, visit| {
+                if let Some(changes) = &mut consumer.changes {
+                    changes.quiet.flush(&mut *visit)?;
+                }
+                let decoded = project(&mut consumer.frame, tables, &consumer.own, branch, frame);
+                match &consumer.changes {
+                    Some(changes) => visit(Watched::Change(BlockChange::Changed {
+                        frame: decoded,
+                        tables: &changes.changed,
+                        rebuilt: &changes.rebuilt,
+                    })),
+                    None => visit(Watched::Hour {
+                        updates: frame,
+                        frame: decoded,
+                    }),
+                }
+            },
+        )?;
         Ok(self.live())
     }
 
     /// Hand every watch of changes still reading its quiet hours not yet
     /// visited.
-    fn flush(&mut self) {
-        for (consumer, watch) in self.consumers.iter_mut().zip(self.watches.iter_mut()) {
-            if watch.stopped() {
-                continue;
-            }
-            if let Some(changes) = &mut consumer.changes
-                && let Err(error) = changes.quiet.flush(&mut watch.visit)
-            {
-                watch.outcome = Some(Err(error));
-            }
+    fn flush(&mut self) -> io::Result<()> {
+        each_watch(
+            self.fanout,
+            &mut self.consumers,
+            &mut *self.watches,
+            |consumer, _| consumer.changes.is_some(),
+            |consumer, visit| match &mut consumer.changes {
+                Some(changes) => changes.quiet.flush(visit),
+                None => Ok(()),
+            },
+        )
+    }
+}
+
+/// Hand every watch still reading that `chosen` picks its `step`: in order
+/// here, or with a fanout at once, each [sendable] watch on a helper and
+/// every other watch here (one sendable watch too when no other is). The
+/// helpers finish before this returns. A step's error stops its watch with
+/// that outcome.
+///
+/// [sendable]: BlockWatch::sendable
+fn each_watch(
+    fanout: Option<&Fanout>,
+    consumers: &mut [Consumer],
+    watches: &mut [BlockWatch<'_>],
+    chosen: impl Fn(&Consumer, &BlockWatch<'_>) -> bool,
+    step: impl Fn(&mut Consumer, &mut Step<'_>) -> io::Result<()> + Sync,
+) -> io::Result<()> {
+    let count = consumers.len();
+    let picked = consumers
+        .iter_mut()
+        .zip(watches.iter_mut())
+        .filter(|(consumer, watch)| !watch.stopped() && chosen(&**consumer, &**watch));
+    let Some(fanout) = fanout else {
+        for (consumer, watch) in picked {
+            visit_one(&step, consumer, watch.visit.step(), &mut watch.outcome);
+        }
+        return Ok(());
+    };
+    let mut here = engine_allocation::vec(count)?;
+    let mut anywhere = engine_allocation::vec(count)?;
+    for (consumer, watch) in picked {
+        let BlockWatch { visit, outcome, .. } = watch;
+        match visit {
+            Visit::Here(visit) => here.push((consumer, &mut **visit, outcome)),
+            Visit::Anywhere(visit) => anywhere.push((consumer, visit, outcome)),
         }
     }
+    let stays = if here.is_empty() {
+        anywhere.pop()
+    } else {
+        None
+    };
+    if anywhere.is_empty() {
+        for (consumer, visit, outcome) in here {
+            visit_one(&step, consumer, visit, outcome);
+        }
+        if let Some((consumer, visit, outcome)) = stays {
+            visit_one(&step, consumer, &mut **visit, outcome);
+        }
+        return Ok(());
+    }
+    let step = &step;
+    let priority = job_priority::Caller::current();
+    let cpu = replay_frame::cpu::Context::capture();
+    let progress = crate::progress::Progress::current();
+    fanout.0.in_place_scope(|scope| {
+        for (consumer, visit, outcome) in anywhere {
+            let (priority, cpu, progress) = (priority.clone(), cpu.clone(), progress.clone());
+            scope.spawn(move |_| {
+                let _progress = progress.map(crate::progress::Progress::install);
+                let _cpu = cpu.enter("watch visit");
+                priority.enter();
+                visit_one(step, consumer, &mut **visit, outcome);
+            });
+        }
+        for (consumer, visit, outcome) in here {
+            visit_one(step, consumer, visit, outcome);
+        }
+        if let Some((consumer, visit, outcome)) = stays {
+            visit_one(step, consumer, &mut **visit, outcome);
+        }
+    });
+    Ok(())
+}
+
+/// Hand one watch its step; an error stops it with that outcome.
+fn visit_one(
+    step: &impl Fn(&mut Consumer, &mut Step<'_>) -> io::Result<()>,
+    consumer: &mut Consumer,
+    visit: &mut Step<'_>,
+    outcome: &mut Option<io::Result<()>>,
+) {
+    if let Err(error) = step(consumer, visit) {
+        *outcome = Some(Err(error));
+    }
+}
+
+/// A visit witnessed without advancing rows: every-hour watches, read
+/// hours, and a delta from a complete baseline deleting keys or naming
+/// watched fields. A failed delta makes that complete view unavailable,
+/// which also visits. Other cases keep their views until the normal
+/// decision, including unwatched deltas in a quiet span.
+fn visits_before(tables: &BlockTables<'_>, consumer: &Consumer, frame: &RecordedFrame) -> bool {
+    let Some(changes) = &consumer.changes else {
+        return true;
+    };
+    consumer
+        .own
+        .iter()
+        .zip(&changes.fields)
+        .any(|(&position, &(fields, read))| {
+            let table = tables.tables[position];
+            fields.is_some()
+                && ((read && frame.metrics.table_ns[table.index()] != 0)
+                    || match &frame.tables[table.index()] {
+                        TableUpdate::Delta {
+                            changed, deleted, ..
+                        } => match tables.views[position].as_deref() {
+                            Some(TableView::Complete(rows)) => {
+                                !deleted.is_empty()
+                                    || changed.iter().any(|row| {
+                                        touches(table, fields, row)
+                                            || (row.mask == full_mask(row.recorded_fields)
+                                                && !has_key(rows, row.key))
+                                    })
+                            }
+                            _ => false,
+                        },
+                        _ => false,
+                    })
+        })
 }
 
 fn has_key(rows: &TableRows, key: u128) -> bool {

@@ -143,6 +143,7 @@ fn consumer_selections_share_one_decode_and_keep_identical_wire_and_reconstructi
                             tables: &tables,
                             frames: &mut |frames| kept = frames.to_vec(),
                         }),
+                        None,
                         || Ok(()),
                     )
                     .unwrap();

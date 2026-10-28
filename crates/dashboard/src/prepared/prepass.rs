@@ -26,9 +26,9 @@ use super::pace::WalkPace;
 pub(crate) use dashboard_base::prepared::prepass::{Bound, Extract, Family, Folded};
 use dashboard_base::prepared::priority::{JobPriority, Level};
 use replay::{
-    container::BlockChange, container::BlockIndex, container::BlockWatch, container::Keep,
-    container::QuietHours, container::Replay, container::TableFields, container::Watched,
-    container::Watching,
+    container::BlockChange, container::BlockIndex, container::BlockWatch, container::Fanout,
+    container::Keep, container::QuietHours, container::Replay, container::TableFields,
+    container::Watched, container::Watching,
 };
 use replay_data::{format::FormatVersion, rows::TableId};
 use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView};
@@ -38,7 +38,7 @@ use std::{
     io,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Condvar, LazyLock, Mutex, MutexGuard,
+        Arc, Condvar, LazyLock, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
@@ -105,6 +105,8 @@ pub(crate) struct Knobs {
     pub runtime: Option<Arc<runtime::State>>,
     pub budget: Option<u64>,
     pub pace: Option<Arc<WalkPace>>,
+    /// The helpers on which the extracts visited at one hour run at once.
+    pub fanout: Option<&'static Fanout>,
     #[cfg(test)]
     pub hook: Option<Hook>,
     #[cfg(test)]
@@ -121,6 +123,7 @@ impl Knobs {
             runtime: runtime::current(),
             budget: None,
             pace: None,
+            fanout: fanout(),
             #[cfg(test)]
             hook: TEST_HOOK.with(|hook| hook.borrow().clone()),
             #[cfg(test)]
@@ -129,6 +132,22 @@ impl Knobs {
             alone: TEST_ALONE.with(std::cell::Cell::get),
         }
     }
+}
+
+/// Helpers that run the extracts visited at one hour at once beside the
+/// worker reading the block: one fewer than the CPUs preparation uses, none
+/// on one. Tests visit in order unless their knobs name a fanout.
+fn fanout() -> Option<&'static Fanout> {
+    static FANOUT: LazyLock<Option<Fanout>> = LazyLock::new(|| {
+        let helpers = super::pipeline::parallelism().saturating_sub(1);
+        (helpers > 0)
+            .then(|| Fanout::new("preparation pre-pass hour", helpers).ok())
+            .flatten()
+    });
+    if cfg!(test) {
+        return None;
+    }
+    FANOUT.as_ref()
 }
 
 /// One block's outcome for one family, with the time its extract took.
@@ -1416,6 +1435,41 @@ struct Running {
     follow: Follow,
 }
 
+/// The wall time at least one of a block's extracts ran, however many ran at
+/// once on a fanout's helpers.
+#[derive(Default)]
+struct Visiting {
+    running: usize,
+    since: Option<Instant>,
+    spent: Duration,
+}
+
+/// One extract running, counted in [`Visiting`] until it drops.
+struct Extracting<'a>(&'a Mutex<Visiting>);
+
+impl<'a> Extracting<'a> {
+    fn start(visiting: &'a Mutex<Visiting>) -> Self {
+        let mut counted = visiting.lock().unwrap_or_else(PoisonError::into_inner);
+        if counted.running == 0 {
+            counted.since = Some(Instant::now());
+        }
+        counted.running += 1;
+        Self(visiting)
+    }
+}
+
+impl Drop for Extracting<'_> {
+    fn drop(&mut self) {
+        let mut counted = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        counted.running -= 1;
+        if counted.running == 0
+            && let Some(since) = counted.since.take()
+        {
+            counted.spent += since.elapsed();
+        }
+    }
+}
+
 /// Give one family's extract, while it goes on, one hour or quiet span
 /// (`run`); one that refuses, fails or panics stops, and its family observes
 /// the block hour by hour. An error once it stopped, which stops its watch.
@@ -1423,6 +1477,7 @@ fn visit(
     family: &'static Family,
     running: &mut Running,
     knobs: &Knobs,
+    visiting: &Mutex<Visiting>,
     at: At<'_>,
     run: impl FnOnce(&mut Box<dyn Extract>, &mut Follow) -> io::Result<()>,
 ) -> io::Result<()> {
@@ -1437,6 +1492,7 @@ fn visit(
     let Some(current) = extract else {
         return Err(io::Error::other("The block extract stopped"));
     };
+    let _extracting = Extracting::start(visiting);
     let started = Instant::now();
     let cpu = ::replay_frame::cpu::scope("extract", Some(family.name));
     let observed = runtime::checked(|| {
@@ -1594,7 +1650,9 @@ fn extract_main(
             Ok(())
         }
     };
+    let visiting = Mutex::new(Visiting::default());
     let read = {
+        let visiting = &visiting;
         let mut watches: Vec<BlockWatch<'_>> = Vec::with_capacity(families.len());
         let mut positions = Vec::with_capacity(families.len());
         for (position, (((reading, running), fields), tables)) in families
@@ -1613,7 +1671,7 @@ fn extract_main(
                 Some(fields) => {
                     // The last recorded hour read, visited or quiet.
                     let mut previous: Option<i32> = None;
-                    let watch = BlockWatch::new(Watching::Changes(fields), move |step| {
+                    let watch = BlockWatch::sendable(Watching::Changes(fields), move |step| {
                         if let Watched::Replacing(tables) = step {
                             running.follow.release(tables);
                             return Ok(());
@@ -1642,6 +1700,7 @@ fn extract_main(
                                     family,
                                     running,
                                     knobs,
+                                    visiting,
                                     At::Hour(frame),
                                     |extract, follow| {
                                         let carried = follow.carried(frame, rebuilt);
@@ -1665,6 +1724,7 @@ fn extract_main(
                                     family,
                                     running,
                                     knobs,
+                                    visiting,
                                     At::Quiet(quiet),
                                     |extract, follow| follow.quiet(extract, replay, quiet, before),
                                 )
@@ -1679,29 +1739,35 @@ fn extract_main(
                 }
                 None => {
                     let mut tracker = FrameChangeTracker::new();
-                    BlockWatch::new(Watching::Every(tables), move |step| {
+                    BlockWatch::sendable(Watching::Every(tables), move |step| {
                         let Watched::Hour { updates, frame } = step else {
                             unreachable!("a watch of every hour")
                         };
                         let changes = tracker.observe_updates(frame, Arc::clone(updates), format);
-                        visit(family, running, knobs, At::Hour(frame), |extract, _| {
-                            extract.observe(replay, frame, &changes)
-                        })
+                        visit(
+                            family,
+                            running,
+                            knobs,
+                            visiting,
+                            At::Hour(frame),
+                            |extract, _| extract.observe(replay, frame, &changes),
+                        )
                     })
                 }
             });
         }
-        let read = replay.read_block_watched_keeping(index, &mut watches, keep, check);
+        let read =
+            replay.read_block_watched_keeping(index, &mut watches, keep, knobs.fanout, check);
         let mut own: Vec<io::Result<()>> = families.iter().map(|_| Ok(())).collect();
         for (position, watch) in positions.into_iter().zip(watches) {
             own[position] = watch.finish();
         }
         read.map(|()| own)
     };
-    let spent = extracts
-        .iter()
-        .map(|running| running.took)
-        .sum::<Duration>();
+    let spent = visiting
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+        .spent;
     let read_time = started.elapsed().saturating_sub(spent);
     // A family's earlier panic or interruption outranks a later failure of the shared read.
     let mut fatal: Vec<Option<io::Error>> = Vec::new();

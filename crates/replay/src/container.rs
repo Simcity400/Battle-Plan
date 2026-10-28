@@ -55,7 +55,7 @@ pub mod test_work;
 mod watched;
 pub use changes::{BlockChange, QuietHours, TableFields};
 pub use stream::{ReplayCursor, ReplayStream};
-pub use watched::{BlockWatch, Keep, Watched, Watching};
+pub use watched::{BlockWatch, Fanout, Keep, Watched, Watching};
 // A decoder allocation bound, not a campaign-size or frame-count limit.
 // V1E branch 6 held 720 valid frames (~5.95 GB raw) between keyframes;
 // writers must close smaller independently decodable blocks before this bound.
