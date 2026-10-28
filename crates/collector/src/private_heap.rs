@@ -10,11 +10,16 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::HANDLE,
-    System::Memory::{HEAP_ZERO_MEMORY, HeapAlloc, HeapCreate, HeapDestroy, HeapFree, HeapReAlloc},
+    System::Memory::{
+        HEAP_REALLOC_IN_PLACE_ONLY, HEAP_ZERO_MEMORY, HeapAlloc, HeapCreate, HeapDestroy, HeapFree,
+        HeapReAlloc,
+    },
 };
 
 // Collector requires Windows x64; ordinary heap blocks are 16-byte aligned.
 const HEAP_ALIGNMENT: usize = 16;
+/// Growth to this size copies outside the heap lock, which a moving HeapReAlloc holds.
+const UNLOCKED_GROWTH: usize = 64 * 1024;
 const HEADER: usize = size_of::<*mut u8>();
 const DLL_PROCESS_DETACH: u32 = 0;
 
@@ -136,7 +141,29 @@ unsafe impl GlobalAlloc for PrivateHeap {
             if self.refuse(tests::REALLOCATE) {
                 return ptr::null_mut();
             }
-            return unsafe { HeapReAlloc(self.heap(), 0, pointer.cast(), new_size) }.cast();
+            if new_size <= layout.size() || new_size < UNLOCKED_GROWTH {
+                return unsafe { HeapReAlloc(self.heap(), 0, pointer.cast(), new_size) }.cast();
+            }
+            let grown = unsafe {
+                HeapReAlloc(
+                    self.heap(),
+                    HEAP_REALLOC_IN_PLACE_ONLY,
+                    pointer.cast(),
+                    new_size,
+                )
+            };
+            if !grown.is_null() {
+                return grown.cast();
+            }
+            // A failed in-place attempt leaves the old block intact.
+            let replacement = unsafe { self.allocate(new_size, layout.align(), false) };
+            if !replacement.is_null() {
+                unsafe {
+                    ptr::copy_nonoverlapping(pointer, replacement, layout.size());
+                    HeapFree(self.heap(), 0, pointer.cast());
+                }
+            }
+            return replacement;
         }
         // Moving a raw over-aligned block changes its padding, and shrinking
         // could discard its payload offset. Copy/free only after success, with

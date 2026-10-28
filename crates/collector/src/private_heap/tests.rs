@@ -1,5 +1,5 @@
 use super::*;
-use windows_sys::Win32::System::Memory::GetProcessHeaps;
+use windows_sys::Win32::System::Memory::{GetProcessHeaps, HeapSize};
 
 pub(super) const CREATE: usize = 1;
 pub(super) const ALLOCATE: usize = 2;
@@ -98,6 +98,40 @@ fn failed_realloc_preserves_the_old_allocation() {
         unsafe { heap.0.dealloc(pointer, layout) };
     }
     // The allocator itself never records a capture failure; checked callers do.
+    assert!(!crate::allocation::failed());
+}
+
+#[test]
+fn large_growth_moves_with_its_payload_and_a_failed_move_keeps_the_old_block() {
+    let heap = Heap::new();
+    let layout = Layout::from_size_align(UNLOCKED_GROWTH, 16).unwrap();
+    let pointer = unsafe { heap.0.alloc(layout) };
+    assert!(!pointer.is_null());
+    let payload = unsafe { std::slice::from_raw_parts_mut(pointer, layout.size()) };
+    for (index, byte) in payload.iter_mut().enumerate() {
+        *byte = index as u8;
+    }
+    let bytes = |pointer: *mut u8| unsafe { std::slice::from_raw_parts(pointer, layout.size()) };
+    let intact = |pointer| {
+        bytes(pointer)
+            .iter()
+            .enumerate()
+            .all(|(i, &b)| b == i as u8)
+    };
+    // Far beyond any in-place extension, so growth must move the block.
+    let grown_size = 64 * 1024 * 1024;
+    heap.0.failures.store(ALLOCATE, Ordering::Relaxed);
+    assert!(unsafe { heap.0.realloc(pointer, layout, grown_size) }.is_null());
+    assert_eq!(heap.0.failures.load(Ordering::Relaxed), 0);
+    assert!(intact(pointer));
+    let grown = unsafe { heap.0.realloc(pointer, layout, grown_size) };
+    assert!(!grown.is_null());
+    let size = unsafe { HeapSize(heap.0.heap(), 0, grown.cast()) };
+    assert!(size >= grown_size);
+    assert!(intact(grown));
+    unsafe { grown.add(grown_size - 1).write(0x5a) };
+    let grown_layout = Layout::from_size_align(grown_size, 16).unwrap();
+    unsafe { heap.0.dealloc(grown, grown_layout) };
     assert!(!crate::allocation::failed());
 }
 

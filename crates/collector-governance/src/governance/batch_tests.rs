@@ -434,3 +434,52 @@ fn governance_batch_carried_multiple_persistent_faults_keep_serial_first_reason(
         serial::Carried::Failed("assigned technology unreadable")
     ));
 }
+#[test]
+fn governance_batch_rehold_refills_storage_without_earlier_rows() {
+    let world = World::new(1);
+    let country = World::country(1);
+    let mut store = drift::Store::default();
+    let mut serial = serial::Store::default();
+    let mut rows = full(&world, 1);
+    hold(&mut store, &mut serial, &world, 1, &rows);
+    // A later complete read with fewer and different rows replaces the hold.
+    rows.inputs[0].cost_raw += 1;
+    rows.bonuses.truncate(1);
+    rows.modifiers.truncate(1);
+    rows.technologies[0].ahead_reduction_years_raw += 1;
+    hold(&mut store, &mut serial, &world, 1, &rows);
+    let new = research(&store, &Trace::new(&world, "Research rehold batch"), 1);
+    let old = serial_research(&serial, &Trace::new(&world, "Research rehold serial"), 1);
+    assert_eq!(new, old);
+    assert_eq!(
+        (new.bonuses.len(), new.modifiers.len()),
+        (1, rows.modifiers.len())
+    );
+    assert_eq!(new.inputs[0].cost_raw, rows.inputs[0].cost_raw);
+    let new = technologies(&store, &Trace::new(&world, "Technology rehold batch"), 1);
+    let old = serial_technologies(&serial, &Trace::new(&world, "Technology rehold serial"), 1);
+    assert_eq!(new, old);
+    assert_eq!(
+        new.1[0].ahead_reduction_years_raw,
+        rows.technologies[0].ahead_reduction_years_raw
+    );
+    // A read that cannot be held whole leaves nothing held, as before.
+    rows.inputs.pop();
+    store.hold_research(
+        &world,
+        0,
+        1,
+        country,
+        (&rows.inputs, &rows.bonuses, &rows.modifiers),
+    );
+    let outcome = store.carry_research(
+        &Trace::new(&world, "Research dropped hold"),
+        0,
+        1,
+        country,
+        engine_native::walk::Buffer::Growing(&mut Vec::new()),
+        engine_native::walk::Buffer::Growing(&mut Vec::new()),
+        engine_native::walk::Buffer::Growing(&mut Vec::new()),
+    );
+    assert!(matches!(outcome, drift::Carried::Miss));
+}

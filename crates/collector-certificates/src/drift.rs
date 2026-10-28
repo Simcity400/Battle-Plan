@@ -31,6 +31,7 @@ use engine_research::{
 use std::collections::HashMap;
 
 /// One country's last complete technology roster read.
+#[derive(Default)]
 struct Technologies {
     country: usize,
     status: usize,
@@ -43,6 +44,7 @@ struct Technologies {
 }
 
 /// One country's last complete research read.
+#[derive(Default)]
 struct Research {
     country: usize,
     status: usize,
@@ -111,45 +113,38 @@ impl Store {
         pointers: &[usize],
         slots: Option<&[cresearch_slot::Row]>,
     ) {
+        // A full read re-holds every drifting country: refill its last hold.
+        let mut held = self.technologies.remove(&owner).unwrap_or_default();
         let technologies = &mut self.technologies;
-        let held = engine_allocation::advisory(|| {
+        let kept = engine_allocation::advisory(|| {
             let slots = slots?;
             let status = status(memory, base, country).ok()?;
-            let mut assigned = Vec::new();
-            engine_allocation::reserve(&mut assigned, slots.len()).ok()?;
+            held.assigned.clear();
+            engine_allocation::reserve(&mut held.assigned, slots.len()).ok()?;
             for slot in slots.iter().filter(|slot| slot.technology_present != 0) {
-                assigned.push(
+                held.assigned.push(
                     rows.iter()
                         .position(|row| row.database_index == slot.database_index)?,
                 );
             }
             // Two slots can research one technology (the loader
             // admits it); the full walk reads each roster row's progress once.
-            assigned.sort_unstable();
-            assigned.dedup();
-            let mut assigned_pointers = Vec::new();
-            engine_allocation::reserve_exact(&mut assigned_pointers, assigned.len()).ok()?;
-            assigned_pointers.extend(assigned.iter().map(|&row| pointers[row]));
-            let held = Technologies {
-                country,
-                status,
-                roster: roster(memory, status)?,
-                rows: copied(rows)?,
-                pointers: copied(pointers)?,
-                assigned,
-                assigned_pointers,
-            };
-            (technologies.contains_key(&owner)
-                || engine_allocation::reserve_map(technologies, 1).is_ok())
-            .then_some(held)
+            held.assigned.sort_unstable();
+            held.assigned.dedup();
+            held.assigned_pointers.clear();
+            engine_allocation::reserve_exact(&mut held.assigned_pointers, held.assigned.len())
+                .ok()?;
+            held.assigned_pointers
+                .extend(held.assigned.iter().map(|&row| pointers[row]));
+            held.country = country;
+            held.status = status;
+            held.roster = roster(memory, status)?;
+            copy_into(&mut held.rows, rows)?;
+            copy_into(&mut held.pointers, pointers)?;
+            engine_allocation::reserve_map(technologies, 1).ok()
         });
-        match held {
-            Some(held) => {
-                self.technologies.insert(owner, held);
-            }
-            None => {
-                self.technologies.remove(&owner);
-            }
+        if kept.is_some() {
+            self.technologies.insert(owner, held);
         }
     }
 
@@ -245,8 +240,10 @@ impl Store {
         ),
     ) {
         let (inputs, bonuses, modifiers) = rows;
+        // A full read re-holds every drifting country: refill its last hold.
+        let mut held = self.research.remove(&owner).unwrap_or_default();
         let research = &mut self.research;
-        let held = engine_allocation::advisory(|| {
+        let kept = engine_allocation::advisory(|| {
             let status = status(memory, base, country).ok()?;
             let slots = slots(memory, status)?;
             // `research_inputs::walk_country_buffer` visits the slots in roster order and sorts its
@@ -254,47 +251,38 @@ impl Store {
             if inputs.len() != slots.count as usize {
                 return None;
             }
-            let mut slots_to_rows = Vec::new();
-            engine_allocation::reserve(&mut slots_to_rows, inputs.len()).ok()?;
+            held.slots_to_rows.clear();
+            engine_allocation::reserve(&mut held.slots_to_rows, inputs.len()).ok()?;
             for position in 0..slots.count {
                 let slot = read::<u64>(memory, slots.element(position, 8)?)?;
                 let slot = usize::try_from(slot).ok().filter(|&slot| slot != 0)?;
                 let index = read::<u32>(memory, slot.checked_add(cresearch_slot::INDEX)?)?;
                 let row = inputs.iter().position(|row| row.slot.index == index)?;
-                slots_to_rows.push((slot, row));
+                held.slots_to_rows.push((slot, row));
             }
-            let mut slot_pointers = Vec::new();
-            engine_allocation::reserve_exact(&mut slot_pointers, slots_to_rows.len()).ok()?;
-            slot_pointers.extend(slots_to_rows.iter().map(|&(slot, _)| slot));
-            let mut assigned_pointers = Vec::new();
-            engine_allocation::reserve_exact(&mut assigned_pointers, slots_to_rows.len()).ok()?;
-            assigned_pointers.extend(
-                slots_to_rows
+            let len = held.slots_to_rows.len();
+            held.slot_pointers.clear();
+            engine_allocation::reserve_exact(&mut held.slot_pointers, len).ok()?;
+            held.slot_pointers
+                .extend(held.slots_to_rows.iter().map(|&(slot, _)| slot));
+            held.assigned_pointers.clear();
+            engine_allocation::reserve_exact(&mut held.assigned_pointers, len).ok()?;
+            held.assigned_pointers.extend(
+                held.slots_to_rows
                     .iter()
                     .map(|&(_, row)| inputs[row].technology_pointer)
                     .filter(|&pointer| pointer != 0),
             );
-            let held = Research {
-                country,
-                status,
-                slots,
-                slots_to_rows,
-                slot_pointers,
-                assigned_pointers,
-                inputs: copied(inputs)?,
-                bonuses: copied(bonuses)?,
-                modifiers: copied(modifiers)?,
-            };
-            (research.contains_key(&owner) || engine_allocation::reserve_map(research, 1).is_ok())
-                .then_some(held)
+            held.country = country;
+            held.status = status;
+            held.slots = slots;
+            copy_into(&mut held.inputs, inputs)?;
+            copy_into(&mut held.bonuses, bonuses)?;
+            copy_into(&mut held.modifiers, modifiers)?;
+            engine_allocation::reserve_map(research, 1).ok()
         });
-        match held {
-            Some(held) => {
-                self.research.insert(owner, held);
-            }
-            None => {
-                self.research.remove(&owner);
-            }
+        if kept.is_some() {
+            self.research.insert(owner, held);
         }
     }
 
@@ -422,15 +410,15 @@ fn slots(memory: &impl Memory, status: usize) -> Option<Array> {
     )
 }
 
-/// A held copy of `rows`, or `None` when storage cannot be had. Called
-/// inside [`engine_allocation::advisory`], where a failed text clone yields
-/// an empty payload instead of stopping the capture: a copy that does not
-/// equal its source is dropped.
-fn copied<T: Clone + PartialEq>(rows: &[T]) -> Option<Vec<T>> {
-    let mut held = Vec::new();
-    engine_allocation::reserve(&mut held, rows.len()).ok()?;
+/// `rows` copied into `held`'s storage, or `None` when it cannot be had.
+/// Called inside [`engine_allocation::advisory`], where a failed text clone
+/// yields an empty payload instead of stopping the capture: a copy that does
+/// not equal its source is dropped.
+fn copy_into<T: Clone + PartialEq>(held: &mut Vec<T>, rows: &[T]) -> Option<()> {
+    held.clear();
+    engine_allocation::reserve(held, rows.len()).ok()?;
     held.extend(rows.iter().cloned());
-    (held == rows).then_some(held)
+    (held.as_slice() == rows).then_some(())
 }
 
 /// A failed gather supplies no values. Advisory storage failure leaves the

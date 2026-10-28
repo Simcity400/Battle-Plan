@@ -1314,9 +1314,12 @@ fn run(
     let mut priority_reconciler =
         crate::frame_priority::Reconciler::start(Arc::clone(&shared.frame_priority))?;
     owned_workers.push(priority_reconciler.thread_id());
-    let (mut history_worker, history_handoff) =
-        HistoryWorker::start(config.output_dir.clone(), config.replay_dir.clone())
-            .map_err(|e| error_reason(e, "history worker could not start"))?;
+    let (mut history_worker, history_handoff) = HistoryWorker::start(
+        config.output_dir.clone(),
+        config.replay_dir.clone(),
+        Some(Arc::clone(&shared)),
+    )
+    .map_err(|e| error_reason(e, "history worker could not start"))?;
     owned_workers.push(history_worker.thread_id());
     // The conversion helpers are collector workers for every quiescence check
     // and join with the processor when the spool thread returns. Without them
@@ -4639,7 +4642,6 @@ fn spool_loop(
     let mut reported = Instant::now() - Duration::from_secs(1);
     let mut priority = OwnPriority::frame_pipeline();
     priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
-    let mut refresh_requests = RefreshRequests::default();
     // Wake-ups replace polling: decode publication, a parked clock
     // preparation and the stop request unpark this thread.
     let _ = shared.spool_waker.set(std::thread::current());
@@ -4898,8 +4900,7 @@ fn spool_loop(
             let _span = phases.span(Phase::Status);
             crate::allocation::attempted_hour(None);
             let _status_phase = crate::allocation::enter(crate::allocation::Phase::Status);
-            if let Err(error) = refresh_requests.poll(&config.output_dir, shared) {
-                crate::allocation::observe(&error);
+            if history_requests.take_refresh_failure() {
                 last_warning = Some("refresh request failed");
             }
             let status_started = sampling::qpc();
@@ -5966,10 +5967,11 @@ const SPOOL_IDLE_WAIT: Duration = Duration::from_millis(10);
 
 /// `recorder refresh` asks for one full-refresh hour: every scheduled table,
 /// including daily, static and sliced ones, is read at the next hourly sample.
-/// The request is a file in the session directory; the spool thread turns it
-/// into `refresh_next` and acknowledges it. Observation remains continuous;
-/// `force_next` is reserved for capture recovery. Nothing is sent to the
-/// game. Oracles use this to compare every table at a chosen hour.
+/// The request is a file in the session directory; the history worker turns
+/// it into `refresh_next` and acknowledges it, so a stalled file system never
+/// holds the spool thread that returns capture buffers. Observation remains
+/// continuous; `force_next` is reserved for capture recovery. Nothing is sent
+/// to the game. Oracles use this to compare every table at a chosen hour.
 #[derive(Default)]
 struct RefreshRequests {
     /// The last accepted token. A request whose acknowledgement or removal
@@ -5981,7 +5983,7 @@ pub(crate) const REFRESH_REQUEST: &str = "refresh.request";
 pub(crate) const REFRESH_ACK: &str = "refresh.ack";
 
 impl RefreshRequests {
-    fn poll(&mut self, session: &Path, shared: &Shared) -> io::Result<()> {
+    fn poll(&mut self, session: &Path, refresh_next: &AtomicBool) -> io::Result<()> {
         let request = session.join(REFRESH_REQUEST);
         let bytes = match fs::read(&request) {
             Ok(bytes) => bytes,
@@ -5995,7 +5997,7 @@ impl RefreshRequests {
             return Ok(());
         }
         let owned = token.to_owned();
-        shared.refresh_next.store(true, Ordering::Release);
+        refresh_next.store(true, Ordering::Release);
         REFRESH_ACCEPTED.fetch_add(1, Ordering::Relaxed);
         self.last = Some(owned);
         if fs::write(session.join(REFRESH_ACK), token.as_bytes()).is_ok() {
@@ -7943,11 +7945,11 @@ mod tests {
         let shared = sampling::Shared::new(0, 0, 1);
         let mut requests = RefreshRequests::default();
         // No request: nothing forced.
-        requests.poll(&session, &shared).unwrap();
+        requests.poll(&session, &shared.refresh_next).unwrap();
         assert!(!shared.force_next.load(Ordering::Acquire));
         assert!(!shared.refresh_next.load(Ordering::Acquire));
         fs::write(session.join(REFRESH_REQUEST), "token-7\n").unwrap();
-        requests.poll(&session, &shared).unwrap();
+        requests.poll(&session, &shared.refresh_next).unwrap();
         assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
         assert!(!shared.force_next.load(Ordering::Acquire));
         assert_eq!(
@@ -7956,18 +7958,18 @@ mod tests {
         );
         assert!(!session.join(REFRESH_REQUEST).exists());
         // Consumed: a later poll forces nothing more.
-        requests.poll(&session, &shared).unwrap();
+        requests.poll(&session, &shared.refresh_next).unwrap();
         assert!(!shared.refresh_next.load(Ordering::Acquire));
         // A request that could not be removed is accepted once, not every hour.
         fs::write(session.join(REFRESH_REQUEST), "token-7").unwrap();
-        requests.poll(&session, &shared).unwrap();
+        requests.poll(&session, &shared.refresh_next).unwrap();
         assert!(!shared.refresh_next.load(Ordering::Acquire));
         // An empty token is not a request; a new token is.
         fs::write(session.join(REFRESH_REQUEST), " \n").unwrap();
-        requests.poll(&session, &shared).unwrap();
+        requests.poll(&session, &shared.refresh_next).unwrap();
         assert!(!shared.refresh_next.load(Ordering::Acquire));
         fs::write(session.join(REFRESH_REQUEST), "token-8").unwrap();
-        requests.poll(&session, &shared).unwrap();
+        requests.poll(&session, &shared.refresh_next).unwrap();
         shared.force_next.store(true, Ordering::Release);
         assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
         assert!(shared.force_next.swap(false, Ordering::AcqRel));

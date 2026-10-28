@@ -61,12 +61,20 @@ struct Mailbox {
     command: Option<Command>,
     response: Option<Response>,
     fence: Option<u64>,
+    refresh_failed: bool,
 }
 pub(super) struct SpoolHistory(Arc<Mutex<Mailbox>>);
 impl SpoolHistory {
     pub(super) fn poll(&self, processor: &mut Processor, frames: &crate::frame_fence::Frames) {
         self.poll_fenced_with(Some(frames), |text| processor.try_history_request(text));
         self.restore_with(|campaign, file| processor.exchange_history_lease(campaign, file));
+    }
+
+    /// Whether a refresh request poll failed since the last call; a busy mailbox defers it.
+    pub(super) fn take_refresh_failure(&self) -> bool {
+        self.0
+            .try_lock()
+            .is_ok_and(|mut mailbox| std::mem::take(&mut mailbox.refresh_failed))
     }
 
     #[cfg(test)]
@@ -176,9 +184,11 @@ pub(super) struct HistoryWorker {
     thread_id: u32,
 }
 impl HistoryWorker {
+    /// With `refresh`, this thread also accepts `recorder refresh` requests.
     pub(super) fn start(
         session: PathBuf,
         replay_directory: PathBuf,
+        refresh: Option<Arc<crate::sampling::Shared>>,
     ) -> io::Result<(Self, SpoolHistory)> {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -202,6 +212,7 @@ impl HistoryWorker {
                     stopped: Some(Arc::clone(&remote.stop)),
                     ..HistoryRequests::default()
                 };
+                let mut refresh_requests = super::RefreshRequests::default();
                 while !remote.stop.load(Ordering::Acquire) {
                     if let Err(error) = requests.poll_with(
                         &session,
@@ -211,6 +222,14 @@ impl HistoryWorker {
                         |_, campaign| remote.retake(campaign),
                     ) {
                         crate::allocation::observe(&error);
+                    }
+                    if let Some(shared) = &refresh {
+                        // Refresh polling belonged to the spool's status phase.
+                        let _status = crate::allocation::enter(crate::allocation::Phase::Status);
+                        if let Err(error) = refresh_requests.poll(&session, &shared.refresh_next) {
+                            crate::allocation::observe(&error);
+                            remote.mailbox.lock().unwrap().refresh_failed = true;
+                        }
                     }
                     std::thread::park_timeout(POLL);
                 }
@@ -1010,7 +1029,7 @@ mod tests {
     fn shutdown_cancels_a_fenced_close_before_releasing_history() {
         let root = root();
         request(&root, "0001", "close");
-        let (mut worker, handoff) = HistoryWorker::start(root.clone(), root.clone()).unwrap();
+        let (mut worker, handoff) = HistoryWorker::start(root.clone(), root.clone(), None).unwrap();
         while handoff.0.lock().unwrap().command.is_none() {
             assert!(!worker.thread.as_ref().unwrap().is_finished());
             std::thread::yield_now();
@@ -1033,7 +1052,7 @@ mod tests {
         let recording = root.join("history");
         fs::write(&recording, b"synthetic history").unwrap();
         let lease = crate::history::lease(&recording).unwrap();
-        let (mut worker, handoff) = HistoryWorker::start(root.clone(), root.clone()).unwrap();
+        let (mut worker, handoff) = HistoryWorker::start(root.clone(), root.clone(), None).unwrap();
         handoff.0.lock().unwrap().command = Some(Command::Retake(CAMPAIGN.to_owned(), Some(lease)));
         drop(handoff);
         assert!(
@@ -1054,6 +1073,38 @@ mod tests {
                 .open(&recording)
                 .unwrap(),
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_worker_accepts_refresh_requests_and_reports_their_failures() {
+        use super::super::{REFRESH_ACK, REFRESH_REQUEST};
+        let root = root();
+        fs::write(root.join(REFRESH_REQUEST), "token-9\n").unwrap();
+        let shared = Arc::new(crate::sampling::Shared::new(0, 0, 1));
+        let (mut worker, handoff) =
+            HistoryWorker::start(root.clone(), root.clone(), Some(Arc::clone(&shared))).unwrap();
+        let started = Instant::now();
+        // Removal is the last step of an accepted request.
+        while root.join(REFRESH_REQUEST).exists() {
+            assert!(started.elapsed() < crate::TEST_HANG_GUARD);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
+        assert_eq!(
+            fs::read_to_string(root.join(REFRESH_ACK)).unwrap(),
+            "token-9"
+        );
+        assert!(!handoff.take_refresh_failure());
+        // A request the worker cannot read reaches the spool's status warning.
+        fs::create_dir(root.join(REFRESH_REQUEST)).unwrap();
+        let started = Instant::now();
+        while !handoff.take_refresh_failure() {
+            assert!(started.elapsed() < crate::TEST_HANG_GUARD);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!shared.refresh_next.load(Ordering::Acquire));
+        worker.finish().unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
