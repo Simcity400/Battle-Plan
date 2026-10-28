@@ -42,6 +42,7 @@ const Dashboard = memo(lazy(() => import('../dashboard/Dashboard')));
 const Settings = lazy(() => import('./Settings'));
 const SettingsNav = lazy(() => import('./Settings').then(module => ({ default: module.SettingsNav })));
 type Tab = 'map' | 'analytics' | 'settings';
+const TAB_NAMES: Record<Tab, string> = { map: 'The campaign map', analytics: 'Analytics', settings: 'Settings' };
 const PAGE_KEY = 'hoi4-replay.analytics-page.v1';
 const SIDEBAR_KEY = 'hoi4-replay.sidebar.v1';
 const SIDEBAR_WIDTH_KEY = 'hoi4-replay.sidebar-width.v1';
@@ -228,7 +229,17 @@ export default function App() {
   const [path, setPath] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
   const [switching, setSwitching] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  // A view switch that failed, kept whole until a switch succeeds; the view still shown offers it again.
+  const [switchFailure, setSwitchFailure] = useState<{ tab: Tab; message: string } | null>(null);
+  // Each failed map operation's error, by operation, until that operation succeeds or is no longer wanted.
+  const [mapFailures, setMapFailures] = useState<Record<string, string>>({});
+  const reportMap = useCallback((operation: string, error: string | null) => setMapFailures(previous => {
+    if ((previous[operation] ?? null) === error) return previous;
+    const next = { ...previous };
+    if (error == null) delete next[operation]; else next[operation] = error;
+    return next;
+  }), []);
+  const actionError = Object.values(mapFailures)[0] ?? null;
   const [popoverOpen, setPopoverOpen] = useState(false);
   useEffect(() => {
     const opening = (event: Event) => { if ('newState' in event && event.newState === 'open' && isMapOverlay(event.target)) setPopoverOpen(true); };
@@ -256,7 +267,7 @@ export default function App() {
     if (folders.contentReady) return;
     let current = true;
     void selectNativeView(true).then(() => {
-      if (current) { setSettingsSection('folders'); setTab('settings'); }
+      if (current) { setSettingsSection('folders'); setSwitchFailure(null); setTab('settings'); }
     }).catch(cause => { if (current) setFolderError(errorMessage(cause)); });
     return () => { current = false; };
   }, [folders?.contentReady]);
@@ -285,36 +296,53 @@ export default function App() {
   }, [native.state?.error]);
 
   function openRecording() { openCampaign.current?.(); }
+  /** Opens the dashboard's recording on the map; a failure stays shown until a later open succeeds. */
+  const openDefault = useCallback((chosen: string | null) => {
+    const request = ++defaultRequest.current;
+    if (!chosen || !desktopAvailable || tab !== 'map' || (chosen === nativePath && !pendingPath.current)) { setOpening(false); reportMap('open', null); return; }
+    pendingPath.current = chosen;
+    setOpening(true);
+    void openReplay(chosen).then(() => { if (request === defaultRequest.current) reportMap('open', null); }, (cause) => {
+      if (request === defaultRequest.current) { pendingPath.current = null; reportMap('open', errorMessage(cause)); }
+    }).finally(() => { if (request === defaultRequest.current) setOpening(false); });
+  }, [tab, nativePath, reportMap]);
   const setDefaultPath = useCallback((chosen: string | null) => {
     defaultChosen.current = true;
     setPath(chosen);
-    setActionError(null);
-    const request = ++defaultRequest.current;
-    if (!chosen || !desktopAvailable || tab !== 'map' || (chosen === nativePath && !pendingPath.current)) { setOpening(false); return; }
-    pendingPath.current = chosen;
-    setOpening(true);
-    void openReplay(chosen).catch((cause) => {
-      if (request === defaultRequest.current) { pendingPath.current = null; setActionError(errorMessage(cause)); }
-    }).finally(() => { if (request === defaultRequest.current) setOpening(false); });
-  }, [tab, nativePath]);
+    reportMap('open', null);
+    openDefault(chosen);
+  }, [openDefault, reportMap]);
 
+  /** Shows `next`: the native view it needs and, for the map, the dashboard's recording opened on it. */
   async function changeTab(next: Tab) {
     if (switching || next === tab) return;
     setSwitching(true);
+    let selected = false;
     try {
       await selectNativeView(next !== 'map');
+      selected = true;
       if (desktopAvailable && next === 'map' && path && path !== nativePath) {
         pendingPath.current = path;
         await openReplay(path);
       }
-      setActionError(null);
+      setSwitchFailure(null);
+      // Showing the map opens its recording again, so a failed open goes with any switch.
+      reportMap('open', null);
       if (next !== 'settings') lastView.current = next;
       setTab(next);
     } catch (cause: unknown) {
-      setActionError(errorMessage(cause));
+      // Only the open failed: the view still shown takes its native view back, or the map would cover it.
+      if (selected) { pendingPath.current = null; await selectNativeView(tab !== 'map').catch(() => {}); }
+      setSwitchFailure({ tab: next, message: errorMessage(cause) });
     } finally {
       setSwitching(false);
     }
+  }
+
+  /** Sends each failed map operation again; its error stays until that operation succeeds. */
+  function retryMap() {
+    if (mapFailures.open != null) openDefault(path);
+    setRetry(value => value + 1);
   }
 
   const workspaceBackdrop = appearance.settings.workspaceBackdrop;
@@ -368,6 +396,10 @@ export default function App() {
         {tab === 'settings' && <nav className="shell-location" aria-label="Location"><span>Settings</span><Icon name="chevron-right" /><strong aria-current="page">{sectionLabel}</strong></nav>}
         {tab !== 'settings' && <RecordingNotice partial={metadata?.partial} damaged={metadata?.damaged} path={metadata?.path} />}
         {pageStorageWarning && <div className="notice warning shell-page-storage-warning" role="status">{pageStorageWarning}</div>}
+        {switchFailure && <div className="notice warning shell-switch-failure" role="alert"><Icon name="alert" />
+          <span>{`${TAB_NAMES[switchFailure.tab]} could not be shown: ${switchFailure.message}`}</span>
+          <button type="button" className="button small" disabled={switching} onClick={() => void changeTab(switchFailure.tab)}>
+            <Icon name="refresh" />Retry</button></div>}
       </header>
 
       <main className="workspace" ref={content}>
@@ -387,10 +419,7 @@ export default function App() {
               <MapState icon="alert" eyebrow="Map unavailable" title="The map could not be prepared" alert>
                 <p className="error-copy">{mapError}</p>
                 <div className="button-row centered">
-                  <button type="button" className="button primary" onClick={() => {
-                    setActionError(null);
-                    setRetry((value) => value + 1);
-                  }}><Icon name="refresh" />Retry map</button>
+                  <button type="button" className="button primary" onClick={retryMap}><Icon name="refresh" />Retry map</button>
                   <button type="button" className="button" disabled={opening} onClick={() => void openRecording()}>
                     <Icon name="folder-open" />Open recording
                   </button>
@@ -414,7 +443,7 @@ export default function App() {
         <section id="panel-analytics" aria-labelledby="tab-analytics" tabIndex={-1}
           className="analytics-panel" hidden={tab !== 'analytics'}>
           <Suspense fallback={<div className="panel-loading" role="status"><span className="spinner" />Loading overview…</div>}>
-            <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={setActionError} mapRetry={retry} onUnsaved={setLayoutsUnsaved} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
+            <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={reportMap} mapRetry={retry} onUnsaved={setLayoutsUnsaved} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
           </Suspense>
         </section>
       </main>

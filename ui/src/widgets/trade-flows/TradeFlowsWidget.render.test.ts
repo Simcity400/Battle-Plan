@@ -21,7 +21,7 @@ test('trade of a group counted at an hour still being prepared is loading, not n
       export const useTradeFlows = (widget, runtime) => {
         const track = runtime.tracks[0], { data, groups } = globalThis.__tradePending;
         const resolved = resolveCountries(widget.countries, [], groups, track.branch.lastHour, Number.MAX_SAFE_INTEGER);
-        return { track, all: false, resolved, groups: { data: groups, retry() {} }, data, retry() {},
+        return { track, all: false, resolved, groups: { data: groups, retry() {} }, data, scaleData: data, retry() {},
           scope: tradeScope(decodeTrade(data), widget.countries, resolved, groups, track.branch.lastHour, false) };
       };`,
     '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour};`,
@@ -50,6 +50,55 @@ test('trade of a group counted at an hour still being prepared is loading, not n
     state.groups = pendingGroups({ final: true, humans: [{ tag: 'GER', firstHour: 0, lastHour: 200 }] });
     assert.match(render(), /No trade at this moment\./);
   } finally { delete host.__tradePending; await close(); }
+});
+
+test('one scale all campaign never fits the moment while its scale is unread or failed', async () => {
+  const span = { firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour };
+  // GER sells ENG 10 steel a day throughout.
+  const data: TradeFlowsReply = { branchId: BRANCH.id, decimals: 0, resources: [{ id: 1, token: 'steel', ordinal: 1, name: null, icon: null }],
+    countries: ['GER', 'ENG'], reads: [0], known: [span], partial: [], warnings: [], flows: [{ seller: 0, buyer: 1, resource: 1,
+      sellerIdentity: '[1,101]', buyerIdentity: '[2,102]', sellerTags: [0], buyerTags: [1], firstHours: [span.firstHour], lastHours: [span.lastHour],
+      deliveredRaw: ['10'], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] }],
+    countryIdentities: ['GER', 'ENG'].map((tag, index) => ({ tag, runs: [{ ...span, slot: index + 1, countryId: index + 101 }] })) };
+  const state: { scaleData?: TradeFlowsReply; scaleError?: string } = {};
+  const host = globalThis as typeof globalThis & { __tradeScale?: typeof state }; host.__tradeScale = state;
+  const { module, close } = await mountModule<{ default: ComponentType<WidgetProps> }>('/ui/src/widgets/trade-flows/TradeFlowsWidget.tsx', {
+    '/widgets/trade-flows/useTradeFlows.ts': `import { decodeTrade, tradeScope } from './tradeData.ts';
+      export const useTradeFlows = (widget, runtime) => {
+        const track = runtime.tracks[0], data = ${JSON.stringify(data)}, { scaleData, scaleError } = globalThis.__tradeScale;
+        return { track, all: true, resolved: null, groups: {}, data, scaleData, scaleError, retryScale() {}, retry() {},
+          scope: tradeScope(decodeTrade(data), widget.countries, null, undefined, track.branch.lastHour, false) };
+      };`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour};`,
+    '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
+    '/dashboard/countryFlagsAt.ts': `export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});
+      export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }) });`,
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();',
+    '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123456'], surface: '#000000', text: '#ffffff', muted: '#777777', countryColours: 'raw' });
+      export const useViewportHeight = () => 1000;`,
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',
+    '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
+    '/widgets/trade-flows/TradeDrillView.tsx': 'export default () => null;',
+    '/charts/flow/FlowDiagram.tsx': 'export default props => `Ribbon scale ${props.scale}`;',
+  });
+  try {
+    const render = (options: Record<string, unknown>) => renderToStaticMarkup(createElement(module.default, { widget: { id: 'trade', kind: 'trade-flows',
+      trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'follow' }, options },
+      runtime: { client: {}, tracks: [{ id: 'main', axisOffset: 0, branch: { ...BRANCH, gaps: [] }, source: { id: 'synthetic', revision: '1', metadata: { campaignKey: 'campaign', countries: [] } } }],
+        clock: { getHour: () => BRANCH.lastHour, getSnapshot: () => ({ position: BRANCH.lastHour, playing: false, hoursPerSecond: 0 }) } },
+      active: true, onDiagnostics() {} } as unknown as WidgetProps));
+    const pending = render({});
+    assert.match(pending, /aria-label="Loading the campaign-wide ribbon scale…"/);
+    assert.doesNotMatch(pending, /Ribbon scale/, 'no diagram sized to the moment instead');
+    assert.match(render({ scale: 'moment' }), /Ribbon scale null/, 'fitting the moment needs no campaign scale');
+    state.scaleError = 'refused';
+    const failed = render({});
+    assert.match(failed, /Couldn’t load the campaign-wide ribbon scale\./);
+    assert.doesNotMatch(failed, /Ribbon scale/);
+    assert.match(render({ scale: 'moment' }), /Ribbon scale null/);
+    state.scaleError = undefined; state.scaleData = data;
+    assert.match(render({}), /Ribbon scale 10\b/);
+  } finally { delete host.__tradeScale; await close(); }
 });
 
 test('chosen countries the market view cannot place at an hour still being prepared are loading, not unavailable', async () => {

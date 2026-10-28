@@ -57,9 +57,12 @@ struct Inner {
     /// The last folders sent with [`NativeHost::set_folders`], which a viewer
     /// started afterwards takes over its launch-time read.
     folders: Option<dashboard::Config>,
-    /// The last display choices (VSync, map scale) sent with [`NativeHost::set_display`], one
-    /// of each kind, which a viewer started afterwards takes over its launch-time read.
-    display: Vec<dashboard::protocol::MapAction>,
+    /// The last display choice (VSync, map scale) of each kind sent with
+    /// [`NativeHost::set_display`], numbered as `display_sent` counted it.
+    display: Vec<(u64, dashboard::protocol::MapAction)>,
+    /// How many display choices were sent. A starting viewer takes over its launch-time read
+    /// only those sent after its launch began; the read already has the earlier ones.
+    display_sent: u64,
     /// A pop-out window's own viewer: parented to that window, and reporting as the pop-out.
     popout: Option<PopOutWindow>,
     /// The last mute choice sent with [`NativeHost::set_muted`].
@@ -100,15 +103,21 @@ fn same_display(a: &dashboard::protocol::MapAction, b: &dashboard::protocol::Map
     )
 }
 
-/// The display choices a starting viewer takes: those read at launch, each replaced by a
-/// choice of the same kind sent while it started.
+/// The display choices a starting viewer takes: those read at launch, each replaced by the
+/// choice of the same kind sent after `since`, the count when its launch began.
 fn launch_display(
     read: impl IntoIterator<Item = dashboard::protocol::MapAction>,
-    sent: &[dashboard::protocol::MapAction],
+    sent: &[(u64, dashboard::protocol::MapAction)],
+    since: u64,
 ) -> Vec<dashboard::protocol::MapAction> {
+    let newer: Vec<_> = sent
+        .iter()
+        .filter(|(number, _)| *number > since)
+        .map(|(_, action)| action)
+        .collect();
     read.into_iter()
-        .filter(|action| !sent.iter().any(|latest| same_display(latest, action)))
-        .chain(sent.iter().cloned())
+        .filter(|action| !newer.iter().any(|latest| same_display(latest, action)))
+        .chain(newer.iter().map(|&action| action.clone()))
         .collect()
 }
 
@@ -298,12 +307,17 @@ impl NativeHost {
     }
 
     /// Queues a display choice (VSync or map scale) for a running viewer, replacing any of the
-    /// same kind still queued, and keeps it for a viewer still starting or started later, which
-    /// takes it over its launch-time read.
+    /// same kind still queued, and keeps it for a viewer still starting, which takes it over its
+    /// launch-time read. A viewer whose launch begins later reads the current settings instead:
+    /// callers send under the video settings' lock and release it only once those hold the choice.
     pub fn set_display(&self, action: dashboard::protocol::MapAction) {
         let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-        inner.display.retain(|kept| !same_display(kept, &action));
-        inner.display.push(action.clone());
+        inner.display_sent += 1;
+        let number = inner.display_sent;
+        inner
+            .display
+            .retain(|(_, kept)| !same_display(kept, &action));
+        inner.display.push((number, action.clone()));
         if inner.process.is_none() || inner.shutting_down {
             return;
         }

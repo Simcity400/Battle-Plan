@@ -344,22 +344,22 @@ fn folders_applied_before_a_viewer_starts_are_kept_for_its_launch() {
 }
 
 #[test]
-fn display_choices_sent_while_no_viewer_runs_are_kept_for_its_launch() {
+fn display_choices_sent_while_no_viewer_runs_are_kept_for_one_starting() {
     use dashboard::protocol::MapAction;
     let host = NativeHost::popout(1, Arc::new(|| ()));
     host.set_display(MapAction::Vsync { enabled: true });
     host.set_display(MapAction::Vsync { enabled: false });
     host.set_display(MapAction::UiScale { scale: Some(1.5) });
     let inner = host.shared.0.lock().unwrap();
-    // Nothing runs yet, so nothing is queued; the latest of each kind is kept instead.
+    // Nothing runs yet, so nothing is queued; the latest of each kind is kept, numbered, instead.
     assert!(inner.pending.actions.is_empty());
     assert_eq!(
         format!("{:?}", inner.display),
         format!(
             "{:?}",
             [
-                MapAction::Vsync { enabled: false },
-                MapAction::UiScale { scale: Some(1.5) }
+                (2, MapAction::Vsync { enabled: false }),
+                (3, MapAction::UiScale { scale: Some(1.5) })
             ]
         )
     );
@@ -401,24 +401,32 @@ fn moving_the_view_never_starts_a_viewer() {
 }
 
 #[test]
-fn a_display_choice_sent_while_a_viewer_starts_replaces_its_launch_read() {
+fn only_a_display_choice_sent_while_a_viewer_starts_replaces_its_launch_read() {
     use dashboard::protocol::MapAction;
-    // Read at launch, then VSync changed before the child was installed.
+    let host = NativeHost::default();
+    let debug = |actions: &[MapAction]| format!("{actions:?}");
     let read = vec![
         MapAction::Vsync { enabled: true },
         MapAction::UiScale { scale: None },
     ];
-    let sent = [MapAction::Vsync { enabled: false }];
-    let debug = |actions: &[MapAction]| format!("{actions:?}");
+    // Sent before this launch began, so its read has them or the game's newer settings.
+    host.set_display(MapAction::Vsync { enabled: false });
+    host.set_display(MapAction::UiScale { scale: Some(1.5) });
+    let since = host.shared.0.lock().unwrap().display_sent;
+    let launch = || {
+        let inner = host.shared.0.lock().unwrap();
+        debug(&launch_display(read.clone(), &inner.display, since))
+    };
+    assert_eq!(launch(), debug(&read));
+    // VSync changed after the read, before the child was installed.
+    host.set_display(MapAction::Vsync { enabled: false });
     assert_eq!(
-        debug(&launch_display(read.clone(), &sent)),
+        launch(),
         debug(&[
             MapAction::UiScale { scale: None },
             MapAction::Vsync { enabled: false }
         ])
     );
-    // Nothing sent leaves the launch read as it is.
-    assert_eq!(debug(&launch_display(read.clone(), &[])), debug(&read));
 }
 
 #[test]

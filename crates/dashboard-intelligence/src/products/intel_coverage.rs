@@ -55,6 +55,9 @@ pub struct IntelCoverageParams {
     pub tags: Option<Vec<String>>,
     #[serde(default = "default_shown")]
     pub shown: usize,
+    // Also every country with a network in or from one shown: those `tags` name, else the most active.
+    #[serde(default)]
+    pub touching: bool,
     #[serde(default)]
     pub owner: Option<String>,
     #[serde(default)]
@@ -300,6 +303,9 @@ impl Product for IntelCoverage {
         {
             return Err("Pair view requires owner and target");
         }
+        if params.touching && matches!(params.view, IntelCoverageView::Pair) {
+            return Err("Networks with any country belong to the matrix view");
+        }
         Ok(())
     }
     fn types() -> Vec<String> {
@@ -316,6 +322,31 @@ impl Product for IntelCoverage {
 
 fn selected(part: &str, selector: &str) -> bool {
     part == selector || countries::split(part).is_some_and(|(tag, _)| tag == selector)
+}
+
+/// Every country with a dated network in or from a chosen one.
+fn counterparties(
+    evidence: &KeyedWindow,
+    chosen: impl Fn(&str) -> bool,
+    cancelled: &AtomicBool,
+) -> io::Result<BTreeSet<String>> {
+    let mut linked = BTreeSet::new();
+    for series in &evidence.series {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let mut parts = series.name.split('|');
+        let (Some(owner), Some(target), Some("coveredControlled")) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if chosen(owner) {
+            linked.insert(target.to_owned());
+        }
+        if chosen(target) {
+            linked.insert(owner.to_owned());
+        }
+    }
+    Ok(linked)
 }
 
 pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
@@ -360,16 +391,19 @@ fn reply(
     };
     let end = last.min(through.unwrap_or(last));
     let pair = matches!(params.view, IntelCoverageView::Pair);
+    let tagged = |part: &str| {
+        params
+            .tags
+            .as_ref()
+            .is_some_and(|tags| tags.iter().any(|tag| selected(part, tag)))
+    };
     let mut evidence = opened.window(first, last, through, |name| {
         if let Some(part) = name.strip_prefix("member|") {
             if pair {
                 selected(part, params.owner.as_deref().expect("validated owner"))
                     || selected(part, params.target.as_deref().expect("validated target"))
             } else {
-                params
-                    .tags
-                    .as_ref()
-                    .is_none_or(|tags| tags.iter().any(|tag| selected(part, tag)))
+                params.touching || params.tags.is_none() || tagged(part)
             }
         } else {
             !pair && name.ends_with("|coveredControlled")
@@ -398,10 +432,21 @@ fn reply(
             known = intersect_spans(&known, &spans);
         }
         Vec::new()
+    } else if params.touching && params.tags.is_some() {
+        Vec::new()
     } else {
         ranking::series(&evidence, &known, cancelled)?
     };
-    let chosen = ranking::shown_anywhere(&ranking, params.shown, cancelled)?;
+    let mut chosen = ranking::shown_anywhere(&ranking, params.shown, cancelled)?;
+    if params.touching {
+        let linked = counterparties(
+            &evidence,
+            |part: &str| chosen.contains(part) || tagged(part),
+            cancelled,
+        )?;
+        chosen.extend(linked);
+    }
+    let included = |part: &str| chosen.contains(part) || tagged(part);
     reply.window = opened.window(first, last, through, |name| {
         let mut parts = name.split('|');
         let (Some(owner), Some(target), Some(_)) = (parts.next(), parts.next(), parts.next())
@@ -412,25 +457,21 @@ fn reply(
             selected(owner, params.owner.as_deref().expect("validated owner"))
                 && selected(target, params.target.as_deref().expect("validated target"))
         } else {
-            let included = |part: &str| {
-                chosen.contains(part)
-                    || params
-                        .tags
-                        .as_ref()
-                        .is_some_and(|tags| tags.iter().any(|tag| selected(part, tag)))
-            };
             included(owner) && included(target)
         }
     })?;
     retain_dated(&mut reply.window);
     // Present values and membership stay exact independently of absence proof.
     reply.window.known = known;
-    reply.window.series.extend(
-        evidence
-            .series
-            .into_iter()
-            .filter(|series| series.name.starts_with("member|")),
-    );
+    reply
+        .window
+        .series
+        .extend(evidence.series.into_iter().filter(|series| {
+            series
+                .name
+                .strip_prefix("member|")
+                .is_some_and(|part| !params.touching || included(part))
+        }));
     reply.window.series.extend(ranking);
     let state = &opened.scan.observer;
     reply.warnings.extend(

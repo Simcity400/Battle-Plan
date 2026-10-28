@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { bridgeCommand, mapSettingsCommand, preparedQueryCommand, recordingRequestBody } from '../../browserBridge.ts';
+import { bridgeCommand, mapSettingsCommand, pageRecordings, preparedQueryCommand, recordingRequestBody } from '../../browserBridge.ts';
 import { MAX_MESSAGE_BYTES } from '../generated/dashboard.ts';
 
 async function* body(...chunks: Buffer[]) { yield* chunks; }
@@ -54,4 +54,42 @@ test('a browser prepared-query refresh reaches the native bridge as a refresh', 
   assert.equal(preparedQueryCommand({ type: 'preparedQuery', request, refresh: false }).refresh, false);
   assert.equal(preparedQueryCommand({ type: 'preparedQuery', request }).refresh, false, 'a body without the flag is a first ask');
   assert.throws(() => preparedQueryCommand({ type: 'preparedQuery', request, refresh: 'yes' }), { message: 'Invalid prepared query request' });
+});
+
+test('a page that has gone has every source it holds released, and its imports go once nothing holds them', () => {
+  const released: string[] = [], removed: string[] = [];
+  const pages = pageRecordings(sourceId => { released.push(sourceId); }, target => { removed.push(target); });
+  pages.imported('first.battleplan', 'page-1');
+  pages.open('first.battleplan', 'page-1')('lease-1');
+  pages.open('library.battleplan', 'page-1')('lease-2');
+  pages.released('lease-1');
+  assert.deepEqual([released, removed], [[], []], 'the page that imported it can still open it again');
+  // Opened and answered, but the page reloads before it learns the source; another open is still under way.
+  pages.open('first.battleplan', 'page-1')('lease-3');
+  const late = pages.open('library.battleplan', 'page-1');
+  pages.left('page-1');
+  assert.deepEqual(released, ['lease-2', 'lease-3'], 'every source the page still holds is released, known to it or not');
+  assert.deepEqual(removed, ['first.battleplan']);
+  assert.equal(pages.isImport('first.battleplan'), false, 'a removed import cannot be opened');
+  late('lease-4'); late('lease-4');
+  assert.deepEqual(released, ['lease-2', 'lease-3', 'lease-4'], 'an open its page left during is released as it ends, once');
+  pages.released('lease-2'); pages.released('unknown-lease'); pages.left('page-1');
+  assert.equal(released.length, 3, 'nothing is released twice');
+
+  // An open reserves the import before it is checked, so its page leaving meanwhile cannot remove it.
+  pages.imported('second.battleplan', 'page-2');
+  const checking = pages.open('second.battleplan', 'page-2');
+  pages.left('page-2');
+  assert.equal(pages.isImport('second.battleplan'), true);
+  checking();
+  assert.deepEqual(removed, ['first.battleplan', 'second.battleplan'], 'a refused open holds nothing once it ends');
+  // Another page's source holds an import its own page let go of.
+  pages.imported('third.battleplan', 'page-3');
+  pages.open('third.battleplan', 'page-4')('lease-5');
+  pages.left('page-3');
+  assert.equal(removed.length, 2);
+  pages.released('lease-5');
+  assert.equal(removed.at(-1), 'third.battleplan');
+  pages.imported('fourth.battleplan', 'page-2');
+  assert.equal(removed.at(-1), 'fourth.battleplan', 'an import finished after its page left is removed at once');
 });

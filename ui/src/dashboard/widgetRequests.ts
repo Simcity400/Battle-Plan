@@ -81,11 +81,17 @@ export function intelShown(widget: WidgetSpec): number {
   const countries = widget.countries;
   return countries.kind === 'group' && countries.group.type === 'top' ? countries.group.count : Number(resolveOptions(INTEL, widget.options).mostCountries) || 12;
 }
+/** Whether the matrix shows one country (the dashboard's, one picked, or the top one) with every
+ * country it has a network in or that has one in it; a group's members stay among themselves. */
+export function intelTouching(widget: WidgetSpec, tags: readonly string[] | undefined): boolean {
+  const countries = widget.countries;
+  return countries.kind === 'group' ? countries.group.type === 'top' && countries.group.count === 1 : tags?.length === 1;
+}
 /** `tags`: the countries chosen, or a group's members over the branch; none asks for the most active. */
 export function intelCoverageRequest(widget: WidgetSpec, track: Track, tags: readonly string[] | undefined = chosenTags(widget)) {
   const options = resolveOptions(INTEL, widget.options);
   return track && options.show !== 'pair'
-    ? request(track, 'intel-network-coverage', requests.intelMatrix(track.branch.id, intelShown(widget), tags)) : null;
+    ? request(track, 'intel-network-coverage', requests.intelMatrix(track.branch.id, intelShown(widget), tags, intelTouching(widget, tags))) : null;
 }
 
 /** The yard product each yard widget reads. */

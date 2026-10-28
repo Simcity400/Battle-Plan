@@ -1,6 +1,7 @@
 import { countryPart, keyedKnown, keyedRead, runAtHour, validateKeyedWindow } from '../../dashboard/keyedHistory.ts';
 import type { KeyedWindow } from '../../dashboard/keyedHistory';
-import type { Run } from '../../charts/series';
+import type { HolderAt } from '../../dashboard/holderLooks';
+import type { Run, Span } from '../../charts/series';
 
 export interface OccupationReserveReply {
   window: KeyedWindow; holders: readonly { tag: string; slot: number }[];
@@ -94,6 +95,28 @@ export function holderBands(reply: OccupationReserveReply, holder: string, sourc
     });
   }
   return bands;
+}
+
+/** Each of `holder`'s source countries at an hour one of its entries names it, so the tag is
+ * proven its own then: `sample` (the drill's look hour) while named then, else its latest
+ * naming up to `hour`, else its first. A source's one colour and legend name are read there. */
+export function sourceWitnesses(reply: OccupationReserveReply, holder: string, hour: number, sample: number): HolderAt[] {
+  const named = new Map<string, Span[]>();
+  for (const series of reply.window.series) {
+    const [owner, , field] = series.name.split('|');
+    if (owner !== holder || field !== 'source') continue;
+    for (const run of series.runs) {
+      const source = reply.sources[run[2]];
+      if (source) named.set(source, [...named.get(source) ?? [], { firstHour: run[0], lastHour: run[1] }]);
+    }
+  }
+  return [...named].map(([source, spans]) => {
+    const latest = spans.filter(span => span.firstHour <= hour).sort((a, b) => b.lastHour - a.lastHour)[0];
+    const at = spans.some(span => span.firstHour <= sample && sample <= span.lastHour) ? sample
+      : latest ? latest.lastHour >= hour ? latest.firstHour : latest.lastHour
+      : Math.min(...spans.map(span => span.firstHour));
+    return { key: source, tag: countryPart(source)!.tag, hour: at };
+  });
 }
 
 export const persons = (value: bigint) => value.toLocaleString('en-US');

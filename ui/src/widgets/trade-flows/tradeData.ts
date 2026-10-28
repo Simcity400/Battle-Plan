@@ -643,6 +643,16 @@ export function campaignScale(flows: readonly Flow[], measure: Measure, from: nu
   return most;
 }
 
+/** A campaign scale kept for one scope (`key`). */
+export interface HeldScale { key: string; scale?: number }
+
+/** The campaign scale to draw: the one `read` now, else the last one read for the same
+ * scope while another extent's is read; none until that scope's first is read. */
+export function heldScale(held: HeldScale | undefined, key: string, read: number | undefined): HeldScale {
+  if (read !== undefined) return held?.key === key && held.scale === read ? held : { key, scale: read };
+  return held?.key === key ? held : { key };
+}
+
 /** Each resource's colour by its place in the campaign's full list (`order`, the
  * game's order), whatever is shown: the first as many as the palette has take its
  * colours in turn, and the rest share `other`, as a ninth category folds into

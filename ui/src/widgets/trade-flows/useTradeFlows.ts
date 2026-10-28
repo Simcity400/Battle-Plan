@@ -136,8 +136,7 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
     widget.options?.between === 'between') : null, [data, widget.countries, widget.options?.between, resolved, groups.data, lastHour]);
   return { track, all, resolved, groups, scope, ...product, data, market, marketReason,
     scaleData: prepared ? scale.data : data,
-    // Without the campaign scale, ribbons would silently size to the moment instead.
-    scaleError: prepared && scale.data === undefined ? scale.error : undefined,
+    scaleError: prepared && scale.data === undefined ? scale.error : undefined, retryScale: scale.retry,
     retry: () => { product.retry(); reached.retry(); pointed.retry(); scale.retry(); },
     hasExactHour: (hour: number) => !prepared || (data?.exactHours ?? []).includes(Math.floor(hour)),
     error: product.error ?? reached.error ?? pointed.error ?? (navigationError?.key === key ? navigationError.error : undefined),

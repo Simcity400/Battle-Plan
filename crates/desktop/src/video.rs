@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
@@ -64,15 +64,24 @@ impl VideoSettings {
         }
     }
 }
-/// The saved settings, and whether `--diagnostics` turned the maps'
-/// diagnostics on for this run without saving it.
-pub struct VideoState(pub Mutex<Result<VideoSettings, String>>, AtomicBool);
+/// The saved settings, whether `--diagnostics` turned the maps'
+/// diagnostics on for this run without saving it, and how many times the
+/// maps' switches changed, counted under the settings' lock.
+pub struct VideoState(
+    pub Mutex<Result<VideoSettings, String>>,
+    AtomicBool,
+    AtomicU64,
+);
 impl Default for VideoState {
     fn default() -> Self {
         let requested = std::env::args_os()
             .skip(1)
             .any(|argument| argument == "--diagnostics");
-        Self(Mutex::new(load()), AtomicBool::new(requested))
+        Self(
+            Mutex::new(load()),
+            AtomicBool::new(requested),
+            AtomicU64::new(0),
+        )
     }
 }
 fn path() -> Result<PathBuf, String> {
@@ -383,74 +392,141 @@ fn effective_map_diagnostics(requested: bool, stored: &Result<VideoSettings, Str
             .is_ok_and(|settings| settings.map_diagnostics)
 }
 
+/// One of the maps' switches as the host holds it, with the number of the
+/// switches' last change it reflects. Events and replies reach the frontend in
+/// any order, so it keeps the value with the highest number.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct MapSwitch {
+    value: bool,
+    sequence: u64,
+}
+
+/// A switch's value and the number of the last change, read under the settings' lock.
+fn read_switch(
+    state: &VideoState,
+    value: impl FnOnce(&Result<VideoSettings, String>) -> bool,
+) -> MapSwitch {
+    let stored = state.0.lock();
+    MapSwitch {
+        value: stored.as_deref().is_ok_and(value),
+        sequence: state.2.load(Ordering::Acquire),
+    }
+}
+
+/// Numbers a change to the switches; the caller holds the settings' lock.
+fn next_change(state: &VideoState) -> u64 {
+    state.2.fetch_add(1, Ordering::AcqRel) + 1
+}
+
 pub fn current_map_diagnostics(state: &VideoState) -> bool {
-    state
-        .0
-        .lock()
-        .is_ok_and(|stored| effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored))
+    diagnostics_switch(state).value
+}
+
+fn diagnostics_switch(state: &VideoState) -> MapSwitch {
+    read_switch(state, |stored| {
+        effective_map_diagnostics(state.1.load(Ordering::Acquire), stored)
+    })
 }
 
 /// Saves the maps' diagnostics choice (`None` flips it), sends it to the
 /// native viewer and tells the frontend. Returns the new choice.
-pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<bool, String> {
+pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
     let mut stored = state.0.lock().map_err(|e| e.to_string())?;
     let enabled = enabled
         .unwrap_or_else(|| !effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored));
+    let muted = muted_in(&stored);
     commit(&path()?, &mut stored, |settings| {
         settings.map_diagnostics = enabled
     })?;
     state.1.store(false, Ordering::Release);
     // Sent before the lock is released, so two changes reach the viewer in the
     // order they were saved.
+    let changed = announce_diagnostics(app, &state, enabled);
+    // Saving over settings that could not be read loads the file, which can change the other switch.
+    let muted = (muted_in(&stored) != muted).then(|| announce_muted(app, &state, !muted));
+    drop(stored);
+    let _ = app.emit("map-diagnostics", changed);
+    if let Some(muted) = muted {
+        let _ = app.emit("map-muted", muted);
+    }
+    Ok(changed)
+}
+
+/// The saved mute choice in `stored`; unreadable settings leave the maps sounding.
+fn muted_in(stored: &Result<VideoSettings, String>) -> bool {
+    stored.as_ref().is_ok_and(|settings| settings.map_muted)
+}
+
+/// Sends a mute choice to every map, numbered for the frontend; the caller holds the lock.
+fn announce_muted(app: &AppHandle, state: &VideoState, muted: bool) -> MapSwitch {
+    app.state::<NativeHost>().set_muted(muted);
+    app.state::<crate::popout::PopOuts>()
+        .mirror(&dashboard::protocol::MapAction::Mute { muted });
+    MapSwitch {
+        value: muted,
+        sequence: next_change(state),
+    }
+}
+
+/// Sends a diagnostics choice to every map, numbered for the frontend; the caller holds the lock.
+fn announce_diagnostics(app: &AppHandle, state: &VideoState, enabled: bool) -> MapSwitch {
     app.state::<NativeHost>().set_diagnostics(enabled);
     app.state::<crate::popout::PopOuts>()
         .mirror(&dashboard::protocol::MapAction::Diagnostics { enabled });
-    drop(stored);
-    let _ = app.emit("map-diagnostics", enabled);
-    Ok(enabled)
+    MapSwitch {
+        value: enabled,
+        sequence: next_change(state),
+    }
 }
 
 /// The saved mute choice; an unreadable file leaves the maps sounding.
 pub fn current_map_muted(state: &VideoState) -> bool {
-    state
-        .0
-        .lock()
-        .is_ok_and(|stored| stored.as_ref().is_ok_and(|settings| settings.map_muted))
+    muted_switch(state).value
+}
+
+fn muted_switch(state: &VideoState) -> MapSwitch {
+    read_switch(state, muted_in)
 }
 
 /// Saves the maps' mute choice, sends it to the native viewer and tells the
 /// frontend. Returns the new choice.
-pub fn change_map_muted(app: &AppHandle, muted: bool) -> Result<bool, String> {
+pub fn change_map_muted(app: &AppHandle, muted: bool) -> Result<MapSwitch, String> {
     let state = app.state::<VideoState>();
     let mut stored = state.0.lock().map_err(|e| e.to_string())?;
+    let diagnostics = effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored);
     commit(&path()?, &mut stored, |settings| settings.map_muted = muted)?;
     // Sent before the lock is released, so changes arrive in saved order.
-    app.state::<NativeHost>().set_muted(muted);
-    app.state::<crate::popout::PopOuts>()
-        .mirror(&dashboard::protocol::MapAction::Mute { muted });
+    let changed = announce_muted(app, &state, muted);
+    // Saving over settings that could not be read loads the file, which can change the other switch.
+    let diagnostics = (effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored)
+        != diagnostics)
+        .then(|| announce_diagnostics(app, &state, !diagnostics));
     drop(stored);
-    let _ = app.emit("map-muted", muted);
-    Ok(muted)
+    let _ = app.emit("map-muted", changed);
+    if let Some(diagnostics) = diagnostics {
+        let _ = app.emit("map-diagnostics", diagnostics);
+    }
+    Ok(changed)
 }
 
 #[tauri::command]
-pub fn map_muted(state: State<'_, VideoState>) -> bool {
-    current_map_muted(&state)
+pub fn map_muted(state: State<'_, VideoState>) -> MapSwitch {
+    muted_switch(&state)
 }
 
 #[tauri::command]
-pub fn set_map_muted(app: AppHandle, muted: bool) -> Result<bool, String> {
+pub fn set_map_muted(app: AppHandle, muted: bool) -> Result<MapSwitch, String> {
     change_map_muted(&app, muted)
 }
 
 #[tauri::command]
-pub fn map_diagnostics(state: State<'_, VideoState>) -> bool {
-    current_map_diagnostics(&state)
+pub fn map_diagnostics(state: State<'_, VideoState>) -> MapSwitch {
+    diagnostics_switch(&state)
 }
 
 #[tauri::command]
-pub fn set_map_diagnostics(app: AppHandle, enabled: Option<bool>) -> Result<bool, String> {
+pub fn set_map_diagnostics(app: AppHandle, enabled: Option<bool>) -> Result<MapSwitch, String> {
     // Settings shows the failure even when the keyboard shortcut asked.
     change_map_diagnostics(&app, enabled).inspect_err(|error| {
         let _ = app.emit("map-diagnostics-error", error);

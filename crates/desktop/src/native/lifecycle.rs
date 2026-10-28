@@ -45,16 +45,13 @@ impl NativeHost {
 
         // Existing viewers need no disk reads. Preference resolution itself reads
         // host status, so release this lock before it and recheck before spawning.
-        if self
-            .shared
-            .0
-            .lock()
-            .map_err(|e| e.to_string())?
-            .process
-            .is_some()
-        {
-            return Ok(());
-        }
+        let since = {
+            let inner = self.shared.0.lock().map_err(|e| e.to_string())?;
+            if inner.process.is_some() {
+                return Ok(());
+            }
+            inner.display_sent
+        };
         let display = crate::video::launch_actions(window)?;
         // The host owns the content folders; the viewer reads none of its own.
         // Unreadable preferences start it without folders, and Settings shows why.
@@ -152,8 +149,8 @@ impl NativeHost {
             inner.pending.bounds = inner.bounds;
             inner.pending.visibility = Some(inner.status.visible);
         }
-        // A display choice sent after the read above has already reached `set_display`.
-        let display = super::launch_display(display, &inner.display);
+        // A display choice sent since the read above began has already reached `set_display`.
+        let display = super::launch_display(display, &inner.display, since);
         inner.pending.actions.extend(display);
         inner
             .pending

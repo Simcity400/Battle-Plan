@@ -30,7 +30,7 @@ test('actual Trade flows selection reasons use its native census without fetchin
       export const useTradeFlows = (widget, runtime) => {
         const track = runtime.tracks[0], data = globalThis.__tradeHolderReason.data;
         const resolved = resolveCountries(widget.countries, ['X'], undefined, track.branch.lastHour, Number.MAX_SAFE_INTEGER);
-        return { track, all: false, resolved, groups: {}, data, retry() {},
+        return { track, all: false, resolved, groups: {}, data, scaleData: data, retry() {},
           scope: tradeScope(decodeTrade(data), widget.countries, resolved, undefined, track.branch.lastHour, false) };
       };`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__tradeHolderReason.hour;',
@@ -124,7 +124,7 @@ test('a country’s flag or name opens its whole trade, reading its own reply on
       export const useTradeFlows = (widget, runtime) => {
         const track = runtime.tracks[0], data = ${JSON.stringify(data)};
         const resolved = resolveCountries(widget.countries, ['X'], undefined, track.branch.lastHour, Number.MAX_SAFE_INTEGER);
-        return { track, all: false, resolved, groups: {}, data, retry() {},
+        return { track, all: false, resolved, groups: {}, data, scaleData: data, retry() {},
           scope: tradeScope(decodeTrade(data), widget.countries, resolved, undefined, track.branch.lastHour, false) };
       };`,
     '/dashboard/products.ts': `export const useProduct = (client, request) => { const s = globalThis.__tradeCountry;

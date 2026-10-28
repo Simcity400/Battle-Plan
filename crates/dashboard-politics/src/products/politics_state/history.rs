@@ -33,7 +33,8 @@
 //! - Civil wars: each holder's stored civil-war rivals, one run per rival
 //!   holder while the holder's own list names it, and apart from them the
 //!   shared game predicate ([`dashboard_text::identity::CivilWars`], indexed
-//!   once per observation) for every listed holder ([`super::civil_wars`]).
+//!   once per observation) for every listed holder, and the game's existence
+//!   check for every holder ever listed ([`super::civil_wars`]).
 //!
 //! Each part also keeps the hours its tables were read ([`Field::Known`]): a
 //! value ending at an hour its part was not read ended unknown, not then.
@@ -214,6 +215,9 @@ pub enum Field {
     CivilWarRival(u32),
     /// 1 while the game's civil-war predicate holds for the holder.
     CivilWar,
+    /// 1 while a holder ever listed in a civil war owns a state, the game's
+    /// existence check; an hour that cannot say has no run.
+    Exists,
     /// 1 at each hour the part's tables were read.
     Known(Part),
 }
@@ -242,6 +246,8 @@ pub struct Prepared {
     /// Each part's keys holding a value at its last observation.
     #[serde(default)]
     held: BTreeMap<Part, BTreeSet<u64>>,
+    /// Every holder a civil-war list has named, whose existence the part follows.
+    listed: BTreeSet<u32>,
     /// Each key once allocated, so an observation finds it without spelling
     /// its name; rebuilt by use after restore.
     #[serde(skip)]
@@ -587,7 +593,8 @@ impl Prepared {
     /// list is not assumed to be answered by its rival's. Apart from them,
     /// the game's own predicate for every listed holder, its inputs indexed
     /// once for them all; a list naming a country that no longer exists
-    /// does not make a civil war.
+    /// does not make a civil war. And whether each holder ever listed
+    /// exists, so a side's annexation is told from one it outlived.
     fn civil_wars(&mut self, frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observed) -> bool {
         let rows = match frame.complete::<tables::CountryCivilWars>() {
             Ok(rows) => rows,
@@ -607,7 +614,7 @@ impl Prepared {
         }
         let predicate = dashboard_text::identity::CivilWars::new(frame);
         let mut read = true;
-        for slot in listed {
+        for &slot in &listed {
             match predicate
                 .as_ref()
                 .map_err(Clone::clone)
@@ -622,6 +629,32 @@ impl Prepared {
                     read = false;
                 }
             }
+        }
+        self.listed.extend(listed);
+        let mut unknown = false;
+        let existing: Vec<u32> = self
+            .listed
+            .iter()
+            .copied()
+            .filter(|&slot| {
+                match predicate
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|predicate| predicate.exists(slot))
+                {
+                    Ok(exists) => exists,
+                    Err(_) => {
+                        unknown = true;
+                        false
+                    }
+                }
+            })
+            .collect();
+        if unknown {
+            self.refuse("civil-war side existence not recorded");
+        }
+        for slot in existing {
+            observed.insert(self.key(slot, Field::Exists), 1);
         }
         read
     }

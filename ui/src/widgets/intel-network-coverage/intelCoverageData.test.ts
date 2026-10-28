@@ -51,6 +51,33 @@ test('the most active countries are chosen at the playback hour, not the branch 
   assert.deepEqual(countriesAt(reply, 10, 3, ['ITA'])!, []);
 });
 
+test('one chosen country is shown first with every country it has a network in or that has one in it then', () => {
+  const runs = (first: number, last: number) => [[first, last, '1', true]];
+  const pair = (owner: string, target: string, first: number) => ['coveredControlled', 'controlledStrength'].map(field => ({ name: `${owner}|${target}|${field}`, runs: runs(first, 40) }));
+  const touching = validateIntelCoverage({
+    window: { firstHour: 0, lastHour: 40, known: [{ firstHour: 0, lastHour: 40 }], reads: [[0, 40, 0]], series: [
+      ...pair('GER@7', 'FRA@9', 0), ...pair('ITA@8', 'GER@7', 0), ...pair('FRA@9', 'ITA@8', 0), ...pair('ENG@4', 'SOV@5', 0), ...pair('GER@7', 'ENG@4', 30),
+      { name: 'member|GER@7', runs: runs(0, 35) }, ...['FRA@9', 'ITA@8', 'ENG@4', 'SOV@5'].map(id => ({ name: `member|${id}`, runs: runs(0, 40) })),
+    ] },
+    warnings: [],
+  });
+  const ids = (hour: number, linked = true) => countriesAt(touching, hour, 2, ['GER'], linked)!.map(country => country.id);
+  assert.deepEqual(ids(10), ['GER@7', 'FRA@9', 'ITA@8'], 'its own networks and those in it, whatever Countries shown says; never SOV');
+  assert.deepEqual(ids(30), ['GER@7', 'ENG@4', 'FRA@9', 'ITA@8'], 'a network begun later counts from its hour');
+  assert.deepEqual(ids(10, false), ['GER@7'], 'chosen countries alone otherwise');
+  assert.deepEqual(ids(38), [], 'without the chosen country there, nothing is its network');
+  // FRA and ITA's networks in each other are shown with GER's.
+  assert.equal(cellState(pairsAt(touching, 10), 'FRA@9', 'ITA@8').kind, 'present');
+});
+
+test('Top 1 shows the most active country then with every country it has a network in or that has one in it', () => {
+  // At hour 21 Italy ranks first and has no network; at 25 France does (ties by identity), with Germany's both ways.
+  assert.deepEqual(countriesAt(reply, 21, 1, undefined, true)!.map(country => country.id), ['ITA@8']);
+  assert.deepEqual(countriesAt(reply, 25, 1, undefined, true)!.map(country => country.id), ['FRA@9', 'GER@7']);
+  assert.deepEqual(countriesAt(reply, 25, 1)!.map(country => country.id), ['FRA@9'], 'one country, never padded to two');
+  assert.equal(countriesAt(reply, 40, 1, undefined, true), null, 'without a recorded ranking, no top country');
+});
+
 test('measures map onto the recorded fields on each basis', () => {
   assert.equal(measureField('covered', 'controlled'), 'coveredControlled');
   assert.equal(measureField('covered', 'core'), 'coveredCore');
@@ -87,4 +114,15 @@ test('the matrix asks for the chosen group\'s members, and a Top countries group
   const humans = widget({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false });
   assert.deepEqual(intelCoverageRequest(humans, track, ['GER', 'ITA'])!.params, { branchId: '1', view: 'matrix', shown: 5, tags: ['GER', 'ITA'] });
   assert.deepEqual(intelCoverageRequest(widget({ kind: 'all' }), track)!.params, { branchId: '1', view: 'matrix', shown: 5 });
+  // The dashboard's country, or one picked, asks for its networks with every country.
+  for (const one of [widget({ kind: 'selected' }), widget({ kind: 'tags', tags: ['GER'] })]) {
+    assert.deepEqual(intelCoverageRequest(one, track, ['GER'])!.params, { branchId: '1', view: 'matrix', shown: 5, tags: ['GER'], touching: true });
+  }
+  assert.equal(intelCoverageRequest(widget({ kind: 'tags', tags: ['GER', 'ITA'] }), track)!.params.touching, undefined);
+  assert.equal(intelCoverageRequest(humans, track, ['GER'])!.params.touching, undefined, 'a group of one stays its members');
+  // Top 1 asks for exactly one, read as one country; Top 2 stays the most active among themselves.
+  const top = (count: number) => widget({ kind: 'group', group: { type: 'top', count }, membership: 'hour', aggregate: false });
+  assert.equal(intelShown(top(1)), 1);
+  assert.deepEqual(intelCoverageRequest(top(1), track, undefined)!.params, { branchId: '1', view: 'matrix', shown: 1, touching: true });
+  assert.deepEqual(intelCoverageRequest(top(2), track, undefined)!.params, { branchId: '1', view: 'matrix', shown: 2 });
 });

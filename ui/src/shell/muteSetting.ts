@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { desktopAvailable, errorMessage } from './api';
+import { newestSwitch, type MapSwitch } from './mapSwitch';
 
 /**
  * The maps' mute choice. The desktop host saves it, sends it to the native maps and
@@ -10,22 +11,17 @@ import { desktopAvailable, errorMessage } from './api';
 export function useMapMuted() {
   const [muted, setMuted] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Events carry no sequence: a reply is dropped once an event newer than its request arrived.
-  const heard = useRef(0);
+  const [take] = useState(() => newestSwitch(setMuted));
   useEffect(() => {
     if (!desktopAvailable) return;
     let live = true;
-    const changed = listen<boolean>('map-muted', event => { heard.current += 1; setMuted(event.payload); setError(null); });
-    void changed.then(() => {
-      const seen = heard.current;
-      return invoke<boolean>('map_muted').then(value => { if (live && heard.current === seen) setMuted(value); });
-    }).catch(cause => { if (live) setError(errorMessage(cause)); });
+    const changed = listen<MapSwitch>('map-muted', event => { if (take(event.payload)) setError(null); });
+    void changed.then(() => invoke<MapSwitch>('map_muted')).then(value => { if (live) take(value); }, cause => { if (live) setError(errorMessage(cause)); });
     return () => { live = false; void changed.then(stop => stop(), () => {}); };
-  }, []);
+  }, [take]);
   const set = (value: boolean) => {
     setError(null);
-    const seen = heard.current;
-    void invoke<boolean>('set_map_muted', { muted: value }).then(next => { if (heard.current === seen) setMuted(next); }, cause => setError(errorMessage(cause)));
+    void invoke<MapSwitch>('set_map_muted', { muted: value }).then(take, cause => setError(errorMessage(cause)));
   };
   return { muted, error, set };
 }

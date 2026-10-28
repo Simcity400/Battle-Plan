@@ -24,7 +24,7 @@ const DTOS: Record<string, Dto> = {
   'occupation-reserve-manpower': { branchId: { kind: 'string', required: true }, view: { kind: ['race', 'holder'] }, tags: { kind: 'strings' },
     tag: { kind: 'string' }, firstHour: { kind: 'i32' }, lastHour: { kind: 'i32' }, top: { kind: 'usize' } },
   'intel-network-coverage': { branchId: { kind: 'string', required: true }, view: { kind: ['matrix', 'pair'] }, tags: { kind: 'strings' },
-    shown: { kind: 'usize' }, owner: { kind: 'string' }, target: { kind: 'string' }, firstHour: { kind: 'i32' }, lastHour: { kind: 'i32' } },
+    shown: { kind: 'usize' }, touching: { kind: 'bool' }, owner: { kind: 'string' }, target: { kind: 'string' }, firstHour: { kind: 'i32' }, lastHour: { kind: 'i32' } },
   'naval-yards': { branchId: { kind: 'string', required: true }, tag: { kind: 'string', required: true }, firstHour: { kind: 'i32' },
     lastHour: { kind: 'i32' } },
 };
@@ -72,6 +72,8 @@ test('every Batch 5 request deserializes into its Rust DTO', () => {
     ['occupation-reserve-manpower', requests.occupationRace('1', ['GER'])],
     ['occupation-reserve-manpower', requests.occupationHolder('1', 'GER@7')],
     ['intel-network-coverage', requests.intelMatrix('1', 12.7)],
+    ['intel-network-coverage', requests.intelMatrix('1', 12, ['GER'], true)],
+    ['intel-network-coverage', requests.intelMatrix('1', 1, undefined, true)],
     ['intel-network-coverage', requests.intelPair('1', 'GER@7', 'ENG@3')],
     ['naval-yards', requests.navalYards('1', 'GER')],
   ];

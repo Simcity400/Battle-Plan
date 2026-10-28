@@ -1,8 +1,10 @@
 //! How the processes hosting the data service return freed memory.
 
 use std::ffi::{c_int, c_long};
+// Links mimalloc's library into binaries that keep the system allocator too.
+use mimalloc as _;
 
-// The mimalloc static library the global allocator links provides these.
+// The mimalloc static library provides these.
 unsafe extern "C" {
     fn mi_option_set(option: c_int, value: c_long);
 }

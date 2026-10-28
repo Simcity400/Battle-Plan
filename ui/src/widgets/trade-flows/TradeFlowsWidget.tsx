@@ -36,9 +36,9 @@ import { contentSet, resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { readAt } from '../../dashboard/reads';
 import { mix, toHex } from '../../shell/appearance/color';
-import { mergePreparedTrade, buildDiagram, campaignScale, coverageNote, sideRanks, decodeTrade, exactSums, formatDays, knownHours, emptyMessage, knownSpanAt, unrecordedMessage, measureAmount, measureNote, OTHER, resourceColours, selectionMessage, identityCountryAt,
+import { mergePreparedTrade, buildDiagram, campaignScale, coverageNote, sideRanks, decodeTrade, exactSums, formatDays, heldScale, knownHours, emptyMessage, knownSpanAt, unrecordedMessage, measureAmount, measureNote, OTHER, resourceColours, selectionMessage, identityCountryAt,
   resourceName, selectFlows, validateTradeFlowsReply } from './tradeData';
-import type { Flow, Measure, SideNode, SideLink } from './tradeData';
+import type { Flow, HeldScale, Measure, SideNode, SideLink } from './tradeData';
 import TradeDrill from './TradeDrillView';
 import TradeCountryView, { resourceLegendItems } from './TradeCountryView';
 import { countryTradeTags } from './tradeCountry';
@@ -112,9 +112,19 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   }, [trade, chosenKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const flows = useMemo(() => trade && scope ? selectFlows(trade, scope, resourceIds) : [], [trade, scope, resourceIds]);
   const diagram = useMemo(() => buildDiagram(flows, measure, from, moment, perSide), [flows, measure, from, moment, perSide]);
-  const scale = useMemo(() => options.scale === 'moment' || !incoming.scaleData || !scope ? null
+  const sized = options.scale !== 'moment';
+  const readScale = useMemo(() => !sized || !incoming.scaleData || !scope ? undefined
     : campaignScale(selectFlows(decodeTrade(incoming.scaleData), scope, resourceIds), measure, from, extent[1]),
-  [incoming.scaleData, scope, resourceIds, measure, from, extent[1], options.scale]); // eslint-disable-line react-hooks/exhaustive-deps
+  [incoming.scaleData, scope, resourceIds, measure, from, extent[1], sized]); // eslint-disable-line react-hooks/exhaustive-deps
+  const fallback = defaultCountryTag(track);
+  const scaleScope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries,
+    widget.countries.kind === 'selected' ? fallback : null, options.between, chosenKey, measure]);
+  const scaleHeld = useRef({ client: runtime.client, held: undefined as HeldScale | undefined });
+  if (scaleHeld.current.client !== runtime.client) scaleHeld.current = { client: runtime.client, held: undefined };
+  scaleHeld.current.held = heldScale(scaleHeld.current.held, scaleScope, readScale);
+  // Undefined until this scope's campaign scale is read: never the moment's fit instead.
+  const scale = sized ? scaleHeld.current.held.scale : null;
+  const scaleFailure = useHeldFailure(sized ? incoming.scaleError : undefined, scale !== undefined, incoming.retryScale);
   // Each country's fixed place for ribbons inside the other side's nodes.
   const ranks = useMemo(() => sideRanks(flows, extent[0], extent[1]), [flows, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -236,7 +246,6 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   // its reason says when a group's members there are unknown or none. Totals over
   // time of a group counted at each hour count every member while it was one.
   const lastHour = track?.branch.lastHour ?? 0;
-  const fallback = defaultCountryTag(track);
   const atMoment = worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, moment, lastHour, identities);
   const momentReason = atMoment.reason && (measure === 'current' || !resolved?.membership) ? atMoment.reason : null;
   const groupUnobserved = widget.countries.kind === 'group' && widget.countries.membership === 'hour' ? resolved?.unobserved ?? null : null;
@@ -395,7 +404,6 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const selectionReason = selectionMessage(resolved, atMoment, measure, from, moment, groupUnobserved);
   if (selectionReason && !pinnedView && !drill.breakdown) return <>{groupFailure}<WidgetState kind="empty" message={selectionReason} /></>;
   if (error) return <>{groupFailure}{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
-  if (incoming.scaleError) return <>{groupFailure}{pinnedHeader}<WidgetState kind="error" what="the campaign-wide ribbon scale" detail={incoming.scaleError} onRetry={retry} /></>;
   // A group with no member found yet asks for nothing, so no reply will come: the moment shown
   // says why. Totals over time can't say so from one moment, and wait for the whole branch.
   const none = measure === 'current' && resolved ? noMembersAt(widget.countries, resolved, groups.data, moment, lastHour) : null;
@@ -408,7 +416,9 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
 
   const caption = measure === 'current' ? 'Per day'
     : `${measure === 'total' ? 'Delivered' : 'Average per trading day'} · ${dayLabel(from)} – ${dayLabel(moment)}`;
-  const main = incoming.hasExactHour && !incoming.hasExactHour(moment) ? <WidgetState kind="loading" label="Loading trade amounts…" /> : <div className="trade-main">
+  const main = scaleFailure ? <WidgetState kind="error" what="the campaign-wide ribbon scale" detail={scaleFailure} onRetry={incoming.retryScale} />
+    : incoming.hasExactHour && !incoming.hasExactHour(moment) ? <WidgetState kind="loading" label="Loading trade amounts…" />
+    : scale === undefined ? <WidgetState kind="loading" label="Loading the campaign-wide ribbon scale…" /> : <div className="trade-main">
     <p className="trade-caption">{caption}
       {coverage ? <span> · {coverage}</span> : null}</p>
     <Legend always label="Resources" items={resourceLegend} windowed={shownResources.length > tokens.categories.length} />

@@ -46,6 +46,60 @@ export function preparedQueryCommand(input: Record<string, any>): Record<string,
   return { type: 'preparedQuery', request: input.request, refresh: input.refresh ?? false };
 }
 
+/** What each page load holds through this server: the sources it opened, and the recordings it imported, which it
+ * offers to open again until it goes away. A page that has gone has its sources released, and an import is removed
+ * once its page has gone and every source opened from it has been released. */
+export function pageRecordings(release: (sourceId: string) => void, remove: (target: string) => void) {
+  const imports = new Map<string, { page: string; opening: number; sources: Set<string> }>();
+  const sources = new Map<string, { page: string; target: string | null }>();
+  // Kept for the server's life, so an open its page left during is released as it finishes.
+  const gone = new Set<string>();
+  const settle = (target: string) => {
+    const entry = imports.get(target);
+    if (!entry || !gone.has(entry.page) || entry.opening || entry.sources.size) return;
+    imports.delete(target);
+    remove(target);
+  };
+  const drop = (sourceId: string) => {
+    const source = sources.get(sourceId);
+    if (!source) return;
+    sources.delete(sourceId);
+    if (source.target !== null) { imports.get(source.target)?.sources.delete(sourceId); settle(source.target); }
+  };
+  return {
+    isImport: (target: string) => imports.has(target),
+    imported: (target: string, page: string) => { imports.set(target, { page, opening: 0, sources: new Set() }); settle(target); },
+    /** Reserves `page`'s open of `path` before anything about it is checked. The call it returns ends the open, with
+     * the source it opened if any. */
+    open: (path: string, page: string) => {
+      const entry = imports.get(path);
+      if (entry) entry.opening++;
+      let ended = false;
+      return (sourceId?: string) => {
+        if (ended) return;
+        ended = true;
+        if (sourceId !== undefined && gone.has(page)) release(sourceId);
+        else if (sourceId !== undefined) { sources.set(sourceId, { page, target: entry ? path : null }); entry?.sources.add(sourceId); }
+        if (entry) { entry.opening--; settle(path); }
+      };
+    },
+    /** The page released `sourceId` itself. */
+    released: (sourceId: string) => drop(sourceId),
+    /** `page` has gone: each source it still holds is released, then its imports go once nothing else holds them. */
+    left: (page: string) => {
+      gone.add(page);
+      for (const [sourceId, source] of [...sources]) if (source.page === page) { release(sourceId); drop(sourceId); }
+      for (const [target, entry] of [...imports]) if (entry.page === page) settle(target);
+    },
+  };
+}
+
+/** The page load a browser request names, which owns what it opens and imports. */
+function pageId(value: unknown): string {
+  if (typeof value !== 'string' || !value || value.length > 64) throw new Error('Invalid recording request');
+  return value;
+}
+
 export function browserBridge(root: string, recordingsRoot: string, gameDir: string, userDir: string): Plugin {
   const libraryRoot = savedReplayFolder(recordingsRoot).then(folder => { recordingsRoot = folder; });
   let contentConfig: Promise<void> | null = null;
@@ -59,7 +113,6 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     gameDir = saved.game_dir || gameDir;
     userDir = saved.user_dir || userDir;
   })();
-  const importedPaths = new Set<string>();
   // Each server keeps its imports under its process id; a later server removes those whose server has gone.
   const importsRoot = path.join(tmpdir(), 'battle-plan-imports');
   const importsOwned = path.join(importsRoot, `${process.pid}-${randomUUID()}`);
@@ -139,13 +192,19 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     signal.addEventListener('abort', cancel, { once: true });
     process.stdin.write(line);
   });
+  // The bridge answers summaries from its read loop, so this answer follows every release written before it.
+  const bridgeLetGo = async () => { if (child) await send({ type: 'recordingSummaries', paths: [] }, new AbortController().signal).catch(() => {}); };
+  const pages = pageRecordings(sourceId => { child?.stdin.write(bridgeCommand({ type: 'release', sourceId })); }, target => {
+    // Work the bridge is still finishing may hold the file a moment longer, which rm's retries wait out.
+    void bridgeLetGo().then(() => rm(path.dirname(target), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })).catch(() => {});
+  });
   /** A bridge built before `source` last changed may exit on the command it adds. */
   const requireBridge = async (source: string, message: string) => {
     const binary = await stat(path.join(root, '.cargo-target/debug/dashboard-bridge.exe'));
     if (binary.mtimeMs < (await stat(path.join(root, source))).mtimeMs) throw new Error(message);
   };
   const withinRoot = async (relative: string) => {
-    if (importedPaths.has(relative)) return { target: await realpath(relative) };
+    if (pages.isImport(relative)) return { target: await realpath(relative) };
     if (!recordingsRoot) throw new Error('Choose a replay folder in Settings.');
     const base = await realpath(recordingsRoot);
     const target = await realpath(path.resolve(base, relative));
@@ -193,6 +252,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             if (request.headers['content-type'] !== 'application/octet-stream') throw new Error('Expected a recording file');
             const name = path.basename(decodeURIComponent(String(request.headers['x-recording-name'] ?? ''))).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
             if (!(/\.(?:battleplan|hoi4replay)$/i.test(name)) || name.length > 180) throw new Error('Choose a .battleplan recording');
+            const page = pageId(request.headers['x-recording-page']);
             const target = path.join(importsOwned, randomUUID(), name);
             await mkdir(path.dirname(target), { recursive: true });
             const file = await open(target, 'wx');
@@ -206,14 +266,38 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
               if (!bytes) throw new Error('The recording is empty');
               await file.close();
               const canonical = await realpath(target);
-              importedPaths.add(canonical);
+              pages.imported(canonical, page);
               response.end(JSON.stringify({ path: canonical }));
             } catch (error) { await file.close(); await rm(path.dirname(target), { recursive: true, force: true }).catch(() => {}); throw error; }
             return;
           }
           if (request.method !== 'POST' || !request.headers['content-type']?.startsWith('application/json')) throw new Error('Expected a JSON recording request');
-          if (pending.size >= 64) throw new Error(BROWSER_BRIDGE_BUSY);
           const input = await recordingRequestBody(request) as Record<string, any>;
+          // Letting go is never refused, or a busy bridge would keep what a page has left.
+          if (input.type === 'release' || input.type === 'pageGone') {
+            if (input.type === 'pageGone') pages.left(pageId(input.page));
+            else {
+              child?.stdin.write(bridgeCommand({ type: 'release', sourceId: input.sourceId }));
+              if (typeof input.sourceId === 'string') pages.released(input.sourceId);
+            }
+            response.end('{}'); return;
+          }
+          if (pending.size >= 64) throw new Error(BROWSER_BRIDGE_BUSY);
+          if (input.type === 'open') {
+            // Reserved before anything awaits, so an import its page lets go of meanwhile stays until the open ends.
+            const ended = pages.open(String(input.path), pageId(input.page));
+            let sourceId: string | undefined;
+            try {
+              await loadContentConfig();
+              const location = await withinRoot(String(input.path));
+              if (!(/\.(?:battleplan|hoi4replay)$/i.test(location.target)) || !(await stat(location.target)).isFile()) throw new Error('Choose a .battleplan recording');
+              const source = await send({ type: 'open', path: location.target, revision: '' }, controller.signal);
+              const id = (source as { id?: unknown } | null)?.id;
+              if (typeof id === 'string') sourceId = id;
+              response.end(JSON.stringify(source));
+            } finally { ended(sourceId); }
+            return;
+          }
           if (input.type === 'library') {
             response.end(JSON.stringify(await recordingSummaries(await listReplayFolder(recordingsRoot, controller.signal), controller.signal))); return;
           }
@@ -254,11 +338,7 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
           }
           let command: Record<string, unknown>;
           await loadContentConfig();
-          if (input.type === 'open') {
-            const location = await withinRoot(String(input.path));
-            if (!(/\.(?:battleplan|hoi4replay)$/i.test(location.target)) || !(await stat(location.target)).isFile()) throw new Error('Choose a .battleplan recording');
-            command = { type: 'open', path: location.target, revision: '' };
-          } else if (input.type === 'mapSettings') {
+          if (input.type === 'mapSettings') {
             await requireBridge('crates/dashboard-core/src/map_settings.rs', 'Map settings are unavailable in this server version. The local data bridge needs updating.');
             command = mapSettingsCommand(input);
           } else if (input.type === 'historyCache') {
@@ -275,9 +355,6 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
             command = preparedQueryCommand(input);
           } else if (input.type === 'product') {
             command = { type: 'product', request: input.request };
-          } else if (input.type === 'release') {
-            child?.stdin.write(bridgeCommand({ type: 'release', sourceId: input.sourceId }));
-            response.end('{}'); return;
           } else throw new Error('Unknown recording operation');
           response.end(JSON.stringify(await send(command, controller.signal)));
         } catch (error) {

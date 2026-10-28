@@ -7,7 +7,7 @@ import type { CountrySelection } from '../../dashboard/model';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import type { ResourceInfo, TradeFlow, TradeFlowsReply } from '../../generated/dashboard';
 import type { PreparedTradeReply } from './tradeData';
-import { buildDiagram, campaignScale, coverageNote, decodeTrade, emptyMessage, flowValue, knownSpanAt, leftOutAt, measureAmount, measureRows, OTHER, resourceColours, selectFlows, selectionMessage,
+import { buildDiagram, campaignScale, coverageNote, decodeTrade, emptyMessage, flowValue, heldScale, knownSpanAt, leftOutAt, measureAmount, measureRows, OTHER, resourceColours, selectFlows, selectionMessage,
   sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply, resourceName, measureNote, mergePreparedTrade, exactSums } from './tradeData.ts';
 import { countryTotal } from './tradeCountry.ts';
 
@@ -178,6 +178,16 @@ test('one scale all campaign: the most traded at once, the final total, the larg
   const peaked = decodeTrade({ ...reply(), flows: [flow(0, 1, 1, [[0, 23, '100000'], [24, 47, '10000000'], [48, 71, '100000']])] }).flows;
   assert.equal(flowValue(peaked[0], 'average', 0, 47), 50.5);
   assert.equal(campaignScale(peaked, 'average', 0, 71), 50.5);
+});
+
+test('a campaign scale holds for its scope while another extent is read, and none is guessed before the first', () => {
+  const unread = heldScale(undefined, 'scope', undefined);
+  assert.equal(unread.scale, undefined);
+  const read = heldScale(unread, 'scope', 20);
+  assert.equal(read.scale, 20);
+  assert.equal(heldScale(read, 'scope', undefined), read, 'the last scale read stays while the grown extent is read');
+  assert.equal(heldScale(read, 'scope', 30).scale, 30);
+  assert.equal(heldScale(read, 'other scope', undefined).scale, undefined, 'another selection, resource set or measure never borrows it');
 });
 
 test('unknown hours are found and said, never counted as no trade', () => {

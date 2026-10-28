@@ -21,35 +21,45 @@ fn record(
     present: &[(u32, u32, &str)],
     lists: &[(u32, u32)],
 ) {
-    record_owning(state, first, last, present, present, lists);
+    record_owning(state, first, last, present, Some(present), lists);
 }
 
-/// As [`record`], only the countries in `owning` owning a state.
+/// As [`record`], only the countries in `owning` owning a state; `None`
+/// leaves the states owned unrecorded.
 fn record_owning(
     state: &mut Prepared,
     first: i32,
     last: i32,
     present: &[(u32, u32, &str)],
-    owning: &[(u32, u32, &str)],
+    owning: Option<&[(u32, u32, &str)]>,
     lists: &[(u32, u32)],
 ) {
     for hour in first..=last {
         let mut at = frame(hour);
         countries(&mut at, present, &[]);
-        set(
-            &mut at,
-            TableId::CountryCounterInputs,
-            TableRows::CountryCounterInputs(
-                present
-                    .iter()
-                    .map(|&(id, _, _)| CountryCounterInputRow {
-                        country: id,
-                        owned_state_count: i32::from(owning.iter().any(|&(owner, _, _)| owner == id)),
-                        ..Default::default()
-                    })
-                    .collect(),
+        match owning {
+            Some(owning) => set(
+                &mut at,
+                TableId::CountryCounterInputs,
+                TableRows::CountryCounterInputs(
+                    present
+                        .iter()
+                        .map(|&(id, _, _)| CountryCounterInputRow {
+                            country: id,
+                            owned_state_count: i32::from(
+                                owning.iter().any(|&(owner, _, _)| owner == id),
+                            ),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ),
             ),
-        );
+            None => {
+                *at.tables[TableId::CountryCounterInputs.index()] = TableView::Unavailable {
+                    reason: "not recorded".into(),
+                };
+            }
+        }
         set(
             &mut at,
             TableId::CountryCivilWars,
@@ -150,7 +160,7 @@ fn an_annexer_listed_only_after_the_annexation_was_not_a_side() {
     record(&mut state, 90, 99, &ALL[..3], &[]);
     record(&mut state, 100, 110, &ALL[..3], &[(1, 2), (2, 1)]);
     // SPL annexes NEW at 110 and only then becomes OLD's rival, in the same episode.
-    record(&mut state, 111, 120, &ALL[..3], &[(3, 1)]);
+    record_owning(&mut state, 111, 120, &ALL[..3], Some(&[ALL[0], ALL[2]][..]), &[(3, 1)]);
     record(&mut state, 121, 125, &ALL[..1], &[]);
     let reply = wars(
         &mut state,
@@ -169,7 +179,9 @@ fn an_annexer_listed_only_after_the_annexation_was_not_a_side() {
 fn a_side_restored_after_its_annexation_was_not_defeated_by_it() {
     let ended = |present: &[(u32, u32, &str)], lists: &[(u32, u32)], annexations: &[Annexation]| {
         let mut state = Prepared::default();
-        record(&mut state, 100, 120, present, lists);
+        record(&mut state, 100, 100, present, lists);
+        // With the states owned unrecorded, only annexations tell a restoration.
+        record_owning(&mut state, 101, 120, present, None, lists);
         record(&mut state, 121, 125, &ALL[..1], &[]);
         wars(&mut state, 125, annexations)
     };
@@ -210,6 +222,36 @@ fn a_side_restored_after_its_annexation_was_not_defeated_by_it() {
         500,
         &[annex(121, "OLD", "NEW", true), annex(450, "NEW", "OUT", false)],
     );
+    assert_eq!(reply.wars[0].outcome.as_ref().map(|outcome| outcome.winner), Some(0));
+}
+
+#[test]
+fn a_side_existing_again_after_its_annexation_was_not_defeated_by_it() {
+    let lists = [(1, 2), (2, 1)];
+    // OLD annexes NEW at 110 and the listings run on; from 120 NEW owns a state where `later` says so.
+    let annexed = |later: Option<&[(u32, u32, &str)]>| {
+        let mut state = Prepared::default();
+        record(&mut state, 100, 110, &ALL[..2], &lists);
+        record_owning(&mut state, 111, 119, &ALL[..2], Some(&ALL[..1]), &lists);
+        record_owning(&mut state, 120, 140, &ALL[..2], later, &lists);
+        record(&mut state, 141, 145, &ALL[..1], &[]);
+        wars(&mut state, 145, &[annex(110, "OLD", "NEW", true)])
+    };
+    // Restored and fighting again before the episode's last listing.
+    let reply = annexed(Some(&ALL[..2]));
+    let war = &reply.wars[0];
+    assert_eq!((war.first_hour, war.last_hour), (100, 140));
+    assert_eq!(war.sides[1].exit, None);
+    assert_eq!(war.outcome, None);
+    // The listings alone do not undo the annexation.
+    let reply = annexed(Some(&ALL[..1]));
+    assert_eq!(reply.wars[0].sides[1].exit.as_ref().map(|exit| exit.hour), Some(110));
+    assert_eq!(
+        reply.wars[0].outcome.as_ref().map(|outcome| (outcome.winner, outcome.hour)),
+        Some((0, 110))
+    );
+    // Nor do hours whose existence is unknown.
+    let reply = annexed(None);
     assert_eq!(reply.wars[0].outcome.as_ref().map(|outcome| outcome.winner), Some(0));
 }
 
@@ -268,7 +310,7 @@ fn a_stale_listing_of_a_country_without_states_is_not_an_ongoing_war() {
     record(&mut state, 100, 110, &ALL[..2], &[(2, 1)]);
     // NEW keeps listing OLD after OLD lost its last state: the game's
     // predicate no longer holds for either, though the listing remains.
-    record_owning(&mut state, 111, 120, &ALL[..2], &ALL[1..2], &[(2, 1)]);
+    record_owning(&mut state, 111, 120, &ALL[..2], Some(&ALL[1..2]), &[(2, 1)]);
     let reply = wars(&mut state, 120, &[]);
     let war = &reply.wars[0];
     assert_eq!((war.first_hour, war.last_hour), (100, 120));

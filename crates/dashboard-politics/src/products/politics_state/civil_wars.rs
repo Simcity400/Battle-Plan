@@ -22,8 +22,10 @@
 //! through a civil war's resolution or another route such as a peace
 //! conference. An annexation by a country that was not a side yet, a later
 //! split, a gap or a capitulation decides nothing. A side's last annexation
-//! decides; one that later annexes was restored. Annexations still name how a
-//! side left, and by which route.
+//! decides; one that later annexes, or is recorded existing after it within
+//! the episode ([`history::Field::Exists`]), was restored. Its listings alone
+//! never undo an annexation, and an hour whose existence is unknown says
+//! nothing. Annexations still name how a side left, and by which route.
 
 use super::history::{self, Field, HolderTag, Metadata, Part, tag_at};
 use dashboard_base::{
@@ -193,6 +195,7 @@ pub fn query(
     reply.known = history::known(&mut reader, &metadata, Part::CivilWars, i32::MIN, through)?;
     let mut listings = Vec::new();
     let mut at_war = BTreeMap::new();
+    let mut exists = BTreeMap::new();
     for (&id, (holder, field)) in &metadata.fields {
         if cancelled.load(Ordering::Acquire) {
             return Err(invalid("Civil war request cancelled"));
@@ -201,6 +204,10 @@ pub fn query(
             Field::CivilWarRival(rival) => rival,
             Field::CivilWar => {
                 at_war.insert(*holder, reader.runs(id, i32::MIN, through)?);
+                continue;
+            }
+            Field::Exists => {
+                exists.insert(*holder, reader.runs(id, i32::MIN, through)?);
                 continue;
             }
             _ => continue,
@@ -214,7 +221,7 @@ pub fn query(
             });
         }
     }
-    reply.wars = episodes(listings, &metadata, &at_war, annexations);
+    reply.wars = episodes(listings, &metadata, &at_war, &exists, annexations);
     for (reason, count) in &metadata.refusals {
         if reason.contains("civil-war") {
             reply
@@ -226,13 +233,15 @@ pub fn query(
     Ok(reply)
 }
 
-/// Each holder's runs of the game's civil-war predicate.
-type AtWar = BTreeMap<u32, Vec<Run>>;
+/// Each holder's runs of one field: the game's civil-war predicate, or its
+/// existence check.
+type HolderRuns = BTreeMap<u32, Vec<Run>>;
 
 fn episodes(
     mut listings: Vec<Listing>,
     metadata: &Metadata,
-    at_war: &AtWar,
+    at_war: &HolderRuns,
+    exists: &HolderRuns,
     annexations: &[Annexation],
 ) -> Vec<CivilWar> {
     listings.sort_by_key(|listing| (listing.first, listing.a, listing.b));
@@ -262,7 +271,7 @@ fn episodes(
     }
     let mut wars: Vec<CivilWar> = groups
         .into_iter()
-        .map(|group| war(group, metadata, at_war, annexations))
+        .map(|group| war(group, metadata, at_war, exists, annexations))
         .collect();
     wars.sort_by_key(|war| (war.first_hour, war.id.clone()));
     wars
@@ -271,7 +280,8 @@ fn episodes(
 fn war(
     mut group: Vec<Listing>,
     metadata: &Metadata,
-    at_war: &AtWar,
+    at_war: &HolderRuns,
+    exists: &HolderRuns,
     annexations: &[Annexation],
 ) -> CivilWar {
     group.sort_by_key(|listing| (listing.first, listing.a, listing.b));
@@ -346,6 +356,13 @@ fn war(
         .max()
         .unwrap_or(i32::MIN)
         .saturating_add(1);
+    // Only hours after its own: an annexation may follow its hour's sample.
+    let existed_after = |holder: u32, hour: i32| {
+        exists.get(&holder).is_some_and(|runs| {
+            runs.iter()
+                .any(|run| run.value != 0 && run.last_hour > hour && run.first_hour <= ended)
+        })
+    };
     let mut annexations: Vec<&Annexation> = annexations.iter().collect();
     annexations.sort_by_key(|annexation| (annexation.hour, annexation.read_hour));
     for annexation in annexations {
@@ -389,8 +406,9 @@ fn war(
             Some(_) => continue,
             None => SideExitKind::AnnexedByOther,
         };
-        // A later annexation supersedes an earlier one: the side was restored between them.
-        sides[annexed].exit = Some(SideExit {
+        // A later annexation supersedes an earlier one, and existing after it undoes it: the side was restored.
+        let restored = existed_after(order[annexed], annexation.hour);
+        sides[annexed].exit = (!restored).then(|| SideExit {
             kind,
             hour: annexation.hour,
             read_hour: annexation.read_hour,

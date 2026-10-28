@@ -9,8 +9,16 @@ import { forgetReplySizes } from './replySizes.ts';
 import { INTERACTIVE_PRODUCTS } from '../generated/dashboard.ts';
 import { BrowserRequestQueue } from './browserRequestQueue.ts';
 import type { BrowserRequestLane } from './browserRequestQueue';
+import { newId } from '../shell/ids.ts';
 
 const requests = new BrowserRequestQueue();
+/** This page load, which owns the recordings it opens and imports. The bridge outlives the page, so a page that goes
+ * away (closed or reloaded) tells it, and the bridge lets go of them, even those whose reply had not arrived. A
+ * back/forward-cache visit retains the page and what it holds. */
+const page = newId();
+if (typeof window !== 'undefined') addEventListener('pagehide', event => {
+  if (!event.persisted) navigator.sendBeacon('/api/recordings', new Blob([JSON.stringify({ type: 'pageGone', page })], { type: 'application/json' }));
+});
 const interactiveProducts: ReadonlySet<string> = new Set(INTERACTIVE_PRODUCTS);
 
 function chooseRecording(): Promise<string | null> {
@@ -25,12 +33,11 @@ function chooseRecording(): Promise<string | null> {
       if (!(/\.(?:battleplan|hoi4replay)$/i.test(file.name))) { reject(new Error('Choose a .battleplan recording')); return; }
       if (file.size > 2 * 1024 * 1024 * 1024) { reject(new Error('Open recordings larger than 2 GB in the desktop app.')); return; }
       void requests.run('history', async signal => {
-        const response = await fetch('/api/recordings/import', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Recording-Name': encodeURIComponent(file.name) }, body: file, signal });
+        const response = await fetch('/api/recordings/import', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Recording-Name': encodeURIComponent(file.name), 'X-Recording-Page': page }, body: file, signal });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error ?? 'Cannot open recording');
         return data.path as string;
-      }).then(resolve)
-        .catch(reject);
+      }).then(resolve, reject);
     }, { once: true });
     input.click();
   });
@@ -49,15 +56,6 @@ async function request<T>(body: { type: string; request?: ProductRequest; source
     return data;
   }, { signal, sourceId: body.type === 'release' ? undefined : body.request?.sourceId ?? body.sourceId, refresh: body.refresh === true, onCancelledValue: releaseLate });
 }
-
-/** Recordings this page holds open. The bridge outlives the page, so a page that goes
- * away (closed or reloaded) without unloading them releases them as it leaves.
- * A back/forward-cache visit retains the page and its source handles and leases. */
-const leases = new Set<string>();
-if (typeof window !== 'undefined') addEventListener('pagehide', event => {
-  if (event.persisted) return;
-  for (const sourceId of leases) navigator.sendBeacon('/api/recordings', new Blob([JSON.stringify({ type: 'release', sourceId })], { type: 'application/json' }));
-});
 
 async function preparation(action: PreparationAction, query: PreparationRequest, signal: AbortSignal) {
   return validatePreparationReply(await request<PreparationReply>({ type: 'preparation', id: query.requestId, sourceId: query.sourceId, revision: query.revision, action }, signal), query);
@@ -99,17 +97,12 @@ export const browserDashboardClient: DashboardClient = {
   historyCache: (clear, signal) => request<HistoryCacheReply>({ type: 'historyCache', clear }, signal),
 
   async openSource(path, signal): Promise<DashboardSource> {
-    const releaseLate = async (late: SourceReply) => {
-      leases.add(late.id);
-      await request({ type: 'release', sourceId: late.id });
-      leases.delete(late.id);
-    };
-    const source = await request<SourceReply>({ type: 'open', path }, signal, releaseLate);
+    const releaseLate = async (late: SourceReply) => { await request({ type: 'release', sourceId: late.id }); };
+    const source = await request<SourceReply>({ type: 'open', path, page }, signal, releaseLate);
     if (signal.aborted) {
       await releaseLate(source).catch(() => {});
       throw new DOMException('Request cancelled', 'AbortError');
     }
-    leases.add(source.id);
     contentRevision(browserDashboardClient).observePresentation(source.presentationGeneration);
     return { id: source.id, path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } };
   },
@@ -122,7 +115,6 @@ export const browserDashboardClient: DashboardClient = {
     forgetReplySizes(browserDashboardClient, sourceId);
     requests.cancelSource(sourceId);
     await request({ type: 'release', sourceId });
-    leases.delete(sourceId);
   },
   async setMapViews() {},
   async onMapStates() { return () => {}; },

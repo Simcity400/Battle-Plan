@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { followMapPlayback } from './mapPlayback.ts';
+import { followMapPlayback, mapCommands } from './mapPlayback.ts';
 import type { BoundTrack } from './model.ts';
 
 const track = { source: { path: 'campaign.battleplan', revision: 'revision-a' }, branch: { id: '7', firstHour: 100, lastHour: 200 }, axisOffset: 100 } as BoundTrack;
@@ -41,6 +41,62 @@ test('map playback reports failures and out-of-range dates without clamping, the
   assert.equal(statuses.at(-1), null);
   assert.deepEqual(calls, [100, 102]);
   stop();
+});
+
+test('a resend repeats a rejected paused seek the clock alone would not send again', async () => {
+  const playback = clock();
+  const calls: number[] = [];
+  const statuses: unknown[] = [];
+  let refuse = true;
+  const failure = new Error('Cannot open recording');
+  const stop = followMapPlayback(playback, track, async (_path, _revision, _branch, hour) => { calls.push(hour); if (refuse) throw failure; }, status => statuses.push(status));
+  await tick();
+  playback.seek(5); await tick();
+  playback.update({}); await tick();
+  assert.deepEqual([calls, statuses], [[100, 105], [failure, failure]]);
+  refuse = false;
+  stop.resend();
+  assert.equal(statuses.length, 2, 'nothing is reported until the repeat is answered');
+  await tick();
+  assert.deepEqual([calls, statuses.at(-1)], [[100, 105, 105], null]);
+  stop(); stop.resend(); await tick();
+  assert.equal(calls.length, 3, 'a stopped follower sends nothing');
+});
+
+test('a failed map command stays shown until a repeat succeeds, and only its latest send reports', async () => {
+  const shown = new Map<string, string>();
+  const commands = mapCommands((operation, error) => { if (error == null) shown.delete(operation); else shown.set(operation, error); });
+  const sent: string[] = [];
+  let refuse = true;
+  const command = (name: string) => async () => { sent.push(name); if (refuse) throw new Error(`Refused ${name}`); };
+  commands.send('configure', command('fog')); await tick();
+  assert.deepEqual(Object.fromEntries(shown), { configure: 'Refused fog' });
+  commands.retry(); await tick();
+  assert.deepEqual([sent, Object.fromEntries(shown)], [['fog', 'fog'], { configure: 'Refused fog' }], 'a repeat refused again keeps its failure');
+  refuse = false;
+  commands.retry();
+  assert.deepEqual(Object.fromEntries(shown), { configure: 'Refused fog' }, 'the failure stays while its repeat is sent');
+  await tick();
+  assert.equal(shown.size, 0);
+  commands.retry(); await tick();
+  assert.equal(sent.length, 3, 'a command that succeeded is not sent again');
+
+  refuse = true;
+  let late!: () => void;
+  commands.send('camera', () => new Promise<void>((_resolve, reject) => { late = () => reject(new Error('Refused walk')); }));
+  commands.send('camera', command('fly')); await tick();
+  late(); await tick();
+  assert.deepEqual(Object.fromEntries(shown), { camera: 'Refused fly' }, 'an older reply cannot report over a newer send');
+  commands.send('toggle 0', command('flip'), false);
+  let due!: () => void;
+  commands.send('aircraft', () => new Promise<void>((_resolve, reject) => { due = () => reject(new Error('Refused aircraft')); }));
+  await tick();
+  refuse = false;
+  commands.forget('aircraft'); due(); await tick();
+  assert.deepEqual(Object.fromEntries(shown), { camera: 'Refused fly', 'toggle 0': 'Refused flip' }, 'a forgotten send reports nothing');
+  commands.retry(); await tick();
+  assert.deepEqual(sent.slice(3), ['fly', 'flip', 'fly'], 'a command that cannot be repeated is cleared rather than sent again');
+  assert.equal(shown.size, 0);
 });
 
 test('late native failure cannot surface in a different view', async () => {

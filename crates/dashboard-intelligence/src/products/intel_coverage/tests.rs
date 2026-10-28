@@ -613,6 +613,59 @@ fn intel_coverage_r1_explicit_tags_keep_pairs_without_unknown_ranking_as_zero() 
 }
 
 #[test]
+fn intel_coverage_touching_adds_every_counterparty_and_the_networks_among_them() {
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let mut scan = Scan::default();
+    let networks = vec![network(1, 2), network(3, 1), network(2, 3), network(4, 5)];
+    observe(&mut scan, &frame(100, Some(networks.clone()), true, 5));
+    let mut later = networks;
+    later.push(network(1, 4));
+    observe(&mut scan, &frame(101, Some(later), true, 5));
+    publish(&mut scan, &fixture);
+    let p = params(serde_json::json!({"branchId":"1", "tags":["Mod 1"], "touching":true}));
+    let reply = load(&fixture, &p, 100, 101, None);
+    for name in [
+        "Mod 1@1|Mod 2@2|coveredControlled",
+        "Mod 3@3|Mod 1@1|coveredControlled",
+        "Mod 2@2|Mod 3@3|coveredControlled",
+        "Mod 1@1|Mod 4@4|coveredControlled",
+    ] {
+        assert!(run(&reply, name).is_some(), "{name}");
+    }
+    assert_eq!(pair_series_count(&reply), 24);
+    assert!(run(&reply, "Mod 4@4|Mod 5@5|coveredControlled").is_none());
+    for id in 1..=4 {
+        assert!(run(&reply, &format!("member|Mod {id}@{id}")).is_some());
+    }
+    assert!(run(&reply, "member|Mod 5@5").is_none());
+    assert!(
+        reply
+            .window
+            .series
+            .iter()
+            .all(|series| !series.name.starts_with("rank|"))
+    );
+    let early = load(&fixture, &p, 100, 100, None);
+    assert_eq!(pair_series_count(&early), 18);
+    assert!(run(&early, "member|Mod 4@4").is_none());
+    assert!(IntelCoverage::validate(&p).is_ok());
+    // Top 1: Mod 1 is the most active throughout, so its networks are read as a chosen one's.
+    let top = params(serde_json::json!({"branchId":"1", "shown":1, "touching":true}));
+    assert!(IntelCoverage::validate(&top).is_ok());
+    let ranked = load(&fixture, &top, 100, 101, None);
+    assert_eq!(pair_series_count(&ranked), 24);
+    assert!(run(&ranked, "Mod 1@1|Mod 4@4|coveredControlled").is_some());
+    assert!(run(&ranked, "Mod 4@4|Mod 5@5|coveredControlled").is_none());
+    assert!(run(&ranked, "member|Mod 5@5").is_none());
+    assert_eq!(
+        run(&ranked, "rank|Mod 1@1").unwrap().runs,
+        [(100, 100, "2".into(), true), (101, 101, "3".into(), false)]
+    );
+    let refused = serde_json::json!({"branchId":"1", "view":"pair", "owner":"Mod 1", "target":"Mod 2", "touching":true});
+    assert!(IntelCoverage::validate(&params(refused)).is_err());
+}
+
+#[test]
 fn intel_coverage_r1_members_and_ranks_follow_gaps_reuse_and_continuation() {
     let fixture = dashboard_base::prepared::series::tests::Fixture::new();
     let mut scan = Scan::default();

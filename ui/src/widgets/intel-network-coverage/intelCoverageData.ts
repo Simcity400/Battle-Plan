@@ -30,22 +30,29 @@ export function validateIntelCoverage(value: unknown): IntelCoverageReply {
 export interface ShownCountry { id: string; tag: string; slot: number }
 
 /** The countries present at `hour`: those the explicit tags name (bare tag or TAG@slot), or
- * else the `shown` most active by their network count then, ties by identity. Null when the
+ * else the `shown` most active by their network count then, ties by identity; with `touching`,
+ * after them every country with a network in or from one of them then. Null when the
  * ranking is not recorded at that hour and no tags choose the countries. */
-export function countriesAt(reply: IntelCoverageReply, hour: number, shown: number, tags?: readonly string[]): ShownCountry[] | null {
+export function countriesAt(reply: IntelCoverageReply, hour: number, shown: number, tags?: readonly string[], touching = false): ShownCountry[] | null {
   const present: string[] = [];
   const ranks = new Map<string, bigint>();
+  const pairs: [string, string][] = [];
   for (const series of reply.window.series) {
-    const [kind, part] = series.name.split('|');
+    const [kind, part, field] = series.name.split('|');
     if (kind === 'member' && runAtHour(series.runs, hour)) present.push(part);
     else if (kind === 'rank') { const run = runAtHour(series.runs, hour); if (run) ranks.set(part, BigInt(run[2])); }
+    else if (touching && field !== undefined && runAtHour(series.runs, hour)) pairs.push([kind, part]);
   }
   const country = (id: string): ShownCountry => ({ id, ...countryPart(id)! });
-  if (tags) return present.filter(id => tags.some(tag => tag === id || tag === countryPart(id)!.tag)).sort().map(country);
-  if (!ranks.size) return null;
-  return present.filter(id => ranks.has(id))
-    .sort((a, b) => { const left = ranks.get(a)!, right = ranks.get(b)!; return left > right ? -1 : left < right ? 1 : a < b ? -1 : a > b ? 1 : 0; })
-    .slice(0, Math.max(0, shown)).map(country);
+  if (!tags && !ranks.size) return null;
+  const own = tags ? present.filter(id => tags.some(tag => tag === id || tag === countryPart(id)!.tag)).sort()
+    : present.filter(id => ranks.has(id))
+      .sort((a, b) => { const left = ranks.get(a)!, right = ranks.get(b)!; return left > right ? -1 : left < right ? 1 : a < b ? -1 : a > b ? 1 : 0; })
+      .slice(0, Math.max(0, shown));
+  if (!touching) return own.map(country);
+  const shownSet = new Set(own);
+  const linked = new Set(pairs.flatMap(([owner, target]) => [...shownSet.has(owner) ? [target] : [], ...shownSet.has(target) ? [owner] : []]));
+  return own.length ? [...own, ...present.filter(id => !shownSet.has(id) && linked.has(id)).sort()].map(country) : [];
 }
 
 /** The field a measure shows on a basis. */

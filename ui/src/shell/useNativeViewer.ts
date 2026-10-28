@@ -18,8 +18,8 @@ export function useDesktopState(retry: number) {
     let active = true;
     let eventVersion = 0;
     let unlisten: (() => void) | undefined;
-    setError(null);
 
+    // A failure stays shown while Retry map connects again.
     async function connect() {
       try {
         const stop = await onViewerState((next) => {
@@ -35,8 +35,10 @@ export function useDesktopState(retry: number) {
         unlisten = stop;
         const beforeRead = eventVersion;
         const snapshot = await getDesktopState();
+        if (!active) return;
         // An event delivered during the read is newer than its snapshot.
-        if (active && beforeRead === eventVersion) setState(snapshot);
+        if (beforeRead === eventVersion) setState(snapshot);
+        setError(null);
       } catch (cause) {
         if (active) setError(errorMessage(cause));
       }

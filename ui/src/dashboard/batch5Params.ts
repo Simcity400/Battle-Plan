@@ -50,6 +50,8 @@ export interface IntelCoverageParams {
   branchId: string; view?: 'matrix' | 'pair'; tags?: string[] | null;
   /** usize: how many of the most active countries the matrix shows. */
   shown?: number;
+  /** Also every country with a network in or from one shown: those `tags` name, else the most active. */
+  touching?: boolean;
   owner?: string | null; target?: string | null; firstHour?: number | null; lastHour?: number | null;
 }
 

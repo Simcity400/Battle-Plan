@@ -34,15 +34,17 @@ import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, 
 import { hasMapOverlay, isMapOverlay } from '../shell/mapOverlays';
 import type { Campaign, Relocation } from './campaigns';
 import { recordingFilename } from './recordingNames';
-import { followMapPlayback } from './mapPlayback';
+import { followMapPlayback, mapCommands } from './mapPlayback';
 import type { ParityHost } from './parityFixture';
 
 interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; cameraMode?: CameraMode;
   /** Whether flying and walking draw the map's interface, as the viewer last reported it. */
   cameraOverlays?: boolean; onMetadata: (metadata: ReplayMetadata | null) => void;
   /** The branch the shown campaign plays, and how to play another; null without one. */
-  onBranch?: (branch: BranchChoice | null) => void; onMapError?: (error: string | null) => void;
-  /** Bumped by Retry map; the campaign map is sent the clock's hour again. */
+  onBranch?: (branch: BranchChoice | null) => void;
+  /** A campaign-map operation failed, or (null) succeeded or is no longer wanted. */
+  onMapError?: (operation: string, error: string | null) => void;
+  /** Bumped by Retry map: the campaign map is sent the clock's hour again, and each failed command. */
   mapRetry?: number;
   /** Whether any page has layout changes not yet saved, which resetting the pages discards. */
   onUnsaved?: (unsaved: boolean) => void;
@@ -152,6 +154,9 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const mounted = useRef(false);
   const roles = useSourceRoles(client);
   const clock = useMemo(() => new PlaybackController(), []);
+  const mapErrors = useRef(onMapError);
+  mapErrors.current = onMapError;
+  const commands = useMemo(() => mapCommands((operation, error) => mapErrors.current?.(operation, error)), []);
   const maps = useMemo(() => new MapViewsStore(client, clock), [client, clock]);
   useEffect(() => {
     // The native picker's day/night and allied-plan toggles flip the widget's own settings.
@@ -197,29 +202,39 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const mapCountry = defaultRoleId ? selectedCountries[defaultRoleId] ?? null : null;
   useEffect(() => {
     if (!mapActive || !mapReady || mapSwitching || defaultLoading || !desktopAvailable) return;
-    let current = true;
-    void mapAction({ kind: 'configure', options: { ...mapOptions, ...campaignPicked, country: mapCountry } }).catch(cause => {
-      if (current) onMapError?.(errorMessage(cause));
-    });
-    return () => { current = false; };
-  }, [mapActive, mapReady, mapSwitching, defaultLoading, mapOptions, campaignPicked, mapCountry, onMapError]);
+    const options = { ...mapOptions, ...campaignPicked, country: mapCountry };
+    commands.send('configure', () => mapAction({ kind: 'configure', options }));
+    return () => commands.forget('configure');
+  }, [mapActive, mapReady, mapSwitching, defaultLoading, mapOptions, campaignPicked, mapCountry, commands]);
   // The camera mode and its overlay choice are the viewer's own: the control shows what it reports
   // and asks it to change.
   const chooseCameraMode = useCallback((mode: CameraMode) => {
-    void mapAction({ kind: 'cameraMode', mode, overlays: cameraOverlays }).catch(cause => onMapError?.(errorMessage(cause)));
-  }, [cameraOverlays, onMapError]);
+    commands.send('camera', () => mapAction({ kind: 'cameraMode', mode, overlays: cameraOverlays }));
+  }, [cameraOverlays, commands]);
   const chooseOverlays = useCallback((overlays: boolean) => {
-    void mapAction({ kind: 'cameraMode', mode: cameraMode, overlays }).catch(cause => onMapError?.(errorMessage(cause)));
-  }, [cameraMode, onMapError]);
+    commands.send('camera', () => mapAction({ kind: 'cameraMode', mode: cameraMode, overlays }));
+  }, [cameraMode, commands]);
+  // A camera change is for the viewer shown when it was asked; a hidden or restarted map drops its failure.
+  useEffect(() => mapActive && mapReady && desktopAvailable ? () => commands.forget('camera') : undefined, [mapActive, mapReady, commands]);
+  const resendSeek = useRef<(() => void) | null>(null);
   useLayoutEffect(() => {
     const reference = tracks.find(track => track.roleId === defaultRoleId);
     if (!mapActive || mapSwitching || defaultLoading || !desktopAvailable || !reference) return;
-    onMapError?.(null);
-    return followMapPlayback(clock, reference, seekMap, error => {
+    const stop = followMapPlayback(clock, reference, seekMap, error => {
       if (error != null) clock.stop();
-      onMapError?.(error == null ? null : errorMessage(error));
+      onMapError?.('seek', error == null ? null : errorMessage(error));
     });
-  }, [clock, tracks, defaultRoleId, defaultLoading, mapActive, mapSwitching, onMapError, mapRetry]);
+    resendSeek.current = stop.resend;
+    return () => { stop(); resendSeek.current = null; onMapError?.('seek', null); };
+  }, [clock, tracks, defaultRoleId, defaultLoading, mapActive, mapSwitching, onMapError]);
+  // Retry map sends the clock's hour again even without a failed seek: a viewer's own load error needs it too.
+  const retried = useRef(mapRetry);
+  useEffect(() => {
+    if (mapRetry === retried.current) return;
+    retried.current = mapRetry;
+    resendSeek.current?.();
+    commands.retry();
+  }, [mapRetry, commands]);
   // Keyed on the window's generation, so every new pop-out window is sent the options and the
   // clock even when it opens in the same render that closed the previous one.
   const popoutConfig = popoutConfigKey(popout);
@@ -494,12 +509,16 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   useEffect(() => {
     let live = true;
     let stop: (() => void) | undefined;
+    // Each click is its own flip, which may have saved before failing: Retry map clears it rather than flips again.
+    const flips: string[] = [];
     void client.onMapToggle?.((event) => {
-      if (live) void campaignToggled(event, setMapOptions, client, defaultSource ?? null)
-        .catch(cause => onMapError?.(errorMessage(cause)));
+      if (!live) return;
+      const flip = `toggle ${flips.length}`;
+      flips.push(flip);
+      commands.send(flip, () => campaignToggled(event, setMapOptions, client, defaultSource ?? null), false);
     }).then(unsubscribe => { if (live) stop = unsubscribe; else unsubscribe(); });
-    return () => { live = false; stop?.(); };
-  }, [client, defaultSource, onMapError]);
+    return () => { live = false; stop?.(); commands.forget(...flips); };
+  }, [client, defaultSource, commands]);
   const countryTags = useMemo(() => Object.fromEntries(campaigns.map(campaign => {
     const metadata = roles.bindings[campaign.id]?.source?.metadata;
     return [campaign.id, selectedCountries[campaign.id] ?? metadata?.countries.find(country => country.id === metadata.playerCountryId)?.tag ?? null];
@@ -522,12 +541,9 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   }, [aircraftRecording]);
   useEffect(() => {
     if (!mapActive || !mapReady || !desktopAvailable) return;
-    let current = true;
-    void mapAction({ kind: 'flyAircraft', aircraft }).catch(cause => {
-      if (current) onMapError?.(errorMessage(cause));
-    });
-    return () => { current = false; };
-  }, [mapActive, mapReady, aircraft, onMapError]);
+    commands.send('aircraft', () => mapAction({ kind: 'flyAircraft', aircraft }));
+    return () => commands.forget('aircraft');
+  }, [mapActive, mapReady, aircraft, commands]);
   // The pop-out's map flies the same aircraft; each viewer it starts is told when it is ready.
   useEffect(() => {
     if (popoutConfig == null) return;

@@ -258,7 +258,8 @@ impl<'a> CivilWars<'a> {
         })
     }
 
-    fn exists(&self, slot: u32) -> Result<bool, String> {
+    /// Whether `slot` owns a state, the game's existence check.
+    pub fn exists(&self, slot: u32) -> Result<bool, String> {
         let raw = self.raw_of(slot)?;
         self.owned.get(&raw).map(|&count| count > 0).ok_or_else(|| {
             format!(

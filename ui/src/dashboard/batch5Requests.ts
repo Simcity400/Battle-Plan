@@ -60,8 +60,8 @@ export const occupationRace = (branchId: string, tags?: readonly string[]): Occu
 
 export const occupationHolder = (branchId: string, tag: string): OccupationReserveParams => ({ branchId, view: 'holder', tag });
 
-export const intelMatrix = (branchId: string, shown: number, tags?: readonly string[]): IntelCoverageParams =>
-  ({ branchId, view: 'matrix', shown: Math.max(2, Math.floor(shown)), ...tags ? { tags: [...tags] } : {} });
+export const intelMatrix = (branchId: string, shown: number, tags?: readonly string[], touching = false): IntelCoverageParams =>
+  ({ branchId, view: 'matrix', shown: Math.max(1, Math.floor(shown)), ...tags ? { tags: [...tags] } : {}, ...touching ? { touching } : {} });
 
 export const intelPair = (branchId: string, owner: string, target: string): IntelCoverageParams => ({ branchId, view: 'pair', owner, target });
 

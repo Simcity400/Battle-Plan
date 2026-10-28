@@ -1,36 +1,39 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-test('a page going away releases the recordings it still holds', async () => {
+test('a page going away names itself, the owner of everything it opened or imported, so the bridge lets go of it all', async () => {
   const handlers = new Map<string, (event: { persisted: boolean }) => void>(), beacons: Blob[] = [];
-  let refuseRelease = false;
+  const owners: unknown[] = [];
   Object.assign(globalThis, { window: globalThis, addEventListener: (type: string, handler: (event: { persisted: boolean }) => void) => handlers.set(type, handler) });
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { sendBeacon: (_url: string, body: Blob) => beacons.push(body) } });
-  globalThis.fetch = (async (_url: string, init: RequestInit) => {
+  // The file input the picker opens, choosing one recording.
+  const listeners = new Map<string, () => void>();
+  const input = { files: [{ name: 'Imported.battleplan', size: 1 }], addEventListener: (type: string, listener: () => void) => listeners.set(type, listener),
+    click: () => listeners.get('change')!(), remove: () => {} };
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { createElement: () => input, body: { append: () => {} } } });
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    if (url === '/api/recordings/import') {
+      owners.push((init.headers as Record<string, string>)['X-Recording-Page']);
+      return { ok: true, json: async () => ({ path: 'imports/Imported.battleplan' }) };
+    }
     const body = JSON.parse(String(init.body));
-    const refused = body.type === 'release' && refuseRelease;
-    const reply = refused ? { error: 'Synthetic release refusal' } : body.type === 'open' ? { id: `lease-${body.path}`, revision: 'r', metadata: {} } : {};
-    return { ok: !refused, text: async () => JSON.stringify(reply) };
+    if (body.type === 'open') owners.push(body.page);
+    const reply = body.type === 'open' ? { id: `lease-${body.path}`, revision: 'r', metadata: {} } : {};
+    return { ok: true, text: async () => JSON.stringify(reply) };
   }) as unknown as typeof fetch;
   const { browserDashboardClient: client } = await import('./browserClient.ts');
   await client.openSource('a', AbortSignal.timeout(1000));
   await client.openSource('b', AbortSignal.timeout(1000));
   await client.releaseSource('lease-a');
+  assert.equal(await client.chooseRecording!(), 'imports/Imported.battleplan');
   handlers.get('pagehide')!({ persisted: true });
-  assert.equal(beacons.length, 0, 'a cached page retains its source leases for Back navigation');
+  assert.equal(beacons.length, 0, 'a cached page retains what it holds for Back navigation');
   handlers.get('pagehide')!({ persisted: false });
   assert.deepEqual(beacons.map(beacon => beacon.type), ['application/json'], 'the bridge accepts JSON MIME, including on page unload');
-  assert.deepEqual(await Promise.all(beacons.map(async beacon => JSON.parse(await beacon.text()))), [{ type: 'release', sourceId: 'lease-b' }]);
-  await client.openSource('c', AbortSignal.timeout(1000));
-  refuseRelease = true;
-  await assert.rejects(client.releaseSource('lease-c'), /Synthetic release refusal/);
-  beacons.length = 0;
-  handlers.get('pagehide')!({ persisted: false });
-  assert.deepEqual(await Promise.all(beacons.map(async beacon => JSON.parse(await beacon.text()))), [
-    { type: 'release', sourceId: 'lease-b' }, { type: 'release', sourceId: 'lease-c' },
-  ], 'a refused release keeps its lease available for unload cleanup');
-  refuseRelease = false;
-  await client.releaseSource('lease-c');
+  const [gone] = await Promise.all(beacons.map(async beacon => JSON.parse(await beacon.text())));
+  assert.equal(gone.type, 'pageGone');
+  assert.ok(typeof gone.page === 'string' && gone.page.length > 0);
+  assert.deepEqual(owners, [gone.page, gone.page, gone.page], 'every open and import names the page that leaves');
 });
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));

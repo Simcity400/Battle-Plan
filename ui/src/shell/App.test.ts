@@ -10,9 +10,13 @@ function elements(value: any): Node[] {
   return [value, ...elements(value.props.children)];
 }
 
-for (const scenario of ['peek', 'storage'] as const) test(scenario === 'peek'
-  ? 'sidebar peek occludes both native-map paths until the sidebar is kept open'
-  : 'page-save warnings survive view changes and reset until saving succeeds', async () => {
+const scenarios = {
+  peek: 'sidebar peek occludes both native-map paths until the sidebar is kept open',
+  storage: 'page-save warnings survive view changes and reset until saving succeeds',
+  retry: 'Retry map sends each failed map operation again and shows its failure until that operation succeeds',
+  switch: 'a switch to the map that cannot open its recording keeps the view shown, which offers the whole switch again',
+} as const;
+for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) test(scenarios[scenario], async () => {
   const slots: any[] = [];
   let cursor = 0;
   let layouts: (() => void)[] = [];
@@ -36,6 +40,8 @@ for (const scenario of ['peek', 'storage'] as const) test(scenario === 'peek'
       layouts.push(() => { previous?.cleanup?.(); slots[index] = { deps, cleanup: effect() }; });
     },
     mapSurface(_element: unknown, visible: boolean) { mapVisible = visible; return null; },
+    openReplay: async (_path: string) => {},
+    selectNativeView: async (_dashboard: boolean) => {},
   };
   const host = globalThis as typeof globalThis & { __shellFixture?: typeof fixture };
   host.__shellFixture = fixture;
@@ -49,7 +55,9 @@ for (const scenario of ['peek', 'storage'] as const) test(scenario === 'peek'
   } });
   const replacements: Record<string, string> = {
     '/shell/api.ts': `export const desktopAvailable = true; export const errorMessage = String;
-      export const selectNativeView = async () => {}; export const openReplay = async () => {}; export const mapAction = async () => {};`,
+      export const mapAction = async () => {};
+      export const selectNativeView = dashboard => globalThis.__shellFixture.selectNativeView(dashboard);
+      export const openReplay = path => globalThis.__shellFixture.openReplay(path);`,
     '/shell/useNativeViewer.ts': `export const useDesktopState = () => ({ state: { ready: true, running: true, viewer: { path: 'synthetic' } }, error: null });
       export const useMapSurface = (...args) => globalThis.__shellFixture.mapSurface(...args);`,
     '/shell/appearance/useAppearance.ts': 'export const useAppearance = () => ({ settings: { backdrop: { kind: "none" }, workspaceBackdrop: { kind: "same" } } });',
@@ -106,6 +114,49 @@ for (const scenario of ['peek', 'storage'] as const) test(scenario === 'peek'
       assert.equal(mapVisible, true);
       assert.equal(hasMapOverlay(), false, 'keeping the sidebar open removes its overlay');
 
+    } else if (scenario === 'retry') {
+      const settle = () => new Promise(resolve => setImmediate(resolve));
+      const retry = () => nodes.find(node => node.type === 'button' && [node.props.children].flat().includes('Retry map'));
+      const shown = () => nodes.find(node => node.props.className === 'error-copy')?.props.children;
+      // The host refuses with its message, as a native command does.
+      fixture.openReplay = () => Promise.reject('Synthetic open refusal');
+      dashboard().props.onPrimaryPath('elsewhere'); await settle(); render();
+      assert.equal(shown(), 'Synthetic open refusal');
+      assert.equal(mapVisible, false, 'the recovery panel shows instead of the native map');
+      dashboard().props.onMapError('seek', 'Synthetic seek refusal'); render();
+      const opened: string[] = [];
+      fixture.openReplay = async (path: string) => { opened.push(path); };
+      retry()!.props.onClick(); render();
+      assert.equal(shown(), 'Synthetic open refusal', 'a failure stays shown while its operation is sent again');
+      assert.equal(dashboard().props.mapRetry, 1, 'the dashboard is asked to send its failed commands again');
+      await settle(); render();
+      assert.deepEqual(opened, ['elsewhere']);
+      assert.equal(shown(), 'Synthetic seek refusal', 'a failed seek is the dashboard\'s to clear once its repeat succeeds');
+      dashboard().props.onMapError('seek', null); render();
+      assert.equal(retry(), undefined);
+      assert.equal(mapVisible, true);
+    } else if (scenario === 'switch') {
+      const settle = () => new Promise(resolve => setImmediate(resolve));
+      const shownTab = () => find(node => node.props.className === 'app-shell').props['data-tab'];
+      const failure = () => nodes.find(node => node.type === 'span' && String(node.props.children).includes('could not be shown'))?.props.children;
+      const retry = () => nodes.find(node => node.type === 'button' && [node.props.children].flat().includes('Retry'));
+      const views: boolean[] = [];
+      fixture.selectNativeView = async (dashboard: boolean) => { views.push(dashboard); };
+      navigation().props.onChoose(navigation().props.pages[0].id); await settle(); render();
+      dashboard().props.onPrimaryPath('elsewhere'); render();
+      assert.equal(shownTab(), 'analytics');
+      fixture.openReplay = () => Promise.reject('Synthetic open refusal');
+      find(node => node.props.id === 'tab-map').props.onClick(); await settle(); render();
+      assert.equal(shownTab(), 'analytics');
+      assert.deepEqual(views, [true, false, true], 'Analytics, still shown, takes its native view back from the map');
+      assert.equal(failure(), 'The campaign map could not be shown: Synthetic open refusal', 'the view still shown says why');
+      const opened: string[] = [];
+      fixture.openReplay = async (path: string) => { opened.push(path); };
+      retry()!.props.onClick(); render();
+      assert.ok(failure(), 'the failure stays shown while the switch is made again');
+      await settle(); render();
+      assert.deepEqual([views.slice(3), opened, shownTab()], [[false], ['elsewhere'], 'map'], 'the whole switch is made again: the map, then its recording');
+      assert.equal(failure(), undefined);
     } else {
       navigation().props.onPages([...navigation().props.pages, { id: 'page-added', label: 'Added' }]); render();
       assert.equal(dashboard().props.pages, navigation().props.pages, 'the dashboard knows which pages exist, so a deleted page drops its kept draft');

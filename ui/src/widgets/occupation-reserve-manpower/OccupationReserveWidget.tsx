@@ -12,7 +12,9 @@ import { useChartTokens } from '../../charts/useChartTokens';
 import type { TooltipContent } from '../../charts/tooltip';
 import { countryPart } from '../../dashboard/keyedHistory';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { useCountryLooks } from '../../dashboard/countryLooks';
+import { lookHour, useCountryLooks } from '../../dashboard/countryLooks';
+import { useHolderLooks } from '../../dashboard/holderLooks';
+import type { HolderAt } from '../../dashboard/holderLooks';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { MEMBERSHIP_PREPARING, noMembersAt, rankedCandidates, resolveCountries } from '../../dashboard/groups';
@@ -25,7 +27,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useProduct } from '../../dashboard/products';
 import { BREAKDOWN } from './definition';
-import { holderSourceBands, persons, reservesAt, sourceParts, validateOccupationReserve } from './occupationReserveData';
+import { holderSourceBands, persons, reservesAt, sourceParts, sourceWitnesses, validateOccupationReserve } from './occupationReserveData';
 import type { HolderReserve, OccupationReserveReply } from './occupationReserveData';
 import { useOccupationReserve } from './useOccupationReserve';
 import './occupationReserve.css';
@@ -154,18 +156,23 @@ function HolderSources({ widget, runtime, active, holder, hour, extent, playhead
   const sources = drill.sources;
   const tags = useMemo(() => sources.flatMap(source => source === null ? [] : [countryPart(source)!.tag]), [sources]);
   const holderTag = holder ? countryPart(holder)?.tag ?? holder : null;
-  const looks = useCountryLooks(runtime.client, track, useMemo(() => [...new Set([...holderTag ? [holderTag] : [], ...tags])], [holderTag, tags]), hour, active);
-  const colour = useCountryColours(tags, looks.color, tokens, looks);
-  const sourceName = (source: string | null) => source === null ? 'Source country unavailable' : looks.name(countryPart(source)!.tag, hour);
-  const sourceColour = (source: string | null) => source === null ? tokens.muted : colour(countryPart(source)!.tag, hour);
+  const looks = useCountryLooks(runtime.client, track, useMemo(() => holderTag ? [holderTag] : [], [holderTag]), hour, active);
+  // One colour per source over the whole history, as history charts colour a series: read where
+  // the tag is proven the source's own, so a later holder of the tag never lends its look.
+  const sample = track ? lookHour(track.branch, hour)?.hour ?? Math.floor(hour) : Math.floor(hour);
+  const witnessKey = JSON.stringify(data && holder ? sourceWitnesses(data, holder, hour, sample) : []);
+  const witnesses = useMemo(() => JSON.parse(witnessKey) as HolderAt[], [witnessKey]);
+  const sourceLooks = useHolderLooks(runtime.client, track, witnesses, active, tokens);
+  const sourceName = (source: string | null) => source === null ? 'Source country unavailable' : sourceLooks.name(source);
+  const sourceColour = (source: string | null) => source === null ? tokens.muted : sourceLooks.colour(source);
   const bands = drill.bands;
   const mix = useMemo(() => holderTag ? { tag: holderTag, bands, parts: sources.map(source => {
     const amount = at ? sourceParts(at).find(part => part.source === source)?.amount ?? (at.admitted ? 0n : undefined) : undefined;
     return { id: source ?? UNRESOLVED, label: sourceName(source), color: sourceColour(source), value: amount === undefined ? '—' : persons(amount) };
   }) } : null,
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [holderTag, bands, sources, at, looks, colour, hour]);
-  // A history tooltip names its sources as they were at the read it shows; swatches stay the bands' colours.
+  [holderTag, bands, sources, at, sourceLooks]);
+  // A history tooltip names its sources as they were at the read it shows; swatches are the bands' colours.
   const [reached, setReached] = useState<number | null>(null);
   const tipRead = useMemo(() => data && reached !== null ? reservesAt(data, reached)?.readHour ?? reached : null, [data, reached]);
   const dated = useCountryLabelsAt(runtime.client, track, useMemo(() => tipRead === null ? [] : tags.map(tag => ({ tag, hour: tipRead })), [tags, tipRead]), active);

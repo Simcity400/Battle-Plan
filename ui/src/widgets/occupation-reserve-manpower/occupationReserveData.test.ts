@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { holderBands, holderSourceBands, reservesAt, sourceParts, validateOccupationReserve } from './occupationReserveData.ts';
+import { holderBands, holderSourceBands, reservesAt, sourceParts, sourceWitnesses, validateOccupationReserve } from './occupationReserveData.ts';
 
 const reply = validateOccupationReserve({
   window: { firstHour: 0, lastHour: 100, known: [{ firstHour: 0, lastHour: 60 }], reads: [[0, 23, 0], [24, 60, 24]], series: [
@@ -48,6 +48,21 @@ test('the holder drill keeps unresolved positive amounts in their own band, by d
   assert.deepEqual(holderSourceBands(reply, 'ITA@8').sources, ['POL@20', 'FRA@9']);
   // FRA's only entry is negative, so its band is empty rather than drawn.
   assert.deepEqual(holderBands(reply, 'GER@7', ['POL@20', 'FRA@9', null])[1], []);
+});
+
+test('each source is looked up where its own entries prove it held its tag, so a later holder of the tag lends nothing', () => {
+  // A second POL holder (slot 21) sends reserve after the first stops; FRA throughout from hour 30.
+  const reused = validateOccupationReserve({ window: { firstHour: 0, lastHour: 90, known: [{ firstHour: 0, lastHour: 90 }], reads: [[0, 90, 0]], series: [
+    { name: 'GER@7|holder', runs: [[0, 90, '1', true]] },
+    { name: 'GER@7|0|amount', runs: [[0, 40, '100', true]] }, { name: 'GER@7|0|source', runs: [[0, 40, '1', true]] },
+    { name: 'GER@7|1|amount', runs: [[50, 90, '200', true]] }, { name: 'GER@7|1|source', runs: [[50, 90, '2', true]] },
+    { name: 'GER@7|2|amount', runs: [[30, 90, '300', true]] }, { name: 'GER@7|2|source', runs: [[30, 90, '3', true]] },
+    { name: 'ITA@8|0|source', runs: [[0, 90, '1', true]] },
+  ] }, holders: [{ tag: 'GER', slot: 7 }], sources: { 1: 'POL@20', 2: 'POL@21', 3: 'FRA@9' }, warnings: [] });
+  const at = (hour: number, sample: number) => Object.fromEntries(sourceWitnesses(reused, 'GER@7', hour, sample).map(witness => [witness.key, [witness.tag, witness.hour]]));
+  assert.deepEqual(at(80, 72), { 'POL@20': ['POL', 40], 'POL@21': ['POL', 72], 'FRA@9': ['FRA', 72] }, 'the shown hour\'s look while named then, else as last named');
+  assert.deepEqual(at(20, 0), { 'POL@20': ['POL', 0], 'POL@21': ['POL', 50], 'FRA@9': ['FRA', 30] }, 'a source not named yet is looked up as first named');
+  assert.deepEqual(at(35, 0)['FRA@9'], ['FRA', 30], 'named at the hour shown but not at the look hour: its first hour of that naming');
 });
 
 /** GER holds POL's reserve from hour 10; both are admitted holders through hour 30. */
