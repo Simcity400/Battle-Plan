@@ -121,9 +121,10 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
     tags: params.top === null ? rankedCandidates(resolved, wantedMoment, params.tags) : params.tags } : null,
   [params, props.prepared, resolved, wantedMoment]);
   const endpoint = usePreparedProducedView(runtime.client, track?.source, endpointParams, wantedMoment, active);
-  // An unknown empty endpoint cannot tell an absent history from an unread
-  // current value. The existing history product keeps that distinction.
-  const preparedView = props.prepared === true && !endpoint.unavailable && !(endpoint.page?.totalCountries === 0 && !endpoint.page.known);
+  // An unknown empty endpoint shows an unread current value only in a branch that read production;
+  // otherwise the history product tells whether production is in the recording at all.
+  const preparedView = props.prepared === true && !endpoint.unavailable
+    && !(endpoint.page?.totalCountries === 0 && !endpoint.page.known && !endpoint.page.recorded);
   const history = useProduct<EquipmentProducedReply>(runtime.client, preparedView ? null : request, active, validateProducedReply);
   const moment = preparedView ? endpoint.hour ?? wantedMoment : wantedMoment;
   const data = preparedView ? endpoint.reply : history.data;
@@ -216,7 +217,9 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
     // A group's members are not known until its history arrives; nothing is shown as empty meanwhile.
     if (!shownReply || !model || (grouped && !numericGroups)) return <WidgetState kind="loading" label="Loading equipment produced…" />;
     if (!shownReply.reads.length && !preparedView) return <WidgetState kind="unavailable" message="Production data is not in this recording." />;
-    if (!produced && !model.tags.length) return branchKnown ? <WidgetState kind="unavailable" message={producedWindowUnavailable(measure)} />
+    // A prepared page answers its moment alone, so only membership then must be known.
+    if (!produced && !model.tags.length) return (preparedView ? resolved.known(moment) : branchKnown)
+      ? <WidgetState kind="unavailable" message={producedWindowUnavailable(measure)} />
       : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
     return null;
   })();

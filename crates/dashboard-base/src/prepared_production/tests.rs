@@ -1105,6 +1105,7 @@ fn pages_before_the_first_supply_count_from_the_observation_history_lists() {
             .unwrap()
             .unwrap();
         assert_eq!(page.observation, Some(0), "hour {hour}, top {:?}", selection.top);
+        assert!(!page.recorded, "no production read yet, hour {hour}");
     }
     // A restart is dated from its own counting start onwards.
     let mut writer = store.replace(key.clone()).unwrap();
@@ -1114,13 +1115,18 @@ fn pages_before_the_first_supply_count_from_the_observation_history_lists() {
     state.result.observations = vec![0];
     state.observation_starts = state.observation_starts();
     state.result.observations = vec![0, 20];
+    state.result.reads = vec![24];
     write_state(&mut writer, &mut state).unwrap();
     writer.commit().unwrap();
-    for (hour, since) in [(12, 0), (30, 20)] {
-        let page = select_at(&store, &key, hour, &params(), 0, 5, &flag)
+    let mut types = params();
+    types.tags.clear();
+    for (hour, since, selection) in [(12, 0, params()), (30, 20, params()), (12, 0, types)] {
+        let page = select_at(&store, &key, hour, &selection, 0, 5, &flag)
             .unwrap()
             .unwrap();
         assert_eq!(page.observation, Some(since), "hour {hour}");
+        // Even before its first read, a page says the branch has production.
+        assert!(page.recorded, "hour {hour}, tags {:?}", selection.tags);
     }
     let _ = std::fs::remove_dir_all(scratch);
 }

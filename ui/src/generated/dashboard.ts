@@ -471,7 +471,11 @@ typeTotals: Array<[string, string]> | null,
 /**
  * The hour every running total at this page began counting, whichever countries are selected.
  */
-observation: number | null, warnings: Array<string>, };
+observation: number | null,
+/**
+ * Whether the branch prepared so far has read production output at all.
+ */
+recorded: boolean, warnings: Array<string>, };
 export type DiplomacyParams = { "view": "opinions", branchId: string, hour: number, tags: Array<string>, } | { "view": "pair", branchId: string, first: string, second: string, hour: number, } | { "view": "pacts", branchId: string, tags: Array<string> | null, } | { "view": "proposals", branchId: string, tags: Array<string> | null, };
 export type DiplomacyReply = DiplomacyOpinionsReply | DiplomacyPairReply | DiplomacyPactsReply | DiplomacyProposalsReply;
 export type DiplomacyCountry = { tag: string, slot: number, countryId: number, };

@@ -390,7 +390,8 @@ export default function RaceChart(props: RaceChartProps) {
       {/* The entries' height past the chart's own: the canvas stays in view while this scrolls. */}
       <div className="race-extent" style={{ height: `calc(${raceHeight(props.remoteRows?.total ?? props.items.length)}px - 100%)` }} />
     </div>
-    <p id={`${owner}-ranking`} className="sr-only">{props.remoteRows ? `${props.remoteRows.total} ranked entries. ${ranking || 'Requested rows are loading.'}` : ranking || props.empty || ''}</p>
+    <p id={`${owner}-ranking`} className="sr-only">{props.remoteRows ? `${props.remoteRows.total} ranked entries. ${ranking
+      || (props.remoteRows.total === 0 && props.empty) || 'Requested rows are loading.'}` : ranking || props.empty || ''}</p>
     <p className="sr-only" aria-live="polite">{spoken}</p>
   </div>;
 }

@@ -6,7 +6,7 @@ import { formatProductionAmount, productionRaceEntries } from './preparedProduce
 import type { ProductionSelection } from './preparedProducedData';
 import { historyProductionParity, preparedProductionParity } from './productionParity.ts';
 
-const page = (total: string | null = '876500'): ProductionSelection => ({ schema: 1, branchId: '1', firstHour: 10, lastHour: 23, known: true, observation: 0,
+const page = (total: string | null = '876500'): ProductionSelection => ({ schema: 1, branchId: '1', firstHour: 10, lastHour: 23, known: true, observation: 0, recorded: true,
   keys: [{ key: 'one', name: 'One', typeKey: null, domain: 'land', names: [] }, { key: 'two', name: 'Two', typeKey: null, domain: 'land', names: [] }],
   types: [], totalCountries: 1, offset: '0', valueMin: '0', valueMax: total ?? '0', warnings: [],
   countries: [{ tag: 'A', slot: 17, countryId: 42, segment: '3', total, equipmentTotal: total,

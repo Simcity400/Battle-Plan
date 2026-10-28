@@ -10,7 +10,7 @@ import type { ProductionSelection, ProductionSelectionRequest } from './prepared
 
 const BRANCH = { id: '1', firstHour: 0, lastHour: 2000 };
 const OBSERVATION = 480;
-const page = (fields: Partial<ProductionSelection> = {}): ProductionSelection => ({ schema: 1, branchId: '1', firstHour: 1990, lastHour: 2000, known: true,
+const page = (fields: Partial<ProductionSelection> = {}): ProductionSelection => ({ schema: 1, branchId: '1', firstHour: 1990, lastHour: 2000, known: true, recorded: true,
   observation: OBSERVATION, keys: [{ key: '7', name: null, typeKey: 'gun', domain: 'land', names: [] }], types: [{ key: 'gun', name: 'Gun', domain: 'land' }],
   totalCountries: 1, offset: '0', valueMin: '0', valueMax: '5', warnings: [],
   countries: [{ tag: 'A', slot: 1, countryId: 2, segment: '1', total: '5', equipmentTotal: '5', readHour: 1990, observation: OBSERVATION,
@@ -65,6 +65,27 @@ test('the prepared race chooses its type, dates its caption and reads its breakd
     assert.match(state(none), /No production data for these countries\./);
     const preparing = run({ typeTotals: [], coverage: { firstHour: 0, lastHour: 1000, complete: false }, pending: [{ firstHour: 1001, lastHour: 2000 }] });
     assert.match(state(preparing), /Most delivered type is still being prepared\./);
+  } finally { delete host.__producedPath; await close(); }
+});
+
+test('an empty page of unknown amounts stays prepared once the branch has read production', async () => {
+  const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/equipment-produced/PreparedEquipmentProducedWidget.tsx', replacements);
+  try {
+    const daily = { ...widgetProps, widget: { ...widgetProps.widget, options: { view: 'race', measure: 'day' } } } as WidgetProps;
+    const run = (recorded: boolean) => {
+      const fixture: Fixture = { prepared: [], history: [], tag: 'A', answer: request => request.limit === 0 && !request.ranked
+        ? { data: page({ countries: [], typeTotals: [['gun', '12']] }), pending: false }
+        : request.ranked ? { data: page({ countries: [], totalCountries: 0, known: false, recorded }), hour: request.hour, pending: false }
+          : { data: page(), hour: request.hour, pending: false } };
+      host.__producedPath = fixture;
+      renderToStaticMarkup(createElement(module.default, daily));
+      return fixture;
+    };
+    const read = run(true);
+    assert.deepEqual(read.history, [], 'no whole-branch history for a day not yet known');
+    assert.equal(read.view!.state, null);
+    assert.equal(read.view!.empty, 'A full day of production data is unavailable.');
+    assert.equal(run(false).history.length, 1, 'only history tells whether production is in the recording');
   } finally { delete host.__producedPath; await close(); }
 });
 

@@ -20,6 +20,8 @@ export interface ProductionSelection {
   typeTotals?: [string, string][] | null;
   /** The hour every running total at this page began counting, whichever countries are selected. */
   observation: number | null;
+  /** Whether the branch prepared so far has read production output at all. */
+  recorded: boolean;
   /** Before preparation completes, the prepared prefix the page answers. */
   coverage?: PreparedPrefixFields['coverage']; pending?: PreparedPrefixFields['pending']; approximate?: PreparedPrefixFields['approximate'];
 }
@@ -59,7 +61,7 @@ export function validateProductionSelection(value: unknown, request: ProductionS
     && new Set(page.countries.map(country => country.tag)).size === page.countries.length
     && (page.typeTotals == null || Array.isArray(page.typeTotals) && page.typeTotals.every(pair => Array.isArray(pair) && pair.length === 2
       && page.keys.some(key => key.key === pair[0]) && quantity(pair[1]) && pair[1] !== null))
-    && (page.observation === null || integer(page.observation))
+    && (page.observation === null || integer(page.observation)) && typeof page.recorded === 'boolean'
     && Array.isArray(page.warnings) && page.warnings.every(warning => typeof warning === 'string');
   if (!ok) throw new Error('The prepared equipment produced page is malformed.');
   return page;

@@ -2240,6 +2240,8 @@ pub struct SelectionPage {
     pub type_totals: Option<Vec<(String, String)>>,
     /// The hour every running total at this page began counting, whichever countries are selected.
     pub observation: Option<i32>,
+    /// Whether the branch prepared so far has read production output at all.
+    pub recorded: bool,
     pub warnings: Vec<String>,
 }
 
@@ -2639,6 +2641,7 @@ fn select_ordered(
     Ok(SelectionPage {
         type_totals,
         observation: None,
+        recorded: false,
         schema: 1,
         branch_id: params.branch_id.clone(),
         first_hour: current.first_hour,
@@ -3534,6 +3537,7 @@ fn select_at_ordered(
             return Ok(None);
         };
         let observation = catalogue.observation_at(hour);
+        let recorded = !catalogue.spending.reads.is_empty();
         let current = EndpointPage {
             schema: 1,
             branch_id: branch.to_string(),
@@ -3557,6 +3561,7 @@ fn select_at_ordered(
         )?;
         selection.keys.clear();
         selection.observation = observation;
+        selection.recorded = recorded;
         return Ok(Some(selection));
     }
     let count = endpoint_count(store, key, branch)?;
@@ -3566,8 +3571,10 @@ fn select_at_ordered(
     };
     bind_equipment_rockets(&mut endpoints, &mut current)?;
     let mut observation = None;
+    let mut recorded = false;
     if let Some(catalogue) = endpoints.catalogue()? {
         observation = catalogue.observation_at(hour);
+        recorded = !catalogue.spending.reads.is_empty();
         for (&variant, kind) in &catalogue.classifications {
             let mut kind = kind.clone();
             // Type identity is stable; recorded naming stays at this endpoint's read.
@@ -3604,6 +3611,7 @@ fn select_at_ordered(
         cancelled,
     )?;
     selection.observation = observation;
+    selection.recorded = recorded;
     Ok(Some(selection))
 }
 

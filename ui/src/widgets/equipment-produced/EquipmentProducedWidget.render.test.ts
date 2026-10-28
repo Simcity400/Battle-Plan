@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { CountryRaceViewProps } from '../../charts/race/CountryRaceView';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { MEMBERSHIP_PREPARING } from '../../dashboard/groups.ts';
-import { assertNoMemberStates, BRANCH, gapGroups, humansBy, mountModule, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
+import { assertNoMemberStates, BRANCH, gapGroups, humansBy, KNOWN_HOUR, mountModule, PENDING_HOUR, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
 import type { CountryGroupReply, EquipmentProducedReply } from '../../generated/dashboard';
 
 test('equipment produced by a group at an hour still being prepared is loading, not unavailable', async () => {
@@ -70,4 +70,34 @@ test('equipment produced by a group with no member found yet says what the momen
         clock: { getHour: () => hour }, client: {} }, active: true, onDiagnostics() {} } as unknown as WidgetProps));
     assertNoMemberStates(render);
   } finally { delete host.__producedGap; await close(); }
+});
+
+test('an empty prepared race of a group waits only for membership at its own moment', async () => {
+  const reply: EquipmentProducedReply = { branchId: BRANCH.id, measure: 'day', count: 'ic', decimals: 5, grouping: 'type', types: [], keys: [],
+    series: [], known: [], reads: [], observations: [], warnings: [] };
+  const page = { totalCountries: 0, known: false, recorded: true, countries: [], observation: null };
+  const state = { groups: pendingGroups() as CountryGroupReply, history: 0 };
+  const host = globalThis as typeof globalThis & { __producedMoment?: typeof state }; host.__producedMoment = state;
+  const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/equipment-produced/EquipmentProducedWidget.tsx', {
+    '/dashboard/products.ts': 'export const useProduct = (_client, request) => { if (request) globalThis.__producedMoment.history++; return { retry() {} }; }; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__producedMoment.groups, retry() {} });',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;",
+    '/widgets/equipment-produced/useProducedTypes.ts': 'export const useProducedTypeList = () => [];',
+    '/widgets/equipment-produced/usePreparedProduction.ts': 'export const hasPreparedProduction = () => true; export const usePreparedProduction = () => ({ pending: false, retry() {} });',
+    '/widgets/equipment-produced/preparedProducedView.ts': `export const usePreparedProducedView = (_client, _source, params, hour) => params
+      ? { page: ${JSON.stringify(page)}, reply: ${JSON.stringify(reply)}, hour, entries: [], tooltip: () => null, pending: false, retry() {} } : { pending: false, retry() {} };`,
+    '/charts/race/CountryPartsDrill.tsx': 'export default props => props.main(() => {}, true);',
+    '/charts/race/CountryRaceView.tsx': 'export default props => props.state ?? null;',
+  });
+  try {
+    const render = (hour: number) => renderToStaticMarkup(createElement(module.default, { widget: { id: 'produced', kind: 'equipment-produced', trackIds: ['main'],
+      countries: humansBy('hour'), time: { mode: 'follow' }, options: { view: 'race', count: 'ic', measure: 'day' } },
+      runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1', metadata: { countries: [] } }, branch: BRANCH }],
+        clock: { getHour: () => hour }, client: {} }, active: true, onDiagnostics() {} } as unknown as WidgetProps));
+    // Membership at KNOWN_HOUR is read though later hours are still being prepared.
+    assert.match(render(KNOWN_HOUR), /A full day of production data is unavailable\./);
+    assert.match(render(PENDING_HOUR), /This range is still being prepared\./);
+    assert.equal(state.history, 0, 'no whole-branch history is asked');
+  } finally { delete host.__producedMoment; await close(); }
 });

@@ -38,7 +38,7 @@ test('prepared production routes the current race; lines and breakdown retain hi
 
 
 test('actual prepared race adapter passes full global extent and real page offset to the chart', async () => {
-  const page: ProductionSelection = { schema: 1, branchId: '1', firstHour: 0, lastHour: 23, known: true, observation: 0,
+  const page: ProductionSelection = { schema: 1, branchId: '1', firstHour: 0, lastHour: 23, known: true, observation: 0, recorded: true,
     keys: [], types: [], totalCountries: 5000, offset: '4999', valueMin: '-7', valueMax: '9007199254740993', warnings: [],
     countries: [{ tag: 'LAST', slot: 4999, countryId: 5000, segment: '1', total: '-7', equipmentTotal: '-7',
       readHour: 0, observation: 0, values: [] }] };

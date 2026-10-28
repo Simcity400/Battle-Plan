@@ -99,6 +99,9 @@ test('actual remote race keeps global scrolling, keys, scale and owned asynchron
     assert.deepEqual(picks, ['4999'], 'another numeric snapshot cannot inherit pending focus');
     box.scrollTop = 20000; view.scroll.props.onScroll({ currentTarget: box }); draw();
     assert.ok(fixture.ranges.at(-1)![0] >= 1000 && fixture.ranges.at(-1)![0] < 1020, 'ordinary scroll requests the global visible range');
+    props.items = []; props.empty = 'Nothing on this day.'; props.remoteRows = { ...props.remoteRows!, total: 0, offset: 0, owner: {} };
+    view = render();
+    assert.equal(view.tree.props.children[1].props.children, '0 ranked entries. Nothing on this day.', 'an empty page reads why, not loading');
   } finally {
     for (const cleanup of cleanups) cleanup(); await vite.close(); delete host.__remoteRace;
   }
