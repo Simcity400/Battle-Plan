@@ -74,23 +74,17 @@ impl Events {
             .map(|leaf| (leaf, BTreeMap::new()))
             .collect();
         let mut reader = Reader::new(store, key, section, cancelled)?;
-        let keys: Vec<_> = self.keys.values().copied().collect();
-        let mut cursor = 0;
-        loop {
-            check_cancel(cancelled)?;
-            let page = reader.events(&keys, from, i32::MAX, cursor, 1024)?;
-            for row in page.rows {
-                let event: Event = serde_json::from_value(row.row)?;
+        let keys: std::collections::BTreeSet<u64> = self.keys.values().copied().collect();
+        // The sums are the same in any order, so each key's rows are read in one pass.
+        for key in keys {
+            reader.each_event(key, from, i32::MAX, &mut |date, row| {
+                let event: Event = serde_json::from_slice(row)?;
                 let amount = event
                     .amount_raw
                     .parse::<i128>()
                     .map_err(|_| dashboard_core::invalid("Invalid prepared military air delta"))?;
-                family.add(event.leaf, event.hour, row.hour, amount)?;
-            }
-            let Some(next) = page.cursor else {
-                break;
-            };
-            cursor = next;
+                family.add(event.leaf, event.hour, date, amount)
+            })?;
         }
         Ok(())
     }

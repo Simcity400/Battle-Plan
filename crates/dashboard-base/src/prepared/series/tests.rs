@@ -3478,6 +3478,76 @@ fn ordinary_event_batches_keep_their_exact_unindexed_format() {
 }
 
 #[test]
+fn each_event_gives_the_rows_events_gives_late_ones_included() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    let mut writer = fixture.writer();
+    for hour in 0..64 {
+        values.advance(hour).unwrap();
+        for key in [3, 9] {
+            values
+                .event(key, hour, &json!({"key": key, "hour": hour}))
+                .unwrap();
+        }
+        if hour % 16 == 15 {
+            values.flush(&mut writer, "events", 0, &flag).unwrap();
+        }
+    }
+    // Late rows, dated behind the frontier, kept in later batches.
+    values.advance(100).unwrap();
+    values.event(9, 20, &json!({"late": 20})).unwrap();
+    values.event(9, 40, &json!({"late": 40})).unwrap();
+    values.flush(&mut writer, "events", 0, &flag).unwrap();
+    values.advance(120).unwrap();
+    values.event(9, -5, &json!({"late": -5})).unwrap();
+    values.flush(&mut writer, "events", 0, &flag).unwrap();
+    writer.commit().unwrap();
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "events".into(), &flag).unwrap();
+    for (from, to) in [
+        (i32::MIN, i32::MAX),
+        (0, 63),
+        (18, 41),
+        (40, 40),
+        (64, 200),
+        (-5, -5),
+    ] {
+        for key in [3, 9] {
+            let mut paged = Vec::new();
+            let mut cursor = 0;
+            loop {
+                let page = reader.events(&[key], from, to, cursor, 7).unwrap();
+                paged.extend(page.rows.into_iter().map(|row| (row.hour, row.row)));
+                match page.cursor {
+                    Some(next) => cursor = next,
+                    None => break,
+                }
+            }
+            let mut each = Vec::new();
+            reader
+                .each_event(key, from, to, &mut |date, row| {
+                    each.push((date, serde_json::from_slice::<Value>(row)?));
+                    Ok(())
+                })
+                .unwrap();
+            let order = |rows: &mut Vec<(i32, Value)>| rows.sort_by_key(|row| row.1.to_string());
+            order(&mut paged);
+            order(&mut each);
+            assert_eq!(each, paged, "{key} {from}..={to}");
+        }
+    }
+    // Cancelled while a batch is visited, the read stops before its next row.
+    let mut visited = 0;
+    let refused = reader.each_event(9, 0, 63, &mut |_, _| {
+        visited += 1;
+        flag.store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    });
+    assert_eq!(refused.unwrap_err().kind(), io::ErrorKind::Interrupted);
+    assert_eq!(visited, 1);
+}
+
+#[test]
 fn backdated_event_counts_do_not_scan_committed_batches() {
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);

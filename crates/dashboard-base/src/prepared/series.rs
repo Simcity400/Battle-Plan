@@ -3810,6 +3810,32 @@ impl<'a> Reader<'a> {
                 .ok_or_else(|| invalid("event count overflow"))
         })
     }
+    /// Each of `key`'s events dated `from..=to` with its date and row as stored, in the order
+    /// batches store them rather than date order: for a reader that only accumulates them, it
+    /// reads each batch's rows once, with no ordinal walk.
+    pub fn each_event(
+        &mut self,
+        key: u64,
+        from: i32,
+        to: i32,
+        visit: &mut dyn FnMut(i32, &[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let cancelled = self.cancelled;
+        check_cancel(cancelled)?;
+        // An event extends its batch's hours, so no batch ending before `from` holds one after it.
+        for batch in self.batches(from, i32::MAX)? {
+            if self.info(batch, key)?.event_rows == 0 {
+                continue;
+            }
+            for (date, row) in &self.data(batch, key)?.events {
+                check_cancel(cancelled)?;
+                if (from..=to).contains(date) {
+                    visit(*date, row)?;
+                }
+            }
+        }
+        Ok(())
+    }
     /// One decimal ordinal addresses the merged hour/key/duplicate order for any key selection.
     pub fn events(
         &mut self,
