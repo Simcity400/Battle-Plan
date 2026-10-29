@@ -509,6 +509,9 @@ struct Member {
     /// The archive record it reads from; `None` for a folder file.
     archive_entry: Option<physfs_zip::Entry>,
     size: u64,
+    /// A recorded folder file's stamp as the content walk listed it, for its hash probe; `None`
+    /// for an archive record, a visual mod's file, or one the listing could not stamp.
+    stamp: Option<Stamp>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1304,11 +1307,15 @@ fn collect_folder_with(
     };
     walk_folder(root, path, overlay, &checked, &mut |relative, entry| {
         if coverage.covered_path(&relative) {
+            let metadata = entry.metadata()?;
+            // Only hashed files need one; a file the listing cannot stamp is stamped by its probe.
+            let stamp = (!overlay).then(|| Stamp::of(&metadata).ok()).flatten();
             files.insert(
                 relative,
                 Member {
                     archive_entry: None,
-                    size: entry.metadata()?.len(),
+                    size: metadata.len(),
+                    stamp,
                 },
             );
         }
@@ -1517,6 +1524,7 @@ impl ResolvedLayer {
                             Member {
                                 size: entry.size,
                                 archive_entry: Some(entry.clone()),
+                                stamp: None,
                             },
                         );
                     }
@@ -1562,8 +1570,10 @@ impl ResolvedLayer {
             LayerSource::Folder(root) => {
                 let paths = self
                     .files
-                    .keys()
-                    .map(|relative| Ok(root.join(folder_text(relative)?)))
+                    .iter()
+                    .map(|(relative, member)| {
+                        Ok((root.join(folder_text(relative)?), member.stamp.clone()))
+                    })
                     .collect::<io::Result<Vec<_>>>()?;
                 // Files before the first failing one keep their digests, as
                 // hashing them one by one would.
@@ -3669,7 +3679,15 @@ struct Stamp {
 
 impl Stamp {
     fn read(path: &Path) -> io::Result<Self> {
-        let metadata = fs::metadata(path)?;
+        #[cfg(test)]
+        hash_cache_tests::STAMPED
+            .lock()
+            .expect("stamped paths")
+            .push(path.to_owned());
+        Self::of(&fs::metadata(path)?)
+    }
+
+    fn of(metadata: &fs::Metadata) -> io::Result<Self> {
         let modified = metadata
             .modified()?
             .duration_since(UNIX_EPOCH)
@@ -3723,13 +3741,33 @@ impl HashCache {
     /// A file's stamp and digest, from the cache or read now; the cache is
     /// changed only by [`HashCache::settle`].
     fn probe(&self, path: &Path) -> io::Result<Probe> {
+        self.probe_listed(path, None)
+    }
+
+    /// [`HashCache::probe`] for a file the content walk listed with `listed`: a digest kept under
+    /// that stamp is taken without reading the file's metadata again. Any other file is stamped
+    /// and, when no digest is kept under its stamp, read now. A listed stamp a change left behind
+    /// (NTFS keeps a hard link's entry as it was when the file is written through another) only
+    /// makes the file's reads refuse it as changed: every covered read is verified against the
+    /// digest taken here, as for a file changed after resolution.
+    fn probe_listed(&self, path: &Path, listed: Option<&Stamp>) -> io::Result<Probe> {
         #[cfg(test)]
         hash_cache_tests::PROBED
             .lock()
             .expect("probed paths")
             .push((path.to_owned(), std::thread::current().id()));
-        let stamp = Stamp::read(path)?;
         let key = text_path(path)?.to_owned();
+        if let Some(stamp) = listed
+            && let Some(hash) = self.get(&key, stamp)
+        {
+            return Ok(Probe {
+                key,
+                stamp: stamp.clone(),
+                hash,
+                read: false,
+            });
+        }
+        let stamp = Stamp::read(path)?;
         if let Some(hash) = self.get(&key, &stamp) {
             return Ok(Probe {
                 key,
@@ -3753,14 +3791,14 @@ impl HashCache {
         })
     }
 
-    /// Probes every path on the machine's cores, returning each result in
-    /// path order.
-    fn probe_all(&self, paths: &[PathBuf]) -> Vec<io::Result<Probe>> {
+    /// Probes every path, with the stamp the content walk listed it with, on the machine's
+    /// cores, returning each result in path order.
+    fn probe_all(&self, paths: &[(PathBuf, Option<Stamp>)]) -> Vec<io::Result<Probe>> {
         let priority = job_priority::JobPriority::current();
         crate::parallel::map_entering(
             paths,
             || priority.clone().enter(job_priority::Level::Normal),
-            |path| self.probe(path),
+            |(path, listed)| self.probe_listed(path, listed.as_ref()),
         )
     }
 

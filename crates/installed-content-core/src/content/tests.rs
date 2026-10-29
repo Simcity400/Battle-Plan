@@ -1288,6 +1288,7 @@ fn listed_paths_keep_case_variants_and_honour_replace_path() {
                 Member {
                     archive_entry: None,
                     size: 0,
+                    stamp: None,
                 },
             );
         }
@@ -2608,6 +2609,7 @@ fn an_unverified_visual_mods_link_to_no_file_passes_to_the_layers_below() {
             Member {
                 archive_entry: None,
                 size: 0,
+                stamp: None,
             },
         );
         Ok(())

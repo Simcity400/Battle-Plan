@@ -7,6 +7,9 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 pub(super) static PROBED: std::sync::Mutex<Vec<(PathBuf, std::thread::ThreadId)>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Every content path whose metadata was read.
+pub(super) static STAMPED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 struct Fixture {
     root: PathBuf,
     identity: Identity,
@@ -294,4 +297,44 @@ fn dirty_hash_cache_write_errors_remain_resolution_failures() {
     let error = resolve(&fixture.identity, &fixture.options).unwrap_err();
     assert_eq!(error.kind(), expected.kind());
     assert!(fixture.cache_path().is_dir());
+}
+
+/// A warm resolve takes every listed folder file's stamp from the content walk, reading none of
+/// their metadata again, and those stamps are what reading the metadata gives.
+#[test]
+fn warm_resolution_stamps_listed_files_from_the_walk() {
+    let fixture = Fixture::with_files("walk_stamps", 20);
+    let listed = |path: &PathBuf| {
+        let text = path.to_string_lossy();
+        text.contains("hoi4_hash_cache_walk_stamps") && text.contains("common")
+    };
+    STAMPED.lock().expect("stamped paths").retain(|path| !listed(path));
+    let resolved = resolve(&fixture.identity, &fixture.options).unwrap();
+    assert_eq!(resolved.stats.cache_hits, resolved.stats.files);
+    let stamped: Vec<_> = STAMPED
+        .lock()
+        .expect("stamped paths")
+        .iter()
+        .filter(|path| listed(path))
+        .cloned()
+        .collect();
+    assert!(stamped.is_empty(), "stamped again: {stamped:?}");
+    let mut members = 0;
+    for layer in &resolved.layers.layers {
+        let LayerSource::Folder(root) = &layer.source else {
+            continue;
+        };
+        for (relative, member) in layer.files.iter() {
+            let path = root.join(std::str::from_utf8(relative).unwrap());
+            let metadata = fs::metadata(&path).unwrap();
+            assert_eq!(
+                member.stamp.as_ref(),
+                Some(&Stamp::of(&metadata).unwrap()),
+                "{}",
+                path.display()
+            );
+            members += 1;
+        }
+    }
+    assert_eq!(members, 22);
 }
