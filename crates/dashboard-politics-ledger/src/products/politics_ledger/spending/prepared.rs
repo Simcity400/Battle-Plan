@@ -64,6 +64,14 @@ pub struct Prepared {
     /// Stable native daily field ordinals, in publication order.
     #[serde(skip)]
     native_daily: BTreeMap<String, BTreeMap<(u32, String), [u64; 26]>>,
+    /// Each recurring payment's native field keys, by its payment key, in
+    /// [`PAYMENT_FIELDS`] order.
+    #[serde(skip)]
+    payment_keys: BTreeMap<String, [u64; PAYMENT_FIELDS.len()]>,
+    /// Each raw cost's native field keys, by its tag and field, in
+    /// [`COST_FIELDS`] order.
+    #[serde(skip)]
+    cost_keys: BTreeMap<(String, String), [u64; COST_FIELDS.len()]>,
     #[cfg(test)]
     #[serde(skip)]
     daily_projection_visits: usize,
@@ -570,6 +578,32 @@ impl<'a> Payments<'a> {
     }
 }
 
+/// A recurring payment's native fields, after its item field.
+const PAYMENT_FIELDS: [&str; 13] = [
+    "charge",
+    "realized-positive",
+    "realized-negative",
+    "realized-unknown",
+    "count",
+    "rows",
+    "presence",
+    "uncovered",
+    "unknown",
+    "lag",
+    "hour",
+    "sequence",
+    "ordinal",
+];
+
+/// A raw cost's native fields, after its cost field.
+const COST_FIELDS: [&str; 4] = ["amount", "sequence", "lag", "covered"];
+
+/// The tag a daily or cost id names; the rest of the id is not read.
+fn id_tag(id: &str) -> io::Result<String> {
+    let (tag, _): (String, serde::de::IgnoredAny) = serde_json::from_str(id)?;
+    Ok(tag)
+}
+
 fn raw_cost_field(cost: &LedgerDailyCost) -> io::Result<String> {
     Ok(format!(
         "raw-cost:{}",
@@ -768,11 +802,14 @@ impl Prepared {
     }
     fn native(&mut self, tag: &str, field: &str, day: i32, value: Option<i128>) -> io::Result<()> {
         let key = self.key(tag, field)?;
+        self.native_at(key, day, value);
+        Ok(())
+    }
+    fn native_at(&mut self, key: u64, day: i32, value: Option<i128>) {
         if let Some(value) = value {
             self.recurring
                 .push(key, Run::new(day, day.saturating_add(23), value, false));
         }
-        Ok(())
     }
     /// The recording this branch is prepared from. A row the next read dates
     /// at a previous read is described from that read decoded again, so only
@@ -1042,9 +1079,8 @@ impl Prepared {
             let (day, mut open) = self.tail.pop_first().unwrap();
             // Every key for this day is written before advancing the shared axis.
             let mut categories = BTreeMap::<(String, String, String), i32>::new();
-            for projected in open.payments.values() {
+            for (id, projected) in &open.payments {
                 let tag = &projected.spend.country_tag;
-                let field = item_field(projected)?;
                 categories
                     .entry((
                         tag.clone(),
@@ -1053,44 +1089,40 @@ impl Prepared {
                     ))
                     .and_modify(|read| *read = (*read).min(projected.spend.read_hour))
                     .or_insert(projected.spend.read_hour);
-                for (suffix, value) in [
-                    ("charge", amount(Some(&projected.known_raw))?),
-                    (
-                        "realized-positive",
-                        amount(projected.spend.realized_delta_raw.as_deref())?
-                            .map(|value| value.max(0)),
-                    ),
-                    (
-                        "realized-negative",
-                        amount(projected.spend.realized_delta_raw.as_deref())?
-                            .map(|value| value.min(0)),
-                    ),
-                    (
-                        "realized-unknown",
-                        Some(i128::from(projected.spend.realized_delta_raw.is_none())),
-                    ),
-                    ("count", Some(i128::from(projected.spend.occurrences))),
-                    ("rows", Some(i128::from(projected.count))),
-                    ("presence", Some(1)),
-                    ("uncovered", Some(i128::from(!projected.spend.covered))),
-                    (
-                        "unknown",
-                        Some(i128::from(
-                            projected.spend.occurrences - projected.known_count,
-                        )),
-                    ),
-                    (
-                        "lag",
-                        Some(i128::from(projected.spend.read_hour) - i128::from(day)),
-                    ),
-                    (
-                        "hour",
-                        Some(i128::from(projected.spend.hour.rem_euclid(24))),
-                    ),
-                    ("sequence", amount(Some(&projected.spend.sequence))?),
-                    ("ordinal", Some(i128::from(projected.spend.ordinal))),
-                ] {
-                    self.native(tag, &format!("{field}:{suffix}"), day, value)?;
+                let values = [
+                    amount(Some(&projected.known_raw))?,
+                    amount(projected.spend.realized_delta_raw.as_deref())?
+                        .map(|value| value.max(0)),
+                    amount(projected.spend.realized_delta_raw.as_deref())?
+                        .map(|value| value.min(0)),
+                    Some(i128::from(projected.spend.realized_delta_raw.is_none())),
+                    Some(i128::from(projected.spend.occurrences)),
+                    Some(i128::from(projected.count)),
+                    Some(1),
+                    Some(i128::from(!projected.spend.covered)),
+                    Some(i128::from(
+                        projected.spend.occurrences - projected.known_count,
+                    )),
+                    Some(i128::from(projected.spend.read_hour) - i128::from(day)),
+                    Some(i128::from(projected.spend.hour.rem_euclid(24))),
+                    amount(Some(&projected.spend.sequence))?,
+                    Some(i128::from(projected.spend.ordinal)),
+                ];
+                // A payment key names one tag and item field: its keys, once numbered, stay.
+                let keys = match self.payment_keys.get(id) {
+                    Some(keys) => *keys,
+                    None => {
+                        let field = item_field(projected)?;
+                        let mut keys = [0; PAYMENT_FIELDS.len()];
+                        for (key, suffix) in keys.iter_mut().zip(PAYMENT_FIELDS) {
+                            *key = self.key(tag, &format!("{field}:{suffix}"))?;
+                        }
+                        self.payment_keys.insert(id.clone(), keys);
+                        keys
+                    }
+                };
+                for (key, value) in keys.into_iter().zip(values) {
+                    self.native_at(key, day, value);
                 }
             }
             for ((tag, currency, category), read) in categories {
@@ -1109,7 +1141,7 @@ impl Prepared {
             }
             let mut daily = BTreeMap::<(String, u32, String), Vec<LedgerDaily>>::new();
             for (id, row) in open.daily {
-                let (tag, _): (String, String) = serde_json::from_str(&id)?;
+                let tag = id_tag(&id)?;
                 daily
                     .entry((tag, row.country, row.epoch.clone()))
                     .or_default()
@@ -1132,7 +1164,7 @@ impl Prepared {
             }
             let mut costs = BTreeMap::<(String, u32, String, u32), Vec<LedgerDailyCost>>::new();
             for (id, row) in open.costs {
-                let (tag, _): (String, String) = serde_json::from_str(&id)?;
+                let tag = id_tag(&id)?;
                 costs
                     .entry((tag, row.country, row.epoch.clone(), row.ordinal))
                     .or_default()
@@ -1145,14 +1177,27 @@ impl Prepared {
                     cost_revisions.extend(revisions.iter().cloned().map(|row| (tag.clone(), row)));
                 }
                 let row = revisions.last().unwrap();
+                let values = [
+                    amount(Some(&row.amount_raw))?,
+                    amount(Some(&row.pp_sequence))?,
+                    Some(i128::from(row.read_hour) - i128::from(day)),
+                    Some(i128::from(row.covered)),
+                ];
                 let field = raw_cost_field(row)?;
-                for (suffix, value) in [
-                    ("amount", amount(Some(&row.amount_raw))?),
-                    ("sequence", amount(Some(&row.pp_sequence))?),
-                    ("lag", Some(i128::from(row.read_hour) - i128::from(day))),
-                    ("covered", Some(i128::from(row.covered))),
-                ] {
-                    self.native(&tag, &format!("{field}:{suffix}"), day, value)?;
+                let named = (tag.clone(), field);
+                let keys = match self.cost_keys.get(&named) {
+                    Some(keys) => *keys,
+                    None => {
+                        let mut keys = [0; COST_FIELDS.len()];
+                        for (key, suffix) in keys.iter_mut().zip(COST_FIELDS) {
+                            *key = self.key(&tag, &format!("{}:{suffix}", named.1))?;
+                        }
+                        self.cost_keys.insert(named, keys);
+                        keys
+                    }
+                };
+                for (key, value) in keys.into_iter().zip(values) {
+                    self.native_at(key, day, value);
                 }
             }
             cost_revisions
