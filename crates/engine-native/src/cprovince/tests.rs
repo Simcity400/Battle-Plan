@@ -2400,3 +2400,203 @@ fn movement_province_reads_state_controller_area_region_and_sea() {
     bytes[PROVINCE + ID] = 5;
     assert_eq!(read(&bytes, 2), Err("movement province identity mismatch"));
 }
+
+const MOVEMENT_BASE: usize = 0x1000;
+
+/// Provinces for the batched movement reader, across a batch boundary: every
+/// tenth id from 3 on is a hole, from 4 a wrong vtable, from 5 a wrong id and
+/// from 6 a null definition, and the last two ids lie past the array.
+fn movement_world() -> (Vec<u8>, Array, Vec<u32>) {
+    const ARRAY: usize = 0x2000;
+    const COUNT: u32 = 80;
+    const STRIDE: usize = 0x200;
+    const PROVINCES: usize = 0x4000;
+    const DEFINITION_STRIDE: usize = 0x100;
+    const DEFINITIONS: usize = PROVINCES + COUNT as usize * STRIDE;
+    const _: () = assert!(crate::province_definition::TERRAIN_FLAGS < DEFINITION_STRIDE);
+    let mut bytes = vec![0_u8; DEFINITIONS + COUNT as usize * DEFINITION_STRIDE];
+    let put = |bytes: &mut [u8], at: usize, value: u64| {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    };
+    let put4 = |bytes: &mut [u8], at: usize, value: u32| {
+        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    };
+    for id in 0..COUNT {
+        let province = PROVINCES + id as usize * STRIDE;
+        let definition = DEFINITIONS + id as usize * DEFINITION_STRIDE;
+        if id % 10 == 3 {
+            continue;
+        }
+        put(&mut bytes, ARRAY + id as usize * 8, province as u64);
+        let vtable = (MOVEMENT_BASE + VTABLE_RVA) as u64 + u64::from(id % 10 == 4);
+        put(&mut bytes, province, vtable);
+        put4(&mut bytes, province + ID, id + u32::from(id % 10 == 5));
+        put(&mut bytes, province + STATE, 0x10_0000 + u64::from(id));
+        put4(&mut bytes, province + CONTROLLER, id * 3);
+        put(
+            &mut bytes,
+            province + CONTROLLER_AREA,
+            0x20_0000 + u64::from(id),
+        );
+        put(
+            &mut bytes,
+            province + STRATEGIC_REGION,
+            0x30_0000 + u64::from(id),
+        );
+        let definition_word = if id % 10 == 6 { 0 } else { definition as u64 };
+        put(&mut bytes, province + DEFINITION, definition_word);
+        bytes[definition + crate::province_definition::TERRAIN_FLAGS] = id as u8;
+    }
+    let provinces = Array {
+        data: ARRAY,
+        count: COUNT - 2,
+    };
+    (bytes, provinces, (0..COUNT).collect())
+}
+
+/// Faults every read covering `fault`, or only the first as a guard page
+/// does, and notes each byte read.
+struct MovementFaults<'a> {
+    bytes: &'a [u8],
+    fault: Option<usize>,
+    once: bool,
+    spent: std::cell::Cell<bool>,
+    reads: std::cell::RefCell<std::collections::BTreeSet<usize>>,
+}
+
+impl<'a> MovementFaults<'a> {
+    fn new(bytes: &'a [u8], fault: Option<usize>, once: bool) -> Self {
+        Self {
+            bytes,
+            fault,
+            once,
+            spent: Default::default(),
+            reads: Default::default(),
+        }
+    }
+}
+
+impl Memory for MovementFaults<'_> {
+    fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+        self.reads
+            .borrow_mut()
+            .extend(at..at.saturating_add(out.len()));
+        if let Some(fault) = self.fault
+            && at <= fault
+            && fault < at.saturating_add(out.len())
+            && !self.spent.get()
+        {
+            self.spent.set(self.once);
+            return false;
+        }
+        SliceMemory {
+            base: 0,
+            bytes: self.bytes,
+        }
+        .copy(at, out)
+    }
+}
+
+type MovementOutcome = Vec<(u32, Result<MovementProvince, &'static str>)>;
+
+fn batched_movement(memory: &impl Memory, provinces: Array, ids: &[u32]) -> MovementOutcome {
+    let mut batched = Vec::new();
+    movement_provinces(memory, MOVEMENT_BASE, provinces, ids, |id, facts| {
+        batched.push((id, facts))
+    });
+    batched
+}
+
+fn movement_alone(memory: &impl Memory, provinces: Array, ids: &[u32]) -> MovementOutcome {
+    ids.iter()
+        .map(|&id| (id, movement_province(memory, MOVEMENT_BASE, provinces, id)))
+        .collect()
+}
+
+/// Batched movement provinces equal one `movement_province` per id, with no
+/// fault and with a persistent fault at every byte either reader touches.
+#[test]
+fn batched_movement_provinces_equal_each_province_read_alone() {
+    let (bytes, provinces, ids) = movement_world();
+    let clean = MovementFaults::new(&bytes, None, false);
+    let batched = batched_movement(&clean, provinces, &ids);
+    assert_eq!(batched, movement_alone(&clean, provinces, &ids));
+    let mismatch = Err("movement province identity mismatch");
+    assert_eq!(
+        batched[7],
+        (
+            7,
+            Ok(MovementProvince {
+                state: Ok(0x10_0007),
+                controller: Ok(21),
+                controller_area: Ok(0x20_0007),
+                strategic_region: Ok(0x30_0007),
+                terrain_flags: Ok(7),
+            })
+        )
+    );
+    assert_eq!(batched[73], (73, mismatch));
+    assert_eq!(batched[74], (74, mismatch));
+    assert_eq!(batched[75], (75, mismatch));
+    assert_eq!(
+        batched[76].1.unwrap().terrain_flags,
+        Err("movement province definition flags unreadable")
+    );
+    assert_eq!(
+        batched[78],
+        (78, Err("movement province outside the province array"))
+    );
+    let touched = clean.reads.into_inner();
+    assert!(touched.len() > ids.len() * 40);
+    for at in touched {
+        let memory = MovementFaults::new(&bytes, Some(at), false);
+        assert_eq!(
+            batched_movement(&memory, provinces, &ids),
+            movement_alone(&memory, provinces, &ids),
+            "fault at {at:#x}"
+        );
+    }
+}
+
+/// A one-shot fault refuses nothing the per-province walk does not: each field
+/// is its fault-free value or the walk's own outcome under that same fault.
+#[test]
+fn batched_movement_provinces_one_shot_faults_refuse_no_more() {
+    fn fields(outcome: MovementOutcome) -> Vec<[Result<u64, &'static str>; 5]> {
+        outcome
+            .into_iter()
+            .map(|(_, facts)| match facts {
+                Ok(province) => [
+                    province.state.map(|value| value as u64),
+                    province.controller.map(u64::from),
+                    province.controller_area.map(|value| value as u64),
+                    province.strategic_region.map(|value| value as u64),
+                    province.terrain_flags.map(u64::from),
+                ],
+                Err(reason) => [Err(reason); 5],
+            })
+            .collect()
+    }
+    let (bytes, provinces, ids) = movement_world();
+    let clean = MovementFaults::new(&bytes, None, false);
+    let expected = fields(batched_movement(&clean, provinces, &ids));
+    let (mut recovered, mut refused) = (0, 0);
+    for at in clean.reads.into_inner() {
+        let batch = MovementFaults::new(&bytes, Some(at), true);
+        let alone = MovementFaults::new(&bytes, Some(at), true);
+        let batched = fields(batched_movement(&batch, provinces, &ids));
+        let walked = fields(movement_alone(&alone, provinces, &ids));
+        for ((batched, walked), expected) in batched.iter().zip(&walked).zip(&expected) {
+            for field in 0..5 {
+                let batched = batched[field];
+                assert!(
+                    batched == expected[field] || batched == walked[field],
+                    "fault at {at:#x}"
+                );
+                recovered += usize::from(batched == expected[field] && batched != walked[field]);
+                refused += usize::from(batched != expected[field]);
+            }
+        }
+    }
+    assert!(recovered > 0 && refused > 0);
+}

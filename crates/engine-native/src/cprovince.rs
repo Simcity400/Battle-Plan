@@ -3006,6 +3006,228 @@ pub fn movement_province(
     })
 }
 
+const MOVEMENT_PROVINCE_ID_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: ID,
+    destination_offset: 0,
+    len: 4,
+}];
+const MOVEMENT_PROVINCE_ID_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&MOVEMENT_PROVINCE_ID_FIELDS, 4).expect("valid record layout");
+/// What [`movement_province`] reads of an authenticated province.
+const MOVEMENT_PROVINCE_FIELDS: [RecordField; 5] = [
+    RecordField {
+        source_offset: DEFINITION,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: STATE,
+        destination_offset: 8,
+        len: 8,
+    },
+    RecordField {
+        source_offset: CONTROLLER,
+        destination_offset: 16,
+        len: 4,
+    },
+    RecordField {
+        source_offset: CONTROLLER_AREA,
+        destination_offset: 24,
+        len: 8,
+    },
+    RecordField {
+        source_offset: STRATEGIC_REGION,
+        destination_offset: 32,
+        len: 8,
+    },
+];
+const MOVEMENT_PROVINCE_BYTES: usize = 40;
+const MOVEMENT_PROVINCE_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&MOVEMENT_PROVINCE_FIELDS, MOVEMENT_PROVINCE_BYTES)
+        .expect("valid record layout");
+const TERRAIN_FLAG_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: crate::province_definition::TERRAIN_FLAGS,
+    destination_offset: 0,
+    len: 1,
+}];
+const TERRAIN_FLAG_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&TERRAIN_FLAG_FIELDS, 1).expect("valid record layout");
+
+/// Gathers one record from each of `sources` into `out`. A row the gather
+/// could not complete goes to `failed`; the rows after it are gathered again.
+fn gather_rows(
+    memory: &impl Memory,
+    sources: &[usize],
+    layout: &RecordLayout<'_>,
+    out: &mut [u8],
+    mut failed: impl FnMut(usize),
+) {
+    let (fields, stride) = (layout.fields().len(), layout.stride());
+    let mut start = 0;
+    while start < sources.len() {
+        let copied = memory.copy_records(
+            RecordSources::Pointers(&sources[start..]),
+            layout,
+            &mut out[start * stride..sources.len() * stride],
+        );
+        let complete = start + copied / fields;
+        if complete == sources.len() {
+            return;
+        }
+        failed(complete);
+        start = complete + 1;
+    }
+}
+
+type MovementResults = [Option<Result<MovementProvince, &'static str>>; BATCH_ROWS];
+
+/// The provinces a stage of [`movement_provinces`] passed on, in id order:
+/// each one's row and the address its next stage gathers from.
+struct MovementRows {
+    rows: [usize; BATCH_ROWS],
+    sources: [usize; BATCH_ROWS],
+    len: usize,
+}
+
+impl MovementRows {
+    const EMPTY: Self = Self {
+        rows: [0; BATCH_ROWS],
+        sources: [0; BATCH_ROWS],
+        len: 0,
+    };
+
+    fn push(&mut self, row: usize, source: usize) {
+        (self.rows[self.len], self.sources[self.len]) = (row, source);
+        self.len += 1;
+    }
+
+    /// Gathers a word of `layout` from each source. A row the gather could not
+    /// complete is read `alone`; the rest stay only if `next` passes them on.
+    fn gather(
+        &mut self,
+        memory: &impl Memory,
+        layout: &RecordLayout<'_>,
+        results: &mut MovementResults,
+        alone: impl Fn(usize) -> Result<MovementProvince, &'static str>,
+        mut next: impl FnMut(usize, usize, u64) -> Result<usize, &'static str>,
+    ) {
+        let stride = layout.stride();
+        let mut bytes = [0u8; BATCH_ROWS * 8];
+        let rows = &self.rows;
+        gather_rows(
+            memory,
+            &self.sources[..self.len],
+            layout,
+            &mut bytes[..self.len * stride],
+            |slot| results[rows[slot]] = Some(alone(rows[slot])),
+        );
+        let open = std::mem::take(&mut self.len);
+        for slot in 0..open {
+            let (row, source) = (self.rows[slot], self.sources[slot]);
+            if results[row].is_some() {
+                continue;
+            }
+            let mut word = [0u8; 8];
+            word[..stride].copy_from_slice(&bytes[slot * stride..][..stride]);
+            match next(row, source, u64::from_le_bytes(word)) {
+                Ok(source) => self.push(row, source),
+                Err(reason) => results[row] = Some(Err(reason)),
+            }
+        }
+    }
+}
+
+/// [`movement_province`] for every id, in order. Entries, vtables, ids,
+/// payloads and definition flags each come from one record gather per batch,
+/// and each stage reads only what the one before authenticated. A province a
+/// gather could not complete is read alone by `movement_province`, as its
+/// per-object path would read it, so a gather refuses nothing that path does not.
+pub fn movement_provinces(
+    memory: &impl Memory,
+    base: usize,
+    provinces: Array,
+    ids: &[u32],
+    mut each: impl FnMut(u32, Result<MovementProvince, &'static str>),
+) {
+    const MISMATCH: &str = "movement province identity mismatch";
+    let vtable = base.checked_add(VTABLE_RVA).map(|pointer| pointer as u64);
+    for ids in ids.chunks(BATCH_ROWS) {
+        let mut results: MovementResults = [const { None }; BATCH_ROWS];
+        let alone = |row: usize| movement_province(memory, base, provinces, ids[row]);
+        let mut open = MovementRows::EMPTY;
+        for (row, &id) in ids.iter().enumerate() {
+            match provinces.element(id, 8) {
+                Some(entry) => open.push(row, entry),
+                None => results[row] = Some(Err("movement province outside the province array")),
+            }
+        }
+        open.gather(memory, &POINTER_LAYOUT, &mut results, &alone, |_, _, pointer| {
+            match usize::try_from(pointer) {
+                Ok(0) => Err(MISMATCH),
+                Ok(pointer) => Ok(pointer),
+                Err(_) => Err("movement province entry unreadable"),
+            }
+        });
+        open.gather(memory, &POINTER_LAYOUT, &mut results, &alone, |_, pointer, word| {
+            (Some(word) == vtable).then_some(pointer).ok_or(MISMATCH)
+        });
+        open.gather(
+            memory,
+            &MOVEMENT_PROVINCE_ID_LAYOUT,
+            &mut results,
+            &alone,
+            |row, pointer, id| (id == u64::from(ids[row])).then_some(pointer).ok_or(MISMATCH),
+        );
+        let mut payload = [0u8; BATCH_ROWS * MOVEMENT_PROVINCE_BYTES];
+        let rows = &open.rows;
+        gather_rows(
+            memory,
+            &open.sources[..open.len],
+            &MOVEMENT_PROVINCE_LAYOUT,
+            &mut payload[..open.len * MOVEMENT_PROVINCE_BYTES],
+            |slot| results[rows[slot]] = Some(alone(rows[slot])),
+        );
+        let mut defined = MovementRows::EMPTY;
+        for slot in 0..open.len {
+            let row = open.rows[slot];
+            if results[row].is_some() {
+                continue;
+            }
+            let record = &payload[slot * MOVEMENT_PROVINCE_BYTES..][..MOVEMENT_PROVINCE_BYTES];
+            let word = |at: usize| u64::from_le_bytes(record[at..at + 8].try_into().unwrap());
+            results[row] = Some(Ok(MovementProvince {
+                state: Ok(word(8) as usize),
+                controller: Ok(u32::from_le_bytes(record[16..20].try_into().unwrap())),
+                controller_area: Ok(word(24) as usize),
+                strategic_region: Ok(word(32) as usize),
+                terrain_flags: Err("movement province definition flags unreadable"),
+            }));
+            if word(0) != 0 {
+                defined.push(row, word(0) as usize);
+            }
+        }
+        // The flag byte is the walk's own read of it, so its fault is the walk's.
+        let (mut flags, mut unreadable) = ([0u8; BATCH_ROWS], [false; BATCH_ROWS]);
+        gather_rows(
+            memory,
+            &defined.sources[..defined.len],
+            &TERRAIN_FLAG_LAYOUT,
+            &mut flags[..defined.len],
+            |slot| unreadable[slot] = true,
+        );
+        for slot in 0..defined.len {
+            if !unreadable[slot]
+                && let Some(Ok(province)) = &mut results[defined.rows[slot]]
+            {
+                province.terrain_flags = Ok(flags[slot]);
+            }
+        }
+        for (row, result) in results.into_iter().enumerate().take(ids.len()) {
+            each(ids[row], result.expect("every province has an outcome"));
+        }
+    }
+}
+
 fn geometry_field<T: crate::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,

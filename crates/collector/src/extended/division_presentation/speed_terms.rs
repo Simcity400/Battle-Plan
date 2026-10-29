@@ -786,10 +786,15 @@ impl SpeedTerms {
             .checked_add(engine_native::cgame_state::PROVINCES)
             .and_then(|address| Array::read(memory, address, 8))
             .ok_or("movement province array invalid");
-        for &id in &ids {
-            let facts = provinces
-                .and_then(|provinces| cprovince::movement_province(memory, base, provinces, id));
-            self.provinces.push((id, facts));
+        match provinces {
+            Ok(provinces) => {
+                cprovince::movement_provinces(memory, base, provinces, &ids, |id, facts| {
+                    self.provinces.push((id, facts))
+                })
+            }
+            Err(reason) => self
+                .provinces
+                .extend(ids.iter().map(|&id| (id, Err(reason)))),
         }
         self.prepare_land_demand(memory, base, game)?;
         // Only location states whose speed operands will be read.
