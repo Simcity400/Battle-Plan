@@ -92,6 +92,48 @@ struct CachedQuery {
     fallbacks: std::collections::BTreeSet<String>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Prepared answers this thread computed rather than took from a cache.
+    pub(crate) static COMPUTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A complete answer as it is kept on disk between sessions ([`stored_answer`]).
+#[derive(Serialize, Deserialize)]
+struct StoredQuery {
+    data: Value,
+    fallbacks: std::collections::BTreeSet<String>,
+}
+
+/// Where `request`'s answer at `publication` is kept on disk: under the store's key and every
+/// page published to the branch, so any later publication, Clear or content change misses it.
+#[allow(clippy::too_many_arguments)]
+fn stored_answer(
+    source: &Source,
+    request: &ProductRequest,
+    content: Option<&ContentOptions>,
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    publication: &impl Serialize,
+) -> io::Result<Option<crate::reply_cache::Entry>> {
+    let Some(content) = content else {
+        return Ok(None);
+    };
+    let pages = super::pipeline::published_pages(store, key, branch)?;
+    let identity = serde_json::to_string(&(publication, pages, key))?;
+    let dependent =
+        crate::products::find(&request.product).is_none_or(|product| product.content_dependent);
+    Ok(crate::reply_cache::Entry::prepared(
+        source,
+        &request.product,
+        dependent,
+        &request.params,
+        &identity,
+        content,
+    ))
+}
+
 /// Content files and the recorded mod stack are bound by the observation
 /// scope's SourceKey. Presentation also depends on today's language and folders
 /// (including the verification choice), even when files() reuses that key.
@@ -2893,7 +2935,9 @@ pub fn query(
     }
     // Null is a query result whose coverage has not been accepted yet. Clients
     // inspect real preparation status and retry; it is not an empty history.
-    let read = |previous: Option<std::sync::Arc<CachedQuery>>| {
+    let read = |previous: Option<std::sync::Arc<CachedQuery>>| -> io::Result<CachedQuery> {
+        #[cfg(test)]
+        COMPUTED.with(|count| count.set(count.get() + 1));
         let scope = cache_product(&request.product)
             .map(|_| super::series::cache_scope(previous.as_ref().map(|reply| &reply.summaries)));
         let ((data, short), fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
@@ -2955,7 +2999,57 @@ pub fn query(
                         + bytes.total() as usize
                         + reply.summaries.bytes()
                 },
-                read,
+                |previous| {
+                    // An answer carries the session's refusals and drawing diagnostics, and content
+                    // read outside the recorded coverage is reported on every reply: none is served
+                    // from or kept on disk while the session holds any.
+                    let quiet = || {
+                        !source.reply_reads_uncovered(content)
+                            && content.is_none_or(|content| {
+                                dashboard_base::catalogue::session_quiet(source, content)
+                            })
+                    };
+                    let stored = stored_answer(
+                        source,
+                        request,
+                        content,
+                        &store,
+                        &key,
+                        branch,
+                        &publication,
+                    )?;
+                    if quiet()
+                        && let Some(kept) = stored
+                            .as_ref()
+                            .and_then(crate::reply_cache::Entry::get)
+                            .and_then(|json| serde_json::from_str::<StoredQuery>(&json).ok())
+                    {
+                        return Ok(CachedQuery {
+                            data: kept.data,
+                            short: Default::default(),
+                            summaries: Default::default(),
+                            fallbacks: kept.fallbacks,
+                        });
+                    }
+                    let answer = read(previous)?;
+                    // Only a complete answer under the binding the source still shows, whose
+                    // computing left the session quiet, is kept.
+                    if let Some(entry) = stored
+                        && answer.short.is_empty()
+                        && !waits(&answer.data)
+                        && quiet()
+                        && content.is_none_or(|content| source.still_admitted(content))
+                    {
+                        let kept = StoredQuery {
+                            data: answer.data.clone(),
+                            fallbacks: answer.fallbacks.clone(),
+                        };
+                        if let Ok(json) = serde_json::to_string(&kept) {
+                            entry.put(&json);
+                        }
+                    }
+                    Ok(answer)
+                },
             )?
     } else {
         std::sync::Arc::new(read(None)?)

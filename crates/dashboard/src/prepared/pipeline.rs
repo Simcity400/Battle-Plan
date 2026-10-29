@@ -1470,6 +1470,33 @@ pub(crate) fn query_pages(
         })
         .collect()
 }
+/// The coverage page of the hourly walk and of every family on `branch`, registered or not,
+/// production lines' among them: every publication to the branch replaces one of them.
+pub(crate) fn published_pages(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+) -> io::Result<Vec<(String, Option<[u64; 3]>)>> {
+    let families: std::collections::BTreeSet<&str> = FAMILIES
+        .iter()
+        .map(|family| family.name)
+        .chain(independent::names())
+        .chain(["production-lines"])
+        .collect();
+    std::iter::once(coverage_section(branch))
+        .chain(
+            families
+                .into_iter()
+                .map(|family| independent::coverage_section(family, branch)),
+        )
+        .map(|section| {
+            let id = store
+                .read(key, &section, 0)?
+                .map(|file| file.id().cache_key());
+            Ok((section, id))
+        })
+        .collect()
+}
 /// The gates readers below the dashboard ask ([`super::coverage::Gates`]):
 /// [`product_coverage`] and [`refusal`].
 struct Gates;

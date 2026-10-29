@@ -44,6 +44,106 @@ fn query(source: &Source, product: &str, params: serde_json::Value) -> serde_jso
     reply["data"].take()
 }
 
+/// A prepared query's reply data, its answer read under `content`.
+fn query_with(
+    source: &Source,
+    content: &ContentOptions,
+    product: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let request = crate::transport::ProductRequest {
+        source_id: source.key().source_id.clone(),
+        revision: source.key().revision.clone(),
+        product: product.into(),
+        params,
+    };
+    let reply =
+        super::super::super::query::query(source, &request, Some(content), &AtomicBool::new(false))
+            .unwrap();
+    let mut reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+    reply["data"].take()
+}
+
+#[test]
+fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for content tests");
+    let frames: Vec<_> = (10..=20).map(|hour| missions(hour, 24)).collect();
+    let placeholder = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let mut fixture = Fixture::new(&placeholder);
+    let game = fixture.root.join("disk-content");
+    dashboard_base::test_fixtures::snow_content::write(&game);
+    let (bound, context) = crate::test_fixtures::source_with_content(frames, &game);
+    fixture.replace(&Replay::open(bound.replay_ref().bytes().to_vec()).unwrap());
+    let content = context.content.unwrap();
+    let flag = AtomicBool::new(false);
+    let params = serde_json::json!({"branchId":"1","tag":"GER","view":"history"});
+    let computed = || super::super::super::query::COMPUTED.with(std::cell::Cell::get);
+    let kept = || crate::reply_cache::size(&crate::reply_cache::folder(&content.options));
+    let first = fixture.source("disk-first");
+    let before = computed();
+    // A reply still waiting for preparation is computed and never kept.
+    let cold = query_with(&first, &content, "air-missions", params.clone());
+    assert_eq!(cold["coverage"]["complete"], false);
+    assert_eq!(kept(), 0);
+    run(&first, Some(&content), &flag, |_| {}).unwrap();
+    let prepared = query_with(&first, &content, "air-missions", params.clone());
+    assert_eq!(prepared["coverage"]["complete"], true, "{prepared}");
+    assert_eq!(computed() - before, 2);
+    assert!(kept() > 0, "the complete answer is kept");
+    // Another source of the recording, as a later session opens it, answers from disk.
+    let later = fixture.source("disk-later");
+    assert_eq!(
+        query_with(&later, &content, "air-missions", params.clone()),
+        prepared
+    );
+    assert_eq!(computed() - before, 2, "answered from disk");
+    // A session holding a diagnostic a reply carries (a shader warning drawn earlier) neither
+    // serves a kept answer nor keeps one, as a fresh answer there carries it.
+    let other = serde_json::json!({"branchId":"1","tag":"ITA","view":"history"});
+    let noisy = fixture.source("disk-noisy");
+    noisy
+        .content(&content.options)
+        .unwrap()
+        .layers
+        .note_shader_warning("drawn earlier".into());
+    query_with(&noisy, &content, "air-missions", params.clone());
+    assert_eq!(computed() - before, 3, "not served from disk there");
+    let size = kept();
+    query_with(&noisy, &content, "air-missions", other.clone());
+    assert_eq!(
+        computed() - before,
+        4,
+        "computed in a session holding a diagnostic"
+    );
+    assert_eq!(kept(), size, "and not kept");
+    query_with(
+        &fixture.source("disk-quiet"),
+        &content,
+        "air-missions",
+        other,
+    );
+    assert_eq!(computed() - before, 5, "never kept, so computed again");
+    // Preparing again after a Clear publishes new pages: the kept answer is not served.
+    super::super::super::files(&later, Some(&content))
+        .unwrap()
+        .0
+        .clear()
+        .unwrap();
+    run(&later, Some(&content), &flag, |_| {}).unwrap();
+    let again = fixture.source("disk-again");
+    assert_eq!(
+        query_with(&again, &content, "air-missions", params),
+        prepared
+    );
+    assert_eq!(computed() - before, 6, "computed for the new publication");
+    super::super::super::files(&again, Some(&content))
+        .unwrap()
+        .0
+        .clear()
+        .unwrap();
+}
+
 #[test]
 fn keyed_families_are_prepared_on_their_own_and_answer_cold_and_prepared() {
     for name in [

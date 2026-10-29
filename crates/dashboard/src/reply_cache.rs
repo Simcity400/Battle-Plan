@@ -25,7 +25,10 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::{Source, products::LoadContext};
+use crate::{
+    Source,
+    products::{ContentOptions, LoadContext},
+};
 
 /// The folder's size limit; pruning keeps three quarters of it.
 pub const LIMIT: u64 = 1 << 30;
@@ -54,7 +57,41 @@ impl Entry {
         params: &serde_json::Value,
         context: &LoadContext,
     ) -> Option<Self> {
-        let content = context.content.as_ref()?;
+        Self::keyed(
+            source,
+            product,
+            content_dependent,
+            &params.to_string(),
+            context.content.as_ref()?,
+        )
+    }
+
+    /// The entry for one prepared query's answer at `publication`, which names every page of
+    /// the prepared store the answer can read, or none when it cannot be kept.
+    pub(crate) fn prepared(
+        source: &Source,
+        product: &str,
+        content_dependent: bool,
+        params: &serde_json::Value,
+        publication: &str,
+        content: &ContentOptions,
+    ) -> Option<Self> {
+        Self::keyed(
+            source,
+            product,
+            content_dependent,
+            &format!("{params}\nprepared {publication}"),
+            content,
+        )
+    }
+
+    fn keyed(
+        source: &Source,
+        product: &str,
+        content_dependent: bool,
+        params: &str,
+        content: &ContentOptions,
+    ) -> Option<Self> {
         let mut changed = String::new();
         if content_dependent {
             crate::content::check_replay(
