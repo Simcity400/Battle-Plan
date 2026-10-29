@@ -257,3 +257,127 @@ fn attach_creates_the_heap_allocation_free_and_refuses_a_failed_creation() {
     // The failure is cached: a later attach check still refuses, creating nothing.
     assert!(!failed.0.ready());
 }
+
+/// Runs `f` with this thread held on one processor, so every list it touches is
+/// the same shard's.
+fn on_one_processor<R>(f: impl FnOnce() -> R) -> R {
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadAffinityMask};
+    let processor = unsafe { GetCurrentProcessorNumber() } as usize;
+    let previous = unsafe { SetThreadAffinityMask(GetCurrentThread(), 1 << (processor % 64)) };
+    assert_ne!(previous, 0);
+    let result = f();
+    unsafe { SetThreadAffinityMask(GetCurrentThread(), previous) };
+    result
+}
+
+#[test]
+fn size_classes_fit_every_small_size_in_16_byte_blocks() {
+    let mut previous = 0;
+    for class in 0..CLASSES {
+        let size = class_size(class);
+        assert!(size > previous && size % HEAP_ALIGNMENT == 0);
+        assert_eq!(super::class(size), Some(class));
+        assert_eq!(super::class(previous + 1), Some(class));
+        previous = size;
+    }
+    assert_eq!(previous, SMALL_LIMIT);
+    assert_eq!(super::class(0), Some(0));
+    assert_eq!(super::class(SMALL_LIMIT + 1), None);
+    for size in 1..=SMALL_LIMIT {
+        assert!(class_size(super::class(size).unwrap()) >= size);
+    }
+}
+
+#[test]
+fn freed_small_blocks_are_reused_and_cleared_on_request() {
+    let heap = Heap::new();
+    on_one_processor(|| {
+        for size in [1, 100, 1024, 1025, SMALL_LIMIT] {
+            let layout = Layout::from_size_align(size, 16).unwrap();
+            let pointer = unsafe { heap.0.alloc(layout) };
+            assert!(!pointer.is_null());
+            unsafe { pointer.write_bytes(0x7c, size) };
+            unsafe { heap.0.dealloc(pointer, layout) };
+            let reused = unsafe { heap.0.alloc_zeroed(layout) };
+            assert_eq!(reused, pointer);
+            let bytes = unsafe { std::slice::from_raw_parts(reused, size) };
+            assert!(bytes.iter().all(|&byte| byte == 0));
+            unsafe { heap.0.dealloc(reused, layout) };
+        }
+    });
+    assert!(!crate::allocation::failed());
+}
+
+#[test]
+fn reallocation_stays_within_a_class_and_moves_across_classes() {
+    let heap = Heap::new();
+    let layout = |size| Layout::from_size_align(size, 8).unwrap();
+    let pointer = unsafe { heap.0.alloc(layout(40)) };
+    assert!(!pointer.is_null());
+    unsafe { pointer.write_bytes(0x11, 40) };
+    assert_eq!(unsafe { heap.0.realloc(pointer, layout(40), 48) }, pointer);
+    // Through a larger class, a large block and back to a small one.
+    let mut current = (pointer, 48);
+    for size in [49, 40_000, 100] {
+        let moved = unsafe { heap.0.realloc(current.0, layout(current.1), size) };
+        assert!(!moved.is_null());
+        assert_ne!(moved, current.0);
+        let kept = current.1.min(size).min(40);
+        assert!(
+            unsafe { std::slice::from_raw_parts(moved, kept) }
+                .iter()
+                .all(|&byte| byte == 0x11)
+        );
+        current = (moved, size);
+    }
+    unsafe { heap.0.dealloc(current.0, layout(current.1)) };
+    assert!(!crate::allocation::failed());
+}
+
+#[test]
+fn a_full_class_returns_further_frees_to_the_heap() {
+    let heap = Heap::new();
+    let layout = Layout::from_size_align(SMALL_LIMIT, 16).unwrap();
+    let class = super::class(SMALL_LIMIT).unwrap();
+    on_one_processor(|| {
+        let blocks = [(); 3].map(|()| unsafe { heap.0.alloc(layout) });
+        assert!(blocks.iter().all(|block| !block.is_null()));
+        for block in blocks {
+            unsafe { heap.0.dealloc(block, layout) };
+        }
+        heap.0.shard().with(|lists| {
+            let list = lists[class];
+            assert_eq!(list.count as usize, SHARD_CLASS_BYTES / SMALL_LIMIT);
+            assert_eq!(list.kept as usize, SHARD_CLASS_BYTES / SMALL_LIMIT);
+            assert_eq!(list.returned as usize, 3 - SHARD_CLASS_BYTES / SMALL_LIMIT);
+        });
+    });
+    // The status itself never allocates; only this test's JSON value does.
+    let snapshot = heap.0.status();
+    crate::test_support::with_allocations_denied(|| {
+        serde_json::to_writer(std::io::sink(), &snapshot).unwrap()
+    });
+    let status = serde_json::to_value(&snapshot).unwrap();
+    let classes = status["classes"].as_array().unwrap();
+    let row = classes
+        .iter()
+        .find(|row| row["bytes"] == SMALL_LIMIT)
+        .unwrap();
+    assert_eq!(row["misses"], 3);
+}
+
+#[test]
+fn detach_forgets_cached_small_blocks() {
+    let heap = Heap::new();
+    let layout = Layout::from_size_align(64, 16).unwrap();
+    let pointer = unsafe { heap.0.alloc(layout) };
+    assert!(!pointer.is_null());
+    unsafe { heap.0.dealloc(pointer, layout) };
+    let handle = heap.0.heap();
+    assert!(unsafe { heap.0.detach(DLL_PROCESS_DETACH, ptr::null_mut()) });
+    assert!(!process_heaps().contains(&handle));
+    for shard in &heap.0.shards {
+        shard.with(|lists| assert!(lists.iter().all(|list| list.head.is_null())));
+    }
+    assert!(unsafe { heap.0.alloc(layout) }.is_null());
+}

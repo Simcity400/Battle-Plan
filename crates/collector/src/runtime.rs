@@ -3173,6 +3173,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "scope": "Map recordings only: hours the DivisionModelInputs job read the division census, and the rows whose orders group trained (the only ones it reads exercise operands for), cumulative and the most in one hour; its timing is the division_model_inputs role's",
             },
             "background_priority": background_priority_status(),
+            "allocator": crate::ALLOCATOR.status(),
             "frame_priority": shared.frame_priority.status(shared.frequency),
             "thread_diagnostics": crate::thread_diagnostics::status(shared.frequency),
             "collector_thread_cpu": crate::thread_cpu::status(
