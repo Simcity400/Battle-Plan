@@ -167,7 +167,7 @@ fn hours() -> Vec<DecodedFrame> {
             TableId::DivisionTemplateIcons,
             "icons refused again",
         ),
-        vec![deletion(6, Disposition::Loss, None)],
+        vec![deletion(6, Disposition::Loss, Some(Cause::Unknown))],
     );
     if let TableView::Complete(TableRows::Divisions(rows)) =
         &mut *hidden.tables[TableId::Divisions.index()]
