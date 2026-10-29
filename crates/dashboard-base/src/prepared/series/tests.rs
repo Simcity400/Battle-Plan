@@ -1854,15 +1854,14 @@ fn values_at_matches_single_key_reads_across_commits_resume_append_and_gaps() {
     }
 }
 
-#[test]
-fn many_keys_read_together_give_each_keys_blob_as_reading_it_alone() {
+/// 1,500 keys over two batches, a fifth of them holding nothing in each, their blobs empty.
+#[cfg(test)]
+fn many_key_batches(flag: &AtomicBool) -> Fixture {
     let mut fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
     let mut values = Accumulator::default();
     for (batch, (first, last)) in [(0, 49), (50, 99)].into_iter().enumerate() {
         for hour in first..=last {
             for key in 0..1500_u64 {
-                // A fifth of the keys hold nothing in each batch, their blobs empty.
                 let amount = (key % 5 != batch as u64)
                     .then(|| i128::from(hour / (1 + key as i32 % 7)) + i128::from(key));
                 values.observe(key, hour, amount, false);
@@ -1873,10 +1872,35 @@ fn many_keys_read_together_give_each_keys_blob_as_reading_it_alone() {
         } else {
             fixture.writer()
         };
-        values.flush(&mut writer, "values", 0, &flag).unwrap();
+        values.flush(&mut writer, "values", 0, flag).unwrap();
         writer.commit().unwrap();
         values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
     }
+    fixture
+}
+
+#[test]
+fn many_keys_runs_read_together_are_each_keys_runs_read_alone() {
+    let flag = AtomicBool::new(false);
+    let fixture = many_key_batches(&flag);
+    // More keys than one read decodes together, asked out of their stored order.
+    let keys: Vec<u64> = (0..1500).rev().collect();
+    let open = || Reader::new(&fixture.store, &fixture.key, "values".into(), &flag).unwrap();
+    let (mut together, mut alone) = (open(), open());
+    assert!(together.runs_each(&[], i32::MIN, i32::MAX).unwrap().is_empty());
+    for (from, to) in [(i32::MIN, i32::MAX), (10, 60), (50, 99), (0, 0)] {
+        let read = together.runs_each(&keys, from, to).unwrap();
+        for (&key, runs) in keys.iter().zip(read) {
+            let expected = alone.runs(key, from, to).unwrap();
+            assert_eq!(runs.unwrap(), expected, "key {key} from {from} to {to}");
+        }
+    }
+}
+
+#[test]
+fn many_keys_read_together_give_each_keys_blob_as_reading_it_alone() {
+    let flag = AtomicBool::new(false);
+    let fixture = many_key_batches(&flag);
     // More keys than one read decodes together, asked out of their stored order.
     let keys: Vec<u64> = (0..1500).rev().collect();
     assert!(keys.len() > DECODE_KEYS);

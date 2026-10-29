@@ -408,6 +408,10 @@ pub struct Naming<'a> {
     pub icon: &'a dyn Fn(&production_lines::RawOrganisation) -> Option<(String, Result<String, String>)>,
 }
 
+/// Other keys a catalogue reply reads together at most: it holds at most this many keys' whole
+/// histories at once, before each is clipped to its row's spans.
+const OTHER_KEYS: usize = 1024;
+
 pub fn query(
     store: &store::Store,
     key: &store::SourceKey,
@@ -498,28 +502,95 @@ pub fn query(
     let catalogue = (params.view == CatalogueView::Designs).then(|| {
         VariantCatalogue::seeded(published.meta.extra.variants.clone())
     });
-    // The party key's runs, read first so a row no chosen country is party to is
-    // skipped before its other keys are read.
-    let party = |published: &mut Published<'_, Field, Extra>,
-                 fields: &[(u64, Field)],
-                 is_party: fn(&Field) -> bool|
-     -> io::Result<Vec<EconomyRun>> {
-        match fields.iter().find(|(_, field)| is_party(field)) {
-            Some(&(id, _)) => published.text(id, &all),
-            None => Ok(Vec::new()),
-        }
+    let is_party: fn(&Field) -> bool = match params.view {
+        CatalogueView::Licences => |field| matches!(field, Field::LicenceGiver(..)),
+        CatalogueView::Organisations => |field| matches!(field, Field::MioHolder(_)),
+        CatalogueView::Designs => |field| matches!(field, Field::DesignCreator(_)),
     };
-    for ((owner, at), fields) in grouped {
+    let rows: Vec<((u64, u32), Vec<(u64, Field)>)> = grouped.into_iter().collect();
+    // Every row's party key is read first, all together, so a row no chosen country is party
+    // to is skipped before its other keys are read; those are then read together too. The rows
+    // are built in order, so a failure refuses the reply where reading key by key did.
+    let party_keys: Vec<Option<u64>> = rows
+        .iter()
+        .map(|(_, fields)| {
+            fields
+                .iter()
+                .find(|(_, field)| is_party(field))
+                .map(|&(id, _)| id)
+        })
+        .collect();
+    let read = published.runs_each(&party_keys.iter().flatten().copied().collect::<Vec<_>>())?;
+    let mut read = read.into_iter();
+    let parties: Vec<io::Result<Vec<EconomyRun>>> = party_keys
+        .iter()
+        .map(|key| match key {
+            Some(_) => read
+                .next()
+                .expect("a read for every party key")
+                .map(|runs| published.clipped_text(runs, &all)),
+            None => Ok(Vec::new()),
+        })
+        .collect();
+    // Each row's spans, none for a skipped row, up to the first party that could not be read.
+    let mut spans: Vec<Option<Vec<(i32, i32)>>> = Vec::new();
+    for (((owner, _), _), party) in rows.iter().zip(&parties) {
+        let Ok(party) = party else {
+            break;
+        };
+        let selected = match params.view {
+            CatalogueView::Licences => selected_spans(chosen.as_ref(), &[*owner as u32], party),
+            _ => selected_spans(chosen.as_ref(), &[], party),
+        };
+        let skipped =
+            selected.is_empty() || (params.view == CatalogueView::Designs && party.is_empty());
+        spans.push((!skipped).then_some(selected));
+    }
+    // Each row's other keys, none for a skipped row, read for a group of rows at a time.
+    let other_keys: Vec<Vec<u64>> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, (_, fields))| match spans.get(index) {
+            Some(Some(_)) => fields
+                .iter()
+                .filter(|(_, field)| !is_party(field))
+                .map(|&(id, _)| id)
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    let mut others = Vec::new().into_iter();
+    // The first row whose other keys are not yet read.
+    let mut unread = 0;
+    let mut parties = parties.into_iter();
+    let mut spans = spans.into_iter();
+    for (index, ((owner, at), fields)) in rows.into_iter().enumerate() {
         published.check()?;
+        let party = parties.next().expect("a party read for every row")?;
+        let Some(spans) = spans.next().expect("spans for every party read") else {
+            continue;
+        };
+        if index >= unread {
+            let mut keys = Vec::new();
+            unread = index;
+            while let Some(row) = other_keys.get(unread) {
+                if !keys.is_empty() && keys.len() + row.len() > OTHER_KEYS {
+                    break;
+                }
+                keys.extend_from_slice(row);
+                unread += 1;
+            }
+            others = published.runs_each(&keys)?.into_iter();
+        }
+        // The next non-party key's runs within the row's spans.
+        let mut text = || -> io::Result<Vec<EconomyRun>> {
+            let runs = others.next().expect("a read for every other key")?;
+            Ok(published.clipped_text(runs, &spans))
+        };
         match params.view {
             CatalogueView::Licences => {
                 let licensee = owner as u32;
-                let licensor = party(&mut published, &fields, |field| matches!(field, Field::LicenceGiver(..)))?;
-                let spans = selected_spans(chosen.as_ref(), &[licensee], &licensor);
-                if spans.is_empty() {
-                    continue;
-                }
-                let licensor = clip_text(&licensor, &spans);
+                let licensor = clip_text(&party, &spans);
                 let parties = std::iter::once(licensee)
                     .chain(licensor.iter().filter_map(|run| run.2.parse().ok()))
                     .collect::<Vec<u32>>();
@@ -533,11 +604,11 @@ pub fn query(
                     variants: Vec::new(),
                 };
                 let mut variants = BTreeMap::new();
-                for (id, field) in fields {
-                    if matches!(field, Field::LicenceGiver(..)) {
+                for (_, field) in fields {
+                    if is_party(&field) {
                         continue;
                     }
-                    let runs = published.text(id, &spans)?;
+                    let runs = text()?;
                     match field {
                         Field::LicenceLent(..) => licence.lent = runs,
                         Field::LicenceRequired(..) => licence.required = runs,
@@ -564,12 +635,7 @@ pub fn query(
                 reply.licences.push(licence);
             }
             CatalogueView::Organisations => {
-                let holder = party(&mut published, &fields, |field| matches!(field, Field::MioHolder(_)))?;
-                let spans = selected_spans(chosen.as_ref(), &[], &holder);
-                if spans.is_empty() {
-                    continue;
-                }
-                let holder = clip_text(&holder, &spans);
+                let holder = clip_text(&party, &spans);
                 let mut mio = OrganisationHistory {
                     id: owner.to_string(),
                     holder,
@@ -583,11 +649,11 @@ pub fn query(
                     cooldown: Vec::new(),
                     names: Vec::new(),
                 };
-                for (id, field) in fields {
-                    if matches!(field, Field::MioHolder(_)) {
+                for (_, field) in fields {
+                    if is_party(&field) {
                         continue;
                     }
-                    let runs = published.text(id, &spans)?;
+                    let runs = text()?;
                     match field {
                         Field::MioSize(_) => mio.size = runs,
                         Field::MioFunds(_) => mio.funds = runs,
@@ -632,12 +698,7 @@ pub fn query(
                 reply.organisations.push(mio);
             }
             CatalogueView::Designs => {
-                let creator = party(&mut published, &fields, |field| matches!(field, Field::DesignCreator(_)))?;
-                let spans = selected_spans(chosen.as_ref(), &[], &creator);
-                if creator.is_empty() || spans.is_empty() {
-                    continue;
-                }
-                let creator = clip_text(&creator, &spans);
+                let creator = clip_text(&party, &spans);
                 let mut design = DesignHistory {
                     id: format!("{owner:x}"),
                     creator,
@@ -647,9 +708,13 @@ pub fn query(
                     archetype_name: None,
                     names: Vec::new(),
                 };
-                for (id, field) in fields {
+                for (_, field) in fields {
+                    if is_party(&field) {
+                        continue;
+                    }
+                    let runs = text()?;
                     if let Field::DesignObsolete(_) = field {
-                        design.obsolete = published.text(id, &spans)?;
+                        design.obsolete = runs;
                     }
                 }
                 holders.extend(design.creator.iter().filter_map(|run| run.2.parse::<u32>().ok()));

@@ -415,11 +415,22 @@ impl<'a, F: DeserializeOwned, X: DeserializeOwned> Published<'a, F, X> {
 
     /// The key's runs as exact decimal text.
     pub fn text(&mut self, key: u64, spans: &[(i32, i32)]) -> io::Result<Vec<EconomyRun>> {
-        Ok(self
-            .runs(key, spans)?
+        let runs = self.reader.runs(key, i32::MIN, self.through)?;
+        Ok(self.clipped_text(runs, spans))
+    }
+
+    /// Each of `keys`' runs through the prepared prefix, unclipped, their blobs read together
+    /// ([`Reader::runs_each`]): each key's, or the failure reading it alone gives.
+    pub fn runs_each(&mut self, keys: &[u64]) -> io::Result<Vec<io::Result<Vec<Run>>>> {
+        self.reader.runs_each(keys, i32::MIN, self.through)
+    }
+
+    /// A key's `runs` clipped to `spans` as exact decimal text, as [`Self::text`] gives them.
+    pub fn clipped_text(&self, runs: Vec<Run>, spans: &[(i32, i32)]) -> Vec<EconomyRun> {
+        clip(runs, spans, self.through)
             .into_iter()
             .map(|run| EconomyRun(run.first_hour, run.last_hour, run.value.to_string()))
-            .collect())
+            .collect()
     }
 
     /// The value at `hour`, where a run holds one.

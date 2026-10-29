@@ -2589,6 +2589,26 @@ impl Built {
 /// A key's blob as a read gives it, or why it could not.
 type Blob = io::Result<Arc<Cached>>;
 
+/// `rows`, one batch's runs of a key, added to `runs` within `from..=to`: a run continuing the
+/// last one extends it.
+fn extend_runs(runs: &mut Vec<Run>, rows: &[Run], from: i32, to: i32) {
+    for &run in rows {
+        if run.last_hour < from || run.first_hour > to {
+            continue;
+        }
+        let run = Run {
+            first_hour: run.first_hour.max(from),
+            last_hour: run.last_hour.min(to),
+            ..run
+        };
+        if let Some(last) = runs.last_mut().filter(|last| last.continues(run)) {
+            last.last_hour = run.last_hour;
+        } else {
+            runs.push(run);
+        }
+    }
+}
+
 /// What refuses a read cancelled part way: the first key's failure already `found`, in key
 /// order, else the cancellation.
 fn refusal(found: impl IntoIterator<Item = Option<io::Error>>, cancelled: io::Error) -> io::Error {
@@ -3214,21 +3234,39 @@ impl<'a> Reader<'a> {
     pub fn runs(&mut self, key: u64, from: i32, to: i32) -> io::Result<Vec<Run>> {
         let mut result: Vec<Run> = Vec::new();
         for batch in self.batches(from, to)? {
-            for &run in &self.data(batch, key)?.runs {
-                if run.last_hour < from || run.first_hour > to {
-                    continue;
-                }
-                let run = Run {
-                    first_hour: run.first_hour.max(from),
-                    last_hour: run.last_hour.min(to),
-                    ..run
-                };
-                if let Some(last) = result.last_mut().filter(|last| last.continues(run)) {
-                    last.last_hour = run.last_hour;
-                } else {
-                    result.push(run);
-                }
+            extend_runs(&mut result, &self.data(batch, key)?.runs, from, to);
+        }
+        Ok(result)
+    }
+    /// [`Self::runs`] of each of `keys`, each batch's blobs read together
+    /// ([`Self::each_blob`]): each key's runs, or the failure reading it alone gives. Only a
+    /// cancellation, or the batches' own read, refuses the whole read.
+    pub fn runs_each(
+        &mut self,
+        keys: &[u64],
+        from: i32,
+        to: i32,
+    ) -> io::Result<Vec<io::Result<Vec<Run>>>> {
+        check_cancel(self.cancelled)?;
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let batches = self.batches(from, to)?;
+        let mut result = Vec::with_capacity(keys.len());
+        for chunk in keys.chunks(DECODE_KEYS) {
+            let mut read: Vec<io::Result<Vec<Run>>> = std::iter::repeat_with(|| Ok(Vec::new()))
+                .take(chunk.len())
+                .collect();
+            for batch in batches.clone() {
+                check_cancel(self.cancelled)?;
+                // A key's first failure, in batch order, is the one reading it alone gives.
+                self.each_blob(batch, chunk, &mut |at, blob| match (blob, &mut read[at]) {
+                    (_, Err(_)) => {}
+                    (Ok(blob), Ok(runs)) => extend_runs(runs, &blob.runs, from, to),
+                    (Err(error), slot) => *slot = Err(error),
+                })?;
             }
+            result.extend(read);
         }
         Ok(result)
     }
