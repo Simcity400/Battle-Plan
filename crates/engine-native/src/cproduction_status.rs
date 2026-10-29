@@ -39,7 +39,7 @@ pub struct LicenseRow {
 }
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_cf78;
+pub const VTABLE_RVA: usize = 0x029e_cf88;
 
 /// Production-line pointer-array data.
 pub const LINES: usize = 0x58;

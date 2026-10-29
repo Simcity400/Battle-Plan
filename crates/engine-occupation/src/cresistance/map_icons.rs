@@ -13,7 +13,7 @@ pub const STATE_RESISTANCE_DEFINITIONS: usize = 0x210;
 pub const STATE_COMPLIANCE_DEFINITIONS: usize = 0x228;
 pub const CORE_RESISTANCE_DEFINITIONS: usize = 0x58;
 pub const CORE_COMPLIANCE_DEFINITIONS: usize = 0x70;
-pub const DEFINITION_VTABLE_RVA: usize = 0x02a3_4e10;
+pub const DEFINITION_VTABLE_RVA: usize = 0x02a3_4e30;
 pub const DEFINITION_NAME: usize = 0x10;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

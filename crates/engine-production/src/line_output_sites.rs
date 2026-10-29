@@ -59,7 +59,7 @@ pub const PRODUCERS: [&str; 4] = ["military", "naval", "railway gun", "ship refi
 /// line at entry. Its entry instruction spills RBX to the stack.
 pub const CREDIT: HookSite = HookSite {
     name: "credit",
-    rva: 0x019b_e9c0,
+    rva: 0x019b_ec70,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x48, 0x83, 0xec, 0x20,
         0x48,
@@ -74,7 +74,7 @@ pub const CREDIT: HookSite = HookSite {
 /// to the stack.
 pub const DELIVERY: HookSite = HookSite {
     name: "delivery",
-    rva: 0x0140_a720,
+    rva: 0x0140_aae0,
     sentinel: [
         0x4c, 0x89, 0x44, 0x24, 0x18, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
         0x41,
@@ -96,7 +96,7 @@ pub const ROCKET_ADVANCE: EntrySite = EntrySite {
 /// DELIVERY's rocket-production caller.
 pub const ROCKET_DELIVERY_RETURN: usize = 0x00ff_5a0a;
 /// Rocket primary vtable.
-pub const ROCKET_VTABLE: usize = 0x029f_88f8;
+pub const ROCKET_VTABLE: usize = 0x029f_8908;
 /// Rocket's owning production status.
 pub const ROCKET_STATUS: usize = 0x38;
 /// Rocket's bound variant pointer, passed to DELIVERY.

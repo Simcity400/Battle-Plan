@@ -10,27 +10,27 @@ use super::{keywords::KeywordTables, leak_string, pe::PeImage, verify_digest};
 
 const TRIGGER_REGISTRATION: u32 = 0x0059_7b90;
 const EFFECT_REGISTRATION: u32 = 0x0058_88e0;
-const OBJECT_ALLOCATION: u32 = 0x0259_fd4c;
+const OBJECT_ALLOCATION: u32 = 0x025a_009c;
 const ENTRY_FACTORY: u32 = 8;
 const TRIGGER_VALUE_READER: u32 = 40;
 const TRIGGER_KEY_READER: u32 = 48;
 const TRIGGER_SCOPE_MASK: u32 = 112;
 const EFFECT_VALUE_READER: u32 = 24;
 const EFFECT_KEY_READER: u32 = 32;
-const ASSIGN_READER: u32 = 0x0144_6700;
-const COMPARISON_READER: u32 = 0x0144_5ab0;
+const ASSIGN_READER: u32 = 0x0144_6ac0;
+const COMPARISON_READER: u32 = 0x0144_5e70;
 const BODY_READER: u32 = 0x0059_6f30;
-const CONTEXT_EFFECT_VTABLE: u32 = 0x02a3_10f0;
-const SCRIPTED_EFFECT_VTABLE: u32 = 0x02a3_11c0;
+const CONTEXT_EFFECT_VTABLE: u32 = 0x02a3_1110;
+const SCRIPTED_EFFECT_VTABLE: u32 = 0x02a3_11e0;
 
 const TRIGGERS_DIGEST: &str = "03c08b0bd5ce9ccba4b299391d917c1a985fb197984924900dadd81e6a68ed28";
 const EFFECTS_DIGEST: &str = "5bc2422fcf914a6cfdf3dd9a3edefdcb74d30d6d20d584f7c89bf249b5b21473";
 const TRIGGER_CLASSES_DIGEST: &str =
-    "00b9ac861566a879fb15ceb47a6144494f5a4bccc30429d29f9214ff1b62a035";
+    "8593a4decfe245219b40614a3ff4c3d9b2c937023d5d8192abdf18208efa6084";
 const EFFECT_READERS_DIGEST: &str =
-    "04f7cab96948b40b16d0ce2d57a64e52ac96dba29abc3a21c9b55b15fea1dd50";
+    "6153bad5a9a2490702382501adcc3d5436d46870d4e8f8e874debd8b655baa08";
 const EFFECT_IDENTITIES_DIGEST: &str =
-    "2442165a92472fd53d1d74b425decc8fa2530ee505ae35b1d8e6add54cdb2f7d";
+    "763b7d3b25b3bc6da1b49bbda3caecac91ab4f2078164fd79d7f90dd1964d2f0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TriggerReader {

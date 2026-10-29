@@ -2,7 +2,7 @@
 //! province slot.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_f2c0;
+pub const VTABLE_RVA: usize = 0x029e_f2d0;
 
 /// Object allocation size.
 pub const SIZE: usize = 0x70;

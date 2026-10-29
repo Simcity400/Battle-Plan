@@ -5,7 +5,7 @@ use crate::{
     Memory, climited_use_tech_bonus::Value, msvc_string::Descriptor, read, research_inputs::Text,
 };
 
-pub const VTABLE_RVA: usize = 0x029f_1828;
+pub const VTABLE_RVA: usize = 0x029f_1838;
 pub const NAME: usize = 0x30;
 pub const ID: usize = 0x50;
 pub const REDUCTION: usize = 0x08;

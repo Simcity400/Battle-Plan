@@ -14,7 +14,7 @@ pub const HEALTHY_LEVEL: usize = 0x14;
 pub const LEVEL: usize = 0x18;
 
 /// CNavalBase vtable.
-pub const VTABLE_RVA: usize = 0x029e_f770;
+pub const VTABLE_RVA: usize = 0x029e_f780;
 /// Per-base country list: pointer, count and one u32 tag per entry. Membership supplies the
 /// prohibition overlay for the viewer.
 pub const COUNTRY_LIST: usize = 0x40;

@@ -5,7 +5,7 @@
 //! routes do not establish a consistency contract here.
 
 /// CUpgradeDelivery primary vtable.
-pub const VTABLE_RVA: usize = 0x2a4b1c0;
+pub const VTABLE_RVA: usize = 0x2a4b1e0;
 /// CUpgradeDelivery status, u32.
 pub const STATUS: usize = 0x08;
 /// Status whose progress is read; other statuses do not reach the progress field.

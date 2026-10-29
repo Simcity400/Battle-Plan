@@ -41,7 +41,7 @@ pub const TOKEN_CAPACITY_RVA: usize = 0x0368f5ac;
 /// MSVC string entry stride for token-name lookup.
 pub const TOKEN_NAME_STRIDE: usize = 0x20;
 /// Dynamic-token wrapper used during strategic-resource loading.
-pub const ADD_DYNAMIC_TOKEN_RVA: usize = 0x0253da40;
+pub const ADD_DYNAMIC_TOKEN_RVA: usize = 0x0253dd90;
 /// Static long-fixed token formatted as fixed15 numeric text instead of its
 /// spelling; saves never serialize the name.
 pub const FIXED15_TOKEN: u32 = 0x167;

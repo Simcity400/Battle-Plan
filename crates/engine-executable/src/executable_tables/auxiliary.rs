@@ -8,25 +8,25 @@ use std::{
 };
 
 /// Native nonlocalized prefix used only by the simulation console override.
-const AIR_DETECTION_OVERRIDE_PREFIX: u32 = 0x029f_9020;
+const AIR_DETECTION_OVERRIDE_PREFIX: u32 = 0x029f_9030;
 
 const CATEGORY_START: u32 = 0x0100_c890;
 const CATEGORY_END: u32 = 0x0100_ca98;
 const CATEGORY_ZERO_CASE: u32 = 0x0100_ca2c;
 const UNNAMED_CATEGORY: u64 = 0x80_0000;
-const STAT_START: u32 = 0x0148_3ab0;
-const STAT_END: u32 = 0x0148_3e6a;
+const STAT_START: u32 = 0x0148_3e70;
+const STAT_END: u32 = 0x0148_422a;
 const STAT_LABELS: u32 = 0x0312_b560;
 const STAT_POLARITY: u32 = 0x0312_b7d0;
 const STAT_COUNT: usize = 78;
-const AI_START: u32 = 0x0154_3ad0;
-const AI_END: u32 = 0x0154_4727;
+const AI_START: u32 = 0x0154_3e90;
+const AI_END: u32 = 0x0154_4ae7;
 const MISSION_START: u32 = 0x0104_8bd0;
 const MISSION_END: u32 = 0x0104_8cbf;
 const EQUIPMENT_MISSION_SELECT: u32 = 0x0109_a01c;
 const EQUIPMENT_MISSION_RESULT: u32 = 0x0109_a15a;
-const EXECUTION_START: u32 = 0x0154_4ad0;
-const EXECUTION_END: u32 = 0x0154_4b27;
+const EXECUTION_START: u32 = 0x0154_4e90;
+const EXECUTION_END: u32 = 0x0154_4ee7;
 const ORDER_START: u32 = 0x006a_9a8a;
 const ORDER_END: u32 = 0x006a_9a97;
 const SELECTOR_START: u32 = 0x0058_4824;
@@ -36,8 +36,8 @@ const RULE_END: u32 = 0x0068_236f;
 const RULE_CONSTRUCT: u32 = 0x0067_fa90;
 const STRING_COPY: u32 = 0x0011_f770;
 const STRING_ASSIGN: u32 = 0x0011_f030;
-const STRING_ALLOCATE: u32 = 0x0259_fd4c;
-const STRING_RELEASE: u32 = 0x0259_fd88;
+const STRING_ALLOCATE: u32 = 0x025a_009c;
+const STRING_RELEASE: u32 = 0x025a_00d8;
 const RULE_STRIDE: u64 = 0x38;
 const RULE_LOCAL_BASE: u64 = 0x2e0;
 const RULE_TOKEN: u64 = 0x28;

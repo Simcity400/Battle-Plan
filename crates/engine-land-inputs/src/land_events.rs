@@ -491,11 +491,11 @@ pub const DESTRUCTION_SENTINEL: [u8; 16] = [
 pub const DESTROY_SENTINEL: [u8; 16] = [
     0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x55,
 ];
-pub const BORDER_FINALIZE_RVA: usize = 0x148a080;
-pub const BORDER_TERMINATE_RVA: usize = 0x148b520;
+pub const BORDER_FINALIZE_RVA: usize = 0x148a440;
+pub const BORDER_TERMINATE_RVA: usize = 0x148b8e0;
 /// Attacker-then-defender finalizer verdict returns, before scripts.
 /// Calls from effects are not verdict queries.
-pub const BORDER_TERMINATE_RETURNS: [usize; 2] = [0x148a0ed, 0x148a0fd];
+pub const BORDER_TERMINATE_RETURNS: [usize; 2] = [0x148a4ad, 0x148a4bd];
 /// Border finalizer and result-handler entry bytes.
 pub const BORDER_FINALIZE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,

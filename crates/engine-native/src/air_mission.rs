@@ -2,7 +2,7 @@
 //! subobject.
 
 /// Mission primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_8ea0;
+pub const VTABLE_RVA: usize = 0x029f_8eb0;
 
 /// Enabled mission mask, u32, including the training bit.
 pub const ENABLED_MASK: usize = 0x10;

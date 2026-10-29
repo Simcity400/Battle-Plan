@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Intel-network vtable.
-pub const VTABLE_RVA: usize = 0x2a1_d848;
+pub const VTABLE_RVA: usize = 0x2a1_d858;
 /// Target country id, read as i32.
 pub const TARGET: usize = 0x08;
 /// Constructor initializing the vtable and embedded objects.

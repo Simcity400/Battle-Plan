@@ -76,7 +76,7 @@ pub fn key_reader(token: u32) -> KeyReader {
         (Reader::Body, 0x1404C1950) => {
             KeyReader::Only(&[OwnKey::Value("specialization"), OwnKey::Value("level")])
         }
-        (Reader::Own(0x141445DB0), 0x140597260) => KeyReader::Only(&[
+        (Reader::Own(0x141446170), 0x140597260) => KeyReader::Only(&[
             OwnKey::Value("value"),
             OwnKey::Value("date"),
             OwnKey::Value("days"),
@@ -126,7 +126,7 @@ pub fn key_reader(token: u32) -> KeyReader {
         (Reader::Body, 0x1404559A0)
         | (Reader::Body, 0x140491870)
         | (Reader::Body, 0x1404581D0)
-        | (Reader::Own(0x140454050), 0x1414467C0) => {
+        | (Reader::Own(0x140454050), 0x141446B80) => {
             KeyReader::Only(&[OwnKey::Value("target"), OwnKey::Value("value")])
         }
         (Reader::Body, 0x140458D90) => KeyReader::Only(&[
@@ -196,7 +196,7 @@ pub fn key_reader(token: u32) -> KeyReader {
             OwnKey::Value("building"),
             OwnKey::Value("include_locked"),
         ]),
-        (Reader::Own(0x141445C30), 0x1414467F0) => KeyReader::ThenLoadKey(&[
+        (Reader::Own(0x141445FF0), 0x141446BB0) => KeyReader::ThenLoadKey(&[
             OwnKey::BoundLocalization("tooltip"),
             OwnKey::BoundLocalization("not_tooltip"),
         ]),
@@ -781,7 +781,7 @@ mod tests {
                 reader,
                 Reader::Own(
                     0x140454050
-                        | 0x141445C30
+                        | 0x141445FF0
                         | 0x14049F1E0
                         | 0x14049F630
                         | 0x14049FA80

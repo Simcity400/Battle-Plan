@@ -3,7 +3,7 @@
 use crate::{Memory, cpdx_array::Array, read};
 
 /// Bidding-turn primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_ada0;
+pub const VTABLE_RVA: usize = 0x029e_adb0;
 /// Serialized raw country reference.
 pub const COUNTRY: usize = 0x08;
 /// Ordered owning action-pointer array, serialized before destruction.

@@ -2,7 +2,7 @@
 //! `cequipment_production_line` and `cproduction_line`.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_8ac0;
+pub const VTABLE_RVA: usize = 0x029f_8ad0;
 
 /// Registry identity kind for ship-refit work orders.
 pub const REFERENCE_TYPE: u32 = 71;

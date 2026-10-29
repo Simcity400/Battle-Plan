@@ -3,13 +3,13 @@
 //! country registration.
 
 /// Primary requests vtable.
-pub const VTABLE_RVA: usize = 0x2a4b260;
+pub const VTABLE_RVA: usize = 0x2a4b280;
 /// Priority, u32; serialization omits the default value one.
 pub const PRIORITY: usize = 0x08;
 /// Persistent subobject displacement.
 pub const PERSISTENT_SUBOBJECT: usize = 0x18;
 /// Persistent subobject vtable.
-pub const PERSISTENT_VTABLE_RVA: usize = 0x2a4b298;
+pub const PERSISTENT_VTABLE_RVA: usize = 0x2a4b2b8;
 /// Owning CArmy pointer requiring both vtables and persistent-id authentication.
 pub const ARMY: usize = 0x20;
 /// CArmyUpgradesStatus back-reference checked against the owning status.

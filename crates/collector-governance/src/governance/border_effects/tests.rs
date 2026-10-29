@@ -150,9 +150,9 @@ impl Fixture {
         self.word(cell + bucket::TYPE, handle as usize);
         self.word(cell + bucket::OBJECT, EVENT);
         // Event and option identities, followed by the immediate effect.
-        self.word(EVENT, IMAGE + 0x02a1_5b78);
+        self.word(EVENT, IMAGE + 0x02a1_5b88);
         self.word(EVENT + 8, handle as usize);
-        self.word(EVENT + 0x118, IMAGE + 0x02a1_5ad8);
+        self.word(EVENT + 0x118, IMAGE + 0x02a1_5ae8);
         self.word(EVENT + 0x238, IMAGE + 0x0285_26c0);
         self.array(EVENT + 0x240, 0x18900, 1);
         self.word(0x18900, 0x18a00);

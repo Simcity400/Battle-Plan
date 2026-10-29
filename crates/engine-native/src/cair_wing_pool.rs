@@ -3,7 +3,7 @@
 pub(crate) mod fuel;
 
 /// Wing-pool primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_7638;
+pub const VTABLE_RVA: usize = 0x029f_7648;
 /// Wing-pool allocation size.
 pub const SIZE: usize = 0x48;
 /// Full CAirBase reference containing u32 type and id.

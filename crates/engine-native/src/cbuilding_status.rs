@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// Building-status vtable.
-pub const VTABLE_RVA: usize = 0x02a1_5080;
+pub const VTABLE_RVA: usize = 0x02a1_5090;
 /// Signed building-index array keyed by template ordinal.
 pub const BUILDING_INDICES: usize = 0x20;
 /// Building-index count, i32, checked before lookup.

@@ -510,7 +510,7 @@ pub const SLOT_ROSTER: usize = ctechnology_status::RESEARCH_SLOTS_DATA;
 const GROUP_MEMBERS: usize = ctechnology_sharing_group::MEMBERS;
 /// The faction sharing roster entry's vtable `research_modifiers` accepts
 /// beside the group's.
-const FACTION_SHARING_VTABLE_RVA: usize = 0x02ac_58d8;
+const FACTION_SHARING_VTABLE_RVA: usize = 0x02ac_5908;
 
 const UNAPPOINT_ADVISOR_RVA: usize = 0x117_2b20;
 const SET_LEVEL_RVA: usize = 0xf5_ff70;
@@ -1283,7 +1283,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
     (
         MutationSite {
             name: "project_database_resync",
-            rva: 0x151_cc40,
+            rva: 0x151_d000,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24,
                 0x18, 0x55,
@@ -1300,7 +1300,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
     (
         MutationSite {
             name: "license_removal",
-            rva: 0x14d_61f0,
+            rva: 0x14d_65b0,
             sentinel: [
                 0x40, 0x55, 0x48, 0x83, 0xec, 0x50, 0x83, 0x79, 0x44, 0x00, 0x48, 0x8b, 0xe9, 0x0f,
                 0x84, 0x4d,
@@ -1315,7 +1315,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
     (
         MutationSite {
             name: "license_extension",
-            rva: 0x14d_34f0,
+            rva: 0x14d_38b0,
             sentinel: [
                 0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48,
                 0x8d, 0x54,
@@ -1561,7 +1561,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
     (
         MutationSite {
             name: "faction_sharing_base",
-            rva: 0x1c7_d260,
+            rva: 0x1c7_d570,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x57, 0x41, 0x56, 0x48, 0x83, 0xec, 0x30, 0x48,
                 0x63, 0xc2,

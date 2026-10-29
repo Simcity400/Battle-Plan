@@ -1,7 +1,7 @@
 //! CFEXAir active naval air slot.
 use crate::{Memory, cequipment_variant, cnaval_combatant::field, cpdx_array::Array};
 
-pub const VTABLE_RVA: usize = 0x02a9_9ab8;
+pub const VTABLE_RVA: usize = 0x02a9_9ae8;
 
 // The two localisation caches are derived. Capture only the wing vectors' subunit indices for
 // viewer localisation. The damage multiplier is saved; update recomputes five weighted wing values

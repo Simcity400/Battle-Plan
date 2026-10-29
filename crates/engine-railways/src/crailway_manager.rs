@@ -13,7 +13,7 @@ pub mod fresh_inputs;
 pub mod selected_inputs;
 
 /// CRailwayManager primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_f310;
+pub const VTABLE_RVA: usize = 0x029e_f320;
 
 /// CRailwayManager province-indexed CProvinceRailwayInfo pointer table.
 pub const PROVINCE_INFO_TABLE: usize = 0x08;

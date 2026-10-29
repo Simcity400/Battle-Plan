@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// Region-weather vtable.
-pub const VTABLE_RVA: usize = 0x029f_3f88;
+pub const VTABLE_RVA: usize = 0x029f_3f98;
 /// Region-weather array stride (`cweather_manager::REGIONS`).
 pub const STRIDE: usize = 0x160;
 /// Region ID, i32, authenticated against its array slot.

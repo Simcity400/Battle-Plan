@@ -854,7 +854,7 @@ mod tests {
             0,
         );
         for rva in operative_action_implementation::VTABLE_RVAS {
-            put(&mut bytes, rva + 0x50, 0x01ac_3fd0_u64.to_le_bytes());
+            put(&mut bytes, rva + 0x50, 0x01ac_4280u64.to_le_bytes());
         }
         put(
             &mut bytes,

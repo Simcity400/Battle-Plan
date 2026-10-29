@@ -86,7 +86,7 @@ pub const EXCHANGE_VTABLE_RVA: usize = cresource_exchange::VTABLE_RVA;
 /// A country's delivery routes, one per canonical importer slot.
 pub const DELIVERY_ROUTES: usize = 0x788;
 /// Lend-lease client: its route pointer and receiver.
-pub const LEND_LEASE_VTABLE_RVA: usize = 0x2a9_9248;
+pub const LEND_LEASE_VTABLE_RVA: usize = 0x2a9_9278;
 pub const LEND_LEASE_ROUTE: usize = 0xc0;
 pub const LEND_LEASE_RECEIVER: usize = 0xb8;
 pub const LEND_LEASE_GIVEN: usize = 0x758;
@@ -100,14 +100,14 @@ const MARKET_BUYERS: usize = 0x48;
 const MARKET_COUNTRY_STRIDE: usize = 0x18;
 /// Market-contract client, embedded in the contract: its route pointer.
 pub const CONTRACT_CLIENT: usize = 0xf0;
-pub const CONTRACT_CLIENT_VTABLE_RVA: usize = 0x29e_8210;
+pub const CONTRACT_CLIENT_VTABLE_RVA: usize = 0x29e_8220;
 pub const CONTRACT_CLIENT_ROUTE: usize = 0xc8;
 pub const CONTRACT_SELLER: usize = 0x58;
 #[cfg(test)]
 pub const CONTRACT_BUYER: usize = 0x5c;
 pub const MARKET_OWNED_CONTRACTS: usize = 0;
 /// Supply-transfer client: the embedded route.
-pub const SUPPLY_VTABLE_RVA: usize = 0x2a1_e6f0;
+pub const SUPPLY_VTABLE_RVA: usize = 0x2a1_e700;
 pub const SUPPLY_ROUTE: usize = 0xa0;
 pub const SUPPLY_COUNTRY_SYSTEMS: usize = 0x108;
 pub const SUPPLY_TRANSFERS: usize = 0xd0;

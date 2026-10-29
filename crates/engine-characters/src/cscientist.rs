@@ -4,7 +4,7 @@
 //! Capacity is not a count and specialization population has no fixed cap.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_af88;
+pub const VTABLE_RVA: usize = 0x029f_af98;
 /// Trait-token vector data.
 pub const TRAIT_DATA: usize = 0x30;
 /// Trait-vector capacity, u32, separate from live count.

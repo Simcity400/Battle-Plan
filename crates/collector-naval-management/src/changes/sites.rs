@@ -204,7 +204,7 @@ pub const REINFORCEMENT_SETTING: Site = Site {
 };
 pub const REPAIR_ORDER_BEGIN: Site = Site {
     name: "repair order begin",
-    rva: 0x013e545f,
+    rva: 0x013e581f,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
@@ -217,7 +217,7 @@ pub const REPAIR_ORDER_BEGIN: Site = Site {
 };
 pub const REPAIR_ORDER_OTHER: Site = Site {
     name: "repair order other",
-    rva: 0x013e5484,
+    rva: 0x013e5844,
     register: Register::Rax,
     write: None,
     adjustment: 0,
@@ -230,20 +230,20 @@ pub const REPAIR_ORDER_OTHER: Site = Site {
 };
 pub const MOVE_REPAIR_ORDER: Site = Site {
     name: "move repair order",
-    rva: 0x013e60d9,
+    rva: 0x013e6499,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
     base: false,
     retire: false,
     sentinel: [
-        0x44, 0x89, 0xab, 0x64, 0x04, 0x00, 0x00, 0x48, 0x8b, 0xcb, 0xe8, 0x78, 0x6e, 0x9f, 0xff,
+        0x44, 0x89, 0xab, 0x64, 0x04, 0x00, 0x00, 0x48, 0x8b, 0xcb, 0xe8, 0xb8, 0x6a, 0x9f, 0xff,
         0x41,
     ],
 };
 pub const CANCEL_REPAIR_ORDER: Site = Site {
     name: "cancel repair order",
-    rva: 0x013e79b4,
+    rva: 0x013e7d74,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
@@ -256,7 +256,7 @@ pub const CANCEL_REPAIR_ORDER: Site = Site {
 };
 pub const REPAIR_POLICY_COMMAND: Site = Site {
     name: "repair policy command",
-    rva: 0x013e81e1,
+    rva: 0x013e85a1,
     register: Register::Rdi,
     write: None,
     adjustment: 0,
@@ -270,7 +270,7 @@ pub const REPAIR_POLICY_COMMAND: Site = Site {
 // Split can be commanded independently of repair mode.
 pub const REPAIR_SPLIT_COMMAND: Site = Site {
     name: "repair split command",
-    rva: 0x013e81f1,
+    rva: 0x013e85b1,
     register: Register::Rdi,
     write: None,
     adjustment: 0,
@@ -283,20 +283,20 @@ pub const REPAIR_SPLIT_COMMAND: Site = Site {
 };
 pub const COPY_TASK_POLICY: Site = Site {
     name: "copy task policy",
-    rva: 0x013fb677,
+    rva: 0x013fba37,
     register: Register::Rbx,
     write: None,
     adjustment: 0,
     base: false,
     retire: false,
     sentinel: [
-        0x89, 0x83, 0x64, 0x04, 0x00, 0x00, 0xe8, 0x3e, 0xaf, 0x9d, 0xff, 0x0f, 0xb6, 0xd0, 0x48,
+        0x89, 0x83, 0x64, 0x04, 0x00, 0x00, 0xe8, 0x7e, 0xab, 0x9d, 0xff, 0x0f, 0xb6, 0xd0, 0x48,
         0x8b,
     ],
 };
 pub const AI_COMPOSITION_CHOICE: Site = Site {
     name: "ai composition choice",
-    rva: 0x013e95a6,
+    rva: 0x013e9966,
     register: Register::Rdi,
     write: None,
     adjustment: 0,
@@ -736,7 +736,7 @@ pub const REFIT_PROGRESS_DAMAGE: Site = Site {
 };
 pub const REFIT_PROGRESS_REFRESH: Site = Site {
     name: "refit progress refresh",
-    rva: 0x019c4f3b,
+    rva: 0x019c51eb,
     register: Register::R14,
     write: None,
     adjustment: 0,
@@ -799,7 +799,7 @@ pub const SITES: &[Site] = &[
 ];
 pub const COMPOSITION_ENTRY: Method = Method {
     name: "composition entry",
-    rva: 0x01a1dd20,
+    rva: 0x01a1dfd0,
     argument: 0,
     adjustment: -8,
     base: false,
@@ -811,7 +811,7 @@ pub const COMPOSITION_ENTRY: Method = Method {
 };
 pub const COMPOSITION_MERGE: Method = Method {
     name: "composition merge",
-    rva: 0x01a1de20,
+    rva: 0x01a1e0d0,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -835,7 +835,7 @@ pub const COMPOSITION_ASSIGN: Method = Method {
 };
 pub const COMPOSITION_ERASE: Method = Method {
     name: "composition erase",
-    rva: 0x01a1ecc0,
+    rva: 0x01a1ef70,
     argument: 0,
     adjustment: -8,
     base: false,
@@ -847,7 +847,7 @@ pub const COMPOSITION_ERASE: Method = Method {
 };
 pub const COMPOSITION_FULFILLMENT: Method = Method {
     name: "composition fulfillment",
-    rva: 0x01a1edb0,
+    rva: 0x01a1f060,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -859,7 +859,7 @@ pub const COMPOSITION_FULFILLMENT: Method = Method {
 };
 pub const COMPOSITION_RANGE: Method = Method {
     name: "composition range",
-    rva: 0x01a1ee10,
+    rva: 0x01a1f0c0,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -871,7 +871,7 @@ pub const COMPOSITION_RANGE: Method = Method {
 };
 pub const COMPOSITION_ROSTER_ADD: Method = Method {
     name: "composition roster add",
-    rva: 0x01a1df40,
+    rva: 0x01a1e1f0,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -883,7 +883,7 @@ pub const COMPOSITION_ROSTER_ADD: Method = Method {
 };
 pub const COMPOSITION_SHIP_ADD: Method = Method {
     name: "composition ship add",
-    rva: 0x01a1e070,
+    rva: 0x01a1e320,
     argument: 0,
     adjustment: 0,
     base: false,
@@ -937,7 +937,7 @@ pub const REFIT_DESTROY: Method = Method {
     base: false,
     retire: true,
     sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x1f, 0x2a,
+        0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x2f, 0x2a,
         0xa0,
     ],
 };

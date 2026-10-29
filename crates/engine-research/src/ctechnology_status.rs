@@ -2,7 +2,7 @@
 //! Layout authentication alone does not establish hourly consistency.
 
 /// CTechnologyStatus vtable.
-pub const VTABLE_RVA: usize = 0x029f_1720;
+pub const VTABLE_RVA: usize = 0x029f_1730;
 /// CTechnologyStatus researched CTechnology* vector.
 pub const RESEARCHED_DATA: usize = 0x40;
 /// CTechnologyStatus all-technology pointer vector.

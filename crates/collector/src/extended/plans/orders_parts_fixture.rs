@@ -16,7 +16,7 @@ pub(super) const FRONTS: usize = 2;
 // child-front data and its signed count spans.
 const CHILD_DATA: usize = 0x380;
 const CHILD_STRIDE: usize = 0x48;
-const CHILD_VTABLE: usize = 0x02a0_24f8;
+const CHILD_VTABLE: usize = 0x02a0_2508;
 // Order serialization preserves the constructed subscriber counts.
 const SUBSCRIBER_VTABLE: usize = 0x029d_8b50;
 

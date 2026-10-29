@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// Project-state-machine primary vtable.
-pub const VTABLE_RVA: usize = 0x02aa_7d60;
+pub const VTABLE_RVA: usize = 0x02aa_7d90;
 /// Current-state pointer required to name one of four inline states.
 pub const CURRENT_STATE: usize = 0x08;
 /// Not-completed u8 flag, restricted to zero or one.

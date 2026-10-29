@@ -182,14 +182,14 @@ impl Renderer<'_, '_, '_> {
     ) -> Option<String> {
         let class = self.effect_class(item)?;
         let result = match class.vtable {
-            0x142A311C0 => self.scripted_effect(item, scopes, indent),
-            0x142A31A70 => self.random_effect(item, scopes, indent),
-            0x142A31BE0 => self
+            0x142A311E0 => self.scripted_effect(item, scopes, indent),
+            0x142A31A90 => self.random_effect(item, scopes, indent),
+            0x142A31C00 => self
                 .random_list(item, scopes)
                 .map(|text| format!("{}{text}", "   ".repeat(indent))),
             0x1427f3a30 => self.scope_loop(item, scopes, indent),
             0x1427F5400 => self.meta_effect(item, scopes, indent),
-            0x142A31978 => self.override_tooltip(item, scopes, indent),
+            0x142A31998 => self.override_tooltip(item, scopes, indent),
             _ => return None,
         };
         Some(match result {

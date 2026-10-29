@@ -3,7 +3,7 @@
 use crate::{Memory, read, research_inputs::Text};
 
 /// Limited-use technology bonus primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_17d8;
+pub const VTABLE_RVA: usize = 0x029f_17e8;
 pub const NAME: usize = 0x10;
 pub const ID: usize = 0x30;
 pub const USES: usize = 0x08;

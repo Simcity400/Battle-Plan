@@ -402,7 +402,7 @@ pub fn movement_terrain(
     terrain: usize,
 ) -> Result<i64, &'static str> {
     // Authenticate terrain type and its embedded unit adjuster.
-    const TERRAIN_VTABLE: usize = 0x02a3_ad30;
+    const TERRAIN_VTABLE: usize = 0x02a3_ad50;
     const ADJUSTER_VTABLE: usize = 0x0280_75b8;
     const UNREADABLE: &str = "movement stat operand unreadable";
     // A null or overflowing leaf is an unreadable operand without a read; the
@@ -585,7 +585,7 @@ mod movement_tests {
             .copy_from_slice(&1_u32.to_le_bytes());
         bytes[stats + MOVEMENT_TERRAIN_ADJUSTERS + 12..stats + MOVEMENT_TERRAIN_ADJUSTERS + 16]
             .copy_from_slice(&1_u32.to_le_bytes());
-        bytes[terrain..terrain + 8].copy_from_slice(&((base + 0x02a3_ad30) as u64).to_le_bytes());
+        bytes[terrain..terrain + 8].copy_from_slice(&((base + 0x02a3_ad50) as u64).to_le_bytes());
         bytes[terrain + 8..terrain + 12].copy_from_slice(&123_u32.to_le_bytes());
         bytes[terrain + 0x88..terrain + 0x8c].copy_from_slice(&1_i32.to_le_bytes());
         for pointer in [cache, terrain + 0x168] {

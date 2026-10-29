@@ -588,7 +588,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
     (
         MutationSite {
             name: "rebuild_hq_requirements",
-            rva: 0x19c9c60,
+            rva: 0x19c9f10,
             sentinel: [
                 0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
                 0x56, 0x41,
@@ -599,7 +599,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
     (
         MutationSite {
             name: "distribute_hq_equipment",
-            rva: 0x19c9a20,
+            rva: 0x19c9cd0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x56,
                 0x48, 0x83,
@@ -610,7 +610,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
     (
         MutationSite {
             name: "add_hq_manpower",
-            rva: 0x19c9700,
+            rva: 0x19c99b0,
             sentinel: [
                 0x85, 0xd2, 0x7e, 0x06, 0x01, 0x91, 0x88, 0x00, 0x00, 0x00, 0xc3, 0xcc, 0xcc, 0xcc,
                 0xcc, 0xcc,
@@ -621,7 +621,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
     (
         MutationSite {
             name: "accept_hq_manpower",
-            rva: 0x19c9710,
+            rva: 0x19c99c0,
             sentinel: [
                 0x4c, 0x8b, 0xc1, 0x8b, 0x89, 0x88, 0x00, 0x00, 0x00, 0x41, 0x8b, 0x80, 0x8c, 0x00,
                 0x00, 0x00,
@@ -632,7 +632,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
     (
         MutationSite {
             name: "take_hq_equipment",
-            rva: 0x19c97c0,
+            rva: 0x19c9a70,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
                 0x20, 0x48,
@@ -643,7 +643,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
     (
         MutationSite {
             name: "refund_hq_equipment",
-            rva: 0x19c9be0,
+            rva: 0x19c9e90,
             sentinel: [
                 0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48, 0x83, 0xc1, 0x20, 0x83,
                 0x39, 0x00,
@@ -654,7 +654,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
     (
         MutationSite {
             name: "destroy_hq_deployment",
-            rva: 0x19c9630,
+            rva: 0x19c98e0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
                 0x20, 0x8b,
@@ -689,7 +689,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 60] = [
     (
         MutationSite {
             name: "set_template_symbol",
-            rva: 0x1c2_c9c0,
+            rva: 0x1c2_cc70,
             sentinel: [
                 0x40, 0x53, 0x57, 0x41, 0x56, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xf9, 0x48, 0x83,
                 0xc1, 0x28,

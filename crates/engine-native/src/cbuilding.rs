@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Building vtable.
-pub const VTABLE_RVA: usize = 0x02a0_6428;
+pub const VTABLE_RVA: usize = 0x02a0_6438;
 /// Lexer type id, u32.
 pub const TYPE_ID: usize = 0x08;
 /// Total level, i16.

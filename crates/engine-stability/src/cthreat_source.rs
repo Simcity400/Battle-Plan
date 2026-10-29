@@ -7,7 +7,7 @@
 use crate::{Memory, msvc_string, read, read_slice, walk::Buffer};
 
 /// CThreatSource primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_2eb8;
+pub const VTABLE_RVA: usize = 0x029f_2ec8;
 /// CThreatSource raw country reference.
 pub const COUNTRY: usize = 0x08;
 /// CThreatSource second raw country reference.

@@ -1199,7 +1199,7 @@ fn normal_route_fixture() -> PresentationMemory {
         (0x17000, 0x16000, 123_u32, 1_u32, 12_345_i64),
         (0x17400, 0x16028, 124, 2, -10_001),
     ] {
-        p64(b, terrain, 0x02a3_ad30);
+        p64(b, terrain, 0x02a3_ad50);
         p32(b, terrain + 8, token);
         p32(b, terrain + 0x88, index);
         p64(b, terrain + 0x168, 0x0280_75b8);

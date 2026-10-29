@@ -2,9 +2,9 @@
 //! world walk or a complete availability evaluator.
 
 /// Primary definition vtable.
-pub const VTABLE_RVA: usize = 0x02a0_1248;
+pub const VTABLE_RVA: usize = 0x02a0_1258;
 /// Secondary definition vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x02a0_1298;
+pub const SECONDARY_VTABLE_RVA: usize = 0x02a0_12a8;
 /// Secondary subobject offset.
 pub const SECONDARY_BASE: usize = 0x08;
 /// Valid-definition byte tested before setting the subunit unlock marker.

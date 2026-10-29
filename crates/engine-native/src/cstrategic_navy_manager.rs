@@ -2,7 +2,7 @@
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, cstrategic_navy, read};
 
 /// Strategic-navy-manager primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_f890;
+pub const VTABLE_RVA: usize = 0x029e_f8a0;
 /// Strategic-navy pointer array.
 pub const NAVIES: usize = 8;
 

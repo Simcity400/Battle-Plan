@@ -100,7 +100,7 @@ const MANPOWER_SPAN: usize = POPULATION + 4 - MANPOWER_AVAILABLE;
 /// replace it, and the save writes its definition's name as `state_category`.
 pub const CATEGORY: usize = 0x898;
 /// State category definition vtable.
-pub const CATEGORY_VTABLE_RVA: usize = 0x02a3_5058;
+pub const CATEGORY_VTABLE_RVA: usize = 0x02a3_5078;
 /// The category definition's lexer token id, u32, beside its vtable.
 pub const CATEGORY_TOKEN: usize = 0x08;
 /// State constructor establishing template and ID.

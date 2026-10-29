@@ -12,7 +12,7 @@ pub mod hover;
 pub mod map_icons;
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_a880;
+pub const VTABLE_RVA: usize = 0x029f_a890;
 /// Owning state pointer from the second constructor argument.
 pub const STATE: usize = 0x08;
 /// Resistance level, signed i64 fixed5, advanced by speed and clamped to its bounds.

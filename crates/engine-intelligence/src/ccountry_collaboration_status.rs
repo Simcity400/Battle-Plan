@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Collaboration-status vtable.
-pub const VTABLE_RVA: usize = 0x02a3_7008;
+pub const VTABLE_RVA: usize = 0x02a3_7028;
 /// Outgoing CCountryCollaborationData pointer array.
 pub const RELATIONS: usize = 0x28;
 /// Outgoing array count, u32.

@@ -5,10 +5,10 @@ use crate::{
 };
 
 pub const DIVISION_HISTORY: usize = 0x638;
-pub const HISTORY_VTABLE_RVA: usize = 0x2a3b5b8;
-pub const STORE_VTABLE_RVA: usize = 0x2a3b568;
-pub const ENTRY_VTABLE_RVA: usize = 0x2a3b8d8;
-pub const MEDAL_VTABLE_RVA: usize = 0x2a3b518;
+pub const HISTORY_VTABLE_RVA: usize = 0x2a3b5d8;
+pub const STORE_VTABLE_RVA: usize = 0x2a3b588;
+pub const ENTRY_VTABLE_RVA: usize = 0x2a3b8f8;
+pub const MEDAL_VTABLE_RVA: usize = 0x2a3b538;
 pub const NULL_MEDAL_VTABLE_RVA: usize = 0x29c2780;
 pub const UNIT_BACKLINK: usize = 8;
 pub const MEDAL_STORE: usize = 0x20;

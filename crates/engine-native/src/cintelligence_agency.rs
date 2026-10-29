@@ -17,7 +17,7 @@ use crate::{
 };
 
 /// CIntelligenceAgency primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_e2b0;
+pub const VTABLE_RVA: usize = 0x029f_e2c0;
 /// CIntelligenceAgency inline COperativeRecruitment.
 pub const RECRUITMENT: usize = 0x08;
 /// CIntelligenceAgency owning CCountry pointer.

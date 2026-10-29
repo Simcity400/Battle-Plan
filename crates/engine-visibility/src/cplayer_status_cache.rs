@@ -12,7 +12,7 @@ use crate::{
 /// Embedded raid-system player-status cache.
 pub const CACHE: usize = 0xf0;
 /// Primary cache vtable.
-pub const VTABLE_RVA: usize = 0x02a5_d2b8;
+pub const VTABLE_RVA: usize = 0x02a5_d2d8;
 /// Raw country reference this cache was built for; zero before first rebuild.
 pub const COUNTRY: usize = 0x08;
 /// Allowed raid database indices, u16, with capacity and count.

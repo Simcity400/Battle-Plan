@@ -19,9 +19,9 @@ impl Renderer<'_, '_, '_> {
             return Some(installed_content_core::effect_keys::NativeClass {
                 name: engine_executable::executable_tables::get()
                     .registries
-                    .effect_class_name(0x142A310F0)
+                    .effect_class_name(0x142A31110)
                     .expect("context effect class is present in verified metadata"),
-                vtable: 0x142A310F0,
+                vtable: 0x142A31110,
             });
         }
         let name = installed_content_core::parser::c_string(item.key.as_deref().unwrap_or_default());
@@ -32,9 +32,9 @@ impl Renderer<'_, '_, '_> {
             .map(|_| installed_content_core::effect_keys::NativeClass {
                 name: engine_executable::executable_tables::get()
                     .registries
-                    .effect_class_name(0x142A311C0)
+                    .effect_class_name(0x142A311E0)
                     .expect("scripted effect class is present in verified metadata"),
-                vtable: 0x142A311C0,
+                vtable: 0x142A311E0,
             })
     }
 
@@ -42,7 +42,7 @@ impl Renderer<'_, '_, '_> {
         let class = self.effect_class(item)?;
         Some(match class.vtable {
             // scopes — I
-            0x142A310F0 => self
+            0x142A31110 => self
                 .context_header(item, scopes)
                 .map(|selected| selected.map(|(_, header)| header).unwrap_or_default()),
             0x1427EB1D8 => lists::own(),
@@ -143,11 +143,11 @@ impl Renderer<'_, '_, '_> {
             0x1427edd48 => self.save_global_event_target(item, scopes),
 
             // lists — I
-            0x142852790  | 0x142A31638  | 0x142A31708 => lists::own(),
+            0x142852790  | 0x142A31658  | 0x142A31728 => lists::own(),
 
-            0x142A311C0  | 0x1427f3a30  | 0x1427F5400  | 0x142A31A70 => lists::own(),
-            0x142A31BE0 => self.random_list(item, scopes),
-            0x142A31978 => self.override_own(item, scopes),
+            0x142A311E0  | 0x1427f3a30  | 0x1427F5400  | 0x142A31A90 => lists::own(),
+            0x142A31C00 => self.random_list(item, scopes),
+            0x142A31998 => self.override_own(item, scopes),
 
             // modifiers — I
             0x1427E5710 => self.timed_idea(item, scopes),
@@ -300,7 +300,7 @@ impl Renderer<'_, '_, '_> {
             0x1427C52B8 => self.char_mio_trait(item, scopes, false),
             0x1427C39C8 => self.char_mio_trait(item, scopes, true),
             // politics — F
-            0x142A31E48 => empty::describe(),
+            0x142A31E68 => empty::describe(),
             0x1427ED040 => self.politics_popularity(item, scopes),
             0x1427CC038 => self.politics_core(item, scopes, b"EFFECT_ADD_CORE_OF"),
             0x1427f0a00 => self.politics_cosmetic(item, scopes),
@@ -383,7 +383,7 @@ impl Renderer<'_, '_, '_> {
             0x1427CF6C8 => self.doctrine_reduction(item, scopes),
 
             // events — F
-            0x142A318A8 => self.custom_tooltip(item, scopes),
+            0x142A318C8 => self.custom_tooltip(item, scopes),
             0x1427E9F40 => self.country_event(item, scopes),
             0x1427F1FB0 => self.removed_decision(item, scopes),
             0x1427EA028 => self.country_event(item, scopes),
@@ -393,7 +393,7 @@ impl Renderer<'_, '_, '_> {
             0x1427F21E0 => self.mission_days(item, scopes),
             0x1427F1890 => self.decision_category(item, scopes),
             0x1427C59E0 => self.show_mio(item, scopes),
-            0x142A317D8 => self.event_option(item, scopes),
+            0x142A317F8 => self.event_option(item, scopes),
             0x1427F1CB0 => self.decision_effect(item, scopes),
             0x1427F19D8 => self.decision_effect(item, scopes),
             0x1427F1AC8 => self.decision_effect(item, scopes),
@@ -561,7 +561,7 @@ impl Renderer<'_, '_, '_> {
             0x1427FD180 => empty::describe(),
             0x1427BD088 => empty::describe(),
             0x1427E9D90 => empty::describe(),
-            0x142A31298 => empty::describe(),
+            0x142A312B8 => empty::describe(),
             0x1427CB440 => empty::describe(),
             0x1427F2610 => empty::describe(),
             0x1427f6f98 => empty::describe(),

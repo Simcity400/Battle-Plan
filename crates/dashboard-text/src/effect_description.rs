@@ -1340,9 +1340,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return text;
         }
         match self.effect_class(item).map(|class| class.vtable) {
-            Some(0x142A310F0) => return self.context_effect(item, scopes, indent),
-            Some(0x142A31708) => return self.tooltip_group(item, scopes, indent),
-            Some(0x142A31638) => return self.hidden_group(item, scopes, indent),
+            Some(0x142A31110) => return self.context_effect(item, scopes, indent),
+            Some(0x142A31728) => return self.tooltip_group(item, scopes, indent),
+            Some(0x142A31658) => return self.hidden_group(item, scopes, indent),
             _ => {}
         }
         let Some(own) = self.own(item, scopes) else {

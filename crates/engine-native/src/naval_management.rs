@@ -25,7 +25,7 @@ pub const FULFILLMENT: usize = COMPOSITION + 0x70;
 pub const COMPOSITION_TOKEN: usize = COMPOSITION + 0xd8;
 /// The native empty AI-composition selection, omitted by the serializer.
 pub const NO_AI_COMPOSITION_TOKEN: u32 = 0x4c17;
-pub const ENTRIES_VTABLE_RVA: usize = 0x029f_b508;
+pub const ENTRIES_VTABLE_RVA: usize = 0x029f_b518;
 pub const COMPOSITION_ENTRIES: usize = 8;
 pub const COMPOSITION_ENTRY_BYTES: usize = 16;
 pub const AUTOMATED_HOMEBASE: usize = 0x104;

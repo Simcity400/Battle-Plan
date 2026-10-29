@@ -3,7 +3,7 @@
 use crate::{Memory, cpdx_array::Array, nproject_cprogram_status, nproject_cproject, read};
 
 /// Project-pool primary vtable.
-pub const VTABLE_RVA: usize = 0x02a4_06f8;
+pub const VTABLE_RVA: usize = 0x02a4_0718;
 /// First project pointer in the contiguous pool.
 pub const PROJECTS: usize = 0x10;
 /// Project u32 capacity in the low half of the header.

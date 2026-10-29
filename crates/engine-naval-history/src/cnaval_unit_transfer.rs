@@ -2,7 +2,7 @@
 //! is installed.
 
 /// CNavalUnitTransfer vtable.
-pub const VTABLE_RVA: usize = 0x029e_a280;
+pub const VTABLE_RVA: usize = 0x029e_a290;
 /// CNavalUnitTransfer packed reference handle u64.
 pub const HANDLE: usize = 0x08;
 /// Signed combat-reference count. Nonzero selects combat action nine

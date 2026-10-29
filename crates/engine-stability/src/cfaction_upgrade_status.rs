@@ -9,7 +9,7 @@ use engine_native::{
 };
 
 pub const STATUS: usize = 0x838;
-pub const VTABLE_RVA: usize = 0x02a3_8090;
+pub const VTABLE_RVA: usize = 0x02a3_80b0;
 pub const MEMBER_UPGRADES: usize = 0x08;
 pub const RESEARCH_SHARING: usize = 0x28;
 pub const DOCTRINE_SHARING: usize = 0x78;

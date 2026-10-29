@@ -25,7 +25,7 @@ pub const PORT_SEA: usize = 0xc8;
 /// Terrain-type pointer reached through the province definition.
 pub const TERRAIN: usize = 0xa8;
 /// ID-taking constructor, clearing centroid fields.
-pub const CONSTRUCTOR_RVA: usize = 0x014a_4030;
+pub const CONSTRUCTOR_RVA: usize = 0x014a_43f0;
 
 /// Province IDs in the raster are u16, bounding the oracle census to their
 /// representable range. Refuse a larger count before sizing allocation.

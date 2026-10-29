@@ -2,9 +2,9 @@
 //! described in `radar_group`.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x02a0_4ec8;
+pub const VTABLE_RVA: usize = 0x02a0_4ed8;
 /// Static-intel-source secondary vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x02a0_4ee8;
+pub const SECONDARY_VTABLE_RVA: usize = 0x02a0_4ef8;
 /// Coverage-group pointer vector.
 pub const GROUPS: usize = 0x28;
 /// Coverage-group vector count, u32.

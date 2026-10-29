@@ -21,7 +21,7 @@ mod tests;
 pub(crate) mod value_readers;
 pub(crate) const READ_SCRIPT: u64 = 0x140587ED0;
 pub(crate) const READ_EFFECT: u64 = 0x140588220;
-pub(crate) const READ_VALUE: u64 = 0x141436230;
+pub(crate) const READ_VALUE: u64 = 0x1414365f0;
 const IF_TOKEN: u32 = 0x27C3;
 pub static REGISTERED_EFFECTS: RuntimeTable<&'static [(u32, &'static str)]> =
     RuntimeTable::new(|| {
@@ -153,7 +153,7 @@ pub fn random_member_fields(item: &Item) -> Vec<Item> {
 }
 pub(crate) fn bound_localization_shape(field: &Field<'_>) -> Shape<()> {
     if field.opens() {
-        Shape::EffectValueKeys(0x1424260C0)
+        Shape::EffectValueKeys(0x142426410)
     } else {
         Shape::One
     }

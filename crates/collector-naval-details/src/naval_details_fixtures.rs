@@ -43,7 +43,7 @@ pub const WING: usize = 0xf_0000;
 pub const WING_HANDLE: u64 = (1_u64 << 32) | 52;
 // Strategic-region template identity for the shared main/branch fixture.
 // Its custom-modifier vector is read by the capture.
-pub const TEMPLATE_VTABLE_RVA: usize = 0x02a5_4c08;
+pub const TEMPLATE_VTABLE_RVA: usize = 0x02a5_4c28;
 
 #[derive(Clone, Copy)]
 pub enum Hour {

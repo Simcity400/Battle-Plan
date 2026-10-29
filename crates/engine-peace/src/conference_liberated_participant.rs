@@ -1,3 +1,3 @@
 //! Liberated-country peace participant identity.
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x02a3_c1c0;
+pub const VTABLE_RVA: usize = 0x02a3_c1e0;

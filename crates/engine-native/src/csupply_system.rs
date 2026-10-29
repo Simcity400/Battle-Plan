@@ -8,9 +8,9 @@ use crate::{
 };
 
 /// CSupplySystem primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_0178;
+pub const VTABLE_RVA: usize = 0x029f_0188;
 /// CSupplySystem secondary vtable (`SECONDARY_BASE`).
-pub const SECONDARY_VTABLE_RVA: usize = 0x029f_01a0;
+pub const SECONDARY_VTABLE_RVA: usize = 0x029f_01b0;
 /// CSupplySystem secondary-base displacement.
 pub const SECONDARY_BASE: usize = 0x08;
 /// CSupplySystem SProvinceSupplyData array pointer.

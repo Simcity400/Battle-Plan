@@ -471,7 +471,7 @@ fn ocean_terrain<const TERMINAL: bool>(
 ) -> Result<usize, &'static str> {
     // Capture the key from the pinned module instead of assuming English
     // content.
-    let key: [u8; 5] = field(memory, base, 0x029f_59b8)?;
+    let key: [u8; 5] = field(memory, base, 0x029f_59c8)?;
     let root = ptr(memory, base, crate::cterrain_database::SINGLETON_RVA)?;
     let types = array(memory, root, 0x40, 8)?;
     let mut found = None;

@@ -3,9 +3,9 @@
 //! or writer ownership.
 
 /// Occupation-status primary vtable.
-pub const VTABLE_RVA: usize = 0x02a0_0c78;
+pub const VTABLE_RVA: usize = 0x02a0_0c88;
 /// Persistent subobject vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x02a0_0cb0;
+pub const SECONDARY_VTABLE_RVA: usize = 0x02a0_0cc0;
 /// Persistent subobject displacement.
 pub const SECONDARY_BASE: usize = 0x18;
 /// Embedded occupation-data robin-hood table; enumerate only live buckets.

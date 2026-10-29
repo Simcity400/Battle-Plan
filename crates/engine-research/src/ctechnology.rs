@@ -3,13 +3,13 @@
 //! These layouts do not establish hourly coherence.
 
 /// CTechnology vtable.
-pub const VTABLE_RVA: usize = 0x029f_1660;
+pub const VTABLE_RVA: usize = 0x029f_1670;
 /// The technology's listener subobject, whose vtable [`LISTENER_VTABLE_RVA`] maps slot 2 to
 /// observer propagation on the owning technology (the object enclosing it).
 pub const LISTENER: usize = 0x10;
 /// The technology listener vtable at [`LISTENER`], the technology's second
 /// vtable.
-pub const LISTENER_VTABLE_RVA: usize = 0x029f_16b0;
+pub const LISTENER_VTABLE_RVA: usize = 0x029f_16c0;
 /// The listeners classifier propagation notifies after a classifier change (pointer array with its
 /// count): dependency-list rebuilding registers each technology's [`LISTENER`] with the
 /// technologies of its template's three dependency lists, so a listener need not be a dependent

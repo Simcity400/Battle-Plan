@@ -2,7 +2,7 @@
 use super::*;
 
 const GROUP_VTABLE: usize = crate::ctechnology_sharing_group::VTABLE_RVA;
-pub(super) const FACTION_VTABLE: usize = 0x02ac_58d8;
+pub(super) const FACTION_VTABLE: usize = 0x02ac_5908;
 #[derive(Clone)]
 struct Group {
     id: u32,

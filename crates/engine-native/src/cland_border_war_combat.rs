@@ -3,9 +3,9 @@
 //! type is runtime minted, independently of ordinary land-combat type 62.
 
 /// CLandBorderWarCombat primary vtable.
-pub const VTABLE_RVA: usize = 0x02a3_6a70;
+pub const VTABLE_RVA: usize = 0x02a3_6a90;
 /// CLandBorderWarCombat secondary vtable (`BODY`).
-pub const BODY_VTABLE_RVA: usize = 0x02a3_6b50;
+pub const BODY_VTABLE_RVA: usize = 0x02a3_6b70;
 /// CLandBorderWarCombat secondary-base displacement.
 pub const BODY: usize = 0x10;
 /// Signed fixed5 configured base combat width, initially zero. Save and load use this value.

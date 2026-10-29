@@ -2,7 +2,7 @@
 
 use crate::{Memory, allocation, cdoctrine_folder_template as folder, cpdx_array::Array, read};
 
-pub const VTABLE_RVA: usize = 0x02a3_8040;
+pub const VTABLE_RVA: usize = 0x02a3_8060;
 pub const FOLDERS: usize = 0x08;
 
 /// Read the companion reached through an already authenticated upgrade status.

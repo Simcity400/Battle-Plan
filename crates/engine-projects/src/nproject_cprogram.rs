@@ -6,7 +6,7 @@ use crate::{
 };
 
 /// Program primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_df60;
+pub const VTABLE_RVA: usize = 0x029e_df70;
 /// Program reference-type discriminator.
 pub const REFERENCE_TYPE: u32 = 83;
 /// Program u32 reference type.

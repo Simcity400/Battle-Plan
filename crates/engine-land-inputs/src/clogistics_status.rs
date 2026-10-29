@@ -33,7 +33,7 @@ use crate::{
 };
 
 /// Logistics-status primary vtable.
-pub const VTABLE_RVA: usize = 0x02a2_e508;
+pub const VTABLE_RVA: usize = 0x02a2_e528;
 /// Logistics history pointer array: capacity and count. Construction fills 19 series; daily update
 /// advances every counted series.
 pub const SERIES: usize = 0x08;
@@ -701,10 +701,10 @@ pub struct BalanceWrite {
     pub available_raw: i64,
 }
 
-pub const BALANCE_WRITE_RVA: usize = 0x015b_2df0;
+pub const BALANCE_WRITE_RVA: usize = 0x015b_31b0;
 pub const BALANCE_CALLS: [(usize, [u8; 16], usize); 2] = [
     (
-        0x0140_b7d4,
+        0x0140_bb94,
         [
             0xe8, 0x17, 0x76, 0x1a, 0, 0x48, 0xff, 0xc6, 0x49, 0x3b, 0xf6, 0x0f, 0x8c, 0x4b, 0xff,
             0xff,
@@ -712,7 +712,7 @@ pub const BALANCE_CALLS: [(usize, [u8; 16], usize); 2] = [
         0x90,
     ),
     (
-        0x0140_bfd2,
+        0x0140_c392,
         [
             0xe8, 0x19, 0x6e, 0x1a, 0, 0x48, 0xff, 0xc6, 0x49, 0x3b, 0xf6, 0x0f, 0x8c, 0x5d, 0xff,
             0xff,
@@ -785,26 +785,26 @@ pub fn balance_write(
 /// clears a different country field, and other setters reach series 0/3/6.
 pub const HISTORY_CALLS: [(usize, [u8; 16], usize); 3] = [
     (
-        0x0140_b628,
+        0x0140_b9e8,
         [
             0xe8, 0x83, 0x63, 0x1a, 0, 0x48, 0xff, 0xc3, 0x49, 0x3b, 0xde, 0x7c, 0xeb, 0x48, 0x8b,
             0x45,
         ],
-        0x015b_19b0,
+        0x015b_1d70,
     ),
     (
-        0x0140_7938,
+        0x0140_7cf8,
         [
             0xe8, 0xb3, 0xa6, 0x1a, 0, 0x48, 0xff, 0xc3, 0x48, 0x3b, 0xde, 0x7c, 0xeb, 0x48, 0x8b,
             0x5c,
         ],
-        0x015b_1ff0,
+        0x015b_23b0,
     ),
     (
-        0x0140_ba08,
+        0x0140_bdc8,
         [
             0xe8, 0xe3, 0x65, 0x1a, 0, 0x48, 0x8b, 0x4f, 0x08, 0xba, 0x07, 0, 0, 0, 0x48, 0x8b,
         ],
-        0x015b_1ff0,
+        0x015b_23b0,
     ),
 ];

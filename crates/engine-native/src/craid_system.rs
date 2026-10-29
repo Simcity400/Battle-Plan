@@ -2,7 +2,7 @@
 //! the country-link table; layout alone does not establish hourly consistency.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_e678;
+pub const VTABLE_RVA: usize = 0x029e_e688;
 /// Country-raid-status array pointer.
 pub const COUNTRY_STATUSES: usize = 0xd8;
 /// Country-status array capacity, u32.

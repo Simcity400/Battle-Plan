@@ -88,7 +88,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     (
         MutationSite {
             name: "scientist_build",
-            rva: 0x14a_7100,
+            rva: 0x14a_74c0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24,
                 0x08, 0x57,
@@ -124,7 +124,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     (
         MutationSite {
             name: "scientist_trait_add",
-            rva: 0x14a_6460,
+            rva: 0x14a_6820,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x48, 0x83, 0xec, 0x20, 0x4c, 0x8b, 0x51, 0x30,
                 0x48, 0x8b,
@@ -137,7 +137,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     (
         MutationSite {
             name: "scientist_trait_remove",
-            rva: 0x14a_8860,
+            rva: 0x14a_8c20,
             sentinel: [
                 0x48, 0x83, 0xec, 0x28, 0x44, 0x8b, 0x51, 0x3c, 0x33, 0xc0, 0x48, 0x89, 0x7c, 0x24,
                 0x20, 0x48,
@@ -150,7 +150,7 @@ pub const MUTATIONS: [(MutationSite, Domain); 8] = [
     (
         MutationSite {
             name: "scientist_trait_reset",
-            rva: 0x14a_85f0,
+            rva: 0x14a_89b0,
             sentinel: [
                 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x68, 0x18, 0x48, 0x89, 0x70,
                 0x20, 0x57,

@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Project primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_f260;
+pub const VTABLE_RVA: usize = 0x029f_f270;
 /// Project reference-type discriminator.
 pub const REFERENCE_TYPE: u32 = 86;
 /// Contiguous project-pool stride.

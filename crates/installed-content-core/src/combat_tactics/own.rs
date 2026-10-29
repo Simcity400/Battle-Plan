@@ -9,10 +9,10 @@ impl Shaper<'_> {
         match address {
             // Body and variable-trigger readers use the key loop or embedded
             // helper selected by KEY_READERS.
-            0x140454050 | 0x141445C30 | 0x14049F1E0 | 0x14049F630 | 0x14049FA80 | 0x14049FED0
+            0x140454050 | 0x141445FF0 | 0x14049F1E0 | 0x14049F630 | 0x14049FA80 | 0x14049FED0
             | 0x1404A0320 => Shape::Body(Node::Class(token)),
             // Scalar first unless the value opens the class's key loop.
-            0x1404540D0 | 0x140454220 | 0x140454800 | 0x141445DB0 | 0x14046AC80 | 0x14046AD80 => {
+            0x1404540D0 | 0x140454220 | 0x140454800 | 0x141446170 | 0x14046AC80 | 0x14046AD80 => {
                 Shape::ObjectIfOpen(Node::Class(token))
             }
             // Integer arrays read resolved tokens without registering definitions.

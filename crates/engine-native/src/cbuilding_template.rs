@@ -19,4 +19,4 @@ pub const DATABASE_ORDINAL: usize = 0x2e0;
 /// Movement fort weight, i32, multiplied by each building's healthy level before the fort test.
 pub const MOVEMENT_FORT_WEIGHT: usize = 0x308;
 /// Real-definition constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x0155_0c30;
+pub const CONSTRUCTOR_RVA: usize = 0x0155_0ff0;

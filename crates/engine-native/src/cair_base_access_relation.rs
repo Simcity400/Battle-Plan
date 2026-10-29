@@ -1,8 +1,8 @@
 //! CAirBaseAccessRelation; shared fields live in `crelation`.
 
 /// Air-base access relation vtable.
-pub const VTABLE_RVA: usize = 0x2a99e20;
+pub const VTABLE_RVA: usize = 0x2a99e50;
 /// Relation type word used by construction and factory dispatch.
 pub const TYPE: u32 = 0x283a;
 /// Constructor receiving the allocated relation object.
-pub const CONSTRUCTOR_RVA: usize = 0x01a1_37f0;
+pub const CONSTRUCTOR_RVA: usize = 0x01a1_3aa0;

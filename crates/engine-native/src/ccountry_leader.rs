@@ -1,7 +1,7 @@
 //! CCountryLeader role object, reached through CCharacter's ideology map or a political party vector.
 
 /// Country-leader role vtable.
-pub const VTABLE_RVA: usize = 0x029f_d710;
+pub const VTABLE_RVA: usize = 0x029f_d720;
 /// Parent character pointer used by name effects and serialized role references.
 pub const CHARACTER: usize = 0x08;
 /// Role id, i32; loading assigns it, serialization omits -1 and nonzero

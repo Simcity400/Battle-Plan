@@ -47,17 +47,17 @@ const ADD_MANPOWER_EXPERIENCE_RVA: usize = 0xccb8d0;
 const REFRESH_EXPERIENCE_RVA: usize = 0xcecca0;
 const REBIND_EXPERIENCE_RVA: usize = 0xcd6690;
 
-const CONSTRUCT_DIVISION_HISTORY_RVA: usize = 0x14e1f90;
-const DESTROY_DIVISION_HISTORY_RVA: usize = 0x14e2550;
-const APPEND_DIVISION_HISTORY_RVA: usize = 0x14e29b0;
-const APPLY_DIVISION_AWARD_RVA: usize = 0x14e2f80;
-const CLEAR_MEDAL_INHERITANCE_RVA: usize = 0x14e72b0;
-const CONSTRUCT_MEDAL_STORE_RVA: usize = 0x14e24a0;
+const CONSTRUCT_DIVISION_HISTORY_RVA: usize = 0x14e2350;
+const DESTROY_DIVISION_HISTORY_RVA: usize = 0x14e2910;
+const APPEND_DIVISION_HISTORY_RVA: usize = 0x14e2d70;
+const APPLY_DIVISION_AWARD_RVA: usize = 0x14e3340;
+const CLEAR_MEDAL_INHERITANCE_RVA: usize = 0x14e7670;
+const CONSTRUCT_MEDAL_STORE_RVA: usize = 0x14e2860;
 const BIND_DIVISION_TEMPLATE_RVA: usize = 0xceb2b0;
-const ADD_OFFICER_EXPERIENCE_RVA: usize = 0x148_4750;
-const SET_OFFICER_EXPERIENCE_RVA: usize = 0x148_65b0;
-const PROMOTE_DIVISION_OFFICER_RVA: usize = 0x14ec8d0;
-const DESTROY_MEDAL_STORE_RVA: usize = 0x14e2910;
+const ADD_OFFICER_EXPERIENCE_RVA: usize = 0x148_4b10;
+const SET_OFFICER_EXPERIENCE_RVA: usize = 0x148_6970;
+const PROMOTE_DIVISION_OFFICER_RVA: usize = 0x14ecc90;
+const DESTROY_MEDAL_STORE_RVA: usize = 0x14e2cd0;
 
 pub const MUTATIONS: [MutationSite; 19] = [
     // The five-byte RBX store to R8's home slot relocates, followed by saves of
@@ -143,8 +143,8 @@ pub const MUTATIONS: [MutationSite; 19] = [
         name: "destroy_division_history",
         rva: DESTROY_DIVISION_HISTORY_RVA,
         sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x57,
-            0x90, 0x55,
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0xb7,
+            0x8c, 0x55,
         ],
     },
     MutationSite {

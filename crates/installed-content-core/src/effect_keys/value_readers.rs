@@ -97,17 +97,17 @@ mod reader_identity {
     pub(super) const STRATEGIC_LOCATION: u64 = 0x14056F210;
     pub(super) const DOCTRINE_KEYS: u64 = 0x140572330;
     pub(super) const DIVISION_TEMPLATE_KEYS: u64 = 0x140BF5CF0;
-    pub(super) const LOCALIZATION_VALUE: u64 = 0x141435C10;
-    pub(super) const EVENT_VALUE: u64 = 0x141435C20;
-    pub(super) const FLAG_VALUE: u64 = 0x141435C40;
-    pub(super) const MODIFY_FLAG_VALUE: u64 = 0x141435F20;
-    pub(super) const ASSIGNMENT_VALUE: u64 = 0x141436430;
-    pub(super) const OPERATIVE_EVENT_KEYS: u64 = 0x141436450;
-    pub(super) const EVENT_KEYS: u64 = 0x1414366A0;
-    pub(super) const FLAG_KEYS: u64 = 0x1414366D0;
-    pub(super) const MODIFY_FLAG_KEYS: u64 = 0x141436B40;
-    pub(super) const EQUIPMENT_VARIANT_KEYS: u64 = 0x1414C4420;
-    pub(super) const BOUND_LOCALIZATION_READ: u64 = 0x1424260C0;
+    pub(super) const LOCALIZATION_VALUE: u64 = 0x141435FD0;
+    pub(super) const EVENT_VALUE: u64 = 0x141435FE0;
+    pub(super) const FLAG_VALUE: u64 = 0x141436000;
+    pub(super) const MODIFY_FLAG_VALUE: u64 = 0x1414362E0;
+    pub(super) const ASSIGNMENT_VALUE: u64 = 0x1414367f0;
+    pub(super) const OPERATIVE_EVENT_KEYS: u64 = 0x141436810;
+    pub(super) const EVENT_KEYS: u64 = 0x141436A60;
+    pub(super) const FLAG_KEYS: u64 = 0x141436A90;
+    pub(super) const MODIFY_FLAG_KEYS: u64 = 0x141436F00;
+    pub(super) const EQUIPMENT_VARIANT_KEYS: u64 = 0x1414C47E0;
+    pub(super) const BOUND_LOCALIZATION_READ: u64 = 0x142426410;
 }
 
 use reader_identity::*;
@@ -1211,11 +1211,11 @@ mod scope_reader_identity {
     pub(super) const DAILY_MASTERY_KEYS: u64 = 0x1405721C0;
     pub(super) const MASTERY_BONUS_KEYS: u64 = 0x140572210;
     pub(super) const MASTERY_KEYS: u64 = 0x140572260;
-    pub(super) const CONDITIONAL_KEYS: u64 = 0x141436860;
-    pub(super) const EVERY_LEADER_KEYS: u64 = 0x14143CB20;
-    pub(super) const RANDOM_LEADER_KEYS: u64 = 0x14143CCA0;
-    pub(super) const EVERY_ORGANISATION_KEYS: u64 = 0x14144BC70;
-    pub(super) const RANDOM_ORGANISATION_KEYS: u64 = 0x14144BDF0;
+    pub(super) const CONDITIONAL_KEYS: u64 = 0x141436c20;
+    pub(super) const EVERY_LEADER_KEYS: u64 = 0x14143CEE0;
+    pub(super) const RANDOM_LEADER_KEYS: u64 = 0x14143D060;
+    pub(super) const EVERY_ORGANISATION_KEYS: u64 = 0x14144C030;
+    pub(super) const RANDOM_ORGANISATION_KEYS: u64 = 0x14144C1B0;
 }
 
 // Only grammars that forward effects supply a known body scope.

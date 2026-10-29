@@ -28,7 +28,7 @@ const NAMED_HANDLE: usize = 0xc0;
 // Embedded equipment bonuses start at one of two places; their entry arrays follow their headers.
 const SPECIFIC_VTABLE_RVA: usize = 0x0279_69f0;
 const BONUS_VTABLE_RVA: usize = 0x0279_6998;
-const NAMED_VTABLE_RVA: usize = 0x029e_ced8;
+const NAMED_VTABLE_RVA: usize = 0x029e_cee8;
 // The industrial-organisation trait bonus embedded in the variant.
 const MIO_BONUS: usize = 0x490;
 const MIO_VTABLE_RVA: usize = 0x0279_6c00;

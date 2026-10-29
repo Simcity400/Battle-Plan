@@ -903,7 +903,7 @@ impl Renderer<'_, '_, '_> {
                     for branch in branches {
                         pending.push(self.effect_children(branch));
                     }
-                } else if class.vtable == 0x142A31BE0 {
+                } else if class.vtable == 0x142A31C00 {
                     // visits each embedded member
                     // group, without evaluating weights or modifier triggers.
                     for member in installed_content_core::effect_keys::random_list_members(item)? {

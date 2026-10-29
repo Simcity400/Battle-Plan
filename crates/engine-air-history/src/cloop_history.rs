@@ -23,7 +23,7 @@ const SLOT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&SLOT_FIELD, 8).expect("valid record layout");
 
 /// CLoopHistory primary vtable.
-pub const VTABLE_RVA: usize = 0x02a4_bc48;
+pub const VTABLE_RVA: usize = 0x02a4_bc68;
 /// Embedded history queue, followed by its three window pointers.
 pub const QUEUE: usize = 0x08;
 /// CLoopHistory daily window pointer.

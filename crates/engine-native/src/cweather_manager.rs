@@ -15,7 +15,7 @@ mod display_grid;
 pub use display_grid::{DisplayGrid, display_grid_size, read_display_grid};
 
 /// CWeatherManager vtable.
-pub const VTABLE_RVA: usize = 0x029f_3fd8;
+pub const VTABLE_RVA: usize = 0x029f_3fe8;
 /// CWeatherManager contiguous SWeatherPerProvince array header.
 pub const PROVINCES: usize = 0x10;
 /// CWeatherManager province array count, i32.

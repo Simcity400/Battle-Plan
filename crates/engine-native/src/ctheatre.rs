@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// CTheatre vtable.
-pub const VTABLE_RVA: usize = 0x029f_2178;
+pub const VTABLE_RVA: usize = 0x029f_2188;
 /// CTheatre reference type.
 pub const REFERENCE_TYPE: u32 = 67;
 /// CTheatre packed type/id handle.

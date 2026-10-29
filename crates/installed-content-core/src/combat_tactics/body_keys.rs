@@ -54,7 +54,7 @@ impl Shaper<'_> {
                 Shape::Skip
             }
             // License conditions contain an equipment variant reference.
-            (0x37B9, Some(b"equipment")) => Shape::Object(Node::KeyReader(0x1414C4420)),
+            (0x37B9, Some(b"equipment")) => Shape::Object(Node::KeyReader(0x1414C47E0)),
             (0x2828 | 0x2938, Some(b"path")) => Shape::RawList,
             (0x2828 | 0x2938, Some(b"controller_priority")) => Shape::Object(Node::Mtth),
             (0x4C9D, Some(b"input")) | (0x31C7, Some(b"collection")) => Self::collection(field),
@@ -107,7 +107,7 @@ impl Shaper<'_> {
             {
                 Shape::One
             }
-            0x1414C4420
+            0x1414C47E0
                 if matches!(
                     key,
                     Some(
@@ -122,7 +122,7 @@ impl Shaper<'_> {
             {
                 Shape::One
             }
-            0x1404912B0 | 0x1414C4420 => Shape::Skip,
+            0x1404912B0 | 0x1414C47E0 => Shape::Skip,
             // The three authored collection fields.
             0x140A6A450 if key == Some(b"name") => Shape::ObjectIfOpen(Node::BoundLocalization),
             0x140A6A450 if key == Some(b"operators") && field.opens() => {

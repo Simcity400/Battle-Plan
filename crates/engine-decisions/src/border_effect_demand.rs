@@ -14,8 +14,8 @@ use crate::{
 };
 
 /// Event and event-option vtables.
-const EVENT_VTABLE: usize = 0x02a1_5b78;
-const OPTION_VTABLE: usize = 0x02a1_5ad8;
+const EVENT_VTABLE: usize = 0x02a1_5b88;
+const OPTION_VTABLE: usize = 0x02a1_5ae8;
 /// Packed event reference type combined with the resolved identifier.
 const EVENT_TYPE: u32 = 0x32;
 /// Embedded option and its effect selector.
@@ -55,11 +55,11 @@ const DESCRIBED: &[usize] = &[
     0x027e_9e68,
     0x027c_b518,
     0x027e_dc78,
-    0x02a3_10f0,
+    0x02a3_1110,
     0x027e_b1d8,
-    0x02a3_1638,
-    0x02a3_1708,
-    0x02a3_18a8,
+    0x02a3_1658,
+    0x02a3_1728,
+    0x02a3_18c8,
 ];
 
 /// Validated native bytes, usable only inside this quiescent callback.

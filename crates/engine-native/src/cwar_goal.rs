@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// CWarGoal primary vtable.
-pub const VTABLE_RVA: usize = 0x02a5_8b10;
+pub const VTABLE_RVA: usize = 0x02a5_8b30;
 /// Recipient raw country reference and type pointer in the embedded goal data.
 pub const RECIPIENT: usize = 0x3c;
 pub const GOAL_TYPE: usize = 0x40;

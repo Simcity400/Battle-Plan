@@ -3,7 +3,7 @@
 use crate::{Memory, sair_wing_combat_data::Key};
 
 /// Damage-entry vtable.
-pub const VTABLE_RVA: usize = 0x02a9_8ed0;
+pub const VTABLE_RVA: usize = 0x02a9_8f00;
 /// Damage-entry array stride.
 pub const STRIDE: usize = 0x18;
 /// Cause type, u32.
@@ -11,7 +11,7 @@ pub const CAUSE_TYPE: usize = 0x08;
 /// Raw signed i64 amount, without narrowing.
 pub const AMOUNT: usize = 0x10;
 /// Lookup/update matches the full u32 cause and adds to its signed i64 amount.
-pub const UPDATE_RVA: usize = 0x019e_f710;
+pub const UPDATE_RVA: usize = 0x019e_f9c0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

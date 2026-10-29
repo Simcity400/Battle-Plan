@@ -689,15 +689,15 @@ pub const CHARGING_CALLERS: &[(usize, &str)] = &[
     (0x1333837, "Advisor"),
     (0x133440e, "Advisor"),
     (0x1334436, "Advisor"),
-    (0x13eb0df, "PrideOfFleet"),
-    (0x13fcd2c, "LeaderPromotion"),
-    (0x14e3139, "Medal"),
-    (0x18d33d2, "LeaderTrait"),
-    (0x18db16b, "LeaderAssignment"),
-    (0x1ab98a1, "SpyMaster"),
-    (0x1b362bc, "Blockade"),
-    (0x1c36988, "ScientistFaction"),
-    (0x1f6b360, "ScientistRecruitment"),
+    (0x13eb49f, "PrideOfFleet"),
+    (0x13fd0ec, "LeaderPromotion"),
+    (0x14e34f9, "Medal"),
+    (0x18d3682, "LeaderTrait"),
+    (0x18db41b, "LeaderAssignment"),
+    (0x1ab9b51, "SpyMaster"),
+    (0x1b3656c, "Blockade"),
+    (0x1c36c38, "ScientistFaction"),
+    (0x1f6b670, "ScientistRecruitment"),
 ];
 
 /// Synchronous charging scopes use up to five integer/pointer arguments and return through RAX.
@@ -854,8 +854,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "LeaderPromotion",
-        function_rva: 0x13fccc0,
-        rva: 0x13fccc0,
+        function_rva: 0x13fd080,
+        rva: 0x13fd080,
         sentinel: [
             0x40, 0x53, 0x48, 0x83, 0xec, 0x40, 0x83, 0x79, 0x28, 0x00, 0x48, 0x8d, 0x59, 0x28,
             0x75, 0x0a,
@@ -864,8 +864,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "LeaderTrait",
-        function_rva: 0x18d3380,
-        rva: 0x18d3380,
+        function_rva: 0x18d3630,
+        rva: 0x18d3630,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x33, 0xff, 0x48, 0x8b,
             0xd9, 0x40,
@@ -914,8 +914,8 @@ pub const SCOPES: &[HookSite] = &[
     },
     HookSite {
         name: "PeaceForceGovernment",
-        function_rva: 0x14f0c20,
-        rva: 0x14f0c20,
+        function_rva: 0x14f0fe0,
+        rva: 0x14f0fe0,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
             0x18, 0x48,

@@ -1,8 +1,8 @@
 //! Railway-gun primary identity with unit class 13.
 /// Primary vtable; secondary reference subobject follows the primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_e8e8;
+pub const VTABLE_RVA: usize = 0x029e_e8f8;
 /// Reference-object secondary vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x029e_eac0;
+pub const SECONDARY_VTABLE_RVA: usize = 0x029e_ead0;
 /// Signed count of the gun's own combat reference array, serialized as
 /// `combat` and separate from the unit combat vector. This count distinguishes
 /// idle action 1 from action 12.

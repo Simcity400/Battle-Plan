@@ -552,7 +552,7 @@ fn map_combat_identity(
             COMBAT_BORDER_WAR,
         ),
         // Authenticate the naval combat's secondary reference-object vtable.
-        crate::cnaval_combat::VTABLE_RVA => (0x02a5_6730, COMBAT_NAVAL),
+        crate::cnaval_combat::VTABLE_RVA => (0x02a5_6750, COMBAT_NAVAL),
         _ => return Err("map combat class unsupported"),
     };
     if base

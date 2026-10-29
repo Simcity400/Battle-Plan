@@ -4559,11 +4559,11 @@ impl RequestsWorld {
             .map(|world| world.army() + carmy::EQUIPMENT_POOL - 0x20)
             .collect::<Vec<_>>();
         let mut root = vec![0; 0xf0 / 8];
-        root[0] = (base + 0x2a4b370) as u64;
+        root[0] = (base + 0x2a4b390) as u64;
         root[1] = army.army() as u64;
         for (offset, vtable, data, pointers) in [
-            (0x10, 0x2a4b0b0, 0x28, &reinforcement_pointers),
-            (0x70, 0x2a4b260, 0x48, &upgrade_pointers),
+            (0x10, 0x2a4b0d0, 0x28, &reinforcement_pointers),
+            (0x70, 0x2a4b280, 0x48, &upgrade_pointers),
         ] {
             root[offset / 8] = (base + vtable) as u64;
             root[(offset + 0x20) / 8] = army.army() as u64;

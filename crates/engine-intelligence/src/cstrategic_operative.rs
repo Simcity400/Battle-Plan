@@ -2,7 +2,7 @@
 //! field is a raw country reference.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x2a1_e108;
+pub const VTABLE_RVA: usize = 0x2a1_e118;
 /// Strategic-operative allocation size.
 pub const SIZE: usize = 0x1c8;
 /// Constructor initializing vtable and owner.

@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// CWorldThreat primary vtable.
-pub const VTABLE_RVA: usize = 0x029f_2f08;
+pub const VTABLE_RVA: usize = 0x029f_2f18;
 /// Stored signed i64 total, after clamping and scalar conversion.
 pub const TOTAL: usize = 0x08;
 /// CWorldThreat CThreatSource pointer array.

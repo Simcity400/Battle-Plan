@@ -135,35 +135,35 @@ pub const SITES: [Site; 24] = [
     },
     Site {
         name: "add pending contribution",
-        rva: 0x1a10b60,
+        rva: 0x1a10e10,
         sentinel: [
             72, 137, 92, 36, 24, 72, 137, 108, 36, 32, 86, 87, 65, 84, 72, 131,
         ],
     },
     Site {
         name: "aggregate dynamic pool",
-        rva: 0x1a10cc0,
+        rva: 0x1a10f70,
         sentinel: [
             72, 137, 92, 36, 16, 72, 137, 116, 36, 24, 72, 137, 124, 36, 32, 85,
         ],
     },
     Site {
         name: "decay dynamic pool",
-        rva: 0x1a10fe0,
+        rva: 0x1a11290,
         sentinel: [
             64, 83, 76, 139, 81, 32, 76, 139, 202, 72, 99, 65, 44, 72, 141, 12,
         ],
     },
     Site {
         name: "move source reference",
-        rva: 0x1a115f0,
+        rva: 0x1a118a0,
         sentinel: [
             139, 66, 8, 137, 65, 8, 139, 66, 12, 137, 65, 12, 139, 66, 16, 137,
         ],
     },
     Site {
         name: "reset source reference",
-        rva: 0x1a11620,
+        rva: 0x1a118d0,
         sentinel: [
             72, 137, 92, 36, 24, 86, 72, 131, 236, 48, 131, 121, 8, 0, 72, 139,
         ],

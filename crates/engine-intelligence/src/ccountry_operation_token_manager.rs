@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Operation-token manager vtable.
-pub const VTABLE_RVA: usize = 0x02a3_8e18;
+pub const VTABLE_RVA: usize = 0x02a3_8e38;
 /// Owning country pointer.
 pub const COUNTRY: usize = 0x08;
 /// Inline target-country map using hash-table insertion.

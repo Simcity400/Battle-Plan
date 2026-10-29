@@ -7,7 +7,7 @@
 /// frontend activation fills only this root.
 pub const SINGLETON_A_RVA: usize = 0x033d_db08;
 /// In-game idler primary vtable.
-pub const VTABLE_RVA: usize = 0x029e_5828;
+pub const VTABLE_RVA: usize = 0x029e_5838;
 
 /// CInGameIdler update.
 pub const UPDATE_RVA: usize = 0x00e4_1600;
